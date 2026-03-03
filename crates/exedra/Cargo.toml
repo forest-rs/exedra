@@ -10,6 +10,7 @@ keywords = ["mesh", "half-edge", "topology", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+understory_dirty.workspace = true
 
 [lints]
 workspace = true

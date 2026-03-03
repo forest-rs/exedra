@@ -1,7 +1,7 @@
 ---
 id: exe-dey4
 title: Transactions, ChangeSet, and DirtySet
-status: open
+status: closed
 deps: [exe-cbv1]
 links: [cam-l8n1]
 created: 2026-03-03T05:30:56Z

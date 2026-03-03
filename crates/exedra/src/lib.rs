@@ -13,6 +13,7 @@ pub mod id;
 pub mod mesh;
 pub mod numeric;
 pub mod topology;
+pub mod txn;
 
 pub use arena::Arena;
 pub use attributes::{AttrError, AttrKey, Attributes, DenseLayer, Domain, SparseLayer};
@@ -22,6 +23,7 @@ pub use mesh::{
 };
 pub use numeric::NumericPolicy;
 pub use topology::{Face, HalfEdge, Vertex};
+pub use txn::{ChangeSet, DirtySet, Txn};
 
 #[cfg(test)]
 mod tests {
