@@ -184,6 +184,39 @@ impl Txn<'_> {
         updated
     }
 
+    /// Returns the corner UV value for `corner`, when present.
+    #[must_use]
+    pub fn corner_uv(&self, corner: CornerId) -> Option<[f32; 2]> {
+        self.mesh
+            .attrs()
+            .sparse(attr::CORNER_UV)
+            .and_then(|layer| layer.get(corner.as_id()).copied())
+    }
+
+    /// Sets corner UV for `corner`, defining the sparse layer on first use.
+    ///
+    /// Returns `true` when `corner` is live and writable.
+    pub fn set_corner_uv(&mut self, corner: CornerId, uv: [f32; 2]) -> bool {
+        if self.mesh.half_edges.get(corner.as_id()).is_none() {
+            return false;
+        }
+        if self.mesh.attrs().sparse(attr::CORNER_UV).is_none() {
+            let _ = self.mesh.attrs_mut().define_sparse(attr::CORNER_UV);
+        }
+        let updated = self
+            .mesh
+            .attrs_mut()
+            .sparse_mut(attr::CORNER_UV)
+            .is_some_and(|layer| {
+                layer.set(corner.as_id(), uv);
+                true
+            });
+        if updated {
+            self.dirty.mark_corner(corner);
+        }
+        updated
+    }
+
     /// Marks a face dirty.
     pub fn mark_face_dirty(&mut self, face: FaceId) {
         self.dirty.mark_face(face);
@@ -362,6 +395,25 @@ mod tests {
             .copied();
         assert_eq!(region, Some(9));
         assert_eq!(drained_faces(&mut changes.dirty), vec![face]);
+    }
+
+    #[test]
+    fn txn_set_corner_uv_writes_sparse_layer_and_marks_corner_dirty() {
+        let built = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let mut mesh = built;
+        let face = mesh.faces().next().expect("face should exist");
+        let corner = mesh.face_loop(face).next().expect("corner should exist");
+
+        let mut txn = mesh.begin();
+        assert!(txn.set_corner_uv(corner, [0.25, 0.5]));
+        assert_eq!(txn.corner_uv(corner), Some([0.25, 0.5]));
+        let mut changes = txn.commit();
+        assert_eq!(drained_corners(&mut changes.dirty), vec![corner]);
     }
 
     #[test]
