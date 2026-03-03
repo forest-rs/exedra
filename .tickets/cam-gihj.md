@@ -1,0 +1,22 @@
+---
+id: cam-gihj
+status: open
+deps: [cam-ibof, exe-k3nb]
+links: [exe-k3nb]
+created: 2026-03-03T06:00:47Z
+type: feature
+priority: 1
+assignee: Bruce Mitchener
+tags: [v0.1]
+---
+# Mark edge sharp operator
+
+Implement the mark-edge-sharp selection/tagging operator. Sets the edge sharpness attribute on selected edges. Simple operator that validates the EditOperator + attribute write path.
+
+## Acceptance Criteria
+
+- Implements EditOperator
+- Sets edge sharpness on selected edges
+- ChangeSet correctly reflects changes
+- Unit tests
+
