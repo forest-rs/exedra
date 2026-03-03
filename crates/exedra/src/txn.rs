@@ -240,6 +240,9 @@ impl Txn<'_> {
     }
 
     /// Commits this transaction and returns a deterministic change summary.
+    ///
+    /// Commit always increments [`Mesh::revision`](crate::Mesh::revision)
+    /// exactly once, even when no mesh fields were changed.
     #[must_use]
     pub fn commit(mut self) -> ChangeSet {
         sort_dedup(&mut self.created_vertices);
@@ -248,6 +251,11 @@ impl Txn<'_> {
         sort_dedup(&mut self.deleted_vertices);
         sort_dedup(&mut self.deleted_half_edges);
         sort_dedup(&mut self.deleted_faces);
+        self.mesh.revision = self
+            .mesh
+            .revision
+            .checked_add(1)
+            .expect("mesh revision overflowed u64");
 
         ChangeSet {
             dirty: self.dirty,
@@ -439,11 +447,27 @@ mod tests {
     #[test]
     fn txn_abort_keeps_eager_mesh_mutations() {
         let mut mesh = Mesh::new();
+        let before = mesh.revision();
         let mut txn = mesh.begin();
         let vertex = txn.add_vertex([0.0, 1.0, 2.0]);
         txn.abort();
 
         assert_eq!(mesh.vertex_position(vertex), Some(&[0.0, 1.0, 2.0]));
+        assert_eq!(mesh.revision(), before);
+    }
+
+    #[test]
+    fn mesh_revision_increments_once_per_commit() {
+        let mut mesh = Mesh::new();
+        assert_eq!(mesh.revision().value(), 0);
+
+        let _ = mesh.begin().commit();
+        assert_eq!(mesh.revision().value(), 1);
+
+        let mut txn = mesh.begin();
+        let _ = txn.add_vertex([1.0, 0.0, 0.0]);
+        let _ = txn.commit();
+        assert_eq!(mesh.revision().value(), 2);
     }
 
     #[test]

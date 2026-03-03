@@ -1,7 +1,7 @@
 ---
 id: exe-1qo5
 title: Add MeshRevision (monotonic version counter)
-status: open
+status: closed
 deps: [exe-cbv1, exe-dey4]
 links: []
 created: 2026-03-03T07:24:23Z

@@ -160,6 +160,20 @@ pub enum ValidationError {
     },
 }
 
+/// Monotonic mesh revision counter.
+///
+/// Revision increments exactly once per successful [`crate::Txn::commit`].
+#[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct MeshRevision(u64);
+
+impl MeshRevision {
+    /// Returns the raw revision value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 /// Result payload for [`MeshBuilder::build`].
 #[derive(Clone, Debug)]
 pub struct MeshBuildResult {
@@ -187,6 +201,7 @@ pub struct Mesh {
     pub(crate) half_edges: Arena<HalfEdge>,
     pub(crate) faces: Arena<Face>,
     pub(crate) attrs: Attributes,
+    pub(crate) revision: u64,
 }
 
 impl Default for Mesh {
@@ -204,7 +219,17 @@ impl Mesh {
             half_edges: Arena::new(),
             faces: Arena::new(),
             attrs: Attributes::new(),
+            revision: 0,
         }
+    }
+
+    /// Returns the current monotonic mesh revision.
+    ///
+    /// Revision is part of mesh state and naturally carries through topology
+    /// transformations such as compaction.
+    #[must_use]
+    pub const fn revision(&self) -> MeshRevision {
+        MeshRevision(self.revision)
     }
 
     /// Returns immutable attribute storage.
