@@ -217,6 +217,27 @@ impl Txn<'_> {
         updated
     }
 
+    /// Returns explicit seam state for an undirected edge.
+    #[must_use]
+    pub fn edge_seam(&self, half_edge: HalfEdgeId) -> Option<bool> {
+        self.mesh.edge_seam(half_edge)
+    }
+
+    /// Sets explicit seam state for an undirected edge.
+    ///
+    /// Returns `true` when `half_edge` is live and writable.
+    pub fn set_edge_seam(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
+        let Some(twin) = self.mesh.twin(half_edge) else {
+            return false;
+        };
+        let updated = self.mesh.set_edge_seam(half_edge, seam);
+        if updated {
+            self.dirty.mark_corner(half_edge);
+            self.dirty.mark_corner(twin);
+        }
+        updated
+    }
+
     /// Marks a face dirty.
     pub fn mark_face_dirty(&mut self, face: FaceId) {
         self.dirty.mark_face(face);
@@ -417,6 +438,64 @@ mod tests {
     }
 
     #[test]
+    fn txn_set_edge_seam_round_trips_from_either_half_edge() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let shared = find_half_edge(&mesh, 0, 2).expect("shared half-edge should exist");
+        let shared_twin = mesh.twin(shared).expect("shared edge should have twin");
+
+        let mut txn = mesh.begin();
+        assert_eq!(txn.edge_seam(shared), Some(false));
+        assert!(txn.set_edge_seam(shared_twin, true));
+        assert_eq!(txn.edge_seam(shared), Some(true));
+        assert_eq!(txn.edge_seam(shared_twin), Some(true));
+        let mut changes = txn.commit();
+
+        let mut corners = drained_corners(&mut changes.dirty);
+        corners.sort_unstable();
+        let mut expected = vec![shared, shared_twin];
+        expected.sort_unstable();
+        assert_eq!(corners, expected);
+    }
+
+    #[test]
+    fn mesh_is_uv_discontinuous_checks_both_edge_endpoints() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let shared = find_half_edge(&mesh, 0, 2).expect("shared half-edge should exist");
+        assert_eq!(mesh.is_uv_discontinuous(shared), Some(false));
+
+        let h = shared;
+        let t = mesh.twin(h).expect("twin should exist");
+        let t_next = mesh.next(t).expect("next should exist");
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_corner_uv(h, [0.25, 0.0]));
+            assert!(txn.set_corner_uv(t_next, [0.75, 0.0]));
+            let _ = txn.commit();
+        }
+        assert_eq!(mesh.is_uv_discontinuous(shared), Some(true));
+    }
+
+    #[test]
     fn txn_commit_sorts_and_dedups_change_lists() {
         let mut mesh = Mesh::new();
         let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
@@ -582,5 +661,17 @@ mod tests {
 
         assert_eq!(changes.created_faces, vec![face]);
         assert_eq!(changes.created_half_edges, vec![half_edge]);
+    }
+
+    fn find_half_edge(mesh: &Mesh, from: u32, to: u32) -> Option<HalfEdgeId> {
+        mesh.faces().find_map(|face| {
+            mesh.face_loop(face).find(|&half_edge| {
+                mesh.from_vertex(half_edge)
+                    .is_some_and(|vertex| vertex.index() == from)
+                    && mesh
+                        .to_vertex(half_edge)
+                        .is_some_and(|vertex| vertex.index() == to)
+            })
+        })
     }
 }

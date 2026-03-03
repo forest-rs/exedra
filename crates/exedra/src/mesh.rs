@@ -319,6 +319,47 @@ impl Mesh {
             .map(|record| record.twin)
     }
 
+    /// Returns a deterministic canonical representative for an undirected edge.
+    ///
+    /// Canonicalization uses the smaller stable half-edge ID between `h` and
+    /// `twin(h)`, so callers can access one per-edge value regardless of which
+    /// directed half-edge they start from.
+    #[must_use]
+    pub fn canonical_edge(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {
+        let twin = self.twin(half_edge)?;
+        Some(core::cmp::min(half_edge, twin))
+    }
+
+    /// Returns the explicit seam tag for an edge.
+    ///
+    /// Returns `None` when `half_edge` is stale.
+    #[must_use]
+    pub fn edge_seam(&self, half_edge: HalfEdgeId) -> Option<bool> {
+        let canonical = self.canonical_edge(half_edge)?;
+        Some(
+            self.attrs
+                .sparse(attr::EDGE_SEAM)
+                .and_then(|layer| layer.get(canonical.as_id()).copied())
+                .unwrap_or(false),
+        )
+    }
+
+    /// Sets the explicit seam tag for an edge.
+    ///
+    /// Returns `true` when `half_edge` is live and writable.
+    pub fn set_edge_seam(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
+        let Some(canonical) = self.canonical_edge(half_edge) else {
+            return false;
+        };
+        if self.attrs.sparse(attr::EDGE_SEAM).is_none() {
+            let _ = self.attrs.define_sparse(attr::EDGE_SEAM);
+        }
+        self.attrs.sparse_mut(attr::EDGE_SEAM).is_some_and(|layer| {
+            layer.set(canonical.as_id(), seam);
+            true
+        })
+    }
+
     /// Returns the next half-edge in the owning face loop.
     #[must_use]
     pub fn next(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {
@@ -391,6 +432,27 @@ impl Mesh {
     pub fn from_vertex(&self, half_edge: HalfEdgeId) -> Option<VertexId> {
         let prev = self.prev(half_edge)?;
         self.to_vertex(prev)
+    }
+
+    /// Returns true when corner UV values are discontinuous across an edge.
+    ///
+    /// This compares effective corner UVs (missing values treated as
+    /// `[0.0, 0.0]`) at both edge endpoints.
+    #[must_use]
+    pub fn is_uv_discontinuous(&self, half_edge: HalfEdgeId) -> Option<bool> {
+        let twin = self.twin(half_edge)?;
+        let next = self.next(half_edge)?;
+        let twin_next = self.next(twin)?;
+        let layer = self.attrs.sparse(attr::CORNER_UV);
+        let uv = |corner: HalfEdgeId| {
+            layer
+                .and_then(|sparse| sparse.get(corner.as_id()).copied())
+                .unwrap_or([0.0, 0.0])
+        };
+
+        let endpoint_a_diff = uv(half_edge).map(f32::to_bits) != uv(twin_next).map(f32::to_bits);
+        let endpoint_b_diff = uv(twin).map(f32::to_bits) != uv(next).map(f32::to_bits);
+        Some(endpoint_a_diff || endpoint_b_diff)
     }
 
     /// Iterates half-edges on an interior face loop.
