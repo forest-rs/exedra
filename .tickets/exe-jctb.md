@@ -1,5 +1,6 @@
 ---
 id: exe-jctb
+title: Ngon/polygon construction API (MeshBuilder + add_face)
 status: open
 deps: [exe-cbv1, exe-8hfg, exe-mid7]
 links: []

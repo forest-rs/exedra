@@ -1,13 +1,14 @@
 ---
 id: ep-h36n
+title: Quad / plane primitive
 status: open
 deps: [ep-cl8t, exe-jbkx, exe-jctb]
 links: []
 created: 2026-03-03T06:53:52Z
 type: feature
-priority: 1
+priority: P2
 assignee: Bruce Mitchener
-tags: [v0.1]
+tags: [v0.1, phase2]
 ---
 # Quad / plane primitive
 

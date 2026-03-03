@@ -1,11 +1,12 @@
 ---
 id: exe-gujq
+title: Mesh compaction (compact + Remap)
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:51:38Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v1.0]
 ---

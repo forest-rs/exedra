@@ -1,13 +1,14 @@
 ---
 id: cam-v5ko
+title: uv_planar operator (v0.1 vertical slice)
 status: open
 deps: [cam-ibof, cam-kiqi, cam-l8n1, exe-2g4u, exe-qcmn]
 links: [exe-2g4u]
 created: 2026-03-03T05:59:00Z
 type: feature
-priority: 0
+priority: P2
 assignee: Bruce Mitchener
-tags: [v0.1]
+tags: [v0.1, phase2]
 ---
 # uv_planar operator (v0.1 vertical slice)
 

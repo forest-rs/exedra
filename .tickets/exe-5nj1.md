@@ -1,5 +1,6 @@
 ---
 id: exe-5nj1
+title: Explicit EDGE_SEAM attribute (edge-domain bool)
 status: open
 deps: [exe-17rj, exe-cbv1]
 links: []
@@ -8,7 +9,7 @@ type: Explicit EDGE_SEAM attribute (edge-domain bool)
 priority: P1
 assignee: Bruce Mitchener
 ---
-# Untitled
+# Explicit EDGE_SEAM attribute (edge-domain bool)
 
 Define an explicit edge-domain boolean attribute EDGE_SEAM that marks edges as UV seams. This is distinct from implicit UV discontinuity detection. Operators like mark_seam set this tag; UV projection operators read it to know where to cut. A derived utility can check whether an edge is an implicit seam (different UV values on corners across the edge) but the authoritative seam tag is the explicit attribute.
 

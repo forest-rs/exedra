@@ -1,11 +1,12 @@
 ---
 id: exe-3otz
+title: Exedra documentation pass
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:51:38Z
 type: task
-priority: 3
+priority: P3
 assignee: Bruce Mitchener
 tags: [v1.0]
 ---

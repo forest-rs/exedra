@@ -1,11 +1,12 @@
 ---
 id: exe-17rj
+title: Attribute system core
 status: open
 deps: [exe-nca7, exe-dc9l]
 links: []
 created: 2026-03-03T05:27:36Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

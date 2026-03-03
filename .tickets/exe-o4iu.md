@@ -1,11 +1,12 @@
 ---
 id: exe-o4iu
+title: Derived corner normals
 status: open
 deps: [exe-k3nb, exe-qcmn]
 links: []
 created: 2026-03-03T05:37:58Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---

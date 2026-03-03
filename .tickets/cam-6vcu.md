@@ -1,11 +1,12 @@
 ---
 id: cam-6vcu
+title: PolicySet and sub-policies
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:57:06Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

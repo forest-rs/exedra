@@ -1,11 +1,12 @@
 ---
 id: exe-yv2u
+title: Fuzz targets for topology edits and booleans
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:51:38Z
 type: task
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v1.0]
 ---

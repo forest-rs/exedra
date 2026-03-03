@@ -1,11 +1,12 @@
 ---
 id: exe-3jxp
+title: Deterministic triangulation
 status: open
 deps: [exe-cbv1]
 links: []
 created: 2026-03-03T05:33:35Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

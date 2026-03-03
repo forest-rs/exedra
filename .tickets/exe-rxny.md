@@ -1,5 +1,6 @@
 ---
 id: exe-rxny
+title: Expand exedra_testkit: golden dump schema and fixture builders
 status: open
 deps: [exe-lopy]
 links: []
@@ -8,7 +9,7 @@ type: Expand exedra_testkit: golden dump schema and fixture builders
 priority: P2
 assignee: Bruce Mitchener
 ---
-# Untitled
+# Expand exedra_testkit: golden dump schema and fixture builders
 
 Define the exedra_testkit scope more concretely. The testkit provides: (1) golden dump format using RON or JSON with ordered lists (not maps) for determinism, (2) fixture builder helpers that construct common test meshes via exedra_primitives, (3) snapshot comparison utilities (dump mesh to golden format, compare against stored golden file), (4) debug visualization helpers (optional). Golden format must be human-readable and diff-friendly.
 

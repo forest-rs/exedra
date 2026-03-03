@@ -1,11 +1,12 @@
 ---
 id: cam-u9zk
+title: Select faces by region (select.faces.by_region)
 status: open
 deps: [cam-ul4v, cam-ibof]
 links: [cam-ul4v]
 created: 2026-03-03T06:33:27Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

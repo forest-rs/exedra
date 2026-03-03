@@ -1,11 +1,12 @@
 ---
 id: exe-k3nb
+title: Edge sharpness attribute
 status: open
 deps: [exe-17rj, exe-cbv1]
 links: [cam-gihj]
 created: 2026-03-03T05:29:34Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

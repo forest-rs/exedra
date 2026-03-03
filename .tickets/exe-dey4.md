@@ -1,11 +1,12 @@
 ---
 id: exe-dey4
+title: Transactions, ChangeSet, and DirtySet
 status: open
 deps: [exe-cbv1]
 links: [cam-l8n1]
 created: 2026-03-03T05:30:56Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

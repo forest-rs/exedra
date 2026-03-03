@@ -1,11 +1,12 @@
 ---
 id: cam-4x8o
+title: DiagnosticsSink and Diagnostic
 status: open
 deps: [exe-dc9l]
 links: []
 created: 2026-03-03T05:56:07Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

@@ -1,13 +1,14 @@
 ---
 id: ep-cl8t
+title: Primitive return type and selection helpers
 status: open
 deps: [exe-dc9l]
 links: [cam-kiqi]
 created: 2026-03-03T06:53:52Z
 type: feature
-priority: 1
+priority: P2
 assignee: Bruce Mitchener
-tags: [v0.1, foundation]
+tags: [v0.1, foundation, phase2]
 ---
 # Primitive return type and selection helpers
 

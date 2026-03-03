@@ -1,11 +1,12 @@
 ---
 id: cam-vt4j
+title: OpContext, Scratch, and Clock
 status: open
 deps: [exe-mid7, exe-dc9l]
 links: []
 created: 2026-03-03T05:53:48Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

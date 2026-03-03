@@ -1,11 +1,12 @@
 ---
 id: cam-gihj
+title: Mark edge sharp operator
 status: open
 deps: [cam-ibof, exe-k3nb]
 links: [exe-k3nb]
 created: 2026-03-03T06:00:47Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

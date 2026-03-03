@@ -1,11 +1,12 @@
 ---
 id: exe-lopy
+title: exedra_testkit crate
 status: open
 deps: []
 links: [cam-tzew]
 created: 2026-03-03T05:52:56Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, infra]
 ---

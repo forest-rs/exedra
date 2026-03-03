@@ -1,11 +1,12 @@
 ---
 id: exe-mid7
+title: NumericPolicy in Exedra core
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:35:43Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

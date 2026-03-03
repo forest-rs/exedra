@@ -1,5 +1,6 @@
 ---
 id: exe-64i3
+title: Minimal traversal iterators (faces, vertices, face_loop, vertex_star)
 status: open
 deps: [exe-cbv1]
 links: []
@@ -8,7 +9,7 @@ type: Minimal traversal iterators (faces, vertices, face_loop, vertex_star)
 priority: P1
 assignee: Bruce Mitchener
 ---
-# Untitled
+# Minimal traversal iterators (faces, vertices, face_loop, vertex_star)
 
 Add boring, minimal iterator/traversal API to Mesh. Four core accessors: mesh.faces() iterates live faces, mesh.vertices() iterates live vertices, mesh.face_loop(face) walks the half-edge loop of a face yielding HalfEdgeIds, mesh.vertex_star(v) walks the one-ring of a vertex yielding neighboring faces/edges. These are the foundation for all higher-level queries and operator logic.
 
@@ -20,3 +21,9 @@ faces() and vertices() iterate arena slots, skipping dead entries. Return type: 
 
 mesh.faces() yields all live face IDs in arena order. mesh.vertices() yields all live vertex IDs in arena order. mesh.face_loop(f) yields half-edges of the face loop. mesh.vertex_star(v) yields one-ring half-edges. All work on quad, box, cylinder, sphere meshes. Deterministic ordering.
 
+
+## Notes
+
+**2026-03-03T10:33:26Z**
+
+Known limitation (v0.1): current Mesh::vertex_star implementation scans all half-edges and filters via from_vertex(), where from_vertex() derives origin through prev() face-loop walking. Complexity is O(total_half_edges * face_degree) worst-case. Keep for now for simplicity/determinism; revisit with adjacency-driven iteration when traversal performance becomes a bottleneck.

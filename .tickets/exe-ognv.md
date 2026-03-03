@@ -1,11 +1,12 @@
 ---
 id: exe-ognv
+title: PropagatePolicy and edit propagation defaults
 status: open
 deps: [exe-17rj]
 links: []
 created: 2026-03-03T05:40:23Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---

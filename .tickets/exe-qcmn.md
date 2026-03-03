@@ -1,11 +1,12 @@
 ---
 id: exe-qcmn
+title: Render extraction (to_trimesh)
 status: open
 deps: [exe-3jxp, exe-2g4u, exe-dey4]
 links: []
 created: 2026-03-03T05:34:01Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

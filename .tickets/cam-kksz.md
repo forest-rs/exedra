@@ -1,11 +1,12 @@
 ---
 id: cam-kksz
+title: Boolean orchestration (preview/commit)
 status: open
 deps: [exe-qa74]
 links: []
 created: 2026-03-03T06:01:15Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.9]
 ---

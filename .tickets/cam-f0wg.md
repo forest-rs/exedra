@@ -1,11 +1,12 @@
 ---
 id: cam-f0wg
+title: Artifacts (bounded, deterministic)
 status: open
 deps: [exe-dc9l]
 links: []
 created: 2026-03-03T05:56:28Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

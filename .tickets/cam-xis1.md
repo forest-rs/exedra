@@ -1,11 +1,12 @@
 ---
 id: cam-xis1
+title: OpReport, Stats, and Timings
 status: open
 deps: [cam-4x8o, cam-f0wg]
 links: []
 created: 2026-03-03T05:54:17Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

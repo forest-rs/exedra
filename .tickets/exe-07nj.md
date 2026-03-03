@@ -1,11 +1,12 @@
 ---
 id: exe-07nj
+title: Patch classification (inside/outside)
 status: open
 deps: [exe-imti]
 links: []
 created: 2026-03-03T05:47:29Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.9, boolean]
 ---

@@ -1,5 +1,6 @@
 ---
 id: exe-8w2z
+title: delete_faces kernel primitive
 status: open
 deps: [exe-dey4]
 links: []

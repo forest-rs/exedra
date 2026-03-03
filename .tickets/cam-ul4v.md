@@ -1,11 +1,12 @@
 ---
 id: cam-ul4v
+title: Face region/material tagging (tag.face.region)
 status: open
 deps: [cam-ibof]
 links: [cam-u9zk]
 created: 2026-03-03T06:00:47Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

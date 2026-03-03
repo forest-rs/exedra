@@ -1,11 +1,12 @@
 ---
 id: exe-fc97
+title: Validation (validate_fast and validate_deep)
 status: open
 deps: [exe-cbv1]
 links: [cam-0711]
 created: 2026-03-03T05:35:11Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

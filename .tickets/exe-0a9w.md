@@ -1,11 +1,12 @@
 ---
 id: exe-0a9w
+title: split_face with attribute propagation
 status: open
 deps: [exe-dey4, exe-ognv]
 links: []
 created: 2026-03-03T05:39:00Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---

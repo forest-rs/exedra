@@ -1,11 +1,12 @@
 ---
 id: cam-0w9l
+title: OpError and OpErrorKind
 status: open
 deps: [cam-4x8o, cam-f0wg]
 links: []
 created: 2026-03-03T05:56:47Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

@@ -1,11 +1,12 @@
 ---
 id: exe-fui5
+title: BooleanScratch and reusable allocations
 status: open
 deps: [exe-qs69]
 links: []
 created: 2026-03-03T05:49:44Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.9, boolean]
 ---

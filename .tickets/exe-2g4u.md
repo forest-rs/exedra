@@ -1,11 +1,12 @@
 ---
 id: exe-2g4u
+title: Corner UV attribute layer
 status: open
 deps: [exe-17rj, exe-cbv1]
 links: [cam-v5ko]
 created: 2026-03-03T05:28:50Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

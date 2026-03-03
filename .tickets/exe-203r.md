@@ -1,11 +1,12 @@
 ---
 id: exe-203r
+title: Decide OUTSIDE face representation
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:37:17Z
 type: task
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, decision]
 ---

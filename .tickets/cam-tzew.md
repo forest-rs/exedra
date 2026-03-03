@@ -1,11 +1,12 @@
 ---
 id: cam-tzew
+title: cambium_testkit crate
 status: open
 deps: []
 links: [exe-lopy]
 created: 2026-03-03T06:01:15Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, infra]
 ---

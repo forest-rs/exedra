@@ -1,11 +1,12 @@
 ---
 id: exe-dc9l
+title: Stable ID type (index + generation)
 status: open
 deps: []
 links: []
 created: 2026-03-03T05:21:25Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

@@ -1,11 +1,12 @@
 ---
 id: cam-wu7q
+title: EditOperator trait
 status: open
 deps: [cam-vt4j, cam-xis1, cam-0w9l]
 links: []
 created: 2026-03-03T05:57:52Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

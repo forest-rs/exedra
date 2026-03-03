@@ -1,11 +1,12 @@
 ---
 id: cam-ibof
+title: OperatorRunner (run_commit and run_preview)
 status: open
 deps: [cam-wu7q, cam-6vcu, exe-dey4, exe-cbv1]
 links: []
 created: 2026-03-03T05:58:07Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

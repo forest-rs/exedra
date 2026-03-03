@@ -1,11 +1,12 @@
 ---
 id: cam-10no
+title: Mark seam edges operator
 status: open
 deps: [cam-ibof, exe-5nj1]
 links: []
 created: 2026-03-03T06:00:47Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

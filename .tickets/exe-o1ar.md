@@ -1,11 +1,12 @@
 ---
 id: exe-o1ar
+title: Extended render extraction (normals + full vertex splitting)
 status: open
 deps: [exe-o4iu, exe-z9pv]
 links: []
 created: 2026-03-03T05:40:41Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---

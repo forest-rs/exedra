@@ -1,11 +1,12 @@
 ---
 id: cam-l8n1
+title: understory_dirty integration and channel definitions
 status: open
 deps: []
 links: [exe-dey4]
 created: 2026-03-03T05:57:27Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

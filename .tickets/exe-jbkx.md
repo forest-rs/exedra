@@ -1,11 +1,12 @@
 ---
 id: exe-jbkx
+title: Mesh construction from indexed triangles
 status: open
 deps: [exe-cbv1, exe-8hfg, exe-mid7]
 links: []
 created: 2026-03-03T05:31:46Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

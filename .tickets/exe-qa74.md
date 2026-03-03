@@ -1,11 +1,12 @@
 ---
 id: exe-qa74
+title: Boolean stitch and cleanup
 status: open
 deps: [exe-07nj]
 links: []
 created: 2026-03-03T05:48:47Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.9, boolean]
 ---

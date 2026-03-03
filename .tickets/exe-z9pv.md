@@ -1,11 +1,12 @@
 ---
 id: exe-z9pv
+title: Custom corner normal override layer
 status: open
 deps: [exe-o4iu]
 links: []
 created: 2026-03-03T05:38:14Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---

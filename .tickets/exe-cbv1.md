@@ -1,11 +1,12 @@
 ---
 id: exe-cbv1
+title: Mesh struct and boundary model
 status: open
 deps: [exe-nca7, exe-2752, exe-203r]
 links: []
 created: 2026-03-03T05:26:03Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

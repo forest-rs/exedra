@@ -1,5 +1,6 @@
 ---
 id: exe-ei01
+title: Derive prev(h) by walking; no stored prev pointer in v0.1
 status: open
 deps: [exe-2752]
 links: []
@@ -8,7 +9,7 @@ type: Derive prev(h) by walking; no stored prev pointer in v0.1
 priority: P1
 assignee: Bruce Mitchener
 ---
-# Untitled
+# Derive prev(h) by walking; no stored prev pointer in v0.1
 
 Decision: do not store a prev half-edge pointer in the topology records for v0.1. Instead, provide a prev(h) accessor that derives the previous half-edge by walking the face loop (next chain) until it wraps around. This saves 4-8 bytes per half-edge and simplifies the mutation surface. If profiling shows prev traversal is a bottleneck, we can add a stored prev pointer later as an optimization.
 

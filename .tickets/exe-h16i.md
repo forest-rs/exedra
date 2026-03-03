@@ -1,11 +1,12 @@
 ---
 id: exe-h16i
+title: Boolean narrow phase (tri-tri intersection)
 status: open
 deps: [exe-qs69]
 links: []
 created: 2026-03-03T05:43:08Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.9, boolean]
 ---

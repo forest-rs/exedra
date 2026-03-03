@@ -1,11 +1,12 @@
 ---
 id: cam-kiqi
+title: Selection canonicalization
 status: open
 deps: [exe-dc9l]
 links: [ep-cl8t]
 created: 2026-03-03T06:00:09Z
 type: feature
-priority: 1
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1]
 ---

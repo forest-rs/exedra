@@ -1,11 +1,12 @@
 ---
 id: cam-5xnn
+title: Region operations (loop selection, flood fill)
 status: open
 deps: []
 links: []
 created: 2026-03-03T06:01:15Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---

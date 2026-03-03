@@ -1,11 +1,12 @@
 ---
 id: exe-8hfg
+title: Vertex positions (required dense layer)
 status: open
 deps: [exe-17rj, exe-cbv1]
 links: []
 created: 2026-03-03T05:27:51Z
 type: feature
-priority: 0
+priority: P1
 assignee: Bruce Mitchener
 tags: [v0.1, foundation]
 ---

@@ -1,11 +1,12 @@
 ---
 id: exe-imti
+title: Mesh splitting along intersection graph
 status: open
 deps: [exe-ikdf]
 links: []
 created: 2026-03-03T05:46:51Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.9, boolean]
 ---

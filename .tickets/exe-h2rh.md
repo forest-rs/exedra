@@ -1,11 +1,12 @@
 ---
 id: exe-h2rh
+title: collapse_edge and flip_edge
 status: open
 deps: [exe-tezb, exe-0a9w]
 links: []
 created: 2026-03-03T05:39:55Z
 type: feature
-priority: 2
+priority: P2
 assignee: Bruce Mitchener
 tags: [v0.5]
 ---
