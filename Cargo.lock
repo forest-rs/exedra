@@ -22,6 +22,11 @@ dependencies = [
 [[package]]
 name = "cambium_testkit"
 version = "0.1.0"
+dependencies = [
+ "cambium",
+ "exedra",
+ "exedra_primitives",
+]
 
 [[package]]
 name = "cfg-if"

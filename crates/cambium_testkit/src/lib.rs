@@ -6,10 +6,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
 
 pub mod golden;
 pub mod regions;
+mod smoke;
 
 pub use golden::{GoldenSnapshot, GoldenStep, ParseError, parse_snapshot, render_snapshot};

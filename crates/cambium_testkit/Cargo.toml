@@ -12,7 +12,13 @@ readme = "README.md"
 
 [features]
 default = ["std"]
-std = []
+libm = ["cambium/libm"]
+std = ["cambium/std"]
+
+[dev-dependencies]
+cambium.workspace = true
+exedra.workspace = true
+exedra_primitives = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true
