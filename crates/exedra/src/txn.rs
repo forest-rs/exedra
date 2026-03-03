@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
 
-use crate::{CornerId, FaceId, HalfEdgeId, Id, Mesh, VertexId};
+use crate::{CornerId, FaceId, HalfEdgeId, Id, Mesh, VertexId, attr};
 
 const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
@@ -158,11 +158,6 @@ impl Txn<'_> {
         self.mesh
     }
 
-    /// Returns a mutable view of the mesh being edited.
-    pub fn mesh_mut(&mut self) -> &mut Mesh {
-        self.mesh
-    }
-
     /// Adds a vertex and records deterministic change bookkeeping.
     pub fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
         let vertex = self.mesh.add_vertex(position);
@@ -176,6 +171,21 @@ impl Txn<'_> {
         let updated = self.mesh.set_vertex_position(vertex, position);
         if updated {
             self.dirty.mark_vertex(vertex);
+        }
+        updated
+    }
+
+    /// Sets the built-in face region value and marks the face dirty on success.
+    ///
+    /// Returns `true` when `face` is live and writable.
+    pub fn set_face_region(&mut self, face: FaceId, region: u32) -> bool {
+        let updated = self
+            .mesh
+            .attrs_mut()
+            .dense_mut(attr::FACE_REGION)
+            .is_some_and(|layer| layer.set(face.as_id(), region));
+        if updated {
+            self.dirty.mark_face(face);
         }
         updated
     }
@@ -297,6 +307,31 @@ mod tests {
 
         assert_eq!(changes.dirty.dirty_vertices(), vec![vertex]);
         assert_eq!(mesh.vertex_position(vertex), Some(&[4.0, 5.0, 6.0]));
+    }
+
+    #[test]
+    fn txn_set_face_region_marks_face_dirty() {
+        let built = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let mut mesh = built;
+        let face = mesh.faces().next().expect("face should exist");
+
+        let mut txn = mesh.begin();
+        assert!(txn.set_face_region(face, 9));
+        let changes = txn.commit();
+
+        let region = mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .expect("face region layer should exist")
+            .get(face.as_id())
+            .copied();
+        assert_eq!(region, Some(9));
+        assert_eq!(changes.dirty.dirty_faces(), vec![face]);
     }
 
     #[test]

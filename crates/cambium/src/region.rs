@@ -10,7 +10,7 @@ use exedra::FaceId;
 
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
-    OpReport,
+    OpReport, SmallCounters,
 };
 
 /// Default untagged face region.
@@ -54,39 +54,32 @@ impl EditOperator for TagFaceRegion {
         if canonicalized {
             report.stats.counters.selections_canonicalized = 1;
         }
-
-        let mut tagged = Vec::with_capacity(faces.len());
+        if txn
+            .mesh()
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .is_none()
         {
-            let layer = txn
-                .mesh_mut()
-                .attrs_mut()
-                .dense_mut(exedra::attr::FACE_REGION)
-                .ok_or_else(|| {
-                    op_error(
-                        ctx,
-                        OpErrorKind::MissingAttribute,
-                        DiagCode::MissingRequiredAttribute,
-                        "missing required dense face.region layer",
-                    )
-                })?;
-            for face in faces {
-                if face == FaceId::OUTSIDE {
-                    continue;
-                }
-                if !layer.set(face.as_id(), params.region_id) {
-                    return Err(op_error(
-                        ctx,
-                        OpErrorKind::PreconditionFailed,
-                        DiagCode::PreconditionFailed,
-                        "face set contains invalid/stale face id",
-                    ));
-                }
-                tagged.push(face);
-            }
+            return Err(op_error(
+                ctx,
+                OpErrorKind::MissingAttribute,
+                DiagCode::MissingRequiredAttribute,
+                "missing required dense face.region layer",
+            ));
         }
 
-        for face in tagged {
-            txn.mark_face_dirty(face);
+        for face in faces {
+            if face == FaceId::OUTSIDE {
+                continue;
+            }
+            if !txn.set_face_region(face, params.region_id) {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::PreconditionFailed,
+                    DiagCode::PreconditionFailed,
+                    "face set contains invalid/stale face id",
+                ));
+            }
             report.stats.counters.faces_processed =
                 report.stats.counters.faces_processed.saturating_add(1);
         }
@@ -96,10 +89,12 @@ impl EditOperator for TagFaceRegion {
 }
 
 fn canonicalize_faces(faces: &mut Vec<FaceId>) -> bool {
+    let mut changed = faces.windows(2).any(|pair| pair[0] >= pair[1]);
     let len_before = faces.len();
     faces.sort_unstable();
     faces.dedup();
-    len_before != faces.len()
+    changed |= faces.len() != len_before;
+    changed
 }
 
 fn op_error(ctx: &OpContext, kind: OpErrorKind, code: DiagCode, message: &'static str) -> OpError {
@@ -113,16 +108,66 @@ fn op_error(ctx: &OpContext, kind: OpErrorKind, code: DiagCode, message: &'stati
     )
 }
 
+/// Deterministic face-selection query result.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RegionSelection {
+    /// Canonical face IDs matching the requested region.
+    pub faces: Vec<FaceId>,
+    /// Query counters.
+    pub counters: SmallCounters,
+}
+
+/// Returns all non-OUTSIDE faces tagged with `region_id`.
+pub fn select_faces_by_region(
+    mesh: &exedra::Mesh,
+    region_id: u32,
+) -> Result<RegionSelection, OpError> {
+    let layer = mesh
+        .attrs()
+        .dense(exedra::attr::FACE_REGION)
+        .ok_or_else(|| {
+            OpError::new(
+                OpErrorKind::MissingAttribute,
+                vec![Diagnostic::new(
+                    DiagLevel::Error,
+                    DiagCode::MissingRequiredAttribute,
+                    "missing required dense face.region layer",
+                )],
+                Artifacts::default(),
+            )
+        })?;
+
+    let mut result = RegionSelection::default();
+    for face in mesh.faces() {
+        if face == FaceId::OUTSIDE {
+            continue;
+        }
+        result.counters.faces_processed = result.counters.faces_processed.saturating_add(1);
+        if layer
+            .get(face.as_id())
+            .is_some_and(|value| *value == region_id)
+        {
+            result.faces.push(face);
+        }
+    }
+    if canonicalize_faces(&mut result.faces) {
+        result.counters.selections_canonicalized = 1;
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
+    use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, Mesh, MeshBuilder};
+    use exedra::{BuildParams, FaceId, Id, Mesh, MeshBuilder};
 
-    use super::{REGION_UNTAGGED, TagFaceRegion, TagFaceRegionParams};
+    use super::{REGION_UNTAGGED, TagFaceRegion, TagFaceRegionParams, select_faces_by_region};
     use crate::{EditOperator, OperatorRunner};
 
-    fn one_quad_mesh() -> (Mesh, exedra::FaceId) {
+    fn one_quad_mesh() -> (Mesh, FaceId) {
         let mut builder = MeshBuilder::new();
         let _ = builder.push_vertex([0.0, 0.0, 0.0]);
         let _ = builder.push_vertex([1.0, 0.0, 0.0]);
@@ -206,5 +251,59 @@ mod tests {
             .get(face.as_id())
             .copied();
         assert_eq!(region, Some(REGION_UNTAGGED));
+    }
+
+    #[test]
+    fn select_faces_by_region_returns_canonical_face_set() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let mut runner = OperatorRunner::new();
+
+        let params = TagFaceRegionParams {
+            region_id: 11,
+            faces: vec![faces[1], faces[0], faces[1]],
+        };
+        let _ = runner
+            .run_commit(&mut mesh, &TagFaceRegion, &params)
+            .expect("tagging should succeed");
+
+        let selected = select_faces_by_region(&mesh, 11).expect("selection should succeed");
+        assert_eq!(selected.faces, vec![faces[0], faces[1]]);
+        assert_eq!(selected.counters.faces_processed, 2);
+        assert_eq!(selected.counters.selections_canonicalized, 0);
+    }
+
+    #[test]
+    fn tag_face_region_rejects_stale_face_id() {
+        let (mut mesh, _) = one_quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let stale = FaceId::from(Id::new(999, NonZeroU32::MIN));
+        let params = TagFaceRegionParams {
+            region_id: 5,
+            faces: vec![stale],
+        };
+
+        let error = runner
+            .run_commit(&mut mesh, &TagFaceRegion, &params)
+            .expect_err("stale face id should fail");
+        assert_eq!(error.kind, crate::OpErrorKind::PreconditionFailed);
+        let face = mesh.faces().next().expect("face should exist");
+        assert!(
+            mesh.attrs()
+                .dense(exedra::attr::FACE_REGION)
+                .expect("face region layer should exist")
+                .get(face.as_id())
+                .is_some_and(|v| *v == 0)
+        );
     }
 }

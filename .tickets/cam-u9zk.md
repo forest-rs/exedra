@@ -1,7 +1,7 @@
 ---
 id: cam-u9zk
 title: Select faces by region (select.faces.by_region)
-status: open
+status: closed
 deps: [cam-ul4v, cam-ibof]
 links: [cam-ul4v]
 created: 2026-03-03T06:33:27Z
