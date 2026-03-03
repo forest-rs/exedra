@@ -1,7 +1,7 @@
 ---
 id: exe-3jxp
 title: Deterministic triangulation
-status: open
+status: closed
 deps: [exe-cbv1]
 links: []
 created: 2026-03-03T05:33:35Z

@@ -10,7 +10,9 @@
 
 use alloc::vec::Vec;
 
-use crate::{Arena, Attributes, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr};
+use crate::{
+    Arena, Attributes, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr,
+};
 
 /// Parameters for indexed-triangle mesh construction.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -419,6 +421,29 @@ impl Mesh {
             let typed = HalfEdgeId::from(id);
             (self.from_vertex(typed) == Some(vertex)).then_some(typed)
         })
+    }
+
+    /// Triangulates one interior face using deterministic fan triangulation.
+    ///
+    /// Fan triangulation emits triangles:
+    /// `(c0, c1, c2)`, `(c0, c2, c3)`, ..., `(c0, c{n-2}, c{n-1})`
+    /// where `c0..c{n-1}` are loop corners from [`Mesh::face_loop`].
+    ///
+    /// This strategy is deterministic and simple, but can generate poor
+    /// quality triangles for non-convex polygons.
+    #[must_use]
+    pub fn triangulate_face_fan(&self, face: FaceId) -> Vec<[CornerId; 3]> {
+        let corners = self.face_loop(face).collect::<Vec<_>>();
+        if corners.len() < 3 {
+            return Vec::new();
+        }
+
+        let c0 = corners[0];
+        let mut triangles = Vec::with_capacity(corners.len().saturating_sub(2));
+        for i in 1..corners.len() - 1 {
+            triangles.push([c0, corners[i], corners[i + 1]]);
+        }
+        triangles
     }
 
     /// Builds a mesh from indexed triangles.
@@ -2095,6 +2120,93 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn triangulate_face_fan_triangle_passthrough() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder
+            .add_face(&[0, 1, 2])
+            .expect("triangle face is valid");
+        let built = builder.build().expect("build should succeed");
+        let face = built.face_ids[0];
+
+        let triangles = built.mesh.triangulate_face_fan(face);
+        assert_eq!(triangles.len(), 1);
+        let loop_corners = built.mesh.face_loop(face).collect::<Vec<_>>();
+        assert_eq!(
+            triangles[0],
+            [loop_corners[0], loop_corners[1], loop_corners[2]]
+        );
+    }
+
+    #[test]
+    fn triangulate_face_fan_quad() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 1.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.add_face(&[0, 1, 2, 3]).expect("quad face is valid");
+        let built = builder.build().expect("build should succeed");
+        let face = built.face_ids[0];
+
+        let triangles = built.mesh.triangulate_face_fan(face);
+        assert_eq!(triangles.len(), 2);
+        let loop_corners = built.mesh.face_loop(face).collect::<Vec<_>>();
+        assert_eq!(
+            triangles[0],
+            [loop_corners[0], loop_corners[1], loop_corners[2]]
+        );
+        assert_eq!(
+            triangles[1],
+            [loop_corners[0], loop_corners[2], loop_corners[3]]
+        );
+    }
+
+    #[test]
+    fn triangulate_face_fan_pentagon_and_hexagon_counts() {
+        let mut pent_builder = MeshBuilder::new();
+        for i in 0..5 {
+            pent_builder.push_vertex([i as f32, 0.0, 0.0]);
+        }
+        pent_builder
+            .add_face(&[0, 1, 2, 3, 4])
+            .expect("pentagon is valid");
+        let pent = pent_builder.build().expect("build should succeed");
+        assert_eq!(pent.mesh.triangulate_face_fan(pent.face_ids[0]).len(), 3);
+
+        let mut hex_builder = MeshBuilder::new();
+        for i in 0..6 {
+            hex_builder.push_vertex([i as f32, 0.0, 0.0]);
+        }
+        hex_builder
+            .add_face(&[0, 1, 2, 3, 4, 5])
+            .expect("hexagon is valid");
+        let hex = hex_builder.build().expect("build should succeed");
+        assert_eq!(hex.mesh.triangulate_face_fan(hex.face_ids[0]).len(), 4);
+    }
+
+    #[test]
+    fn triangulate_face_fan_is_deterministic() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([2.0, 0.0, 0.0]);
+        builder.push_vertex([3.0, 0.0, 0.0]);
+        builder.push_vertex([4.0, 0.0, 0.0]);
+        builder
+            .add_face(&[0, 1, 2, 3, 4])
+            .expect("pentagon is valid");
+        let built = builder.build().expect("build should succeed");
+        let face = built.face_ids[0];
+
+        let a = built.mesh.triangulate_face_fan(face);
+        let b = built.mesh.triangulate_face_fan(face);
+        assert_eq!(a, b);
     }
 
     #[test]
