@@ -17,6 +17,7 @@ pub mod policy;
 pub mod region;
 pub mod report;
 pub mod runner;
+pub mod selection;
 mod timing;
 
 pub use artifact::{Artifact, Artifacts};
@@ -33,3 +34,4 @@ pub use region::{
 };
 pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
+pub use selection::{FaceSet, canonicalize_face_set};

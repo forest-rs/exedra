@@ -1,7 +1,7 @@
 ---
 id: cam-kiqi
 title: Selection canonicalization
-status: open
+status: closed
 deps: [exe-dc9l]
 links: [ep-cl8t]
 created: 2026-03-03T06:00:09Z

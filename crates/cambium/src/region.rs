@@ -4,10 +4,10 @@
 //! Region-tagging operators and helpers.
 
 use alloc::vec;
-use alloc::vec::Vec;
 
 use exedra::FaceId;
 
+use crate::selection::{FaceSet, canonicalize_face_set};
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
     OpReport, SmallCounters,
@@ -22,7 +22,7 @@ pub struct TagFaceRegionParams {
     /// Region identifier to write.
     pub region_id: u32,
     /// Faces to tag.
-    pub faces: Vec<FaceId>,
+    pub faces: FaceSet,
 }
 
 /// Edit operator that writes face-region tags.
@@ -43,7 +43,7 @@ impl EditOperator for TagFaceRegion {
         ctx: &mut OpContext,
     ) -> Result<OpReport, OpError> {
         let mut faces = params.faces.clone();
-        let canonicalized = canonicalize_faces(&mut faces);
+        let canonicalized = canonicalize_face_set(&mut faces);
         let mut report = OpReport::new(
             self.name(),
             Artifacts::new(
@@ -88,15 +88,6 @@ impl EditOperator for TagFaceRegion {
     }
 }
 
-fn canonicalize_faces(faces: &mut Vec<FaceId>) -> bool {
-    let mut changed = faces.windows(2).any(|pair| pair[0] >= pair[1]);
-    let len_before = faces.len();
-    faces.sort_unstable();
-    faces.dedup();
-    changed |= faces.len() != len_before;
-    changed
-}
-
 fn op_error(ctx: &OpContext, kind: OpErrorKind, code: DiagCode, message: &'static str) -> OpError {
     OpError::new(
         kind,
@@ -112,7 +103,7 @@ fn op_error(ctx: &OpContext, kind: OpErrorKind, code: DiagCode, message: &'stati
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RegionSelection {
     /// Canonical face IDs matching the requested region.
-    pub faces: Vec<FaceId>,
+    pub faces: FaceSet,
     /// Query counters.
     pub counters: SmallCounters,
 }
@@ -150,7 +141,7 @@ pub fn select_faces_by_region(
             result.faces.push(face);
         }
     }
-    if canonicalize_faces(&mut result.faces) {
+    if canonicalize_face_set(&mut result.faces) {
         result.counters.selections_canonicalized = 1;
     }
     Ok(result)
