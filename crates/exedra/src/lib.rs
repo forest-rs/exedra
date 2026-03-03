@@ -12,6 +12,7 @@ pub mod attributes;
 pub mod id;
 pub mod mesh;
 pub mod numeric;
+pub mod render;
 pub mod topology;
 pub mod txn;
 
@@ -23,6 +24,7 @@ pub use mesh::{
     ValidationError,
 };
 pub use numeric::NumericPolicy;
+pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use topology::{Face, HalfEdge, Vertex};
 pub use txn::{ChangeSet, DirtySet, Txn};
 
