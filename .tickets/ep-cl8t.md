@@ -1,7 +1,7 @@
 ---
 id: ep-cl8t
 title: Primitive return type and selection helpers
-status: open
+status: closed
 deps: [exe-dc9l]
 links: [cam-kiqi]
 created: 2026-03-03T06:53:52Z
@@ -36,3 +36,9 @@ See docs/exedra_primitives_handoff.md for full API shape.
 - All types are documented
 - Unit tests for canonicalization
 
+
+## Notes
+
+**2026-03-03T17:03:05Z**
+
+Implemented Primitive metadata API in exedra_primitives: Primitive, RegionId, FaceRegionLayer, SelectionName, Selections, canonical FaceSet/EdgeSet wrappers, and sort+dedup helpers. Added rustdoc for all public types and unit tests covering canonicalization and FaceRegionLayer default fallback. Validation: cargo fmt --all, taplo fmt, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.
