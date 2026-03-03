@@ -6,8 +6,10 @@
 #![no_std]
 extern crate alloc;
 
+pub mod artifact;
 pub mod diag;
 
+pub use artifact::{Artifact, Artifacts};
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 
 #[cfg(test)]

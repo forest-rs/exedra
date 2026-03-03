@@ -1,7 +1,7 @@
 ---
 id: cam-f0wg
 title: Artifacts (bounded, deterministic)
-status: open
+status: closed
 deps: [exe-dc9l]
 links: []
 created: 2026-03-03T05:56:28Z
