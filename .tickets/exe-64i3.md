@@ -1,7 +1,7 @@
 ---
 id: exe-64i3
 title: Minimal traversal iterators (faces, vertices, face_loop, vertex_star)
-status: open
+status: closed
 deps: [exe-cbv1]
 links: []
 created: 2026-03-03T07:06:59Z

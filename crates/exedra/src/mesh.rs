@@ -263,6 +263,16 @@ impl Mesh {
             .filter(|out| *out != HalfEdgeId::INVALID)
     }
 
+    /// Iterates live vertices in deterministic arena slot order.
+    pub fn vertices(&self) -> impl Iterator<Item = VertexId> + '_ {
+        self.vertices.iter().map(|(id, _)| VertexId::from(id))
+    }
+
+    /// Iterates live interior faces in deterministic arena slot order.
+    pub fn faces(&self) -> impl Iterator<Item = FaceId> + '_ {
+        self.faces.iter().map(|(id, _)| FaceId::from(id))
+    }
+
     /// Returns one loop half-edge for an interior face.
     ///
     /// Returns `None` for [`FaceId::OUTSIDE`].
@@ -1496,6 +1506,49 @@ mod tests {
             star.iter()
                 .any(|h| mesh.face(*h).expect("live half-edge") == FaceId::OUTSIDE)
         );
+    }
+
+    #[test]
+    fn vertices_iterates_live_vertices_in_slot_order() {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([2.0, 0.0, 0.0]);
+        let removed = mesh.vertices.remove(v1.as_id());
+        assert!(removed.is_some());
+        let v3 = mesh.add_vertex([3.0, 0.0, 0.0]);
+
+        let vertices: Vec<_> = mesh.vertices().collect();
+        assert_eq!(vertices, vec![v0, v3, v2]);
+    }
+
+    #[test]
+    fn faces_iterates_live_faces_in_slot_order() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 1.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.push_vertex([2.0, 0.0, 0.0]);
+        builder.push_vertex([2.0, 1.0, 0.0]);
+        builder
+            .add_face(&[0, 1, 2, 3])
+            .expect("face should be valid");
+        builder
+            .add_face(&[1, 4, 5, 2])
+            .expect("face should be valid");
+        let mut mesh = builder.build().expect("mesh should build").mesh;
+        let f0 = FaceId::from(Id::new(0, core::num::NonZeroU32::MIN));
+        let f1 = FaceId::from(Id::new(1, core::num::NonZeroU32::MIN));
+        let removed = mesh.faces.remove(f0.as_id());
+        assert!(removed.is_some());
+        let f2 = FaceId::from(mesh.faces.insert(Face {
+            edge: HalfEdgeId::INVALID,
+            degree: 3,
+        }));
+
+        let faces: Vec<_> = mesh.faces().collect();
+        assert_eq!(faces, vec![f2, f1]);
     }
 
     #[test]
