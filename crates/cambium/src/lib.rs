@@ -20,6 +20,7 @@ pub mod report;
 pub mod runner;
 pub mod selection;
 mod timing;
+pub mod validate;
 
 pub use artifact::{Artifact, Artifacts};
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
@@ -37,3 +38,4 @@ pub use region::{
 pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use selection::{FaceSet, canonicalize_face_set};
+pub use validate::{ValidateMesh, ValidateMeshMode, ValidateMeshParams};
