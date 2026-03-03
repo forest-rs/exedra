@@ -1,7 +1,7 @@
 ---
 id: exe-fc97
 title: Validation (validate_fast and validate_deep)
-status: open
+status: closed
 deps: [exe-cbv1]
 links: [cam-0711]
 created: 2026-03-03T05:35:11Z
@@ -54,3 +54,7 @@ Design brief: crates/exedra/docs/briefs/03_determinism_contract.md, crates/exedr
 **2026-03-03T06:27:28Z**
 
 Design brief: crates/exedra/docs/briefs/15_validation_invariants_and_error_reporting.md
+
+**2026-03-03T11:24:23Z**
+
+Implemented structured mesh validation with ValidationError and two entrypoints: validate_fast() (cheap core checks) and validate_deep() (graph-walk checks, partial v0.1). Added fast checks for twin involution, face loop closedness by cached degree, topology reference validity, and dense/domain capacity mismatches. Added deep checks for face degree consistency, foreign half-edges in loops, vertex-star closure, OUTSIDE boundary invariants, and undirected edge multiplicity. Added Attributes::dense_capacity_mismatches helper. Added tests for valid mesh passes and intentionally corrupted meshes producing expected errors. Re-exported ValidationError at crate root. Validation run: cargo fmt --all; cargo clippy --workspace --all-targets --all-features -- -D warnings; cargo test --workspace --all-features; cargo doc --no-deps.

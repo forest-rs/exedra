@@ -82,6 +82,84 @@ pub enum BuildError {
     InvalidWeldTolerance,
 }
 
+/// Structured mesh validation error.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ValidationError {
+    /// A dense attribute layer length does not match domain capacity.
+    DenseCapacityMismatch {
+        /// Attribute domain.
+        domain: crate::Domain,
+        /// Attribute name.
+        name: &'static str,
+        /// Expected dense length.
+        expected: usize,
+        /// Actual dense length.
+        actual: usize,
+    },
+    /// A topology reference points to a stale/dead ID.
+    InvalidReference {
+        /// Owning element category.
+        owner: &'static str,
+        /// Owning element index.
+        owner_index: u32,
+        /// Referenced field name.
+        field: &'static str,
+        /// Referenced ID index.
+        target_index: u32,
+    },
+    /// Twin involution is broken (`twin(twin(h)) != h`).
+    TwinMismatch {
+        /// Half-edge index.
+        half_edge: u32,
+        /// Twin index referenced by `half_edge`.
+        twin: u32,
+        /// Twin of twin index.
+        twin_of_twin: u32,
+    },
+    /// Face loop did not close after cached degree steps.
+    FaceLoopNotClosed {
+        /// Face index.
+        face: u32,
+    },
+    /// Cached degree does not match deep loop enumeration.
+    FaceDegreeMismatch {
+        /// Face index.
+        face: u32,
+        /// Cached degree value.
+        cached: u32,
+        /// Enumerated degree value.
+        actual: usize,
+    },
+    /// A half-edge in a face loop points at a different face.
+    FaceLoopForeignHalfEdge {
+        /// Face index.
+        face: u32,
+        /// Half-edge index.
+        half_edge: u32,
+        /// Face index found on half-edge.
+        found_face: u32,
+    },
+    /// Vertex-star walk did not terminate.
+    VertexStarNotClosed {
+        /// Vertex index.
+        vertex: u32,
+    },
+    /// Boundary modeling invariant is broken.
+    BoundaryInvariantBroken {
+        /// Half-edge index.
+        half_edge: u32,
+    },
+    /// Undirected edge does not have exactly two half-edges.
+    EdgeMultiplicity {
+        /// Lower endpoint index.
+        a: u32,
+        /// Upper endpoint index.
+        b: u32,
+        /// Number of half-edges found for this undirected edge.
+        count: usize,
+    },
+}
+
 /// Result payload for [`MeshBuilder::build`].
 #[derive(Clone, Debug)]
 pub struct MeshBuildResult {
@@ -539,6 +617,237 @@ impl Mesh {
         Ok(builder.build()?.mesh)
     }
 
+    /// Runs cheap core invariant checks.
+    #[must_use]
+    pub fn validate_fast(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        let expected_vertex_cap = self.vertices.slot_count();
+        let expected_face_cap = self.faces.slot_count();
+        let expected_half_edge_cap = self.half_edges.slot_count();
+        if self.attrs.domain_capacity(crate::Domain::Vertex) != expected_vertex_cap {
+            errors.push(ValidationError::DenseCapacityMismatch {
+                domain: crate::Domain::Vertex,
+                name: "<domain-capacity>",
+                expected: expected_vertex_cap,
+                actual: self.attrs.domain_capacity(crate::Domain::Vertex),
+            });
+        }
+        if self.attrs.domain_capacity(crate::Domain::Face) != expected_face_cap {
+            errors.push(ValidationError::DenseCapacityMismatch {
+                domain: crate::Domain::Face,
+                name: "<domain-capacity>",
+                expected: expected_face_cap,
+                actual: self.attrs.domain_capacity(crate::Domain::Face),
+            });
+        }
+        if self.attrs.domain_capacity(crate::Domain::HalfEdge) != expected_half_edge_cap {
+            errors.push(ValidationError::DenseCapacityMismatch {
+                domain: crate::Domain::HalfEdge,
+                name: "<domain-capacity>",
+                expected: expected_half_edge_cap,
+                actual: self.attrs.domain_capacity(crate::Domain::HalfEdge),
+            });
+        }
+        for (domain, name, expected, actual) in self.attrs.dense_capacity_mismatches() {
+            errors.push(ValidationError::DenseCapacityMismatch {
+                domain,
+                name,
+                expected,
+                actual,
+            });
+        }
+
+        for (id, vertex) in self.vertices.iter() {
+            if vertex.out != HalfEdgeId::INVALID
+                && self.half_edges.get(vertex.out.as_id()).is_none()
+            {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "vertex",
+                    owner_index: id.index(),
+                    field: "out",
+                    target_index: vertex.out.index(),
+                });
+            }
+        }
+
+        for (id, half_edge) in self.half_edges.iter() {
+            let h = HalfEdgeId::from(id);
+            if self.vertices.get(half_edge.to.as_id()).is_none() {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "half_edge",
+                    owner_index: id.index(),
+                    field: "to",
+                    target_index: half_edge.to.index(),
+                });
+            }
+            if self.half_edges.get(half_edge.next.as_id()).is_none() {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "half_edge",
+                    owner_index: id.index(),
+                    field: "next",
+                    target_index: half_edge.next.index(),
+                });
+            }
+            if self.half_edges.get(half_edge.twin.as_id()).is_none() {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "half_edge",
+                    owner_index: id.index(),
+                    field: "twin",
+                    target_index: half_edge.twin.index(),
+                });
+            }
+            if half_edge.face != FaceId::OUTSIDE && self.faces.get(half_edge.face.as_id()).is_none()
+            {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "half_edge",
+                    owner_index: id.index(),
+                    field: "face",
+                    target_index: half_edge.face.index(),
+                });
+            }
+
+            if let Some(twin_record) = self.half_edges.get(half_edge.twin.as_id()) {
+                let twin_of_twin = twin_record.twin;
+                if twin_of_twin != h {
+                    errors.push(ValidationError::TwinMismatch {
+                        half_edge: h.index(),
+                        twin: half_edge.twin.index(),
+                        twin_of_twin: twin_of_twin.index(),
+                    });
+                }
+            }
+        }
+
+        for (id, face) in self.faces.iter() {
+            if self.half_edges.get(face.edge.as_id()).is_none() {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "face",
+                    owner_index: id.index(),
+                    field: "edge",
+                    target_index: face.edge.index(),
+                });
+                continue;
+            }
+            let mut cursor = face.edge;
+            let mut ok = true;
+            for _ in 0..face.degree {
+                let Some(next) = self.half_edges.get(cursor.as_id()).map(|h| h.next) else {
+                    ok = false;
+                    break;
+                };
+                cursor = next;
+            }
+            if !ok || cursor != face.edge {
+                errors.push(ValidationError::FaceLoopNotClosed { face: id.index() });
+            }
+        }
+
+        errors
+    }
+
+    /// Runs deeper graph-walk validation checks (v0.1 partial coverage).
+    #[must_use]
+    pub fn validate_deep(&self) -> Vec<ValidationError> {
+        let mut errors = self.validate_fast();
+        let max_steps = self.half_edges.slot_count().max(1);
+
+        for (face_id, face_record) in self.faces.iter() {
+            let face = FaceId::from(face_id);
+            let mut cursor = face_record.edge;
+            let mut count = 0_usize;
+            loop {
+                let Some(record) = self.half_edges.get(cursor.as_id()) else {
+                    break;
+                };
+                if record.face != face {
+                    errors.push(ValidationError::FaceLoopForeignHalfEdge {
+                        face: face.index(),
+                        half_edge: cursor.index(),
+                        found_face: record.face.index(),
+                    });
+                    break;
+                }
+                count += 1;
+                cursor = record.next;
+                if cursor == face_record.edge {
+                    break;
+                }
+                if count > max_steps {
+                    errors.push(ValidationError::FaceLoopNotClosed { face: face.index() });
+                    break;
+                }
+            }
+            if count != face_record.degree as usize {
+                errors.push(ValidationError::FaceDegreeMismatch {
+                    face: face.index(),
+                    cached: face_record.degree,
+                    actual: count,
+                });
+            }
+        }
+
+        for (vertex_id, vertex_record) in self.vertices.iter() {
+            if vertex_record.out == HalfEdgeId::INVALID {
+                continue;
+            }
+            let mut cursor = vertex_record.out;
+            let start = cursor;
+            let mut closed = false;
+            for _ in 0..max_steps {
+                let Some(h) = self.half_edges.get(cursor.as_id()) else {
+                    break;
+                };
+                let Some(twin) = self.half_edges.get(h.twin.as_id()) else {
+                    break;
+                };
+                cursor = twin.next;
+                if cursor == start {
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                errors.push(ValidationError::VertexStarNotClosed {
+                    vertex: vertex_id.index(),
+                });
+            }
+        }
+
+        let mut edge_keys = Vec::<(u32, u32)>::new();
+        for (id, h) in self.half_edges.iter() {
+            let twin = self.half_edges.get(h.twin.as_id());
+            if h.face == FaceId::OUTSIDE && twin.is_some_and(|t| t.face == FaceId::OUTSIDE) {
+                errors.push(ValidationError::BoundaryInvariantBroken {
+                    half_edge: id.index(),
+                });
+            }
+
+            let Some(twin) = twin else {
+                continue;
+            };
+            let a = twin.to.index();
+            let b = h.to.index();
+            edge_keys.push((u32::min(a, b), u32::max(a, b)));
+        }
+        edge_keys.sort_unstable();
+        let mut cursor = 0_usize;
+        while cursor < edge_keys.len() {
+            let (a, b) = edge_keys[cursor];
+            let mut end = cursor + 1;
+            while end < edge_keys.len() && edge_keys[end] == (a, b) {
+                end += 1;
+            }
+            let count = end - cursor;
+            if count != 2 {
+                errors.push(ValidationError::EdgeMultiplicity { a, b, count });
+            }
+            cursor = end;
+        }
+
+        errors
+    }
+
     fn sync_attr_capacities(&mut self) {
         self.attrs.sync_capacities(
             self.vertices.slot_count(),
@@ -893,7 +1202,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder};
+    use super::{BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder, ValidationError};
     use crate::{AttrKey, Domain, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
 
     fn triangle_mesh() -> Mesh {
@@ -1814,6 +2123,132 @@ mod tests {
         let face = result.face_ids[0];
         let loop_len = result.mesh.face_loop(face).count();
         assert_eq!(loop_len, 4);
+    }
+
+    #[test]
+    fn validate_fast_and_deep_pass_on_valid_mesh() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("valid mesh builds");
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn validate_fast_reports_twin_and_capacity_issues() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .expect("triangle builds");
+        let first = mesh
+            .half_edges
+            .iter()
+            .next()
+            .map(|(id, _)| HalfEdgeId::from(id))
+            .expect("has half-edge");
+        let bad_twin = mesh.next(first).expect("next exists");
+        mesh.half_edges.get_mut(first.as_id()).expect("live").twin = bad_twin;
+        mesh.attrs.sync_capacities(0, 0, 0);
+
+        let errors = mesh.validate_fast();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::TwinMismatch { half_edge, .. } if *half_edge == first.index()))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::DenseCapacityMismatch { .. }))
+        );
+    }
+
+    #[test]
+    fn validate_deep_reports_degree_and_boundary_issues() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .expect("triangle builds");
+        let face = mesh
+            .faces
+            .iter()
+            .next()
+            .map(|(id, _)| FaceId::from(id))
+            .expect("face");
+        mesh.faces.get_mut(face.as_id()).expect("face live").degree = 99;
+
+        let outside = mesh
+            .half_edges
+            .iter()
+            .find_map(|(id, h)| (h.face == FaceId::OUTSIDE).then_some(HalfEdgeId::from(id)))
+            .expect("outside edge exists");
+        let outside_twin = mesh.twin(outside).expect("outside has twin");
+        mesh.half_edges
+            .get_mut(outside.as_id())
+            .expect("outside live")
+            .twin = outside;
+        mesh.half_edges
+            .get_mut(outside_twin.as_id())
+            .expect("twin live")
+            .twin = outside_twin;
+
+        let errors = mesh.validate_deep();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::FaceDegreeMismatch { face: f, .. } if *f == face.index()))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::BoundaryInvariantBroken { half_edge } if *half_edge == outside.index()))
+        );
+    }
+
+    #[test]
+    fn validate_deep_does_not_duplicate_boundary_error_for_stale_twin() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .expect("triangle builds");
+        let outside = mesh
+            .half_edges
+            .iter()
+            .find_map(|(id, h)| (h.face == FaceId::OUTSIDE).then_some(HalfEdgeId::from(id)))
+            .expect("outside edge exists");
+        mesh.half_edges
+            .get_mut(outside.as_id())
+            .expect("outside live")
+            .twin = HalfEdgeId::INVALID;
+
+        let errors = mesh.validate_deep();
+        assert!(errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidReference {
+                    owner: "half_edge",
+                    owner_index,
+                    field: "twin",
+                    ..
+                } if *owner_index == outside.index()
+        )));
+        assert!(!errors.iter().any(|e| matches!(
+            e,
+            ValidationError::BoundaryInvariantBroken { half_edge } if *half_edge == outside.index()
+        )));
     }
 
     #[test]

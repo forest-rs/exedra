@@ -17,7 +17,9 @@ pub mod topology;
 pub use arena::Arena;
 pub use attributes::{AttrError, AttrKey, Attributes, DenseLayer, Domain, SparseLayer};
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
-pub use mesh::{BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder};
+pub use mesh::{
+    BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder, ValidationError,
+};
 pub use numeric::NumericPolicy;
 pub use topology::{Face, HalfEdge, Vertex};
 

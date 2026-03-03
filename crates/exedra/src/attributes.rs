@@ -392,6 +392,31 @@ impl Attributes {
             .iter_mut()
             .find(|entry| entry.domain == domain && entry.name == name)
     }
+
+    /// Returns dense-layer capacity mismatches against domain capacities.
+    #[must_use]
+    pub fn dense_capacity_mismatches(&self) -> Vec<(Domain, &'static str, usize, usize)> {
+        let mut mismatches = Vec::new();
+        for entry in &self.dense {
+            let expected = self.domain_capacity(entry.domain);
+            let actual = match &entry.layer {
+                Layer::DenseVec3(layer) => layer.len(),
+                Layer::DenseVec2(layer) => layer.len(),
+                Layer::DenseF32(layer) => layer.len(),
+                Layer::DenseU32(layer) => layer.len(),
+                Layer::DenseBool(layer) => layer.len(),
+                Layer::SparseVec3(_)
+                | Layer::SparseVec2(_)
+                | Layer::SparseF32(_)
+                | Layer::SparseU32(_)
+                | Layer::SparseBool(_) => continue,
+            };
+            if actual != expected {
+                mismatches.push((entry.domain, entry.name, expected, actual));
+            }
+        }
+        mismatches
+    }
 }
 
 #[cfg(test)]
