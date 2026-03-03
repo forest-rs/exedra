@@ -1,6 +1,6 @@
 ---
 id: exe-o33y
-status: open
+status: closed
 deps: [exe-dey4]
 links: []
 created: 2026-03-03T12:47:14Z

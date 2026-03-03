@@ -179,7 +179,7 @@ mod tests {
             faces: vec![face, face],
         };
 
-        let result = runner
+        let mut result = runner
             .run_commit(&mut mesh, &op, &params)
             .expect("tag operator should succeed");
 
@@ -193,7 +193,9 @@ mod tests {
         assert_eq!(result.report.name, op.name());
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.selections_canonicalized, 1);
-        assert_eq!(result.change_set.dirty.dirty_faces(), vec![face]);
+        let mut dirty_faces = Vec::new();
+        result.change_set.dirty.drain_faces_into(&mut dirty_faces);
+        assert_eq!(dirty_faces, vec![face]);
     }
 
     #[test]

@@ -16,7 +16,7 @@ const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 /// Conservative dirty summary for incremental systems.
 ///
 /// This wraps [`understory_dirty`] primitives while exposing typed Exedra
-/// domains. Deterministic snapshot accessors allocate and sort on each call.
+/// domains. The primary consumption path is deterministic drain operations.
 #[derive(Clone, Debug, Default)]
 pub struct DirtySet {
     inner: UnderstoryDirtySet<Id>,
@@ -41,6 +41,24 @@ impl DirtySet {
         self.inner.generation()
     }
 
+    /// Returns `true` when the face channel has dirty IDs.
+    #[must_use]
+    pub fn has_dirty_faces(&self) -> bool {
+        self.inner.has_dirty(DIRTY_FACES_CHANNEL)
+    }
+
+    /// Returns `true` when the vertex channel has dirty IDs.
+    #[must_use]
+    pub fn has_dirty_vertices(&self) -> bool {
+        self.inner.has_dirty(DIRTY_VERTICES_CHANNEL)
+    }
+
+    /// Returns `true` when the corner channel has dirty IDs.
+    #[must_use]
+    pub fn has_dirty_corners(&self) -> bool {
+        self.inner.has_dirty(DIRTY_CORNERS_CHANNEL)
+    }
+
     /// Marks a face as dirty.
     pub fn mark_face(&mut self, face: FaceId) {
         self.inner.mark(face.as_id(), DIRTY_FACES_CHANNEL);
@@ -56,43 +74,19 @@ impl DirtySet {
         self.inner.mark(corner.as_id(), DIRTY_CORNERS_CHANNEL);
     }
 
-    /// Returns dirty faces without ordering guarantees and without allocation.
-    pub fn dirty_faces_unordered(&self) -> impl Iterator<Item = FaceId> + '_ {
-        self.inner.iter(DIRTY_FACES_CHANNEL).map(FaceId::from)
+    /// Drains dirty faces in deterministic ID order into `out`.
+    pub fn drain_faces_into(&mut self, out: &mut Vec<FaceId>) {
+        drain_sorted_into(&mut self.inner, DIRTY_FACES_CHANNEL, out);
     }
 
-    /// Returns dirty vertices without ordering guarantees and without allocation.
-    pub fn dirty_vertices_unordered(&self) -> impl Iterator<Item = VertexId> + '_ {
-        self.inner.iter(DIRTY_VERTICES_CHANNEL).map(VertexId::from)
+    /// Drains dirty vertices in deterministic ID order into `out`.
+    pub fn drain_vertices_into(&mut self, out: &mut Vec<VertexId>) {
+        drain_sorted_into(&mut self.inner, DIRTY_VERTICES_CHANNEL, out);
     }
 
-    /// Returns dirty corners without ordering guarantees and without allocation.
-    pub fn dirty_corners_unordered(&self) -> impl Iterator<Item = CornerId> + '_ {
-        self.inner.iter(DIRTY_CORNERS_CHANNEL).map(CornerId::from)
-    }
-
-    /// Returns sorted dirty faces in deterministic ID order.
-    #[must_use]
-    pub fn dirty_faces(&self) -> Vec<FaceId> {
-        let mut ids = self.dirty_faces_unordered().collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
-    }
-
-    /// Returns sorted dirty vertices in deterministic ID order.
-    #[must_use]
-    pub fn dirty_vertices(&self) -> Vec<VertexId> {
-        let mut ids = self.dirty_vertices_unordered().collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
-    }
-
-    /// Returns sorted dirty corners in deterministic ID order.
-    #[must_use]
-    pub fn dirty_corners(&self) -> Vec<CornerId> {
-        let mut ids = self.dirty_corners_unordered().collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
+    /// Drains dirty corners in deterministic ID order into `out`.
+    pub fn drain_corners_into(&mut self, out: &mut Vec<CornerId>) {
+        drain_sorted_into(&mut self.inner, DIRTY_CORNERS_CHANNEL, out);
     }
 }
 
@@ -275,26 +269,54 @@ fn sort_dedup<T: Ord>(values: &mut Vec<T>) {
     values.dedup();
 }
 
+fn drain_sorted_into<T>(dirty: &mut UnderstoryDirtySet<Id>, channel: Channel, out: &mut Vec<T>)
+where
+    T: From<Id> + Ord,
+{
+    out.clear();
+    out.extend(dirty.drain(channel).map(T::from));
+    out.sort_unstable();
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
     use crate::{Face, HalfEdge, Id};
 
     use super::*;
 
+    fn drained_faces(dirty: &mut DirtySet) -> Vec<FaceId> {
+        let mut values = Vec::new();
+        dirty.drain_faces_into(&mut values);
+        values
+    }
+
+    fn drained_vertices(dirty: &mut DirtySet) -> Vec<VertexId> {
+        let mut values = Vec::new();
+        dirty.drain_vertices_into(&mut values);
+        values
+    }
+
+    fn drained_corners(dirty: &mut DirtySet) -> Vec<CornerId> {
+        let mut values = Vec::new();
+        dirty.drain_corners_into(&mut values);
+        values
+    }
+
     #[test]
     fn txn_add_vertex_commits_created_and_dirty() {
         let mut mesh = Mesh::new();
         let mut txn = mesh.begin();
         let vertex = txn.add_vertex([1.0, 2.0, 3.0]);
-        let changes = txn.commit();
+        let mut changes = txn.commit();
 
         assert_eq!(changes.created_vertices, vec![vertex]);
-        assert_eq!(changes.dirty.dirty_vertices(), vec![vertex]);
-        assert!(changes.dirty.dirty_faces().is_empty());
-        assert!(changes.dirty.dirty_corners().is_empty());
+        assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
+        assert!(drained_faces(&mut changes.dirty).is_empty());
+        assert!(drained_corners(&mut changes.dirty).is_empty());
     }
 
     #[test]
@@ -303,9 +325,9 @@ mod tests {
         let vertex = mesh.add_vertex([0.0, 0.0, 0.0]);
         let mut txn = mesh.begin();
         assert!(txn.set_vertex_position(vertex, [4.0, 5.0, 6.0]));
-        let changes = txn.commit();
+        let mut changes = txn.commit();
 
-        assert_eq!(changes.dirty.dirty_vertices(), vec![vertex]);
+        assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
         assert_eq!(mesh.vertex_position(vertex), Some(&[4.0, 5.0, 6.0]));
     }
 
@@ -322,7 +344,7 @@ mod tests {
 
         let mut txn = mesh.begin();
         assert!(txn.set_face_region(face, 9));
-        let changes = txn.commit();
+        let mut changes = txn.commit();
 
         let region = mesh
             .attrs()
@@ -331,7 +353,7 @@ mod tests {
             .get(face.as_id())
             .copied();
         assert_eq!(region, Some(9));
-        assert_eq!(changes.dirty.dirty_faces(), vec![face]);
+        assert_eq!(drained_faces(&mut changes.dirty), vec![face]);
     }
 
     #[test]
@@ -357,14 +379,14 @@ mod tests {
         txn.record_created_half_edge(h1);
         txn.mark_corner_dirty(h1);
         txn.mark_face_dirty(f0);
-        let changes = txn.commit();
+        let mut changes = txn.commit();
 
         assert_eq!(changes.deleted_vertices, vec![v0, v2]);
         assert_eq!(changes.created_faces, vec![f1, f0]);
         assert_eq!(changes.created_half_edges, vec![h1, h0]);
-        assert_eq!(changes.dirty.dirty_faces(), vec![f0]);
-        assert_eq!(changes.dirty.dirty_vertices(), vec![v0, v2]);
-        assert_eq!(changes.dirty.dirty_corners(), vec![h1]);
+        assert_eq!(drained_faces(&mut changes.dirty), vec![f0]);
+        assert_eq!(drained_vertices(&mut changes.dirty), vec![v0, v2]);
+        assert_eq!(drained_corners(&mut changes.dirty), vec![h1]);
 
         let _ = v1;
     }
@@ -382,12 +404,27 @@ mod tests {
         dirty.mark_corner(corner);
 
         assert!(dirty.generation() >= initial + 3);
-        assert_eq!(dirty.dirty_faces(), vec![face]);
-        assert_eq!(dirty.dirty_vertices(), vec![vertex]);
-        assert_eq!(dirty.dirty_corners(), vec![corner]);
-        assert!(dirty.dirty_faces_unordered().any(|id| id == face));
-        assert!(dirty.dirty_vertices_unordered().any(|id| id == vertex));
-        assert!(dirty.dirty_corners_unordered().any(|id| id == corner));
+        assert!(dirty.has_dirty_faces());
+        assert!(dirty.has_dirty_vertices());
+        assert!(dirty.has_dirty_corners());
+        assert_eq!(drained_faces(&mut dirty), vec![face]);
+        assert_eq!(drained_vertices(&mut dirty), vec![vertex]);
+        assert_eq!(drained_corners(&mut dirty), vec![corner]);
+    }
+
+    #[test]
+    fn dirty_set_drains_in_deterministic_order_and_consumes() {
+        let mut dirty = DirtySet::new();
+        let f2 = FaceId::from(Id::new(2, NonZeroU32::MIN));
+        let f0 = FaceId::from(Id::new(0, NonZeroU32::MIN));
+        let f1 = FaceId::from(Id::new(1, NonZeroU32::MIN));
+        dirty.mark_face(f2);
+        dirty.mark_face(f0);
+        dirty.mark_face(f1);
+
+        assert_eq!(drained_faces(&mut dirty), vec![f0, f1, f2]);
+        assert!(drained_faces(&mut dirty).is_empty());
+        assert!(!dirty.has_dirty_faces());
     }
 
     #[test]
@@ -419,14 +456,14 @@ mod tests {
         txn.record_deleted_face(face);
         txn.record_deleted_half_edge(edge);
         txn.record_deleted_vertex(vertex);
-        let changes = txn.commit();
+        let mut changes = txn.commit();
 
         assert_eq!(changes.deleted_faces, vec![face]);
         assert_eq!(changes.deleted_half_edges, vec![edge]);
         assert_eq!(changes.deleted_vertices, vec![vertex]);
-        assert_eq!(changes.dirty.dirty_faces(), vec![face]);
-        assert_eq!(changes.dirty.dirty_corners(), vec![edge]);
-        assert_eq!(changes.dirty.dirty_vertices(), vec![vertex]);
+        assert_eq!(drained_faces(&mut changes.dirty), vec![face]);
+        assert_eq!(drained_corners(&mut changes.dirty), vec![edge]);
+        assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
     }
 
     #[test]
