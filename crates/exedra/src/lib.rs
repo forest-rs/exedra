@@ -8,10 +8,12 @@ extern crate alloc;
 
 pub mod arena;
 pub mod id;
+pub mod numeric;
 pub mod topology;
 
 pub use arena::Arena;
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
+pub use numeric::NumericPolicy;
 pub use topology::{Face, HalfEdge, Vertex};
 
 #[cfg(test)]

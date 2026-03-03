@@ -1,7 +1,7 @@
 ---
 id: exe-mid7
 title: NumericPolicy in Exedra core
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-03T05:35:43Z
@@ -40,3 +40,7 @@ This aligns with "Explicit Over Implicit" — no magic constants buried in code.
 **2026-03-03T06:17:41Z**
 
 Design brief: crates/exedra/docs/briefs/04_numeric_policy_explicit_epsilons.md
+
+**2026-03-03T10:14:52Z**
+
+Implementation summary (2026-03-03): added core NumericPolicy with explicit defaults (epsilon, merge_tolerance, coplanar_tolerance, normal_epsilon), Default impl, and tests locking defaults/sanity constraints. NumericPolicy is now exported from exedra core and ready for direct use by upcoming mesh construction APIs (exe-jbkx/exe-jctb). Validation run: typos, cargo fmt --all, taplo fmt, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features, cargo doc --no-deps.
