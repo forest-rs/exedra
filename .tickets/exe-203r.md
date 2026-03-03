@@ -1,7 +1,7 @@
 ---
 id: exe-203r
 title: Decide OUTSIDE face representation
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-03T05:37:17Z
@@ -42,3 +42,7 @@ This must be decided before or during exe-cbv1 (Mesh struct). The choice affects
 **2026-03-03T06:17:41Z**
 
 Design brief: crates/exedra/docs/briefs/02_outside_face_boundary_model.md
+
+**2026-03-03T09:35:42Z**
+
+Decision made 2026-03-03: choose sentinel OUTSIDE representation (FaceId::OUTSIDE not stored in face arena). Documented in crates/exedra/docs/adr-0003-outside-face-representation.md and boundary brief updated accordingly.

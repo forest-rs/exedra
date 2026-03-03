@@ -20,5 +20,9 @@ This keeps traversal and validation simple and predictable:
 - Validation can make strong claims (every half-edge has a twin; boundary is `face == OUTSIDE`).
 - Higher layers can reason about open meshes without pervasive “is boundary?” branching.
 
+## v0.1 Resolution
+For v0.1, `OUTSIDE` is represented as a reserved sentinel `FaceId` and is not a
+real face arena entry (see ADR-0003).
+
 ## Non-goals / deferrals
 - This doesn’t solve non-manifold complexity; it provides a clean, consistent base.
