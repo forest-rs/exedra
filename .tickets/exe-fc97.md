@@ -43,3 +43,13 @@ validate_deep may be incomplete in v0.1 (document what is and is not checked).
 - Coverage of: twin symmetry, face loop closure, vertex.out validity, layer capacities
 - Unit tests: valid mesh passes, intentionally broken mesh reports correct errors
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/03_determinism_contract.md, crates/exedra/docs/briefs/12_half_edge_vs_alternatives.md
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/15_validation_invariants_and_error_reporting.md

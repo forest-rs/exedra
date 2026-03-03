@@ -43,3 +43,9 @@ Artifacts must be bounded and streamable for large meshes.
 - Stage timing and stats captured
 - Unit tests trigger each failure kind with appropriate diagnostics
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md

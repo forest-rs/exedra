@@ -35,3 +35,9 @@ This must be decided before or during exe-cbv1 (Mesh struct). The choice affects
 - Implementation in exe-cbv1 aligns with the decision
 - Validation code aligns with the decision
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/02_outside_face_boundary_model.md

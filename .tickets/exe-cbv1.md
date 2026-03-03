@@ -52,3 +52,9 @@ Mesh must be Clone (required for Cambium preview path in v0.1).
 - Mesh: Clone is implemented
 - Unit tests for traversal on simple meshes (single triangle, quad, open edge)
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/02_outside_face_boundary_model.md, crates/exedra/docs/briefs/12_half_edge_vs_alternatives.md

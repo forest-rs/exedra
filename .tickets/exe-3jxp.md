@@ -42,3 +42,9 @@ Caching: triangulation results should be cacheable per face (invalidated via Dir
 - Strategy and limitations are documented
 - Unit tests for triangle, quad, pentagon, hexagon faces
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/03_determinism_contract.md, crates/exedra/docs/briefs/11_deterministic_triangulation_strategy.md

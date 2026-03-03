@@ -33,3 +33,9 @@ This is the first concrete attribute layer and validates the attribute system de
 - Integrates with the attribute system from exe-17rj
 - Unit tests for position get/set
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/01_corner_attributes_and_extraction.md

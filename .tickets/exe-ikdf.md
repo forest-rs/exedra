@@ -34,3 +34,9 @@ Artifacts: intersection polylines are a key debug artifact for boolean diagnosti
 - Debug artifact: intersection polylines exportable
 - Unit tests for simple intersection curves
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md

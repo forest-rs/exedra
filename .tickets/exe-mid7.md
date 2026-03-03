@@ -33,3 +33,9 @@ This aligns with "Explicit Over Implicit" — no magic constants buried in code.
 - No hidden epsilon constants elsewhere in the codebase
 - Unit test validates default values are sensible
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/04_numeric_policy_explicit_epsilons.md

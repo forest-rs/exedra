@@ -33,3 +33,9 @@ Storage: sparse (rare — most corners use derived normals)
 - New corners from edits default to cleared overrides
 - Unit tests for each NormalsSource mode
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/05_derived_vs_authored_normals.md

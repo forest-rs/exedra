@@ -19,3 +19,9 @@ Implement box projection UV generation — 6 planar projections with determinist
 - Correct UV output for all face orientations
 - Golden tests for cube and sphere-like meshes
 
+
+## Notes
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — step 7 uses uv.box for texturing basilica walls/dome.

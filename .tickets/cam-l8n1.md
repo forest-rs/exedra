@@ -38,3 +38,13 @@ Module layout: dirty.rs
 - Documentation of per-channel memory impact
 - Unit tests for channel set/clear/query
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/05_understory_dirty_channels_for_caches.md
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — after UV ops mark UvDerived, after topology edits mark Adjacency, after selections mark Selection.

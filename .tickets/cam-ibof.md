@@ -51,3 +51,21 @@ Module layout: runner.rs
 - Runner-level timing buckets recorded
 - Unit tests for both paths with a simple test operator
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/01_preview_commit_first_class.md, crates/cambium/docs/briefs/02_edit_operators_primary.md
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/14_exedra_cambium_boundary_contract.md
+
+**2026-03-03T06:36:03Z**
+
+Design brief: crates/exedra/docs/briefs/16_scratch_buffer_protocol.md
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — preview/commit is used interactively around ruin steps 8-10. Preview clones the mesh; commit produces ChangeSet for incremental extraction.

@@ -29,3 +29,9 @@ Compaction produces reproducible results (determinism contract).
 - Attributes preserved correctly
 - validate_deep() passes on compacted mesh
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/07_stable_ids_and_compaction.md

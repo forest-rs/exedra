@@ -38,3 +38,9 @@ Both are v0.5+ and only if correctness is proven. May be deferred.
 - validate_deep() passes after each operation
 - Unit tests with complex attribute configurations
 
+
+## Notes
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/13_edit_propagation_model.md

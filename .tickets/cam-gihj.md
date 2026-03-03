@@ -20,3 +20,9 @@ Implement the mark-edge-sharp selection/tagging operator. Sets the edge sharpnes
 - ChangeSet correctly reflects changes
 - Unit tests
 
+
+## Notes
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — step 6 (shade.sharpness.from_angle) tags sharp edges by dihedral angle across the whole basilica mesh.

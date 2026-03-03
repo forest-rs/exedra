@@ -30,3 +30,9 @@ For each candidate triangle pair from broad phase:
 - Deterministic output
 - Unit tests for: crossing, coplanar, edge-touching, no intersection
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md

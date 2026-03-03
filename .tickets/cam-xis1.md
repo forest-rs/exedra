@@ -39,3 +39,9 @@ Module layout: report.rs
 - SmallCounters has documented fields
 - Unit tests for timing accumulation, max_buckets overflow
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/03_reports_and_bounded_artifacts.md

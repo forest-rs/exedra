@@ -29,3 +29,9 @@ AABB tree or BVH over triangulated faces of each input mesh.
 - Stats: total pairs, candidates after culling, reduction ratio
 - Scratch-friendly (no per-query allocations in hot loop)
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md

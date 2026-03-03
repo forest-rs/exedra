@@ -40,3 +40,13 @@ Module layout: policy.rs
 - Used by OpContext
 - Unit tests for default construction
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/07_budget_and_cancellation_semantics.md
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — step 10 (ruin.damage.chip_edges) is budgetable in preview mode via max_faces/max_corners.

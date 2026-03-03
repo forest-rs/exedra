@@ -37,3 +37,9 @@ Module layout: error.rs
 - Wrapping helpers for Exedra errors
 - Display/Debug implementations
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/07_budget_and_cancellation_semantics.md

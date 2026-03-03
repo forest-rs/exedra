@@ -20,3 +20,9 @@ Create cambium_testkit workspace crate. Provides golden snapshot formats, debug 
 - Debug dump serialization works
 - Can be used from cambium tests
 
+
+## Notes
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — defines per-step artifact expectations and golden test posture. Region constants (REGION_WALL_OUTER etc.) live in testkit.

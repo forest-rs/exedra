@@ -39,3 +39,13 @@ No global operator registry in v0.1 — static dispatch is fine.
 - Trait is object-safe if practical (or document why not)
 - At least one implementation exists (uv_planar)
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/02_edit_operators_primary.md
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/14_exedra_cambium_boundary_contract.md

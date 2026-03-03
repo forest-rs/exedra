@@ -35,3 +35,9 @@ Determinism: identical mesh + params = identical normals.
 - Deterministic output
 - Golden tests for smooth sphere, sharp cube, mixed sharpness cases
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/05_derived_vs_authored_normals.md

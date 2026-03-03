@@ -42,3 +42,9 @@ Module layout: diag.rs
 - DiagSpan references Exedra element IDs
 - Unit tests for overflow with mixed severity levels
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/03_reports_and_bounded_artifacts.md

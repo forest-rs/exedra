@@ -33,3 +33,9 @@ This layer is consumed by render extraction (to_trimesh) which splits render ver
 - Accessible via built-in key CORNER_UV
 - Unit tests for UV get/set, partial coverage
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/01_corner_attributes_and_extraction.md, crates/exedra/docs/briefs/10_attribute_storage_hybrid_dense_sparse.md

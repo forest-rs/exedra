@@ -40,3 +40,9 @@ This crate can depend on std and on exedra.
 - Golden snapshot comparison helper exists
 - Can be used from exedra tests
 
+
+## Notes
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — defines minimal dump set (program input, per-step reports, final mesh snapshot, final extraction) and golden test posture.

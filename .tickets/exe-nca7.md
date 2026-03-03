@@ -38,3 +38,9 @@ Scratch-friendly: no per-element heap allocations. The Vec grows but individual 
 - No std dependency (alloc only for Vec)
 - Unit tests for insert/remove/reuse, stale ID rejection, iteration order determinism
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/07_stable_ids_and_compaction.md

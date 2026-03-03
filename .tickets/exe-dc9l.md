@@ -40,3 +40,9 @@ Open question: whether to use a single generic Id<Domain> with a phantom tag or 
 - No std dependency
 - Unit tests for equality, hashing, sentinel identity, and niche optimization
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/03_determinism_contract.md, crates/exedra/docs/briefs/07_stable_ids_and_compaction.md

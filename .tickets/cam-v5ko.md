@@ -57,3 +57,17 @@ Module layout: ops/uv_planar.rs
 - Golden determinism tests pass
 - End-to-end: mesh -> uv_planar -> extraction -> TriMesh matches golden
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/08_attribute_keys_builtins.md
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/14_exedra_cambium_boundary_contract.md
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — step 7 uses uv.box or uv.planar to texture stone/brick/mosaic surfaces. Scoped by region.

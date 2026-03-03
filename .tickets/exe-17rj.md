@@ -51,3 +51,13 @@ v0.1 scope: implement the registry/storage infrastructure and the required posit
 - Layer capacity tracks arena capacity for dense layers
 - Unit tests for layer creation, get/set, capacity tracking
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/01_corner_attributes_and_extraction.md, crates/exedra/docs/briefs/10_attribute_storage_hybrid_dense_sparse.md
+
+**2026-03-03T06:33:53Z**
+
+The face-domain region id layer (u32) needs a built-in key (e.g. attr::FACE_REGION). See cam-ul4v for context — region tagging is the composability glue for operator pipelines.

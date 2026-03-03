@@ -33,3 +33,13 @@ Clear between uses but retain capacity.
 - No allocations in hot loops during boolean execution
 - clear() retains capacity
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md
+
+**2026-03-03T06:36:03Z**
+
+Design brief: crates/exedra/docs/briefs/16_scratch_buffer_protocol.md

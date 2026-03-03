@@ -33,3 +33,9 @@ Must maintain mesh validity throughout.
 - Attribute propagation handled
 - Deterministic result
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md

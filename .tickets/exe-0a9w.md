@@ -34,3 +34,13 @@ Must execute inside a Txn.
 - DirtySet and ChangeSet updated
 - Unit tests for quad split, n-gon split, UV preservation
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/05_derived_vs_authored_normals.md
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/13_edit_propagation_model.md

@@ -42,3 +42,13 @@ Module layout: context.rs
 - no_std compatible (Clock no-ops without std)
 - Unit tests for scratch clear, clock bucket accumulation
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/06_clock_and_timing_buckets.md
+
+**2026-03-03T06:36:03Z**
+
+Design brief: crates/exedra/docs/briefs/16_scratch_buffer_protocol.md

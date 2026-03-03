@@ -51,3 +51,17 @@ Mutation operations on Txn are the only way to modify topology. This is the enfo
 - understory_dirty is wired as a dependency
 - Unit tests for transaction lifecycle and dirty tracking
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/09_txn_changeset_dirtyset_and_understory_dirty.md
+
+**2026-03-03T06:27:28Z**
+
+Design brief: crates/exedra/docs/briefs/14_exedra_cambium_boundary_contract.md
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — each edit operator step produces a ChangeSet. Interactive workflows use preview/commit around steps 8-10 (ruinization).

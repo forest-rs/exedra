@@ -44,3 +44,9 @@ Module layout: artifact.rs
 - Overflow is deterministic (earliest kept)
 - Unit tests for limit enforcement and byte accounting
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/cambium/docs/briefs/03_reports_and_bounded_artifacts.md

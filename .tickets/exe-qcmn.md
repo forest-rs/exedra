@@ -55,3 +55,17 @@ v0.1 scope: FullRebuild must work. Incremental may be stubbed or coarse.
 - FullRebuild mode works end-to-end
 - Unit tests: mesh with UV seam produces correct splits, ordering is stable across runs
 
+
+## Notes
+
+**2026-03-03T06:17:41Z**
+
+Design brief: crates/exedra/docs/briefs/01_corner_attributes_and_extraction.md, crates/exedra/docs/briefs/11_deterministic_triangulation_strategy.md
+
+**2026-03-03T06:36:03Z**
+
+Design brief: crates/exedra/docs/briefs/16_scratch_buffer_protocol.md
+
+**2026-03-03T06:37:44Z**
+
+Worked example: docs/worked_example_basilica.md — incremental extraction is driven by ChangeSet.dirty after each commit-mode step. The renderer only re-triangulates affected faces.

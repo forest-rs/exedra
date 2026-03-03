@@ -39,3 +39,9 @@ Used by:
 - Default is smooth (not sharp)
 - Unit tests for set/get from both half-edges of a pair
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/10_attribute_storage_hybrid_dense_sparse.md

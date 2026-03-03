@@ -33,3 +33,9 @@ Output: Mesh + BooleanArtifacts for diagnostics
 - No dangling half-edges or orphaned vertices
 - End-to-end boolean produces correct results on test corpus
 
+
+## Notes
+
+**2026-03-03T06:21:10Z**
+
+Design brief: crates/exedra/docs/briefs/06_staged_booleans_with_artifacts.md
