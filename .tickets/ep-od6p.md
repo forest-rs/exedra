@@ -3,7 +3,7 @@ id: ep-od6p
 title: Cylinder primitive
 status: closed
 deps: [ep-cl8t, exe-jbkx, exe-jctb]
-links: [cam-tecx]
+links: [cam-tecx, ep-wbxp, ep-jql5, ep-ahz4]
 created: 2026-03-03T06:53:52Z
 type: feature
 priority: P2

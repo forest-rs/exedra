@@ -3,7 +3,7 @@ id: ep-y90k
 title: Box primitive
 status: closed
 deps: [ep-cl8t, exe-jbkx, exe-jctb]
-links: []
+links: [ep-vd0t]
 created: 2026-03-03T06:53:52Z
 type: feature
 priority: P2
