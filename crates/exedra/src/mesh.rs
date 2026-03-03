@@ -3,7 +3,7 @@
 
 //! Mesh container and core topology traversal over half-edge records.
 
-use crate::{Arena, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId};
+use crate::{Arena, Attributes, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId};
 
 /// Half-edge mesh storage with explicit OUTSIDE boundary semantics.
 #[derive(Clone, Debug, Default)]
@@ -11,17 +11,31 @@ pub struct Mesh {
     pub(crate) vertices: Arena<Vertex>,
     pub(crate) half_edges: Arena<HalfEdge>,
     pub(crate) faces: Arena<Face>,
+    pub(crate) attrs: Attributes,
 }
 
 impl Mesh {
     /// Creates an empty mesh.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             vertices: Arena::new(),
             half_edges: Arena::new(),
             faces: Arena::new(),
+            attrs: Attributes::new(),
         }
+    }
+
+    /// Returns immutable attribute storage.
+    #[must_use]
+    pub const fn attrs(&self) -> &Attributes {
+        &self.attrs
+    }
+
+    /// Returns mutable attribute storage.
+    #[must_use]
+    pub fn attrs_mut(&mut self) -> &mut Attributes {
+        &mut self.attrs
     }
 
     /// Returns one outgoing half-edge for the given vertex.

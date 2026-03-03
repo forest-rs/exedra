@@ -7,12 +7,15 @@
 extern crate alloc;
 
 pub mod arena;
+pub mod attr;
+pub mod attributes;
 pub mod id;
 pub mod mesh;
 pub mod numeric;
 pub mod topology;
 
 pub use arena::Arena;
+pub use attributes::{AttrError, AttrKey, Attributes, DenseLayer, Domain, SparseLayer};
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::Mesh;
 pub use numeric::NumericPolicy;
