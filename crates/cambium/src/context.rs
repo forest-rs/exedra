@@ -13,13 +13,10 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+use crate::policy::PolicySet;
 #[cfg(any(target_arch = "wasm32", feature = "std"))]
 use crate::timing::duration_nanos_u64;
 use crate::{DiagnosticsSink, Timings};
-
-/// Temporary policy placeholder used by [`OpContext`] until full `PolicySet` lands.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct ContextPolicy;
 
 /// Reusable typed scratch buffers for hot loops.
 ///
@@ -138,10 +135,10 @@ impl Drop for ClockBucket<'_> {
 /// - `scratch` buffers are reused across operator calls
 /// - callers should invoke [`Scratch::clear`] between operators
 /// - data inside `scratch` should be treated as ephemeral and not retained
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct OpContext {
     /// Higher-level policy.
-    pub policy: ContextPolicy,
+    pub policy: PolicySet,
     /// Numeric policy from Exedra.
     pub numeric: NumericPolicy,
     /// Reusable scratch buffers.
@@ -150,18 +147,6 @@ pub struct OpContext {
     pub diagnostics: DiagnosticsSink,
     /// Bucketed clock.
     pub clock: Clock,
-}
-
-impl Default for OpContext {
-    fn default() -> Self {
-        Self {
-            policy: ContextPolicy,
-            numeric: NumericPolicy::default(),
-            scratch: Scratch::default(),
-            diagnostics: DiagnosticsSink::default(),
-            clock: Clock::default(),
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 ---
 id: cam-6vcu
 title: PolicySet and sub-policies
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-03T05:57:06Z
