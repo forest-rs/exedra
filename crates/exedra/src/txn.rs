@@ -238,6 +238,27 @@ impl Txn<'_> {
         updated
     }
 
+    /// Returns explicit sharpness state for an undirected edge.
+    #[must_use]
+    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<bool> {
+        self.mesh.edge_sharpness(half_edge)
+    }
+
+    /// Sets explicit sharpness state for an undirected edge.
+    ///
+    /// Returns `true` when `half_edge` is live and writable.
+    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: bool) -> bool {
+        let Some(twin) = self.mesh.twin(half_edge) else {
+            return false;
+        };
+        let updated = self.mesh.set_edge_sharpness(half_edge, sharp);
+        if updated {
+            self.dirty.mark_corner(half_edge);
+            self.dirty.mark_corner(twin);
+        }
+        updated
+    }
+
     /// Marks a face dirty.
     pub fn mark_face_dirty(&mut self, face: FaceId) {
         self.dirty.mark_face(face);
@@ -458,6 +479,36 @@ mod tests {
         assert!(txn.set_edge_seam(shared_twin, true));
         assert_eq!(txn.edge_seam(shared), Some(true));
         assert_eq!(txn.edge_seam(shared_twin), Some(true));
+        let mut changes = txn.commit();
+
+        let mut corners = drained_corners(&mut changes.dirty);
+        corners.sort_unstable();
+        let mut expected = vec![shared, shared_twin];
+        expected.sort_unstable();
+        assert_eq!(corners, expected);
+    }
+
+    #[test]
+    fn txn_set_edge_sharpness_round_trips_from_either_half_edge() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let shared = find_half_edge(&mesh, 0, 2).expect("shared half-edge should exist");
+        let shared_twin = mesh.twin(shared).expect("shared edge should have twin");
+
+        let mut txn = mesh.begin();
+        assert_eq!(txn.edge_sharpness(shared), Some(false));
+        assert!(txn.set_edge_sharpness(shared_twin, true));
+        assert_eq!(txn.edge_sharpness(shared), Some(true));
+        assert_eq!(txn.edge_sharpness(shared_twin), Some(true));
         let mut changes = txn.commit();
 
         let mut corners = drained_corners(&mut changes.dirty);

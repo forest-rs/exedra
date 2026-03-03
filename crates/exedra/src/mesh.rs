@@ -360,6 +360,38 @@ impl Mesh {
         })
     }
 
+    /// Returns the explicit sharpness tag for an edge.
+    ///
+    /// Returns `None` when `half_edge` is stale.
+    #[must_use]
+    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<bool> {
+        let canonical = self.canonical_edge(half_edge)?;
+        Some(
+            self.attrs
+                .sparse(attr::EDGE_SHARPNESS)
+                .and_then(|layer| layer.get(canonical.as_id()).copied())
+                .unwrap_or(false),
+        )
+    }
+
+    /// Sets the explicit sharpness tag for an edge.
+    ///
+    /// Returns `true` when `half_edge` is live and writable.
+    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: bool) -> bool {
+        let Some(canonical) = self.canonical_edge(half_edge) else {
+            return false;
+        };
+        if self.attrs.sparse(attr::EDGE_SHARPNESS).is_none() {
+            let _ = self.attrs.define_sparse(attr::EDGE_SHARPNESS);
+        }
+        self.attrs
+            .sparse_mut(attr::EDGE_SHARPNESS)
+            .is_some_and(|layer| {
+                layer.set(canonical.as_id(), sharp);
+                true
+            })
+    }
+
     /// Returns the next half-edge in the owning face loop.
     #[must_use]
     pub fn next(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {

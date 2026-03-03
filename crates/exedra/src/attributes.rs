@@ -533,6 +533,12 @@ mod tests {
     }
 
     #[test]
+    fn edge_sharpness_builtin_key_has_expected_shape() {
+        assert_eq!(attr::EDGE_SHARPNESS.domain(), Domain::HalfEdge);
+        assert_eq!(attr::EDGE_SHARPNESS.name(), "edge.sharpness");
+    }
+
+    #[test]
     fn face_region_builtin_key_has_expected_shape() {
         assert_eq!(attr::FACE_REGION.domain(), Domain::Face);
         assert_eq!(attr::FACE_REGION.name(), "face.region");

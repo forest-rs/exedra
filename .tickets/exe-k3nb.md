@@ -1,7 +1,7 @@
 ---
 id: exe-k3nb
 title: Edge sharpness attribute
-status: open
+status: closed
 deps: [exe-17rj, exe-cbv1]
 links: [cam-gihj]
 created: 2026-03-03T05:29:34Z
@@ -46,3 +46,7 @@ Used by:
 **2026-03-03T06:21:10Z**
 
 Design brief: crates/exedra/docs/briefs/10_attribute_storage_hybrid_dense_sparse.md
+
+**2026-03-03T17:44:28Z**
+
+Added EDGE_SHARPNESS built-in key, mesh accessors (edge_sharpness/set_edge_sharpness), txn wrappers with corner dirty marking, and round-trip tests from either half-edge. Validated with cargo fmt --all, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.
