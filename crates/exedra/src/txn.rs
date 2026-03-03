@@ -158,6 +158,11 @@ impl Txn<'_> {
         self.mesh
     }
 
+    /// Returns a mutable view of the mesh being edited.
+    pub fn mesh_mut(&mut self) -> &mut Mesh {
+        self.mesh
+    }
+
     /// Adds a vertex and records deterministic change bookkeeping.
     pub fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
         let vertex = self.mesh.add_vertex(position);

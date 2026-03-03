@@ -254,8 +254,10 @@ impl Attributes {
     #[must_use]
     pub fn new() -> Self {
         let mut attrs = Self::default();
-        let created = attrs.define_dense(crate::attr::VERTEX_POSITION, [0.0, 0.0, 0.0]);
-        debug_assert!(created.is_ok(), "built-in VERTEX_POSITION must be unique");
+        let position = attrs.define_dense(crate::attr::VERTEX_POSITION, [0.0, 0.0, 0.0]);
+        debug_assert!(position.is_ok(), "built-in VERTEX_POSITION must be unique");
+        let region = attrs.define_dense(crate::attr::FACE_REGION, 0);
+        debug_assert!(region.is_ok(), "built-in FACE_REGION must be unique");
         attrs
     }
 
@@ -522,6 +524,25 @@ mod tests {
     fn corner_uv_builtin_key_has_expected_shape() {
         assert_eq!(attr::CORNER_UV.domain(), Domain::HalfEdge);
         assert_eq!(attr::CORNER_UV.name(), "corner.uv");
+    }
+
+    #[test]
+    fn face_region_builtin_key_has_expected_shape() {
+        assert_eq!(attr::FACE_REGION.domain(), Domain::Face);
+        assert_eq!(attr::FACE_REGION.name(), "face.region");
+    }
+
+    #[test]
+    fn face_region_builtin_defaults_to_untagged() {
+        let mut attrs = Attributes::new();
+        attrs.sync_capacities(0, 2, 0);
+        let face0 = Id::new(0, NonZeroU32::MIN);
+        let face1 = Id::new(1, NonZeroU32::MIN);
+        let regions = attrs
+            .dense(attr::FACE_REGION)
+            .expect("builtin face region layer");
+        assert_eq!(regions.get(face0), Some(&0));
+        assert_eq!(regions.get(face1), Some(&0));
     }
 
     #[test]

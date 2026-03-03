@@ -14,6 +14,7 @@ pub mod diag;
 pub mod error;
 pub mod operator;
 pub mod policy;
+pub mod region;
 pub mod report;
 pub mod runner;
 mod timing;
@@ -27,5 +28,6 @@ pub use policy::{
     BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
     QualityPolicy, UvPolicy, ValidatePolicy, WorkBudget,
 };
+pub use region::{REGION_UNTAGGED, TagFaceRegion, TagFaceRegionParams};
 pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
 pub use runner::{OpResult, OperatorRunner, PreviewResult};

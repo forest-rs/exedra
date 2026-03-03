@@ -1,7 +1,7 @@
 ---
 id: cam-ul4v
 title: Face region/material tagging (tag.face.region)
-status: open
+status: closed
 deps: [cam-ibof]
 links: [cam-u9zk]
 created: 2026-03-03T06:00:47Z
@@ -51,3 +51,7 @@ This is foundational for the basilica worked example where every step uses regio
 **2026-03-03T06:37:44Z**
 
 Worked example: docs/worked_example_basilica.md — every step uses region tags (REGION_FOOTPRINT, REGION_WALL_OUTER, REGION_DOME, etc.) to scope subsequent operators. Region tagging is the composability mechanism.
+
+**2026-03-03T13:29:12Z**
+
+API note: added exedra::attr::FACE_REGION built-in dense key and Txn::set_face_region() to support transaction-scoped operator writes to face-domain attributes.

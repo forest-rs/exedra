@@ -14,3 +14,6 @@ pub const VERTEX_POSITION: AttrKey<[f32; 3]> = AttrKey::new(Domain::Vertex, "ver
 
 /// Optional corner UV coordinates.
 pub const CORNER_UV: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.uv");
+
+/// Dense face region/material identifier.
+pub const FACE_REGION: AttrKey<u32> = AttrKey::new(Domain::Face, "face.region");
