@@ -1,7 +1,7 @@
 ---
 id: cam-0w9l
 title: OpError and OpErrorKind
-status: open
+status: closed
 deps: [cam-4x8o, cam-f0wg]
 links: []
 created: 2026-03-03T05:56:47Z
