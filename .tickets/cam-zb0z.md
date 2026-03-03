@@ -1,7 +1,7 @@
 ---
 id: cam-zb0z
 title: UV box projection operator
-status: open
+status: closed
 deps: [cam-ibof]
 links: []
 created: 2026-03-03T06:00:47Z
