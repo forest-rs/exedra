@@ -1,7 +1,7 @@
 ---
 id: ep-wbxp
 title: UV sphere primitive
-status: open
+status: closed
 deps: [ep-cl8t, exe-jbkx, exe-jctb]
 links: []
 created: 2026-03-03T06:53:52Z
@@ -34,3 +34,9 @@ See docs/exedra_primitives_handoff.md section "uv_sphere".
 - Deterministic vertex/face ordering
 - Unit test with fixed params
 
+
+## Notes
+
+**2026-03-03T17:13:54Z**
+
+Implemented deterministic uv_sphere primitive with pole triangle fans, quad mid-bands, deterministic seam selection, and canonical pole/all face selections. Added region tagging for body/top-pole/bottom-pole and tests for topology counts + determinism. Reused shared no-std trig helper in common module. Validation: cargo fmt --all, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.

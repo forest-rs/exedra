@@ -14,10 +14,12 @@ pub mod box_primitive;
 mod common;
 pub mod cylinder;
 pub mod quad;
+pub mod uv_sphere;
 
 pub use box_primitive::{BoxParams, box_primitive};
 pub use cylinder::{CylinderParams, cylinder};
 pub use quad::{QuadParams, quad};
+pub use uv_sphere::{UvSphereParams, uv_sphere};
 
 /// Output bundle produced by primitive constructors.
 ///
