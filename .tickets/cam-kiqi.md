@@ -2,7 +2,7 @@
 id: cam-kiqi
 status: open
 deps: [exe-dc9l]
-links: []
+links: [ep-cl8t]
 created: 2026-03-03T06:00:09Z
 type: feature
 priority: 1

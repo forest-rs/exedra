@@ -2,7 +2,7 @@
 id: cam-tecx
 status: open
 deps: [cam-ibof]
-links: []
+links: [ep-od6p]
 created: 2026-03-03T06:00:47Z
 type: feature
 priority: 2

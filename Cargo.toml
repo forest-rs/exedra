@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cambium",
     "crates/exedra",
+    "crates/exedra_primitives",
 ]
 
 [workspace.package]

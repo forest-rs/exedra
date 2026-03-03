@@ -9,3 +9,10 @@ version = "0.1.0"
 [[package]]
 name = "exedra"
 version = "0.1.0"
+
+[[package]]
+name = "exedra_primitives"
+version = "0.1.0"
+dependencies = [
+ "exedra",
+]

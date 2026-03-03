@@ -1,0 +1,16 @@
+[package]
+name = "exedra_primitives"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic mesh primitive generators for exedra"
+keywords = ["mesh", "primitives", "geometry", "no_std"]
+categories = ["data-structures", "algorithms"]
+
+[dependencies]
+exedra = { path = "../exedra" }
+
+[lints]
+workspace = true
