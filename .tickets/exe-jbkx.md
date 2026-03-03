@@ -1,7 +1,7 @@
 ---
 id: exe-jbkx
 title: Mesh construction from indexed triangles
-status: open
+status: closed
 deps: [exe-cbv1, exe-8hfg, exe-mid7]
 links: []
 created: 2026-03-03T05:31:46Z
@@ -53,3 +53,7 @@ Determinism: identical inputs must produce identical topology and ID assignment.
 
 exe-jctb adds MeshBuilder / from_polygons for arbitrary polygon faces (quads, ngon caps). from_indexed_triangles may be reimplemented atop MeshBuilder or coexist as a convenience wrapper. Both paths must produce identical results for triangle-only input.
 
+
+**2026-03-03T10:30:12Z**
+
+Implemented Mesh::from_indexed_triangles with optional weld tolerance and explicit BuildError taxonomy. Added deterministic interior/boundary twin linking, OUTSIDE boundary loop stitching, vertex.out initialization, and attribute capacity sync. Added coverage for single triangle boundary loop, shared-edge twin linkage, open-quad boundary count, closed tetra no-boundary, weld-tolerance merge behavior, and deterministic reconstruction. Validation run: cargo fmt --all; cargo clippy --workspace --all-targets --all-features -- -D warnings; cargo test --workspace --all-features; cargo doc --no-deps.

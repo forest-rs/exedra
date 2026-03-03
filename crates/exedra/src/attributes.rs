@@ -269,7 +269,7 @@ impl Attributes {
         }
     }
 
-    /// Syncs dense-layer capacities to arena capacities.
+    /// Syncs dense-layer capacities to domain slot counts.
     pub fn sync_capacities(&mut self, vertex: usize, face: usize, half_edge: usize) {
         self.vertex_capacity = vertex;
         self.face_capacity = face;

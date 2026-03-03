@@ -2,16 +2,76 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Mesh container and core topology traversal over half-edge records.
+//!
+//! Core invariants:
+//! - Face loops are closed `next` cycles.
+//! - Every half-edge has a twin; boundary twins use [`FaceId::OUTSIDE`].
+//! - Boundary half-edges always have `face == FaceId::OUTSIDE`.
+
+use alloc::vec::Vec;
 
 use crate::{Arena, Attributes, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr};
 
+/// Parameters for indexed-triangle mesh construction.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct BuildParams {
+    /// Optional weld tolerance for deduplicating input positions.
+    ///
+    /// When `None`, input positions are kept as-is. When `Some(t)`, vertices
+    /// within distance `t` are deterministically welded to the earliest match.
+    ///
+    /// `t` must be finite and non-negative.
+    pub weld_tolerance: Option<f32>,
+}
+
+/// Indexed-triangle construction error.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BuildError {
+    /// Triangle index referenced a position outside the input array.
+    IndexOutOfBounds {
+        /// Triangle index in the input list.
+        triangle: usize,
+        /// Out-of-range vertex index value.
+        index: u32,
+    },
+    /// Triangle collapsed to fewer than three distinct vertices after remap/weld.
+    DegenerateTriangle {
+        /// Triangle index in the input list.
+        triangle: usize,
+    },
+    /// More than two faces share an undirected edge, or two edges share same direction.
+    NonManifoldEdge {
+        /// Lower endpoint index of the undirected edge key.
+        a: u32,
+        /// Upper endpoint index of the undirected edge key.
+        b: u32,
+        /// Number of occurrences seen for this edge key.
+        count: usize,
+    },
+    /// Boundary stitching failed (missing or ambiguous continuation).
+    BoundaryStitchFailed {
+        /// Boundary vertex where continuation lookup failed.
+        vertex: u32,
+        /// Number of continuation candidates found.
+        candidates: usize,
+    },
+    /// Build parameter contained an invalid weld tolerance value.
+    InvalidWeldTolerance,
+}
+
 /// Half-edge mesh storage with explicit OUTSIDE boundary semantics.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Mesh {
     pub(crate) vertices: Arena<Vertex>,
     pub(crate) half_edges: Arena<HalfEdge>,
     pub(crate) faces: Arena<Face>,
     pub(crate) attrs: Attributes,
+}
+
+impl Default for Mesh {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Mesh {
@@ -82,7 +142,9 @@ impl Mesh {
             .filter(|out| *out != HalfEdgeId::INVALID)
     }
 
-    /// Returns one loop half-edge for the given interior face.
+    /// Returns one loop half-edge for an interior face.
+    ///
+    /// Returns `None` for [`FaceId::OUTSIDE`].
     #[must_use]
     pub fn face_edge(&self, face: FaceId) -> Option<HalfEdgeId> {
         if face == FaceId::OUTSIDE {
@@ -129,15 +191,14 @@ impl Mesh {
     #[must_use]
     pub fn prev(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {
         let face = self.face(half_edge)?;
-        let max_steps = if face == FaceId::OUTSIDE {
-            self.half_edges.len().max(1)
+        let face_degree = if face == FaceId::OUTSIDE {
+            None
         } else {
             self.faces
                 .get(face.as_id())
                 .and_then(|record| usize::try_from(record.degree).ok())
-                .unwrap_or_else(|| self.half_edges.len().max(1))
-                .max(1)
         };
+        let max_steps = self.half_edges.slot_count().max(1);
         let mut cursor = self.next(half_edge).unwrap_or_else(|| {
             panic!(
                 "mesh topology corruption: prev() missing next for half-edge {}",
@@ -157,10 +218,11 @@ impl Mesh {
             cursor = next;
         }
         panic!(
-            "mesh topology corruption: prev() exceeded {} steps for half-edge {} on face {}",
+            "mesh topology corruption: prev() exceeded {} steps for half-edge {} on face {} (degree {:?})",
             max_steps,
             half_edge.index(),
-            face.index()
+            face.index(),
+            face_degree
         );
     }
 
@@ -203,9 +265,224 @@ impl Mesh {
         })
     }
 
+    /// Builds a mesh from indexed triangles.
+    ///
+    /// `positions` contains input vertex coordinates. `indices` contains one
+    /// triangle per entry, indexing into `positions`.
+    ///
+    /// On success this produces a valid half-edge mesh with explicit OUTSIDE
+    /// boundary modeling:
+    /// - every interior edge has a twin,
+    /// - every open boundary edge gets a twin on [`FaceId::OUTSIDE`],
+    /// - boundary `next` links form OUTSIDE loops.
+    ///
+    /// Construction is deterministic: identical inputs and params produce
+    /// identical topology and ID assignment.
+    ///
+    /// Returns:
+    /// - [`BuildError::InvalidWeldTolerance`] for invalid weld params,
+    /// - [`BuildError::IndexOutOfBounds`] for invalid triangle indices,
+    /// - [`BuildError::DegenerateTriangle`] for collapsed triangles,
+    /// - [`BuildError::NonManifoldEdge`] for non-manifold edge usage,
+    /// - [`BuildError::BoundaryStitchFailed`] when boundary loop linking is
+    ///   ambiguous or incomplete.
+    ///
+    /// Boundary stitching currently performs linear candidate scans per boundary
+    /// half-edge, so stitching cost is quadratic in boundary edge count.
+    pub fn from_indexed_triangles(
+        positions: &[[f32; 3]],
+        indices: &[[u32; 3]],
+        params: &BuildParams,
+    ) -> Result<Self, BuildError> {
+        if params
+            .weld_tolerance
+            .is_some_and(|t| !t.is_finite() || t < 0.0)
+        {
+            return Err(BuildError::InvalidWeldTolerance);
+        }
+        let (canonical_positions, remap) = weld_positions(positions, params.weld_tolerance);
+
+        let mut mesh = Self::new();
+        let mut vertex_ids = Vec::with_capacity(canonical_positions.len());
+        for position in &canonical_positions {
+            vertex_ids.push(mesh.add_vertex(*position));
+        }
+
+        let mut edge_records: Vec<(u32, u32, HalfEdgeId)> = Vec::with_capacity(indices.len() * 3);
+        let mut endpoints: Vec<(u32, u32)> = Vec::with_capacity(indices.len() * 6);
+
+        for (triangle, tri) in indices.iter().enumerate() {
+            let i0 = remap_index(tri[0], &remap, triangle)?;
+            let i1 = remap_index(tri[1], &remap, triangle)?;
+            let i2 = remap_index(tri[2], &remap, triangle)?;
+            if i0 == i1 || i1 == i2 || i2 == i0 {
+                return Err(BuildError::DegenerateTriangle { triangle });
+            }
+
+            let v0 = *vertex_ids
+                .get(i0 as usize)
+                .ok_or(BuildError::IndexOutOfBounds {
+                    triangle,
+                    index: i0,
+                })?;
+            let v1 = *vertex_ids
+                .get(i1 as usize)
+                .ok_or(BuildError::IndexOutOfBounds {
+                    triangle,
+                    index: i1,
+                })?;
+            let v2 = *vertex_ids
+                .get(i2 as usize)
+                .ok_or(BuildError::IndexOutOfBounds {
+                    triangle,
+                    index: i2,
+                })?;
+
+            let face = FaceId::from(mesh.faces.insert(Face {
+                edge: HalfEdgeId::INVALID,
+                degree: 3,
+            }));
+            let h0 = HalfEdgeId::from(mesh.half_edges.insert(HalfEdge {
+                to: v1,
+                face,
+                next: HalfEdgeId::INVALID,
+                twin: HalfEdgeId::INVALID,
+            }));
+            let h1 = HalfEdgeId::from(mesh.half_edges.insert(HalfEdge {
+                to: v2,
+                face,
+                next: HalfEdgeId::INVALID,
+                twin: HalfEdgeId::INVALID,
+            }));
+            let h2 = HalfEdgeId::from(mesh.half_edges.insert(HalfEdge {
+                to: v0,
+                face,
+                next: HalfEdgeId::INVALID,
+                twin: HalfEdgeId::INVALID,
+            }));
+
+            mesh.half_edges.get_mut(h0.as_id()).expect("h0 live").next = h1;
+            mesh.half_edges.get_mut(h1.as_id()).expect("h1 live").next = h2;
+            mesh.half_edges.get_mut(h2.as_id()).expect("h2 live").next = h0;
+            mesh.faces.get_mut(face.as_id()).expect("face live").edge = h0;
+
+            edge_records.push((i0, i1, h0));
+            edge_records.push((i1, i2, h1));
+            edge_records.push((i2, i0, h2));
+            set_endpoint(&mut endpoints, h0, i0, i1);
+            set_endpoint(&mut endpoints, h1, i1, i2);
+            set_endpoint(&mut endpoints, h2, i2, i0);
+        }
+
+        let mut grouped: Vec<(u32, u32, u32, u32, HalfEdgeId)> = edge_records
+            .iter()
+            .map(|(from, to, hid)| (u32::min(*from, *to), u32::max(*from, *to), *from, *to, *hid))
+            .collect();
+        grouped.sort_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
+
+        let mut boundary_interior: Vec<HalfEdgeId> = Vec::new();
+        let mut cursor = 0_usize;
+        while cursor < grouped.len() {
+            let (a, b, _, _, _) = grouped[cursor];
+            let mut end = cursor + 1;
+            while end < grouped.len() && grouped[end].0 == a && grouped[end].1 == b {
+                end += 1;
+            }
+
+            let group = &grouped[cursor..end];
+            if group.len() == 1 {
+                boundary_interior.push(group[0].4);
+            } else if group.len() == 2 {
+                let (_, _, from0, to0, h0) = group[0];
+                let (_, _, from1, to1, h1) = group[1];
+                if from0 == from1 || to0 == to1 {
+                    return Err(BuildError::NonManifoldEdge {
+                        a,
+                        b,
+                        count: group.len(),
+                    });
+                }
+                mesh.half_edges.get_mut(h0.as_id()).expect("h0 live").twin = h1;
+                mesh.half_edges.get_mut(h1.as_id()).expect("h1 live").twin = h0;
+            } else {
+                return Err(BuildError::NonManifoldEdge {
+                    a,
+                    b,
+                    count: group.len(),
+                });
+            }
+            cursor = end;
+        }
+
+        boundary_interior.sort_by_key(|id| id.index());
+        let mut boundary_ids = Vec::with_capacity(boundary_interior.len());
+        for interior in &boundary_interior {
+            let (from, to) = get_endpoint(&endpoints, *interior);
+            let boundary_to = *vertex_ids
+                .get(from as usize)
+                .expect("endpoint index must map to an existing vertex id");
+            let boundary = HalfEdgeId::from(mesh.half_edges.insert(HalfEdge {
+                to: boundary_to,
+                face: FaceId::OUTSIDE,
+                next: HalfEdgeId::INVALID,
+                twin: *interior,
+            }));
+            mesh.half_edges
+                .get_mut(interior.as_id())
+                .expect("interior edge live")
+                .twin = boundary;
+            set_endpoint(&mut endpoints, boundary, to, from);
+            boundary_ids.push(boundary);
+        }
+
+        for boundary in &boundary_ids {
+            let (_, to) = get_endpoint(&endpoints, *boundary);
+            let candidates = boundary_ids
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    let (start, _) = get_endpoint(&endpoints, *candidate);
+                    start == to
+                })
+                .collect::<Vec<_>>();
+            if candidates.len() != 1 {
+                return Err(BuildError::BoundaryStitchFailed {
+                    vertex: to,
+                    candidates: candidates.len(),
+                });
+            }
+            mesh.half_edges
+                .get_mut(boundary.as_id())
+                .expect("boundary edge live")
+                .next = candidates[0];
+        }
+
+        for (id, _) in mesh.half_edges.iter() {
+            let half_edge = HalfEdgeId::from(id);
+            let (from, _) = get_endpoint(&endpoints, half_edge);
+            let vertex = *vertex_ids
+                .get(from as usize)
+                .expect("endpoint index must map to an existing vertex id");
+            let out = &mut mesh
+                .vertices
+                .get_mut(vertex.as_id())
+                .expect("vertex live")
+                .out;
+            if *out == HalfEdgeId::INVALID {
+                *out = half_edge;
+            }
+        }
+
+        mesh.sync_attr_capacities();
+        Ok(mesh)
+    }
+
     fn sync_attr_capacities(&mut self) {
-        self.attrs
-            .sync_capacities(self.vertices.len(), self.faces.len(), self.half_edges.len());
+        self.attrs.sync_capacities(
+            self.vertices.slot_count(),
+            self.faces.slot_count(),
+            self.half_edges.slot_count(),
+        );
     }
 }
 
@@ -255,12 +532,70 @@ impl Iterator for FaceLoopIter<'_> {
     }
 }
 
+fn remap_index(index: u32, remap: &[u32], triangle: usize) -> Result<u32, BuildError> {
+    remap
+        .get(index as usize)
+        .copied()
+        .ok_or(BuildError::IndexOutOfBounds { triangle, index })
+}
+
+fn weld_positions(positions: &[[f32; 3]], tolerance: Option<f32>) -> (Vec<[f32; 3]>, Vec<u32>) {
+    let Some(tol) = tolerance else {
+        let mut remap = Vec::with_capacity(positions.len());
+        for index in 0..positions.len() {
+            remap.push(index_to_u32(index));
+        }
+        return (positions.to_vec(), remap);
+    };
+
+    let mut canonical = Vec::<[f32; 3]>::new();
+    let mut remap = Vec::<u32>::with_capacity(positions.len());
+    let tol_sq = tol * tol;
+    for position in positions {
+        let mut found = None;
+        for (idx, candidate) in canonical.iter().enumerate() {
+            let dx = position[0] - candidate[0];
+            let dy = position[1] - candidate[1];
+            let dz = position[2] - candidate[2];
+            if dx * dx + dy * dy + dz * dz <= tol_sq {
+                found = Some(index_to_u32(idx));
+                break;
+            }
+        }
+        if let Some(index) = found {
+            remap.push(index);
+        } else {
+            let index = index_to_u32(canonical.len());
+            canonical.push(*position);
+            remap.push(index);
+        }
+    }
+    (canonical, remap)
+}
+
+fn set_endpoint(endpoints: &mut Vec<(u32, u32)>, hid: HalfEdgeId, from: u32, to: u32) {
+    let index = hid.index() as usize;
+    if index >= endpoints.len() {
+        endpoints.resize(index + 1, (u32::MAX, u32::MAX));
+    }
+    endpoints[index] = (from, to);
+}
+
+fn get_endpoint(endpoints: &[(u32, u32)], hid: HalfEdgeId) -> (u32, u32) {
+    endpoints[hid.index() as usize]
+}
+
+fn index_to_u32(index: usize) -> u32 {
+    u32::try_from(index).expect("index overflowed u32")
+}
+
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::Mesh;
-    use crate::{Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
+    use super::{BuildError, BuildParams, Mesh};
+    use crate::{AttrKey, Domain, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
 
     fn triangle_mesh() -> Mesh {
         let mut mesh = Mesh::new();
@@ -656,5 +991,331 @@ mod tests {
         assert_eq!(mesh.vertex_position(vertex), Some(&[1.0, 2.0, 3.0]));
         assert!(mesh.set_vertex_position(vertex, [4.0, 5.0, 6.0]));
         assert_eq!(mesh.vertex_position(vertex), Some(&[4.0, 5.0, 6.0]));
+    }
+
+    #[test]
+    fn mesh_default_matches_new_for_builtin_attributes() {
+        let mut mesh = Mesh::default();
+        let vertex = mesh.add_vertex([1.0, 2.0, 3.0]);
+        assert_eq!(mesh.vertex_position(vertex), Some(&[1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn from_indexed_triangles_single_triangle_has_boundary_loop() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .expect("single triangle should build");
+
+        let boundary = mesh
+            .half_edges
+            .iter()
+            .filter(|(_, h)| h.face == FaceId::OUTSIDE)
+            .count();
+        assert_eq!(boundary, 3);
+    }
+
+    #[test]
+    fn from_indexed_triangles_shared_edge_links_twins() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [2, 1, 3]],
+            &BuildParams::default(),
+        )
+        .expect("two triangles should build");
+
+        let interior_pairs = mesh
+            .half_edges
+            .iter()
+            .filter(|(id, h)| {
+                h.face != FaceId::OUTSIDE
+                    && mesh.half_edges.get(h.twin.as_id()).is_some_and(|twin| {
+                        twin.face != FaceId::OUTSIDE && id.index() < h.twin.index()
+                    })
+            })
+            .count();
+        assert_eq!(interior_pairs, 1);
+    }
+
+    #[test]
+    fn from_indexed_triangles_open_quad_has_four_boundary_edges() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("open quad should build");
+
+        let boundary = mesh
+            .half_edges
+            .iter()
+            .filter(|(_, h)| h.face == FaceId::OUTSIDE)
+            .count();
+        assert_eq!(boundary, 4);
+    }
+
+    #[test]
+    fn from_indexed_triangles_closed_tetra_has_no_boundary() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 0.8, 0.0],
+                [0.5, 0.3, 0.9],
+            ],
+            &[[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
+            &BuildParams::default(),
+        )
+        .expect("tetrahedron should build");
+
+        let boundary = mesh
+            .half_edges
+            .iter()
+            .filter(|(_, h)| h.face == FaceId::OUTSIDE)
+            .count();
+        assert_eq!(boundary, 0);
+    }
+
+    #[test]
+    fn from_indexed_triangles_weld_tolerance_merges_nearby_vertices() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0005, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 3], [2, 3, 1]],
+            &BuildParams {
+                weld_tolerance: Some(0.001),
+            },
+        )
+        .expect("welded mesh should build");
+
+        assert_eq!(mesh.vertices.len(), 3);
+        assert_eq!(mesh.faces.len(), 2);
+    }
+
+    #[test]
+    fn from_indexed_triangles_reports_index_out_of_bounds() {
+        let result = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 3]],
+            &BuildParams::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(BuildError::IndexOutOfBounds {
+                triangle: 0,
+                index: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn from_indexed_triangles_reports_degenerate_triangle_directly() {
+        let result = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            &[[0, 0, 1]],
+            &BuildParams::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(BuildError::DegenerateTriangle { triangle: 0 })
+        ));
+    }
+
+    #[test]
+    fn from_indexed_triangles_reports_degenerate_triangle_after_weld() {
+        let result = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [0.0005, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams {
+                weld_tolerance: Some(0.001),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(BuildError::DegenerateTriangle { triangle: 0 })
+        ));
+    }
+
+    #[test]
+    fn from_indexed_triangles_reports_non_manifold_edge() {
+        let result = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],  // 0
+                [1.0, 0.0, 0.0],  // 1
+                [0.0, 1.0, 0.0],  // 2
+                [0.0, -1.0, 0.0], // 3
+                [1.0, 1.0, 0.0],  // 4
+            ],
+            &[[0, 1, 2], [1, 0, 3], [0, 1, 4]],
+            &BuildParams::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(BuildError::NonManifoldEdge {
+                a: 0,
+                b: 1,
+                count: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn from_indexed_triangles_rejects_negative_weld_tolerance() {
+        let result = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams {
+                weld_tolerance: Some(-0.001),
+            },
+        );
+        assert!(matches!(result, Err(BuildError::InvalidWeldTolerance)));
+    }
+
+    #[test]
+    fn from_indexed_triangles_reports_boundary_stitch_ambiguity() {
+        let result = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 3, 4]],
+            &BuildParams::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(BuildError::BoundaryStitchFailed {
+                vertex: 0,
+                candidates: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn from_indexed_triangles_is_deterministic() {
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let triangles = [[0, 1, 2], [0, 2, 3]];
+        let params = BuildParams::default();
+
+        let a = Mesh::from_indexed_triangles(&positions, &triangles, &params).expect("build A");
+        let b = Mesh::from_indexed_triangles(&positions, &triangles, &params).expect("build B");
+
+        let verts_a: Vec<_> = a.vertices.iter().map(|(id, v)| (id, *v)).collect();
+        let verts_b: Vec<_> = b.vertices.iter().map(|(id, v)| (id, *v)).collect();
+        assert_eq!(verts_a, verts_b);
+
+        let half_edges_a: Vec<_> = a.half_edges.iter().map(|(id, h)| (id, *h)).collect();
+        let half_edges_b: Vec<_> = b.half_edges.iter().map(|(id, h)| (id, *h)).collect();
+        assert_eq!(half_edges_a, half_edges_b);
+
+        let faces_a: Vec<_> = a.faces.iter().map(|(id, f)| (id, *f)).collect();
+        let faces_b: Vec<_> = b.faces.iter().map(|(id, f)| (id, *f)).collect();
+        assert_eq!(faces_a, faces_b);
+    }
+
+    #[test]
+    fn from_indexed_triangles_empty_input_is_empty_mesh() {
+        let mesh =
+            Mesh::from_indexed_triangles(&[], &[], &BuildParams::default()).expect("empty builds");
+        assert_eq!(mesh.vertices.len(), 0);
+        assert_eq!(mesh.faces.len(), 0);
+        assert_eq!(mesh.half_edges.len(), 0);
+    }
+
+    #[test]
+    fn from_indexed_triangles_sets_expected_vertex_positions() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[[2.0, 3.0, 5.0], [7.0, 11.0, 13.0], [17.0, 19.0, 23.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .expect("triangle should build");
+
+        let positions: Vec<_> = mesh
+            .vertices
+            .iter()
+            .map(|(id, _)| {
+                *mesh
+                    .vertex_position(VertexId::from(id))
+                    .expect("position set")
+            })
+            .collect();
+        assert_eq!(
+            positions,
+            vec![[2.0, 3.0, 5.0], [7.0, 11.0, 13.0], [17.0, 19.0, 23.0]]
+        );
+    }
+
+    #[test]
+    fn from_indexed_triangles_has_twin_involution() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("open quad should build");
+
+        for (id, _) in mesh.half_edges.iter() {
+            let h = HalfEdgeId::from(id);
+            let twin = mesh.twin(h).expect("every half-edge has twin");
+            assert_eq!(mesh.twin(twin), Some(h));
+        }
+    }
+
+    #[test]
+    fn sync_attr_capacities_uses_slot_count_after_tombstones() {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([2.0, 0.0, 0.0]);
+        let removed = mesh.vertices.remove(v1.as_id());
+        assert!(removed.is_some());
+        mesh.sync_attr_capacities();
+
+        let custom = AttrKey::<f32>::new(Domain::Vertex, "vertex.test.weight");
+        assert_eq!(mesh.attrs_mut().define_dense(custom, 0.0), Ok(()));
+        assert_eq!(mesh.attrs().dense(custom).expect("layer exists").len(), 3);
+        assert_eq!(
+            mesh.attrs()
+                .dense(custom)
+                .expect("layer exists")
+                .get(v0.as_id()),
+            Some(&0.0)
+        );
+        assert_eq!(
+            mesh.attrs()
+                .dense(custom)
+                .expect("layer exists")
+                .get(v2.as_id()),
+            Some(&0.0)
+        );
     }
 }
