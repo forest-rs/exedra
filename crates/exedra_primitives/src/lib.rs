@@ -10,9 +10,11 @@ use alloc::vec::Vec;
 
 use exedra::{FaceId, HalfEdgeId, Mesh};
 
+pub mod box_primitive;
 mod common;
 pub mod quad;
 
+pub use box_primitive::{BoxParams, box_primitive};
 pub use quad::{QuadParams, quad};
 
 /// Output bundle produced by primitive constructors.

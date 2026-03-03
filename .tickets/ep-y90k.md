@@ -1,7 +1,7 @@
 ---
 id: ep-y90k
 title: Box primitive
-status: open
+status: closed
 deps: [ep-cl8t, exe-jbkx, exe-jctb]
 links: []
 created: 2026-03-03T06:53:52Z
@@ -41,3 +41,7 @@ See docs/exedra_primitives_handoff.md section "box".
 **2026-03-03T06:54:22Z**
 
 Worked example: docs/worked_example_basilica.md — the box primitive is useful for testing UV box projection (step 7).
+
+**2026-03-03T17:10:13Z**
+
+Implemented deterministic box_primitive with fixed vertex numbering and face emission order (+X, -X, +Y, -Y, +Z, -Z), per-side selections, and per-side region IDs. Added v0.1 guard for segments != [1,1,1] and unit tests for validity/region mapping/determinism. Validation: cargo fmt --all, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.
