@@ -1,7 +1,7 @@
 ---
 id: ep-od6p
 status: open
-deps: [ep-cl8t, exe-jbkx]
+deps: [ep-cl8t, exe-jbkx, exe-jctb]
 links: [cam-tecx]
 created: 2026-03-03T06:53:52Z
 type: feature

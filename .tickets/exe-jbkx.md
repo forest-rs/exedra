@@ -46,3 +46,9 @@ Determinism: identical inputs must produce identical topology and ID assignment.
 - Unit tests: single triangle, two triangles sharing an edge, open quad, closed tetrahedron
 - Deterministic: same input produces same mesh
 
+## Notes
+
+**2026-03-03 — ngon builder relationship**
+
+exe-jctb adds MeshBuilder / from_polygons for arbitrary polygon faces (quads, ngon caps). from_indexed_triangles may be reimplemented atop MeshBuilder or coexist as a convenience wrapper. Both paths must produce identical results for triangle-only input.
+

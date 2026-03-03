@@ -46,3 +46,7 @@ This crate can depend on std and on exedra.
 **2026-03-03T06:37:44Z**
 
 Worked example: docs/worked_example_basilica.md — defines minimal dump set (program input, per-step reports, final mesh snapshot, final extraction) and golden test posture.
+
+**2026-03-03 — expanded scope (exe-rxny)**
+
+exe-rxny details the expanded testkit scope: RON/JSON golden dump format with ordered lists (not maps) for determinism, fixture builders wrapping exedra_primitives with canonical params, snapshot comparison utilities (dump_golden / assert_golden). testkit depends on exedra_primitives and std.
