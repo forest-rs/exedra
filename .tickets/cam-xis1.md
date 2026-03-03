@@ -1,7 +1,7 @@
 ---
 id: cam-xis1
 title: OpReport, Stats, and Timings
-status: open
+status: closed
 deps: [cam-4x8o, cam-f0wg]
 links: []
 created: 2026-03-03T05:54:17Z
