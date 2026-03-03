@@ -1,7 +1,7 @@
 ---
 id: exe-ei01
 title: Derive prev(h) by walking; no stored prev pointer in v0.1
-status: open
+status: closed
 deps: [exe-2752]
 links: []
 created: 2026-03-03T07:06:41Z
@@ -21,3 +21,9 @@ HalfEdge record stores: next, twin, vertex, face. No prev field. Mesh::prev(h) w
 
 HalfEdge struct has no prev field. Mesh::prev(h) method exists and returns correct result. prev(h) works for triangles, quads, and ngons. Decision documented in exe-2752 or topology docs.
 
+
+## Notes
+
+**2026-03-03T10:19:37Z**
+
+Implementation summary (2026-03-03): prev(h) is implemented on Mesh by walking next links until wraparound (no stored prev pointer in HalfEdge). Added explicit regression coverage for triangles, quads, and ngons (pentagon) via mesh traversal tests. Topology records remain prev-free as decided in exe-2752. Validation run: typos, cargo fmt --all, taplo fmt, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features, cargo doc --no-deps.
