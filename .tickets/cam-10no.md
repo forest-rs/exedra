@@ -1,7 +1,7 @@
 ---
 id: cam-10no
 title: Mark seam edges operator
-status: open
+status: closed
 deps: [cam-ibof, exe-5nj1]
 links: []
 created: 2026-03-03T06:00:47Z
@@ -26,3 +26,9 @@ Uses the explicit EDGE_SEAM edge-domain bool attribute (defined in exe-5nj1). Th
 - Unit tests verify attribute is set correctly
 - Works through EditOperator / OperatorRunner
 
+
+## Notes
+
+**2026-03-03T17:42:30Z**
+
+Implemented edge seam marking operator: added EdgeSet canonicalization, new seam operator (MarkEdgeSeam), public exports, and tests for set/clear + duplicate canonicalization. Validated with cargo fmt --all, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.
