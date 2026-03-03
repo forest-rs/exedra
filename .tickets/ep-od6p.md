@@ -1,7 +1,7 @@
 ---
 id: ep-od6p
 title: Cylinder primitive
-status: open
+status: closed
 deps: [ep-cl8t, exe-jbkx, exe-jctb]
 links: [cam-tecx]
 created: 2026-03-03T06:53:52Z
@@ -42,3 +42,7 @@ See docs/exedra_primitives_handoff.md section "cylinder".
 **2026-03-03T06:54:22Z**
 
 Worked example: docs/worked_example_basilica.md — drums and columns are cylinders. The drum primitive feeds into shape.add.dome.
+
+**2026-03-03T17:12:35Z**
+
+Implemented deterministic cylinder primitive with capped/uncapped modes, deterministic seam/rim selections from builder provenance, and side/top/bottom region tagging. Added no-std sin/cos helper in shared module for angular sampling without extra dependencies. Added tests for capped and uncapped validity and determinism. Validation: cargo fmt --all, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.
