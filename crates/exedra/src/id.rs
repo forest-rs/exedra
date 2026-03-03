@@ -85,6 +85,16 @@ define_id_type!(VertexId, "Stable ID for a vertex arena slot.");
 define_id_type!(HalfEdgeId, "Stable ID for a half-edge arena slot.");
 define_id_type!(FaceId, "Stable ID for a face arena slot.");
 
+impl VertexId {
+    /// Reserved sentinel ID for "no vertex".
+    pub const INVALID: Self = Self::new(u32::MAX, NonZeroU32::MIN);
+}
+
+impl HalfEdgeId {
+    /// Reserved sentinel ID for "no half-edge".
+    pub const INVALID: Self = Self::new(u32::MAX, NonZeroU32::MIN);
+}
+
 impl FaceId {
     /// Reserved sentinel ID representing the outside face region.
     pub const OUTSIDE: Self = Self::new(u32::MAX, NonZeroU32::MIN);

@@ -25,11 +25,17 @@ enum Slot<T> {
 /// The arena preserves deterministic slot-order iteration and never compacts
 /// implicitly. Removed slots are recycled through a free list with bumped
 /// generation counters.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
     free_head: Option<u32>,
     len: usize,
+}
+
+impl<T> Default for Arena<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T> Arena<T> {

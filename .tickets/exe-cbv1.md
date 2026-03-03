@@ -1,7 +1,7 @@
 ---
 id: exe-cbv1
 title: Mesh struct and boundary model
-status: open
+status: closed
 deps: [exe-nca7, exe-2752, exe-203r]
 links: []
 created: 2026-03-03T05:26:03Z
@@ -59,3 +59,7 @@ Mesh must be Clone (required for Cambium preview path in v0.1).
 **2026-03-03T06:17:41Z**
 
 Design brief: crates/exedra/docs/briefs/02_outside_face_boundary_model.md, crates/exedra/docs/briefs/12_half_edge_vs_alternatives.md
+
+**2026-03-03T10:18:52Z**
+
+Implementation summary (2026-03-03): added Mesh owning vertex/half-edge/face arenas with explicit OUTSIDE sentinel semantics and core traversal accessors (twin/next/prev/face/to/from, vertex_out, face_edge), plus deterministic face_loop and vertex_star traversal. Added boundary-oriented unit tests for triangle/quad/open-boundary cases and Mesh clone behavior. Validation run: typos, cargo fmt --all, taplo fmt, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features, cargo doc --no-deps.
