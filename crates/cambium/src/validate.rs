@@ -101,6 +101,10 @@ fn validation_diagnostics(pass: &'static str, errors: &[ValidationError]) -> Vec
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
+    use alloc::vec;
+
+    use cambium_testkit::{GoldenSnapshot, GoldenStep, parse_snapshot, render_snapshot};
     use exedra::Mesh;
 
     use super::{ValidateMesh, ValidateMeshMode, ValidateMeshParams, validation_diagnostics};
@@ -159,5 +163,23 @@ mod tests {
         assert_eq!(diagnostics[0].level, DiagLevel::Error);
         assert_eq!(diagnostics[0].code, DiagCode::NonManifoldInput);
         assert!(diagnostics[0].message.contains("validation (fast):"));
+    }
+
+    #[test]
+    fn cambium_tests_can_use_cambium_testkit_snapshot_format() {
+        let snapshot = GoldenSnapshot {
+            scenario: String::from("validate-op"),
+            steps: vec![GoldenStep {
+                label: String::from("step_1"),
+                op: String::from("inspect.validate.mesh"),
+                faces_processed: 0,
+                corners_written: 0,
+                selections_canonicalized: 0,
+                diagnostics: vec![],
+            }],
+        };
+        let encoded = render_snapshot(&snapshot);
+        let decoded = parse_snapshot(&encoded).expect("roundtrip should parse");
+        assert_eq!(decoded, snapshot);
     }
 }

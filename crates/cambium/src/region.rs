@@ -247,6 +247,11 @@ mod tests {
     }
 
     #[test]
+    fn testkit_region_untagged_matches_cambium_constant() {
+        assert_eq!(cambium_testkit::regions::REGION_UNTAGGED, REGION_UNTAGGED);
+    }
+
+    #[test]
     fn select_faces_by_region_returns_canonical_face_set() {
         let mut mesh = Mesh::from_indexed_triangles(
             &[

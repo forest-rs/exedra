@@ -1,7 +1,7 @@
 ---
 id: cam-tzew
 title: cambium_testkit crate
-status: open
+status: closed
 deps: []
 links: [exe-lopy]
 created: 2026-03-03T06:01:15Z
