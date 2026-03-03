@@ -1,7 +1,7 @@
 ---
 id: cam-ibof
 title: OperatorRunner (run_commit and run_preview)
-status: open
+status: closed
 deps: [cam-wu7q, cam-6vcu, exe-dey4, exe-cbv1]
 links: [cam-ezlm, cam-vt4j]
 created: 2026-03-03T05:58:07Z

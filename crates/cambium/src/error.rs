@@ -3,6 +3,7 @@
 
 //! Structured Cambium operator errors.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
@@ -53,6 +54,8 @@ pub struct OpError {
     pub diagnostics: Vec<Diagnostic>,
     /// Attached bounded artifacts.
     pub artifacts: Artifacts,
+    /// Optional committed change summary when failure happens post-commit.
+    pub change_set: Option<Box<exedra::ChangeSet>>,
 }
 
 impl OpError {
@@ -63,7 +66,15 @@ impl OpError {
             kind,
             diagnostics,
             artifacts,
+            change_set: None,
         }
+    }
+
+    /// Attaches a committed change summary.
+    #[must_use]
+    pub fn with_change_set(mut self, change_set: exedra::ChangeSet) -> Self {
+        self.change_set = Some(Box::new(change_set));
+        self
     }
 
     /// Wraps an Exedra build error into Cambium operator space.
@@ -180,6 +191,17 @@ mod tests {
         assert_eq!(error.diagnostics.len(), 3);
         assert_eq!(error.diagnostics[0].message, "seed diagnostic");
         assert_eq!(error.diagnostics[1].code, DiagCode::NonManifoldInput);
+    }
+
+    #[test]
+    fn change_set_can_be_attached_to_errors() {
+        let changes = exedra::ChangeSet::default();
+        let error = OpError::new(OpErrorKind::InvalidMesh, vec![], Artifacts::new(2, 128))
+            .with_change_set(changes.clone());
+        assert_eq!(
+            error.change_set.as_ref().map(|v| v.deleted_faces.len()),
+            Some(0)
+        );
     }
 
     #[test]
