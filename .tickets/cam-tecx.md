@@ -1,7 +1,7 @@
 ---
 id: cam-tecx
 title: UV cylinder projection operator
-status: open
+status: closed
 deps: [cam-ibof]
 links: [ep-od6p]
 created: 2026-03-03T06:00:47Z

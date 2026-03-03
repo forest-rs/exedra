@@ -11,10 +11,12 @@ categories = ["data-structures", "algorithms"]
 
 [dependencies]
 exedra.workspace = true
+libm = { optional = true, workspace = true }
 understory_dirty.workspace = true
 
 [features]
-default = []
+default = ["std"]
+libm = ["dep:libm"]
 std = []
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -19,7 +19,7 @@ env:
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.
-  FEATURES_DEPENDING_ON_STD: "std"
+  FEATURES_DEPENDING_ON_STD: "std,default"
 
 
 # Rationale

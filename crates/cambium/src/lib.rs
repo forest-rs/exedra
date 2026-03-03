@@ -7,6 +7,8 @@
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
+#[cfg(not(any(feature = "std", feature = "libm")))]
+compile_error!("cambium requires either the `std` or `libm` feature");
 
 pub mod artifact;
 pub mod context;
@@ -20,10 +22,12 @@ pub mod report;
 pub mod runner;
 pub mod selection;
 
+mod math;
 mod timing;
 mod uv_common;
 
 pub mod uv_box;
+pub mod uv_cylinder;
 pub mod uv_planar;
 pub mod validate;
 
@@ -44,5 +48,6 @@ pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timi
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use selection::{FaceSet, canonicalize_face_set};
 pub use uv_box::{UvBox, UvBoxParams};
+pub use uv_cylinder::{CylinderAxis, UvCylinder, UvCylinderParams};
 pub use uv_planar::{UvPlanar, UvPlanarParams, UvPlane, UvScope};
 pub use validate::{ValidateMesh, ValidateMeshMode, ValidateMeshParams};
