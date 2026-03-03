@@ -10,6 +10,11 @@ use alloc::vec::Vec;
 
 use exedra::{FaceId, HalfEdgeId, Mesh};
 
+mod common;
+pub mod quad;
+
+pub use quad::{QuadParams, quad};
+
 /// Output bundle produced by primitive constructors.
 ///
 /// Primitive generators return topology (`mesh`) plus semantic metadata used by
