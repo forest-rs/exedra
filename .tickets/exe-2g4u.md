@@ -1,7 +1,7 @@
 ---
 id: exe-2g4u
 title: Corner UV attribute layer
-status: open
+status: closed
 deps: [exe-17rj, exe-cbv1]
 links: [cam-v5ko]
 created: 2026-03-03T05:28:50Z

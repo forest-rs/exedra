@@ -519,6 +519,56 @@ mod tests {
     }
 
     #[test]
+    fn corner_uv_builtin_key_has_expected_shape() {
+        assert_eq!(attr::CORNER_UV.domain(), Domain::HalfEdge);
+        assert_eq!(attr::CORNER_UV.name(), "corner.uv");
+    }
+
+    #[test]
+    fn corner_uv_sparse_layer_supports_partial_coverage() {
+        let mut attrs = Attributes::new();
+        assert_eq!(attrs.define_sparse(attr::CORNER_UV), Ok(()));
+
+        let a = Id::new(1, NonZeroU32::MIN);
+        let b = Id::new(3, NonZeroU32::MIN);
+
+        assert_eq!(
+            attrs
+                .sparse(attr::CORNER_UV)
+                .expect("corner uv layer should exist")
+                .get(a),
+            None
+        );
+        assert_eq!(
+            attrs
+                .sparse(attr::CORNER_UV)
+                .expect("corner uv layer should exist")
+                .get(b),
+            None
+        );
+
+        attrs
+            .sparse_mut(attr::CORNER_UV)
+            .expect("corner uv layer should exist")
+            .set(a, [0.25, 0.75]);
+
+        assert_eq!(
+            attrs
+                .sparse(attr::CORNER_UV)
+                .expect("corner uv layer should exist")
+                .get(a),
+            Some(&[0.25, 0.75])
+        );
+        assert_eq!(
+            attrs
+                .sparse(attr::CORNER_UV)
+                .expect("corner uv layer should exist")
+                .get(b),
+            None
+        );
+    }
+
+    #[test]
     fn duplicate_key_registration_is_rejected() {
         let mut attrs = Attributes::new();
         assert_eq!(
