@@ -1,7 +1,7 @@
 ---
 id: exe-jctb
 title: Ngon/polygon construction API (MeshBuilder + add_face)
-status: open
+status: closed
 deps: [exe-cbv1, exe-8hfg, exe-mid7]
 links: []
 created: 2026-03-03T07:06:36Z
@@ -103,3 +103,9 @@ v0.1: both paths coexist independently. No requirement that IDs match across the
 - Caller can map builder face index → FaceId after build
 - Caller can map builder vertex index → VertexId after build
 
+
+## Notes
+
+**2026-03-03T11:19:40Z**
+
+Implemented MeshBuilder-based polygon/ngon construction with builder-local indices: push_vertex, add_face validation, and build() returning MeshBuildResult provenance (vertex_ids, face_ids, face_edge_ids). Added Mesh::from_polygons convenience wrapper. Added structured InvalidFaceLoop errors (TooShort, RepeatedVertex, ZeroLengthEdge, IndexOutOfBounds), deterministic twin matching, OUTSIDE boundary creation/stitching, and vertex.out initialization. Added acceptance-oriented tests for quad/ngon face degree, mixed-degree input, empty input, non-manifold detection, validation errors, box closed manifold, open-cylinder boundary loops, provenance mapping, and existing constructor invariants. Validation run: cargo fmt --all; cargo clippy --workspace --all-targets --all-features -- -D warnings; cargo test --workspace --all-features; cargo doc --no-deps.

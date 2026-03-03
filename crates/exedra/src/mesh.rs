@@ -24,6 +24,22 @@ pub struct BuildParams {
     pub weld_tolerance: Option<f32>,
 }
 
+/// Invalid face-loop reason for polygon/ngon construction.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FaceLoopErrorKind {
+    /// Face loop has fewer than 3 vertices.
+    TooShort,
+    /// Face loop contains a repeated vertex index.
+    RepeatedVertex,
+    /// Face loop contains a zero-length edge (`v_i == v_{i+1}`).
+    ZeroLengthEdge,
+    /// Face loop references a vertex index outside builder vertex storage.
+    IndexOutOfBounds {
+        /// Out-of-range vertex index value.
+        index: u32,
+    },
+}
+
 /// Indexed-triangle construction error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BuildError {
@@ -55,8 +71,35 @@ pub enum BuildError {
         /// Number of continuation candidates found.
         candidates: usize,
     },
+    /// Face-loop validation failed during polygon/ngon construction.
+    InvalidFaceLoop {
+        /// Face-loop index in builder input order.
+        face: usize,
+        /// Validation failure reason.
+        kind: FaceLoopErrorKind,
+    },
     /// Build parameter contained an invalid weld tolerance value.
     InvalidWeldTolerance,
+}
+
+/// Result payload for [`MeshBuilder::build`].
+#[derive(Clone, Debug)]
+pub struct MeshBuildResult {
+    /// Built mesh.
+    pub mesh: Mesh,
+    /// Builder-local vertex index `i` maps to `vertex_ids[i]`.
+    pub vertex_ids: Vec<VertexId>,
+    /// Builder-local face index `i` maps to `face_ids[i]`.
+    pub face_ids: Vec<FaceId>,
+    /// Directed loop edge provenance by face: `face_edge_ids[face][edge_index]`.
+    pub face_edge_ids: Vec<Vec<HalfEdgeId>>,
+}
+
+/// Incremental polygon/ngon mesh builder using builder-local indices.
+#[derive(Clone, Debug, Default)]
+pub struct MeshBuilder {
+    vertices: Vec<[f32; 3]>,
+    faces: Vec<Vec<u32>>,
 }
 
 /// Half-edge mesh storage with explicit OUTSIDE boundary semantics.
@@ -477,12 +520,268 @@ impl Mesh {
         Ok(mesh)
     }
 
+    /// Builds a mesh from arbitrary polygon face loops (no triangulation).
+    ///
+    /// `positions` provides builder-local vertex positions.
+    /// `face_loops` contains polygon loops as builder-local vertex indices.
+    #[must_use = "construction can fail with structured BuildError"]
+    pub fn from_polygons(
+        positions: &[[f32; 3]],
+        face_loops: &[&[u32]],
+    ) -> Result<Self, BuildError> {
+        let mut builder = MeshBuilder::new();
+        for position in positions {
+            let _ = builder.push_vertex(*position);
+        }
+        for loop_indices in face_loops {
+            builder.add_face(loop_indices)?;
+        }
+        Ok(builder.build()?.mesh)
+    }
+
     fn sync_attr_capacities(&mut self) {
         self.attrs.sync_capacities(
             self.vertices.slot_count(),
             self.faces.slot_count(),
             self.half_edges.slot_count(),
         );
+    }
+}
+
+impl MeshBuilder {
+    /// Creates an empty polygon/ngon builder.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            vertices: Vec::new(),
+            faces: Vec::new(),
+        }
+    }
+
+    /// Pushes a builder-local vertex and returns its local index.
+    pub fn push_vertex(&mut self, position: [f32; 3]) -> u32 {
+        let index = index_to_u32(self.vertices.len());
+        self.vertices.push(position);
+        index
+    }
+
+    /// Adds one polygon face loop (builder-local vertex indices).
+    pub fn add_face(&mut self, loop_indices: &[u32]) -> Result<(), BuildError> {
+        let face = self.faces.len();
+        if loop_indices.len() < 3 {
+            return Err(BuildError::InvalidFaceLoop {
+                face,
+                kind: FaceLoopErrorKind::TooShort,
+            });
+        }
+        for &index in loop_indices {
+            if usize::try_from(index)
+                .ok()
+                .is_none_or(|i| i >= self.vertices.len())
+            {
+                return Err(BuildError::InvalidFaceLoop {
+                    face,
+                    kind: FaceLoopErrorKind::IndexOutOfBounds { index },
+                });
+            }
+        }
+        for edge in loop_indices.windows(2) {
+            if edge[0] == edge[1] {
+                return Err(BuildError::InvalidFaceLoop {
+                    face,
+                    kind: FaceLoopErrorKind::ZeroLengthEdge,
+                });
+            }
+        }
+        if loop_indices.first() == loop_indices.last() {
+            return Err(BuildError::InvalidFaceLoop {
+                face,
+                kind: FaceLoopErrorKind::ZeroLengthEdge,
+            });
+        }
+        for (i, &a) in loop_indices.iter().enumerate() {
+            for &b in &loop_indices[(i + 1)..] {
+                if a == b {
+                    return Err(BuildError::InvalidFaceLoop {
+                        face,
+                        kind: FaceLoopErrorKind::RepeatedVertex,
+                    });
+                }
+            }
+        }
+
+        self.faces.push(loop_indices.to_vec());
+        Ok(())
+    }
+
+    /// Builds the final mesh and provenance mapping.
+    pub fn build(&self) -> Result<MeshBuildResult, BuildError> {
+        let mut mesh = Mesh::new();
+        let mut vertex_ids = Vec::with_capacity(self.vertices.len());
+        for position in &self.vertices {
+            vertex_ids.push(mesh.add_vertex(*position));
+        }
+
+        let mut face_ids = Vec::with_capacity(self.faces.len());
+        let mut face_edge_ids = Vec::with_capacity(self.faces.len());
+        let mut edge_records: Vec<(u32, u32, HalfEdgeId)> = Vec::new();
+        let mut endpoints: Vec<(u32, u32)> = Vec::new();
+
+        for (face_index, loop_indices) in self.faces.iter().enumerate() {
+            let degree = index_to_u32(loop_indices.len());
+            let face = FaceId::from(mesh.faces.insert(Face {
+                edge: HalfEdgeId::INVALID,
+                degree,
+            }));
+            let mut loop_half_edges = Vec::with_capacity(loop_indices.len());
+
+            for i in 0..loop_indices.len() {
+                let from = loop_indices[i];
+                let to = loop_indices[(i + 1) % loop_indices.len()];
+                debug_assert_ne!(
+                    from, to,
+                    "MeshBuilder::add_face validates zero-length edges"
+                );
+                let to_vertex =
+                    *vertex_ids
+                        .get(to as usize)
+                        .ok_or(BuildError::InvalidFaceLoop {
+                            // Defensive-only check; add_face validates this.
+                            face: face_index,
+                            kind: FaceLoopErrorKind::IndexOutOfBounds { index: to },
+                        })?;
+                let hid = HalfEdgeId::from(mesh.half_edges.insert(HalfEdge {
+                    to: to_vertex,
+                    face,
+                    next: HalfEdgeId::INVALID,
+                    twin: HalfEdgeId::INVALID,
+                }));
+                loop_half_edges.push(hid);
+                edge_records.push((from, to, hid));
+                set_endpoint(&mut endpoints, hid, from, to);
+            }
+
+            for i in 0..loop_half_edges.len() {
+                let current = loop_half_edges[i];
+                let next = loop_half_edges[(i + 1) % loop_half_edges.len()];
+                mesh.half_edges
+                    .get_mut(current.as_id())
+                    .expect("newly created half-edge must be live")
+                    .next = next;
+            }
+            mesh.faces
+                .get_mut(face.as_id())
+                .expect("newly created face must be live")
+                .edge = loop_half_edges[0];
+            face_ids.push(face);
+            face_edge_ids.push(loop_half_edges);
+        }
+
+        let mut grouped: Vec<(u32, u32, u32, u32, HalfEdgeId)> = edge_records
+            .iter()
+            .map(|(from, to, hid)| (u32::min(*from, *to), u32::max(*from, *to), *from, *to, *hid))
+            .collect();
+        grouped.sort_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
+
+        let mut boundary_interior = Vec::<HalfEdgeId>::new();
+        let mut cursor = 0_usize;
+        while cursor < grouped.len() {
+            let (a, b, _, _, _) = grouped[cursor];
+            let mut end = cursor + 1;
+            while end < grouped.len() && grouped[end].0 == a && grouped[end].1 == b {
+                end += 1;
+            }
+            let group = &grouped[cursor..end];
+            if group.len() == 1 {
+                boundary_interior.push(group[0].4);
+            } else if group.len() == 2 {
+                let (_, _, from0, to0, h0) = group[0];
+                let (_, _, from1, to1, h1) = group[1];
+                if from0 == from1 || to0 == to1 {
+                    return Err(BuildError::NonManifoldEdge {
+                        a,
+                        b,
+                        count: group.len(),
+                    });
+                }
+                mesh.half_edges.get_mut(h0.as_id()).expect("h0 live").twin = h1;
+                mesh.half_edges.get_mut(h1.as_id()).expect("h1 live").twin = h0;
+            } else {
+                return Err(BuildError::NonManifoldEdge {
+                    a,
+                    b,
+                    count: group.len(),
+                });
+            }
+            cursor = end;
+        }
+
+        boundary_interior.sort_by_key(|id| id.index());
+        let mut boundary_ids = Vec::with_capacity(boundary_interior.len());
+        for interior in &boundary_interior {
+            let (from, to) = get_endpoint(&endpoints, *interior);
+            let boundary_to = *vertex_ids
+                .get(from as usize)
+                .expect("endpoint index must map to an existing vertex id");
+            let boundary = HalfEdgeId::from(mesh.half_edges.insert(HalfEdge {
+                to: boundary_to,
+                face: FaceId::OUTSIDE,
+                next: HalfEdgeId::INVALID,
+                twin: *interior,
+            }));
+            mesh.half_edges
+                .get_mut(interior.as_id())
+                .expect("interior edge live")
+                .twin = boundary;
+            set_endpoint(&mut endpoints, boundary, to, from);
+            boundary_ids.push(boundary);
+        }
+
+        for boundary in &boundary_ids {
+            let (_, to) = get_endpoint(&endpoints, *boundary);
+            let candidates = boundary_ids
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    let (start, _) = get_endpoint(&endpoints, *candidate);
+                    start == to
+                })
+                .collect::<Vec<_>>();
+            if candidates.len() != 1 {
+                return Err(BuildError::BoundaryStitchFailed {
+                    vertex: to,
+                    candidates: candidates.len(),
+                });
+            }
+            mesh.half_edges
+                .get_mut(boundary.as_id())
+                .expect("boundary edge live")
+                .next = candidates[0];
+        }
+
+        for (id, _) in mesh.half_edges.iter() {
+            let half_edge = HalfEdgeId::from(id);
+            let (from, _) = get_endpoint(&endpoints, half_edge);
+            let vertex = *vertex_ids
+                .get(from as usize)
+                .expect("endpoint index must map to an existing vertex id");
+            let out = &mut mesh
+                .vertices
+                .get_mut(vertex.as_id())
+                .expect("vertex live")
+                .out;
+            if *out == HalfEdgeId::INVALID {
+                *out = half_edge;
+            }
+        }
+
+        mesh.sync_attr_capacities();
+        Ok(MeshBuildResult {
+            mesh,
+            vertex_ids,
+            face_ids,
+            face_edge_ids,
+        })
     }
 }
 
@@ -594,7 +893,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{BuildError, BuildParams, Mesh};
+    use super::{BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder};
     use crate::{AttrKey, Domain, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
 
     fn triangle_mesh() -> Mesh {
@@ -1288,6 +1587,233 @@ mod tests {
             let twin = mesh.twin(h).expect("every half-edge has twin");
             assert_eq!(mesh.twin(twin), Some(h));
         }
+    }
+
+    fn count_boundary_loops(mesh: &Mesh) -> usize {
+        let mut visited = vec![false; mesh.half_edges.slot_count()];
+        let mut loops = 0_usize;
+        for (id, half_edge) in mesh.half_edges.iter() {
+            if half_edge.face != FaceId::OUTSIDE || visited[id.index() as usize] {
+                continue;
+            }
+            loops += 1;
+            let start = HalfEdgeId::from(id);
+            let mut cursor = start;
+            loop {
+                visited[cursor.index() as usize] = true;
+                cursor = mesh.next(cursor).expect("boundary next exists");
+                if cursor == start {
+                    break;
+                }
+            }
+        }
+        loops
+    }
+
+    #[test]
+    fn mesh_builder_quad_is_single_ngon_face() {
+        let mut builder = MeshBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([1.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([1.0, 1.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.add_face(&[v0, v1, v2, v3]).expect("quad accepted");
+        let result = builder.build().expect("quad builds");
+        let mesh = result.mesh;
+
+        assert_eq!(mesh.faces.len(), 1);
+        let face = result.face_ids[0];
+        let record = mesh.faces.get(face.as_id()).expect("face live");
+        assert_eq!(record.degree, 4);
+        assert_eq!(mesh.face_loop(face).count(), 4);
+        assert_eq!(
+            mesh.half_edges
+                .iter()
+                .filter(|(_, h)| h.face == FaceId::OUTSIDE)
+                .count(),
+            4
+        );
+        assert_eq!(count_boundary_loops(&mesh), 1);
+    }
+
+    #[test]
+    fn mesh_builder_mixed_degree_faces_build() {
+        let mut builder = MeshBuilder::new();
+        for position in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ] {
+            let _ = builder.push_vertex(position);
+        }
+        builder.add_face(&[0, 1, 2, 3]).expect("quad");
+        builder.add_face(&[1, 4, 2]).expect("triangle");
+        let result = builder.build().expect("mixed build");
+        let mesh = result.mesh;
+        assert_eq!(mesh.faces.len(), 2);
+        let d0 = mesh
+            .faces
+            .get(result.face_ids[0].as_id())
+            .expect("f0")
+            .degree;
+        let d1 = mesh
+            .faces
+            .get(result.face_ids[1].as_id())
+            .expect("f1")
+            .degree;
+        assert_eq!((d0, d1), (4, 3));
+    }
+
+    #[test]
+    fn from_polygons_empty_input_is_empty_mesh() {
+        let mesh = Mesh::from_polygons(&[], &[]).expect("empty polygons build");
+        assert_eq!(mesh.vertices.len(), 0);
+        assert_eq!(mesh.faces.len(), 0);
+        assert_eq!(mesh.half_edges.len(), 0);
+    }
+
+    #[test]
+    fn mesh_builder_validation_errors_are_structured() {
+        let mut builder = MeshBuilder::new();
+        let _ = builder.push_vertex([0.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([1.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([0.0, 1.0, 0.0]);
+        assert!(matches!(
+            builder.add_face(&[0, 1]),
+            Err(BuildError::InvalidFaceLoop {
+                kind: FaceLoopErrorKind::TooShort,
+                ..
+            })
+        ));
+        assert!(matches!(
+            builder.add_face(&[0, 1, 1]),
+            Err(BuildError::InvalidFaceLoop {
+                kind: FaceLoopErrorKind::ZeroLengthEdge,
+                ..
+            })
+        ));
+        assert!(matches!(
+            builder.add_face(&[0, 1, 2, 1]),
+            Err(BuildError::InvalidFaceLoop {
+                kind: FaceLoopErrorKind::RepeatedVertex,
+                ..
+            })
+        ));
+        assert!(matches!(
+            builder.add_face(&[0, 1, 99]),
+            Err(BuildError::InvalidFaceLoop {
+                kind: FaceLoopErrorKind::IndexOutOfBounds { index: 99 },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn mesh_builder_detects_non_manifold_edge() {
+        let mut builder = MeshBuilder::new();
+        for position in [
+            [0.0, 0.0, 0.0],  // 0
+            [1.0, 0.0, 0.0],  // 1
+            [0.0, 1.0, 0.0],  // 2
+            [0.0, -1.0, 0.0], // 3
+            [1.0, 1.0, 0.0],  // 4
+        ] {
+            let _ = builder.push_vertex(position);
+        }
+        builder.add_face(&[0, 1, 2]).expect("f0");
+        builder.add_face(&[1, 0, 3]).expect("f1");
+        builder.add_face(&[0, 1, 4]).expect("f2");
+        assert!(matches!(
+            builder.build(),
+            Err(BuildError::NonManifoldEdge {
+                a: 0,
+                b: 1,
+                count: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn mesh_builder_closed_box_has_no_boundary() {
+        let mut builder = MeshBuilder::new();
+        for position in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
+            let _ = builder.push_vertex(position);
+        }
+        // Outward-oriented quads.
+        for loop_indices in [
+            [0, 3, 2, 1], // bottom
+            [4, 5, 6, 7], // top
+            [0, 1, 5, 4], // front
+            [1, 2, 6, 5], // right
+            [2, 3, 7, 6], // back
+            [3, 0, 4, 7], // left
+        ] {
+            builder.add_face(&loop_indices).expect("box face");
+        }
+        let result = builder.build().expect("box build");
+        let mesh = result.mesh;
+        assert_eq!(mesh.faces.len(), 6);
+        assert_eq!(
+            mesh.half_edges
+                .iter()
+                .filter(|(_, h)| h.face == FaceId::OUTSIDE)
+                .count(),
+            0
+        );
+        assert_eq!(count_boundary_loops(&mesh), 0);
+    }
+
+    #[test]
+    fn mesh_builder_open_cylinder_side_has_two_boundary_loops() {
+        let mut builder = MeshBuilder::new();
+        // bottom ring 0..4, top ring 4..8
+        for position in [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [-1.0, 0.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ] {
+            let _ = builder.push_vertex(position);
+        }
+        for face in [[0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]] {
+            builder.add_face(&face).expect("side face");
+        }
+        let result = builder.build().expect("cylinder side build");
+        let mesh = result.mesh;
+        assert_eq!(count_boundary_loops(&mesh), 2);
+    }
+
+    #[test]
+    fn mesh_builder_provenance_maps_builder_indices() {
+        let mut builder = MeshBuilder::new();
+        let _ = builder.push_vertex([0.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([1.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([1.0, 1.0, 0.0]);
+        let _ = builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.add_face(&[0, 1, 2, 3]).expect("quad");
+        let result = builder.build().expect("build");
+        assert_eq!(result.vertex_ids.len(), 4);
+        assert_eq!(result.face_ids.len(), 1);
+        assert_eq!(result.face_edge_ids.len(), 1);
+        assert_eq!(result.face_edge_ids[0].len(), 4);
+        let face = result.face_ids[0];
+        let loop_len = result.mesh.face_loop(face).count();
+        assert_eq!(loop_len, 4);
     }
 
     #[test]
