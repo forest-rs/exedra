@@ -3,7 +3,7 @@
 
 //! Mesh container and core topology traversal over half-edge records.
 
-use crate::{Arena, Attributes, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId};
+use crate::{Arena, Attributes, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr};
 
 /// Half-edge mesh storage with explicit OUTSIDE boundary semantics.
 #[derive(Clone, Debug, Default)]
@@ -36,6 +36,41 @@ impl Mesh {
     #[must_use]
     pub fn attrs_mut(&mut self) -> &mut Attributes {
         &mut self.attrs
+    }
+
+    /// Adds a new vertex with a required position value.
+    ///
+    /// The vertex position is written into the required dense
+    /// [`attr::VERTEX_POSITION`] layer.
+    pub fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
+        let id = VertexId::from(self.vertices.insert(Vertex {
+            out: HalfEdgeId::INVALID,
+        }));
+        self.sync_attr_capacities();
+        let set_ok = self
+            .attrs
+            .dense_mut(attr::VERTEX_POSITION)
+            .expect("builtin position layer must exist")
+            .set(id.as_id(), position);
+        debug_assert!(set_ok, "new vertex index must be in dense position layer");
+        id
+    }
+
+    /// Returns the required position for a vertex.
+    #[must_use]
+    pub fn vertex_position(&self, vertex: VertexId) -> Option<&[f32; 3]> {
+        self.attrs
+            .dense(attr::VERTEX_POSITION)
+            .and_then(|layer| layer.get(vertex.as_id()))
+    }
+
+    /// Sets the required position for a vertex.
+    ///
+    /// Returns `true` if the vertex slot exists in the position layer.
+    pub fn set_vertex_position(&mut self, vertex: VertexId, position: [f32; 3]) -> bool {
+        self.attrs
+            .dense_mut(attr::VERTEX_POSITION)
+            .is_some_and(|layer| layer.set(vertex.as_id(), position))
     }
 
     /// Returns one outgoing half-edge for the given vertex.
@@ -167,6 +202,11 @@ impl Mesh {
             (self.from_vertex(typed) == Some(vertex)).then_some(typed)
         })
     }
+
+    fn sync_attr_capacities(&mut self) {
+        self.attrs
+            .sync_capacities(self.vertices.len(), self.faces.len(), self.half_edges.len());
+    }
 }
 
 /// Iterator over half-edges in a face loop.
@@ -220,19 +260,13 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::Mesh;
-    use crate::{Face, FaceId, HalfEdge, HalfEdgeId, Id, Vertex, VertexId};
+    use crate::{Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
 
     fn triangle_mesh() -> Mesh {
         let mut mesh = Mesh::new();
-        let v0 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v1 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v2 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([0.0, 1.0, 0.0]);
         let face = FaceId::from(mesh.faces.insert(Face {
             edge: HalfEdgeId::INVALID,
             degree: 3,
@@ -298,18 +332,10 @@ mod tests {
 
     fn quad_mesh_open_boundary() -> (Mesh, FaceId) {
         let mut mesh = Mesh::new();
-        let v0 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v1 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v2 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v3 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([1.0, 1.0, 0.0]);
+        let v3 = mesh.add_vertex([0.0, 1.0, 0.0]);
         let face = FaceId::from(mesh.faces.insert(Face {
             edge: HalfEdgeId::INVALID,
             degree: 4,
@@ -393,21 +419,11 @@ mod tests {
 
     fn pentagon_mesh_open_boundary() -> (Mesh, FaceId) {
         let mut mesh = Mesh::new();
-        let v0 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v1 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v2 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v3 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v4 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([1.5, 0.8, 0.0]);
+        let v3 = mesh.add_vertex([0.5, 1.4, 0.0]);
+        let v4 = mesh.add_vertex([-0.2, 0.7, 0.0]);
         let face = FaceId::from(mesh.faces.insert(Face {
             edge: HalfEdgeId::INVALID,
             degree: 5,
@@ -563,15 +579,9 @@ mod tests {
     #[should_panic(expected = "prev() exceeded")]
     fn prev_panics_when_face_loop_does_not_reach_target() {
         let mut mesh = Mesh::new();
-        let v0 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v1 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v2 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([0.0, 1.0, 0.0]);
         let face = FaceId::from(mesh.faces.insert(Face {
             edge: HalfEdgeId::INVALID,
             degree: 3,
@@ -604,15 +614,9 @@ mod tests {
     #[should_panic(expected = "face_loop exceeded")]
     fn face_loop_panics_when_loop_does_not_close() {
         let mut mesh = Mesh::new();
-        let v0 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v1 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
-        let v2 = VertexId::from(mesh.vertices.insert(Vertex {
-            out: HalfEdgeId::INVALID,
-        }));
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([0.0, 1.0, 0.0]);
         let face = FaceId::from(mesh.faces.insert(Face {
             edge: HalfEdgeId::INVALID,
             degree: 3,
@@ -643,5 +647,14 @@ mod tests {
         mesh.half_edges.get_mut(h2.as_id()).expect("h2 live").next = h1;
 
         let _: Vec<_> = mesh.face_loop(face).collect();
+    }
+
+    #[test]
+    fn required_vertex_positions_can_get_and_set() {
+        let mut mesh = Mesh::new();
+        let vertex = mesh.add_vertex([1.0, 2.0, 3.0]);
+        assert_eq!(mesh.vertex_position(vertex), Some(&[1.0, 2.0, 3.0]));
+        assert!(mesh.set_vertex_position(vertex, [4.0, 5.0, 6.0]));
+        assert_eq!(mesh.vertex_position(vertex), Some(&[4.0, 5.0, 6.0]));
     }
 }
