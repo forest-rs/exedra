@@ -1,7 +1,7 @@
 ---
 id: exe-nca7
 title: Generational arena
-status: open
+status: closed
 deps: [exe-dc9l]
 links: []
 created: 2026-03-03T05:22:18Z
@@ -45,3 +45,7 @@ Scratch-friendly: no per-element heap allocations. The Vec grows but individual 
 **2026-03-03T06:17:41Z**
 
 Design brief: crates/exedra/docs/briefs/07_stable_ids_and_compaction.md
+
+**2026-03-03T10:10:57Z**
+
+Implementation summary (2026-03-03): added Arena<T> with tombstone free-list reuse, generation bump on delete, stale-id rejection, deterministic slot-order iter/iter_mut, and len/capacity introspection plus regression tests. Validation run: typos, cargo fmt --all, taplo fmt, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features, cargo doc --no-deps.

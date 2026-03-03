@@ -6,8 +6,10 @@
 #![no_std]
 extern crate alloc;
 
+pub mod arena;
 pub mod id;
 
+pub use arena::Arena;
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 
 #[cfg(test)]
