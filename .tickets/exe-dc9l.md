@@ -1,7 +1,7 @@
 ---
 id: exe-dc9l
 title: Stable ID type (index + generation)
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-03T05:21:25Z
@@ -47,3 +47,7 @@ Open question: whether to use a single generic Id<Domain> with a phantom tag or 
 **2026-03-03T06:17:41Z**
 
 Design brief: crates/exedra/docs/briefs/03_determinism_contract.md, crates/exedra/docs/briefs/07_stable_ids_and_compaction.md
+
+**2026-03-03T09:43:23Z**
+
+Implementation summary (2026-03-03): added core Id + typed wrappers (VertexId/HalfEdgeId/FaceId, CornerId alias), reserved FaceId::OUTSIDE sentinel, and tests for equality/hash/sentinel identity/Option niche size. Validation run: typos, cargo fmt --all, taplo fmt, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features, cargo doc --no-deps.

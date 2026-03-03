@@ -6,8 +6,22 @@
 #![no_std]
 extern crate alloc;
 
+pub mod id;
+
+pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
+
 #[cfg(test)]
 mod tests {
+    use core::mem::size_of;
+
+    use super::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
+
     #[test]
-    fn placeholder() {}
+    fn option_id_uses_niche_optimization() {
+        assert_eq!(size_of::<Option<Id>>(), size_of::<Id>());
+        assert_eq!(size_of::<Option<VertexId>>(), size_of::<VertexId>());
+        assert_eq!(size_of::<Option<HalfEdgeId>>(), size_of::<HalfEdgeId>());
+        assert_eq!(size_of::<Option<CornerId>>(), size_of::<CornerId>());
+        assert_eq!(size_of::<Option<FaceId>>(), size_of::<FaceId>());
+    }
 }
