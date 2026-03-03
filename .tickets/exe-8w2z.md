@@ -1,7 +1,7 @@
 ---
 id: exe-8w2z
 title: delete_faces kernel primitive
-status: open
+status: closed
 deps: [exe-dey4]
 links: []
 created: 2026-03-03T07:06:40Z
@@ -121,3 +121,9 @@ Half-edges are corner IDs (CornerId == HalfEdgeId). Deleting half-edges implicit
 - Works through the transaction system
 - Deterministic: same canonical FaceSet + policy → same result, same boundary loop ordering
 
+
+## Notes
+
+**2026-03-03T18:33:21Z**
+
+Implemented deterministic face-deletion kernel via transaction path: added DeletePolicy/DeleteFacesError, Txn::delete_faces, Mesh::delete_faces convenience wrapper, OUTSIDE loop restitching, vertex out-pointer fixup, isolated-vertex policy handling, and corner sparse-attribute cleanup for deleted half-edges. Added tests for canonical input validation, single-face delete on closed box boundary behavior, and KeepIsolated policy. Validated with cargo fmt --all, cargo clippy --workspace --all-targets --all-features -- -D warnings, cargo test --workspace --all-features.

@@ -138,6 +138,16 @@ impl<T> SparseLayer<T> {
             Err(position) => self.values.insert(position, (id.index(), value)),
         }
     }
+
+    /// Removes a value for a stable ID slot.
+    ///
+    /// Returns the removed value when present.
+    pub fn remove(&mut self, id: Id) -> Option<T> {
+        self.values
+            .binary_search_by_key(&id.index(), |(index, _)| *index)
+            .ok()
+            .map(|position| self.values.remove(position).1)
+    }
 }
 
 /// Internal concrete storage variants used by [`Attributes`].

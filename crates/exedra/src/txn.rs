@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
 
-use crate::{CornerId, FaceId, HalfEdgeId, Id, Mesh, VertexId, attr};
+use crate::{CornerId, FaceId, HalfEdge, HalfEdgeId, Id, Mesh, VertexId, attr};
 
 const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
@@ -109,6 +109,30 @@ pub struct ChangeSet {
     pub deleted_faces: Vec<FaceId>,
 }
 
+/// Face-deletion behavior for isolated vertices.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum DeletePolicy {
+    /// Remove isolated vertices after face deletion.
+    #[default]
+    CleanupIsolated,
+    /// Keep isolated vertices with `out = HalfEdgeId::INVALID`.
+    KeepIsolated,
+}
+
+/// Structured face-deletion error.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DeleteFacesError {
+    /// Input face list must be sorted and deduplicated.
+    NonCanonicalFaceSet,
+    /// `FaceId::OUTSIDE` is not a deletable interior face.
+    OutsideFaceNotAllowed,
+    /// Face ID is stale/dead.
+    FaceNotLive {
+        /// Stale face index.
+        face: u32,
+    },
+}
+
 /// Single-writer transaction over a mesh.
 ///
 /// Mutations are applied eagerly to the underlying mesh. Dropping a transaction
@@ -142,6 +166,23 @@ impl Mesh {
             deleted_half_edges: Vec::new(),
             deleted_faces: Vec::new(),
         }
+    }
+
+    /// Deletes a canonical set of interior faces in one committed transaction.
+    ///
+    /// This is a convenience wrapper over [`Txn::delete_faces`] + [`Txn::commit`].
+    ///
+    /// Note: transactions in Exedra are eager. This returns only precondition
+    /// errors before mutation begins. If internal boundary restitching cannot
+    /// produce a valid continuation, this function panics with diagnostics.
+    pub fn delete_faces(
+        &mut self,
+        faces: &[FaceId],
+        policy: DeletePolicy,
+    ) -> Result<ChangeSet, DeleteFacesError> {
+        let mut txn = self.begin();
+        txn.delete_faces(faces, policy)?;
+        Ok(txn.commit())
     }
 }
 
@@ -259,6 +300,140 @@ impl Txn<'_> {
         updated
     }
 
+    /// Deletes interior faces from the mesh.
+    ///
+    /// `faces` must be canonical (sorted, deduplicated), contain only live
+    /// interior face IDs, and never include [`FaceId::OUTSIDE`].
+    ///
+    /// Note: transactions in Exedra are eager. This returns only precondition
+    /// errors before mutation begins. If internal boundary restitching cannot
+    /// produce a valid continuation, this function panics with diagnostics.
+    pub fn delete_faces(
+        &mut self,
+        faces: &[FaceId],
+        policy: DeletePolicy,
+    ) -> Result<(), DeleteFacesError> {
+        if !is_canonical_face_set(faces) {
+            return Err(DeleteFacesError::NonCanonicalFaceSet);
+        }
+        for &face in faces {
+            if face == FaceId::OUTSIDE {
+                return Err(DeleteFacesError::OutsideFaceNotAllowed);
+            }
+            if self.mesh.faces.get(face.as_id()).is_none() {
+                return Err(DeleteFacesError::FaceNotLive { face: face.index() });
+            }
+        }
+        if faces.is_empty() {
+            return Ok(());
+        }
+
+        let mut dirty_faces = Vec::<FaceId>::new();
+        let mut dirty_vertices = Vec::<VertexId>::new();
+        let mut boundary_replacements = Vec::<HalfEdgeId>::new();
+        let mut deleted_half_edges = Vec::<HalfEdgeId>::new();
+
+        for &face in faces {
+            let loop_edges = self.mesh.face_loop(face).collect::<Vec<_>>();
+            for half_edge in loop_edges {
+                let twin = self
+                    .mesh
+                    .twin(half_edge)
+                    .expect("valid mesh must provide a twin for each half-edge");
+                let twin_face = self
+                    .mesh
+                    .face(twin)
+                    .expect("valid mesh must provide an owning face for each half-edge");
+                deleted_half_edges.push(half_edge);
+                if twin_face == FaceId::OUTSIDE {
+                    deleted_half_edges.push(twin);
+                } else if !contains_face(faces, twin_face) {
+                    boundary_replacements.push(twin);
+                    dirty_faces.push(twin_face);
+                }
+                collect_half_edge_vertices(self.mesh, half_edge, &mut dirty_vertices);
+            }
+        }
+        sort_dedup(&mut deleted_half_edges);
+        sort_dedup(&mut boundary_replacements);
+        sort_dedup(&mut dirty_faces);
+        sort_dedup(&mut dirty_vertices);
+
+        for &face in faces {
+            let removed = self.mesh.faces.remove(face.as_id());
+            debug_assert!(removed.is_some(), "validated face should remove");
+            self.record_deleted_face(face);
+        }
+        for half_edge in deleted_half_edges {
+            let removed = self.mesh.half_edges.remove(half_edge.as_id());
+            debug_assert!(removed.is_some(), "validated half-edge should remove");
+            self.record_deleted_half_edge(half_edge);
+            clear_deleted_corner_attrs(self.mesh, half_edge);
+        }
+
+        for twin in boundary_replacements {
+            let from = self
+                .mesh
+                .from_vertex(twin)
+                .expect("surviving interior half-edge must have an origin");
+            let boundary = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+                to: from,
+                face: FaceId::OUTSIDE,
+                next: HalfEdgeId::INVALID,
+                twin,
+            }));
+            self.mesh
+                .half_edges
+                .get_mut(twin.as_id())
+                .expect("surviving interior half-edge must be live")
+                .twin = boundary;
+            self.record_created_half_edge(boundary);
+            collect_half_edge_vertices(self.mesh, boundary, &mut dirty_vertices);
+        }
+        sort_dedup(&mut dirty_vertices);
+
+        stitch_outside_loops(self.mesh);
+
+        for face in dirty_faces {
+            self.mark_face_dirty(face);
+            let corners = self.mesh.face_loop(face).collect::<Vec<_>>();
+            for corner in corners {
+                self.mark_corner_dirty(corner);
+            }
+        }
+        let mut isolated = Vec::<VertexId>::new();
+        // TODO(exe-8w2z): For small localized deletions, building a global
+        // outgoing index is O(total_half_edges). Consider a scoped fallback
+        // that scans only stars of affected vertices.
+        let outgoing_index = build_outgoing_index(self.mesh);
+        for &vertex in &dirty_vertices {
+            let new_out = find_outgoing_half_edge(&outgoing_index, vertex);
+            let Some(record) = self.mesh.vertices.get_mut(vertex.as_id()) else {
+                continue;
+            };
+            let previous = record.out;
+            record.out = new_out.unwrap_or(HalfEdgeId::INVALID);
+            if record.out != previous {
+                self.mark_vertex_dirty(vertex);
+            }
+            if new_out.is_none() {
+                isolated.push(vertex);
+            }
+        }
+        for vertex in dirty_vertices {
+            self.mark_vertex_dirty(vertex);
+        }
+
+        if policy == DeletePolicy::CleanupIsolated {
+            for vertex in isolated {
+                if self.mesh.vertices.remove(vertex.as_id()).is_some() {
+                    self.record_deleted_vertex(vertex);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Marks a face dirty.
     pub fn mark_face_dirty(&mut self, face: FaceId) {
         self.dirty.mark_face(face);
@@ -361,13 +536,129 @@ where
     out.sort_unstable();
 }
 
+fn is_canonical_face_set(faces: &[FaceId]) -> bool {
+    faces.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn contains_face(faces: &[FaceId], target: FaceId) -> bool {
+    faces.binary_search(&target).is_ok()
+}
+
+fn collect_half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId, out: &mut Vec<VertexId>) {
+    if let Some((from, to)) = half_edge_vertices(mesh, half_edge) {
+        out.push(from);
+        out.push(to);
+    }
+}
+
+fn half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId) -> Option<(VertexId, VertexId)> {
+    let to = mesh.to_vertex(half_edge)?;
+    let twin = mesh.twin(half_edge)?;
+    let from = mesh.to_vertex(twin)?;
+    Some((from, to))
+}
+
+fn build_outgoing_index(mesh: &Mesh) -> Vec<(VertexId, HalfEdgeId)> {
+    let mut pairs = mesh
+        .half_edges
+        .iter()
+        .filter_map(|(id, _)| {
+            let half_edge = HalfEdgeId::from(id);
+            half_edge_vertices(mesh, half_edge).map(|(from, _)| (from, half_edge))
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_unstable_by_key(|(vertex, half_edge)| (*vertex, *half_edge));
+    pairs.dedup_by_key(|(vertex, _)| *vertex);
+    pairs
+}
+
+fn find_outgoing_half_edge(
+    outgoing_index: &[(VertexId, HalfEdgeId)],
+    vertex: VertexId,
+) -> Option<HalfEdgeId> {
+    outgoing_index
+        .binary_search_by_key(&vertex, |(candidate, _)| *candidate)
+        .ok()
+        .map(|position| outgoing_index[position].1)
+}
+
+fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
+    if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+        let _ = layer.remove(half_edge.as_id());
+    }
+    if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SEAM) {
+        let _ = layer.remove(half_edge.as_id());
+    }
+    if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SHARPNESS) {
+        let _ = layer.remove(half_edge.as_id());
+    }
+}
+
+fn stitch_outside_loops(mesh: &mut Mesh) {
+    let boundary = mesh
+        .half_edges
+        .iter()
+        .filter_map(|(id, edge)| (edge.face == FaceId::OUTSIDE).then_some(HalfEdgeId::from(id)))
+        .collect::<Vec<_>>();
+    // TODO(exe-8w2z): This currently re-stitches all OUTSIDE loops globally.
+    // We can scope to affected boundary components once delete kernels track
+    // local boundary frontiers.
+
+    // Build a deterministic index of boundary starts:
+    // start(boundary_h) == to(twin(boundary_h)).
+    let mut starts = boundary
+        .iter()
+        .copied()
+        .map(|boundary_half_edge| {
+            let twin = mesh
+                .twin(boundary_half_edge)
+                .expect("boundary half-edge must have twin");
+            let start = mesh
+                .to_vertex(twin)
+                .expect("boundary twin must have destination vertex");
+            (start, boundary_half_edge)
+        })
+        .collect::<Vec<_>>();
+    starts.sort_unstable_by_key(|(start, boundary_half_edge)| (*start, *boundary_half_edge));
+
+    for half_edge in &boundary {
+        let to = mesh
+            .to_vertex(*half_edge)
+            .expect("boundary half-edge must have destination vertex");
+
+        let range = equal_range_by_vertex(&starts, to);
+        let candidates = range.end.saturating_sub(range.start);
+        if candidates != 1 {
+            panic!(
+                "mesh topology corruption: OUTSIDE stitch failed at vertex {} ({} candidates)",
+                to.index(),
+                candidates
+            );
+        }
+        let next = starts[range.start].1;
+        mesh.half_edges
+            .get_mut(half_edge.as_id())
+            .expect("boundary half-edge must be live")
+            .next = next;
+    }
+}
+
+fn equal_range_by_vertex(
+    starts: &[(VertexId, HalfEdgeId)],
+    vertex: VertexId,
+) -> core::ops::Range<usize> {
+    let lower = starts.partition_point(|(candidate, _)| *candidate < vertex);
+    let upper = starts.partition_point(|(candidate, _)| *candidate <= vertex);
+    lower..upper
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use crate::{Face, HalfEdge, Id};
+    use crate::{Face, HalfEdge, Id, MeshBuilder};
 
     use super::*;
 
@@ -387,6 +678,55 @@ mod tests {
         let mut values = Vec::new();
         dirty.drain_corners_into(&mut values);
         values
+    }
+
+    fn count_boundary_loops(mesh: &Mesh) -> usize {
+        let mut visited = vec![false; mesh.half_edges.slot_count()];
+        let mut loops = 0_usize;
+        for (id, half_edge) in mesh.half_edges.iter() {
+            if half_edge.face != FaceId::OUTSIDE || visited[id.index() as usize] {
+                continue;
+            }
+            loops += 1;
+            let start = HalfEdgeId::from(id);
+            let mut cursor = start;
+            loop {
+                visited[cursor.index() as usize] = true;
+                cursor = mesh.next(cursor).expect("boundary next exists");
+                if cursor == start {
+                    break;
+                }
+            }
+        }
+        loops
+    }
+
+    fn closed_box_mesh() -> (Mesh, Vec<FaceId>) {
+        let mut builder = MeshBuilder::new();
+        for position in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
+            let _ = builder.push_vertex(position);
+        }
+        for loop_indices in [
+            [0, 3, 2, 1], // bottom
+            [4, 5, 6, 7], // top
+            [0, 1, 5, 4], // front
+            [1, 2, 6, 5], // right
+            [2, 3, 7, 6], // back
+            [3, 0, 4, 7], // left
+        ] {
+            builder.add_face(&loop_indices).expect("box face");
+        }
+        let built = builder.build().expect("box build");
+        (built.mesh, built.face_ids)
     }
 
     #[test]
@@ -544,6 +884,77 @@ mod tests {
             let _ = txn.commit();
         }
         assert_eq!(mesh.is_uv_discontinuous(shared), Some(true));
+    }
+
+    #[test]
+    fn delete_faces_rejects_non_canonical_input() {
+        let (mut mesh, faces) = closed_box_mesh();
+        let err = mesh
+            .delete_faces(&[faces[1], faces[0]], DeletePolicy::CleanupIsolated)
+            .expect_err("non-canonical face set must fail");
+        assert_eq!(err, DeleteFacesError::NonCanonicalFaceSet);
+    }
+
+    #[test]
+    fn delete_single_box_face_creates_one_boundary_loop_and_valid_mesh() {
+        let (mut mesh, faces) = closed_box_mesh();
+        let deleted = faces[0];
+        let changes = mesh
+            .delete_faces(&[deleted], DeletePolicy::CleanupIsolated)
+            .expect("delete should succeed");
+
+        assert_eq!(changes.deleted_faces, vec![deleted]);
+        assert_eq!(mesh.faces.len(), 5);
+        assert_eq!(count_boundary_loops(&mesh), 1);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_faces_keep_isolated_preserves_lonely_vertices() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let vertex_count = mesh.vertices.len();
+
+        let changes = mesh
+            .delete_faces(&[face], DeletePolicy::KeepIsolated)
+            .expect("delete should succeed");
+        assert_eq!(mesh.faces.len(), 0);
+        assert_eq!(mesh.vertices.len(), vertex_count);
+        assert!(changes.deleted_vertices.is_empty());
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_two_adjacent_box_faces_merges_into_one_opening() {
+        let (mut mesh, faces) = closed_box_mesh();
+        let changes = mesh
+            .delete_faces(&[faces[2], faces[3]], DeletePolicy::CleanupIsolated)
+            .expect("delete should succeed");
+        assert_eq!(changes.deleted_faces, vec![faces[2], faces[3]]);
+        assert_eq!(mesh.faces.len(), 4);
+        assert_eq!(count_boundary_loops(&mesh), 1);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_two_non_adjacent_box_faces_creates_two_openings() {
+        let (mut mesh, faces) = closed_box_mesh();
+        let changes = mesh
+            .delete_faces(&[faces[2], faces[4]], DeletePolicy::CleanupIsolated)
+            .expect("delete should succeed");
+        assert_eq!(changes.deleted_faces, vec![faces[2], faces[4]]);
+        assert_eq!(mesh.faces.len(), 4);
+        assert_eq!(count_boundary_loops(&mesh), 2);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
     }
 
     #[test]
