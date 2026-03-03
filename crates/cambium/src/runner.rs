@@ -51,6 +51,8 @@ impl OperatorRunner {
     ///
     /// Semantics:
     /// - mesh mutations are committed before optional post-commit validation
+    /// - committed changes are conservatively mapped into Cambium cache-dirty
+    ///   channels (`Adjacency`, `OperatorCache`)
     /// - when `validate.fail_on_error` is enabled, this can return `Err` after
     ///   commit; in that case the attached `OpError` carries the committed
     ///   `change_set` for reconciliation
@@ -81,6 +83,7 @@ impl OperatorRunner {
             let _bucket = self.ctx.clock.bucket("txn.commit");
             txn.commit()
         };
+        self.ctx.cache_dirty.mark_from_change_set(&change_set);
 
         if self.ctx.policy.validate.validate_on_commit {
             let errors = {
@@ -97,6 +100,10 @@ impl OperatorRunner {
     }
 
     /// Runs one operator in preview mode against a cloned mesh.
+    ///
+    /// Preview isolation:
+    /// - any mutations to [`OpContext::cache_dirty`] performed during preview
+    ///   are discarded before returning, including error paths
     pub fn run_preview<O: EditOperator>(
         &mut self,
         mesh: &Mesh,
@@ -104,49 +111,54 @@ impl OperatorRunner {
         params: &O::Params,
     ) -> Result<PreviewResult, OpError> {
         self.reset_for_run();
-        let mut preview_mesh = mesh.clone();
-        let mut txn = preview_mesh.begin();
+        let cache_dirty_before = self.ctx.cache_dirty.clone();
+        let result = (|| {
+            let mut preview_mesh = mesh.clone();
+            let mut txn = preview_mesh.begin();
 
-        #[cfg(any(target_arch = "wasm32", feature = "std"))]
-        let op_apply_start = Instant::now();
-        let mut report = {
-            match op.apply(&mut txn, params, &mut self.ctx) {
-                Ok(report) => report,
-                Err(error) => return Err(self.attach_context_diagnostics(error)),
-            }
-        };
-        #[cfg(any(target_arch = "wasm32", feature = "std"))]
-        self.ctx
-            .clock
-            .add_nanos("op.apply", duration_nanos_u64(op_apply_start.elapsed()));
-        #[cfg(not(any(target_arch = "wasm32", feature = "std")))]
-        self.ctx.clock.add_nanos("op.apply", 0);
-        {
-            let _bucket = self.ctx.clock.bucket("txn.commit");
-            // Preview still runs the same transaction path to produce report
-            // timings; the preview change-set is intentionally discarded.
-            let _ = txn.commit();
-        }
-
-        if self.ctx.policy.validate.validate_on_preview {
-            let errors = {
-                let _bucket = self.ctx.clock.bucket("validate");
-                preview_mesh.validate_deep()
+            #[cfg(any(target_arch = "wasm32", feature = "std"))]
+            let op_apply_start = Instant::now();
+            let mut report = {
+                match op.apply(&mut txn, params, &mut self.ctx) {
+                    Ok(report) => report,
+                    Err(error) => return Err(self.attach_context_diagnostics(error)),
+                }
             };
-            if !errors.is_empty() && self.ctx.policy.validate.fail_on_error {
-                return Err(OpError::from_validation_errors(
-                    &errors,
-                    self.context_diagnostics_snapshot(),
-                    report.artifacts.clone(),
-                ));
+            #[cfg(any(target_arch = "wasm32", feature = "std"))]
+            self.ctx
+                .clock
+                .add_nanos("op.apply", duration_nanos_u64(op_apply_start.elapsed()));
+            #[cfg(not(any(target_arch = "wasm32", feature = "std")))]
+            self.ctx.clock.add_nanos("op.apply", 0);
+            {
+                let _bucket = self.ctx.clock.bucket("txn.commit");
+                // Preview still runs the same transaction path to produce report
+                // timings; the preview change-set is intentionally discarded.
+                let _ = txn.commit();
             }
-        }
 
-        report.timings = self.ctx.clock.timings();
-        Ok(PreviewResult {
-            preview_mesh,
-            report,
-        })
+            if self.ctx.policy.validate.validate_on_preview {
+                let errors = {
+                    let _bucket = self.ctx.clock.bucket("validate");
+                    preview_mesh.validate_deep()
+                };
+                if !errors.is_empty() && self.ctx.policy.validate.fail_on_error {
+                    return Err(OpError::from_validation_errors(
+                        &errors,
+                        self.context_diagnostics_snapshot(),
+                        report.artifacts.clone(),
+                    ));
+                }
+            }
+
+            report.timings = self.ctx.clock.timings();
+            Ok(PreviewResult {
+                preview_mesh,
+                report,
+            })
+        })();
+        self.ctx.cache_dirty = cache_dirty_before;
+        result
     }
 
     fn reset_for_run(&mut self) {
@@ -183,10 +195,13 @@ impl OperatorRunner {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use exedra::Txn;
 
     use super::OperatorRunner;
-    use crate::{Artifacts, EditOperator, OpContext, OpError, OpReport};
+    use crate::{Artifacts, DirtyChannel, EditOperator, OpContext, OpError, OpReport};
 
     struct AddVertexOperator;
 
@@ -236,6 +251,18 @@ mod tests {
                 .iter()
                 .any(|bucket| bucket.name == "txn.commit")
         );
+        let mut adjacency = Vec::new();
+        runner
+            .ctx
+            .cache_dirty
+            .drain_into(DirtyChannel::Adjacency, &mut adjacency);
+        assert!(adjacency.contains(&crate::DirtyKey::Global));
+        let mut op_cache = Vec::new();
+        runner
+            .ctx
+            .cache_dirty
+            .drain_into(DirtyChannel::OperatorCache, &mut op_cache);
+        assert_eq!(op_cache, vec![crate::DirtyKey::Global]);
     }
 
     #[test]
@@ -296,5 +323,38 @@ mod tests {
                 .iter()
                 .any(|bucket| bucket.name == "validate")
         );
+    }
+
+    struct MarksPreviewDirtyOperator;
+
+    impl EditOperator for MarksPreviewDirtyOperator {
+        type Params = ();
+
+        fn name(&self) -> &'static str {
+            "test.marks_preview_dirty"
+        }
+
+        fn apply(
+            &self,
+            _txn: &mut Txn<'_>,
+            _params: &Self::Params,
+            ctx: &mut OpContext,
+        ) -> Result<OpReport, OpError> {
+            ctx.cache_dirty.mark_global(DirtyChannel::Selection);
+            Ok(OpReport::new(self.name(), Artifacts::default()))
+        }
+    }
+
+    #[test]
+    fn run_preview_discards_cache_dirty_mutations() {
+        let base = exedra::Mesh::new();
+        let op = MarksPreviewDirtyOperator;
+        let mut runner = OperatorRunner::new();
+
+        let result = runner
+            .run_preview(&base, &op, &())
+            .expect("preview should succeed");
+        let _ = result;
+        assert!(!runner.ctx.cache_dirty.has_any(DirtyChannel::Selection));
     }
 }

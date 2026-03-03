@@ -11,6 +11,7 @@ extern crate std;
 pub mod artifact;
 pub mod context;
 pub mod diag;
+pub mod dirty;
 pub mod error;
 pub mod operator;
 pub mod policy;
@@ -23,6 +24,7 @@ mod timing;
 pub use artifact::{Artifact, Artifacts};
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
+pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
 pub use operator::EditOperator;
 pub use policy::{

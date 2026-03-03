@@ -1,7 +1,7 @@
 ---
 id: cam-l8n1
 title: understory_dirty integration and channel definitions
-status: open
+status: closed
 deps: []
 links: [exe-dey4]
 created: 2026-03-03T05:57:27Z

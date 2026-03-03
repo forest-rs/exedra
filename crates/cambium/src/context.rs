@@ -16,7 +16,7 @@ use web_time::Instant;
 use crate::policy::PolicySet;
 #[cfg(any(target_arch = "wasm32", feature = "std"))]
 use crate::timing::duration_nanos_u64;
-use crate::{DiagnosticsSink, Timings};
+use crate::{CacheDirtySet, DiagnosticsSink, Timings};
 
 /// Reusable typed scratch buffers for hot loops.
 ///
@@ -147,6 +147,8 @@ pub struct OpContext {
     pub diagnostics: DiagnosticsSink,
     /// Bucketed clock.
     pub clock: Clock,
+    /// Runtime cache dirty channels.
+    pub cache_dirty: CacheDirtySet,
 }
 
 #[cfg(test)]
@@ -202,5 +204,6 @@ mod tests {
         assert!(ctx.scratch.u32s.is_empty());
         assert!(ctx.diagnostics.is_empty());
         assert!(ctx.clock.timings().iter().next().is_none());
+        assert!(ctx.cache_dirty.is_empty());
     }
 }
