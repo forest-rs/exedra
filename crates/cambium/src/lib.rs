@@ -23,6 +23,7 @@ pub mod report;
 pub mod runner;
 pub mod seam;
 pub mod selection;
+pub mod sharp;
 
 mod math;
 #[cfg(test)]
@@ -52,6 +53,7 @@ pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timi
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use seam::{MarkEdgeSeam, MarkEdgeSeamParams};
 pub use selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
+pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};
 pub use uv_box::{UvBox, UvBoxParams};
 pub use uv_cylinder::{CylinderAxis, UvCylinder, UvCylinderParams};
 pub use uv_planar::{UvPlanar, UvPlanarParams, UvPlane, UvScope};

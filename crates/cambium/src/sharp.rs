@@ -1,0 +1,104 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Edge sharpness tagging operator.
+
+use crate::edge_mark::apply_edge_bool_tag;
+use crate::selection::EdgeSet;
+use crate::{EditOperator, OpContext, OpError, OpReport};
+
+/// Parameters for [`MarkEdgeSharp`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MarkEdgeSharpParams {
+    /// Edge half-edges to mark/unmark.
+    pub edges: EdgeSet,
+    /// Target sharpness state.
+    pub sharp: bool,
+}
+
+/// Marks or clears explicit edge sharpness tags.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct MarkEdgeSharp;
+
+impl EditOperator for MarkEdgeSharp {
+    type Params = MarkEdgeSharpParams;
+
+    fn name(&self) -> &'static str {
+        "mark.edge.sharp"
+    }
+
+    fn apply(
+        &self,
+        txn: &mut exedra::Txn<'_>,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<OpReport, OpError> {
+        apply_edge_bool_tag(
+            txn,
+            &params.edges,
+            params.sharp,
+            ctx,
+            self.name(),
+            "edge set contains invalid/stale half-edge id",
+            |txn, edge, sharp| txn.set_edge_sharpness(edge, sharp),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::{MarkEdgeSharp, MarkEdgeSharpParams};
+    use crate::{EditOperator, OperatorRunner, test_support::shared_edge_mesh};
+
+    #[test]
+    fn mark_edge_sharp_sets_and_clears_tag() {
+        let (mut mesh, shared, twin) = shared_edge_mesh();
+        let mut runner = OperatorRunner::new();
+        let op = MarkEdgeSharp;
+
+        let set_params = MarkEdgeSharpParams {
+            edges: vec![twin],
+            sharp: true,
+        };
+        let mut set_result = runner
+            .run_commit(&mut mesh, &op, &set_params)
+            .expect("mark edge sharp should succeed");
+        assert_eq!(set_result.report.name, op.name());
+        assert_eq!(mesh.edge_sharpness(shared), Some(true));
+        assert_eq!(mesh.edge_sharpness(twin), Some(true));
+        let mut dirty = Vec::new();
+        set_result.change_set.dirty.drain_corners_into(&mut dirty);
+        assert_eq!(dirty.len(), 2);
+
+        let clear_params = MarkEdgeSharpParams {
+            edges: vec![shared],
+            sharp: false,
+        };
+        let _ = runner
+            .run_commit(&mut mesh, &op, &clear_params)
+            .expect("clear edge sharp should succeed");
+        assert_eq!(mesh.edge_sharpness(shared), Some(false));
+        assert_eq!(mesh.edge_sharpness(twin), Some(false));
+    }
+
+    #[test]
+    fn mark_edge_sharp_canonicalizes_duplicate_selection() {
+        let (mut mesh, shared, twin) = shared_edge_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = runner
+            .run_commit(
+                &mut mesh,
+                &MarkEdgeSharp,
+                &MarkEdgeSharpParams {
+                    edges: vec![shared, twin, shared],
+                    sharp: true,
+                },
+            )
+            .expect("mark edge sharp should succeed");
+        assert_eq!(result.report.stats.counters.selections_canonicalized, 2);
+        assert_eq!(result.report.stats.counters.corners_written, 1);
+    }
+}
