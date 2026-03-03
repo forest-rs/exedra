@@ -67,4 +67,5 @@ clippy.allow_attributes = "warn"
 rust.unsafe_code = "deny"
 
 [workspace.dependencies]
+exedra = { path = "crates/exedra" }
 understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "83ccf57799fe9aef99b78bfd5d541b9fad45200a" }

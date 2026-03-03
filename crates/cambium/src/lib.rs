@@ -6,6 +6,10 @@
 #![no_std]
 extern crate alloc;
 
+pub mod diag;
+
+pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
+
 #[cfg(test)]
 mod tests {
     #[test]

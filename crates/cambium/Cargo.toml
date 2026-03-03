@@ -10,6 +10,7 @@ keywords = ["mesh", "modeling", "operators", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+exedra.workspace = true
 
 [lints]
 workspace = true
