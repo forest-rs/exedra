@@ -51,6 +51,7 @@ compile_error!("cambium requires either the `std` or `libm` feature");
 mod artifact;
 mod bounds;
 mod context;
+mod delete;
 mod diag;
 mod dirty;
 mod edge_mark;
@@ -82,6 +83,10 @@ pub use artifact::{Artifact, Artifacts};
 pub use artifact::{DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACT_ITEMS};
 pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, InspectBounds};
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
+pub use delete::{
+    DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
+    DeleteFacesParams,
+};
 pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
