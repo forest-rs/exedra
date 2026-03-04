@@ -2,7 +2,7 @@
 id: cam-drpp
 title: Extrude and inset operators
 status: open
-deps: [exe-tezb]
+deps: [exe-tezb, exe-al9q]
 links: []
 created: 2026-03-03T06:01:15Z
 type: feature
