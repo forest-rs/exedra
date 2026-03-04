@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
 
+use crate::sorted_merge::for_each_count_join;
 use crate::{CornerId, FaceId, HalfEdge, HalfEdgeId, Id, Mesh, VertexId, attr};
 
 const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
@@ -665,43 +666,21 @@ fn preflight_boundary_continuation(
     let outgoing_counts = count_vertices(outgoing);
     let incoming_counts = count_vertices(incoming);
 
-    let mut i = 0_usize;
-    let mut j = 0_usize;
-    while i < outgoing_counts.len() || j < incoming_counts.len() {
-        let (vertex, out_count, in_count) = match (outgoing_counts.get(i), incoming_counts.get(j)) {
-            (Some((vo, co)), Some((vi, ci))) if vo == vi => {
-                i += 1;
-                j += 1;
-                (*vo, *co, *ci)
+    let mut mismatch = None;
+    for_each_count_join(
+        &outgoing_counts,
+        &incoming_counts,
+        |vertex, out_count, in_count| {
+            if out_count != 1 || in_count != 1 {
+                let _ = mismatch.get_or_insert(DeleteFacesError::BoundaryContinuationAmbiguous {
+                    vertex: vertex.index(),
+                    outgoing: out_count,
+                    incoming: in_count,
+                });
             }
-            (Some((vo, co)), Some((vi, _))) if vo < vi => {
-                i += 1;
-                (*vo, *co, 0)
-            }
-            (Some((_, _)), Some((vi, ci))) => {
-                j += 1;
-                (*vi, 0, *ci)
-            }
-            (Some((vo, co)), None) => {
-                i += 1;
-                (*vo, *co, 0)
-            }
-            (None, Some((vi, ci))) => {
-                j += 1;
-                (*vi, 0, *ci)
-            }
-            (None, None) => break,
-        };
-        if out_count != 1 || in_count != 1 {
-            return Err(DeleteFacesError::BoundaryContinuationAmbiguous {
-                vertex: vertex.index(),
-                outgoing: out_count,
-                incoming: in_count,
-            });
-        }
-    }
-
-    Ok(())
+        },
+    );
+    mismatch.map_or(Ok(()), Err)
 }
 
 fn count_vertices(mut values: Vec<VertexId>) -> Vec<(VertexId, usize)> {

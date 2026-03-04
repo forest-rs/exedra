@@ -13,6 +13,7 @@ pub mod id;
 pub mod mesh;
 pub mod numeric;
 pub mod render;
+mod sorted_merge;
 pub mod topology;
 pub mod txn;
 
