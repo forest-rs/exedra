@@ -21,7 +21,7 @@ PropagatePolicy {
   uv_split: UvSplit (Midpoint, CopyFromSide)
   normal_override_split: NormalOverrideSplit (Clear, CopyFromSide, Average)
   face_attr_split: FaceAttrSplit (Copy, CopyAndTag)
-  edge_attr_split: EdgeAttrSplit (Inherit, Clear, SplitWeights)
+  edge_attr_split: EdgeAttrSplit (Inherit, Clear, DecayOnSplit)
 }
 
 Consumed by split_edge, split_face, collapse_edge, flip_edge.

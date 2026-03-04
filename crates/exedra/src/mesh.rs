@@ -480,24 +480,24 @@ impl Mesh {
         })
     }
 
-    /// Returns the explicit sharpness tag for an edge.
+    /// Returns the explicit sharpness value for an edge.
     ///
     /// Returns `None` when `half_edge` is stale.
     #[must_use]
-    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<bool> {
+    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<f32> {
         let canonical = self.canonical_edge(half_edge)?;
         Some(
             self.attrs
                 .sparse(attr::EDGE_SHARPNESS)
                 .and_then(|layer| layer.get(canonical.as_id()).copied())
-                .unwrap_or(false),
+                .unwrap_or(0.0),
         )
     }
 
-    /// Sets the explicit sharpness tag for an edge.
+    /// Sets the explicit sharpness value for an edge.
     ///
     /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: bool) -> bool {
+    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
         let Some(canonical) = self.canonical_edge(half_edge) else {
             return false;
         };

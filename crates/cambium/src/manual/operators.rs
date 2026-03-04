@@ -46,6 +46,22 @@
 //! - Keep artifact ordering stable.
 //! - Keep timing bucket names stable across runs and versions.
 //!
+//! # Edge Sharpness Conventions
+//!
+//! Edge sharpness is numeric (`f32`) in Exedra/Cambium:
+//! - `0.0` means smooth,
+//! - values above `0.0` are authored sharpness.
+//!
+//! Operator-facing write path:
+//! - [`MarkEdgeSharp`](crate::MarkEdgeSharp) and
+//!   [`MarkEdgeSharpParams`](crate::MarkEdgeSharpParams).
+//!
+//! Transaction propagation behavior for split kernels is controlled by
+//! [`exedra::EdgeAttrPropagation`]:
+//! - `Inherit` preserves sharpness,
+//! - `DecayOnSplit` applies subdivision-style decay,
+//! - `Clear` resets to `0.0`.
+//!
 //! # Skeleton
 //!
 //! ```rust

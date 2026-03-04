@@ -1,24 +1,25 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Shared implementation for edge-boolean tagging operators.
+//! Shared implementation for edge tagging operators.
 
 use crate::selection::{EdgeSet, canonicalize_edge_set};
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, OpContext, OpError, OpErrorKind, OpReport,
 };
 
-pub(crate) fn apply_edge_bool_tag<F>(
+pub(crate) fn apply_edge_tag<T, F>(
     txn: &mut exedra::Txn<'_>,
     edges: &EdgeSet,
-    value: bool,
+    value: T,
     ctx: &mut OpContext,
     op_name: &'static str,
     error_message: &'static str,
     mut setter: F,
 ) -> Result<OpReport, OpError>
 where
-    F: FnMut(&mut exedra::Txn<'_>, exedra::HalfEdgeId, bool) -> bool,
+    T: Copy,
+    F: FnMut(&mut exedra::Txn<'_>, exedra::HalfEdgeId, T) -> bool,
 {
     let mut canonical_input = edges.clone();
     let mut report = OpReport::new(
@@ -60,15 +61,12 @@ where
 
     for edge in canonical_topology {
         if !setter(txn, edge, value) {
-            debug_assert!(
-                false,
-                "edge bool setter failed after canonical-edge validation"
-            );
+            debug_assert!(false, "edge setter failed after canonical-edge validation");
             return Err(op_error(
                 ctx,
                 OpErrorKind::InternalInvariantViolation,
                 DiagCode::InternalInvariantViolation,
-                "edge bool setter failed after canonical-edge validation",
+                "edge setter failed after canonical-edge validation",
             ));
         }
         // One canonical sparse edge slot is written per surviving edge.

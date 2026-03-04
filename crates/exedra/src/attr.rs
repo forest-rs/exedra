@@ -20,10 +20,11 @@ pub const CORNER_UV: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.
 /// Stored sparsely on canonical half-edge IDs (one per undirected edge).
 pub const EDGE_SEAM: AttrKey<bool> = AttrKey::new(Domain::HalfEdge, "edge.seam");
 
-/// Optional explicit edge sharpness tag.
+/// Optional explicit edge sharpness value.
 ///
 /// Stored sparsely on canonical half-edge IDs (one per undirected edge).
-pub const EDGE_SHARPNESS: AttrKey<bool> = AttrKey::new(Domain::HalfEdge, "edge.sharpness");
+/// `0.0` means smooth; positive values mean increasingly sharp.
+pub const EDGE_SHARPNESS: AttrKey<f32> = AttrKey::new(Domain::HalfEdge, "edge.sharpness");
 
 /// Dense face region/material identifier.
 pub const FACE_REGION: AttrKey<u32> = AttrKey::new(Domain::Face, "face.region");

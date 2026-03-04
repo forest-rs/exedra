@@ -10,6 +10,11 @@
 //! - deterministic region/selection helpers,
 //! - deterministic UV and tagging operators.
 //!
+//! Tagging note:
+//! - [`MarkEdgeSharp`] / [`MarkEdgeSharpParams`] use numeric `f32`
+//!   sharpness (`0.0` smooth, `> 0.0` sharp),
+//! - [`MarkEdgeSeam`] / [`MarkEdgeSeamParams`] use boolean seam tags.
+//!
 //! The intended public surface is this crate root (`cambium::...`) through
 //! re-exported operator/runtime types and functions.
 //!

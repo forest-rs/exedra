@@ -45,3 +45,11 @@
 //! [`Txn::split_edge`](crate::Txn::split_edge). It inserts a midpoint vertex,
 //! rewires the local half-edge pair, updates dirty/change tracking, and applies
 //! propagation defaults/overrides for edge/corner attributes.
+//!
+//! For edge sharpness in v0.1:
+//! - [`EdgeAttrPropagation::Inherit`](crate::EdgeAttrPropagation::Inherit)
+//!   preserves authored sharpness as-is (modeling-friendly default),
+//! - [`EdgeAttrPropagation::DecayOnSplit`](crate::EdgeAttrPropagation::DecayOnSplit)
+//!   applies subdivision-style decay (`sharpness = max(sharpness - 1.0, 0.0)`),
+//! - [`EdgeAttrPropagation::Clear`](crate::EdgeAttrPropagation::Clear) resets
+//!   sharpness to `0.0`.

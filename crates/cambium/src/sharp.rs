@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Edge sharpness tagging operator.
+//!
+//! `mark.edge.sharp` writes explicit `f32` sharpness values to selected
+//! undirected edges:
+//! - `0.0` means smooth,
+//! - values above `0.0` mean authored sharpness.
 
-use crate::edge_mark::apply_edge_bool_tag;
+use crate::edge_mark::apply_edge_tag;
 use crate::selection::EdgeSet;
 use crate::{EditOperator, OpContext, OpError, OpReport};
 
 /// Parameters for [`MarkEdgeSharp`].
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MarkEdgeSharpParams {
     /// Edge half-edges to mark/unmark.
     pub edges: EdgeSet,
-    /// Target sharpness state.
-    pub sharp: bool,
+    /// Target edge sharpness value (`0.0` is smooth).
+    pub sharp: f32,
 }
 
 /// Marks or clears explicit edge sharpness tags.
@@ -33,7 +38,7 @@ impl EditOperator for MarkEdgeSharp {
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<OpReport, OpError> {
-        apply_edge_bool_tag(
+        apply_edge_tag(
             txn,
             &params.edges,
             params.sharp,
@@ -61,27 +66,27 @@ mod tests {
 
         let set_params = MarkEdgeSharpParams {
             edges: vec![twin],
-            sharp: true,
+            sharp: 2.5,
         };
         let mut set_result = runner
             .run_commit(&mut mesh, &op, &set_params)
             .expect("mark edge sharp should succeed");
         assert_eq!(set_result.report.name, op.name());
-        assert_eq!(mesh.edge_sharpness(shared), Some(true));
-        assert_eq!(mesh.edge_sharpness(twin), Some(true));
+        assert_eq!(mesh.edge_sharpness(shared), Some(2.5));
+        assert_eq!(mesh.edge_sharpness(twin), Some(2.5));
         let mut dirty = Vec::new();
         set_result.change_set.dirty.drain_corners_into(&mut dirty);
         assert_eq!(dirty.len(), 2);
 
         let clear_params = MarkEdgeSharpParams {
             edges: vec![shared],
-            sharp: false,
+            sharp: 0.0,
         };
         let _ = runner
             .run_commit(&mut mesh, &op, &clear_params)
             .expect("clear edge sharp should succeed");
-        assert_eq!(mesh.edge_sharpness(shared), Some(false));
-        assert_eq!(mesh.edge_sharpness(twin), Some(false));
+        assert_eq!(mesh.edge_sharpness(shared), Some(0.0));
+        assert_eq!(mesh.edge_sharpness(twin), Some(0.0));
     }
 
     #[test]
@@ -94,7 +99,7 @@ mod tests {
                 &MarkEdgeSharp,
                 &MarkEdgeSharpParams {
                     edges: vec![shared, twin, shared],
-                    sharp: true,
+                    sharp: 1.0,
                 },
             )
             .expect("mark edge sharp should succeed");

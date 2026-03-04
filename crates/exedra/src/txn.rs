@@ -65,10 +65,10 @@ pub enum EdgeAttrPropagation {
     Inherit,
     /// Clear authored edge attributes on new topology.
     Clear,
-    /// Split/distribute source weights across child edges.
+    /// Apply subdivision-style decay to edge sharpness on split.
     ///
-    /// Edit kernels supply concrete split/distribution rules.
-    SplitWeights,
+    /// Current behavior decays by `1.0` and clamps at `0.0`.
+    DecayOnSplit,
 }
 
 /// Policy controlling attribute/value propagation across topology edits.
@@ -444,16 +444,16 @@ impl Txn<'_> {
         updated
     }
 
-    /// Returns explicit sharpness state for an undirected edge.
+    /// Returns explicit sharpness value for an undirected edge.
     #[must_use]
-    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<bool> {
+    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<f32> {
         self.mesh.edge_sharpness(half_edge)
     }
 
-    /// Sets explicit sharpness state for an undirected edge.
+    /// Sets explicit sharpness value for an undirected edge.
     ///
     /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: bool) -> bool {
+    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
         let Some(twin) = self.mesh.twin(half_edge) else {
             return false;
         };
@@ -476,9 +476,14 @@ impl Txn<'_> {
     /// Attribute/default propagation in v0.1:
     /// - vertex position follows [`PropagatePolicy::position`]
     ///   (`Midpoint`/`WeightedMidpoint` currently both use midpoint),
-    /// - edge seam/sharpness inherited to both child undirected edges when
+    /// - edge seam inherited to both child undirected edges when
     ///   policy is [`EdgeAttrPropagation::Inherit`] or
-    ///   [`EdgeAttrPropagation::SplitWeights`], cleared for `Clear`,
+    ///   [`EdgeAttrPropagation::DecayOnSplit`], cleared for `Clear`,
+    /// - edge sharpness propagation is policy-dependent:
+    ///   - [`EdgeAttrPropagation::Inherit`]: preserve source value,
+    ///   - [`EdgeAttrPropagation::DecayOnSplit`]: decay by `1.0` on split
+    ///     (clamped to `0.0`),
+    ///   - [`EdgeAttrPropagation::Clear`]: reset to `0.0`,
     /// - new corner UVs use midpoint interpolation when policy is
     ///   [`UvPropagation::Midpoint`] and side-copy for `CopyFromSide`,
     /// - face attributes are unchanged.
@@ -638,7 +643,7 @@ impl Txn<'_> {
             let _ = layer.remove(old_canonical_edge.as_id());
         }
         match self.propagate_policy.edge_attr {
-            EdgeAttrPropagation::Inherit | EdgeAttrPropagation::SplitWeights => {
+            EdgeAttrPropagation::Inherit => {
                 if let Some(seam) = seam {
                     let _ = self.set_edge_seam(half_edge, seam);
                     let _ = self.set_edge_seam(child_h, seam);
@@ -648,11 +653,22 @@ impl Txn<'_> {
                     let _ = self.set_edge_sharpness(child_h, sharp);
                 }
             }
+            EdgeAttrPropagation::DecayOnSplit => {
+                if let Some(seam) = seam {
+                    let _ = self.set_edge_seam(half_edge, seam);
+                    let _ = self.set_edge_seam(child_h, seam);
+                }
+                if let Some(sharp) = sharp {
+                    let split_sharp = (sharp - 1.0).max(0.0);
+                    let _ = self.set_edge_sharpness(half_edge, split_sharp);
+                    let _ = self.set_edge_sharpness(child_h, split_sharp);
+                }
+            }
             EdgeAttrPropagation::Clear => {
                 let _ = self.set_edge_seam(half_edge, false);
                 let _ = self.set_edge_seam(child_h, false);
-                let _ = self.set_edge_sharpness(half_edge, false);
-                let _ = self.set_edge_sharpness(child_h, false);
+                let _ = self.set_edge_sharpness(half_edge, 0.0);
+                let _ = self.set_edge_sharpness(child_h, 0.0);
             }
         }
 
@@ -1268,7 +1284,7 @@ mod tests {
             uv: UvPropagation::CopyFromSide,
             normal_override: NormalOverridePropagation::Average,
             face_attr: FaceAttrPropagation::CopyAndTag,
-            edge_attr: EdgeAttrPropagation::SplitWeights,
+            edge_attr: EdgeAttrPropagation::DecayOnSplit,
         });
         assert_eq!(
             txn.propagate_policy().position,
@@ -1285,7 +1301,7 @@ mod tests {
         );
         assert_eq!(
             txn.propagate_policy().edge_attr,
-            EdgeAttrPropagation::SplitWeights
+            EdgeAttrPropagation::DecayOnSplit
         );
     }
 
@@ -1405,10 +1421,10 @@ mod tests {
         let shared_twin = mesh.twin(shared).expect("shared edge should have twin");
 
         let mut txn = mesh.begin();
-        assert_eq!(txn.edge_sharpness(shared), Some(false));
-        assert!(txn.set_edge_sharpness(shared_twin, true));
-        assert_eq!(txn.edge_sharpness(shared), Some(true));
-        assert_eq!(txn.edge_sharpness(shared_twin), Some(true));
+        assert_eq!(txn.edge_sharpness(shared), Some(0.0));
+        assert!(txn.set_edge_sharpness(shared_twin, 2.5));
+        assert_eq!(txn.edge_sharpness(shared), Some(2.5));
+        assert_eq!(txn.edge_sharpness(shared_twin), Some(2.5));
         let mut changes = txn.commit();
 
         let mut corners = drained_corners(&mut changes.dirty);
@@ -1543,7 +1559,7 @@ mod tests {
         {
             let mut txn = mesh.begin();
             assert!(txn.set_edge_seam(shared, true));
-            assert!(txn.set_edge_sharpness(shared, true));
+            assert!(txn.set_edge_sharpness(shared, 2.5));
             let _ = txn.commit();
         }
 
@@ -1556,19 +1572,43 @@ mod tests {
         assert_eq!(mesh.edge_seam(child_h), Some(true));
         assert_eq!(mesh.edge_seam(twin), Some(true));
         assert_eq!(mesh.edge_seam(child_t), Some(true));
-        assert_eq!(mesh.edge_sharpness(shared), Some(true));
-        assert_eq!(mesh.edge_sharpness(child_h), Some(true));
-        assert_eq!(mesh.edge_sharpness(twin), Some(true));
-        assert_eq!(mesh.edge_sharpness(child_t), Some(true));
+        assert_eq!(mesh.edge_sharpness(shared), Some(2.5));
+        assert_eq!(mesh.edge_sharpness(child_h), Some(2.5));
+        assert_eq!(mesh.edge_sharpness(twin), Some(2.5));
+        assert_eq!(mesh.edge_sharpness(child_t), Some(2.5));
         assert!(mesh.validate_deep().is_empty());
 
         let (mut mesh, shared) = split_source_mesh();
         {
             let mut txn = mesh.begin();
             assert!(txn.set_edge_seam(shared, true));
-            assert!(txn.set_edge_sharpness(shared, true));
+            assert!(txn.set_edge_sharpness(shared, 2.5));
             let _ = txn.commit();
         }
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        let mut txn = mesh.begin();
+        txn.set_propagate_policy(PropagatePolicy {
+            edge_attr: EdgeAttrPropagation::DecayOnSplit,
+            ..PropagatePolicy::default()
+        });
+        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn.commit();
+        let child_h = mesh.next(shared).expect("split child should exist");
+        let child_t = mesh.next(twin).expect("split child should exist");
+        assert_eq!(mesh.edge_sharpness(shared), Some(1.5));
+        assert_eq!(mesh.edge_sharpness(child_h), Some(1.5));
+        assert_eq!(mesh.edge_sharpness(twin), Some(1.5));
+        assert_eq!(mesh.edge_sharpness(child_t), Some(1.5));
+        assert!(mesh.validate_deep().is_empty());
+
+        let (mut mesh, shared) = split_source_mesh();
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_edge_seam(shared, true));
+            assert!(txn.set_edge_sharpness(shared, 2.5));
+            let _ = txn.commit();
+        }
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
         let mut txn = mesh.begin();
         txn.set_propagate_policy(PropagatePolicy {
             edge_attr: EdgeAttrPropagation::Clear,
@@ -1576,17 +1616,16 @@ mod tests {
         });
         let _ = txn.split_edge(shared).expect("split should succeed");
         let _ = txn.commit();
-        let twin = mesh.twin(shared).expect("shared edge should have twin");
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
         assert_eq!(mesh.edge_seam(shared), Some(false));
         assert_eq!(mesh.edge_seam(child_h), Some(false));
         assert_eq!(mesh.edge_seam(twin), Some(false));
         assert_eq!(mesh.edge_seam(child_t), Some(false));
-        assert_eq!(mesh.edge_sharpness(shared), Some(false));
-        assert_eq!(mesh.edge_sharpness(child_h), Some(false));
-        assert_eq!(mesh.edge_sharpness(twin), Some(false));
-        assert_eq!(mesh.edge_sharpness(child_t), Some(false));
+        assert_eq!(mesh.edge_sharpness(shared), Some(0.0));
+        assert_eq!(mesh.edge_sharpness(child_h), Some(0.0));
+        assert_eq!(mesh.edge_sharpness(twin), Some(0.0));
+        assert_eq!(mesh.edge_sharpness(child_t), Some(0.0));
         assert!(mesh.validate_deep().is_empty());
     }
 

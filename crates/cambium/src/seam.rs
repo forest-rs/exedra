@@ -3,7 +3,7 @@
 
 //! Edge seam tagging operator.
 
-use crate::edge_mark::apply_edge_bool_tag;
+use crate::edge_mark::apply_edge_tag;
 use crate::selection::EdgeSet;
 use crate::{EditOperator, OpContext, OpError, OpReport};
 
@@ -33,7 +33,7 @@ impl EditOperator for MarkEdgeSeam {
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<OpReport, OpError> {
-        apply_edge_bool_tag(
+        apply_edge_tag(
             txn,
             &params.edges,
             params.seam,

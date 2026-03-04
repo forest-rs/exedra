@@ -26,6 +26,10 @@
 //! - [`EDGE_SEAM`](crate::attr::EDGE_SEAM),
 //! - [`EDGE_SHARPNESS`](crate::attr::EDGE_SHARPNESS).
 //!
+//! Sharpness uses sparse `f32` values on canonical undirected edges:
+//! - `0.0` means smooth,
+//! - values above `0.0` mean authored sharpness.
+//!
 //! # Capacity Model
 //!
 //! Dense capacities are based on arena slot counts, not live counts. This

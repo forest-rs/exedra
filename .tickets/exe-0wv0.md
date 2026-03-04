@@ -1,7 +1,7 @@
 ---
 id: exe-0wv0
 title: Migrate EDGE_SHARPNESS from bool to f32 for semi-sharp creasing
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T05:53:27Z
