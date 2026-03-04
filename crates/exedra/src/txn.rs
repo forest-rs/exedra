@@ -260,6 +260,45 @@ impl fmt::Display for DeleteFacesError {
 
 impl core::error::Error for DeleteFacesError {}
 
+/// Structured edge-deletion error from [`Mesh::delete_edges`] and
+/// [`Txn::delete_edges`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DeleteEdgesError {
+    /// Input edge list must be sorted, deduplicated, and canonicalized.
+    NonCanonicalEdgeSet,
+    /// Half-edge ID is stale/dead or has no live twin.
+    HalfEdgeNotLive {
+        /// Stale half-edge index.
+        half_edge: u32,
+    },
+    /// Edge does not bound any interior face.
+    EdgeHasNoInteriorFace {
+        /// Half-edge index.
+        half_edge: u32,
+    },
+    /// Incident-face deletion failed.
+    FaceDeleteFailed(DeleteFacesError),
+}
+
+impl fmt::Display for DeleteEdgesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonCanonicalEdgeSet => f.write_str(
+                "edge set must be sorted, deduplicated, and use canonical undirected edge IDs",
+            ),
+            Self::HalfEdgeNotLive { half_edge } => {
+                write!(f, "half-edge is not live or has no live twin: {half_edge}")
+            }
+            Self::EdgeHasNoInteriorFace { half_edge } => {
+                write!(f, "edge has no interior incident face: {half_edge}")
+            }
+            Self::FaceDeleteFailed(err) => write!(f, "failed to delete incident faces: {err}"),
+        }
+    }
+}
+
+impl core::error::Error for DeleteEdgesError {}
+
 /// Structured edge-split error from [`Txn::split_edge`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitEdgeError {
@@ -419,6 +458,19 @@ impl Mesh {
     ) -> Result<ChangeSet, DeleteFacesError> {
         let mut txn = self.begin();
         txn.delete_faces(faces, policy)?;
+        Ok(txn.commit())
+    }
+
+    /// Deletes a canonical set of undirected edges in one committed transaction.
+    ///
+    /// This is a convenience wrapper over [`Txn::delete_edges`] + [`Txn::commit`].
+    pub fn delete_edges(
+        &mut self,
+        edges: &[HalfEdgeId],
+        policy: DeletePolicy,
+    ) -> Result<ChangeSet, DeleteEdgesError> {
+        let mut txn = self.begin();
+        txn.delete_edges(edges, policy)?;
         Ok(txn.commit())
     }
 }
@@ -1319,6 +1371,70 @@ impl Txn<'_> {
         Ok(())
     }
 
+    /// Deletes canonical undirected edges by deleting all incident interior faces.
+    ///
+    /// `edges` must be canonical (sorted, deduplicated) and contain only live
+    /// half-edge IDs where each ID is the canonical representative
+    /// (`min(edge, twin)`) of an undirected edge.
+    ///
+    /// Each selected edge contributes its interior incident face(s), and this
+    /// kernel delegates topology mutation to [`Txn::delete_faces`].
+    pub fn delete_edges(
+        &mut self,
+        edges: &[HalfEdgeId],
+        policy: DeletePolicy,
+    ) -> Result<(), DeleteEdgesError> {
+        let mut faces = Vec::<FaceId>::new();
+        let mut previous = None;
+
+        for &half_edge in edges {
+            if let Some(prev) = previous
+                && prev >= half_edge
+            {
+                return Err(DeleteEdgesError::NonCanonicalEdgeSet);
+            }
+            previous = Some(half_edge);
+
+            let twin = self
+                .mesh
+                .twin(half_edge)
+                .ok_or(DeleteEdgesError::HalfEdgeNotLive {
+                    half_edge: half_edge.index(),
+                })?;
+            if core::cmp::min(half_edge, twin) != half_edge {
+                return Err(DeleteEdgesError::NonCanonicalEdgeSet);
+            }
+
+            let face = self
+                .mesh
+                .face(half_edge)
+                .ok_or(DeleteEdgesError::HalfEdgeNotLive {
+                    half_edge: half_edge.index(),
+                })?;
+            let twin_face = self
+                .mesh
+                .face(twin)
+                .ok_or(DeleteEdgesError::HalfEdgeNotLive {
+                    half_edge: half_edge.index(),
+                })?;
+            if face != FaceId::OUTSIDE {
+                faces.push(face);
+            }
+            if twin_face != FaceId::OUTSIDE {
+                faces.push(twin_face);
+            }
+            if face == FaceId::OUTSIDE && twin_face == FaceId::OUTSIDE {
+                return Err(DeleteEdgesError::EdgeHasNoInteriorFace {
+                    half_edge: half_edge.index(),
+                });
+            }
+        }
+
+        sort_dedup(&mut faces);
+        self.delete_faces(&faces, policy)
+            .map_err(DeleteEdgesError::FaceDeleteFailed)
+    }
+
     /// Marks a face dirty.
     pub fn mark_face_dirty(&mut self, face: FaceId) {
         self.dirty.mark_face(face);
@@ -1740,6 +1856,82 @@ mod tests {
         }
         let built = builder.build().expect("box build");
         (built.mesh, built.face_ids)
+    }
+
+    fn two_tri_strip_mesh() -> Mesh {
+        Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [2, 1, 3]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("two-triangle strip should build")
+    }
+
+    fn three_tri_strip_mesh() -> Mesh {
+        Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [2, 1, 3], [2, 3, 4]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("three-triangle strip should build")
+    }
+
+    fn canonical_interior_edges(mesh: &Mesh) -> Vec<HalfEdgeId> {
+        let mut edges = mesh
+            .half_edges
+            .iter()
+            .map(|(id, _)| HalfEdgeId::from(id))
+            .filter(|&half_edge| {
+                let Some(twin) = mesh.twin(half_edge) else {
+                    return false;
+                };
+                if core::cmp::min(half_edge, twin) != half_edge {
+                    return false;
+                }
+                let Some(face) = mesh.face(half_edge) else {
+                    return false;
+                };
+                let Some(twin_face) = mesh.face(twin) else {
+                    return false;
+                };
+                face != FaceId::OUTSIDE && twin_face != FaceId::OUTSIDE
+            })
+            .collect::<Vec<_>>();
+        edges.sort_unstable();
+        edges
+    }
+
+    fn canonical_boundary_edge(mesh: &Mesh) -> HalfEdgeId {
+        mesh.half_edges
+            .iter()
+            .map(|(id, _)| HalfEdgeId::from(id))
+            .find(|&half_edge| {
+                let Some(twin) = mesh.twin(half_edge) else {
+                    return false;
+                };
+                if core::cmp::min(half_edge, twin) != half_edge {
+                    return false;
+                }
+                let Some(face) = mesh.face(half_edge) else {
+                    return false;
+                };
+                let Some(twin_face) = mesh.face(twin) else {
+                    return false;
+                };
+                (face == FaceId::OUTSIDE) != (twin_face == FaceId::OUTSIDE)
+            })
+            .expect("mesh should have canonical boundary edge")
     }
 
     #[test]
@@ -2559,6 +2751,97 @@ mod tests {
             .delete_faces(&[faces[1], faces[0]], DeletePolicy::CleanupIsolated)
             .expect_err("non-canonical face set must fail");
         assert_eq!(err, DeleteFacesError::NonCanonicalFaceSet);
+    }
+
+    #[test]
+    fn delete_edges_rejects_stale_half_edge() {
+        let mut mesh = two_tri_strip_mesh();
+        let mut txn = mesh.begin();
+        let stale = HalfEdgeId::from(Id::new(999, NonZeroU32::MIN));
+        let err = txn
+            .delete_edges(&[stale], DeletePolicy::CleanupIsolated)
+            .expect_err("stale half-edge should fail");
+        assert_eq!(err, DeleteEdgesError::HalfEdgeNotLive { half_edge: 999 });
+    }
+
+    #[test]
+    fn delete_edges_rejects_non_canonical_orientation() {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edges(&mesh)
+            .first()
+            .copied()
+            .expect("strip should have interior edge");
+        let twin = mesh.twin(edge).expect("interior edge should have twin");
+        let mut txn = mesh.begin();
+        let err = txn
+            .delete_edges(&[twin], DeletePolicy::CleanupIsolated)
+            .expect_err("non-canonical orientation should fail");
+        assert_eq!(err, DeleteEdgesError::NonCanonicalEdgeSet);
+    }
+
+    #[test]
+    fn delete_edges_rejects_non_canonical_order() {
+        let mut mesh = three_tri_strip_mesh();
+        let edges = canonical_interior_edges(&mesh);
+        let mut txn = mesh.begin();
+        let err = txn
+            .delete_edges(&[edges[1], edges[0]], DeletePolicy::CleanupIsolated)
+            .expect_err("unsorted edge set should fail");
+        assert_eq!(err, DeleteEdgesError::NonCanonicalEdgeSet);
+    }
+
+    #[test]
+    fn delete_edges_single_interior_edge_deletes_incident_faces() {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edges(&mesh)
+            .first()
+            .copied()
+            .expect("strip should have interior edge");
+        let changes = mesh
+            .delete_edges(&[edge], DeletePolicy::CleanupIsolated)
+            .expect("interior edge delete should succeed");
+        assert_eq!(mesh.faces().count(), 0);
+        assert_eq!(mesh.half_edges.len(), 0);
+        assert_eq!(mesh.vertices().count(), 0);
+        assert_eq!(changes.deleted_faces.len(), 2);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_edges_boundary_edge_deletes_single_face() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("triangle mesh should build");
+        let edge = canonical_boundary_edge(&mesh);
+        let changes = mesh
+            .delete_edges(&[edge], DeletePolicy::KeepIsolated)
+            .expect("boundary edge delete should succeed");
+        assert_eq!(mesh.faces().count(), 0);
+        assert_eq!(mesh.half_edges.len(), 0);
+        assert_eq!(mesh.vertices().count(), 3);
+        assert_eq!(changes.deleted_faces.len(), 1);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_edges_adjacent_multi_edge_deletes_union_of_incident_faces() {
+        let mut mesh = three_tri_strip_mesh();
+        let edges = canonical_interior_edges(&mesh);
+        assert_eq!(edges.len(), 2);
+        let changes = mesh
+            .delete_edges(&[edges[0], edges[1]], DeletePolicy::CleanupIsolated)
+            .expect("multi-edge delete should succeed");
+        assert_eq!(mesh.faces().count(), 0);
+        assert_eq!(mesh.half_edges.len(), 0);
+        assert_eq!(mesh.vertices().count(), 0);
+        assert_eq!(changes.deleted_faces.len(), 3);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
     }
 
     #[test]

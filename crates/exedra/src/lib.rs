@@ -48,9 +48,9 @@ pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use topology::{Face, HalfEdge, Vertex};
 pub use txn::{
-    AddFaceError, ChangeSet, DeleteFacesError, DeletePolicy, DirtySet, EdgeAttrPropagation,
-    FaceAttrPropagation, NormalOverridePropagation, PositionPropagation, PropagatePolicy,
-    SplitEdgeError, SplitFaceError, Txn, UvPropagation,
+    AddFaceError, ChangeSet, DeleteEdgesError, DeleteFacesError, DeletePolicy, DirtySet,
+    EdgeAttrPropagation, FaceAttrPropagation, NormalOverridePropagation, PositionPropagation,
+    PropagatePolicy, SplitEdgeError, SplitFaceError, Txn, UvPropagation,
 };
 
 #[cfg(test)]
