@@ -49,6 +49,13 @@ impl Default for CylinderParams {
 /// Vertices are emitted in increasing angular order; seam reference is fixed at
 /// angle `0`.
 ///
+/// Selection semantics:
+/// - `edges.seam`: single side edge on the fixed longitude seam (`theta = 0`).
+/// - `edges.rim_top`: one edge per segment on the top side/cap interface
+///   (or side/OUTSIDE boundary when uncapped).
+/// - `edges.rim_bottom`: one edge per segment on the bottom side/cap interface
+///   (or side/OUTSIDE boundary when uncapped).
+///
 /// # Panics
 ///
 /// Panics when `params.segments < 3`.
@@ -175,9 +182,22 @@ fn push_ring(builder: &mut MeshBuilder, radius: f32, y: f32, segments: usize) {
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::ExtractParams;
+    use exedra::{ExtractParams, FaceId, HalfEdgeId};
 
     use super::{CylinderParams, REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE, cylinder};
+
+    fn incident_faces(primitive: &crate::Primitive, edge: HalfEdgeId) -> (FaceId, FaceId) {
+        let face = primitive
+            .mesh
+            .face(edge)
+            .expect("selection edge should be live");
+        let twin = primitive
+            .mesh
+            .twin(edge)
+            .expect("selection edge should have twin");
+        let twin_face = primitive.mesh.face(twin).expect("twin edge should be live");
+        (face, twin_face)
+    }
 
     #[test]
     fn capped_cylinder_builds_expected_regions() {
@@ -243,5 +263,101 @@ mod tests {
         assert_eq!(tri_a.positions, tri_b.positions);
         assert_eq!(a.face_region, b.face_region);
         assert_eq!(a.selections, b.selections);
+    }
+
+    #[test]
+    fn capped_cylinder_rim_and_seam_sets_match_contract() {
+        let primitive = cylinder(&CylinderParams {
+            segments: 8,
+            capped: true,
+            ..CylinderParams::default()
+        });
+        let seam = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.seam")
+            .expect("edges.seam should exist");
+        let rim_top = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_top")
+            .expect("edges.rim_top should exist");
+        let rim_bottom = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_bottom")
+            .expect("edges.rim_bottom should exist");
+
+        assert_eq!(seam.1.as_slice().len(), 1);
+        assert_eq!(rim_top.1.as_slice().len(), 8);
+        assert_eq!(rim_bottom.1.as_slice().len(), 8);
+
+        let (seam_face, seam_twin_face) = incident_faces(&primitive, seam.1.as_slice()[0]);
+        assert_eq!(primitive.face_region.get(seam_face), REGION_SIDE);
+        assert_eq!(primitive.face_region.get(seam_twin_face), REGION_SIDE);
+
+        for edge in rim_top.1.as_slice() {
+            let (face, twin_face) = incident_faces(&primitive, *edge);
+            let a = primitive.face_region.get(face);
+            let b = primitive.face_region.get(twin_face);
+            assert!(
+                (a == REGION_SIDE && b == REGION_CAP_TOP)
+                    || (a == REGION_CAP_TOP && b == REGION_SIDE)
+            );
+        }
+        for edge in rim_bottom.1.as_slice() {
+            let (face, twin_face) = incident_faces(&primitive, *edge);
+            let a = primitive.face_region.get(face);
+            let b = primitive.face_region.get(twin_face);
+            assert!(
+                (a == REGION_SIDE && b == REGION_CAP_BOTTOM)
+                    || (a == REGION_CAP_BOTTOM && b == REGION_SIDE)
+            );
+        }
+    }
+
+    #[test]
+    fn uncapped_cylinder_rim_sets_are_side_to_outside_boundaries() {
+        let primitive = cylinder(&CylinderParams {
+            segments: 6,
+            capped: false,
+            ..CylinderParams::default()
+        });
+        let rim_top = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_top")
+            .expect("edges.rim_top should exist");
+        let rim_bottom = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_bottom")
+            .expect("edges.rim_bottom should exist");
+
+        for edge in rim_top
+            .1
+            .as_slice()
+            .iter()
+            .chain(rim_bottom.1.as_slice().iter())
+        {
+            let (face, twin_face) = incident_faces(&primitive, *edge);
+            let side = if face == FaceId::OUTSIDE {
+                twin_face
+            } else {
+                face
+            };
+            let outside = if face == FaceId::OUTSIDE {
+                face
+            } else {
+                twin_face
+            };
+            assert_eq!(outside, FaceId::OUTSIDE);
+            assert_eq!(primitive.face_region.get(side), REGION_SIDE);
+        }
     }
 }

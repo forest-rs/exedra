@@ -45,6 +45,10 @@ impl Default for UvSphereParams {
 ///
 /// Poles are triangle fans; intermediate bands are quads.
 ///
+/// Selection semantics:
+/// - `edges.seam`: one edge per latitude step along fixed longitude `0`,
+///   ordered from top pole to bottom pole.
+///
 /// # Panics
 ///
 /// Panics when `lat_segments < 1` or `lon_segments < 3`.
@@ -167,9 +171,28 @@ pub fn uv_sphere(params: &UvSphereParams) -> Primitive {
 
 #[cfg(test)]
 mod tests {
-    use exedra::ExtractParams;
+    use exedra::{ExtractParams, HalfEdgeId};
 
-    use super::{UvSphereParams, uv_sphere};
+    use super::{REGION_BODY, REGION_POLE_BOTTOM, REGION_POLE_TOP, UvSphereParams, uv_sphere};
+
+    fn incident_regions(
+        primitive: &crate::Primitive,
+        edge: HalfEdgeId,
+    ) -> (crate::RegionId, crate::RegionId) {
+        let face = primitive
+            .mesh
+            .face(edge)
+            .expect("selection edge should be live");
+        let twin = primitive
+            .mesh
+            .twin(edge)
+            .expect("selection edge should have twin");
+        let twin_face = primitive.mesh.face(twin).expect("twin edge should be live");
+        (
+            primitive.face_region.get(face),
+            primitive.face_region.get(twin_face),
+        )
+    }
 
     #[test]
     fn uv_sphere_builds_expected_topology() {
@@ -229,5 +252,34 @@ mod tests {
         assert_eq!(tri_a.positions, tri_b.positions);
         assert_eq!(a.face_region, b.face_region);
         assert_eq!(a.selections, b.selections);
+    }
+
+    #[test]
+    fn uv_sphere_seam_selection_matches_documented_contract() {
+        let primitive = uv_sphere(&UvSphereParams {
+            lat_segments: 3,
+            lon_segments: 8,
+            ..UvSphereParams::default()
+        });
+        let seam = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.seam")
+            .expect("edges.seam should exist");
+        let seam_edges = seam.1.as_slice();
+        assert_eq!(seam_edges.len(), 4);
+
+        let (first_a, first_b) = incident_regions(&primitive, seam_edges[0]);
+        assert!(first_a == REGION_POLE_TOP || first_b == REGION_POLE_TOP);
+
+        for edge in &seam_edges[1..seam_edges.len() - 1] {
+            let (a, b) = incident_regions(&primitive, *edge);
+            assert_eq!(a, REGION_BODY);
+            assert_eq!(b, REGION_BODY);
+        }
+
+        let (last_a, last_b) = incident_regions(&primitive, seam_edges[seam_edges.len() - 1]);
+        assert!(last_a == REGION_POLE_BOTTOM || last_b == REGION_POLE_BOTTOM);
     }
 }
