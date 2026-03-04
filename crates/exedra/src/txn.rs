@@ -412,12 +412,14 @@ impl Txn<'_> {
             }
         }
         let mut isolated = Vec::<VertexId>::new();
-        // TODO(exe-8w2z): For small localized deletions, building a global
-        // outgoing index is O(total_half_edges). Consider a scoped fallback
-        // that scans only stars of affected vertices.
-        let outgoing_index = build_outgoing_index(self.mesh);
+        let use_global_index =
+            should_use_global_outgoing_index(dirty_vertices.len(), self.mesh.half_edges.len());
+        let outgoing_index = use_global_index.then(|| build_outgoing_index(self.mesh));
         for &vertex in &dirty_vertices {
-            let new_out = find_outgoing_half_edge(&outgoing_index, vertex);
+            let new_out = outgoing_index
+                .as_deref()
+                .and_then(|index| find_outgoing_half_edge(index, vertex))
+                .or_else(|| find_outgoing_half_edge_linear_scan(self.mesh, vertex));
             let Some(record) = self.mesh.vertices.get_mut(vertex.as_id()) else {
                 continue;
             };
@@ -582,6 +584,14 @@ fn build_outgoing_index(mesh: &Mesh) -> Vec<(VertexId, HalfEdgeId)> {
     pairs
 }
 
+fn find_outgoing_half_edge_linear_scan(mesh: &Mesh, vertex: VertexId) -> Option<HalfEdgeId> {
+    mesh.half_edges.iter().find_map(|(id, _)| {
+        let half_edge = HalfEdgeId::from(id);
+        (half_edge_vertices(mesh, half_edge).is_some_and(|(from, _)| from == vertex))
+            .then_some(half_edge)
+    })
+}
+
 fn find_outgoing_half_edge(
     outgoing_index: &[(VertexId, HalfEdgeId)],
     vertex: VertexId,
@@ -590,6 +600,16 @@ fn find_outgoing_half_edge(
         .binary_search_by_key(&vertex, |(candidate, _)| *candidate)
         .ok()
         .map(|position| outgoing_index[position].1)
+}
+
+fn should_use_global_outgoing_index(affected_vertices: usize, total_half_edges: usize) -> bool {
+    if affected_vertices == 0 || total_half_edges == 0 {
+        return false;
+    }
+    // Heuristic: switch to global index once the affected set is at least
+    // about 1/8 of total half-edges; this avoids expensive repeated linear
+    // scans near crossover cases.
+    affected_vertices.saturating_mul(8) > total_half_edges
 }
 
 fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
@@ -1105,6 +1125,19 @@ mod tests {
         assert_eq!(mesh.revision(), baseline_revision);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn outgoing_index_strategy_prefers_localized_scans_for_small_edits() {
+        assert!(!should_use_global_outgoing_index(1, 1_000));
+        assert!(!should_use_global_outgoing_index(8, 10_000));
+        assert!(!should_use_global_outgoing_index(0, 100));
+    }
+
+    #[test]
+    fn outgoing_index_strategy_switches_to_global_for_large_affected_sets() {
+        assert!(should_use_global_outgoing_index(130, 1_000));
+        assert!(should_use_global_outgoing_index(1_300, 10_000));
     }
 
     #[test]

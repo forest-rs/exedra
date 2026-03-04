@@ -1,6 +1,6 @@
 ---
 id: exe-usoc
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T00:40:37Z
@@ -21,3 +21,9 @@ Add a thresholded strategy in Txn::delete_faces. Inputs: affected vertex set siz
 
 1) Out-pointer fixup no longer always builds a global index for small deletions. 2) Deterministic outcomes remain unchanged for existing tests. 3) Add tests covering both strategy paths. 4) cargo clippy/test pass.
 
+
+## Notes
+
+**2026-03-04T01:00:04Z**
+
+Implemented thresholded out-pointer repair strategy in Txn::delete_faces: localized per-vertex scan for small affected sets, global outgoing index for large affected sets. Added strategy tests for both paths and kept deterministic tie-breaking behavior. Validation: cargo test -p exedra --all-features; cargo clippy -p exedra --all-targets --all-features -- -D warnings.
