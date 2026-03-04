@@ -72,8 +72,7 @@ where
             ));
         }
         // One canonical sparse edge slot is written per surviving edge.
-        report.stats.counters.corners_written =
-            report.stats.counters.corners_written.saturating_add(1);
+        report.stats.counters.edges_written = report.stats.counters.edges_written.saturating_add(1);
     }
 
     Ok(report)

@@ -99,6 +99,7 @@ mod tests {
             )
             .expect("mark edge seam should succeed");
         assert_eq!(result.report.stats.counters.selections_canonicalized, 2);
-        assert_eq!(result.report.stats.counters.corners_written, 1);
+        assert_eq!(result.report.stats.counters.edges_written, 1);
+        assert_eq!(result.report.stats.counters.corners_written, 0);
     }
 }

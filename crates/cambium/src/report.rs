@@ -26,10 +26,9 @@ pub struct SmallCounters {
     /// Faces visited/processed.
     pub faces_processed: u64,
     /// Corner-domain writes performed by the operator.
-    ///
-    /// Note: edge-domain boolean tag operators currently reuse this counter to
-    /// report canonical undirected-edge writes (one sparse slot per edge).
     pub corners_written: u64,
+    /// Edge-domain attribute writes (canonical undirected edges).
+    pub edges_written: u64,
     /// Corners skipped because destination already had value.
     pub corners_skipped_existing: u64,
     /// Selection canonicalization passes performed.
