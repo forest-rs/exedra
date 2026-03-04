@@ -8,7 +8,7 @@ created: 2026-03-03T05:39:00Z
 type: feature
 priority: P1
 assignee: Bruce Mitchener
-tags: [v0.5]
+tags: [v0.1]
 ---
 # split_face with attribute propagation
 

@@ -8,7 +8,7 @@ created: 2026-03-03T05:40:23Z
 type: feature
 priority: P1
 assignee: Bruce Mitchener
-tags: [v0.5]
+tags: [v0.1]
 ---
 # PropagatePolicy and edit propagation defaults
 
