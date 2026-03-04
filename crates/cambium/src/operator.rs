@@ -10,7 +10,8 @@ use crate::{OpContext, OpError, OpReport};
 /// Primary operator trait for topology/attribute edits.
 ///
 /// Operators mutate mesh state through a transaction and return an operator
-/// report. Transaction commit/abort is orchestrated by the runner.
+/// report plus a typed output payload. Transaction commit/abort is
+/// orchestrated by the runner.
 ///
 /// Implemented by concrete operators such as [`UvPlanar`](crate::UvPlanar),
 /// [`UvBox`](crate::UvBox), [`UvCylinder`](crate::UvCylinder),
@@ -23,6 +24,8 @@ use crate::{OpContext, OpError, OpReport};
 pub trait EditOperator {
     /// Input parameter payload for this operator.
     type Params;
+    /// Typed authoritative output payload for chaining.
+    type Output;
 
     /// Stable dot-separated operator identifier (for example: `"uv.planar"`).
     fn name(&self) -> &'static str;
@@ -33,7 +36,7 @@ pub trait EditOperator {
         txn: &mut Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError>;
+    ) -> Result<(OpReport, Self::Output), OpError>;
 }
 
 #[cfg(test)]
@@ -46,6 +49,7 @@ mod tests {
 
     impl EditOperator for NoopOperator {
         type Params = ();
+        type Output = ();
 
         fn name(&self) -> &'static str {
             "test.noop"
@@ -56,8 +60,8 @@ mod tests {
             _txn: &mut Txn<'_>,
             _params: &Self::Params,
             _ctx: &mut OpContext,
-        ) -> Result<OpReport, OpError> {
-            Ok(OpReport::new(self.name(), Artifacts::default()))
+        ) -> Result<(OpReport, Self::Output), OpError> {
+            Ok((OpReport::new(self.name(), Artifacts::default()), ()))
         }
     }
 

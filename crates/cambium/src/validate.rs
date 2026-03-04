@@ -42,8 +42,16 @@ impl Default for ValidateMeshParams {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ValidateMesh;
 
+/// Typed output from [`ValidateMesh`].
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct ValidateMeshOutput {
+    /// Number of emitted validation diagnostics.
+    pub diagnostics_emitted: u64,
+}
+
 impl EditOperator for ValidateMesh {
     type Params = ValidateMeshParams;
+    type Output = ValidateMeshOutput;
 
     fn name(&self) -> &'static str {
         "inspect.validate.mesh"
@@ -54,7 +62,7 @@ impl EditOperator for ValidateMesh {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         let mesh = txn.mesh();
         let mut report = OpReport::new(self.name(), Artifacts::default());
         report.stats.elements_touched.vertices = mesh.vertices().count() as u64;
@@ -74,11 +82,15 @@ impl EditOperator for ValidateMesh {
             }
         }
 
+        let emitted = diagnostics.len();
         for diagnostic in diagnostics {
             ctx.diagnostics.push(diagnostic);
         }
 
-        Ok(report)
+        let output = ValidateMeshOutput {
+            diagnostics_emitted: u64::try_from(emitted).expect("diagnostic count should fit u64"),
+        };
+        Ok((report, output))
     }
 }
 
@@ -116,7 +128,7 @@ mod tests {
         let mut txn = mesh.begin();
         let op = ValidateMesh;
         let mut ctx = OpContext::default();
-        let report = op
+        let (report, output) = op
             .apply(
                 &mut txn,
                 &ValidateMeshParams {
@@ -128,6 +140,7 @@ mod tests {
         assert_eq!(report.name, "inspect.validate.mesh");
         assert_eq!(report.stats.elements_touched.vertices, 0);
         assert_eq!(report.stats.elements_touched.faces, 0);
+        assert_eq!(output.diagnostics_emitted, 0);
         assert!(ctx.diagnostics.is_empty());
     }
 
@@ -137,7 +150,7 @@ mod tests {
         let mut txn = mesh.begin();
         let op = ValidateMesh;
         let mut ctx = OpContext::default();
-        let _ = op
+        let (_, output) = op
             .apply(
                 &mut txn,
                 &ValidateMeshParams {
@@ -146,6 +159,7 @@ mod tests {
                 &mut ctx,
             )
             .expect("validation operator should succeed");
+        assert_eq!(output.diagnostics_emitted, 0);
         assert!(ctx.diagnostics.is_empty());
     }
 

@@ -31,6 +31,7 @@ pub struct TagFaceRegion;
 
 impl EditOperator for TagFaceRegion {
     type Params = TagFaceRegionParams;
+    type Output = FaceSet;
 
     fn name(&self) -> &'static str {
         "tag.face.region"
@@ -41,7 +42,7 @@ impl EditOperator for TagFaceRegion {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         let mut faces = params.faces.clone();
         let canonicalized = canonicalize_face_set(&mut faces);
         let mut report = OpReport::new(
@@ -68,6 +69,7 @@ impl EditOperator for TagFaceRegion {
             ));
         }
 
+        let mut tagged = FaceSet::new();
         for face in faces {
             if face == FaceId::OUTSIDE {
                 continue;
@@ -82,9 +84,10 @@ impl EditOperator for TagFaceRegion {
             }
             report.stats.counters.faces_processed =
                 report.stats.counters.faces_processed.saturating_add(1);
+            tagged.push(face);
         }
 
-        Ok(report)
+        Ok((report, tagged))
     }
 }
 

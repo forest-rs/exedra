@@ -1,7 +1,7 @@
 ---
 id: cam-tdg4
 title: Typed operator outputs for authoritative chaining
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T16:17:03Z

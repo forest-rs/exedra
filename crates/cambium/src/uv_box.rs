@@ -46,6 +46,7 @@ pub struct UvBox;
 
 impl EditOperator for UvBox {
     type Params = UvBoxParams;
+    type Output = crate::FaceSet;
 
     fn name(&self) -> &'static str {
         "uv.box"
@@ -56,7 +57,7 @@ impl EditOperator for UvBox {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         let mut report = OpReport::new(
             self.name(),
             Artifacts::new(
@@ -72,7 +73,7 @@ impl EditOperator for UvBox {
             report.stats.counters.selections_canonicalized = 1;
         }
         if faces.faces.is_empty() {
-            return Ok(report);
+            return Ok((report, crate::FaceSet::new()));
         }
         let _ = report.artifacts.push(Artifact::FaceSet {
             name: "uv.box.affected_faces".into(),
@@ -129,7 +130,7 @@ impl EditOperator for UvBox {
                 }
             }
         }
-        Ok(report)
+        Ok((report, faces.faces))
     }
 }
 

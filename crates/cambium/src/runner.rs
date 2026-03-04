@@ -17,20 +17,24 @@ use crate::{Diagnostic, EditOperator, OpContext, OpError, OpReport};
 
 /// Result from [`OperatorRunner::run_commit`].
 #[derive(Clone, Debug)]
-pub struct OpResult {
+pub struct OpResult<T = ()> {
     /// Transaction commit summary.
     pub change_set: ChangeSet,
     /// Operator report for this run.
     pub report: OpReport,
+    /// Typed operator output.
+    pub output: T,
 }
 
 /// Result from [`OperatorRunner::run_preview`].
 #[derive(Clone, Debug)]
-pub struct PreviewResult {
+pub struct PreviewResult<T = ()> {
     /// Preview mesh produced by running on a cloned base mesh.
     pub preview_mesh: Mesh,
     /// Operator report for this run.
     pub report: OpReport,
+    /// Typed operator output.
+    pub output: T,
 }
 
 /// Stateful runner owning reusable operator context.
@@ -63,13 +67,13 @@ impl OperatorRunner {
         mesh: &mut Mesh,
         op: &O,
         params: &O::Params,
-    ) -> Result<OpResult, OpError> {
+    ) -> Result<OpResult<O::Output>, OpError> {
         self.reset_for_run();
         let mut txn = mesh.begin();
 
         #[cfg(any(target_arch = "wasm32", feature = "std"))]
         let op_apply_start = Instant::now();
-        let mut report = {
+        let (mut report, output) = {
             match op.apply(&mut txn, params, &mut self.ctx) {
                 Ok(report) => report,
                 Err(error) => return Err(self.attach_context_diagnostics(error)),
@@ -98,7 +102,11 @@ impl OperatorRunner {
         }
 
         report.timings = self.ctx.clock.timings();
-        Ok(OpResult { change_set, report })
+        Ok(OpResult {
+            change_set,
+            report,
+            output,
+        })
     }
 
     /// Runs one operator in preview mode against a cloned mesh.
@@ -111,7 +119,7 @@ impl OperatorRunner {
         mesh: &Mesh,
         op: &O,
         params: &O::Params,
-    ) -> Result<PreviewResult, OpError> {
+    ) -> Result<PreviewResult<O::Output>, OpError> {
         self.reset_for_run();
         let cache_dirty_before = self.ctx.cache_dirty.clone();
         let result = (|| {
@@ -120,7 +128,7 @@ impl OperatorRunner {
 
             #[cfg(any(target_arch = "wasm32", feature = "std"))]
             let op_apply_start = Instant::now();
-            let mut report = {
+            let (mut report, output) = {
                 match op.apply(&mut txn, params, &mut self.ctx) {
                     Ok(report) => report,
                     Err(error) => return Err(self.attach_context_diagnostics(error)),
@@ -157,6 +165,7 @@ impl OperatorRunner {
             Ok(PreviewResult {
                 preview_mesh,
                 report,
+                output,
             })
         })();
         self.ctx.cache_dirty = cache_dirty_before;
@@ -209,6 +218,7 @@ mod tests {
 
     impl EditOperator for AddVertexOperator {
         type Params = [f32; 3];
+        type Output = ();
 
         fn name(&self) -> &'static str {
             "test.add_vertex"
@@ -219,11 +229,11 @@ mod tests {
             txn: &mut Txn<'_>,
             params: &Self::Params,
             ctx: &mut OpContext,
-        ) -> Result<OpReport, OpError> {
+        ) -> Result<(OpReport, Self::Output), OpError> {
             assert!(ctx.scratch.u32s.is_empty());
             ctx.scratch.u32s.push(7);
             let _ = txn.add_vertex(*params);
-            Ok(OpReport::new(self.name(), Artifacts::default()))
+            Ok((OpReport::new(self.name(), Artifacts::default()), ()))
         }
     }
 
@@ -239,6 +249,7 @@ mod tests {
         assert_eq!(mesh.vertices().count(), 1);
         assert_eq!(result.change_set.created_vertices.len(), 1);
         assert_eq!(result.report.name, "test.add_vertex");
+        assert_eq!(result.output, ());
         assert!(
             result
                 .report
@@ -331,6 +342,7 @@ mod tests {
 
     impl EditOperator for MarksPreviewDirtyOperator {
         type Params = ();
+        type Output = ();
 
         fn name(&self) -> &'static str {
             "test.marks_preview_dirty"
@@ -341,9 +353,9 @@ mod tests {
             _txn: &mut Txn<'_>,
             _params: &Self::Params,
             ctx: &mut OpContext,
-        ) -> Result<OpReport, OpError> {
+        ) -> Result<(OpReport, Self::Output), OpError> {
             ctx.cache_dirty.mark_global(DirtyChannel::Selection);
-            Ok(OpReport::new(self.name(), Artifacts::default()))
+            Ok((OpReport::new(self.name(), Artifacts::default()), ()))
         }
     }
 

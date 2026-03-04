@@ -27,6 +27,7 @@ pub struct MarkEdgeSharp;
 
 impl EditOperator for MarkEdgeSharp {
     type Params = MarkEdgeSharpParams;
+    type Output = EdgeSet;
 
     fn name(&self) -> &'static str {
         "mark.edge.sharp"
@@ -37,7 +38,7 @@ impl EditOperator for MarkEdgeSharp {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         apply_edge_tag(
             txn,
             &params.edges,

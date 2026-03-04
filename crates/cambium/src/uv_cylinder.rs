@@ -65,6 +65,7 @@ pub struct UvCylinder;
 
 impl EditOperator for UvCylinder {
     type Params = UvCylinderParams;
+    type Output = crate::FaceSet;
 
     fn name(&self) -> &'static str {
         "uv.cylinder"
@@ -75,7 +76,7 @@ impl EditOperator for UvCylinder {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         let mut report = OpReport::new(
             self.name(),
             Artifacts::new(
@@ -91,7 +92,7 @@ impl EditOperator for UvCylinder {
             report.stats.counters.selections_canonicalized = 1;
         }
         if faces.faces.is_empty() {
-            return Ok(report);
+            return Ok((report, crate::FaceSet::new()));
         }
         let _ = report.artifacts.push(Artifact::FaceSet {
             name: "uv.cylinder.affected_faces".into(),
@@ -134,7 +135,7 @@ impl EditOperator for UvCylinder {
                 }
             }
         }
-        Ok(report)
+        Ok((report, faces.faces))
     }
 }
 

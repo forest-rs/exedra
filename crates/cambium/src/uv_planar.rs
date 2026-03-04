@@ -71,6 +71,7 @@ pub struct UvPlanar;
 
 impl EditOperator for UvPlanar {
     type Params = UvPlanarParams;
+    type Output = FaceSet;
 
     fn name(&self) -> &'static str {
         "uv.planar"
@@ -81,7 +82,7 @@ impl EditOperator for UvPlanar {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         let mut report = OpReport::new(
             self.name(),
             Artifacts::new(
@@ -97,7 +98,7 @@ impl EditOperator for UvPlanar {
             report.stats.counters.selections_canonicalized = 1;
         }
         if faces.faces.is_empty() {
-            return Ok(report);
+            return Ok((report, FaceSet::new()));
         }
 
         if report.artifacts.push(Artifact::FaceSet {
@@ -164,7 +165,7 @@ impl EditOperator for UvPlanar {
             }
         }
 
-        Ok(report)
+        Ok((report, faces.faces))
     }
 }
 

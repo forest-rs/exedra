@@ -16,7 +16,7 @@ pub(crate) fn apply_edge_tag<T, F>(
     op_name: &'static str,
     error_message: &'static str,
     mut setter: F,
-) -> Result<OpReport, OpError>
+) -> Result<(OpReport, EdgeSet), OpError>
 where
     T: Copy,
     F: FnMut(&mut exedra::Txn<'_>, exedra::HalfEdgeId, T) -> bool,
@@ -59,7 +59,7 @@ where
             .saturating_add(1);
     }
 
-    for edge in canonical_topology {
+    for edge in canonical_topology.iter().copied() {
         if !setter(txn, edge, value) {
             debug_assert!(false, "edge setter failed after canonical-edge validation");
             return Err(op_error(
@@ -73,7 +73,7 @@ where
         report.stats.counters.edges_written = report.stats.counters.edges_written.saturating_add(1);
     }
 
-    Ok(report)
+    Ok((report, canonical_topology))
 }
 
 pub(crate) fn op_error(

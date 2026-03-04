@@ -75,6 +75,7 @@
 //!
 //! impl EditOperator for ExampleOp {
 //!     type Params = ExampleParams;
+//!     type Output = ();
 //!
 //!     fn name(&self) -> &'static str {
 //!         "example.op"
@@ -85,7 +86,7 @@
 //!         txn: &mut exedra::Txn<'_>,
 //!         _params: &Self::Params,
 //!         ctx: &mut OpContext,
-//!     ) -> Result<OpReport, OpError> {
+//!     ) -> Result<(OpReport, Self::Output), OpError> {
 //!         let mut report = OpReport::new(
 //!             self.name(),
 //!             Artifacts::new(
@@ -111,7 +112,7 @@
 //!             let _ = txn.add_vertex([0.0, 0.0, 0.0]);
 //!         }
 //!
-//!         Ok(report)
+//!         Ok((report, ()))
 //!     }
 //! }
 //! ```

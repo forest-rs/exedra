@@ -84,7 +84,10 @@ pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
-pub use face_edit::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
+pub use face_edit::{
+    ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, InsetFaces, InsetFacesOutput,
+    InsetFacesParams,
+};
 pub use operator::EditOperator;
 pub use policy::{
     BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
@@ -101,4 +104,4 @@ pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};
 pub use uv_box::{UvBox, UvBoxParams};
 pub use uv_cylinder::{CylinderAxis, UvCylinder, UvCylinderParams};
 pub use uv_planar::{UvPlanar, UvPlanarParams, UvPlane, UvScope};
-pub use validate::{ValidateMesh, ValidateMeshMode, ValidateMeshParams};
+pub use validate::{ValidateMesh, ValidateMeshMode, ValidateMeshOutput, ValidateMeshParams};

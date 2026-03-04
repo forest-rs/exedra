@@ -29,6 +29,15 @@ pub struct ExtrudeFacesParams {
     pub distance: f32,
 }
 
+/// Typed output from [`ExtrudeFaces`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExtrudeFacesOutput {
+    /// Created cap face IDs.
+    pub cap_faces: FaceSet,
+    /// Created side-wall face IDs.
+    pub wall_faces: FaceSet,
+}
+
 impl Default for ExtrudeFacesParams {
     fn default() -> Self {
         Self {
@@ -49,6 +58,15 @@ pub struct InsetFacesParams {
     pub factor: f32,
 }
 
+/// Typed output from [`InsetFaces`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InsetFacesOutput {
+    /// Created inner face IDs.
+    pub inner_faces: FaceSet,
+    /// Created frame face IDs.
+    pub frame_faces: FaceSet,
+}
+
 impl Default for InsetFacesParams {
     fn default() -> Self {
         Self {
@@ -64,6 +82,7 @@ pub struct ExtrudeFaces;
 
 impl EditOperator for ExtrudeFaces {
     type Params = ExtrudeFacesParams;
+    type Output = ExtrudeFacesOutput;
 
     fn name(&self) -> &'static str {
         "edit.face.extrude"
@@ -74,7 +93,7 @@ impl EditOperator for ExtrudeFaces {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         if !params.distance.is_finite() {
             return Err(op_error(
                 ctx,
@@ -191,14 +210,19 @@ impl EditOperator for ExtrudeFaces {
         }
         let _ = report.artifacts.push(Artifact::FaceSet {
             name: "extrude.cap_faces".to_string(),
-            faces: cap_faces,
+            faces: cap_faces.clone(),
         });
         let _ = report.artifacts.push(Artifact::FaceSet {
             name: "extrude.wall_faces".to_string(),
-            faces: wall_faces,
+            faces: wall_faces.clone(),
         });
-
-        Ok(report)
+        Ok((
+            report,
+            ExtrudeFacesOutput {
+                cap_faces,
+                wall_faces,
+            },
+        ))
     }
 }
 
@@ -208,6 +232,7 @@ pub struct InsetFaces;
 
 impl EditOperator for InsetFaces {
     type Params = InsetFacesParams;
+    type Output = InsetFacesOutput;
 
     fn name(&self) -> &'static str {
         "edit.face.inset"
@@ -218,7 +243,7 @@ impl EditOperator for InsetFaces {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         if !params.factor.is_finite() || !(0.0..1.0).contains(&params.factor) {
             return Err(op_error(
                 ctx,
@@ -338,14 +363,19 @@ impl EditOperator for InsetFaces {
         }
         let _ = report.artifacts.push(Artifact::FaceSet {
             name: "inset.inner_faces".to_string(),
-            faces: inner_faces,
+            faces: inner_faces.clone(),
         });
         let _ = report.artifacts.push(Artifact::FaceSet {
             name: "inset.frame_faces".to_string(),
-            faces: frame_faces,
+            faces: frame_faces.clone(),
         });
-
-        Ok(report)
+        Ok((
+            report,
+            InsetFacesOutput {
+                inner_faces,
+                frame_faces,
+            },
+        ))
     }
 }
 
@@ -600,6 +630,8 @@ mod tests {
         }
         assert_eq!(cap_count, Some(1));
         assert_eq!(wall_count, Some(4));
+        assert_eq!(result.output.cap_faces.len(), 1);
+        assert_eq!(result.output.wall_faces.len(), 4);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }
@@ -641,6 +673,8 @@ mod tests {
         }
         assert_eq!(inner_count, Some(1));
         assert_eq!(frame_count, Some(4));
+        assert_eq!(result.output.inner_faces.len(), 1);
+        assert_eq!(result.output.frame_faces.len(), 4);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }

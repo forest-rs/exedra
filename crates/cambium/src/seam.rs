@@ -22,6 +22,7 @@ pub struct MarkEdgeSeam;
 
 impl EditOperator for MarkEdgeSeam {
     type Params = MarkEdgeSeamParams;
+    type Output = EdgeSet;
 
     fn name(&self) -> &'static str {
         "mark.edge.seam"
@@ -32,7 +33,7 @@ impl EditOperator for MarkEdgeSeam {
         txn: &mut exedra::Txn<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<OpReport, OpError> {
+    ) -> Result<(OpReport, Self::Output), OpError> {
         apply_edge_tag(
             txn,
             &params.edges,
