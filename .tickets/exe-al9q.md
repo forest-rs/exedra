@@ -1,7 +1,7 @@
 ---
 id: exe-al9q
 title: Txn face-creation kernel for edit operators
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T07:43:37Z

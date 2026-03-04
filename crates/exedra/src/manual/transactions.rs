@@ -51,6 +51,11 @@
 //! Existing corners keep authored values; diagonal corners are populated from
 //! policy rules while preserving sparse missingness.
 //!
+//! [`Txn::add_face`](crate::Txn::add_face) builds a new interior polygon loop
+//! from live [`VertexId`](crate::VertexId)s. It reuses compatible OUTSIDE
+//! half-edges when filling/opening boundaries and creates new interior+OUTSIDE
+//! pairs otherwise.
+//!
 //! For edge sharpness in v0.1:
 //! - [`EdgeAttrPropagation::Inherit`](crate::EdgeAttrPropagation::Inherit)
 //!   preserves authored sharpness as-is (modeling-friendly default),

@@ -314,6 +314,57 @@ impl fmt::Display for SplitFaceError {
 
 impl core::error::Error for SplitFaceError {}
 
+/// Structured face-creation error from [`Txn::add_face`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AddFaceError {
+    /// Face loop must have at least three vertices.
+    LoopTooShort,
+    /// Vertex ID is stale or not live.
+    VertexNotLive {
+        /// Stale vertex index.
+        vertex: u32,
+    },
+    /// Consecutive loop vertices must differ.
+    ZeroLengthEdge {
+        /// Source vertex index.
+        from: u32,
+        /// Destination vertex index.
+        to: u32,
+    },
+    /// Loop vertices must be unique.
+    RepeatedVertex {
+        /// Repeated vertex index.
+        vertex: u32,
+    },
+    /// Adding the face would make an undirected edge non-manifold.
+    NonManifoldEdge {
+        /// Smaller endpoint index.
+        a: u32,
+        /// Larger endpoint index.
+        b: u32,
+    },
+}
+
+impl fmt::Display for AddFaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LoopTooShort => f.write_str("face loop must contain at least 3 vertices"),
+            Self::VertexNotLive { vertex } => write!(f, "vertex is not live: {vertex}"),
+            Self::ZeroLengthEdge { from, to } => {
+                write!(f, "zero-length edge in face loop: {from}->{to}")
+            }
+            Self::RepeatedVertex { vertex } => {
+                write!(f, "repeated vertex in face loop: {vertex}")
+            }
+            Self::NonManifoldEdge { a, b } => {
+                write!(f, "adding face would create non-manifold edge: ({a}, {b})")
+            }
+        }
+    }
+}
+
+impl core::error::Error for AddFaceError {}
+
 /// Single-writer transaction over a mesh.
 ///
 /// Mutations are applied eagerly to the underlying mesh. Dropping a transaction
@@ -495,6 +546,146 @@ impl Txn<'_> {
             self.dirty.mark_corner(twin);
         }
         updated
+    }
+
+    /// Adds one interior polygon face loop from live vertex IDs.
+    ///
+    /// For each directed loop edge `from -> to`, behavior is:
+    /// - reuse an existing matching OUTSIDE half-edge when present,
+    /// - otherwise create a new interior half-edge and a new OUTSIDE twin.
+    ///
+    /// This supports edit operators that need to fill holes or create side-wall
+    /// strips while preserving transaction bookkeeping and deterministic dirty
+    /// summaries.
+    pub fn add_face(&mut self, loop_vertices: &[VertexId]) -> Result<FaceId, AddFaceError> {
+        if loop_vertices.len() < 3 {
+            return Err(AddFaceError::LoopTooShort);
+        }
+        for &vertex in loop_vertices {
+            if self.mesh.vertices.get(vertex.as_id()).is_none() {
+                return Err(AddFaceError::VertexNotLive {
+                    vertex: vertex.index(),
+                });
+            }
+        }
+        for pair in loop_vertices.windows(2) {
+            if pair[0] == pair[1] {
+                return Err(AddFaceError::ZeroLengthEdge {
+                    from: pair[0].index(),
+                    to: pair[1].index(),
+                });
+            }
+        }
+        if loop_vertices.first() == loop_vertices.last() {
+            let first = loop_vertices[0];
+            return Err(AddFaceError::ZeroLengthEdge {
+                from: first.index(),
+                to: first.index(),
+            });
+        }
+        for i in 0..loop_vertices.len() {
+            let a = loop_vertices[i];
+            for &b in &loop_vertices[(i + 1)..] {
+                if a == b {
+                    return Err(AddFaceError::RepeatedVertex { vertex: a.index() });
+                }
+            }
+        }
+
+        let mut reuse_boundary = Vec::<Option<HalfEdgeId>>::with_capacity(loop_vertices.len());
+        for i in 0..loop_vertices.len() {
+            let from = loop_vertices[i];
+            let to = loop_vertices[(i + 1) % loop_vertices.len()];
+            let reuse = find_boundary_half_edge(self.mesh, from, to);
+            if reuse.is_none() && has_undirected_edge(self.mesh, from, to) {
+                return Err(AddFaceError::NonManifoldEdge {
+                    a: u32::min(from.index(), to.index()),
+                    b: u32::max(from.index(), to.index()),
+                });
+            }
+            reuse_boundary.push(reuse);
+        }
+
+        let degree =
+            u32::try_from(loop_vertices.len()).expect("face loop length should fit into u32");
+        let face = FaceId::from(self.mesh.faces.insert(crate::Face {
+            edge: HalfEdgeId::INVALID,
+            degree,
+        }));
+        let mut loop_half_edges = Vec::<HalfEdgeId>::with_capacity(loop_vertices.len());
+        for i in 0..loop_vertices.len() {
+            let from = loop_vertices[i];
+            let to = loop_vertices[(i + 1) % loop_vertices.len()];
+            if let Some(boundary) = reuse_boundary[i] {
+                self.mesh
+                    .half_edges
+                    .get_mut(boundary.as_id())
+                    .expect("preflight-validated boundary half-edge must be live")
+                    .face = face;
+                loop_half_edges.push(boundary);
+                self.mark_corner_dirty(boundary);
+                continue;
+            }
+
+            let interior = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+                to,
+                face,
+                next: HalfEdgeId::INVALID,
+                twin: HalfEdgeId::INVALID,
+            }));
+            let boundary = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+                to: from,
+                face: FaceId::OUTSIDE,
+                next: HalfEdgeId::INVALID,
+                twin: interior,
+            }));
+            self.mesh
+                .half_edges
+                .get_mut(interior.as_id())
+                .expect("new interior half-edge must be live")
+                .twin = boundary;
+            loop_half_edges.push(interior);
+            self.record_created_half_edge(interior);
+            self.record_created_half_edge(boundary);
+            self.mark_corner_dirty(interior);
+            self.mark_corner_dirty(boundary);
+        }
+
+        for i in 0..loop_half_edges.len() {
+            let current = loop_half_edges[i];
+            let next = loop_half_edges[(i + 1) % loop_half_edges.len()];
+            self.mesh
+                .half_edges
+                .get_mut(current.as_id())
+                .expect("new face loop half-edge must be live")
+                .next = next;
+        }
+        self.mesh
+            .faces
+            .get_mut(face.as_id())
+            .expect("new face must be live")
+            .edge = loop_half_edges[0];
+
+        stitch_outside_loops(self.mesh);
+        self.mesh.attrs.sync_capacities(
+            self.mesh.vertices.slot_count(),
+            self.mesh.faces.slot_count(),
+            self.mesh.half_edges.slot_count(),
+        );
+
+        self.record_created_face(face);
+        self.mark_face_dirty(face);
+        for &vertex in loop_vertices {
+            self.mark_vertex_dirty(vertex);
+        }
+        for &corner in &loop_half_edges {
+            self.mark_corner_dirty(corner);
+            if let Some(twin) = self.mesh.twin(corner) {
+                self.mark_corner_dirty(twin);
+            }
+        }
+
+        Ok(face)
     }
 
     /// Splits an undirected edge by inserting a new midpoint vertex.
@@ -1250,6 +1441,31 @@ fn half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId) -> Option<(VertexId, V
     let twin = mesh.twin(half_edge)?;
     let from = mesh.to_vertex(twin)?;
     Some((from, to))
+}
+
+fn has_undirected_edge(mesh: &Mesh, a: VertexId, b: VertexId) -> bool {
+    let (lo, hi) = (
+        u32::min(a.index(), b.index()),
+        u32::max(a.index(), b.index()),
+    );
+    mesh.half_edges.iter().any(|(id, _)| {
+        half_edge_vertices(mesh, HalfEdgeId::from(id)).is_some_and(|(from, to)| {
+            let x = u32::min(from.index(), to.index());
+            let y = u32::max(from.index(), to.index());
+            x == lo && y == hi
+        })
+    })
+}
+
+fn find_boundary_half_edge(mesh: &Mesh, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
+    mesh.half_edges.iter().find_map(|(id, edge)| {
+        if edge.face != FaceId::OUTSIDE {
+            return None;
+        }
+        let half_edge = HalfEdgeId::from(id);
+        let (candidate_from, candidate_to) = half_edge_vertices(mesh, half_edge)?;
+        (candidate_from == from && candidate_to == to).then_some(half_edge)
+    })
 }
 
 fn build_outgoing_index(mesh: &Mesh) -> Vec<(VertexId, HalfEdgeId)> {
@@ -2231,6 +2447,109 @@ mod tests {
         let changes = txn.commit();
         let diagonal = changes.created_half_edges[0];
         assert_eq!(mesh.edge_sharpness(diagonal), Some(2.0));
+    }
+
+    #[test]
+    fn add_face_creates_triangle_with_boundary_twins() {
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.begin();
+        let v0 = txn.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = txn.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = txn.add_vertex([0.0, 1.0, 0.0]);
+        let face = txn
+            .add_face(&[v0, v1, v2])
+            .expect("triangle face creation should succeed");
+        let changes = txn.commit();
+
+        assert_eq!(changes.created_faces, vec![face]);
+        assert_eq!(changes.created_half_edges.len(), 6);
+        assert_eq!(
+            mesh.faces.get(face.as_id()).map(|record| record.degree),
+            Some(3)
+        );
+        assert_eq!(
+            mesh.half_edges
+                .iter()
+                .filter(|(_, edge)| edge.face == FaceId::OUTSIDE)
+                .count(),
+            3
+        );
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn add_face_reuses_boundary_half_edges_when_possible() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("source mesh should build");
+        let vertices = mesh.vertices().collect::<Vec<_>>();
+
+        let mut txn = mesh.begin();
+        let face = txn
+            .add_face(&[vertices[0], vertices[2], vertices[1]])
+            .expect("reversed triangle should consume existing boundary");
+        let changes = txn.commit();
+
+        assert_eq!(changes.created_faces, vec![face]);
+        assert!(changes.created_half_edges.is_empty());
+        assert_eq!(mesh.faces.len(), 2);
+        assert_eq!(
+            mesh.half_edges
+                .iter()
+                .filter(|(_, edge)| edge.face == FaceId::OUTSIDE)
+                .count(),
+            0
+        );
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn add_face_rejects_invalid_input() {
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.begin();
+        let v0 = txn.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = txn.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = txn.add_vertex([0.0, 1.0, 0.0]);
+        let stale = VertexId::from(Id::new(999, NonZeroU32::MIN));
+
+        let err = txn
+            .add_face(&[v0, v1, stale])
+            .expect_err("stale vertex should fail");
+        assert_eq!(err, AddFaceError::VertexNotLive { vertex: 999 });
+
+        let err = txn
+            .add_face(&[v0, v1, v2, v1])
+            .expect_err("repeated vertex should fail");
+        assert_eq!(err, AddFaceError::RepeatedVertex { vertex: v1.index() });
+    }
+
+    #[test]
+    fn add_face_rejects_non_manifold_edge() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("source mesh should build");
+        let vertices = mesh.vertices().collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            let _ = txn
+                .add_face(&[vertices[0], vertices[2], vertices[1]])
+                .expect("second face should close boundary");
+            let _ = txn.commit();
+        }
+
+        let mut txn = mesh.begin();
+        let err = txn
+            .add_face(&[vertices[0], vertices[1], vertices[2]])
+            .expect_err("third face on same edge set should fail");
+        assert!(matches!(err, AddFaceError::NonManifoldEdge { .. }));
     }
 
     #[test]
