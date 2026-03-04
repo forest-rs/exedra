@@ -9,6 +9,7 @@
 //! - Boundary half-edges always have `face == FaceId::OUTSIDE`.
 
 use alloc::vec::Vec;
+use core::fmt;
 
 use crate::{
     Arena, Attributes, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr,
@@ -41,6 +42,21 @@ pub enum FaceLoopErrorKind {
         index: u32,
     },
 }
+
+impl fmt::Display for FaceLoopErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooShort => f.write_str("face loop has fewer than 3 vertices"),
+            Self::RepeatedVertex => f.write_str("face loop contains a repeated vertex"),
+            Self::ZeroLengthEdge => f.write_str("face loop contains a zero-length edge"),
+            Self::IndexOutOfBounds { index } => {
+                write!(f, "face loop index out of bounds: {index}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for FaceLoopErrorKind {}
 
 /// Indexed-triangle construction error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -83,6 +99,34 @@ pub enum BuildError {
     /// Build parameter contained an invalid weld tolerance value.
     InvalidWeldTolerance,
 }
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IndexOutOfBounds { triangle, index } => {
+                write!(f, "triangle {triangle} index out of bounds: {index}")
+            }
+            Self::DegenerateTriangle { triangle } => {
+                write!(f, "triangle {triangle} is degenerate")
+            }
+            Self::NonManifoldEdge { a, b, count } => {
+                write!(f, "non-manifold edge ({a}, {b}) with multiplicity {count}")
+            }
+            Self::BoundaryStitchFailed { vertex, candidates } => {
+                write!(
+                    f,
+                    "boundary stitch failed at vertex {vertex} ({candidates} candidates)"
+                )
+            }
+            Self::InvalidFaceLoop { face, kind } => {
+                write!(f, "invalid face loop at face {face}: {kind}")
+            }
+            Self::InvalidWeldTolerance => f.write_str("invalid weld tolerance"),
+        }
+    }
+}
+
+impl core::error::Error for BuildError {}
 
 /// Structured mesh validation error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -161,6 +205,67 @@ pub enum ValidationError {
         count: usize,
     },
 }
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DenseCapacityMismatch {
+                domain,
+                name,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "dense capacity mismatch for {domain:?}.{name}: expected {expected}, got {actual}"
+            ),
+            Self::InvalidReference {
+                owner,
+                owner_index,
+                field,
+                target_index,
+            } => write!(
+                f,
+                "invalid reference: {owner}[{owner_index}].{field} -> {target_index}"
+            ),
+            Self::TwinMismatch {
+                half_edge,
+                twin,
+                twin_of_twin,
+            } => write!(
+                f,
+                "twin mismatch at half-edge {half_edge}: twin {twin}, twin(twin) {twin_of_twin}"
+            ),
+            Self::FaceLoopNotClosed { face } => write!(f, "face loop not closed: {face}"),
+            Self::FaceDegreeMismatch {
+                face,
+                cached,
+                actual,
+            } => write!(
+                f,
+                "face degree mismatch at {face}: cached {cached}, actual {actual}"
+            ),
+            Self::FaceLoopForeignHalfEdge {
+                face,
+                half_edge,
+                found_face,
+            } => write!(
+                f,
+                "foreign half-edge in face loop: face {face}, half-edge {half_edge}, found {found_face}"
+            ),
+            Self::VertexStarNotClosed { vertex } => {
+                write!(f, "vertex star not closed: {vertex}")
+            }
+            Self::BoundaryInvariantBroken { half_edge } => {
+                write!(f, "boundary invariant broken at half-edge {half_edge}")
+            }
+            Self::EdgeMultiplicity { a, b, count } => {
+                write!(f, "edge multiplicity mismatch for ({a}, {b}): {count}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for ValidationError {}
 
 /// Monotonic mesh revision counter.
 ///

@@ -4,6 +4,7 @@
 //! Explicit mesh transactions and deterministic change summaries.
 
 use alloc::vec::Vec;
+use core::fmt;
 
 use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
 
@@ -142,6 +143,26 @@ pub enum DeleteFacesError {
         incoming: usize,
     },
 }
+
+impl fmt::Display for DeleteFacesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonCanonicalFaceSet => f.write_str("face set must be sorted and deduplicated"),
+            Self::OutsideFaceNotAllowed => f.write_str("FaceId::OUTSIDE cannot be deleted"),
+            Self::FaceNotLive { face } => write!(f, "face is not live: {face}"),
+            Self::BoundaryContinuationAmbiguous {
+                vertex,
+                outgoing,
+                incoming,
+            } => write!(
+                f,
+                "boundary continuation ambiguous at vertex {vertex}: outgoing={outgoing}, incoming={incoming}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for DeleteFacesError {}
 
 /// Single-writer transaction over a mesh.
 ///

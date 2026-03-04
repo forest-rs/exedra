@@ -45,6 +45,8 @@ impl fmt::Display for OpErrorKind {
     }
 }
 
+impl core::error::Error for OpErrorKind {}
+
 /// Structured operator error payload with context.
 #[derive(Clone, Debug)]
 pub struct OpError {
@@ -128,6 +130,8 @@ impl fmt::Display for OpError {
         )
     }
 }
+
+impl core::error::Error for OpError {}
 
 #[cfg(test)]
 mod tests {

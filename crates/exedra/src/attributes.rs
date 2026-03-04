@@ -5,6 +5,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt;
 use core::marker::PhantomData;
 
 use crate::Id;
@@ -258,6 +259,18 @@ pub enum AttrError {
     /// Layer name/domain already exists with the same type.
     AlreadyExists,
 }
+
+impl fmt::Display for AttrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Self::TypeMismatch => "attribute layer exists with different type",
+            Self::AlreadyExists => "attribute layer already exists",
+        };
+        f.write_str(text)
+    }
+}
+
+impl core::error::Error for AttrError {}
 
 impl Attributes {
     /// Creates a new attribute store with required built-ins registered.
