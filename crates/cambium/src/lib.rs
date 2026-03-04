@@ -49,6 +49,7 @@ extern crate std;
 compile_error!("cambium requires either the `std` or `libm` feature");
 
 mod artifact;
+mod bounds;
 mod context;
 mod diag;
 mod dirty;
@@ -79,6 +80,7 @@ mod validate;
 
 pub use artifact::{Artifact, Artifacts};
 pub use artifact::{DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACT_ITEMS};
+pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, InspectBounds};
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
 pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};

@@ -1,7 +1,7 @@
 ---
 id: cam-94ez
 title: Bounds inspect operator
-status: open
+status: closed
 deps: [cam-tdg4]
 links: []
 created: 2026-03-04T16:09:59Z
