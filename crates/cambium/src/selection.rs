@@ -16,24 +16,23 @@ pub type EdgeSet = Vec<HalfEdgeId>;
 ///
 /// Returns `true` if the input was modified.
 pub fn canonicalize_face_set(faces: &mut FaceSet) -> bool {
-    let mut changed = faces.windows(2).any(|pair| pair[0] >= pair[1]);
-    let len_before = faces.len();
-    faces.sort_unstable();
-    faces.dedup();
-    changed |= faces.len() != len_before;
-    changed
+    canonicalize_sorted_unique(faces)
 }
 
 /// Canonicalizes a half-edge selection in-place.
 ///
 /// Returns `true` if the input was modified.
 pub fn canonicalize_edge_set(edges: &mut EdgeSet) -> bool {
-    let mut changed = edges.windows(2).any(|pair| pair[0] >= pair[1]);
-    let len_before = edges.len();
-    edges.sort_unstable();
-    edges.dedup();
-    changed |= edges.len() != len_before;
-    changed
+    canonicalize_sorted_unique(edges)
+}
+
+fn canonicalize_sorted_unique<T: Ord>(values: &mut Vec<T>) -> bool {
+    if values.windows(2).all(|pair| pair[0] < pair[1]) {
+        return false;
+    }
+    values.sort_unstable();
+    values.dedup();
+    true
 }
 
 #[cfg(test)]
@@ -75,6 +74,17 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_face_set_reports_change_for_reordered_unique_input() {
+        let f0 = FaceId::from(Id::new(0, NonZeroU32::MIN));
+        let f1 = FaceId::from(Id::new(1, NonZeroU32::MIN));
+        let mut faces: FaceSet = vec![f1, f0];
+
+        let changed = canonicalize_face_set(&mut faces);
+        assert!(changed);
+        assert_eq!(faces, vec![f0, f1]);
+    }
+
+    #[test]
     fn canonicalize_edge_set_sorts_and_dedups() {
         let e0 = HalfEdgeId::from(Id::new(0, NonZeroU32::MIN));
         let e1 = HalfEdgeId::from(Id::new(1, NonZeroU32::MIN));
@@ -84,5 +94,14 @@ mod tests {
         let changed = canonicalize_edge_set(&mut edges);
         assert!(changed);
         assert_eq!(edges, vec![e0, e1, e2]);
+    }
+
+    #[test]
+    fn canonicalize_edge_set_reports_no_change_for_canonical_input() {
+        let e0 = HalfEdgeId::from(Id::new(0, NonZeroU32::MIN));
+        let e1 = HalfEdgeId::from(Id::new(1, NonZeroU32::MIN));
+        let mut edges: EdgeSet = vec![e0, e1];
+        let changed = canonicalize_edge_set(&mut edges);
+        assert!(!changed);
     }
 }

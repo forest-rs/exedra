@@ -1,6 +1,6 @@
 ---
 id: cam-kxpi
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T00:40:37Z
