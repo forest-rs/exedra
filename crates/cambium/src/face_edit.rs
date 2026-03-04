@@ -4,7 +4,6 @@
 //! Face extrude/inset edit operators.
 
 use alloc::format;
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -13,8 +12,8 @@ use exedra::{AddFaceError, DeletePolicy, FaceId, VertexId};
 use crate::math::FloatExt;
 use crate::selection::{FaceSet, canonicalize_face_set};
 use crate::{
-    Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError,
-    OpErrorKind, OpReport,
+    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
+    OpReport,
 };
 
 /// Parameters for [`ExtrudeFaces`].
@@ -208,14 +207,6 @@ impl EditOperator for ExtrudeFaces {
             report.stats.elements_deleted.faces =
                 report.stats.elements_deleted.faces.saturating_add(1);
         }
-        let _ = report.artifacts.push(Artifact::FaceSet {
-            name: "extrude.cap_faces".to_string(),
-            faces: cap_faces.clone(),
-        });
-        let _ = report.artifacts.push(Artifact::FaceSet {
-            name: "extrude.wall_faces".to_string(),
-            faces: wall_faces.clone(),
-        });
         Ok((
             report,
             ExtrudeFacesOutput {
@@ -361,14 +352,6 @@ impl EditOperator for InsetFaces {
             report.stats.elements_deleted.faces =
                 report.stats.elements_deleted.faces.saturating_add(1);
         }
-        let _ = report.artifacts.push(Artifact::FaceSet {
-            name: "inset.inner_faces".to_string(),
-            faces: inner_faces.clone(),
-        });
-        let _ = report.artifacts.push(Artifact::FaceSet {
-            name: "inset.frame_faces".to_string(),
-            faces: frame_faces.clone(),
-        });
         Ok((
             report,
             InsetFacesOutput {
@@ -576,7 +559,7 @@ mod tests {
     use exedra::{BuildParams, Mesh};
 
     use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
-    use crate::{Artifact, OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams};
+    use crate::{OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams};
 
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
         let mesh = Mesh::from_polygons(
@@ -615,21 +598,6 @@ mod tests {
             .filter(|position| position[2].abs() > 1e-5)
             .count();
         assert_eq!(nonzero_z, 4);
-        let mut cap_count = None;
-        let mut wall_count = None;
-        for artifact in result.report.artifacts.iter() {
-            match artifact {
-                Artifact::FaceSet { name, faces } if name == "extrude.cap_faces" => {
-                    cap_count = Some(faces.len());
-                }
-                Artifact::FaceSet { name, faces } if name == "extrude.wall_faces" => {
-                    wall_count = Some(faces.len());
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(cap_count, Some(1));
-        assert_eq!(wall_count, Some(4));
         assert_eq!(result.output.cap_faces.len(), 1);
         assert_eq!(result.output.wall_faces.len(), 4);
         assert!(mesh.validate_fast().is_empty());
@@ -658,21 +626,6 @@ mod tests {
             .filter(|position| position[2].abs() > 1e-5)
             .count();
         assert_eq!(nonzero_z, 0);
-        let mut inner_count = None;
-        let mut frame_count = None;
-        for artifact in result.report.artifacts.iter() {
-            match artifact {
-                Artifact::FaceSet { name, faces } if name == "inset.inner_faces" => {
-                    inner_count = Some(faces.len());
-                }
-                Artifact::FaceSet { name, faces } if name == "inset.frame_faces" => {
-                    frame_count = Some(faces.len());
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(inner_count, Some(1));
-        assert_eq!(frame_count, Some(4));
         assert_eq!(result.output.inner_faces.len(), 1);
         assert_eq!(result.output.frame_faces.len(), 4);
         assert!(mesh.validate_fast().is_empty());
