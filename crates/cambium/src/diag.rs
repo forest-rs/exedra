@@ -62,6 +62,9 @@ pub enum DiagSpan {
 }
 
 /// Structured diagnostic record.
+///
+/// Emitted through [`DiagnosticsSink`] and often attached to
+/// [`OpError`](crate::OpError) and [`OpReport`](crate::OpReport).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     /// Severity.
@@ -108,6 +111,8 @@ pub const DEFAULT_MAX_DIAGNOSTICS: usize = 64;
 /// - keep all `Error` first, then `Warn`, then `Note`
 /// - within each level keep earliest insertion order
 /// - truncate at `max_diagnostics`
+///
+/// Stored in [`OpContext::diagnostics`](crate::OpContext::diagnostics).
 #[derive(Clone, Debug)]
 pub struct DiagnosticsSink {
     max_diagnostics: usize,

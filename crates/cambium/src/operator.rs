@@ -12,6 +12,12 @@ use crate::{OpContext, OpError, OpReport};
 /// Operators mutate mesh state through a transaction and return an operator
 /// report. Transaction commit/abort is orchestrated by the runner.
 ///
+/// Implemented by concrete operators such as [`UvPlanar`](crate::UvPlanar),
+/// [`UvBox`](crate::UvBox), [`UvCylinder`](crate::UvCylinder),
+/// [`TagFaceRegion`](crate::TagFaceRegion),
+/// [`MarkEdgeSeam`](crate::MarkEdgeSeam), and
+/// [`MarkEdgeSharp`](crate::MarkEdgeSharp).
+///
 /// This trait is intentionally not object-safe in v0.1 because `Params` is an
 /// associated type. Cambium currently favors static dispatch.
 pub trait EditOperator {

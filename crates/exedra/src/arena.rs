@@ -25,6 +25,9 @@ enum Slot<T> {
 /// The arena preserves deterministic slot-order iteration and never compacts
 /// implicitly. Removed slots are recycled through a free list with bumped
 /// generation counters.
+///
+/// Exedra uses this internally for vertex/half-edge/face storage; it is also
+/// available as a general stable-handle arena for advanced callers.
 #[derive(Clone, Debug)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,

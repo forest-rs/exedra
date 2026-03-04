@@ -1,7 +1,24 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Deterministic mesh primitive generators for exedra.
+//! Deterministic primitive mesh generators for Exedra.
+//!
+//! This crate provides a curated constructor surface at the crate root:
+//! - constructors: [`quad()`], [`box_primitive()`], [`cylinder()`], [`uv_sphere()`],
+//! - parameter types: [`QuadParams`], [`BoxParams`], [`CylinderParams`],
+//!   [`UvSphereParams`],
+//! - semantic region/selection metadata in [`Primitive`].
+//!
+//! Primitive outputs are deterministic for fixed input parameters and include:
+//! - generated [`Mesh`] topology,
+//! - face-region assignment ([`FaceRegionLayer`]),
+//! - named canonical face/edge selections ([`Selections`]).
+//!
+//! Typical flow:
+//! 1. Build a primitive (for example [`quad()`]).
+//! 2. Read semantic metadata from [`Primitive::face_region`] and
+//!    [`Primitive::selections`].
+//! 3. Pass [`Primitive::mesh`] into Exedra/Cambium workflows.
 
 #![no_std]
 extern crate alloc;
@@ -10,15 +27,21 @@ use alloc::vec::Vec;
 
 use exedra::{FaceId, HalfEdgeId, Mesh};
 
-pub mod box_primitive;
+mod box_primitive;
 mod common;
-pub mod cylinder;
-pub mod quad;
-pub mod uv_sphere;
+mod cylinder;
+mod quad;
+mod uv_sphere;
 
 pub use box_primitive::{BoxParams, box_primitive};
+pub use box_primitive::{
+    REGION_SIDE_X_NEG, REGION_SIDE_X_POS, REGION_SIDE_Y_NEG, REGION_SIDE_Y_POS, REGION_SIDE_Z_NEG,
+    REGION_SIDE_Z_POS,
+};
 pub use cylinder::{CylinderParams, cylinder};
-pub use quad::{QuadParams, quad};
+pub use cylinder::{REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE};
+pub use quad::{QuadParams, REGION_FACE, quad};
+pub use uv_sphere::{REGION_BODY, REGION_POLE_BOTTOM, REGION_POLE_TOP};
 pub use uv_sphere::{UvSphereParams, uv_sphere};
 
 /// Output bundle produced by primitive constructors.
@@ -35,14 +58,27 @@ pub struct Primitive {
     pub selections: Selections,
 }
 
-/// Semantic region ID used by primitive outputs.
+/// Semantic region ID used by [`FaceRegionLayer`] and primitive region constants.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct RegionId(pub u32);
 
-/// Dense face-domain region layer.
+/// Dense face-domain semantic region metadata produced by primitive constructors.
 ///
-/// `values` is indexed by `FaceId::index()`. Missing indices resolve to
-/// `default`.
+/// Primitive generators assign stable region IDs (for example side/cap/pole) so
+/// downstream tools can select and process semantic parts of a shape without
+/// re-deriving them from geometry.
+///
+/// This layer is intentionally shipped as primitive metadata (rather than
+/// written directly into `mesh.attrs()`) so callers can choose how to map or
+/// merge region semantics into their own attribute schemas.
+///
+/// [`FaceRegionLayer::values`] is indexed by [`FaceId::index`]. Missing indices
+/// resolve to [`FaceRegionLayer::default`].
+///
+/// Typical usage:
+/// 1. Build a primitive.
+/// 2. For each mesh face, read `face_region.get(face)`.
+/// 3. Map region IDs into your material/selection/tagging workflow.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaceRegionLayer {
     /// Default region returned when a face index is not present in `values`.
@@ -71,11 +107,24 @@ impl FaceRegionLayer {
     }
 }
 
-/// Stable selection name used for primitive metadata.
+/// Stable selection name used in [`Selections`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct SelectionName(pub &'static str);
 
-/// Named canonical face/edge selections produced by primitives.
+/// Named canonical face/edge selections produced by primitive constructors.
+///
+/// Selections provide pre-authored semantic subsets (for example `"faces.all"`,
+/// `"faces.cap_top"`, `"edges.seam"`) so callers can target meaningful parts
+/// of a primitive without recomputing adjacency or geometry predicates.
+///
+/// Selection names are stable API strings and should be treated as contracts by
+/// downstream tools. The contained sets are canonical (sorted + deduplicated)
+/// for deterministic processing.
+///
+/// Typical usage:
+/// 1. Find a named set in [`Selections::face_sets`] or [`Selections::edge_sets`].
+/// 2. Iterate IDs from [`FaceSet::as_slice`] / [`EdgeSet::as_slice`].
+/// 3. Apply region/tag/UV operations to that deterministic subset.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Selections {
     /// Named face sets (for example `faces.all`, `faces.cap_top`).
@@ -85,6 +134,8 @@ pub struct Selections {
 }
 
 /// Canonical set of faces (sorted by stable ID, deduplicated).
+///
+/// Used inside [`Selections::face_sets`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaceSet(Vec<FaceId>);
 
@@ -128,6 +179,8 @@ impl From<Vec<FaceId>> for FaceSet {
 }
 
 /// Canonical set of half-edges (sorted by stable ID, deduplicated).
+///
+/// Used inside [`Selections::edge_sets`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EdgeSet(Vec<HalfEdgeId>);
 
@@ -172,7 +225,8 @@ impl From<Vec<HalfEdgeId>> for EdgeSet {
 
 /// Canonicalizes face IDs in-place (stable ID sort + dedup).
 ///
-/// Returns `true` when the vector content changed.
+/// Returns `true` when the vector content changed. This is used by
+/// [`FaceSet::from_vec`].
 pub fn sort_and_dedup_faces(values: &mut Vec<FaceId>) -> bool {
     let before = values.clone();
     values.sort_unstable();
@@ -182,7 +236,8 @@ pub fn sort_and_dedup_faces(values: &mut Vec<FaceId>) -> bool {
 
 /// Canonicalizes half-edge IDs in-place (stable ID sort + dedup).
 ///
-/// Returns `true` when the vector content changed.
+/// Returns `true` when the vector content changed. This is used by
+/// [`EdgeSet::from_vec`].
 pub fn sort_and_dedup_edges(values: &mut Vec<HalfEdgeId>) -> bool {
     let before = values.clone();
     values.sort_unstable();

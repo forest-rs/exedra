@@ -7,7 +7,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use exedra::{CornerId, Domain, FaceId, HalfEdgeId, Mesh};
+use exedra::attributes::Domain;
+use exedra::{CornerId, FaceId, HalfEdgeId, Mesh};
 
 /// Default artifact item cap for [`Artifacts`].
 pub const DEFAULT_MAX_ARTIFACT_ITEMS: usize = 16;
@@ -15,6 +16,9 @@ pub const DEFAULT_MAX_ARTIFACT_ITEMS: usize = 16;
 pub const DEFAULT_MAX_ARTIFACT_BYTES: usize = 1 << 20;
 
 /// One operator-emitted debug artifact.
+///
+/// Artifacts are attached to [`OpReport::artifacts`](crate::OpReport::artifacts)
+/// for debugging and inspection workflows.
 #[derive(Clone, Debug)]
 pub enum Artifact {
     /// Full mesh snapshot.
@@ -105,6 +109,8 @@ impl Artifact {
 ///
 /// On overflow (item count or bytes), new entries are dropped. Earlier entries
 /// are always retained.
+///
+/// Stored on [`OpReport::artifacts`](crate::OpReport::artifacts).
 #[derive(Clone, Debug)]
 pub struct Artifacts {
     items: Vec<Artifact>,
@@ -182,7 +188,8 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::{Domain, FaceId, Id, Mesh};
+    use exedra::attributes::Domain;
+    use exedra::{FaceId, Id, Mesh};
 
     use super::{Artifact, Artifacts, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACT_ITEMS};
 

@@ -15,7 +15,7 @@ use web_time::Instant;
 use crate::timing::duration_nanos_u64;
 use crate::{Diagnostic, EditOperator, OpContext, OpError, OpReport};
 
-/// Result from a committed operator run.
+/// Result from [`OperatorRunner::run_commit`].
 #[derive(Clone, Debug)]
 pub struct OpResult {
     /// Transaction commit summary.
@@ -24,7 +24,7 @@ pub struct OpResult {
     pub report: OpReport,
 }
 
-/// Result from a preview operator run.
+/// Result from [`OperatorRunner::run_preview`].
 #[derive(Clone, Debug)]
 pub struct PreviewResult {
     /// Preview mesh produced by running on a cloned base mesh.
@@ -34,6 +34,8 @@ pub struct PreviewResult {
 }
 
 /// Stateful runner owning reusable operator context.
+///
+/// This is the main entry point for executing Cambium operators.
 #[derive(Debug, Default)]
 pub struct OperatorRunner {
     /// Reusable execution context.

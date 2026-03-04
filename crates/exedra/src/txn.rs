@@ -19,6 +19,9 @@ const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 ///
 /// This wraps [`understory_dirty`] primitives while exposing typed Exedra
 /// domains. The primary consumption path is deterministic drain operations.
+///
+/// Most callers consume this via [`ChangeSet::dirty`] after
+/// [`Txn::commit`](crate::Txn::commit).
 #[derive(Clone, Debug, Default)]
 pub struct DirtySet {
     inner: UnderstoryDirtySet<Id>,
@@ -93,6 +96,9 @@ impl DirtySet {
 }
 
 /// Deterministic summary of mesh changes produced by a committed transaction.
+///
+/// Returned by [`Txn::commit`] and by convenience wrappers such as
+/// [`Mesh::delete_faces`].
 #[derive(Clone, Debug, Default)]
 pub struct ChangeSet {
     /// Conservative invalidation summary.
@@ -112,6 +118,8 @@ pub struct ChangeSet {
 }
 
 /// Face-deletion behavior for isolated vertices.
+///
+/// Passed to [`Mesh::delete_faces`] or [`Txn::delete_faces`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum DeletePolicy {
     /// Remove isolated vertices after face deletion.
@@ -121,7 +129,8 @@ pub enum DeletePolicy {
     KeepIsolated,
 }
 
-/// Structured face-deletion error.
+/// Structured face-deletion error from [`Mesh::delete_faces`] and
+/// [`Txn::delete_faces`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteFacesError {
     /// Input face list must be sorted and deduplicated.
@@ -168,6 +177,9 @@ impl core::error::Error for DeleteFacesError {}
 ///
 /// Mutations are applied eagerly to the underlying mesh. Dropping a transaction
 /// does not roll back mesh changes; it only discards accumulated bookkeeping.
+///
+/// Acquire via [`Mesh::begin`], apply mutating operations, then finish with
+/// [`Txn::commit`] (or [`Txn::abort`] to drop bookkeeping only).
 #[derive(Debug)]
 pub struct Txn<'a> {
     mesh: &'a mut Mesh,

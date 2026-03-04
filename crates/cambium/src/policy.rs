@@ -166,6 +166,9 @@ impl Default for PropagatePolicy {
 ///
 /// Uses [`PartialEq`] (not `Eq`) because float-bearing sub-policies (UV/boolean)
 /// intentionally avoid total equality semantics.
+///
+/// Stored on [`OpContext::policy`](crate::OpContext::policy) and consulted by
+/// operators/runners.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct PolicySet {
     /// Quality/budget controls.

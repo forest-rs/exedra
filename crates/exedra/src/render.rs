@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Deterministic render extraction from polygonal mesh to triangle mesh.
+//!
+//! Use [`Mesh::to_trimesh`](crate::Mesh::to_trimesh) to produce [`TriMesh`]
+//! output for downstream rendering.
 
 use alloc::vec::Vec;
 
+use crate::attributes::SparseLayer;
 use crate::{CornerId, FaceId, Mesh, VertexId, attr};
 
 /// Triangle mesh suitable for GPU upload.
+///
+/// Produced by [`Mesh::to_trimesh`]. The buffers are parallel by
+/// render-vertex index: `positions[i]`, `uvs[i]`, and `normals[i]`
+/// describe vertex `i`, and `indices` references those vertices in
+/// triangle order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TriMesh {
     /// Triangle index buffer.
@@ -22,7 +31,7 @@ pub struct TriMesh {
     pub normals: Vec<[f32; 3]>,
 }
 
-/// Extraction mode.
+/// Extraction mode used by [`ExtractParams`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum ExtractMode {
     /// Rebuilds output from full mesh state.
@@ -32,7 +41,19 @@ pub enum ExtractMode {
     Incremental,
 }
 
-/// Render extraction parameters.
+/// Render extraction parameters for [`Mesh::to_trimesh`](crate::Mesh::to_trimesh).
+///
+/// In v0.1, [`ExtractMode::Incremental`] behaves as full rebuild.
+///
+/// # Example
+/// ```rust
+/// use exedra::{ExtractMode, ExtractParams};
+///
+/// let params = ExtractParams {
+///     mode: ExtractMode::FullRebuild,
+/// };
+/// assert_eq!(params.mode, ExtractMode::FullRebuild);
+/// ```
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ExtractParams {
     /// Extraction mode.
@@ -47,7 +68,7 @@ impl Default for ExtractParams {
     }
 }
 
-/// Deterministic extraction counters.
+/// Deterministic extraction counters returned by [`Mesh::to_trimesh`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExtractStats {
     /// Number of emitted triangles.
@@ -75,6 +96,24 @@ impl Mesh {
     /// Render vertex splitting:
     /// - keys are `(VertexId, corner_uv_bits)`
     /// - shared topology vertices split when corner UVs differ
+    ///
+    /// # Example
+    /// ```rust
+    /// use exedra::{ExtractParams, Mesh};
+    ///
+    /// let positions = [
+    ///     [0.0, 0.0, 0.0],
+    ///     [1.0, 0.0, 0.0],
+    ///     [0.0, 1.0, 0.0],
+    /// ];
+    /// let triangles = [[0_u32, 1, 2]];
+    /// let mesh = Mesh::from_indexed_triangles(&positions, &triangles, &Default::default())?;
+    ///
+    /// let (tri, stats) = mesh.to_trimesh(&ExtractParams::default());
+    /// assert_eq!(tri.indices, vec![0, 1, 2]);
+    /// assert_eq!(stats.triangle_count, 1);
+    /// # Ok::<(), exedra::BuildError>(())
+    /// ```
     pub fn to_trimesh(&self, params: &ExtractParams) -> (TriMesh, ExtractStats) {
         if params.mode == ExtractMode::Incremental {
             debug_assert!(
@@ -109,7 +148,7 @@ impl Mesh {
 fn emit_face(
     source: &Mesh,
     face: FaceId,
-    corner_uvs: Option<&crate::SparseLayer<[f32; 2]>>,
+    corner_uvs: Option<&SparseLayer<[f32; 2]>>,
     mesh: &mut TriMesh,
     keys: &mut Vec<RenderVertexKey>,
     seen_vertex_uv: &mut Vec<(VertexId, [u32; 2])>,
@@ -135,7 +174,7 @@ fn emit_face(
 fn resolve_render_vertex(
     source: &Mesh,
     corner: CornerId,
-    corner_uvs: Option<&crate::SparseLayer<[f32; 2]>>,
+    corner_uvs: Option<&SparseLayer<[f32; 2]>>,
     mesh: &mut TriMesh,
     keys: &mut Vec<RenderVertexKey>,
     seen_vertex_uv: &mut Vec<(VertexId, [u32; 2])>,

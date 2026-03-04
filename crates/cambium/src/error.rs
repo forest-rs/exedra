@@ -11,7 +11,7 @@ use exedra::{BuildError, ValidationError};
 
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
 
-/// Classifies high-level operator failure cause.
+/// Classifies high-level operator failure cause for [`OpError`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum OpErrorKind {
     /// A required precondition failed before mutation.
@@ -48,6 +48,10 @@ impl fmt::Display for OpErrorKind {
 impl core::error::Error for OpErrorKind {}
 
 /// Structured operator error payload with context.
+///
+/// Returned by operator application and runner execution paths
+/// ([`OperatorRunner::run_commit`](crate::OperatorRunner::run_commit),
+/// [`OperatorRunner::run_preview`](crate::OperatorRunner::run_preview)).
 #[derive(Clone, Debug)]
 pub struct OpError {
     /// Error classification.

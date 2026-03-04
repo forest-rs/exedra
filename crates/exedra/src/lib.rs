@@ -1,24 +1,44 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Structural half-edge mesh kernel.
+//! Exedra: deterministic half-edge mesh kernel.
+//!
+//! Exedra provides a compact, explicit core for polygonal mesh editing:
+//! - stable generational IDs ([`VertexId`], [`HalfEdgeId`], [`FaceId`]),
+//! - half-edge topology with explicit OUTSIDE boundary modeling,
+//! - typed dense/sparse attribute layers,
+//! - transactional edits with deterministic change summaries,
+//! - deterministic render extraction ([`Mesh::to_trimesh`]).
+//!
+//! The intended public surface is the crate root (`exedra::...`) via
+//! re-exported core types like [`Mesh`], [`Txn`], [`MeshBuilder`], and
+//! attribute/key APIs.
+//!
+//! For deeper narrative docs, see [`manual`].
+//!
+//! Common entry points:
+//! - Attributes and domains: [`attributes`]
+//! - Built-in attribute keys: [`attr`]
+//! - Mesh construction/traversal: [`Mesh`], [`MeshBuilder`]
+//! - Render extraction: [`ExtractParams`], [`TriMesh`]
 
 #![no_std]
 extern crate alloc;
 
-pub mod arena;
+mod arena;
 pub mod attr;
 pub mod attributes;
-pub mod id;
+mod id;
+#[cfg(doc)]
+pub mod manual;
 pub mod mesh;
-pub mod numeric;
-pub mod render;
+mod numeric;
+mod render;
 mod sorted_merge;
-pub mod topology;
-pub mod txn;
+mod topology;
+mod txn;
 
 pub use arena::Arena;
-pub use attributes::{AttrError, AttrKey, Attributes, DenseLayer, Domain, SparseLayer};
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
     BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder, MeshRevision,

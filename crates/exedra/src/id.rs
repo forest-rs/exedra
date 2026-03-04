@@ -81,9 +81,18 @@ macro_rules! define_id_type {
     };
 }
 
-define_id_type!(VertexId, "Stable ID for a vertex arena slot.");
-define_id_type!(HalfEdgeId, "Stable ID for a half-edge arena slot.");
-define_id_type!(FaceId, "Stable ID for a face arena slot.");
+define_id_type!(
+    VertexId,
+    "Stable ID for a [`Vertex`](crate::Vertex) arena slot, returned by APIs like [`Mesh::add_vertex`](crate::Mesh::add_vertex)."
+);
+define_id_type!(
+    HalfEdgeId,
+    "Stable ID for a [`HalfEdge`](crate::HalfEdge) arena slot, returned by topology traversal APIs."
+);
+define_id_type!(
+    FaceId,
+    "Stable ID for a [`Face`](crate::Face) arena slot, returned by face builders/iterators."
+);
 
 impl VertexId {
     /// Reserved sentinel ID for "no vertex".
@@ -100,7 +109,16 @@ impl FaceId {
     pub const OUTSIDE: Self = Self::new(u32::MAX, NonZeroU32::MIN);
 }
 
-/// Corner IDs are exactly half-edge IDs (`CornerId == HalfEdgeId`).
+/// Corner IDs are exactly half-edge IDs ([`CornerId`] == [`HalfEdgeId`]).
+///
+/// A face with degree `N` has `N` corners and `N` directed boundary steps.
+/// In Exedra, each directed step is a half-edge, so each half-edge on a face
+/// loop also names exactly one corner of that face.
+///
+/// This matters because some attributes are per-corner, not per-vertex. For
+/// example, UVs can differ across faces at a seam even when they share the
+/// same topology vertex; storing those values on corners preserves that
+/// discontinuity explicitly.
 pub type CornerId = HalfEdgeId;
 
 #[cfg(test)]

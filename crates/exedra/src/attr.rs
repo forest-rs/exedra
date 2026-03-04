@@ -7,7 +7,7 @@
 //! treats as part of core mesh semantics. Keeping these keys centralized avoids
 //! string drift across crates and gives callers one stable place to import them.
 
-use crate::{AttrKey, Domain};
+use crate::attributes::{AttrKey, Domain};
 
 /// Required dense vertex positions.
 pub const VERTEX_POSITION: AttrKey<[f32; 3]> = AttrKey::new(Domain::Vertex, "vertex.position");

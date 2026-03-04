@@ -7,6 +7,9 @@
 ///
 /// All tolerance-based geometric comparisons should flow through this policy
 /// rather than using ad-hoc epsilon constants.
+///
+/// Pass this through higher-level operator/primitive APIs when you want mesh
+/// construction and validation behavior to stay numerically consistent.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct NumericPolicy {
     /// Base epsilon used for near-equality checks.

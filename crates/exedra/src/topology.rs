@@ -7,7 +7,9 @@ use crate::{FaceId, HalfEdgeId, VertexId};
 
 /// Vertex topology record.
 ///
-/// `out` references one outgoing half-edge for vertex-star traversal.
+/// [`Vertex::out`] references one outgoing half-edge for
+/// [`Mesh::vertex_star`](crate::Mesh::vertex_star) traversal.
+/// Stored in the mesh vertex arena and exposed mainly for diagnostics/tests.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Vertex {
     /// One outgoing half-edge from this vertex.
@@ -15,6 +17,9 @@ pub struct Vertex {
 }
 
 /// Half-edge topology record.
+///
+/// Stored in the mesh half-edge arena and exposed mainly for
+/// diagnostics/tests.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HalfEdge {
     /// Destination vertex of this directed half-edge.
@@ -28,6 +33,8 @@ pub struct HalfEdge {
 }
 
 /// Face topology record.
+///
+/// Stored in the mesh face arena and exposed mainly for diagnostics/tests.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Face {
     /// One half-edge on this face's loop.

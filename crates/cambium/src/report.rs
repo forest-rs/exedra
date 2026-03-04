@@ -36,6 +36,21 @@ pub struct SmallCounters {
 }
 
 /// Deterministic stats payload for one operator run.
+///
+/// You typically read this from [`OpReport::stats`] after running an operator
+/// through [`crate::OperatorRunner`].
+///
+/// # Example
+/// ```rust
+/// use cambium::Stats;
+///
+/// let mut stats = Stats::default();
+/// stats.counters.faces_processed = 3;
+/// stats.counters.corners_written = 12;
+///
+/// assert_eq!(stats.counters.faces_processed, 3);
+/// assert_eq!(stats.counters.corners_written, 12);
+/// ```
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Stats {
     /// Elements touched (read and/or written).
@@ -61,6 +76,25 @@ pub struct TimeBucket {
 ///
 /// Bucket ordering is insertion order. Overflow keeps earlier buckets and
 /// deterministically drops new distinct bucket names.
+///
+/// You usually read this from [`OpReport::timings`], populated by
+/// [`crate::OperatorRunner`] during `run_commit`/`run_preview`.
+///
+/// # Example
+/// ```rust
+/// use cambium::Timings;
+///
+/// let mut timings = Timings::new(2);
+/// timings.add("select", 100);
+/// timings.add("select", 50);
+/// timings.add("attrs", 25);
+///
+/// let buckets = timings.iter().collect::<Vec<_>>();
+/// assert_eq!(buckets.len(), 2);
+/// assert_eq!(buckets[0].name, "select");
+/// assert_eq!(buckets[0].nanos, 150);
+/// assert_eq!(buckets[1].name, "attrs");
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Timings {
     max_buckets: usize,
@@ -125,6 +159,14 @@ impl Default for Timings {
 }
 
 /// Operator execution report payload.
+///
+/// Returned by all [`EditOperator`](crate::EditOperator) implementations and
+/// included in [`OpResult`](crate::OpResult) /
+/// [`PreviewResult`](crate::PreviewResult).
+///
+/// In typical usage, obtain this as `result.report` from
+/// [`crate::OperatorRunner::run_commit`] or `preview.report` from
+/// [`crate::OperatorRunner::run_preview`].
 #[derive(Clone, Debug)]
 pub struct OpReport {
     /// Stable operator name.

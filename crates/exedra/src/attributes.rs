@@ -1,7 +1,69 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Typed attribute layers across mesh domains.
+//! Typed attribute storage across mesh domains.
+//!
+//! This module defines Exedra's attribute model:
+//! - [`AttrKey<T>`]: typed key (domain + stable name),
+//! - [`DenseLayer<T>`]: per-slot values with default fill,
+//! - [`SparseLayer<T>`]: sparse overrides keyed by stable slot index,
+//! - [`Attributes`]: registry and storage for all mesh-domain layers.
+//!
+//! Typical flow:
+//! 1. Define a typed key (or use a built-in from [`attr`](crate::attr)).
+//! 2. Register a layer with [`Attributes::define_dense`] or
+//!    [`Attributes::define_sparse`].
+//! 3. Access the layer through typed lookups (`dense*` / `sparse*`).
+//! 4. Keep capacities synced to mesh slot counts via
+//!    [`Attributes::sync_capacities`].
+//!
+//! Use [`Domain`] to choose where an attribute lives:
+//! - [`Domain::Vertex`]: per-vertex data (for example weights or custom flags),
+//! - [`Domain::Face`]: per-face data (for example region/material IDs),
+//! - [`Domain::HalfEdge`]: per-corner/per-directed-edge data (for example UVs,
+//!   seams, or sharpness).
+//!
+//! # Examples
+//!
+//! Registering and writing a custom face-region dense layer:
+//! ```rust
+//! use exedra::attributes::{AttrKey, Attributes, Domain};
+//! use exedra::{FaceId, Id};
+//! use core::num::NonZeroU32;
+//!
+//! let mut attrs = Attributes::new();
+//! let custom_region = AttrKey::<u32>::new(Domain::Face, "custom.region");
+//! attrs.define_dense(custom_region, 0)?;
+//!
+//! // Dense layers are indexed by stable slot index (`id.index()`).
+//! attrs.sync_capacities(0, 4, 0);
+//! let face = FaceId::from(Id::new(2, NonZeroU32::MIN));
+//! attrs.dense_mut(custom_region).unwrap().set(face.as_id(), 7);
+//! assert_eq!(attrs.dense(custom_region).unwrap().get(face.as_id()), Some(&7));
+//! # Ok::<(), exedra::attributes::AttrError>(())
+//! ```
+//!
+//! Registering and writing a sparse per-corner UV layer:
+//! ```rust
+//! use exedra::attributes::{AttrKey, Attributes, Domain};
+//! use exedra::{CornerId, Id};
+//! use core::num::NonZeroU32;
+//!
+//! let mut attrs = Attributes::new();
+//! let custom_uv = AttrKey::<[f32; 2]>::new(Domain::HalfEdge, "custom.uv");
+//! attrs.define_sparse(custom_uv)?;
+//!
+//! let corner = CornerId::from(Id::new(3, NonZeroU32::MIN));
+//! attrs.sparse_mut(custom_uv).unwrap().set(corner.as_id(), [0.25, 0.75]);
+//! assert_eq!(attrs.sparse(custom_uv).unwrap().get(corner.as_id()), Some(&[0.25, 0.75]));
+//! # Ok::<(), exedra::attributes::AttrError>(())
+//! ```
+//!
+//! Domain capacities are synchronized from mesh slot counts (not live counts),
+//! so stable IDs remain indexable even after tombstones appear.
+//!
+//! Built-in keys (for example vertex position, corner UV, face region, seam,
+//! sharpness) are declared in [`attr`](crate::attr).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -13,11 +75,13 @@ use crate::Id;
 /// Attribute domain.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Domain {
-    /// Vertex-domain attributes.
+    /// Vertex-domain attributes (`VertexId` slots).
     Vertex,
-    /// Face-domain attributes.
+    /// Face-domain attributes (`FaceId` slots).
     Face,
-    /// Half-edge/corner-domain attributes.
+    /// Half-edge/corner-domain attributes (`HalfEdgeId`/`CornerId` slots).
+    ///
+    /// In Exedra, corners are represented by half-edge IDs.
     HalfEdge,
 }
 
@@ -251,12 +315,16 @@ pub struct Attributes {
     sparse: Vec<Entry>,
 }
 
-/// Attribute layer registration error.
+/// Attribute layer registration error returned by [`Attributes`] definition APIs.
+///
+/// You receive this from [`Attributes::define_dense`] and
+/// [`Attributes::define_sparse`] when a requested `(domain, name)` cannot be
+/// registered with the provided type.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AttrError {
-    /// Layer name/domain already exists with a different type.
+    /// `(domain, name)` already exists with a different Rust value type.
     TypeMismatch,
-    /// Layer name/domain already exists with the same type.
+    /// `(domain, name)` already exists with the same Rust value type.
     AlreadyExists,
 }
 
@@ -322,6 +390,8 @@ impl Attributes {
     }
 
     /// Defines a dense typed layer.
+    ///
+    /// Returns [`AttrError`] when the layer cannot be registered for the key.
     pub fn define_dense<T: LayerValue>(
         &mut self,
         key: AttrKey<T>,
@@ -347,6 +417,8 @@ impl Attributes {
     }
 
     /// Defines a sparse typed layer.
+    ///
+    /// Returns [`AttrError`] when the layer cannot be registered for the key.
     pub fn define_sparse<T: LayerValue>(&mut self, key: AttrKey<T>) -> Result<(), AttrError> {
         if let Some(existing) = self.find_sparse_entry(key.domain(), key.name()) {
             return if T::sparse_ref(&existing.layer).is_some() {
@@ -367,6 +439,9 @@ impl Attributes {
     }
 
     /// Returns dense layer by typed key.
+    ///
+    /// Returns `None` when no dense layer is registered for this key, or when
+    /// a layer exists under the same `(domain, name)` with a different type.
     #[must_use]
     pub fn dense<T: LayerValue>(&self, key: AttrKey<T>) -> Option<&DenseLayer<T>> {
         let entry = self.find_dense_entry(key.domain(), key.name())?;
@@ -374,6 +449,8 @@ impl Attributes {
     }
 
     /// Returns mutable dense layer by typed key.
+    ///
+    /// Returns `None` under the same conditions as [`Self::dense`].
     #[must_use]
     pub fn dense_mut<T: LayerValue>(&mut self, key: AttrKey<T>) -> Option<&mut DenseLayer<T>> {
         let entry = self.find_dense_entry_mut(key.domain(), key.name())?;
@@ -381,6 +458,9 @@ impl Attributes {
     }
 
     /// Returns sparse layer by typed key.
+    ///
+    /// Returns `None` when no sparse layer is registered for this key, or when
+    /// a layer exists under the same `(domain, name)` with a different type.
     #[must_use]
     pub fn sparse<T: LayerValue>(&self, key: AttrKey<T>) -> Option<&SparseLayer<T>> {
         let entry = self.find_sparse_entry(key.domain(), key.name())?;
@@ -388,6 +468,8 @@ impl Attributes {
     }
 
     /// Returns mutable sparse layer by typed key.
+    ///
+    /// Returns `None` under the same conditions as [`Self::sparse`].
     #[must_use]
     pub fn sparse_mut<T: LayerValue>(&mut self, key: AttrKey<T>) -> Option<&mut SparseLayer<T>> {
         let entry = self.find_sparse_entry_mut(key.domain(), key.name())?;

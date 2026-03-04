@@ -8,8 +8,13 @@ use alloc::vec::Vec;
 use exedra::{FaceId, HalfEdgeId};
 
 /// Canonical face selection (`Vec<FaceId>` sorted and deduplicated).
+///
+/// Used by operator params such as
+/// [`TagFaceRegionParams::faces`](crate::TagFaceRegionParams::faces).
 pub type FaceSet = Vec<FaceId>;
 /// Canonical edge selection (`Vec<HalfEdgeId>` sorted and deduplicated).
+///
+/// Used by edge-mark operators and UV/tagging selection APIs.
 pub type EdgeSet = Vec<HalfEdgeId>;
 
 /// Canonicalizes a face selection in-place.

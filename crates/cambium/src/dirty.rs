@@ -56,6 +56,9 @@ pub enum DirtyKey {
 }
 
 /// Cambium runtime dirty-tracking set.
+///
+/// Stored in [`OpContext::cache_dirty`](crate::OpContext::cache_dirty) and
+/// updated by [`OperatorRunner`](crate::OperatorRunner) after commit.
 #[derive(Clone, Debug, Default)]
 pub struct CacheDirtySet {
     inner: UnderstoryDirtySet<DirtyKey>,

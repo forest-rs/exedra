@@ -135,6 +135,9 @@ impl Drop for ClockBucket<'_> {
 /// - `scratch` buffers are reused across operator calls
 /// - callers should invoke [`Scratch::clear`] between operators
 /// - data inside `scratch` should be treated as ephemeral and not retained
+///
+/// Owned by [`OperatorRunner`](crate::OperatorRunner) as reusable execution
+/// state.
 #[derive(Debug, Default)]
 pub struct OpContext {
     /// Higher-level policy.

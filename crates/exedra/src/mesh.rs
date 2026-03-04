@@ -12,10 +12,11 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::{
-    Arena, Attributes, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr,
+    Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr,
+    attributes::{Attributes, Domain},
 };
 
-/// Parameters for indexed-triangle mesh construction.
+/// Parameters for [`Mesh::from_indexed_triangles`].
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct BuildParams {
     /// Optional weld tolerance for deduplicating input positions.
@@ -27,7 +28,7 @@ pub struct BuildParams {
     pub weld_tolerance: Option<f32>,
 }
 
-/// Invalid face-loop reason for polygon/ngon construction.
+/// Invalid face-loop reason reported by [`MeshBuilder::add_face`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FaceLoopErrorKind {
     /// Face loop has fewer than 3 vertices.
@@ -58,7 +59,8 @@ impl fmt::Display for FaceLoopErrorKind {
 
 impl core::error::Error for FaceLoopErrorKind {}
 
-/// Indexed-triangle construction error.
+/// Construction error returned by [`Mesh::from_indexed_triangles`] and
+/// [`Mesh::from_polygons`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BuildError {
     /// Triangle index referenced a position outside the input array.
@@ -128,13 +130,14 @@ impl fmt::Display for BuildError {
 
 impl core::error::Error for BuildError {}
 
-/// Structured mesh validation error.
+/// Structured validation error returned by [`Mesh::validate_fast`] and
+/// [`Mesh::validate_deep`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ValidationError {
     /// A dense attribute layer length does not match domain capacity.
     DenseCapacityMismatch {
         /// Attribute domain.
-        domain: crate::Domain,
+        domain: Domain,
         /// Attribute name.
         name: &'static str,
         /// Expected dense length.
@@ -269,7 +272,7 @@ impl core::error::Error for ValidationError {}
 
 /// Monotonic mesh revision counter.
 ///
-/// Revision increments exactly once per successful [`crate::Txn::commit`].
+/// Revision increments exactly once per successful [`Txn::commit`](crate::Txn::commit).
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MeshRevision(u64);
 
@@ -281,7 +284,10 @@ impl MeshRevision {
     }
 }
 
-/// Result payload for [`MeshBuilder::build`].
+/// Result payload from [`MeshBuilder::build`].
+///
+/// Use this when you need both the built mesh and deterministic provenance
+/// back to builder-local indices.
 #[derive(Clone, Debug)]
 pub struct MeshBuildResult {
     /// Built mesh.
@@ -295,6 +301,11 @@ pub struct MeshBuildResult {
 }
 
 /// Incremental polygon/ngon mesh builder using builder-local indices.
+///
+/// Build flow:
+/// 1. [`MeshBuilder::push_vertex`]
+/// 2. [`MeshBuilder::add_face`]
+/// 3. [`MeshBuilder::build`]
 #[derive(Clone, Debug, Default)]
 pub struct MeshBuilder {
     vertices: Vec<[f32; 3]>,
@@ -302,6 +313,10 @@ pub struct MeshBuilder {
 }
 
 /// Half-edge mesh storage with explicit OUTSIDE boundary semantics.
+///
+/// This is the main topology container in Exedra. Construct with [`Mesh::new`]
+/// or builders like [`Mesh::from_indexed_triangles`]/[`Mesh::from_polygons`],
+/// then traverse/edit using methods on this type or via [`Txn`](crate::Txn).
 #[derive(Clone, Debug)]
 pub struct Mesh {
     pub(crate) vertices: Arena<Vertex>,
@@ -884,28 +899,28 @@ impl Mesh {
         let expected_vertex_cap = self.vertices.slot_count();
         let expected_face_cap = self.faces.slot_count();
         let expected_half_edge_cap = self.half_edges.slot_count();
-        if self.attrs.domain_capacity(crate::Domain::Vertex) != expected_vertex_cap {
+        if self.attrs.domain_capacity(Domain::Vertex) != expected_vertex_cap {
             errors.push(ValidationError::DenseCapacityMismatch {
-                domain: crate::Domain::Vertex,
+                domain: Domain::Vertex,
                 name: "<domain-capacity>",
                 expected: expected_vertex_cap,
-                actual: self.attrs.domain_capacity(crate::Domain::Vertex),
+                actual: self.attrs.domain_capacity(Domain::Vertex),
             });
         }
-        if self.attrs.domain_capacity(crate::Domain::Face) != expected_face_cap {
+        if self.attrs.domain_capacity(Domain::Face) != expected_face_cap {
             errors.push(ValidationError::DenseCapacityMismatch {
-                domain: crate::Domain::Face,
+                domain: Domain::Face,
                 name: "<domain-capacity>",
                 expected: expected_face_cap,
-                actual: self.attrs.domain_capacity(crate::Domain::Face),
+                actual: self.attrs.domain_capacity(Domain::Face),
             });
         }
-        if self.attrs.domain_capacity(crate::Domain::HalfEdge) != expected_half_edge_cap {
+        if self.attrs.domain_capacity(Domain::HalfEdge) != expected_half_edge_cap {
             errors.push(ValidationError::DenseCapacityMismatch {
-                domain: crate::Domain::HalfEdge,
+                domain: Domain::HalfEdge,
                 name: "<domain-capacity>",
                 expected: expected_half_edge_cap,
-                actual: self.attrs.domain_capacity(crate::Domain::HalfEdge),
+                actual: self.attrs.domain_capacity(Domain::HalfEdge),
             });
         }
         for (domain, name, expected, actual) in self.attrs.dense_capacity_mismatches() {
@@ -1353,7 +1368,9 @@ impl MeshBuilder {
     }
 }
 
-/// Iterator over half-edges in a face loop.
+/// Iterator returned by [`Mesh::face_loop`].
+///
+/// Yields half-edges in deterministic loop order for one interior face.
 #[derive(Debug)]
 pub struct FaceLoopIter<'a> {
     mesh: &'a Mesh,
@@ -1462,7 +1479,8 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder, ValidationError};
-    use crate::{AttrKey, Domain, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
+    use crate::attributes::{AttrKey, Domain};
+    use crate::{Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
 
     fn triangle_mesh() -> Mesh {
         let mut mesh = Mesh::new();
