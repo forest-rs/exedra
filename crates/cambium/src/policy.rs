@@ -3,6 +3,8 @@
 
 //! Cambium policy set and sub-policies.
 
+pub use exedra::PropagatePolicy;
+
 /// Operator quality mode.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum QualityMode {
@@ -141,27 +143,6 @@ pub struct BooleanPolicy {
     pub commit_params: BooleanParams,
 }
 
-/// Placeholder propagation policy until Exedra exposes `PropagatePolicy`.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct PropagatePolicy {
-    /// Mark adjacent faces dirty.
-    pub dirty_adjacent_faces: bool,
-    /// Mark endpoint vertices dirty.
-    pub dirty_endpoint_vertices: bool,
-    /// Mark affected corners dirty.
-    pub dirty_corners: bool,
-}
-
-impl Default for PropagatePolicy {
-    fn default() -> Self {
-        Self {
-            dirty_adjacent_faces: true,
-            dirty_endpoint_vertices: true,
-            dirty_corners: true,
-        }
-    }
-}
-
 /// Top-level Cambium policy set.
 ///
 /// Uses [`PartialEq`] (not `Eq`) because float-bearing sub-policies (UV/boolean)
@@ -177,7 +158,7 @@ pub struct PolicySet {
     pub uv: UvPolicy,
     /// Boolean controls.
     pub boolean: BooleanPolicy,
-    /// Edit propagation controls.
+    /// Edit propagation controls shared with Exedra edit kernels.
     pub propagate: PropagatePolicy,
     /// Runtime hard limits.
     pub limits: LimitsPolicy,

@@ -1,7 +1,7 @@
 ---
 id: exe-ognv
 title: PropagatePolicy and edit propagation defaults
-status: open
+status: closed
 deps: [exe-17rj]
 links: []
 created: 2026-03-03T05:40:23Z

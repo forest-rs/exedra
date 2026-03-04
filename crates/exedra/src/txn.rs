@@ -15,6 +15,93 @@ const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
 const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 
+/// Vertex-position propagation behavior for topology edits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum PositionPropagation {
+    /// Compute the new position as the endpoint midpoint.
+    Midpoint,
+    ///
+    /// Edit kernels supply the weights/inputs for this strategy.
+    WeightedMidpoint,
+}
+
+/// Corner-UV propagation behavior for topology edits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum UvPropagation {
+    /// Compute UVs as midpoint/interpolation from source corners.
+    Midpoint,
+    /// Copy UVs from one source side chosen by the edit primitive.
+    CopyFromSide,
+}
+
+/// Corner normal-override propagation for topology edits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum NormalOverridePropagation {
+    /// Clear authored override so derived normals recompute.
+    Clear,
+    /// Copy override from one source side chosen by the edit primitive.
+    CopyFromSide,
+    /// Average source overrides when available.
+    ///
+    /// Edit kernels define source sampling and weighting details.
+    Average,
+}
+
+/// Face-domain attribute propagation for topology edits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FaceAttrPropagation {
+    /// Copy source face attributes.
+    Copy,
+    /// Copy attributes and allow the edit primitive to append metadata/tag.
+    ///
+    /// Edit kernels supply tag payload details.
+    CopyAndTag,
+}
+
+/// Edge-domain attribute propagation for topology edits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum EdgeAttrPropagation {
+    /// Inherit source edge attributes.
+    Inherit,
+    /// Clear authored edge attributes on new topology.
+    Clear,
+    /// Split/distribute source weights across child edges.
+    ///
+    /// Edit kernels supply concrete split/distribution rules.
+    SplitWeights,
+}
+
+/// Policy controlling attribute/value propagation across topology edits.
+///
+/// This is designed for edit primitives such as split/collapse/flip operations.
+/// v0.1 defines the framework and defaults; individual edit kernels consume the
+/// policy as they are implemented.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct PropagatePolicy {
+    /// Position propagation mode.
+    pub position: PositionPropagation,
+    /// Corner UV propagation mode.
+    pub uv: UvPropagation,
+    /// Corner normal-override propagation mode.
+    pub normal_override: NormalOverridePropagation,
+    /// Face-domain propagation mode.
+    pub face_attr: FaceAttrPropagation,
+    /// Edge-domain propagation mode.
+    pub edge_attr: EdgeAttrPropagation,
+}
+
+impl Default for PropagatePolicy {
+    fn default() -> Self {
+        Self {
+            position: PositionPropagation::Midpoint,
+            uv: UvPropagation::Midpoint,
+            normal_override: NormalOverridePropagation::Clear,
+            face_attr: FaceAttrPropagation::Copy,
+            edge_attr: EdgeAttrPropagation::Inherit,
+        }
+    }
+}
+
 /// Conservative dirty summary for incremental systems.
 ///
 /// This wraps [`understory_dirty`] primitives while exposing typed Exedra
@@ -183,6 +270,7 @@ impl core::error::Error for DeleteFacesError {}
 #[derive(Debug)]
 pub struct Txn<'a> {
     mesh: &'a mut Mesh,
+    propagate_policy: PropagatePolicy,
     dirty: DirtySet,
     created_vertices: Vec<VertexId>,
     created_half_edges: Vec<HalfEdgeId>,
@@ -201,6 +289,7 @@ impl Mesh {
     pub fn begin(&mut self) -> Txn<'_> {
         Txn {
             mesh: self,
+            propagate_policy: PropagatePolicy::default(),
             dirty: DirtySet::new(),
             created_vertices: Vec::new(),
             created_half_edges: Vec::new(),
@@ -230,6 +319,17 @@ impl Mesh {
 }
 
 impl Txn<'_> {
+    /// Returns the current edit propagation policy.
+    #[must_use]
+    pub const fn propagate_policy(&self) -> PropagatePolicy {
+        self.propagate_policy
+    }
+
+    /// Replaces the edit propagation policy for this transaction.
+    pub fn set_propagate_policy(&mut self, policy: PropagatePolicy) {
+        self.propagate_policy = policy;
+    }
+
     /// Returns an immutable view of the mesh being edited.
     #[must_use]
     pub fn mesh(&self) -> &Mesh {
@@ -864,6 +964,47 @@ mod tests {
         }
         let built = builder.build().expect("box build");
         (built.mesh, built.face_ids)
+    }
+
+    #[test]
+    fn propagate_policy_defaults_are_sensible() {
+        let policy = PropagatePolicy::default();
+        assert_eq!(policy.position, PositionPropagation::Midpoint);
+        assert_eq!(policy.uv, UvPropagation::Midpoint);
+        assert_eq!(policy.normal_override, NormalOverridePropagation::Clear);
+        assert_eq!(policy.face_attr, FaceAttrPropagation::Copy);
+        assert_eq!(policy.edge_attr, EdgeAttrPropagation::Inherit);
+    }
+
+    #[test]
+    fn txn_propagate_policy_can_be_overridden() {
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.begin();
+        assert_eq!(txn.propagate_policy(), PropagatePolicy::default());
+        txn.set_propagate_policy(PropagatePolicy {
+            position: PositionPropagation::WeightedMidpoint,
+            uv: UvPropagation::CopyFromSide,
+            normal_override: NormalOverridePropagation::Average,
+            face_attr: FaceAttrPropagation::CopyAndTag,
+            edge_attr: EdgeAttrPropagation::SplitWeights,
+        });
+        assert_eq!(
+            txn.propagate_policy().position,
+            PositionPropagation::WeightedMidpoint
+        );
+        assert_eq!(txn.propagate_policy().uv, UvPropagation::CopyFromSide);
+        assert_eq!(
+            txn.propagate_policy().normal_override,
+            NormalOverridePropagation::Average
+        );
+        assert_eq!(
+            txn.propagate_policy().face_attr,
+            FaceAttrPropagation::CopyAndTag
+        );
+        assert_eq!(
+            txn.propagate_policy().edge_attr,
+            EdgeAttrPropagation::SplitWeights
+        );
     }
 
     #[test]

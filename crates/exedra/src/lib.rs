@@ -47,7 +47,10 @@ pub use mesh::{
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use topology::{Face, HalfEdge, Vertex};
-pub use txn::{ChangeSet, DeleteFacesError, DeletePolicy, DirtySet, Txn};
+pub use txn::{
+    ChangeSet, DeleteFacesError, DeletePolicy, DirtySet, EdgeAttrPropagation, FaceAttrPropagation,
+    NormalOverridePropagation, PositionPropagation, PropagatePolicy, Txn, UvPropagation,
+};
 
 #[cfg(test)]
 mod tests {

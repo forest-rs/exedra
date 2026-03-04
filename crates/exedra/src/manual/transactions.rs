@@ -33,3 +33,10 @@
 //!
 //! These summaries are intended for incremental systems (cache invalidation,
 //! downstream dependency updates) rather than full recomputation.
+//!
+//! # Propagation Policy
+//!
+//! Edit kernels that create/transform topology consume
+//! [`PropagatePolicy`](crate::PropagatePolicy). Configure per-transaction
+//! behavior via [`Txn::set_propagate_policy`](crate::Txn::set_propagate_policy)
+//! and inspect with [`Txn::propagate_policy`](crate::Txn::propagate_policy).
