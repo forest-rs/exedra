@@ -1,6 +1,6 @@
 ---
 id: exe-xf3l
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T00:40:37Z
@@ -21,3 +21,9 @@ Compute boundary-transition implications for the requested face set against surv
 
 1) New preflight runs before mutation in delete_faces. 2) Ambiguous boundary continuation returns structured error (no mutation). 3) Add regression test that previously would panic and now errors cleanly. 4) Existing delete tests still pass.
 
+
+## Notes
+
+**2026-03-04T00:59:28Z**
+
+Implemented preflight boundary-manifold continuation checks in Txn::delete_faces before mutation. Added DeleteFacesError::BoundaryContinuationAmbiguous and regression test on octahedron deletion case to ensure no mutation on failure. Validation: cargo test -p exedra --all-features; cargo clippy -p exedra --all-targets --all-features -- -D warnings.

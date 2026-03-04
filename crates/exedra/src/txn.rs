@@ -131,6 +131,15 @@ pub enum DeleteFacesError {
         /// Stale face index.
         face: u32,
     },
+    /// Post-delete boundary continuation would be ambiguous at a vertex.
+    BoundaryContinuationAmbiguous {
+        /// Vertex where boundary fan continuity fails.
+        vertex: u32,
+        /// Number of outgoing boundary candidates after deletion.
+        outgoing: usize,
+        /// Number of incoming boundary edges after deletion.
+        incoming: usize,
+    },
 }
 
 /// Single-writer transaction over a mesh.
@@ -358,6 +367,7 @@ impl Txn<'_> {
         sort_dedup(&mut boundary_replacements);
         sort_dedup(&mut dirty_faces);
         sort_dedup(&mut dirty_vertices);
+        preflight_boundary_continuation(self.mesh, &deleted_half_edges, &boundary_replacements)?;
 
         for &face in faces {
             let removed = self.mesh.faces.remove(face.as_id());
@@ -592,6 +602,101 @@ fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
     if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SHARPNESS) {
         let _ = layer.remove(half_edge.as_id());
     }
+}
+
+fn preflight_boundary_continuation(
+    mesh: &Mesh,
+    deleted_half_edges: &[HalfEdgeId],
+    boundary_replacements: &[HalfEdgeId],
+) -> Result<(), DeleteFacesError> {
+    let mut outgoing = Vec::<VertexId>::new();
+    let mut incoming = Vec::<VertexId>::new();
+
+    for (id, edge) in mesh.half_edges.iter() {
+        let half_edge = HalfEdgeId::from(id);
+        if edge.face != FaceId::OUTSIDE {
+            continue;
+        }
+        if deleted_half_edges.binary_search(&half_edge).is_ok() {
+            continue;
+        }
+        let to = mesh
+            .to_vertex(half_edge)
+            .expect("boundary half-edge must have destination");
+        let start = mesh
+            .twin(half_edge)
+            .and_then(|twin| mesh.to_vertex(twin))
+            .expect("boundary half-edge must have twin with destination");
+        outgoing.push(start);
+        incoming.push(to);
+    }
+
+    for &twin in boundary_replacements {
+        let start = mesh
+            .to_vertex(twin)
+            .expect("replacement twin must have destination");
+        let to = mesh
+            .from_vertex(twin)
+            .expect("replacement twin must have origin");
+        outgoing.push(start);
+        incoming.push(to);
+    }
+
+    let outgoing_counts = count_vertices(outgoing);
+    let incoming_counts = count_vertices(incoming);
+
+    let mut i = 0_usize;
+    let mut j = 0_usize;
+    while i < outgoing_counts.len() || j < incoming_counts.len() {
+        let (vertex, out_count, in_count) = match (outgoing_counts.get(i), incoming_counts.get(j)) {
+            (Some((vo, co)), Some((vi, ci))) if vo == vi => {
+                i += 1;
+                j += 1;
+                (*vo, *co, *ci)
+            }
+            (Some((vo, co)), Some((vi, _))) if vo < vi => {
+                i += 1;
+                (*vo, *co, 0)
+            }
+            (Some((_, _)), Some((vi, ci))) => {
+                j += 1;
+                (*vi, 0, *ci)
+            }
+            (Some((vo, co)), None) => {
+                i += 1;
+                (*vo, *co, 0)
+            }
+            (None, Some((vi, ci))) => {
+                j += 1;
+                (*vi, 0, *ci)
+            }
+            (None, None) => break,
+        };
+        if out_count != 1 || in_count != 1 {
+            return Err(DeleteFacesError::BoundaryContinuationAmbiguous {
+                vertex: vertex.index(),
+                outgoing: out_count,
+                incoming: in_count,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn count_vertices(mut values: Vec<VertexId>) -> Vec<(VertexId, usize)> {
+    values.sort_unstable();
+    let mut counts = Vec::<(VertexId, usize)>::new();
+    for vertex in values {
+        if let Some((last, count)) = counts.last_mut()
+            && *last == vertex
+        {
+            *count = count.saturating_add(1);
+            continue;
+        }
+        counts.push((vertex, 1));
+    }
+    counts
 }
 
 fn stitch_outside_loops(mesh: &mut Mesh) {
@@ -953,6 +1058,51 @@ mod tests {
         assert_eq!(changes.deleted_faces, vec![faces[2], faces[4]]);
         assert_eq!(mesh.faces.len(), 4);
         assert_eq!(count_boundary_loops(&mesh), 2);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_faces_rejects_preflight_boundary_ambiguity_without_mutation() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 1.0],  // 0 top
+                [0.0, 0.0, -1.0], // 1 bottom
+                [1.0, 0.0, 0.0],  // 2
+                [0.0, 1.0, 0.0],  // 3
+                [-1.0, 0.0, 0.0], // 4
+                [0.0, -1.0, 0.0], // 5
+            ],
+            &[
+                [0, 2, 3],
+                [0, 3, 4],
+                [0, 4, 5],
+                [0, 5, 2],
+                [1, 3, 2],
+                [1, 4, 3],
+                [1, 5, 4],
+                [1, 2, 5],
+            ],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("octahedron build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let baseline_face_count = mesh.faces.len();
+        let baseline_half_edge_count = mesh.half_edges.len();
+        let baseline_vertex_count = mesh.vertices.len();
+        let baseline_revision = mesh.revision();
+
+        let err = mesh
+            .delete_faces(&[faces[0], faces[2]], DeletePolicy::CleanupIsolated)
+            .expect_err("preflight ambiguity should fail");
+        assert!(matches!(
+            err,
+            DeleteFacesError::BoundaryContinuationAmbiguous { .. }
+        ));
+        assert_eq!(mesh.faces.len(), baseline_face_count);
+        assert_eq!(mesh.half_edges.len(), baseline_half_edge_count);
+        assert_eq!(mesh.vertices.len(), baseline_vertex_count);
+        assert_eq!(mesh.revision(), baseline_revision);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }
