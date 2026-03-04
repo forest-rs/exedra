@@ -6,6 +6,7 @@
 pub(crate) trait FloatExt {
     fn atan2_ext(self, x: Self) -> Self;
     fn rem_euclid_ext(self, rhs: Self) -> Self;
+    fn sqrt_ext(self) -> Self;
 }
 
 #[cfg(feature = "std")]
@@ -18,6 +19,11 @@ impl FloatExt for f32 {
     #[inline]
     fn rem_euclid_ext(self, rhs: Self) -> Self {
         self.rem_euclid(rhs)
+    }
+
+    #[inline]
+    fn sqrt_ext(self) -> Self {
+        self.sqrt()
     }
 }
 
@@ -36,5 +42,10 @@ impl FloatExt for f32 {
             remainder += rhs_abs;
         }
         remainder
+    }
+
+    #[inline]
+    fn sqrt_ext(self) -> Self {
+        libm::sqrtf(self)
     }
 }

@@ -8,7 +8,8 @@
 //! - structured diagnostics/artifacts/reports,
 //! - policy-controlled execution,
 //! - deterministic region/selection helpers,
-//! - deterministic UV and tagging operators.
+//! - deterministic UV/tagging operators,
+//! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`]).
 //!
 //! Tagging note:
 //! - [`MarkEdgeSharp`] / [`MarkEdgeSharpParams`] use numeric `f32`
@@ -53,6 +54,7 @@ mod diag;
 mod dirty;
 mod edge_mark;
 mod error;
+mod face_edit;
 mod operator;
 mod policy;
 mod region;
@@ -82,6 +84,7 @@ pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
+pub use face_edit::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
 pub use operator::EditOperator;
 pub use policy::{
     BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
