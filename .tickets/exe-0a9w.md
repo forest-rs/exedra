@@ -1,7 +1,7 @@
 ---
 id: exe-0a9w
 title: split_face with attribute propagation
-status: open
+status: closed
 deps: [exe-dey4, exe-ognv]
 links: []
 created: 2026-03-03T05:39:00Z

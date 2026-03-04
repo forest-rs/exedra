@@ -46,6 +46,11 @@
 //! rewires the local half-edge pair, updates dirty/change tracking, and applies
 //! propagation defaults/overrides for edge/corner attributes.
 //!
+//! [`Txn::split_face`](crate::Txn::split_face) inserts a diagonal between two
+//! non-adjacent corners of one interior face and creates a second face.
+//! Existing corners keep authored values; diagonal corners are populated from
+//! policy rules while preserving sparse missingness.
+//!
 //! For edge sharpness in v0.1:
 //! - [`EdgeAttrPropagation::Inherit`](crate::EdgeAttrPropagation::Inherit)
 //!   preserves authored sharpness as-is (modeling-friendly default),
@@ -53,3 +58,6 @@
 //!   applies subdivision-style decay (`sharpness = max(sharpness - 1.0, 0.0)`),
 //! - [`EdgeAttrPropagation::Clear`](crate::EdgeAttrPropagation::Clear) resets
 //!   sharpness to `0.0`.
+//!
+//! For `split_face`, diagonal sharpness is smooth by default (`Inherit`/`Clear`)
+//! and only derives from nearby authored sharpness under `DecayOnSplit`.

@@ -282,6 +282,38 @@ impl fmt::Display for SplitEdgeError {
 
 impl core::error::Error for SplitEdgeError {}
 
+/// Structured face-split error from [`Txn::split_face`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SplitFaceError {
+    /// Corner ID is stale or not live.
+    CornerNotLive {
+        /// Stale corner index.
+        corner: u32,
+    },
+    /// Corners must belong to the same interior face.
+    CornersNotOnSameFace,
+    /// `FaceId::OUTSIDE` cannot be split.
+    OutsideFaceNotAllowed,
+    /// Corners must be distinct.
+    IdenticalCorners,
+    /// Adjacent corners cannot form a diagonal.
+    AdjacentCorners,
+}
+
+impl fmt::Display for SplitFaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CornerNotLive { corner } => write!(f, "corner is not live: {corner}"),
+            Self::CornersNotOnSameFace => f.write_str("corners must belong to the same face"),
+            Self::OutsideFaceNotAllowed => f.write_str("FaceId::OUTSIDE cannot be split"),
+            Self::IdenticalCorners => f.write_str("corners must be distinct"),
+            Self::AdjacentCorners => f.write_str("adjacent corners cannot form a diagonal"),
+        }
+    }
+}
+
+impl core::error::Error for SplitFaceError {}
+
 /// Single-writer transaction over a mesh.
 ///
 /// Mutations are applied eagerly to the underlying mesh. Dropping a transaction
@@ -727,6 +759,236 @@ impl Txn<'_> {
         }
 
         Ok(new_vertex)
+    }
+
+    /// Splits one interior face by inserting a diagonal between two corners.
+    ///
+    /// `corner_a` and `corner_b` must be distinct, non-adjacent corners on
+    /// the same interior face loop.
+    ///
+    /// Propagation/default behavior in v0.1:
+    /// - new face inherits source face-region value,
+    /// - existing corner UVs are preserved,
+    /// - diagonal corner UVs follow [`PropagatePolicy::uv`] while preserving
+    ///   sparse missingness (missing sources stay missing),
+    /// - diagonal edge sharpness defaults to smooth for
+    ///   [`EdgeAttrPropagation::Inherit`] / [`EdgeAttrPropagation::Clear`],
+    ///   and only derives from nearby authored sharpness under
+    ///   [`EdgeAttrPropagation::DecayOnSplit`].
+    pub fn split_face(
+        &mut self,
+        corner_a: CornerId,
+        corner_b: CornerId,
+    ) -> Result<FaceId, SplitFaceError> {
+        if corner_a == corner_b {
+            return Err(SplitFaceError::IdenticalCorners);
+        }
+        if self.mesh.half_edges.get(corner_a.as_id()).is_none() {
+            return Err(SplitFaceError::CornerNotLive {
+                corner: corner_a.index(),
+            });
+        }
+        if self.mesh.half_edges.get(corner_b.as_id()).is_none() {
+            return Err(SplitFaceError::CornerNotLive {
+                corner: corner_b.index(),
+            });
+        }
+        let face = self
+            .mesh
+            .face(corner_a)
+            .ok_or(SplitFaceError::CornerNotLive {
+                corner: corner_a.index(),
+            })?;
+        let face_b = self
+            .mesh
+            .face(corner_b)
+            .ok_or(SplitFaceError::CornerNotLive {
+                corner: corner_b.index(),
+            })?;
+        if face != face_b {
+            return Err(SplitFaceError::CornersNotOnSameFace);
+        }
+        if face == FaceId::OUTSIDE {
+            return Err(SplitFaceError::OutsideFaceNotAllowed);
+        }
+
+        let loop_edges = self.mesh.face_loop(face).collect::<Vec<_>>();
+        let degree = loop_edges.len();
+        let ia = loop_edges
+            .iter()
+            .position(|&corner| corner == corner_a)
+            .ok_or(SplitFaceError::CornersNotOnSameFace)?;
+        let ib = loop_edges
+            .iter()
+            .position(|&corner| corner == corner_b)
+            .ok_or(SplitFaceError::CornersNotOnSameFace)?;
+        let a_next_index = (ia + 1) % degree;
+        let b_next_index = (ib + 1) % degree;
+        if a_next_index == ib || b_next_index == ia {
+            return Err(SplitFaceError::AdjacentCorners);
+        }
+
+        let corner_a_next = loop_edges[a_next_index];
+        let corner_b_next = loop_edges[b_next_index];
+        let vertex_a = self
+            .mesh
+            .to_vertex(corner_a)
+            .expect("validated corner has destination vertex");
+        let vertex_b = self
+            .mesh
+            .to_vertex(corner_b)
+            .expect("validated corner has destination vertex");
+
+        // Ordered path from `corner_a_next` through `corner_b` (inclusive) becomes new face.
+        let mut new_face_path = Vec::<CornerId>::with_capacity(degree);
+        let mut cursor = corner_a_next;
+        for _ in 0..degree {
+            new_face_path.push(cursor);
+            if cursor == corner_b {
+                break;
+            }
+            cursor = self
+                .mesh
+                .next(cursor)
+                .expect("face loop should have valid next pointers");
+        }
+        debug_assert_eq!(
+            new_face_path.last().copied(),
+            Some(corner_b),
+            "face loop path should reach target corner"
+        );
+
+        let diagonal_a_b = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+            to: vertex_b,
+            face,
+            next: corner_b_next,
+            twin: HalfEdgeId::INVALID,
+        }));
+        let new_face = FaceId::from(self.mesh.faces.insert(crate::Face {
+            edge: corner_b,
+            degree: 0,
+        }));
+        let diagonal_b_a = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+            to: vertex_a,
+            face: new_face,
+            next: corner_a_next,
+            twin: diagonal_a_b,
+        }));
+        self.mesh
+            .half_edges
+            .get_mut(diagonal_a_b.as_id())
+            .expect("new diagonal half-edge must be live")
+            .twin = diagonal_b_a;
+
+        self.mesh
+            .half_edges
+            .get_mut(corner_a.as_id())
+            .expect("validated corner must be live")
+            .next = diagonal_a_b;
+        self.mesh
+            .half_edges
+            .get_mut(corner_b.as_id())
+            .expect("validated corner must be live")
+            .next = diagonal_b_a;
+
+        for &corner in &new_face_path {
+            self.mesh
+                .half_edges
+                .get_mut(corner.as_id())
+                .expect("validated loop corner must be live")
+                .face = new_face;
+        }
+        let new_face_path_len =
+            u32::try_from(new_face_path.len()).expect("face path length should fit u32");
+        let face_degree = u32::try_from(degree).expect("face degree should fit u32");
+        let new_face_degree = new_face_path_len + 1;
+        let old_face_degree = face_degree - new_face_path_len + 1;
+        {
+            let source_face = self
+                .mesh
+                .faces
+                .get_mut(face.as_id())
+                .expect("source face must be live");
+            source_face.edge = corner_a;
+            source_face.degree = old_face_degree;
+        }
+        self.mesh
+            .faces
+            .get_mut(new_face.as_id())
+            .expect("new face must be live")
+            .degree = new_face_degree;
+
+        if let Some(region_layer) = self.mesh.attrs_mut().dense_mut(attr::FACE_REGION) {
+            let region = region_layer.get(face.as_id()).copied().unwrap_or(0);
+            let _ = region_layer.set(new_face.as_id(), region);
+        }
+
+        if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
+            let uv_a = self.corner_uv(corner_a);
+            let uv_b = self.corner_uv(corner_b);
+            let uv_diag = match self.propagate_policy.uv {
+                UvPropagation::Midpoint => match (uv_a, uv_b) {
+                    (Some(a), Some(b)) => Some([0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]),
+                    _ => None,
+                },
+                UvPropagation::CopyFromSide => uv_b,
+            };
+            let uv_twin = match self.propagate_policy.uv {
+                UvPropagation::Midpoint => uv_diag,
+                UvPropagation::CopyFromSide => uv_a,
+            };
+            if let Some(uv) = uv_diag {
+                let _ = self.set_corner_uv(diagonal_a_b, uv);
+            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+                let _ = layer.remove(diagonal_a_b.as_id());
+            }
+            if let Some(uv) = uv_twin {
+                let _ = self.set_corner_uv(diagonal_b_a, uv);
+            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+                let _ = layer.remove(diagonal_b_a.as_id());
+            }
+        }
+
+        // v0.1 diagonal sharpness derives from the two existing directed
+        // edges that leave the split endpoints (`corner_a`, `corner_b`).
+        let source_sharp = self
+            .edge_sharpness(corner_a)
+            .unwrap_or(0.0)
+            .max(self.edge_sharpness(corner_b).unwrap_or(0.0));
+        let diagonal_sharp = match self.propagate_policy.edge_attr {
+            EdgeAttrPropagation::Clear => 0.0,
+            EdgeAttrPropagation::Inherit => 0.0,
+            EdgeAttrPropagation::DecayOnSplit => (source_sharp - 1.0).max(0.0),
+        };
+        if diagonal_sharp > 0.0 {
+            let _ = self.set_edge_sharpness(diagonal_a_b, diagonal_sharp);
+        }
+
+        self.mesh.attrs.sync_capacities(
+            self.mesh.vertices.slot_count(),
+            self.mesh.faces.slot_count(),
+            self.mesh.half_edges.slot_count(),
+        );
+
+        self.record_created_face(new_face);
+        self.record_created_half_edge(diagonal_a_b);
+        self.record_created_half_edge(diagonal_b_a);
+        self.mark_face_dirty(face);
+        self.mark_face_dirty(new_face);
+        self.mark_corner_dirty(corner_a);
+        self.mark_corner_dirty(corner_b);
+        self.mark_corner_dirty(diagonal_a_b);
+        self.mark_corner_dirty(diagonal_b_a);
+        // Conservative dirty marking: include the full original loop to keep
+        // incremental consumers correct even when only face ownership changed.
+        for corner in loop_edges {
+            if let Some(to) = self.mesh.to_vertex(corner) {
+                self.mark_vertex_dirty(to);
+            }
+            self.mark_corner_dirty(corner);
+        }
+
+        Ok(new_face)
     }
 
     /// Deletes interior faces from the mesh.
@@ -1712,6 +1974,263 @@ mod tests {
         assert!(mesh.vertex_out(inserted).is_some());
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn split_face_quad_inserts_diagonal_and_splits_into_triangles() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        let half_edges_before = mesh.half_edges.len();
+        let faces_before = mesh.faces.len();
+
+        let mut txn = mesh.begin();
+        let new_face = txn
+            .split_face(corners[0], corners[2])
+            .expect("split should succeed");
+        let mut changes = txn.commit();
+
+        assert_eq!(mesh.faces.len(), faces_before + 1);
+        assert_eq!(mesh.half_edges.len(), half_edges_before + 2);
+        assert_eq!(
+            mesh.faces.get(face.as_id()).map(|record| record.degree),
+            Some(3)
+        );
+        assert_eq!(
+            mesh.faces.get(new_face.as_id()).map(|record| record.degree),
+            Some(3)
+        );
+        assert_eq!(changes.created_faces, vec![new_face]);
+        assert_eq!(changes.created_half_edges.len(), 2);
+        let mut dirty_faces = drained_faces(&mut changes.dirty);
+        dirty_faces.sort_unstable();
+        assert_eq!(dirty_faces, vec![face, new_face]);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn split_face_rejects_adjacent_corners() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        let mut txn = mesh.begin();
+        let err = txn
+            .split_face(corners[0], corners[1])
+            .expect_err("adjacent corners must fail");
+        assert_eq!(err, SplitFaceError::AdjacentCorners);
+    }
+
+    #[test]
+    fn split_face_rejects_identical_and_stale_corners() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+
+        let mut txn = mesh.begin();
+        let err = txn
+            .split_face(corners[0], corners[0])
+            .expect_err("identical corners must fail");
+        assert_eq!(err, SplitFaceError::IdenticalCorners);
+
+        let err = txn
+            .split_face(corners[0], CornerId::new(999, NonZeroU32::MIN))
+            .expect_err("stale corner must fail");
+        assert_eq!(err, SplitFaceError::CornerNotLive { corner: 999 });
+    }
+
+    #[test]
+    fn split_face_rejects_outside_and_cross_face_inputs() {
+        let mut open = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let boundary_a = find_half_edge(&open, 0, 1).expect("boundary should exist");
+        let boundary_b = find_half_edge(&open, 1, 2).expect("boundary should exist");
+        let outside_corner_a = open.twin(boundary_a).expect("outside corner should exist");
+        let outside_corner_b = open.twin(boundary_b).expect("outside corner should exist");
+        let mut txn = open.begin();
+        let err = txn
+            .split_face(outside_corner_a, outside_corner_b)
+            .expect_err("outside face should fail");
+        assert_eq!(err, SplitFaceError::OutsideFaceNotAllowed);
+
+        let (mut closed, _) = closed_box_mesh();
+        let faces = closed.faces().collect::<Vec<_>>();
+        let f0 = faces[0];
+        let f1 = faces[1];
+        let c0 = closed.face_loop(f0).next().expect("corner 0");
+        let c1 = closed.face_loop(f1).next().expect("corner 1");
+        let mut txn = closed.begin();
+        let err = txn
+            .split_face(c0, c1)
+            .expect_err("cross-face split must fail");
+        assert_eq!(err, SplitFaceError::CornersNotOnSameFace);
+    }
+
+    #[test]
+    fn split_face_ngon_and_uv_propagation() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4]],
+        )
+        .expect("pentagon build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_corner_uv(corners[0], [0.0, 0.0]));
+            assert!(txn.set_corner_uv(corners[2], [2.0, 1.0]));
+            let _ = txn.commit();
+        }
+
+        let mut txn = mesh.begin();
+        txn.set_propagate_policy(PropagatePolicy {
+            uv: UvPropagation::CopyFromSide,
+            ..txn.propagate_policy()
+        });
+        let new_face = txn
+            .split_face(corners[0], corners[2])
+            .expect("split should succeed");
+        let changes = txn.commit();
+        assert_eq!(changes.created_faces, vec![new_face]);
+
+        let new_edges = changes.created_half_edges;
+        assert_eq!(new_edges.len(), 2);
+        let uv_layer = mesh
+            .attrs()
+            .sparse(attr::CORNER_UV)
+            .expect("corner uv layer should exist");
+        let uv_values = new_edges
+            .iter()
+            .map(|edge| uv_layer.get(edge.as_id()).copied().unwrap_or([0.0, 0.0]))
+            .collect::<Vec<_>>();
+        assert!(uv_values.contains(&[0.0, 0.0]));
+        assert!(uv_values.contains(&[2.0, 1.0]));
+        assert_eq!(
+            mesh.faces.get(face.as_id()).map(|record| record.degree),
+            Some(4)
+        );
+        assert_eq!(
+            mesh.faces.get(new_face.as_id()).map(|record| record.degree),
+            Some(3)
+        );
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn split_face_uv_midpoint_preserves_missingness() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_corner_uv(corners[0], [0.5, 0.25]));
+            let _ = txn.commit();
+        }
+
+        let mut txn = mesh.begin();
+        let _ = txn
+            .split_face(corners[0], corners[2])
+            .expect("split should succeed");
+        let changes = txn.commit();
+        let uv_layer = mesh
+            .attrs()
+            .sparse(attr::CORNER_UV)
+            .expect("corner uv layer should exist");
+        for edge in changes.created_half_edges {
+            assert!(
+                uv_layer.get(edge.as_id()).is_none(),
+                "new diagonal corners should stay missing when midpoint inputs are incomplete"
+            );
+        }
+    }
+
+    #[test]
+    fn split_face_diagonal_sharpness_is_policy_controlled() {
+        let (mut mesh, _) = closed_box_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_edge_sharpness(corners[0], 3.0));
+            assert!(txn.set_edge_sharpness(corners[2], 2.0));
+            let _ = txn.commit();
+        }
+
+        let mut txn = mesh.begin();
+        let _ = txn
+            .split_face(corners[0], corners[2])
+            .expect("split should succeed");
+        let changes = txn.commit();
+        let diagonal = changes.created_half_edges[0];
+        assert_eq!(mesh.edge_sharpness(diagonal), Some(0.0));
+
+        let (mut mesh, _) = closed_box_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_edge_sharpness(corners[0], 3.0));
+            assert!(txn.set_edge_sharpness(corners[2], 2.0));
+            let _ = txn.commit();
+        }
+        let mut txn = mesh.begin();
+        txn.set_propagate_policy(PropagatePolicy {
+            edge_attr: EdgeAttrPropagation::DecayOnSplit,
+            ..PropagatePolicy::default()
+        });
+        let _ = txn
+            .split_face(corners[0], corners[2])
+            .expect("split should succeed");
+        let changes = txn.commit();
+        let diagonal = changes.created_half_edges[0];
+        assert_eq!(mesh.edge_sharpness(diagonal), Some(2.0));
     }
 
     #[test]
