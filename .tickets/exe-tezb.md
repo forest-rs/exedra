@@ -1,7 +1,7 @@
 ---
 id: exe-tezb
 title: split_edge with attribute propagation
-status: open
+status: closed
 deps: [exe-dey4, exe-ognv]
 links: []
 created: 2026-03-03T05:38:32Z

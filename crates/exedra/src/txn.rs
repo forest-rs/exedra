@@ -260,6 +260,28 @@ impl fmt::Display for DeleteFacesError {
 
 impl core::error::Error for DeleteFacesError {}
 
+/// Structured edge-split error from [`Txn::split_edge`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SplitEdgeError {
+    /// Half-edge must be live and have a live twin.
+    HalfEdgeNotLive {
+        /// Stale or invalid half-edge index.
+        half_edge: u32,
+    },
+}
+
+impl fmt::Display for SplitEdgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HalfEdgeNotLive { half_edge } => {
+                write!(f, "half-edge is not live or has no live twin: {half_edge}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for SplitEdgeError {}
+
 /// Single-writer transaction over a mesh.
 ///
 /// Mutations are applied eagerly to the underlying mesh. Dropping a transaction
@@ -441,6 +463,254 @@ impl Txn<'_> {
             self.dirty.mark_corner(twin);
         }
         updated
+    }
+
+    /// Splits an undirected edge by inserting a new midpoint vertex.
+    ///
+    /// Topology update:
+    /// - original directed pair `(h, twin(h))` is replaced by
+    ///   `(h -> child_h)` and `(twin(h) -> child_twin)`,
+    /// - each adjacent face loop gains one corner,
+    /// - midpoint vertex is inserted and used by the new child half-edges.
+    ///
+    /// Attribute/default propagation in v0.1:
+    /// - vertex position follows [`PropagatePolicy::position`]
+    ///   (`Midpoint`/`WeightedMidpoint` currently both use midpoint),
+    /// - edge seam/sharpness inherited to both child undirected edges when
+    ///   policy is [`EdgeAttrPropagation::Inherit`] or
+    ///   [`EdgeAttrPropagation::SplitWeights`], cleared for `Clear`,
+    /// - new corner UVs use midpoint interpolation when policy is
+    ///   [`UvPropagation::Midpoint`] and side-copy for `CopyFromSide`,
+    /// - face attributes are unchanged.
+    pub fn split_edge(&mut self, half_edge: HalfEdgeId) -> Result<VertexId, SplitEdgeError> {
+        let twin = self
+            .mesh
+            .twin(half_edge)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+        if self.mesh.half_edges.get(half_edge.as_id()).is_none()
+            || self.mesh.half_edges.get(twin.as_id()).is_none()
+        {
+            return Err(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            });
+        }
+
+        let from = self
+            .mesh
+            .from_vertex(half_edge)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+        let to = self
+            .mesh
+            .to_vertex(half_edge)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+        let h_next = self
+            .mesh
+            .next(half_edge)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+        let t_next = self
+            .mesh
+            .next(twin)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+
+        let from_pos = *self
+            .mesh
+            .vertex_position(from)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+        let to_pos = *self
+            .mesh
+            .vertex_position(to)
+            .ok_or(SplitEdgeError::HalfEdgeNotLive {
+                half_edge: half_edge.index(),
+            })?;
+        let midpoint = [
+            0.5 * (from_pos[0] + to_pos[0]),
+            0.5 * (from_pos[1] + to_pos[1]),
+            0.5 * (from_pos[2] + to_pos[2]),
+        ];
+
+        let new_vertex = self.add_vertex(match self.propagate_policy.position {
+            PositionPropagation::Midpoint | PositionPropagation::WeightedMidpoint => midpoint,
+        });
+
+        let h_face = self.mesh.face(half_edge).expect("validated edge face");
+        let t_face = self.mesh.face(twin).expect("validated twin face");
+        let old_canonical_edge = core::cmp::min(half_edge, twin);
+
+        // Capture source corner UVs before rewiring. Corner UV is stored at the
+        // destination corner vertex per-face.
+        let old_uv_h = self.corner_uv(half_edge);
+        let old_uv_t = self.corner_uv(twin);
+        let uv_a_fh = corner_uv_for_face_to_vertex(self.mesh, h_face, from).unwrap_or([0.0, 0.0]);
+        let uv_b_ft = corner_uv_for_face_to_vertex(self.mesh, t_face, to).unwrap_or([0.0, 0.0]);
+
+        let child_h = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+            to,
+            face: h_face,
+            next: h_next,
+            twin,
+        }));
+        let child_t = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
+            to: from,
+            face: t_face,
+            next: t_next,
+            twin: half_edge,
+        }));
+
+        self.mesh
+            .half_edges
+            .get_mut(half_edge.as_id())
+            .expect("validated half-edge")
+            .to = new_vertex;
+        self.mesh
+            .half_edges
+            .get_mut(half_edge.as_id())
+            .expect("validated half-edge")
+            .next = child_h;
+        self.mesh
+            .half_edges
+            .get_mut(half_edge.as_id())
+            .expect("validated half-edge")
+            .twin = child_t;
+
+        self.mesh
+            .half_edges
+            .get_mut(twin.as_id())
+            .expect("validated twin")
+            .to = new_vertex;
+        self.mesh
+            .half_edges
+            .get_mut(twin.as_id())
+            .expect("validated twin")
+            .next = child_t;
+        self.mesh
+            .half_edges
+            .get_mut(twin.as_id())
+            .expect("validated twin")
+            .twin = child_h;
+        self.mesh
+            .vertices
+            .get_mut(new_vertex.as_id())
+            .expect("new vertex must be live")
+            .out = child_h;
+        self.mesh.attrs.sync_capacities(
+            self.mesh.vertices.slot_count(),
+            self.mesh.faces.slot_count(),
+            self.mesh.half_edges.slot_count(),
+        );
+
+        self.record_created_half_edge(child_h);
+        self.record_created_half_edge(child_t);
+        self.mark_corner_dirty(half_edge);
+        self.mark_corner_dirty(twin);
+        self.mark_corner_dirty(child_h);
+        self.mark_corner_dirty(child_t);
+        self.mark_vertex_dirty(from);
+        self.mark_vertex_dirty(to);
+        self.mark_vertex_dirty(new_vertex);
+
+        // Propagate edge-domain authored tags from original undirected edge.
+        let seam = self
+            .mesh
+            .attrs()
+            .sparse(attr::EDGE_SEAM)
+            .and_then(|layer| layer.get(old_canonical_edge.as_id()).copied());
+        let sharp = self
+            .mesh
+            .attrs()
+            .sparse(attr::EDGE_SHARPNESS)
+            .and_then(|layer| layer.get(old_canonical_edge.as_id()).copied());
+        if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::EDGE_SEAM) {
+            let _ = layer.remove(old_canonical_edge.as_id());
+        }
+        if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::EDGE_SHARPNESS) {
+            let _ = layer.remove(old_canonical_edge.as_id());
+        }
+        match self.propagate_policy.edge_attr {
+            EdgeAttrPropagation::Inherit | EdgeAttrPropagation::SplitWeights => {
+                if let Some(seam) = seam {
+                    let _ = self.set_edge_seam(half_edge, seam);
+                    let _ = self.set_edge_seam(child_h, seam);
+                }
+                if let Some(sharp) = sharp {
+                    let _ = self.set_edge_sharpness(half_edge, sharp);
+                    let _ = self.set_edge_sharpness(child_h, sharp);
+                }
+            }
+            EdgeAttrPropagation::Clear => {
+                let _ = self.set_edge_seam(half_edge, false);
+                let _ = self.set_edge_seam(child_h, false);
+                let _ = self.set_edge_sharpness(half_edge, false);
+                let _ = self.set_edge_sharpness(child_h, false);
+            }
+        }
+
+        // Propagate corner UVs for new corners.
+        if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
+            // Child corners preserve their destination corner UVs from the
+            // source mesh (child_h -> old half_edge destination, child_t -> old twin destination).
+            if let Some(uv) = old_uv_h {
+                let _ = self.set_corner_uv(child_h, uv);
+            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+                let _ = layer.remove(child_h.as_id());
+            }
+            if let Some(uv) = old_uv_t {
+                let _ = self.set_corner_uv(child_t, uv);
+            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+                let _ = layer.remove(child_t.as_id());
+            }
+
+            // Parent corners now target the inserted midpoint vertex.
+            let h_uv_mid = match self.propagate_policy.uv {
+                UvPropagation::Midpoint => {
+                    let uv_b_fh = old_uv_h.unwrap_or([0.0, 0.0]);
+                    [
+                        0.5 * (uv_a_fh[0] + uv_b_fh[0]),
+                        0.5 * (uv_a_fh[1] + uv_b_fh[1]),
+                    ]
+                }
+                UvPropagation::CopyFromSide => old_uv_h.unwrap_or([0.0, 0.0]),
+            };
+            let t_uv_mid = match self.propagate_policy.uv {
+                UvPropagation::Midpoint => {
+                    let uv_a_ft = old_uv_t.unwrap_or([0.0, 0.0]);
+                    [
+                        0.5 * (uv_b_ft[0] + uv_a_ft[0]),
+                        0.5 * (uv_b_ft[1] + uv_a_ft[1]),
+                    ]
+                }
+                UvPropagation::CopyFromSide => old_uv_t.unwrap_or([0.0, 0.0]),
+            };
+            let _ = self.set_corner_uv(half_edge, h_uv_mid);
+            let _ = self.set_corner_uv(twin, t_uv_mid);
+        }
+
+        // Update cached degree for incident interior faces.
+        if h_face != FaceId::OUTSIDE {
+            if let Some(face) = self.mesh.faces.get_mut(h_face.as_id()) {
+                face.degree = face.degree.saturating_add(1);
+            }
+            self.mark_face_dirty(h_face);
+        }
+        if t_face != FaceId::OUTSIDE && t_face != h_face {
+            if let Some(face) = self.mesh.faces.get_mut(t_face.as_id()) {
+                face.degree = face.degree.saturating_add(1);
+            }
+            self.mark_face_dirty(t_face);
+        }
+
+        Ok(new_vertex)
     }
 
     /// Deletes interior faces from the mesh.
@@ -744,6 +1014,18 @@ fn should_use_global_outgoing_index(affected_vertices: usize, total_half_edges: 
     // about 1/8 of total half-edges; this avoids expensive repeated linear
     // scans near crossover cases.
     affected_vertices.saturating_mul(8) > total_half_edges
+}
+
+fn corner_uv_for_face_to_vertex(mesh: &Mesh, face: FaceId, vertex: VertexId) -> Option<[f32; 2]> {
+    if face == FaceId::OUTSIDE {
+        return None;
+    }
+    let corner = mesh
+        .face_loop(face)
+        .find(|&candidate| mesh.to_vertex(candidate) == Some(vertex))?;
+    mesh.attrs()
+        .sparse(attr::CORNER_UV)
+        .and_then(|layer| layer.get(corner.as_id()).copied())
 }
 
 fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
@@ -1162,6 +1444,235 @@ mod tests {
             let _ = txn.commit();
         }
         assert_eq!(mesh.is_uv_discontinuous(shared), Some(true));
+    }
+
+    fn split_source_mesh() -> (Mesh, HalfEdgeId) {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let shared = find_half_edge(&mesh, 0, 2).expect("shared half-edge should exist");
+        (mesh, shared)
+    }
+
+    #[test]
+    fn split_edge_rejects_stale_half_edge() {
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.begin();
+        let err = txn
+            .split_edge(HalfEdgeId::new(99, NonZeroU32::MIN))
+            .expect_err("stale half-edge must fail");
+        assert_eq!(err, SplitEdgeError::HalfEdgeNotLive { half_edge: 99 });
+    }
+
+    #[test]
+    fn split_edge_updates_topology_midpoint_and_change_tracking() {
+        let (mut mesh, shared) = split_source_mesh();
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        let left_face = mesh.face(shared).expect("shared edge face should exist");
+        let right_face = mesh.face(twin).expect("shared twin face should exist");
+        let from = mesh
+            .from_vertex(shared)
+            .expect("shared edge origin should exist");
+        let to = mesh
+            .to_vertex(shared)
+            .expect("shared edge destination should exist");
+        let vertices_before = mesh.vertices.len();
+        let half_edges_before = mesh.half_edges.len();
+
+        let mut txn = mesh.begin();
+        let inserted = txn.split_edge(shared).expect("split should succeed");
+        let mut changes = txn.commit();
+
+        assert_eq!(mesh.vertices.len(), vertices_before + 1);
+        assert_eq!(mesh.half_edges.len(), half_edges_before + 2);
+        assert_eq!(
+            mesh.faces.get(left_face.as_id()).map(|face| face.degree),
+            Some(4)
+        );
+        assert_eq!(
+            mesh.faces.get(right_face.as_id()).map(|face| face.degree),
+            Some(4)
+        );
+        assert_eq!(mesh.vertex_position(inserted), Some(&[0.5, 0.5, 0.0]));
+        assert_eq!(mesh.to_vertex(shared), Some(inserted));
+        assert_eq!(mesh.to_vertex(twin), Some(inserted));
+        let new_out = mesh
+            .vertex_out(inserted)
+            .expect("newly inserted vertex should have outgoing half-edge");
+        let child_h = mesh.next(shared).expect("split child should exist");
+        let child_t = mesh.next(twin).expect("split child should exist");
+        assert!(new_out == child_h || new_out == child_t);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+        for (id, _) in mesh.half_edges.iter() {
+            let half_edge = HalfEdgeId::from(id);
+            let twin_of_twin = mesh
+                .twin(half_edge)
+                .and_then(|candidate| mesh.twin(candidate))
+                .expect("live half-edge should have valid twin pair");
+            assert_eq!(twin_of_twin, half_edge);
+        }
+
+        assert_eq!(changes.created_vertices, vec![inserted]);
+        assert_eq!(changes.created_half_edges.len(), 2);
+        let mut dirty_vertices = drained_vertices(&mut changes.dirty);
+        dirty_vertices.sort_unstable();
+        let mut expected_vertices = vec![from, to, inserted];
+        expected_vertices.sort_unstable();
+        assert_eq!(dirty_vertices, expected_vertices);
+        let mut dirty_faces = drained_faces(&mut changes.dirty);
+        dirty_faces.sort_unstable();
+        let mut expected_faces = vec![left_face, right_face];
+        expected_faces.sort_unstable();
+        assert_eq!(dirty_faces, expected_faces);
+        assert_eq!(drained_corners(&mut changes.dirty).len(), 4);
+    }
+
+    #[test]
+    fn split_edge_edge_attributes_follow_policy() {
+        let (mut mesh, shared) = split_source_mesh();
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_edge_seam(shared, true));
+            assert!(txn.set_edge_sharpness(shared, true));
+            let _ = txn.commit();
+        }
+
+        let mut txn = mesh.begin();
+        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn.commit();
+        let child_h = mesh.next(shared).expect("split child should exist");
+        let child_t = mesh.next(twin).expect("split child should exist");
+        assert_eq!(mesh.edge_seam(shared), Some(true));
+        assert_eq!(mesh.edge_seam(child_h), Some(true));
+        assert_eq!(mesh.edge_seam(twin), Some(true));
+        assert_eq!(mesh.edge_seam(child_t), Some(true));
+        assert_eq!(mesh.edge_sharpness(shared), Some(true));
+        assert_eq!(mesh.edge_sharpness(child_h), Some(true));
+        assert_eq!(mesh.edge_sharpness(twin), Some(true));
+        assert_eq!(mesh.edge_sharpness(child_t), Some(true));
+        assert!(mesh.validate_deep().is_empty());
+
+        let (mut mesh, shared) = split_source_mesh();
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_edge_seam(shared, true));
+            assert!(txn.set_edge_sharpness(shared, true));
+            let _ = txn.commit();
+        }
+        let mut txn = mesh.begin();
+        txn.set_propagate_policy(PropagatePolicy {
+            edge_attr: EdgeAttrPropagation::Clear,
+            ..PropagatePolicy::default()
+        });
+        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn.commit();
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        let child_h = mesh.next(shared).expect("split child should exist");
+        let child_t = mesh.next(twin).expect("split child should exist");
+        assert_eq!(mesh.edge_seam(shared), Some(false));
+        assert_eq!(mesh.edge_seam(child_h), Some(false));
+        assert_eq!(mesh.edge_seam(twin), Some(false));
+        assert_eq!(mesh.edge_seam(child_t), Some(false));
+        assert_eq!(mesh.edge_sharpness(shared), Some(false));
+        assert_eq!(mesh.edge_sharpness(child_h), Some(false));
+        assert_eq!(mesh.edge_sharpness(twin), Some(false));
+        assert_eq!(mesh.edge_sharpness(child_t), Some(false));
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn split_edge_uvs_follow_policy() {
+        let (mut mesh, shared) = split_source_mesh();
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_corner_uv(shared, [0.0, 0.25]));
+            assert!(txn.set_corner_uv(twin, [1.0, 0.75]));
+            let _ = txn.commit();
+        }
+
+        let mut txn = mesh.begin();
+        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn.commit();
+        let child_h = mesh.next(shared).expect("split child should exist");
+        let child_t = mesh.next(twin).expect("split child should exist");
+        let uv_layer = mesh
+            .attrs()
+            .sparse(attr::CORNER_UV)
+            .expect("corner UV layer should exist");
+        assert_eq!(uv_layer.get(shared.as_id()).copied(), Some([0.0, 0.125]));
+        assert_eq!(uv_layer.get(twin.as_id()).copied(), Some([0.5, 0.375]));
+        assert_eq!(uv_layer.get(child_h.as_id()).copied(), Some([0.0, 0.25]));
+        assert_eq!(uv_layer.get(child_t.as_id()).copied(), Some([1.0, 0.75]));
+        assert!(mesh.validate_deep().is_empty());
+
+        let (mut mesh, shared) = split_source_mesh();
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_corner_uv(shared, [0.0, 0.25]));
+            assert!(txn.set_corner_uv(twin, [1.0, 0.75]));
+            let _ = txn.commit();
+        }
+        let mut txn = mesh.begin();
+        txn.set_propagate_policy(PropagatePolicy {
+            uv: UvPropagation::CopyFromSide,
+            ..PropagatePolicy::default()
+        });
+        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn.commit();
+        let child_h = mesh.next(shared).expect("split child should exist");
+        let child_t = mesh.next(twin).expect("split child should exist");
+        let uv_layer = mesh
+            .attrs()
+            .sparse(attr::CORNER_UV)
+            .expect("corner UV layer should exist");
+        assert_eq!(uv_layer.get(shared.as_id()).copied(), Some([0.0, 0.25]));
+        assert_eq!(uv_layer.get(twin.as_id()).copied(), Some([1.0, 0.75]));
+        assert_eq!(uv_layer.get(child_h.as_id()).copied(), Some([0.0, 0.25]));
+        assert_eq!(uv_layer.get(child_t.as_id()).copied(), Some([1.0, 0.75]));
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn split_edge_handles_boundary_edges() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let boundary = find_half_edge(&mesh, 0, 1).expect("boundary edge should exist");
+        let twin = mesh
+            .twin(boundary)
+            .expect("boundary edge should have outside twin");
+        let interior_face = mesh.face(boundary).expect("boundary face should exist");
+        assert_eq!(mesh.face(twin), Some(FaceId::OUTSIDE));
+
+        let mut txn = mesh.begin();
+        let inserted = txn.split_edge(boundary).expect("split should succeed");
+        let _ = txn.commit();
+
+        assert_eq!(
+            mesh.faces
+                .get(interior_face.as_id())
+                .map(|face| face.degree),
+            Some(4)
+        );
+        assert_eq!(mesh.face(twin), Some(FaceId::OUTSIDE));
+        assert!(mesh.vertex_out(inserted).is_some());
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
     }
 
     #[test]

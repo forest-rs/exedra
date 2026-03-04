@@ -40,3 +40,8 @@
 //! [`PropagatePolicy`](crate::PropagatePolicy). Configure per-transaction
 //! behavior via [`Txn::set_propagate_policy`](crate::Txn::set_propagate_policy)
 //! and inspect with [`Txn::propagate_policy`](crate::Txn::propagate_policy).
+//!
+//! `split_edge` is the first topology-transforming kernel using this policy:
+//! [`Txn::split_edge`](crate::Txn::split_edge). It inserts a midpoint vertex,
+//! rewires the local half-edge pair, updates dirty/change tracking, and applies
+//! propagation defaults/overrides for edge/corner attributes.
