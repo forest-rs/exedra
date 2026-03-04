@@ -7,6 +7,7 @@ use alloc::vec;
 
 use exedra::FaceId;
 
+use crate::op_common::op_error;
 use crate::selection::{FaceSet, canonicalize_face_set};
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
@@ -89,17 +90,6 @@ impl EditOperator for TagFaceRegion {
 
         Ok((report, tagged))
     }
-}
-
-fn op_error(ctx: &OpContext, kind: OpErrorKind, code: DiagCode, message: &'static str) -> OpError {
-    OpError::new(
-        kind,
-        vec![Diagnostic::new(DiagLevel::Error, code, message)],
-        Artifacts::new(
-            ctx.policy.limits.max_artifact_items,
-            ctx.policy.limits.max_artifact_bytes,
-        ),
-    )
 }
 
 /// Deterministic face-selection query result.

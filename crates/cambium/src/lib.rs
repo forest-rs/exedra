@@ -57,6 +57,7 @@ mod dirty;
 mod edge_mark;
 mod error;
 mod face_edit;
+mod op_common;
 mod operator;
 mod policy;
 mod region;

@@ -5,15 +5,12 @@
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec;
 
 use exedra::{DeleteEdgesError, DeleteFacesError, DeletePolicy, FaceId, HalfEdgeId};
 
+use crate::op_common::op_error;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
-use crate::{
-    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
-    OpReport,
-};
+use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
 
 /// Parameters for [`DeleteEdges`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -319,22 +316,6 @@ fn map_delete_edges_error(ctx: &OpContext, err: DeleteEdgesError) -> OpError {
         }
     };
     op_error(ctx, kind, code, message)
-}
-
-fn op_error(
-    ctx: &OpContext,
-    kind: OpErrorKind,
-    code: DiagCode,
-    message: impl Into<String>,
-) -> OpError {
-    OpError::new(
-        kind,
-        vec![Diagnostic::new(DiagLevel::Error, code, message)],
-        Artifacts::new(
-            ctx.policy.limits.max_artifact_items,
-            ctx.policy.limits.max_artifact_bytes,
-        ),
-    )
 }
 
 #[cfg(test)]

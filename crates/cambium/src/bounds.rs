@@ -4,17 +4,14 @@
 //! Bounds inspection operator.
 
 use alloc::format;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra::FaceId;
 
 use crate::math::FloatExt;
+use crate::op_common::op_error;
 use crate::selection::{FaceSet, canonicalize_face_set};
-use crate::{
-    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
-    OpReport,
-};
+use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
 
 /// Face selection scope for [`InspectBounds`].
 #[derive(Clone, Debug, PartialEq)]
@@ -229,22 +226,6 @@ impl BoundsAccumulator {
             diagonal: (dx * dx + dy * dy + dz * dz).sqrt_ext(),
         })
     }
-}
-
-fn op_error(
-    ctx: &OpContext,
-    kind: OpErrorKind,
-    code: DiagCode,
-    message: impl Into<alloc::string::String>,
-) -> OpError {
-    OpError::new(
-        kind,
-        vec![Diagnostic::new(DiagLevel::Error, code, message)],
-        Artifacts::new(
-            ctx.policy.limits.max_artifact_items,
-            ctx.policy.limits.max_artifact_bytes,
-        ),
-    )
 }
 
 #[cfg(test)]

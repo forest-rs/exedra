@@ -3,10 +3,9 @@
 
 //! Shared implementation for edge tagging operators.
 
+use crate::op_common::op_error;
 use crate::selection::{EdgeSet, canonicalize_edge_set};
-use crate::{
-    Artifacts, DiagCode, DiagLevel, Diagnostic, OpContext, OpError, OpErrorKind, OpReport,
-};
+use crate::{Artifacts, DiagCode, OpContext, OpError, OpErrorKind, OpReport};
 
 pub(crate) fn apply_edge_tag<T, F>(
     txn: &mut exedra::Txn<'_>,
@@ -74,20 +73,4 @@ where
     }
 
     Ok((report, canonical_topology))
-}
-
-pub(crate) fn op_error(
-    ctx: &OpContext,
-    kind: OpErrorKind,
-    code: DiagCode,
-    message: &'static str,
-) -> OpError {
-    OpError::new(
-        kind,
-        alloc::vec![Diagnostic::new(DiagLevel::Error, code, message)],
-        Artifacts::new(
-            ctx.policy.limits.max_artifact_items,
-            ctx.policy.limits.max_artifact_bytes,
-        ),
-    )
 }

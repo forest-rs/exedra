@@ -4,17 +4,14 @@
 //! Face extrude/inset edit operators.
 
 use alloc::format;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra::{AddFaceError, DeletePolicy, FaceId, VertexId};
 
 use crate::math::FloatExt;
+use crate::op_common::op_error;
 use crate::selection::{FaceSet, canonicalize_face_set};
-use crate::{
-    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
-    OpReport,
-};
+use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
 
 /// Parameters for [`ExtrudeFaces`].
 #[derive(Clone, Debug, PartialEq)]
@@ -533,22 +530,6 @@ fn add_frame_face(
             Err(err) => Err(err),
         },
     }
-}
-
-fn op_error(
-    ctx: &OpContext,
-    kind: OpErrorKind,
-    code: DiagCode,
-    message: impl Into<alloc::string::String>,
-) -> OpError {
-    OpError::new(
-        kind,
-        vec![Diagnostic::new(DiagLevel::Error, code, message)],
-        Artifacts::new(
-            ctx.policy.limits.max_artifact_items,
-            ctx.policy.limits.max_artifact_bytes,
-        ),
-    )
 }
 
 #[cfg(test)]
