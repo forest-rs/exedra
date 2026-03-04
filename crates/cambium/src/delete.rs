@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use exedra::{DeleteEdgesError, DeleteFacesError, DeletePolicy, FaceId, HalfEdgeId};
+use exedra::{DeleteFacesError, DeletePolicy, FaceId, HalfEdgeId};
 
 use crate::op_common::op_error;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
@@ -136,8 +136,8 @@ impl EditOperator for DeleteEdges {
             )
         })?;
 
-        txn.delete_edges(&edges, params.policy)
-            .map_err(|err| map_delete_edges_error(ctx, err))?;
+        txn.delete_faces(&faces, params.policy)
+            .map_err(|err| map_delete_faces_error(ctx, err))?;
 
         let mut report = OpReport::new(
             self.name(),
@@ -290,30 +290,6 @@ fn map_delete_faces_error(ctx: &OpContext, err: DeleteFacesError) -> OpError {
             DiagCode::NonManifoldInput,
             format!("delete_faces preflight failed: {err}"),
         ),
-    };
-    op_error(ctx, kind, code, message)
-}
-
-fn map_delete_edges_error(ctx: &OpContext, err: DeleteEdgesError) -> OpError {
-    let (kind, code, message) = match err {
-        DeleteEdgesError::NonCanonicalEdgeSet => (
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            String::from("edge set must be sorted, deduplicated, and canonicalized"),
-        ),
-        DeleteEdgesError::HalfEdgeNotLive { half_edge } => (
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            format!("edge selection contains stale half-edge id: {half_edge}"),
-        ),
-        DeleteEdgesError::EdgeHasNoInteriorFace { half_edge } => (
-            OpErrorKind::InvalidMesh,
-            DiagCode::InternalInvariantViolation,
-            format!("edge has no interior incident face: {half_edge}"),
-        ),
-        DeleteEdgesError::FaceDeleteFailed(face_err) => {
-            return map_delete_faces_error(ctx, face_err);
-        }
     };
     op_error(ctx, kind, code, message)
 }
