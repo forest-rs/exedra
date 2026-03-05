@@ -6,10 +6,13 @@
 use alloc::format;
 use alloc::string::String;
 
-use exedra::{DeleteFacesError, DeletePolicy, FaceId, HalfEdgeId};
+use exedra::{DeleteFacesError, DeletePolicy, DeleteVerticesError, FaceId, HalfEdgeId};
 
 use crate::op_common::op_error;
-use crate::selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
+use crate::selection::{
+    EdgeSet, FaceSet, VertexSet, canonicalize_edge_set, canonicalize_face_set,
+    canonicalize_vertex_set,
+};
 use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
 
 /// Parameters for [`DeleteEdges`].
@@ -62,6 +65,20 @@ impl Default for DeleteFacesParams {
 pub struct DeleteFacesOutput {
     /// Canonical face selection that was applied.
     pub faces: FaceSet,
+}
+
+/// Parameters for [`DeleteVertices`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DeleteVerticesParams {
+    /// Canonical isolated vertex selection.
+    pub vertices: VertexSet,
+}
+
+/// Typed output from [`DeleteVertices`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DeleteVerticesOutput {
+    /// Canonical vertex selection that was applied.
+    pub vertices: VertexSet,
 }
 
 /// `edit.delete.edges` operator.
@@ -232,6 +249,68 @@ impl EditOperator for DeleteFaces {
     }
 }
 
+/// `edit.delete.vertices` operator.
+///
+/// # Example
+/// ```rust
+/// use cambium::{DeleteVertices, DeleteVerticesParams, OperatorRunner};
+/// use exedra::Mesh;
+///
+/// let mut mesh = Mesh::new();
+/// let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+/// let _v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+///
+/// let mut runner = OperatorRunner::new();
+/// let result = runner
+///     .run_commit(
+///         &mut mesh,
+///         &DeleteVertices,
+///         &DeleteVerticesParams {
+///             vertices: vec![v0],
+///         },
+///     )
+///     .expect("delete vertices should succeed");
+/// assert_eq!(result.output.vertices, vec![v0]);
+/// ```
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DeleteVertices;
+
+impl EditOperator for DeleteVertices {
+    type Params = DeleteVerticesParams;
+    type Output = DeleteVerticesOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.delete.vertices"
+    }
+
+    fn apply(
+        &self,
+        txn: &mut exedra::Txn<'_>,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let mut vertices = params.vertices.clone();
+        let canonicalized = canonicalize_vertex_set(&mut vertices);
+        txn.delete_vertices(&vertices)
+            .map_err(|err| map_delete_vertices_error(ctx, err))?;
+
+        let mut report = OpReport::new(
+            self.name(),
+            Artifacts::new(
+                ctx.policy.limits.max_artifact_items,
+                ctx.policy.limits.max_artifact_bytes,
+            ),
+        );
+        if canonicalized {
+            report.stats.counters.selections_canonicalized = 1;
+        }
+        report.stats.elements_touched.vertices =
+            u64::try_from(vertices.len()).expect("vertex count should fit u64");
+        report.stats.elements_deleted.vertices = report.stats.elements_touched.vertices;
+        Ok((report, DeleteVerticesOutput { vertices }))
+    }
+}
+
 fn incident_faces_for_edges(mesh: &exedra::Mesh, edges: &[HalfEdgeId]) -> Result<FaceSet, String> {
     let mut faces = FaceSet::new();
     for &edge in edges {
@@ -294,6 +373,27 @@ fn map_delete_faces_error(ctx: &OpContext, err: DeleteFacesError) -> OpError {
     op_error(ctx, kind, code, message)
 }
 
+fn map_delete_vertices_error(ctx: &OpContext, err: DeleteVerticesError) -> OpError {
+    let (kind, code, message) = match err {
+        DeleteVerticesError::NonCanonicalVertexSet => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            String::from("vertex set must be sorted and deduplicated"),
+        ),
+        DeleteVerticesError::VertexNotLive { vertex } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("vertex selection contains stale vertex id: {vertex}"),
+        ),
+        DeleteVerticesError::VertexNotIsolated { vertex } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("vertex is not isolated: {vertex}"),
+        ),
+    };
+    op_error(ctx, kind, code, message)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -304,7 +404,7 @@ mod tests {
 
     use super::{
         DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
-        DeleteFacesParams,
+        DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
     };
     use crate::{OpErrorKind, OperatorRunner};
 
@@ -437,6 +537,46 @@ mod tests {
                 },
             )
             .expect_err("outside face should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn delete_vertices_applies_and_returns_typed_output() {
+        let mut mesh = exedra::Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let _v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let mut runner = OperatorRunner::new();
+        let result = runner
+            .run_commit(
+                &mut mesh,
+                &DeleteVertices,
+                &DeleteVerticesParams { vertices: vec![v0] },
+            )
+            .expect("delete vertices should succeed");
+        assert_eq!(result.output, DeleteVerticesOutput { vertices: vec![v0] });
+        assert_eq!(result.report.stats.elements_deleted.vertices, 1);
+        assert_eq!(mesh.vertices().count(), 1);
+    }
+
+    #[test]
+    fn delete_vertices_rejects_non_isolated_vertex() {
+        let mut mesh = exedra::Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .expect("triangle build should succeed");
+        let vertex = mesh.vertices().next().expect("vertex should exist");
+        let mut runner = OperatorRunner::new();
+        let err = runner
+            .run_commit(
+                &mut mesh,
+                &DeleteVertices,
+                &DeleteVerticesParams {
+                    vertices: vec![vertex],
+                },
+            )
+            .expect_err("non-isolated vertex should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 }

@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{FaceId, HalfEdgeId};
+use exedra::{FaceId, HalfEdgeId, VertexId};
 
 /// Canonical face selection (`Vec<FaceId>` sorted and deduplicated).
 ///
@@ -16,6 +16,8 @@ pub type FaceSet = Vec<FaceId>;
 ///
 /// Used by edge-mark operators and UV/tagging selection APIs.
 pub type EdgeSet = Vec<HalfEdgeId>;
+/// Canonical vertex selection (`Vec<VertexId>` sorted and deduplicated).
+pub type VertexSet = Vec<VertexId>;
 
 /// Canonicalizes a face selection in-place.
 ///
@@ -29,6 +31,13 @@ pub fn canonicalize_face_set(faces: &mut FaceSet) -> bool {
 /// Returns `true` if the input was modified.
 pub fn canonicalize_edge_set(edges: &mut EdgeSet) -> bool {
     canonicalize_sorted_unique(edges)
+}
+
+/// Canonicalizes a vertex selection in-place.
+///
+/// Returns `true` if the input was modified.
+pub fn canonicalize_vertex_set(vertices: &mut VertexSet) -> bool {
+    canonicalize_sorted_unique(vertices)
 }
 
 fn canonicalize_sorted_unique<T: Ord>(values: &mut Vec<T>) -> bool {
@@ -45,9 +54,12 @@ mod tests {
     use alloc::vec;
     use core::num::NonZeroU32;
 
-    use exedra::{FaceId, HalfEdgeId, Id};
+    use exedra::{FaceId, HalfEdgeId, Id, VertexId};
 
-    use super::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
+    use super::{
+        EdgeSet, FaceSet, VertexSet, canonicalize_edge_set, canonicalize_face_set,
+        canonicalize_vertex_set,
+    };
 
     #[test]
     fn canonicalize_face_set_sorts_and_dedups() {
@@ -108,5 +120,17 @@ mod tests {
         let mut edges: EdgeSet = vec![e0, e1];
         let changed = canonicalize_edge_set(&mut edges);
         assert!(!changed);
+    }
+
+    #[test]
+    fn canonicalize_vertex_set_sorts_and_dedups() {
+        let v0 = VertexId::from(Id::new(0, NonZeroU32::MIN));
+        let v1 = VertexId::from(Id::new(1, NonZeroU32::MIN));
+        let v2 = VertexId::from(Id::new(2, NonZeroU32::MIN));
+        let mut vertices: VertexSet = vec![v2, v1, v2, v0];
+
+        let changed = canonicalize_vertex_set(&mut vertices);
+        assert!(changed);
+        assert_eq!(vertices, vec![v0, v1, v2]);
     }
 }

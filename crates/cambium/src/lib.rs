@@ -86,7 +86,7 @@ pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, Inspect
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
 pub use delete::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
-    DeleteFacesParams,
+    DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
 };
 pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
@@ -107,7 +107,10 @@ pub use region::{
 pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use seam::{MarkEdgeSeam, MarkEdgeSeamParams};
-pub use selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
+pub use selection::{
+    EdgeSet, FaceSet, VertexSet, canonicalize_edge_set, canonicalize_face_set,
+    canonicalize_vertex_set,
+};
 pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};
 pub use uv_box::{UvBox, UvBoxParams};
 pub use uv_cylinder::{CylinderAxis, UvCylinder, UvCylinderParams};

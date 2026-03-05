@@ -1,6 +1,6 @@
 ---
 id: cam-0cae
-status: open
+status: closed
 deps: [exe-3ebg]
 links: []
 created: 2026-03-04T17:42:28Z
