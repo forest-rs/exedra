@@ -35,8 +35,6 @@ pub trait EditOperator {
     fn name(&self) -> &'static str;
 
     /// Compiles deterministic operator intent from immutable mesh state.
-    ///
-    /// Default behavior is a direct clone of `params`.
     fn compile(
         &self,
         mesh: &Mesh,
@@ -45,8 +43,6 @@ pub trait EditOperator {
     ) -> Result<Self::Plan, OpError>;
 
     /// Applies an already-compiled plan.
-    ///
-    /// Default behavior forwards to [`Self::apply`] with the compiled payload.
     fn apply_plan(
         &self,
         txn: &mut EditSession<'_>,
@@ -64,13 +60,19 @@ pub trait EditOperator {
         hasher.finish()
     }
 
-    /// Applies one operator pass into an in-flight transaction.
+    /// Applies one operator pass into an in-flight edit session.
+    ///
+    /// Default behavior uses the explicit lifecycle:
+    /// `compile(txn.mesh(), params, ctx)` then `apply_plan(txn, plan, ctx)`.
     fn apply(
         &self,
         txn: &mut EditSession<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
-    ) -> Result<(OpReport, Self::Output), OpError>;
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let plan = self.compile(txn.mesh(), params, ctx)?;
+        self.apply_plan(txn, &plan, ctx)
+    }
 }
 
 #[cfg(test)]
@@ -90,15 +92,6 @@ mod tests {
             "test.noop"
         }
 
-        fn apply(
-            &self,
-            _txn: &mut EditSession<'_>,
-            _params: &Self::Params,
-            _ctx: &mut OpContext,
-        ) -> Result<(OpReport, Self::Output), OpError> {
-            Ok((OpReport::new(self.name(), Artifacts::default()), ()))
-        }
-
         fn compile(
             &self,
             _mesh: &Mesh,
@@ -110,11 +103,11 @@ mod tests {
 
         fn apply_plan(
             &self,
-            txn: &mut EditSession<'_>,
+            _txn: &mut EditSession<'_>,
             _plan: &Self::Plan,
-            ctx: &mut OpContext,
+            _ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {
-            self.apply(txn, &(), ctx)
+            Ok((OpReport::new(self.name(), Artifacts::default()), ()))
         }
     }
 
