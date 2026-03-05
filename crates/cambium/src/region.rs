@@ -168,17 +168,7 @@ mod tests {
     use exedra::{BuildParams, FaceId, Id, Mesh, MeshBuilder};
 
     use super::{REGION_UNTAGGED, TagFaceRegion, TagFaceRegionParams, select_faces_by_region};
-    use crate::{EditOperator, OperatorRunner};
-
-    fn commit<O: EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{EditOperator, OperatorRunner, test_support::commit};
 
     fn one_quad_mesh() -> (Mesh, FaceId) {
         let mut builder = MeshBuilder::new();

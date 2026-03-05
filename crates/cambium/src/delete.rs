@@ -258,16 +258,6 @@ impl EditOperator for DeleteFaces {
         "edit.delete.faces"
     }
 
-    fn apply(
-        &self,
-        txn: &mut exedra::EditSession<'_>,
-        params: &Self::Params,
-        ctx: &mut OpContext,
-    ) -> Result<(OpReport, Self::Output), OpError> {
-        let plan = self.compile(txn.mesh(), params, ctx)?;
-        self.apply_plan(txn, &plan, ctx)
-    }
-
     fn compile(
         &self,
         mesh: &exedra::Mesh,
@@ -524,17 +514,7 @@ mod tests {
         DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
         DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
     };
-    use crate::{OpErrorKind, OperatorRunner, mesh_signature};
-
-    fn commit<O: crate::EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut exedra::Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{OpErrorKind, OperatorRunner, mesh_signature, test_support::commit};
 
     fn two_tri_strip_mesh() -> exedra::Mesh {
         exedra::Mesh::from_indexed_triangles(

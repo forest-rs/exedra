@@ -237,17 +237,7 @@ mod tests {
     use exedra::{ExtractParams, MeshBuilder};
 
     use super::{UvPlanar, UvPlanarParams, UvPlane, UvScope};
-    use crate::OperatorRunner;
-
-    fn commit<O: crate::EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut exedra::Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{OperatorRunner, test_support::commit};
 
     #[test]
     fn uv_planar_writes_uvs_and_extracts_trimesh() {

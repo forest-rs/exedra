@@ -256,16 +256,6 @@ impl EditOperator for InsetFaces {
         "edit.face.inset"
     }
 
-    fn apply(
-        &self,
-        txn: &mut exedra::EditSession<'_>,
-        params: &Self::Params,
-        ctx: &mut OpContext,
-    ) -> Result<(OpReport, Self::Output), OpError> {
-        let plan = self.compile(txn.mesh(), params, ctx)?;
-        self.apply_plan(txn, &plan, ctx)
-    }
-
     fn compile(
         &self,
         mesh: &exedra::Mesh,
@@ -604,17 +594,10 @@ mod tests {
     use exedra::{BuildParams, Mesh};
 
     use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
-    use crate::{OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature};
-
-    fn commit<O: crate::EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{
+        OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature,
+        test_support::commit,
+    };
 
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
         let mesh = Mesh::from_polygons(

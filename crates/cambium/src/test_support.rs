@@ -5,6 +5,18 @@
 
 use exedra::{BuildParams, HalfEdgeId, Mesh};
 
+use crate::{EditOperator, OpError, OpResult, OperatorRunner};
+
+pub(crate) fn commit<O: EditOperator>(
+    runner: &mut OperatorRunner,
+    mesh: &mut Mesh,
+    op: &O,
+    params: &O::Params,
+) -> Result<OpResult<O::Output>, OpError> {
+    let plan = runner.compile(mesh, op, params)?;
+    runner.apply_in_place(mesh, op, &plan)
+}
+
 pub(crate) fn shared_edge_mesh() -> (Mesh, HalfEdgeId, HalfEdgeId) {
     let mesh = Mesh::from_indexed_triangles(
         &[

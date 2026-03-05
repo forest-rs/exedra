@@ -259,17 +259,7 @@ mod tests {
     use exedra::{BuildParams, FaceId, Id, Mesh};
 
     use super::{BoundsParams, BoundsScope, InspectBounds};
-    use crate::{OpErrorKind, OperatorRunner};
-
-    fn commit<O: crate::EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{OpErrorKind, OperatorRunner, test_support::commit};
 
     #[test]
     fn bounds_empty_mesh_returns_none() {

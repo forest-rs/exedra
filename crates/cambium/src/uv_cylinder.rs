@@ -189,17 +189,7 @@ mod tests {
     use exedra::MeshBuilder;
 
     use super::{CylinderAxis, UvCylinder, UvCylinderParams};
-    use crate::{OperatorRunner, UvScope};
-
-    fn commit<O: crate::EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut exedra::Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{OperatorRunner, UvScope, test_support::commit};
 
     fn side_strip_mesh() -> exedra::Mesh {
         let mut builder = MeshBuilder::new();

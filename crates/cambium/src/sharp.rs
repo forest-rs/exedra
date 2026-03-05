@@ -76,17 +76,10 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{MarkEdgeSharp, MarkEdgeSharpParams};
-    use crate::{EditOperator, OperatorRunner, test_support::shared_edge_mesh};
-
-    fn commit<O: EditOperator>(
-        runner: &mut OperatorRunner,
-        mesh: &mut exedra::Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
-        let plan = runner.compile(mesh, op, params)?;
-        runner.apply_in_place(mesh, op, &plan)
-    }
+    use crate::{
+        EditOperator, OperatorRunner,
+        test_support::{commit, shared_edge_mesh},
+    };
 
     #[test]
     fn mark_edge_sharp_sets_and_clears_tag() {
