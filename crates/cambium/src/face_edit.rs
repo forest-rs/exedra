@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Face extrude/inset edit operators.
+//! Face-edit operators (extrude, inset, cut, solidify).
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -83,6 +83,48 @@ pub struct InsetFacesOutput {
     pub inner_faces: FaceSet,
     /// Created frame face IDs.
     pub frame_faces: FaceSet,
+}
+
+/// Parameters for [`SolidifyFaces`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolidifyFacesParams {
+    /// Canonical face selection.
+    pub faces: FaceSet,
+    /// Solidify mode controlling source-face retention.
+    pub mode: SolidifyMode,
+    /// Signed thickness along each selected face normal.
+    pub thickness: f32,
+}
+
+/// Solidify source-face retention behavior.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum SolidifyMode {
+    /// Keep source faces and create side walls + offset cap.
+    ///
+    /// This requires selected patch boundaries to lie on mesh boundary.
+    #[default]
+    KeepSource,
+    /// Remove source faces and create open-shell topology.
+    ShellOpen,
+}
+
+impl Default for SolidifyFacesParams {
+    fn default() -> Self {
+        Self {
+            faces: FaceSet::default(),
+            mode: SolidifyMode::KeepSource,
+            thickness: 0.1,
+        }
+    }
+}
+
+/// Typed output from [`SolidifyFaces`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SolidifyFacesOutput {
+    /// Created offset cap face IDs.
+    pub cap_faces: FaceSet,
+    /// Created side-wall face IDs.
+    pub wall_faces: FaceSet,
 }
 
 /// Parameters for [`CutRectFace`].
@@ -648,6 +690,72 @@ impl EditOperator for InsetFaces {
         hasher.write_face_set(&plan.faces);
         hasher.write_f32_bits(plan.factor);
         hasher.write_u8(u8::from(plan.selections_canonicalized));
+        hasher.finish()
+    }
+}
+
+/// `edit.face.solidify` operator.
+///
+/// This is a dedicated shell-thickness operator built on the face-edit kernel
+/// path used by [`ExtrudeFaces`], with a stable user-facing name and defaults.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SolidifyFaces;
+
+impl EditOperator for SolidifyFaces {
+    type Params = SolidifyFacesParams;
+    type Plan = ExtrudeFacesParams;
+    type Output = SolidifyFacesOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.face.solidify"
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        let extrude_mode = match params.mode {
+            SolidifyMode::KeepSource => ExtrudeMode::KeepSource,
+            SolidifyMode::ShellOpen => ExtrudeMode::ShellOpen,
+        };
+        let mapped = ExtrudeFacesParams {
+            faces: params.faces.clone(),
+            mode: extrude_mode,
+            distance: params.thickness,
+        };
+        let op = ExtrudeFaces;
+        op.compile(mesh, &mapped, ctx)
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let op = ExtrudeFaces;
+        let (mut report, output) = op.apply_plan(txn, plan, ctx)?;
+        report.name = self.name();
+        Ok((
+            report,
+            SolidifyFacesOutput {
+                cap_faces: output.cap_faces,
+                wall_faces: output.wall_faces,
+            },
+        ))
+    }
+
+    fn plan_fingerprint(&self, plan: &Self::Plan) -> crate::PlanFingerprint {
+        let mut hasher = PlanHasher::new();
+        hasher.write_str(self.name());
+        hasher.write_face_set(&plan.faces);
+        hasher.write_u8(match plan.mode {
+            ExtrudeMode::ShellOpen => 0,
+            ExtrudeMode::KeepSource => 1,
+        });
+        hasher.write_f32_bits(plan.distance);
         hasher.finish()
     }
 }
@@ -1483,7 +1591,7 @@ mod tests {
 
     use super::{
         CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
-        InsetFacesParams,
+        InsetFacesParams, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
     };
     use crate::{
         DeleteFaces, DeleteFacesParams, OpErrorKind, OperatorRunner, TagFaceRegion,
@@ -1889,6 +1997,50 @@ mod tests {
             },
         )
         .expect_err("keep-source extrude on closed volume should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn solidify_keep_source_succeeds_on_open_surface() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &SolidifyFaces,
+            &SolidifyFacesParams {
+                faces: vec![face],
+                mode: SolidifyMode::KeepSource,
+                thickness: 0.3,
+            },
+        )
+        .expect("solidify should succeed on open surface");
+        assert_eq!(result.report.name, "edit.face.solidify");
+        assert_eq!(result.output.cap_faces.len(), 1);
+        assert_eq!(result.output.wall_faces.len(), 4);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn solidify_keep_source_rejects_closed_box_face() {
+        let mut mesh = cube_mesh();
+        let face = mesh
+            .faces()
+            .max_by(|&a, &b| face_avg_z(&mesh, a).total_cmp(&face_avg_z(&mesh, b)))
+            .expect("target face should exist");
+        let mut runner = OperatorRunner::new();
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &SolidifyFaces,
+            &SolidifyFacesParams {
+                faces: vec![face],
+                mode: SolidifyMode::KeepSource,
+                thickness: 0.2,
+            },
+        )
+        .expect_err("solidify keep-source on closed volume should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 

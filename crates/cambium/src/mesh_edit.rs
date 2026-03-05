@@ -14,7 +14,10 @@ use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
 
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
-use crate::{CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan};
+use crate::{
+    CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, SolidifyFaces,
+    SolidifyFacesParams, SolidifyMode,
+};
 use crate::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
@@ -41,6 +44,10 @@ enum MeshEditStep {
     },
     Inset {
         factor: f32,
+    },
+    Solidify {
+        thickness: f32,
+        mode: SolidifyMode,
     },
     CutRect {
         frame_origin: [f32; 3],
@@ -89,6 +96,8 @@ pub enum MeshEditStepPlan {
     Extrude(EditPlan<ExtrudeFacesParams>),
     /// Compiled `edit.face.inset` plan.
     Inset(EditPlan<InsetFacesPlan>),
+    /// Compiled `edit.face.solidify` plan.
+    Solidify(EditPlan<ExtrudeFacesParams>),
     /// Compiled `edit.face.cut.rect` plan.
     CutRect(EditPlan<CutRectFacePlan>),
     /// Compiled `tag.face.region` plan.
@@ -156,7 +165,7 @@ pub struct MeshEditPreview {
 /// Typical sequence:
 /// 1. start with [`MeshEdit::new`],
 /// 2. seed a face selection with [`MeshEdit::select_faces`] (or [`MeshEdit::select`]),
-/// 3. append fluent steps (`extrude`, `inset`, `cut_rect`, `tag`, `delete`),
+/// 3. append fluent steps (`extrude`, `inset`, `solidify`, `cut_rect`, `tag`, `delete`),
 /// 4. run `plan`, `preview`, or `apply`.
 ///
 /// ```rust
@@ -196,6 +205,7 @@ pub struct MeshEditPreview {
 /// - `select_boundary_edge_loop` selects edges,
 /// - `extrude` selects `cap_faces`,
 /// - `inset` selects `inner_faces`,
+/// - `solidify` selects `cap_faces`,
 /// - `cut_rect` selects `inner_faces`,
 /// - `tag` keeps selected faces,
 /// - `mark_seam` / `mark_sharp` keep selected edges,
@@ -275,6 +285,25 @@ impl MeshEdit {
     #[must_use]
     pub fn inset(mut self, factor: f32) -> Self {
         self.steps.push(MeshEditStep::Inset { factor });
+        self
+    }
+
+    /// Adds one solidify step using the current selected faces.
+    ///
+    /// Uses [`SolidifyMode::KeepSource`] by default.
+    #[must_use]
+    pub fn solidify(mut self, thickness: f32) -> Self {
+        self.steps.push(MeshEditStep::Solidify {
+            thickness,
+            mode: SolidifyMode::KeepSource,
+        });
+        self
+    }
+
+    /// Adds one solidify step with explicit source-face retention mode.
+    #[must_use]
+    pub fn solidify_with_mode(mut self, thickness: f32, mode: SolidifyMode) -> Self {
+        self.steps.push(MeshEditStep::Solidify { thickness, mode });
         self
     }
 
@@ -406,6 +435,20 @@ impl MeshEdit {
                     let result = runner.apply_in_place(&mut working, &op, &plan)?;
                     current_selection = Selection::from(result.output.inner_faces);
                     compiled_steps.push(MeshEditStepPlan::Inset(plan));
+                }
+                MeshEditStep::Solidify { thickness, mode } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.face.solidify")?;
+                    let params = SolidifyFacesParams {
+                        faces: current_faces,
+                        mode,
+                        thickness,
+                    };
+                    let op = SolidifyFaces;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.cap_faces);
+                    compiled_steps.push(MeshEditStepPlan::Solidify(plan));
                 }
                 MeshEditStep::CutRect {
                     frame_origin,
@@ -588,6 +631,17 @@ impl MeshEdit {
                     current_selection = Selection::from(output.inner_faces);
                     reports.push(report);
                 }
+                MeshEditStepPlan::Solidify(compiled) => {
+                    let op = SolidifyFaces;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output,
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(output.cap_faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::CutRect(compiled) => {
                     let op = CutRectFace;
                     let PreviewResult {
@@ -720,6 +774,12 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output.inner_faces);
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::Solidify(compiled) => {
+                    let op = SolidifyFaces;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.cap_faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::CutRect(compiled) => {
                     let op = CutRectFace;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -817,6 +877,10 @@ fn mesh_edit_fingerprint(
                 hasher.write_u64(plan.fingerprint.value());
             }
             MeshEditStepPlan::Inset(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::Solidify(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -953,8 +1017,9 @@ mod tests {
     use super::MeshEdit;
     use crate::{
         CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
-        InsetFacesParams, OperatorRunner, Selection, TagFaceRegion, TagFaceRegionParams,
-        mesh_signature, test_support::shared_edge_mesh,
+        InsetFacesParams, OperatorRunner, Selection, SolidifyFaces, SolidifyFacesParams,
+        SolidifyMode, TagFaceRegion, TagFaceRegionParams, mesh_signature,
+        test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1139,6 +1204,40 @@ mod tests {
         assert_eq!(
             flow_result.selection,
             Selection::from(direct_result.output.inner_faces)
+        );
+    }
+
+    #[test]
+    fn mesh_edit_solidify_matches_manual_operator_sequence() {
+        let (base, face) = one_quad_mesh();
+        let flow = MeshEdit::new()
+            .select_faces(vec![face])
+            .solidify_with_mode(0.2, SolidifyMode::KeepSource);
+
+        let mut flow_runner = OperatorRunner::new();
+        let mut flow_mesh = base.clone();
+        let flow_result = flow
+            .apply(&mut flow_runner, &mut flow_mesh)
+            .expect("fluent solidify should succeed");
+
+        let mut direct_mesh = base.clone();
+        let mut direct_runner = OperatorRunner::new();
+        let params = SolidifyFacesParams {
+            faces: vec![face],
+            mode: SolidifyMode::KeepSource,
+            thickness: 0.2,
+        };
+        let plan = direct_runner
+            .compile(&direct_mesh, &SolidifyFaces, &params)
+            .expect("solidify compile should succeed");
+        let direct_result = direct_runner
+            .apply_in_place(&mut direct_mesh, &SolidifyFaces, &plan)
+            .expect("solidify apply should succeed");
+
+        assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(
+            flow_result.selection,
+            Selection::from(direct_result.output.cap_faces)
         );
     }
 

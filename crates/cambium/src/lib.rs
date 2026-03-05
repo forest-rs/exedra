@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`SolidifyFaces`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -172,7 +172,8 @@ pub use delete::{
 pub use face_edit::{
     CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, ExtrudeFaces,
     ExtrudeFacesOutput, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesOutput,
-    InsetFacesParams, InsetFacesPlan,
+    InsetFacesParams, InsetFacesPlan, SolidifyFaces, SolidifyFacesOutput, SolidifyFacesParams,
+    SolidifyMode,
 };
 pub use region::{
     EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection,
@@ -193,7 +194,8 @@ mod naming_tests {
     use super::{
         CutRectFace, DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces,
         InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp,
-        SelectBoundaryEdgeLoop, TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
+        SelectBoundaryEdgeLoop, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder, UvPlanar,
+        ValidateMesh,
     };
 
     #[test]
@@ -205,6 +207,7 @@ mod naming_tests {
             CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
+            SolidifyFaces.name(),
             InspectBounds.name(),
             InspectSelectionSummary.name(),
             ValidateMesh.name(),
@@ -249,6 +252,7 @@ mod naming_tests {
             CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
+            SolidifyFaces.name(),
             InspectBounds.name(),
             InspectSelectionSummary.name(),
             ValidateMesh.name(),
@@ -267,6 +271,7 @@ mod naming_tests {
             "edit.face.cut.rect",
             "edit.face.extrude",
             "edit.face.inset",
+            "edit.face.solidify",
             "inspect.bounds",
             "inspect.select.summary",
             "inspect.validate.mesh",

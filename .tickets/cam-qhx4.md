@@ -1,6 +1,6 @@
 ---
 id: cam-qhx4
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-05T09:59:41Z

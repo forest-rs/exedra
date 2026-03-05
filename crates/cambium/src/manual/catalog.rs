@@ -63,6 +63,7 @@
 //! | `edit.face.cut.rect` | [`CutRectFace`](crate::CutRectFace) | [`CutRectFaceParams`](crate::CutRectFaceParams) | [`CutRectFaceOutput`](crate::CutRectFaceOutput) | Cuts one rectangular inner face from one quad face for opening workflows. |
 //! | `edit.face.extrude` | [`ExtrudeFaces`](crate::ExtrudeFaces) | [`ExtrudeFacesParams`](crate::ExtrudeFacesParams) (`mode`: [`ExtrudeMode`](crate::ExtrudeMode)) | [`ExtrudeFacesOutput`](crate::ExtrudeFacesOutput) | Face-edit counters + generated cap/wall outputs; mode controls source-face retention. |
 //! | `edit.face.inset` | [`InsetFaces`](crate::InsetFaces) | [`InsetFacesParams`](crate::InsetFacesParams) | [`InsetFacesOutput`](crate::InsetFacesOutput) | Face-edit counters + generated inner/frame outputs. |
+//! | `edit.face.solidify` | [`SolidifyFaces`](crate::SolidifyFaces) | [`SolidifyFacesParams`](crate::SolidifyFacesParams) (`mode`: [`SolidifyMode`](crate::SolidifyMode)) | [`SolidifyFacesOutput`](crate::SolidifyFacesOutput) | Explicit shell-thickness operation over selected faces. |
 //!
 //! # Reporting Expectations
 //!
