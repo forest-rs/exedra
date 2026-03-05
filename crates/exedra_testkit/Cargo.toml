@@ -1,0 +1,17 @@
+[package]
+name = "exedra_testkit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic fixtures, golden snapshots, and debug dumps for Exedra"
+keywords = ["mesh", "test", "golden", "snapshot"]
+categories = ["development-tools::testing"]
+readme = "README.md"
+
+[dependencies]
+exedra.workspace = true
+
+[lints]
+workspace = true

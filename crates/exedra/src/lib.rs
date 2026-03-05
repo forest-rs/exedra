@@ -60,6 +60,8 @@ pub use topology::{Face, HalfEdge, Vertex};
 mod tests {
     use core::mem::size_of;
 
+    use exedra_testkit::fixtures::triangle_mesh;
+
     use super::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 
     #[test]
@@ -69,5 +71,11 @@ mod tests {
         assert_eq!(size_of::<Option<HalfEdgeId>>(), size_of::<HalfEdgeId>());
         assert_eq!(size_of::<Option<CornerId>>(), size_of::<CornerId>());
         assert_eq!(size_of::<Option<FaceId>>(), size_of::<FaceId>());
+    }
+
+    #[test]
+    fn exedra_tests_can_use_exedra_testkit_fixtures() {
+        let mesh = triangle_mesh();
+        assert!(mesh.validate_fast().is_empty());
     }
 }

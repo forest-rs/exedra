@@ -5,6 +5,7 @@ members = [
     "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_primitives",
+    "crates/exedra_testkit",
 ]
 
 [workspace.package]
@@ -72,6 +73,7 @@ cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
+exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 libm = "0.2.15"
 understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "83ccf57799fe9aef99b78bfd5d541b9fad45200a" }
 web-time = "1.1.0"

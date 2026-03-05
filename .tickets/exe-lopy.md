@@ -1,7 +1,7 @@
 ---
 id: exe-lopy
 title: exedra_testkit crate
-status: open
+status: closed
 deps: []
 links: [cam-tzew]
 created: 2026-03-03T05:52:56Z

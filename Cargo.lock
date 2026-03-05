@@ -38,11 +38,19 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "exedra"
 version = "0.1.0"
 dependencies = [
+ "exedra_testkit",
  "understory_dirty",
 ]
 
 [[package]]
 name = "exedra_primitives"
+version = "0.1.0"
+dependencies = [
+ "exedra",
+]
+
+[[package]]
+name = "exedra_testkit"
 version = "0.1.0"
 dependencies = [
  "exedra",
