@@ -136,8 +136,8 @@ pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timi
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use seam::{MarkEdgeSeam, MarkEdgeSeamParams};
 pub use selection::{
-    EdgeSet, FaceSet, VertexSet, canonicalize_edge_set, canonicalize_face_set,
-    canonicalize_vertex_set,
+    EdgeSet, FaceSet, Selection, SelectionDomainError, SelectionKind, VertexSet,
+    canonicalize_edge_set, canonicalize_face_set, canonicalize_vertex_set,
 };
 pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};
 pub use uv_box::{UvBox, UvBoxParams};
