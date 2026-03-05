@@ -86,7 +86,7 @@ impl EditOperator for ExtrudeFaces {
 
     fn apply(
         &self,
-        txn: &mut exedra::Txn<'_>,
+        txn: &mut exedra::EditSession<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -228,7 +228,7 @@ impl EditOperator for InsetFaces {
 
     fn apply(
         &self,
-        txn: &mut exedra::Txn<'_>,
+        txn: &mut exedra::EditSession<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -504,7 +504,7 @@ fn normalized_face_normal(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<
 }
 
 fn add_frame_face(
-    txn: &mut exedra::Txn<'_>,
+    txn: &mut exedra::EditSession<'_>,
     current: VertexId,
     next: VertexId,
     current_inset: VertexId,
@@ -522,7 +522,7 @@ fn add_frame_face(
             .map(|face| (face, FrameWinding::UseForwardOuterEdge)),
         None => match txn.add_face(&reverse_outer) {
             Ok(face) => Ok((face, FrameWinding::UseReverseOuterEdge)),
-            // Relies on Txn::add_face preflight returning NonManifoldEdge
+            // Relies on EditSession::add_face preflight returning NonManifoldEdge
             // before mutation, so trying the alternate winding is safe.
             Err(AddFaceError::NonManifoldEdge { .. }) => txn
                 .add_face(&forward_outer)

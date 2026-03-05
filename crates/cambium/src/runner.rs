@@ -209,7 +209,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::Txn;
+    use exedra::EditSession;
 
     use super::OperatorRunner;
     use crate::{Artifacts, DirtyChannel, EditOperator, OpContext, OpError, OpReport};
@@ -226,7 +226,7 @@ mod tests {
 
         fn apply(
             &self,
-            txn: &mut Txn<'_>,
+            txn: &mut EditSession<'_>,
             params: &Self::Params,
             ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {
@@ -350,7 +350,7 @@ mod tests {
 
         fn apply(
             &self,
-            _txn: &mut Txn<'_>,
+            _txn: &mut EditSession<'_>,
             _params: &Self::Params,
             ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {

@@ -13,7 +13,7 @@ Edit-based execution aligns with Exedra’s kernel contract:
 
 ## Alternatives considered
 - **All operators return new Mesh**: simpler in isolation, but complicates incremental workflows and encourages copying.
-- **Operators mutate mesh directly without Txn**: breaks the contract and makes invalidation brittle.
+- **Operators mutate mesh directly without EditSession**: breaks the contract and makes invalidation brittle.
 
 ## Implications
 - OperatorRunner commits transactions and standardizes preview/commit behavior.

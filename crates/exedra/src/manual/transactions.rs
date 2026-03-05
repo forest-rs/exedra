@@ -3,7 +3,7 @@
 
 //! Transactions and Change Sets
 //!
-//! Exedra edits are performed through [`Txn`](crate::Txn), obtained from
+//! Exedra edits are performed through [`EditSession`](crate::EditSession), obtained from
 //! [`Mesh::begin`](crate::Mesh::begin).
 //!
 //! ```rust
@@ -22,7 +22,7 @@
 //! Transactions are eager in v0.1:
 //! - mutating txn calls update the underlying mesh immediately,
 //! - dropping/aborting a transaction does not roll back mesh edits,
-//! - [`Txn::commit`](crate::Txn::commit) finalizes deterministic bookkeeping
+//! - [`EditSession::commit`](crate::EditSession::commit) finalizes deterministic bookkeeping
 //!   and increments mesh revision.
 //!
 //! # Change Summaries
@@ -38,20 +38,20 @@
 //!
 //! Edit kernels that create/transform topology consume
 //! [`PropagatePolicy`](crate::PropagatePolicy). Configure per-transaction
-//! behavior via [`Txn::set_propagate_policy`](crate::Txn::set_propagate_policy)
-//! and inspect with [`Txn::propagate_policy`](crate::Txn::propagate_policy).
+//! behavior via [`EditSession::set_propagate_policy`](crate::EditSession::set_propagate_policy)
+//! and inspect with [`EditSession::propagate_policy`](crate::EditSession::propagate_policy).
 //!
 //! `split_edge` is the first topology-transforming kernel using this policy:
-//! [`Txn::split_edge`](crate::Txn::split_edge). It inserts a midpoint vertex,
+//! [`EditSession::split_edge`](crate::EditSession::split_edge). It inserts a midpoint vertex,
 //! rewires the local half-edge pair, updates dirty/change tracking, and applies
 //! propagation defaults/overrides for edge/corner attributes.
 //!
-//! [`Txn::split_face`](crate::Txn::split_face) inserts a diagonal between two
+//! [`EditSession::split_face`](crate::EditSession::split_face) inserts a diagonal between two
 //! non-adjacent corners of one interior face and creates a second face.
 //! Existing corners keep authored values; diagonal corners are populated from
 //! policy rules while preserving sparse missingness.
 //!
-//! [`Txn::add_face`](crate::Txn::add_face) builds a new interior polygon loop
+//! [`EditSession::add_face`](crate::EditSession::add_face) builds a new interior polygon loop
 //! from live [`VertexId`](crate::VertexId)s. It reuses compatible OUTSIDE
 //! half-edges when filling/opening boundaries and creates new interior+OUTSIDE
 //! pairs otherwise.

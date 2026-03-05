@@ -40,7 +40,7 @@ impl EditOperator for TagFaceRegion {
 
     fn apply(
         &self,
-        txn: &mut exedra::Txn<'_>,
+        txn: &mut exedra::EditSession<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {

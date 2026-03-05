@@ -11,7 +11,7 @@
 //! - deterministic render extraction ([`Mesh::to_trimesh`]).
 //!
 //! The intended public surface is the crate root (`exedra::...`) via
-//! re-exported core types like [`Mesh`], [`Txn`], [`MeshBuilder`], and
+//! re-exported core types like [`Mesh`], [`EditSession`], [`MeshBuilder`], and
 //! attribute/key APIs.
 //!
 //! For deeper narrative docs, see [`manual`].
@@ -34,9 +34,9 @@ pub mod manual;
 pub mod mesh;
 mod numeric;
 mod render;
+mod session;
 mod sorted_merge;
 mod topology;
-mod txn;
 
 pub use arena::Arena;
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
@@ -46,12 +46,12 @@ pub use mesh::{
 };
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
-pub use topology::{Face, HalfEdge, Vertex};
-pub use txn::{
+pub use session::{
     AddFaceError, ChangeSet, DeleteEdgesError, DeleteFacesError, DeletePolicy, DeleteVerticesError,
-    DirtySet, EdgeAttrPropagation, FaceAttrPropagation, NormalOverridePropagation,
-    PositionPropagation, PropagatePolicy, SplitEdgeError, SplitFaceError, Txn, UvPropagation,
+    DirtySet, EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,
+    PositionPropagation, PropagatePolicy, SplitEdgeError, SplitFaceError, UvPropagation,
 };
+pub use topology::{Face, HalfEdge, Vertex};
 
 #[cfg(test)]
 mod tests {

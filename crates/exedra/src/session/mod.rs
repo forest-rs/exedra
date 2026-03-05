@@ -15,6 +15,9 @@ const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
 const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 
+mod attrs;
+mod bookkeeping;
+
 /// Vertex-position propagation behavior for topology edits.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum PositionPropagation {
@@ -108,7 +111,7 @@ impl Default for PropagatePolicy {
 /// domains. The primary consumption path is deterministic drain operations.
 ///
 /// Most callers consume this via [`ChangeSet::dirty`] after
-/// [`Txn::commit`](crate::Txn::commit).
+/// [`EditSession::commit`](crate::EditSession::commit).
 #[derive(Clone, Debug, Default)]
 pub struct DirtySet {
     inner: UnderstoryDirtySet<Id>,
@@ -184,7 +187,7 @@ impl DirtySet {
 
 /// Deterministic summary of mesh changes produced by a committed transaction.
 ///
-/// Returned by [`Txn::commit`] and by convenience wrappers such as
+/// Returned by [`EditSession::commit`] and by convenience wrappers such as
 /// [`Mesh::delete_faces`].
 #[derive(Clone, Debug, Default)]
 pub struct ChangeSet {
@@ -206,7 +209,7 @@ pub struct ChangeSet {
 
 /// Face-deletion behavior for isolated vertices.
 ///
-/// Passed to [`Mesh::delete_faces`] or [`Txn::delete_faces`].
+/// Passed to [`Mesh::delete_faces`] or [`EditSession::delete_faces`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum DeletePolicy {
     /// Remove isolated vertices after face deletion.
@@ -217,7 +220,7 @@ pub enum DeletePolicy {
 }
 
 /// Structured face-deletion error from [`Mesh::delete_faces`] and
-/// [`Txn::delete_faces`].
+/// [`EditSession::delete_faces`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteFacesError {
     /// Input face list must be sorted and deduplicated.
@@ -261,7 +264,7 @@ impl fmt::Display for DeleteFacesError {
 impl core::error::Error for DeleteFacesError {}
 
 /// Structured edge-deletion error from [`Mesh::delete_edges`] and
-/// [`Txn::delete_edges`].
+/// [`EditSession::delete_edges`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteEdgesError {
     /// Input edge list must be sorted, deduplicated, and canonicalized.
@@ -300,7 +303,7 @@ impl fmt::Display for DeleteEdgesError {
 impl core::error::Error for DeleteEdgesError {}
 
 /// Structured vertex-deletion error from [`Mesh::delete_vertices`] and
-/// [`Txn::delete_vertices`].
+/// [`EditSession::delete_vertices`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteVerticesError {
     /// Input vertex list must be sorted and deduplicated.
@@ -333,7 +336,7 @@ impl fmt::Display for DeleteVerticesError {
 
 impl core::error::Error for DeleteVerticesError {}
 
-/// Structured edge-split error from [`Txn::split_edge`].
+/// Structured edge-split error from [`EditSession::split_edge`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitEdgeError {
     /// Half-edge must be live and have a live twin.
@@ -355,7 +358,7 @@ impl fmt::Display for SplitEdgeError {
 
 impl core::error::Error for SplitEdgeError {}
 
-/// Structured face-split error from [`Txn::split_face`].
+/// Structured face-split error from [`EditSession::split_face`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitFaceError {
     /// Corner ID is stale or not live.
@@ -387,7 +390,7 @@ impl fmt::Display for SplitFaceError {
 
 impl core::error::Error for SplitFaceError {}
 
-/// Structured face-creation error from [`Txn::add_face`].
+/// Structured face-creation error from [`EditSession::add_face`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AddFaceError {
     /// Face loop must have at least three vertices.
@@ -444,9 +447,9 @@ impl core::error::Error for AddFaceError {}
 /// does not roll back mesh changes; it only discards accumulated bookkeeping.
 ///
 /// Acquire via [`Mesh::begin`], apply mutating operations, then finish with
-/// [`Txn::commit`] (or [`Txn::abort`] to drop bookkeeping only).
+/// [`EditSession::commit`] (or [`EditSession::abort`] to drop bookkeeping only).
 #[derive(Debug)]
-pub struct Txn<'a> {
+pub struct EditSession<'a> {
     mesh: &'a mut Mesh,
     propagate_policy: PropagatePolicy,
     dirty: DirtySet,
@@ -462,10 +465,10 @@ impl Mesh {
     /// Begins a new transaction borrowing this mesh mutably.
     ///
     /// Mutations performed through the transaction update the mesh immediately.
-    /// Call [`Txn::commit`] to materialize a [`ChangeSet`], or [`Txn::abort`]
+    /// Call [`EditSession::commit`] to materialize a [`ChangeSet`], or [`EditSession::abort`]
     /// to explicitly discard bookkeeping without rollback.
-    pub fn begin(&mut self) -> Txn<'_> {
-        Txn {
+    pub fn begin(&mut self) -> EditSession<'_> {
+        EditSession {
             mesh: self,
             propagate_policy: PropagatePolicy::default(),
             dirty: DirtySet::new(),
@@ -480,7 +483,7 @@ impl Mesh {
 
     /// Deletes a canonical set of interior faces in one committed transaction.
     ///
-    /// This is a convenience wrapper over [`Txn::delete_faces`] + [`Txn::commit`].
+    /// This is a convenience wrapper over [`EditSession::delete_faces`] + [`EditSession::commit`].
     ///
     /// Note: transactions in Exedra are eager. This returns only precondition
     /// errors before mutation begins. If internal boundary restitching cannot
@@ -497,7 +500,7 @@ impl Mesh {
 
     /// Deletes a canonical set of undirected edges in one committed transaction.
     ///
-    /// This is a convenience wrapper over [`Txn::delete_edges`] + [`Txn::commit`].
+    /// This is a convenience wrapper over [`EditSession::delete_edges`] + [`EditSession::commit`].
     pub fn delete_edges(
         &mut self,
         edges: &[HalfEdgeId],
@@ -510,7 +513,7 @@ impl Mesh {
 
     /// Deletes a canonical set of isolated vertices in one committed transaction.
     ///
-    /// This is a convenience wrapper over [`Txn::delete_vertices`] + [`Txn::commit`].
+    /// This is a convenience wrapper over [`EditSession::delete_vertices`] + [`EditSession::commit`].
     pub fn delete_vertices(
         &mut self,
         vertices: &[VertexId],
@@ -521,131 +524,7 @@ impl Mesh {
     }
 }
 
-impl Txn<'_> {
-    /// Returns the current edit propagation policy.
-    #[must_use]
-    pub const fn propagate_policy(&self) -> PropagatePolicy {
-        self.propagate_policy
-    }
-
-    /// Replaces the edit propagation policy for this transaction.
-    pub fn set_propagate_policy(&mut self, policy: PropagatePolicy) {
-        self.propagate_policy = policy;
-    }
-
-    /// Returns an immutable view of the mesh being edited.
-    #[must_use]
-    pub fn mesh(&self) -> &Mesh {
-        self.mesh
-    }
-
-    /// Adds a vertex and records deterministic change bookkeeping.
-    pub fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
-        let vertex = self.mesh.add_vertex(position);
-        self.created_vertices.push(vertex);
-        self.dirty.mark_vertex(vertex);
-        vertex
-    }
-
-    /// Sets a vertex position and marks affected data dirty on success.
-    pub fn set_vertex_position(&mut self, vertex: VertexId, position: [f32; 3]) -> bool {
-        let updated = self.mesh.set_vertex_position(vertex, position);
-        if updated {
-            self.dirty.mark_vertex(vertex);
-        }
-        updated
-    }
-
-    /// Sets the built-in face region value and marks the face dirty on success.
-    ///
-    /// Returns `true` when `face` is live and writable.
-    pub fn set_face_region(&mut self, face: FaceId, region: u32) -> bool {
-        let updated = self
-            .mesh
-            .attrs_mut()
-            .dense_mut(attr::FACE_REGION)
-            .is_some_and(|layer| layer.set(face.as_id(), region));
-        if updated {
-            self.dirty.mark_face(face);
-        }
-        updated
-    }
-
-    /// Returns the corner UV value for `corner`, when present.
-    #[must_use]
-    pub fn corner_uv(&self, corner: CornerId) -> Option<[f32; 2]> {
-        self.mesh
-            .attrs()
-            .sparse(attr::CORNER_UV)
-            .and_then(|layer| layer.get(corner.as_id()).copied())
-    }
-
-    /// Sets corner UV for `corner`, defining the sparse layer on first use.
-    ///
-    /// Returns `true` when `corner` is live and writable.
-    pub fn set_corner_uv(&mut self, corner: CornerId, uv: [f32; 2]) -> bool {
-        if self.mesh.half_edges.get(corner.as_id()).is_none() {
-            return false;
-        }
-        if self.mesh.attrs().sparse(attr::CORNER_UV).is_none() {
-            let _ = self.mesh.attrs_mut().define_sparse(attr::CORNER_UV);
-        }
-        let updated = self
-            .mesh
-            .attrs_mut()
-            .sparse_mut(attr::CORNER_UV)
-            .is_some_and(|layer| {
-                layer.set(corner.as_id(), uv);
-                true
-            });
-        if updated {
-            self.dirty.mark_corner(corner);
-        }
-        updated
-    }
-
-    /// Returns explicit seam state for an undirected edge.
-    #[must_use]
-    pub fn edge_seam(&self, half_edge: HalfEdgeId) -> Option<bool> {
-        self.mesh.edge_seam(half_edge)
-    }
-
-    /// Sets explicit seam state for an undirected edge.
-    ///
-    /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_seam(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
-        let Some(twin) = self.mesh.twin(half_edge) else {
-            return false;
-        };
-        let updated = self.mesh.set_edge_seam(half_edge, seam);
-        if updated {
-            self.dirty.mark_corner(half_edge);
-            self.dirty.mark_corner(twin);
-        }
-        updated
-    }
-
-    /// Returns explicit sharpness value for an undirected edge.
-    #[must_use]
-    pub fn edge_sharpness(&self, half_edge: HalfEdgeId) -> Option<f32> {
-        self.mesh.edge_sharpness(half_edge)
-    }
-
-    /// Sets explicit sharpness value for an undirected edge.
-    ///
-    /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
-        let Some(twin) = self.mesh.twin(half_edge) else {
-            return false;
-        };
-        let updated = self.mesh.set_edge_sharpness(half_edge, sharp);
-        if updated {
-            self.dirty.mark_corner(half_edge);
-            self.dirty.mark_corner(twin);
-        }
-        updated
-    }
-
+impl EditSession<'_> {
     /// Adds one interior polygon face loop from live vertex IDs.
     ///
     /// For each directed loop edge `from -> to`, behavior is:
@@ -1424,7 +1303,7 @@ impl Txn<'_> {
     /// (`min(edge, twin)`) of an undirected edge.
     ///
     /// Each selected edge contributes its interior incident face(s), and this
-    /// kernel delegates topology mutation to [`Txn::delete_faces`].
+    /// kernel delegates topology mutation to [`EditSession::delete_faces`].
     pub fn delete_edges(
         &mut self,
         edges: &[HalfEdgeId],
@@ -1509,93 +1388,6 @@ impl Txn<'_> {
         }
         Ok(())
     }
-
-    /// Marks a face dirty.
-    pub fn mark_face_dirty(&mut self, face: FaceId) {
-        self.dirty.mark_face(face);
-    }
-
-    /// Marks a vertex dirty.
-    pub fn mark_vertex_dirty(&mut self, vertex: VertexId) {
-        self.dirty.mark_vertex(vertex);
-    }
-
-    /// Marks a corner dirty.
-    pub fn mark_corner_dirty(&mut self, corner: CornerId) {
-        self.dirty.mark_corner(corner);
-    }
-
-    /// Records a created half-edge in this transaction.
-    ///
-    /// This is intended for topology-edit kernels that mutate half-edge
-    /// storage and must report created IDs in the resulting [`ChangeSet`].
-    pub fn record_created_half_edge(&mut self, half_edge: HalfEdgeId) {
-        self.created_half_edges.push(half_edge);
-    }
-
-    /// Records a created face in this transaction.
-    ///
-    /// This is intended for topology-edit kernels that mutate face storage and
-    /// must report created IDs in the resulting [`ChangeSet`].
-    pub fn record_created_face(&mut self, face: FaceId) {
-        self.created_faces.push(face);
-    }
-
-    /// Records a deleted vertex in this transaction.
-    ///
-    /// Topology-edit kernels should call this when a vertex is removed.
-    pub fn record_deleted_vertex(&mut self, vertex: VertexId) {
-        self.deleted_vertices.push(vertex);
-        self.dirty.mark_vertex(vertex);
-    }
-
-    /// Records a deleted half-edge in this transaction.
-    ///
-    /// Topology-edit kernels should call this when a half-edge is removed.
-    pub fn record_deleted_half_edge(&mut self, half_edge: HalfEdgeId) {
-        self.deleted_half_edges.push(half_edge);
-        self.dirty.mark_corner(half_edge);
-    }
-
-    /// Records a deleted face in this transaction.
-    ///
-    /// Topology-edit kernels should call this when a face is removed.
-    pub fn record_deleted_face(&mut self, face: FaceId) {
-        self.deleted_faces.push(face);
-        self.dirty.mark_face(face);
-    }
-
-    /// Commits this transaction and returns a deterministic change summary.
-    ///
-    /// Commit always increments [`Mesh::revision`](crate::Mesh::revision)
-    /// exactly once, even when no mesh fields were changed.
-    #[must_use]
-    pub fn commit(mut self) -> ChangeSet {
-        sort_dedup(&mut self.created_vertices);
-        sort_dedup(&mut self.created_half_edges);
-        sort_dedup(&mut self.created_faces);
-        sort_dedup(&mut self.deleted_vertices);
-        sort_dedup(&mut self.deleted_half_edges);
-        sort_dedup(&mut self.deleted_faces);
-        self.mesh.revision = self
-            .mesh
-            .revision
-            .checked_add(1)
-            .expect("mesh revision overflowed u64");
-
-        ChangeSet {
-            dirty: self.dirty,
-            created_vertices: self.created_vertices,
-            created_half_edges: self.created_half_edges,
-            created_faces: self.created_faces,
-            deleted_vertices: self.deleted_vertices,
-            deleted_half_edges: self.deleted_half_edges,
-            deleted_faces: self.deleted_faces,
-        }
-    }
-
-    /// Explicitly discards transaction bookkeeping without rollback.
-    pub fn abort(self) {}
 }
 
 fn sort_dedup<T: Ord>(values: &mut Vec<T>) {

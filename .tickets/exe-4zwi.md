@@ -1,6 +1,6 @@
 ---
 id: exe-4zwi
-status: open
+status: closed
 deps: [cam-mrwk]
 links: []
 created: 2026-03-05T02:03:21Z

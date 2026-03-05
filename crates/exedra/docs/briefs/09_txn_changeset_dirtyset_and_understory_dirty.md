@@ -1,7 +1,7 @@
-# Brief: Txn → ChangeSet → DirtySet, and how it plays with `understory_dirty`
+# Brief: EditSession → ChangeSet → DirtySet, and how it plays with `understory_dirty`
 
 ## Decision
-All Exedra mutations happen in an explicit **transaction** (`Txn`). Commit produces a deterministic **ChangeSet** containing created/deleted IDs and a conservative **DirtySet** for invalidation. Cambium uses Exedra’s ChangeSet/DirtySet as the **source of truth** for mesh-derived invalidation, and uses `understory_dirty` only for **Cambium-runtime caches and workflow state**.
+All Exedra mutations happen in an explicit **transaction** (`EditSession`). Commit produces a deterministic **ChangeSet** containing created/deleted IDs and a conservative **DirtySet** for invalidation. Cambium uses Exedra’s ChangeSet/DirtySet as the **source of truth** for mesh-derived invalidation, and uses `understory_dirty` only for **Cambium-runtime caches and workflow state**.
 
 ## Why
 Incremental systems rot when invalidation is “inferred”:

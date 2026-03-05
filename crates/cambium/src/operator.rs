@@ -3,7 +3,7 @@
 
 //! Edit-operator trait boundary for Cambium.
 
-use exedra::Txn;
+use exedra::EditSession;
 
 use crate::{OpContext, OpError, OpReport};
 
@@ -33,7 +33,7 @@ pub trait EditOperator {
     /// Applies one operator pass into an in-flight transaction.
     fn apply(
         &self,
-        txn: &mut Txn<'_>,
+        txn: &mut EditSession<'_>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError>;
@@ -43,7 +43,7 @@ pub trait EditOperator {
 mod tests {
     use super::EditOperator;
     use crate::{Artifacts, OpContext, OpError, OpReport};
-    use exedra::Txn;
+    use exedra::EditSession;
 
     struct NoopOperator;
 
@@ -57,7 +57,7 @@ mod tests {
 
         fn apply(
             &self,
-            _txn: &mut Txn<'_>,
+            _txn: &mut EditSession<'_>,
             _params: &Self::Params,
             _ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {

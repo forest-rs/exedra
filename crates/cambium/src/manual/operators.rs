@@ -4,7 +4,7 @@
 //! Operator Authoring Guide
 //!
 //! Operators implement [`EditOperator`](crate::EditOperator) and mutate mesh
-//! state through an in-flight [`exedra::Txn`]. The runner owns commit/preview
+//! state through an in-flight [`exedra::EditSession`]. The runner owns commit/preview
 //! orchestration.
 //!
 //! Lifecycle:
@@ -83,7 +83,7 @@
 //!
 //!     fn apply(
 //!         &self,
-//!         txn: &mut exedra::Txn<'_>,
+//!         txn: &mut exedra::EditSession<'_>,
 //!         _params: &Self::Params,
 //!         ctx: &mut OpContext,
 //!     ) -> Result<(OpReport, Self::Output), OpError> {

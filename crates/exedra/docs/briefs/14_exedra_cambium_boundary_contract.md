@@ -24,7 +24,7 @@ A crisp contract preserves modularity and replaceability.
    - deterministic extraction buffer ordering
    - no hash iteration leakage into public outputs
 3. **Explicit mutation**:
-   - mutations occur via `Txn`
+   - mutations occur via `EditSession`
    - `commit()` returns `ChangeSet` with `DirtySet`
 4. **Attribute domains and built-ins**:
    - vertex/face/edge/corner domains are stable concepts
@@ -48,7 +48,7 @@ A crisp contract preserves modularity and replaceability.
 - Own UV generation utilities and seam tooling.
 
 ## What Cambium must NOT do (boundary violations)
-- Mutate Exedra topology/attributes without a `Txn`.
+- Mutate Exedra topology/attributes without a `EditSession`.
 - Infer kernel dirtiness by inspection; must consume `ChangeSet.dirty`.
 - Depend on internal arena layout beyond stable APIs.
 - Invent identities for Exedra built-in attribute layers (no ad-hoc string keys).
@@ -56,7 +56,7 @@ A crisp contract preserves modularity and replaceability.
 
 ## Boundary objects (the seam)
 Objects crossing the boundary and expected to remain stable:
-- `Txn`, `ChangeSet`, `DirtySet`
+- `EditSession`, `ChangeSet`, `DirtySet`
 - `ValidateReport`
 - extraction outputs (`TriMesh`, `ExtractStats`)
 - boolean errors/artifacts (later)

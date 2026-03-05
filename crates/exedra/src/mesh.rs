@@ -272,7 +272,7 @@ impl core::error::Error for ValidationError {}
 
 /// Monotonic mesh revision counter.
 ///
-/// Revision increments exactly once per successful [`Txn::commit`](crate::Txn::commit).
+/// Revision increments exactly once per successful [`EditSession::commit`](crate::EditSession::commit).
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MeshRevision(u64);
 
@@ -316,7 +316,7 @@ pub struct MeshBuilder {
 ///
 /// This is the main topology container in Exedra. Construct with [`Mesh::new`]
 /// or builders like [`Mesh::from_indexed_triangles`]/[`Mesh::from_polygons`],
-/// then traverse/edit using methods on this type or via [`Txn`](crate::Txn).
+/// then traverse/edit using methods on this type or via [`EditSession`](crate::EditSession).
 #[derive(Clone, Debug)]
 pub struct Mesh {
     pub(crate) vertices: Arena<Vertex>,
