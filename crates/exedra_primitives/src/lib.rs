@@ -5,9 +5,9 @@
 //!
 //! This crate provides a curated constructor surface at the crate root:
 //! - constructors: [`quad()`], [`grid()`], [`box_primitive()`], [`cylinder()`],
-//!   [`uv_sphere()`],
+//!   [`cone()`], [`uv_sphere()`],
 //! - parameter types: [`QuadParams`], [`GridParams`], [`BoxParams`],
-//!   [`CylinderParams`], [`UvSphereParams`],
+//!   [`CylinderParams`], [`ConeParams`], [`UvSphereParams`],
 //! - semantic region/selection metadata in [`Primitive`].
 //!
 //! Primitive outputs are deterministic for fixed input parameters and include:
@@ -34,6 +34,7 @@ use exedra::{FaceId, HalfEdgeId, Mesh};
 
 mod box_primitive;
 mod common;
+mod cone;
 mod cylinder;
 mod grid;
 mod quad;
@@ -43,6 +44,9 @@ pub use box_primitive::{BoxParams, box_primitive};
 pub use box_primitive::{
     REGION_SIDE_X_NEG, REGION_SIDE_X_POS, REGION_SIDE_Y_NEG, REGION_SIDE_Y_POS, REGION_SIDE_Z_NEG,
     REGION_SIDE_Z_POS,
+};
+pub use cone::{
+    ConeParams, REGION_CAP_BOTTOM as REGION_CONE_CAP_BOTTOM, REGION_SIDE as REGION_CONE_SIDE, cone,
 };
 pub use cylinder::{CylinderParams, cylinder};
 pub use cylinder::{REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE};
