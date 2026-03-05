@@ -21,6 +21,7 @@
 //! | Stable Name | Operator | Params | Output | Reporting Notes |
 //! | --- | --- | --- | --- | --- |
 //! | `inspect.bounds` | [`InspectBounds`](crate::InspectBounds) | [`BoundsParams`](crate::BoundsParams) | [`BoundsOutput`](crate::BoundsOutput) | Primarily counters + summary artifacts; read-only inspection. |
+//! | `inspect.select.summary` | [`InspectSelectionSummary`](crate::InspectSelectionSummary) | [`SelectionSummaryParams`](crate::SelectionSummaryParams) | [`SelectionSummaryOutput`](crate::SelectionSummaryOutput) | Summarizes selection liveness/domain counts without mutation. |
 //! | `inspect.validate.mesh` | [`ValidateMesh`](crate::ValidateMesh) | [`ValidateMeshParams`](crate::ValidateMeshParams) | [`ValidateMeshOutput`](crate::ValidateMeshOutput) | Validation diagnostics plus summary counters. |
 //!
 //! ## `select.*`

@@ -38,7 +38,7 @@
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
 //! - Operator families:
-//!   - `inspect.*`: [`InspectBounds`], [`ValidateMesh`]
+//!   - `inspect.*`: [`InspectBounds`], [`InspectSelectionSummary`], [`ValidateMesh`]
 //!   - `select.*`: [`SelectBoundaryEdgeLoop`], [`select_faces_by_region`], [`select_boundary_edge_loop`], [`flood_fill_faces_by_region`]
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
@@ -99,6 +99,7 @@ mod dirty;
 mod edge_mark;
 mod error;
 mod face_edit;
+mod inspect_selection;
 mod op_common;
 mod operator;
 mod plan;
@@ -146,6 +147,9 @@ pub use exedra::{
 
 // Policies and selection surface.
 pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, InspectBounds};
+pub use inspect_selection::{
+    InspectSelectionSummary, SelectionSummaryDetail, SelectionSummaryOutput, SelectionSummaryParams,
+};
 pub use policy::{
     BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
     QualityPolicy, UvPolicy, ValidatePolicy, WorkBudget,
@@ -187,8 +191,8 @@ mod naming_tests {
 
     use super::{
         DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces, InsetFaces,
-        InspectBounds, MarkEdgeSeam, MarkEdgeSharp, SelectBoundaryEdgeLoop, TagFaceRegion, UvBox,
-        UvCylinder, UvPlanar, ValidateMesh,
+        InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp,
+        SelectBoundaryEdgeLoop, TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
     };
 
     #[test]
@@ -200,6 +204,7 @@ mod naming_tests {
             ExtrudeFaces.name(),
             InsetFaces.name(),
             InspectBounds.name(),
+            InspectSelectionSummary.name(),
             ValidateMesh.name(),
             MarkEdgeSeam.name(),
             MarkEdgeSharp.name(),
@@ -242,6 +247,7 @@ mod naming_tests {
             ExtrudeFaces.name(),
             InsetFaces.name(),
             InspectBounds.name(),
+            InspectSelectionSummary.name(),
             ValidateMesh.name(),
             MarkEdgeSeam.name(),
             MarkEdgeSharp.name(),
@@ -258,6 +264,7 @@ mod naming_tests {
             "edit.face.extrude",
             "edit.face.inset",
             "inspect.bounds",
+            "inspect.select.summary",
             "inspect.validate.mesh",
             "mark.edge.seam",
             "mark.edge.sharp",

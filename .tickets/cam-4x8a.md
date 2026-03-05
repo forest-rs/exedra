@@ -1,6 +1,6 @@
 ---
 id: cam-4x8a
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-05T09:59:41Z
