@@ -20,6 +20,14 @@ const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
 const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 
+#[derive(Copy, Clone, Debug)]
+struct OutgoingAdj {
+    from: VertexId,
+    to: VertexId,
+    half_edge: HalfEdgeId,
+    face: FaceId,
+}
+
 mod attrs;
 mod bookkeeping;
 mod propagation;
@@ -458,6 +466,8 @@ impl core::error::Error for AddFaceError {}
 pub struct EditSession<'a> {
     mesh: &'a mut Mesh,
     propagate_policy: PropagatePolicy,
+    outgoing_index: Vec<OutgoingAdj>,
+    outgoing_index_valid: bool,
     dirty: DirtySet,
     created_vertices: Vec<VertexId>,
     created_half_edges: Vec<HalfEdgeId>,
@@ -477,6 +487,8 @@ impl Mesh {
         EditSession {
             mesh: self,
             propagate_policy: PropagatePolicy::default(),
+            outgoing_index: Vec::new(),
+            outgoing_index_valid: false,
             dirty: DirtySet::new(),
             created_vertices: Vec::new(),
             created_half_edges: Vec::new(),
@@ -531,6 +543,33 @@ impl Mesh {
 }
 
 impl EditSession<'_> {
+    fn ensure_outgoing_index(&mut self) -> &[OutgoingAdj] {
+        if !self.outgoing_index_valid {
+            self.outgoing_index = build_outgoing_index(self.mesh);
+            self.outgoing_index_valid = true;
+        }
+        &self.outgoing_index
+    }
+
+    fn invalidate_outgoing_index(&mut self) {
+        self.outgoing_index_valid = false;
+    }
+
+    fn vertex_has_incident_half_edge(&mut self, vertex: VertexId) -> bool {
+        let index = self.ensure_outgoing_index();
+        vertex_has_incident_half_edge_in_index(index, vertex)
+    }
+
+    fn has_undirected_edge(&mut self, a: VertexId, b: VertexId) -> bool {
+        let index = self.ensure_outgoing_index();
+        has_undirected_edge_in_index(index, a, b)
+    }
+
+    fn find_boundary_half_edge(&mut self, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
+        let index = self.ensure_outgoing_index();
+        find_boundary_half_edge_in_index(index, from, to)
+    }
+
     /// Adds one interior polygon face loop from live vertex IDs.
     ///
     /// For each directed loop edge `from -> to`, behavior is:
@@ -579,8 +618,8 @@ impl EditSession<'_> {
         for i in 0..loop_vertices.len() {
             let from = loop_vertices[i];
             let to = loop_vertices[(i + 1) % loop_vertices.len()];
-            let reuse = find_boundary_half_edge(self.mesh, from, to);
-            if reuse.is_none() && has_undirected_edge(self.mesh, from, to) {
+            let reuse = self.find_boundary_half_edge(from, to);
+            if reuse.is_none() && self.has_undirected_edge(from, to) {
                 return Err(AddFaceError::NonManifoldEdge {
                     a: u32::min(from.index(), to.index()),
                     b: u32::max(from.index(), to.index()),
@@ -668,6 +707,7 @@ impl EditSession<'_> {
             }
         }
 
+        self.invalidate_outgoing_index();
         Ok(face)
     }
 
@@ -870,6 +910,7 @@ impl EditSession<'_> {
             self.mark_face_dirty(t_face);
         }
 
+        self.invalidate_outgoing_index();
         Ok(new_vertex)
     }
 
@@ -1085,6 +1126,7 @@ impl EditSession<'_> {
             self.mark_corner_dirty(corner);
         }
 
+        self.invalidate_outgoing_index();
         Ok(new_face)
     }
 
@@ -1222,6 +1264,7 @@ impl EditSession<'_> {
                 }
             }
         }
+        self.invalidate_outgoing_index();
         Ok(())
     }
 
@@ -1303,8 +1346,7 @@ impl EditSession<'_> {
                     vertex: vertex.index(),
                 });
             };
-            if record.out != HalfEdgeId::INVALID || vertex_has_incident_half_edge(self.mesh, vertex)
-            {
+            if record.out != HalfEdgeId::INVALID || self.vertex_has_incident_half_edge(vertex) {
                 return Err(DeleteVerticesError::VertexNotIsolated {
                     vertex: vertex.index(),
                 });
@@ -1315,6 +1357,7 @@ impl EditSession<'_> {
             debug_assert!(removed.is_some(), "validated vertex should remove");
             self.record_deleted_vertex(vertex);
         }
+        self.invalidate_outgoing_index();
         Ok(())
     }
 }
@@ -1359,49 +1402,55 @@ fn half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId) -> Option<(VertexId, V
     Some((from, to))
 }
 
-fn vertex_has_incident_half_edge(mesh: &Mesh, vertex: VertexId) -> bool {
-    mesh.half_edges.iter().any(|(id, _)| {
-        half_edge_vertices(mesh, HalfEdgeId::from(id))
-            .is_some_and(|(from, to)| from == vertex || to == vertex)
-    })
+fn vertex_has_incident_half_edge_in_index(
+    outgoing_index: &[OutgoingAdj],
+    vertex: VertexId,
+) -> bool {
+    !equal_range_in_outgoing(outgoing_index, vertex).is_empty()
 }
 
-fn has_undirected_edge(mesh: &Mesh, a: VertexId, b: VertexId) -> bool {
-    let (lo, hi) = (
-        u32::min(a.index(), b.index()),
-        u32::max(a.index(), b.index()),
-    );
-    mesh.half_edges.iter().any(|(id, _)| {
-        half_edge_vertices(mesh, HalfEdgeId::from(id)).is_some_and(|(from, to)| {
-            let x = u32::min(from.index(), to.index());
-            let y = u32::max(from.index(), to.index());
-            x == lo && y == hi
-        })
-    })
-}
-
-fn find_boundary_half_edge(mesh: &Mesh, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
-    mesh.half_edges.iter().find_map(|(id, edge)| {
-        if edge.face != FaceId::OUTSIDE {
-            return None;
+fn has_undirected_edge_in_index(outgoing_index: &[OutgoingAdj], a: VertexId, b: VertexId) -> bool {
+    let a_range = equal_range_in_outgoing(outgoing_index, a);
+    for entry in &outgoing_index[a_range] {
+        if entry.to == b {
+            return true;
         }
-        let half_edge = HalfEdgeId::from(id);
-        let (candidate_from, candidate_to) = half_edge_vertices(mesh, half_edge)?;
-        (candidate_from == from && candidate_to == to).then_some(half_edge)
+    }
+    let b_range = equal_range_in_outgoing(outgoing_index, b);
+    for entry in &outgoing_index[b_range] {
+        if entry.to == a {
+            return true;
+        }
+    }
+    false
+}
+
+fn find_boundary_half_edge_in_index(
+    outgoing_index: &[OutgoingAdj],
+    from: VertexId,
+    to: VertexId,
+) -> Option<HalfEdgeId> {
+    let range = equal_range_in_outgoing(outgoing_index, from);
+    outgoing_index[range].iter().find_map(|entry| {
+        (entry.face == FaceId::OUTSIDE && entry.to == to).then_some(entry.half_edge)
     })
 }
 
-fn build_outgoing_index(mesh: &Mesh) -> Vec<(VertexId, HalfEdgeId)> {
+fn build_outgoing_index(mesh: &Mesh) -> Vec<OutgoingAdj> {
     let mut pairs = mesh
         .half_edges
         .iter()
-        .filter_map(|(id, _)| {
+        .filter_map(|(id, edge)| {
             let half_edge = HalfEdgeId::from(id);
-            half_edge_vertices(mesh, half_edge).map(|(from, _)| (from, half_edge))
+            half_edge_vertices(mesh, half_edge).map(|(from, to)| OutgoingAdj {
+                from,
+                to,
+                half_edge,
+                face: edge.face,
+            })
         })
         .collect::<Vec<_>>();
-    pairs.sort_unstable_by_key(|(vertex, half_edge)| (*vertex, *half_edge));
-    pairs.dedup_by_key(|(vertex, _)| *vertex);
+    pairs.sort_unstable_by_key(|entry| (entry.from, entry.half_edge));
     pairs
 }
 
@@ -1413,14 +1462,18 @@ fn find_outgoing_half_edge_linear_scan(mesh: &Mesh, vertex: VertexId) -> Option<
     })
 }
 
-fn find_outgoing_half_edge(
-    outgoing_index: &[(VertexId, HalfEdgeId)],
+fn find_outgoing_half_edge(outgoing_index: &[OutgoingAdj], vertex: VertexId) -> Option<HalfEdgeId> {
+    let range = equal_range_in_outgoing(outgoing_index, vertex);
+    outgoing_index.get(range.start).map(|entry| entry.half_edge)
+}
+
+fn equal_range_in_outgoing(
+    outgoing_index: &[OutgoingAdj],
     vertex: VertexId,
-) -> Option<HalfEdgeId> {
-    outgoing_index
-        .binary_search_by_key(&vertex, |(candidate, _)| *candidate)
-        .ok()
-        .map(|position| outgoing_index[position].1)
+) -> core::ops::Range<usize> {
+    let lower = outgoing_index.partition_point(|entry| entry.from < vertex);
+    let upper = outgoing_index.partition_point(|entry| entry.from <= vertex);
+    lower..upper
 }
 
 fn should_use_global_outgoing_index(affected_vertices: usize, total_half_edges: usize) -> bool {
@@ -2549,6 +2602,35 @@ mod tests {
             .add_face(&[vertices[0], vertices[1], vertices[2]])
             .expect_err("third face on same edge set should fail");
         assert!(matches!(err, AddFaceError::NonManifoldEdge { .. }));
+    }
+
+    #[test]
+    fn outgoing_index_queries_update_after_topology_edits() {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([0.0, 1.0, 0.0]);
+        let v3 = mesh.add_vertex([1.0, 1.0, 0.0]);
+
+        let mut txn = mesh.begin();
+        let _ = txn.add_face(&[v0, v1, v2]).expect("first face should add");
+        assert!(txn.find_boundary_half_edge(v1, v0).is_some());
+
+        let _ = txn.add_face(&[v1, v3, v2]).expect("second face should add");
+        assert!(txn.find_boundary_half_edge(v1, v2).is_none());
+
+        let shared = find_half_edge(txn.mesh(), v1.index(), v2.index()).expect("shared edge");
+        let from = txn
+            .mesh()
+            .from_vertex(shared)
+            .expect("shared edge should have source");
+        let to = txn
+            .mesh()
+            .to_vertex(shared)
+            .expect("shared edge should have destination");
+        assert!(txn.has_undirected_edge(from, to));
+        let _ = txn.split_edge(shared).expect("split should succeed");
+        assert!(!txn.has_undirected_edge(from, to));
     }
 
     #[test]

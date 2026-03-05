@@ -1,6 +1,6 @@
 ---
 id: exe-23ot
-status: open
+status: closed
 deps: [cam-mrwk, exe-0sqg]
 links: []
 created: 2026-03-05T02:03:21Z
@@ -20,3 +20,9 @@ Add internal adjacency/index support (at minimum vertex -> incident/outgoing hal
 ## Acceptance Criteria
 
 - Internal adjacency index maintained correctly through existing edit kernels; - scan-heavy helpers migrated or wrapped by indexed equivalents; - deterministic behavior documented; - tests cover index consistency after representative edits; - local benchmark/test evidence is recorded for targeted scan replacements (wind tunnel integration may land as follow-up regression harness)
+
+## Notes
+
+**2026-03-05T04:09:33Z**
+
+Implemented EditSession-maintained outgoing adjacency cache (lazy rebuild + invalidation on topology edits), migrated has_undirected_edge/find_boundary_half_edge/vertex_has_incident_half_edge to indexed lookups, and added regression test outgoing_index_queries_update_after_topology_edits. Validation: cargo clippy --workspace --all-targets --all-features -- -D warnings; cargo test --workspace --all-features.
