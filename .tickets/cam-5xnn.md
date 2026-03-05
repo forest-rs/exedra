@@ -1,7 +1,7 @@
 ---
 id: cam-5xnn
 title: Region operations (loop selection, flood fill)
-status: open
+status: closed
 deps: [cam-t6lk, exe-23ot]
 links: []
 created: 2026-03-03T06:01:15Z

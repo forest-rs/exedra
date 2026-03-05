@@ -39,7 +39,7 @@
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
 //! - Operator families:
 //!   - `inspect.*`: [`InspectBounds`], [`ValidateMesh`]
-//!   - `select.*`: [`select_faces_by_region`]
+//!   - `select.*`: [`select_faces_by_region`], [`select_boundary_edge_loop`], [`flood_fill_faces_by_region`]
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
@@ -168,7 +168,9 @@ pub use face_edit::{
     InsetFacesOutput, InsetFacesParams, InsetFacesPlan,
 };
 pub use region::{
-    REGION_UNTAGGED, RegionSelection, TagFaceRegion, TagFaceRegionParams, select_faces_by_region,
+    EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection, TagFaceRegion,
+    TagFaceRegionParams, flood_fill_faces_by_region, select_boundary_edge_loop,
+    select_faces_by_region,
 };
 pub use seam::{MarkEdgeSeam, MarkEdgeSeamParams};
 pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};

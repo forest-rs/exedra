@@ -3,12 +3,13 @@
 
 //! Region-tagging operators and helpers.
 
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec;
 
-use exedra::FaceId;
+use exedra::{FaceId, HalfEdgeId};
 
 use crate::op_common::op_error;
-use crate::selection::{FaceSet, canonicalize_face_set};
+use crate::selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
     OpReport, SmallCounters,
@@ -120,6 +121,26 @@ pub struct RegionSelection {
     pub counters: SmallCounters,
 }
 
+/// Deterministic boundary-loop edge-selection query result.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EdgeLoopSelection {
+    /// Canonical undirected edge IDs in the selected loop.
+    pub edges: EdgeSet,
+    /// Query counters.
+    pub counters: SmallCounters,
+}
+
+/// Deterministic region flood-fill query result.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RegionFloodSelection {
+    /// Region identifier used by the flood fill.
+    pub region_id: u32,
+    /// Canonical connected face IDs matching `region_id`.
+    pub faces: FaceSet,
+    /// Query counters.
+    pub counters: SmallCounters,
+}
+
 /// Returns all non-OUTSIDE faces tagged with `region_id`.
 pub fn select_faces_by_region(
     mesh: &exedra::Mesh,
@@ -159,16 +180,205 @@ pub fn select_faces_by_region(
     Ok(result)
 }
 
+/// Returns the boundary loop containing `seed_edge`.
+///
+/// v0.1 scope supports boundary loops only. Passing an interior edge returns
+/// [`OpErrorKind::PreconditionFailed`].
+pub fn select_boundary_edge_loop(
+    mesh: &exedra::Mesh,
+    seed_edge: HalfEdgeId,
+) -> Result<EdgeLoopSelection, OpError> {
+    let twin = mesh.twin(seed_edge).ok_or_else(|| {
+        query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "edge loop seed is stale or missing twin",
+        )
+    })?;
+    let seed_face = mesh.face(seed_edge).ok_or_else(|| {
+        query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "edge loop seed is stale",
+        )
+    })?;
+    let twin_face = mesh.face(twin).ok_or_else(|| {
+        query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "edge loop seed has stale twin face",
+        )
+    })?;
+
+    let start = if seed_face == FaceId::OUTSIDE {
+        seed_edge
+    } else if twin_face == FaceId::OUTSIDE {
+        twin
+    } else {
+        return Err(query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "edge loop selection currently supports boundary edges only",
+        ));
+    };
+
+    let mut result = EdgeLoopSelection::default();
+    let mut visited = BTreeSet::new();
+    let mut current = start;
+    loop {
+        if !visited.insert(current) {
+            if current == start {
+                break;
+            }
+            return Err(query_error(
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                "boundary loop traversal revisited a non-start half-edge",
+            ));
+        }
+        if mesh.face(current) != Some(FaceId::OUTSIDE) {
+            return Err(query_error(
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                "boundary loop traversal encountered non-OUTSIDE half-edge",
+            ));
+        }
+        let canonical = mesh.canonical_edge(current).ok_or_else(|| {
+            query_error(
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                "boundary loop traversal encountered stale canonical edge",
+            )
+        })?;
+        result.edges.push(canonical);
+        let next = mesh.next(current).ok_or_else(|| {
+            query_error(
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                "boundary loop traversal encountered missing next pointer",
+            )
+        })?;
+        if next == start {
+            break;
+        }
+        current = next;
+    }
+
+    if canonicalize_edge_set(&mut result.edges) {
+        result.counters.selections_canonicalized = 1;
+    }
+    Ok(result)
+}
+
+/// Flood-fills connected faces that share the seed face's region ID.
+pub fn flood_fill_faces_by_region(
+    mesh: &exedra::Mesh,
+    seed_face: FaceId,
+) -> Result<RegionFloodSelection, OpError> {
+    if seed_face == FaceId::OUTSIDE {
+        return Err(query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "region flood fill seed cannot be FaceId::OUTSIDE",
+        ));
+    }
+    let _seed_edge = mesh.face_edge(seed_face).ok_or_else(|| {
+        query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "region flood fill seed face is stale",
+        )
+    })?;
+    let layer = mesh
+        .attrs()
+        .dense(exedra::attr::FACE_REGION)
+        .ok_or_else(|| {
+            query_error(
+                OpErrorKind::MissingAttribute,
+                DiagCode::MissingRequiredAttribute,
+                "missing required dense face.region layer",
+            )
+        })?;
+    let region_id = *layer.get(seed_face.as_id()).ok_or_else(|| {
+        query_error(
+            OpErrorKind::InternalInvariantViolation,
+            DiagCode::InternalInvariantViolation,
+            "seed face missing face.region value",
+        )
+    })?;
+
+    let mut visited = BTreeSet::new();
+    visited.insert(seed_face);
+    let mut queue = VecDeque::new();
+    queue.push_back(seed_face);
+
+    let mut result = RegionFloodSelection {
+        region_id,
+        ..RegionFloodSelection::default()
+    };
+
+    while let Some(face) = queue.pop_front() {
+        result.counters.faces_processed = result.counters.faces_processed.saturating_add(1);
+        result.faces.push(face);
+        for corner in mesh.face_loop(face) {
+            let twin = mesh.twin(corner).ok_or_else(|| {
+                query_error(
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    "region flood fill encountered stale twin",
+                )
+            })?;
+            let adjacent = mesh.face(twin).ok_or_else(|| {
+                query_error(
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    "region flood fill encountered stale adjacent face",
+                )
+            })?;
+            if adjacent == FaceId::OUTSIDE || visited.contains(&adjacent) {
+                continue;
+            }
+            if layer
+                .get(adjacent.as_id())
+                .is_some_and(|value| *value == region_id)
+            {
+                visited.insert(adjacent);
+                queue.push_back(adjacent);
+            }
+        }
+    }
+
+    if canonicalize_face_set(&mut result.faces) {
+        result.counters.selections_canonicalized = 1;
+    }
+    Ok(result)
+}
+
+fn query_error(kind: OpErrorKind, code: DiagCode, message: &'static str) -> OpError {
+    OpError::new(
+        kind,
+        vec![Diagnostic::new(DiagLevel::Error, code, message)],
+        Artifacts::default(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, FaceId, Id, Mesh, MeshBuilder};
+    use exedra::{BuildParams, FaceId, HalfEdgeId, Id, Mesh, MeshBuilder};
 
-    use super::{REGION_UNTAGGED, TagFaceRegion, TagFaceRegionParams, select_faces_by_region};
-    use crate::{EditOperator, OperatorRunner, test_support::commit};
+    use super::{
+        EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, TagFaceRegion,
+        TagFaceRegionParams, flood_fill_faces_by_region, select_boundary_edge_loop,
+        select_faces_by_region,
+    };
+    use crate::{
+        EdgeSet, EditOperator, OpErrorKind, OperatorRunner, SmallCounters, canonicalize_edge_set,
+        test_support::commit,
+    };
 
     fn one_quad_mesh() -> (Mesh, FaceId) {
         let mut builder = MeshBuilder::new();
@@ -301,7 +511,7 @@ mod tests {
 
         let error = commit(&mut runner, &mut mesh, &TagFaceRegion, &params)
             .expect_err("stale face id should fail");
-        assert_eq!(error.kind, crate::OpErrorKind::PreconditionFailed);
+        assert_eq!(error.kind, OpErrorKind::PreconditionFailed);
         let face = mesh.faces().next().expect("face should exist");
         assert!(
             mesh.attrs()
@@ -310,5 +520,126 @@ mod tests {
                 .get(face.as_id())
                 .is_some_and(|v| *v == 0)
         );
+    }
+
+    fn boundary_edges(mesh: &Mesh) -> EdgeSet {
+        let mut edges = EdgeSet::new();
+        for face in mesh.faces() {
+            for corner in mesh.face_loop(face) {
+                let twin = mesh.twin(corner).expect("corner must have twin");
+                if mesh.face(twin) == Some(FaceId::OUTSIDE) {
+                    edges.push(
+                        mesh.canonical_edge(corner)
+                            .expect("boundary corner must have canonical edge"),
+                    );
+                }
+            }
+        }
+        let _ = canonicalize_edge_set(&mut edges);
+        edges
+    }
+
+    fn first_interior_edge(mesh: &Mesh) -> HalfEdgeId {
+        for face in mesh.faces() {
+            for corner in mesh.face_loop(face) {
+                let twin = mesh.twin(corner).expect("corner must have twin");
+                if mesh
+                    .face(twin)
+                    .is_some_and(|adjacent| adjacent != FaceId::OUTSIDE)
+                {
+                    return corner;
+                }
+            }
+        }
+        panic!("expected interior edge");
+    }
+
+    #[test]
+    fn select_boundary_edge_loop_returns_canonical_boundary_edges() {
+        let (mesh, face) = one_quad_mesh();
+        let seed = mesh
+            .face_loop(face)
+            .next()
+            .expect("quad should provide one boundary edge");
+        let selected = select_boundary_edge_loop(&mesh, seed).expect("selection should succeed");
+        let expected = boundary_edges(&mesh);
+        assert_eq!(
+            selected,
+            EdgeLoopSelection {
+                edges: expected,
+                counters: SmallCounters {
+                    selections_canonicalized: 1,
+                    ..SmallCounters::default()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn select_boundary_edge_loop_rejects_interior_seed_edge() {
+        let mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 4, 3], &[1, 2, 5, 4]],
+        )
+        .expect("mesh build should succeed");
+        let interior = first_interior_edge(&mesh);
+        let error = select_boundary_edge_loop(&mesh, interior)
+            .expect_err("interior edge seed should be rejected");
+        assert_eq!(error.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn flood_fill_faces_by_region_selects_connected_component_only() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3], &[4, 5, 6, 7]],
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let mut runner = OperatorRunner::new();
+        let params = TagFaceRegionParams {
+            region_id: 11,
+            faces: vec![faces[0], faces[1]],
+        };
+        let _ = commit(&mut runner, &mut mesh, &TagFaceRegion, &params)
+            .expect("tagging should succeed");
+
+        let filled = flood_fill_faces_by_region(&mesh, faces[0]).expect("flood fill should work");
+        assert_eq!(
+            filled,
+            RegionFloodSelection {
+                region_id: 11,
+                faces: vec![faces[0]],
+                counters: SmallCounters {
+                    faces_processed: 1,
+                    ..SmallCounters::default()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn flood_fill_faces_by_region_rejects_outside_seed() {
+        let (mesh, _) = one_quad_mesh();
+        let error = flood_fill_faces_by_region(&mesh, FaceId::OUTSIDE)
+            .expect_err("outside seed should fail");
+        assert_eq!(error.kind, OpErrorKind::PreconditionFailed);
     }
 }
