@@ -465,7 +465,6 @@ impl core::error::Error for AddFaceError {}
 #[derive(Debug)]
 pub struct EditSession<'a> {
     mesh: &'a mut Mesh,
-    propagate_policy: PropagatePolicy,
     outgoing_index: Vec<OutgoingAdj>,
     outgoing_index_valid: bool,
     dirty: DirtySet,
@@ -486,7 +485,6 @@ impl Mesh {
     pub fn begin(&mut self) -> EditSession<'_> {
         EditSession {
             mesh: self,
-            propagate_policy: PropagatePolicy::default(),
             outgoing_index: Vec::new(),
             outgoing_index_valid: false,
             dirty: DirtySet::new(),
@@ -777,7 +775,11 @@ impl EditSession<'_> {
     /// - new corner UVs use midpoint interpolation when policy is
     ///   [`UvPropagation::Midpoint`] and side-copy for `CopyFromSide`,
     /// - face attributes are unchanged.
-    pub fn split_edge(&mut self, half_edge: HalfEdgeId) -> Result<VertexId, SplitEdgeError> {
+    pub fn split_edge(
+        &mut self,
+        half_edge: HalfEdgeId,
+        policy: &PropagatePolicy,
+    ) -> Result<VertexId, SplitEdgeError> {
         let twin = self
             .mesh
             .twin(half_edge)
@@ -835,7 +837,7 @@ impl EditSession<'_> {
             0.5 * (from_pos[2] + to_pos[2]),
         ];
 
-        let new_vertex = self.add_vertex(match self.propagate_policy.position {
+        let new_vertex = self.add_vertex(match policy.position {
             PositionPropagation::Midpoint | PositionPropagation::WeightedMidpoint => midpoint,
         });
 
@@ -918,12 +920,10 @@ impl EditSession<'_> {
         // Propagate edge-domain authored tags from original undirected edge.
         let edge_tags = capture_edge_tags(self.mesh, old_canonical_edge);
         clear_edge_tags(self.mesh, old_canonical_edge);
-        let policy = self.propagate_policy;
-        propagate_split_edge_edge_attrs(self, half_edge, child_h, edge_tags, &policy);
+        propagate_split_edge_edge_attrs(self, half_edge, child_h, edge_tags, policy);
 
         // Propagate corner UVs for new corners.
         if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
-            let policy = self.propagate_policy;
             propagate_split_edge_corner_uvs(
                 self,
                 half_edge,
@@ -936,7 +936,7 @@ impl EditSession<'_> {
                     uv_a_fh,
                     uv_b_ft,
                 },
-                &policy,
+                policy,
             );
         }
 
@@ -976,6 +976,7 @@ impl EditSession<'_> {
         &mut self,
         corner_a: CornerId,
         corner_b: CornerId,
+        policy: &PropagatePolicy,
     ) -> Result<FaceId, SplitFaceError> {
         if corner_a == corner_b {
             return Err(SplitFaceError::IdenticalCorners);
@@ -1123,15 +1124,7 @@ impl EditSession<'_> {
         if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
             let uv_a = self.corner_uv(corner_a);
             let uv_b = self.corner_uv(corner_b);
-            let policy = self.propagate_policy;
-            propagate_split_face_diagonal_uvs(
-                self,
-                diagonal_a_b,
-                diagonal_b_a,
-                uv_a,
-                uv_b,
-                &policy,
-            );
+            propagate_split_face_diagonal_uvs(self, diagonal_a_b, diagonal_b_a, uv_a, uv_b, policy);
         }
 
         // v0.1 diagonal sharpness derives from the two existing directed
@@ -1140,8 +1133,7 @@ impl EditSession<'_> {
             .edge_sharpness(corner_a)
             .unwrap_or(0.0)
             .max(self.edge_sharpness(corner_b).unwrap_or(0.0));
-        let policy = self.propagate_policy;
-        let diagonal_sharp = split_face_diagonal_sharpness(source_sharp, &policy);
+        let diagonal_sharp = split_face_diagonal_sharpness(source_sharp, policy);
         if diagonal_sharp > 0.0 {
             let _ = self.set_edge_sharpness(diagonal_a_b, diagonal_sharp);
         }
@@ -1908,34 +1900,41 @@ mod tests {
     }
 
     #[test]
-    fn txn_propagate_policy_can_be_overridden() {
-        let mut mesh = Mesh::new();
+    fn per_call_policies_can_mix_within_one_session() {
+        let (mut mesh, shared) = split_source_mesh();
+        let twin = mesh.twin(shared).expect("shared edge should have twin");
+        {
+            let mut txn = mesh.begin();
+            assert!(txn.set_edge_sharpness(shared, 3.0));
+            let _ = txn.commit();
+        }
         let mut txn = mesh.begin();
-        assert_eq!(txn.propagate_policy(), PropagatePolicy::default());
-        txn.set_propagate_policy(PropagatePolicy {
-            position: PositionPropagation::WeightedMidpoint,
-            uv: UvPropagation::CopyFromSide,
-            normal_override: NormalOverridePropagation::Average,
-            face_attr: FaceAttrPropagation::CopyAndTag,
+        let decay = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::DecayOnSplit,
-        });
-        assert_eq!(
-            txn.propagate_policy().position,
-            PositionPropagation::WeightedMidpoint
-        );
-        assert_eq!(txn.propagate_policy().uv, UvPropagation::CopyFromSide);
-        assert_eq!(
-            txn.propagate_policy().normal_override,
-            NormalOverridePropagation::Average
-        );
-        assert_eq!(
-            txn.propagate_policy().face_attr,
-            FaceAttrPropagation::CopyAndTag
-        );
-        assert_eq!(
-            txn.propagate_policy().edge_attr,
-            EdgeAttrPropagation::DecayOnSplit
-        );
+            ..PropagatePolicy::default()
+        };
+        let _ = txn
+            .split_edge(shared, &decay)
+            .expect("split with decay policy should succeed");
+        let child_h = txn
+            .mesh()
+            .next(shared)
+            .expect("split child should exist after first split");
+        let clear = PropagatePolicy {
+            edge_attr: EdgeAttrPropagation::Clear,
+            ..PropagatePolicy::default()
+        };
+        let _ = txn
+            .split_edge(child_h, &clear)
+            .expect("split with clear policy should succeed");
+        let _ = txn.commit();
+
+        let child_t = mesh.next(twin).expect("split child should exist");
+        let child_h_twin = mesh.twin(child_h).expect("split child should have twin");
+        assert_eq!(mesh.edge_sharpness(shared), Some(2.0));
+        assert_eq!(mesh.edge_sharpness(child_t), Some(0.0));
+        assert_eq!(mesh.edge_sharpness(child_h), Some(0.0));
+        assert_eq!(mesh.edge_sharpness(child_h_twin), Some(0.0));
     }
 
     #[test]
@@ -2116,7 +2115,10 @@ mod tests {
         let mut mesh = Mesh::new();
         let mut txn = mesh.begin();
         let err = txn
-            .split_edge(HalfEdgeId::new(99, NonZeroU32::MIN))
+            .split_edge(
+                HalfEdgeId::new(99, NonZeroU32::MIN),
+                &PropagatePolicy::default(),
+            )
             .expect_err("stale half-edge must fail");
         assert_eq!(err, SplitEdgeError::HalfEdgeNotLive { half_edge: 99 });
     }
@@ -2137,7 +2139,9 @@ mod tests {
         let half_edges_before = mesh.half_edges.len();
 
         let mut txn = mesh.begin();
-        let inserted = txn.split_edge(shared).expect("split should succeed");
+        let inserted = txn
+            .split_edge(shared, &PropagatePolicy::default())
+            .expect("split should succeed");
         let mut changes = txn.commit();
 
         assert_eq!(mesh.vertices.len(), vertices_before + 1);
@@ -2197,7 +2201,9 @@ mod tests {
         }
 
         let mut txn = mesh.begin();
-        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn
+            .split_edge(shared, &PropagatePolicy::default())
+            .expect("split should succeed");
         let _ = txn.commit();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
@@ -2220,11 +2226,13 @@ mod tests {
         }
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         let mut txn = mesh.begin();
-        txn.set_propagate_policy(PropagatePolicy {
+        let policy = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::DecayOnSplit,
             ..PropagatePolicy::default()
-        });
-        let _ = txn.split_edge(shared).expect("split should succeed");
+        };
+        let _ = txn
+            .split_edge(shared, &policy)
+            .expect("split should succeed");
         let _ = txn.commit();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
@@ -2243,11 +2251,13 @@ mod tests {
         }
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         let mut txn = mesh.begin();
-        txn.set_propagate_policy(PropagatePolicy {
+        let policy = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::Clear,
             ..PropagatePolicy::default()
-        });
-        let _ = txn.split_edge(shared).expect("split should succeed");
+        };
+        let _ = txn
+            .split_edge(shared, &policy)
+            .expect("split should succeed");
         let _ = txn.commit();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
@@ -2274,7 +2284,9 @@ mod tests {
         }
 
         let mut txn = mesh.begin();
-        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn
+            .split_edge(shared, &PropagatePolicy::default())
+            .expect("split should succeed");
         let _ = txn.commit();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
@@ -2297,11 +2309,13 @@ mod tests {
             let _ = txn.commit();
         }
         let mut txn = mesh.begin();
-        txn.set_propagate_policy(PropagatePolicy {
+        let policy = PropagatePolicy {
             uv: UvPropagation::CopyFromSide,
             ..PropagatePolicy::default()
-        });
-        let _ = txn.split_edge(shared).expect("split should succeed");
+        };
+        let _ = txn
+            .split_edge(shared, &policy)
+            .expect("split should succeed");
         let _ = txn.commit();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
@@ -2332,7 +2346,9 @@ mod tests {
         assert_eq!(mesh.face(twin), Some(FaceId::OUTSIDE));
 
         let mut txn = mesh.begin();
-        let inserted = txn.split_edge(boundary).expect("split should succeed");
+        let inserted = txn
+            .split_edge(boundary, &PropagatePolicy::default())
+            .expect("split should succeed");
         let _ = txn.commit();
 
         assert_eq!(
@@ -2366,7 +2382,7 @@ mod tests {
 
         let mut txn = mesh.begin();
         let new_face = txn
-            .split_face(corners[0], corners[2])
+            .split_face(corners[0], corners[2], &PropagatePolicy::default())
             .expect("split should succeed");
         let mut changes = txn.commit();
 
@@ -2405,7 +2421,7 @@ mod tests {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         let mut txn = mesh.begin();
         let err = txn
-            .split_face(corners[0], corners[1])
+            .split_face(corners[0], corners[1], &PropagatePolicy::default())
             .expect_err("adjacent corners must fail");
         assert_eq!(err, SplitFaceError::AdjacentCorners);
     }
@@ -2427,12 +2443,16 @@ mod tests {
 
         let mut txn = mesh.begin();
         let err = txn
-            .split_face(corners[0], corners[0])
+            .split_face(corners[0], corners[0], &PropagatePolicy::default())
             .expect_err("identical corners must fail");
         assert_eq!(err, SplitFaceError::IdenticalCorners);
 
         let err = txn
-            .split_face(corners[0], CornerId::new(999, NonZeroU32::MIN))
+            .split_face(
+                corners[0],
+                CornerId::new(999, NonZeroU32::MIN),
+                &PropagatePolicy::default(),
+            )
             .expect_err("stale corner must fail");
         assert_eq!(err, SplitFaceError::CornerNotLive { corner: 999 });
     }
@@ -2451,7 +2471,11 @@ mod tests {
         let outside_corner_b = open.twin(boundary_b).expect("outside corner should exist");
         let mut txn = open.begin();
         let err = txn
-            .split_face(outside_corner_a, outside_corner_b)
+            .split_face(
+                outside_corner_a,
+                outside_corner_b,
+                &PropagatePolicy::default(),
+            )
             .expect_err("outside face should fail");
         assert_eq!(err, SplitFaceError::OutsideFaceNotAllowed);
 
@@ -2463,7 +2487,7 @@ mod tests {
         let c1 = closed.face_loop(f1).next().expect("corner 1");
         let mut txn = closed.begin();
         let err = txn
-            .split_face(c0, c1)
+            .split_face(c0, c1, &PropagatePolicy::default())
             .expect_err("cross-face split must fail");
         assert_eq!(err, SplitFaceError::CornersNotOnSameFace);
     }
@@ -2491,12 +2515,12 @@ mod tests {
         }
 
         let mut txn = mesh.begin();
-        txn.set_propagate_policy(PropagatePolicy {
+        let policy = PropagatePolicy {
             uv: UvPropagation::CopyFromSide,
-            ..txn.propagate_policy()
-        });
+            ..PropagatePolicy::default()
+        };
         let new_face = txn
-            .split_face(corners[0], corners[2])
+            .split_face(corners[0], corners[2], &policy)
             .expect("split should succeed");
         let changes = txn.commit();
         assert_eq!(changes.created_faces, vec![new_face]);
@@ -2547,7 +2571,7 @@ mod tests {
 
         let mut txn = mesh.begin();
         let _ = txn
-            .split_face(corners[0], corners[2])
+            .split_face(corners[0], corners[2], &PropagatePolicy::default())
             .expect("split should succeed");
         let changes = txn.commit();
         let uv_layer = mesh
@@ -2576,7 +2600,7 @@ mod tests {
 
         let mut txn = mesh.begin();
         let _ = txn
-            .split_face(corners[0], corners[2])
+            .split_face(corners[0], corners[2], &PropagatePolicy::default())
             .expect("split should succeed");
         let changes = txn.commit();
         let diagonal = changes.created_half_edges[0];
@@ -2592,12 +2616,12 @@ mod tests {
             let _ = txn.commit();
         }
         let mut txn = mesh.begin();
-        txn.set_propagate_policy(PropagatePolicy {
+        let policy = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::DecayOnSplit,
             ..PropagatePolicy::default()
-        });
+        };
         let _ = txn
-            .split_face(corners[0], corners[2])
+            .split_face(corners[0], corners[2], &policy)
             .expect("split should succeed");
         let changes = txn.commit();
         let diagonal = changes.created_half_edges[0];
@@ -2734,7 +2758,9 @@ mod tests {
             .to_vertex(shared)
             .expect("shared edge should have destination");
         assert!(txn.has_undirected_edge(from, to));
-        let _ = txn.split_edge(shared).expect("split should succeed");
+        let _ = txn
+            .split_edge(shared, &PropagatePolicy::default())
+            .expect("split should succeed");
         txn.assert_outgoing_index_consistent();
         assert!(!txn.has_undirected_edge(from, to));
     }

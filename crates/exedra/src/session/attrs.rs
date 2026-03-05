@@ -4,17 +4,6 @@
 use super::*;
 
 impl EditSession<'_> {
-    /// Returns the current edit propagation policy.
-    #[must_use]
-    pub const fn propagate_policy(&self) -> PropagatePolicy {
-        self.propagate_policy
-    }
-
-    /// Replaces the edit propagation policy for this transaction.
-    pub fn set_propagate_policy(&mut self, policy: PropagatePolicy) {
-        self.propagate_policy = policy;
-    }
-
     /// Returns an immutable view of the mesh being edited.
     #[must_use]
     pub fn mesh(&self) -> &Mesh {

@@ -37,9 +37,7 @@
 //! # Propagation Policy
 //!
 //! Edit kernels that create/transform topology consume
-//! [`PropagatePolicy`](crate::PropagatePolicy). Configure per-transaction
-//! behavior via [`EditSession::set_propagate_policy`](crate::EditSession::set_propagate_policy)
-//! and inspect with [`EditSession::propagate_policy`](crate::EditSession::propagate_policy).
+//! [`PropagatePolicy`](crate::PropagatePolicy) as explicit per-call input.
 //!
 //! `split_edge` is the first topology-transforming kernel using this policy:
 //! [`EditSession::split_edge`](crate::EditSession::split_edge). It inserts a midpoint vertex,
