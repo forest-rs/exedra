@@ -33,6 +33,8 @@ pub struct SmallCounters {
     pub corners_skipped_existing: u64,
     /// Selection canonicalization passes performed.
     pub selections_canonicalized: u64,
+    /// Vertices deleted in this run (commit-path only).
+    pub deleted_vertices: u64,
 }
 
 /// Deterministic stats payload for one operator run.

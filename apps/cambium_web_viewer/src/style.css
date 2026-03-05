@@ -1,0 +1,100 @@
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(140deg, #f2f7ff 0%, #dce8ff 35%, #f7f3eb 100%);
+  color: #0e1a2b;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  padding: 16px;
+  border-right: 1px solid #9db2d3;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(6px);
+  overflow: auto;
+}
+
+h1 {
+  margin: 0 0 16px 0;
+  font-size: 1.4rem;
+}
+
+h2 {
+  margin: 16px 0 8px 0;
+  font-size: 1rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+
+.toggle {
+  flex-direction: row;
+  align-items: center;
+}
+
+select,
+button,
+input[type="range"] {
+  width: 100%;
+}
+
+button {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid #2a4e84;
+  background: #2a4e84;
+  color: #f5f8ff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1f3d68;
+}
+
+#viewport {
+  position: relative;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+pre {
+  margin: 0;
+  padding: 8px;
+  background: #f4f7fb;
+  border: 1px solid #cad7eb;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 900px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(300px, 1fr);
+  }
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid #9db2d3;
+  }
+}

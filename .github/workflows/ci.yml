@@ -12,10 +12,17 @@ env:
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS:
+    -p cambium
+    -p cambium_testkit
+    -p exedra
+    -p exedra_primitives
+    -p exedra_testkit
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS:
+    --exclude cambium_web_bridge
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS:
+    --exclude cambium_web_bridge
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.

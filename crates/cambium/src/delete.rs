@@ -576,6 +576,10 @@ mod tests {
         assert_eq!(result.output.faces.len(), 2);
         assert_eq!(mesh.faces().count(), 0);
         assert_eq!(result.report.stats.elements_deleted.faces, 2);
+        assert_eq!(
+            result.report.stats.counters.deleted_vertices,
+            u64::try_from(result.change_set.deleted_vertices.len()).expect("count should fit u64")
+        );
     }
 
     #[test]
@@ -629,6 +633,10 @@ mod tests {
         );
         assert_eq!(result.report.stats.counters.selections_canonicalized, 1);
         assert_eq!(mesh.faces().count(), 0);
+        assert_eq!(
+            result.report.stats.counters.deleted_vertices,
+            u64::try_from(result.change_set.deleted_vertices.len()).expect("count should fit u64")
+        );
     }
 
     #[test]
@@ -696,6 +704,7 @@ mod tests {
         .expect("delete vertices should succeed");
         assert_eq!(result.output, DeleteVerticesOutput { vertices: vec![v0] });
         assert_eq!(result.report.stats.elements_deleted.vertices, 1);
+        assert_eq!(result.report.stats.counters.deleted_vertices, 1);
         assert_eq!(mesh.vertices().count(), 1);
     }
 

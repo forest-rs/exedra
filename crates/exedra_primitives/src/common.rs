@@ -52,23 +52,14 @@ pub(crate) fn face_region_layer(
 }
 
 pub(crate) fn sin_cos(theta: f32) -> (f32, f32) {
-    let reduced = wrap_pi(theta);
-    let x2 = reduced * reduced;
-    let sin = reduced * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 * (1.0 / 5040.0))));
-    let cos = 1.0 - x2 * (0.5 - x2 * (1.0 / 24.0 - x2 * (1.0 / 720.0)));
-    (sin, cos)
-}
-
-fn wrap_pi(theta: f32) -> f32 {
-    const PI: f32 = core::f32::consts::PI;
-    const TAU: f32 = core::f32::consts::TAU;
-    let mut wrapped = theta % TAU;
-    if wrapped > PI {
-        wrapped -= TAU;
-    } else if wrapped < -PI {
-        wrapped += TAU;
+    #[cfg(feature = "std")]
+    {
+        theta.sin_cos()
     }
-    wrapped
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        (libm::sinf(theta), libm::cosf(theta))
+    }
 }
 
 pub(crate) fn usize_to_u32(value: usize) -> u32 {

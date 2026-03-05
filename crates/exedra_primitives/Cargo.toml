@@ -11,6 +11,12 @@ categories = ["data-structures", "algorithms"]
 
 [dependencies]
 exedra = { path = "../exedra" }
+libm = { optional = true, workspace = true }
+
+[features]
+default = ["std"]
+libm = ["dep:libm"]
+std = []
 
 [lints]
 workspace = true

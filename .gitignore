@@ -1,3 +1,6 @@
 /target
+node_modules/
+dist/
+.vite/
 AGENTS.md
 CLAUDE.md

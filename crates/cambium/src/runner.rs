@@ -138,6 +138,8 @@ impl OperatorRunner {
             let _bucket = self.ctx.clock.bucket("txn.commit");
             txn.commit()
         };
+        report.stats.counters.deleted_vertices = u64::try_from(change_set.deleted_vertices.len())
+            .expect("deleted vertex count should fit u64");
         self.ctx.cache_dirty.mark_from_change_set(&change_set);
 
         if self.ctx.policy.validate.validate_on_commit {

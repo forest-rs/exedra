@@ -17,6 +17,7 @@ LOD = "LOD"
 
 # Match Inside a Word - Case Insensitive
 [default.extend-words]
+metalness = "metalness"
 
 [files]
 # Include .github, .cargo, etc.

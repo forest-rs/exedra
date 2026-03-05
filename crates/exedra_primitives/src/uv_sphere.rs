@@ -171,6 +171,8 @@ pub fn uv_sphere(params: &UvSphereParams) -> Primitive {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use exedra::{ExtractParams, HalfEdgeId};
 
     use super::{REGION_BODY, REGION_POLE_BOTTOM, REGION_POLE_TOP, UvSphereParams, uv_sphere};
@@ -281,5 +283,47 @@ mod tests {
 
         let (last_a, last_b) = incident_regions(&primitive, seam_edges[seam_edges.len() - 1]);
         assert!(last_a == REGION_POLE_BOTTOM || last_b == REGION_POLE_BOTTOM);
+    }
+
+    #[test]
+    fn uv_sphere_vertex_rings_are_radially_symmetric() {
+        let params = UvSphereParams {
+            radius: 1.0,
+            lat_segments: 6,
+            lon_segments: 16,
+            centered: true,
+        };
+        let primitive = uv_sphere(&params);
+        let mut positions = Vec::new();
+        for vertex in primitive.mesh.vertices() {
+            let position = primitive
+                .mesh
+                .vertex_position(vertex)
+                .expect("vertex position should exist");
+            positions.push(position);
+        }
+
+        let lat_segments = params.lat_segments as usize;
+        let lon_segments = params.lon_segments as usize;
+        for ring in 0..lat_segments {
+            let start = 1 + ring * lon_segments;
+            for lon in 0..(lon_segments / 2) {
+                let opposite = (lon + lon_segments / 2) % lon_segments;
+                let a = positions[start + lon];
+                let b = positions[start + opposite];
+                assert!(
+                    (a[0] + b[0]).abs() < 1.0e-5,
+                    "ring {ring} lon {lon}: x symmetry mismatch"
+                );
+                assert!(
+                    (a[2] + b[2]).abs() < 1.0e-5,
+                    "ring {ring} lon {lon}: z symmetry mismatch"
+                );
+                assert!(
+                    (a[1] - b[1]).abs() < 1.0e-5,
+                    "ring {ring} lon {lon}: y mismatch"
+                );
+            }
+        }
     }
 }

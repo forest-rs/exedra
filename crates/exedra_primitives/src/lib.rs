@@ -22,6 +22,10 @@
 
 #![no_std]
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+#[cfg(not(any(feature = "std", feature = "libm")))]
+compile_error!("exedra_primitives requires either the `std` or `libm` feature");
 
 use alloc::vec::Vec;
 
