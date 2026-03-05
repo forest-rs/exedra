@@ -1,7 +1,7 @@
 ---
 id: cam-nyws
 status: open
-deps: [cam-inf3]
+deps: [cam-inf3, cam-g3hn, cam-suy5]
 links: []
 created: 2026-03-04T04:27:35Z
 type: task
@@ -15,7 +15,7 @@ Add a rustdoc-visible operator catalog that helps users discover available opera
 
 ## Design
 
-Extend the doc-only manual with a catalog section/table listing each operator, stable name(), param type, commit/preview behavior, primary stats counters, timing bucket expectations, and common diagnostics. Cross-link to operator types and param structs. Keep this as curated documentation (not generated), updated as operators are added.
+Extend the doc-only manual with a catalog section/table listing each operator, stable `name()`, param type, output type, compile/preview/apply behavior, primary stats counters, timing bucket expectations, and common diagnostics. Cross-link to operator types and param structs. Keep this curated (not generated) and aligned with the frozen v0.1 operator set from `cam-g3hn` plus naming decisions from `cam-suy5`.
 
 ## Acceptance Criteria
 

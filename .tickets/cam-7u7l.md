@@ -2,7 +2,7 @@
 id: cam-7u7l
 title: Extrude mode semantics (shell vs keep-source)
 status: open
-deps: [cam-mn4h, cam-1xjc, exe-cz8g]
+deps: [cam-mn4h, cam-1xjc, exe-cz8g, cam-xnoi]
 links: []
 created: 2026-03-04T12:54:57Z
 type: feature
@@ -16,7 +16,7 @@ Add explicit extrude mode semantics so users can choose one-sided shell behavior
 
 ## Design
 
-Current extrude deletes source face, creates side walls + offset cap (open at source location). Add mode enum in params, e.g. RemoveSource (current), KeepSource (thickness-like prism from selected patch). Define topology outcomes, region propagation, and constraints for adjacent selections.
+Current extrude deletes source face, creates side walls + offset cap (open at source location). Implement explicit mode semantics from `cam-xnoi` with forward-compatible naming (for example shell/open-surface vs keep-source/volume-friendly behavior). Define topology outcomes for open vs closed contexts, region/attribute propagation expectations, and constraints for adjacent selections.
 
 ## Acceptance Criteria
 
@@ -24,3 +24,4 @@ Current extrude deletes source face, creates side walls + offset cap (open at so
 - Both modes documented and tested
 - Deterministic behavior for canonical selections
 - Diagnostics for unsupported inputs
+- Naming and mode contract align with `cam-xnoi` semantics matrix

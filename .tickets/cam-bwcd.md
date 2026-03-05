@@ -1,7 +1,7 @@
 ---
 id: cam-bwcd
 status: open
-deps: [cam-inf3]
+deps: [cam-inf3, cam-g3hn, cam-suy5]
 links: []
 created: 2026-03-04T04:27:31Z
 type: task
@@ -15,7 +15,7 @@ Curate Cambium operator discoverability at crate-root/module namespace level as 
 
 ## Design
 
-Define and enforce namespace conventions for operator names and module grouping (e.g., uv.*, tag.*, mark.*, inspect.*, select.*). Ensure root re-exports are grouped/documented, avoid flat undifferentiated surface, and provide stable naming guidance for future operators. Add rustdoc section in crate docs that points to operator families and primary entry points.
+Define and enforce namespace conventions for operator names and module grouping (e.g., `edit.*`, `uv.*`, `tag.*`, `mark.*`, `inspect.*`, `select.*`). Apply taxonomy decisions from `cam-g3hn` and stable-name alignment from `cam-suy5`. Ensure root re-exports are grouped/documented, avoid a flat undifferentiated surface, and provide stable naming guidance for future operators. Add a crate-doc discoverability section that points to operator families and primary entry points.
 
 ## Acceptance Criteria
 

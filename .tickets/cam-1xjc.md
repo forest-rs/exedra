@@ -16,7 +16,7 @@ Support adjacent selected faces for extrude/inset by handling shared-border coll
 
 ## Design
 
-Current preflight rejects selections where faces share an edge. Add patch-aware processing that computes outer boundary loops of the selected region, avoids duplicate internal walls, and preserves manifold topology.
+Current preflight rejects selections where faces share an edge. Add patch-aware processing that computes outer boundary loops of the selected region, avoids duplicate internal walls, and preserves manifold topology. Output should be deterministic and aligned with face-edit semantics contracts used by extrude/inset mode work.
 
 ## Acceptance Criteria
 
@@ -24,3 +24,4 @@ Current preflight rejects selections where faces share an edge. Add patch-aware 
 - No duplicate walls across internal shared edges
 - Deterministic boundary-loop construction for selected patches
 - Tests for adjacent/non-adjacent/mixed selections
+- Behavior is documented as compatible with `cam-xnoi` / `cam-7u7l` mode semantics
