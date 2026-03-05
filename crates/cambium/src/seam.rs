@@ -73,6 +73,16 @@ mod tests {
     use super::{MarkEdgeSeam, MarkEdgeSeamParams};
     use crate::{EditOperator, OperatorRunner, test_support::shared_edge_mesh};
 
+    fn commit<O: EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut exedra::Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     #[test]
     fn mark_edge_seam_sets_and_clears_tag() {
         let (mut mesh, shared, twin) = shared_edge_mesh();
@@ -83,8 +93,7 @@ mod tests {
             edges: vec![twin],
             seam: true,
         };
-        let mut set_result = runner
-            .run_commit(&mut mesh, &op, &set_params)
+        let mut set_result = commit(&mut runner, &mut mesh, &op, &set_params)
             .expect("mark edge seam should succeed");
         assert_eq!(set_result.report.name, op.name());
         assert_eq!(mesh.edge_seam(shared), Some(true));
@@ -97,8 +106,7 @@ mod tests {
             edges: vec![shared],
             seam: false,
         };
-        let _ = runner
-            .run_commit(&mut mesh, &op, &clear_params)
+        let _ = commit(&mut runner, &mut mesh, &op, &clear_params)
             .expect("clear edge seam should succeed");
         assert_eq!(mesh.edge_seam(shared), Some(false));
         assert_eq!(mesh.edge_seam(twin), Some(false));
@@ -108,16 +116,16 @@ mod tests {
     fn mark_edge_seam_canonicalizes_duplicate_selection() {
         let (mut mesh, shared, twin) = shared_edge_mesh();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &MarkEdgeSeam,
-                &MarkEdgeSeamParams {
-                    edges: vec![shared, twin, shared],
-                    seam: true,
-                },
-            )
-            .expect("mark edge seam should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &MarkEdgeSeam,
+            &MarkEdgeSeamParams {
+                edges: vec![shared, twin, shared],
+                seam: true,
+            },
+        )
+        .expect("mark edge seam should succeed");
         assert_eq!(result.report.stats.counters.selections_canonicalized, 2);
         assert_eq!(result.report.stats.counters.edges_written, 1);
         assert_eq!(result.report.stats.counters.corners_written, 0);

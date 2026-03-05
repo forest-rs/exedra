@@ -191,6 +191,16 @@ mod tests {
     use super::{CylinderAxis, UvCylinder, UvCylinderParams};
     use crate::{OperatorRunner, UvScope};
 
+    fn commit<O: crate::EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut exedra::Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     fn side_strip_mesh() -> exedra::Mesh {
         let mut builder = MeshBuilder::new();
         builder.push_vertex([1.0, 0.0, 0.0]);
@@ -207,20 +217,20 @@ mod tests {
     fn uv_cylinder_projects_with_configurable_axis() {
         let mut mesh = side_strip_mesh();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &UvCylinder,
-                &UvCylinderParams {
-                    scope: UvScope::WholeMesh,
-                    axis: CylinderAxis::Y,
-                    seam_offset_radians: 0.0,
-                    scale: [1.0, 1.0],
-                    offset: [0.0, 0.0],
-                    write_missing_only: false,
-                },
-            )
-            .expect("uv.cylinder should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &UvCylinder,
+            &UvCylinderParams {
+                scope: UvScope::WholeMesh,
+                axis: CylinderAxis::Y,
+                seam_offset_radians: 0.0,
+                scale: [1.0, 1.0],
+                offset: [0.0, 0.0],
+                write_missing_only: false,
+            },
+        )
+        .expect("uv.cylinder should succeed");
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.corners_written, 4);
     }
@@ -240,12 +250,10 @@ mod tests {
             write_missing_only: false,
         };
 
-        let _ = runner_a
-            .run_commit(&mut mesh_a, &UvCylinder, &params)
-            .expect("run should succeed");
-        let _ = runner_b
-            .run_commit(&mut mesh_b, &UvCylinder, &params)
-            .expect("run should succeed");
+        let _ =
+            commit(&mut runner_a, &mut mesh_a, &UvCylinder, &params).expect("run should succeed");
+        let _ =
+            commit(&mut runner_b, &mut mesh_b, &UvCylinder, &params).expect("run should succeed");
 
         let (tri_a, _) = mesh_a.to_trimesh(&exedra::ExtractParams::default());
         let (tri_b, _) = mesh_b.to_trimesh(&exedra::ExtractParams::default());

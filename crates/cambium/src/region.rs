@@ -170,6 +170,16 @@ mod tests {
     use super::{REGION_UNTAGGED, TagFaceRegion, TagFaceRegionParams, select_faces_by_region};
     use crate::{EditOperator, OperatorRunner};
 
+    fn commit<O: EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     fn one_quad_mesh() -> (Mesh, FaceId) {
         let mut builder = MeshBuilder::new();
         let _ = builder.push_vertex([0.0, 0.0, 0.0]);
@@ -191,9 +201,8 @@ mod tests {
             faces: vec![face, face],
         };
 
-        let mut result = runner
-            .run_commit(&mut mesh, &op, &params)
-            .expect("tag operator should succeed");
+        let mut result =
+            commit(&mut runner, &mut mesh, &op, &params).expect("tag operator should succeed");
 
         let region = mesh
             .attrs()
@@ -219,16 +228,14 @@ mod tests {
             region_id: 3,
             faces: vec![face],
         };
-        runner
-            .run_commit(&mut mesh, &op, &set_non_zero)
+        commit(&mut runner, &mut mesh, &op, &set_non_zero)
             .expect("tagging to non-zero should succeed");
 
         let set_untagged = TagFaceRegionParams {
             region_id: REGION_UNTAGGED,
             faces: vec![face],
         };
-        runner
-            .run_commit(&mut mesh, &op, &set_untagged)
+        commit(&mut runner, &mut mesh, &op, &set_untagged)
             .expect("tagging to untagged should succeed");
 
         let region = mesh
@@ -283,8 +290,7 @@ mod tests {
             region_id: 11,
             faces: vec![faces[1], faces[0], faces[1]],
         };
-        let _ = runner
-            .run_commit(&mut mesh, &TagFaceRegion, &params)
+        let _ = commit(&mut runner, &mut mesh, &TagFaceRegion, &params)
             .expect("tagging should succeed");
 
         let selected = select_faces_by_region(&mesh, 11).expect("selection should succeed");
@@ -303,8 +309,7 @@ mod tests {
             faces: vec![stale],
         };
 
-        let error = runner
-            .run_commit(&mut mesh, &TagFaceRegion, &params)
+        let error = commit(&mut runner, &mut mesh, &TagFaceRegion, &params)
             .expect_err("stale face id should fail");
         assert_eq!(error.kind, crate::OpErrorKind::PreconditionFailed);
         let face = mesh.faces().next().expect("face should exist");

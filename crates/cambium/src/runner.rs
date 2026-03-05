@@ -16,7 +16,7 @@ use web_time::Instant;
 use crate::timing::duration_nanos_u64;
 use crate::{Diagnostic, EditOperator, EditPlan, OpContext, OpError, OpErrorKind, OpReport};
 
-/// Result from [`OperatorRunner::run_commit`].
+/// Result from [`OperatorRunner::apply_in_place`].
 #[derive(Clone, Debug)]
 pub struct OpResult<T = ()> {
     /// Transaction commit summary.
@@ -27,7 +27,7 @@ pub struct OpResult<T = ()> {
     pub output: T,
 }
 
-/// Result from [`OperatorRunner::run_preview`].
+/// Result from [`OperatorRunner::preview_on_clone`].
 #[derive(Clone, Debug)]
 pub struct PreviewResult<T = ()> {
     /// Preview mesh produced by running on a cloned base mesh.
@@ -85,46 +85,6 @@ impl OperatorRunner {
     ) -> Result<PreviewResult<O::Output>, OpError> {
         self.reset_for_run();
         self.preview_on_clone_with_ctx(mesh, op, plan)
-    }
-
-    /// Runs one operator in commit mode.
-    ///
-    /// This is an adapter over [`Self::compile`] + [`Self::apply_in_place`].
-    ///
-    /// Semantics:
-    /// - mesh mutations are committed before optional post-commit validation
-    /// - committed changes are conservatively mapped into Cambium cache-dirty
-    ///   channels (`Adjacency`, `OperatorCache`)
-    /// - when `validate.fail_on_error` is enabled, this can return `Err` after
-    ///   commit; in that case the attached `OpError` carries the committed
-    ///   `change_set` for reconciliation
-    pub fn run_commit<O: EditOperator>(
-        &mut self,
-        mesh: &mut Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<OpResult<O::Output>, OpError> {
-        self.reset_for_run();
-        let plan = self.compile_with_ctx(mesh, op, params)?;
-        self.apply_in_place_with_ctx(mesh, op, &plan)
-    }
-
-    /// Runs one operator in preview mode against a cloned mesh.
-    ///
-    /// This is an adapter over [`Self::compile`] + [`Self::preview_on_clone`].
-    ///
-    /// Preview isolation:
-    /// - any mutations to [`OpContext::cache_dirty`] performed during preview
-    ///   are discarded before returning, including error paths
-    pub fn run_preview<O: EditOperator>(
-        &mut self,
-        mesh: &Mesh,
-        op: &O,
-        params: &O::Params,
-    ) -> Result<PreviewResult<O::Output>, OpError> {
-        self.reset_for_run();
-        let plan = self.compile_with_ctx(mesh, op, params)?;
-        self.preview_on_clone_with_ctx(mesh, op, &plan)
     }
 
     fn compile_with_ctx<O: EditOperator>(
@@ -361,13 +321,16 @@ mod tests {
     }
 
     #[test]
-    fn run_commit_mutates_mesh_and_returns_change_set() {
+    fn apply_in_place_mutates_mesh_and_returns_change_set() {
         let mut mesh = exedra::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
+        let plan = runner
+            .compile(&mesh, &op, &[1.0, 2.0, 3.0])
+            .expect("compile should succeed");
         let result = runner
-            .run_commit(&mut mesh, &op, &[1.0, 2.0, 3.0])
-            .expect("commit should succeed");
+            .apply_in_place(&mut mesh, &op, &plan)
+            .expect("apply should succeed");
 
         assert_eq!(mesh.vertices().count(), 1);
         assert_eq!(result.change_set.created_vertices.len(), 1);
@@ -402,12 +365,15 @@ mod tests {
     }
 
     #[test]
-    fn run_preview_does_not_mutate_base_mesh() {
+    fn preview_on_clone_does_not_mutate_base_mesh() {
         let base = exedra::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
+        let plan = runner
+            .compile(&base, &op, &[4.0, 5.0, 6.0])
+            .expect("compile should succeed");
         let result = runner
-            .run_preview(&base, &op, &[4.0, 5.0, 6.0])
+            .preview_on_clone(&base, &op, &plan)
             .expect("preview should succeed");
 
         assert_eq!(base.vertices().count(), 0);
@@ -420,11 +386,17 @@ mod tests {
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
 
+        let plan_a = runner
+            .compile(&mesh, &op, &[0.0, 0.0, 0.0])
+            .expect("compile should succeed");
         let _ = runner
-            .run_commit(&mut mesh, &op, &[0.0, 0.0, 0.0])
+            .apply_in_place(&mut mesh, &op, &plan_a)
             .expect("first run should succeed");
+        let plan_b = runner
+            .compile(&mesh, &op, &[1.0, 0.0, 0.0])
+            .expect("compile should succeed");
         let _ = runner
-            .run_commit(&mut mesh, &op, &[1.0, 0.0, 0.0])
+            .apply_in_place(&mut mesh, &op, &plan_b)
             .expect("second run should succeed");
     }
 
@@ -442,15 +414,18 @@ mod tests {
     }
 
     #[test]
-    fn run_preview_with_validation_enabled_still_succeeds_for_valid_mesh() {
+    fn preview_on_clone_with_validation_enabled_still_succeeds_for_valid_mesh() {
         let base = exedra::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
         runner.ctx.policy.validate.validate_on_preview = true;
         runner.ctx.policy.validate.fail_on_error = true;
 
+        let plan = runner
+            .compile(&base, &op, &[0.0, 0.0, 0.0])
+            .expect("compile should succeed");
         let result = runner
-            .run_preview(&base, &op, &[0.0, 0.0, 0.0])
+            .preview_on_clone(&base, &op, &plan)
             .expect("preview on valid mesh should succeed");
         assert!(
             result
@@ -502,13 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn run_preview_discards_cache_dirty_mutations() {
+    fn preview_on_clone_discards_cache_dirty_mutations() {
         let base = exedra::Mesh::new();
         let op = MarksPreviewDirtyOperator;
         let mut runner = OperatorRunner::new();
+        let plan = runner
+            .compile(&base, &op, &())
+            .expect("compile should succeed");
 
         let result = runner
-            .run_preview(&base, &op, &())
+            .preview_on_clone(&base, &op, &plan)
             .expect("preview should succeed");
         let _ = result;
         assert!(!runner.ctx.cache_dirty.has_any(DirtyChannel::Selection));

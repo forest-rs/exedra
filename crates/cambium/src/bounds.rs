@@ -75,8 +75,11 @@ pub struct BoundsOutput {
 /// )
 /// .expect("triangle build should succeed");
 /// let mut runner = OperatorRunner::new();
+/// let plan = runner
+///     .compile(&mesh, &InspectBounds, &BoundsParams::default())
+///     .expect("compile should succeed");
 /// let result = runner
-///     .run_commit(&mut mesh, &InspectBounds, &BoundsParams::default())
+///     .apply_in_place(&mut mesh, &InspectBounds, &plan)
 ///     .expect("bounds should succeed");
 /// let bounds = result.output.bounds.expect("triangle should have bounds");
 /// assert_eq!(bounds.min, [0.0, 0.0, 0.0]);
@@ -258,13 +261,27 @@ mod tests {
     use super::{BoundsParams, BoundsScope, InspectBounds};
     use crate::{OpErrorKind, OperatorRunner};
 
+    fn commit<O: crate::EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     #[test]
     fn bounds_empty_mesh_returns_none() {
         let mut mesh = Mesh::new();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(&mut mesh, &InspectBounds, &BoundsParams::default())
-            .expect("bounds should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InspectBounds,
+            &BoundsParams::default(),
+        )
+        .expect("bounds should succeed");
         assert!(result.output.bounds.is_none());
         assert_eq!(result.output.vertex_count, 0);
         assert_eq!(result.output.face_count, 0);
@@ -279,9 +296,13 @@ mod tests {
         )
         .expect("triangle build should succeed");
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(&mut mesh, &InspectBounds, &BoundsParams::default())
-            .expect("bounds should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InspectBounds,
+            &BoundsParams::default(),
+        )
+        .expect("bounds should succeed");
         let bounds = result.output.bounds.expect("bounds should exist");
         assert_eq!(bounds.min, [0.0, 0.0, 0.0]);
         assert_eq!(bounds.max, [2.0, 2.0, 0.0]);
@@ -306,15 +327,15 @@ mod tests {
         .expect("mesh build should succeed");
         let faces = mesh.faces().collect::<Vec<_>>();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &InspectBounds,
-                &BoundsParams {
-                    scope: BoundsScope::FaceSet(vec![faces[1]]),
-                },
-            )
-            .expect("bounds should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InspectBounds,
+            &BoundsParams {
+                scope: BoundsScope::FaceSet(vec![faces[1]]),
+            },
+        )
+        .expect("bounds should succeed");
         let bounds = result.output.bounds.expect("bounds should exist");
         assert_eq!(bounds.min, [0.0, 0.0, 0.0]);
         assert_eq!(bounds.max, [1.0, 1.0, 0.0]);
@@ -337,15 +358,15 @@ mod tests {
         .expect("mesh build should succeed");
         let faces = mesh.faces().collect::<Vec<_>>();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &InspectBounds,
-                &BoundsParams {
-                    scope: BoundsScope::FaceSet(vec![faces[1], faces[0]]),
-                },
-            )
-            .expect("bounds should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InspectBounds,
+            &BoundsParams {
+                scope: BoundsScope::FaceSet(vec![faces[1], faces[0]]),
+            },
+        )
+        .expect("bounds should succeed");
         let bounds = result.output.bounds.expect("bounds should exist");
         assert_eq!(bounds.min, [0.0, 0.0, 0.0]);
         assert_eq!(bounds.max, [1.0, 1.0, 0.0]);
@@ -360,15 +381,15 @@ mod tests {
         let mut mesh = Mesh::new();
         let stale = FaceId::from(Id::new(999, NonZeroU32::MIN));
         let mut runner = OperatorRunner::new();
-        let err = runner
-            .run_commit(
-                &mut mesh,
-                &InspectBounds,
-                &BoundsParams {
-                    scope: BoundsScope::FaceSet(vec![stale]),
-                },
-            )
-            .expect_err("stale face should fail");
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &InspectBounds,
+            &BoundsParams {
+                scope: BoundsScope::FaceSet(vec![stale]),
+            },
+        )
+        .expect_err("stale face should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 }

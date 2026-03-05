@@ -3,6 +3,8 @@
 
 //! Cambium: deterministic operator layer over Exedra.
 //!
+//! Cambium is the workflow-facing SDK tier for mesh operations.
+//!
 //! Cambium builds on Exedra with a curated operator/runtime API:
 //! - operator trait and runner orchestration ([`EditOperator`], [`OperatorRunner`]),
 //! - structured diagnostics/artifacts/reports,
@@ -10,6 +12,11 @@
 //! - deterministic region/selection helpers,
 //! - deterministic UV/tagging operators,
 //! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`]).
+//!
+//! API tiers:
+//! - SDK tier (`cambium`): workflows, operators, planning lifecycle, reporting.
+//! - Engine tier (`exedra`): topology/attributes kernel and invariants.
+//!   Workflow users should start in `cambium::...`.
 //!
 //! Tagging note:
 //! - [`MarkEdgeSharp`] / [`MarkEdgeSharpParams`] use numeric `f32`
@@ -21,10 +28,20 @@
 //!
 //! For a longer operator-authoring guide, see [`manual`].
 //!
+//! # Where To Find X
+//! - Mesh + IDs: [`Mesh`], [`FaceId`], [`HalfEdgeId`], [`VertexId`]
+//! - Build/extract helpers: [`BuildParams`], [`ExtractParams`], [`TriMesh`]
+//! - Planning lifecycle: [`OperatorRunner::compile`],
+//!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
+//! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
+//! - Inspection: [`InspectBounds`], [`ValidateMesh`]
+//! - Editing operators: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`],
+//!   [`ExtrudeFaces`], [`InsetFaces`], [`TagFaceRegion`], [`MarkEdgeSeam`], [`MarkEdgeSharp`]
+//! - UV operators: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
+//!
 //! # Typical Flow
 //! ```rust
-//! use cambium::{OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams};
-//! use exedra::Mesh;
+//! use cambium::{Mesh, OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams};
 //!
 //! // Start from any Exedra mesh (empty is fine for this flow example).
 //! let mesh = Mesh::new();
@@ -41,6 +58,10 @@
 //! assert_eq!(preview.report.name, "inspect.validate.mesh");
 //! # Ok::<(), cambium::OpError>(())
 //! ```
+//!
+//! # Migration Note
+//! `run_commit` / `run_preview` were removed in favor of explicit lifecycle
+//! calls: `compile` -> `apply_in_place` / `preview_on_clone`.
 
 #![no_std]
 extern crate alloc;
@@ -94,6 +115,10 @@ pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
+pub use exedra::{
+    BuildParams, CornerId, DeletePolicy, ExtractParams, FaceId, HalfEdgeId, Mesh, MeshBuilder,
+    TriMesh, VertexId,
+};
 pub use face_edit::{
     ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, InsetFaces, InsetFacesOutput,
     InsetFacesParams, InsetFacesPlan,

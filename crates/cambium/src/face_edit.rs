@@ -606,6 +606,16 @@ mod tests {
     use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
     use crate::{OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature};
 
+    fn commit<O: crate::EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
         let mesh = Mesh::from_polygons(
             &[
@@ -631,9 +641,7 @@ mod tests {
             distance: 1.0,
         };
 
-        let result = runner
-            .run_commit(&mut mesh, &op, &params)
-            .expect("extrude should succeed");
+        let result = commit(&mut runner, &mut mesh, &op, &params).expect("extrude should succeed");
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(mesh.faces().count(), 5);
         assert_eq!(mesh.vertices().count(), 8);
@@ -659,9 +667,7 @@ mod tests {
             factor: 0.25,
         };
 
-        let result = runner
-            .run_commit(&mut mesh, &op, &params)
-            .expect("inset should succeed");
+        let result = commit(&mut runner, &mut mesh, &op, &params).expect("inset should succeed");
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(mesh.faces().count(), 5);
         assert_eq!(mesh.vertices().count(), 8);
@@ -681,26 +687,26 @@ mod tests {
     fn extrude_and_inset_preserve_face_region() {
         let (mut mesh, face) = quad_mesh();
         let mut runner = OperatorRunner::new();
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &TagFaceRegion,
-                &TagFaceRegionParams {
-                    region_id: 42,
-                    faces: vec![face],
-                },
-            )
-            .expect("region tagging should succeed");
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &ExtrudeFaces,
-                &ExtrudeFacesParams {
-                    faces: vec![face],
-                    distance: 0.5,
-                },
-            )
-            .expect("extrude should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &TagFaceRegion,
+            &TagFaceRegionParams {
+                region_id: 42,
+                faces: vec![face],
+            },
+        )
+        .expect("region tagging should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                distance: 0.5,
+            },
+        )
+        .expect("extrude should succeed");
 
         let layer = mesh
             .attrs()
@@ -726,26 +732,26 @@ mod tests {
         )
         .expect("quad build should succeed");
         let face = mesh.faces().next().expect("face should exist");
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &TagFaceRegion,
-                &TagFaceRegionParams {
-                    region_id: 9,
-                    faces: vec![face],
-                },
-            )
-            .expect("region tagging should succeed");
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &InsetFaces,
-                &InsetFacesParams {
-                    faces: vec![face],
-                    factor: 0.3,
-                },
-            )
-            .expect("inset should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &TagFaceRegion,
+            &TagFaceRegionParams {
+                region_id: 9,
+                faces: vec![face],
+            },
+        )
+        .expect("region tagging should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![face],
+                factor: 0.3,
+            },
+        )
+        .expect("inset should succeed");
         let layer = mesh
             .attrs()
             .dense(exedra::attr::FACE_REGION)
@@ -774,16 +780,16 @@ mod tests {
         .expect("mesh build should succeed");
         let faces = mesh.faces().collect::<Vec<_>>();
         let mut runner = OperatorRunner::new();
-        let err = runner
-            .run_commit(
-                &mut mesh,
-                &ExtrudeFaces,
-                &ExtrudeFacesParams {
-                    faces,
-                    distance: 1.0,
-                },
-            )
-            .expect_err("adjacent selection should fail");
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces,
+                distance: 1.0,
+            },
+        )
+        .expect_err("adjacent selection should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 
@@ -802,16 +808,16 @@ mod tests {
         .expect("pentagon build should succeed");
         let face = mesh.faces().next().expect("face should exist");
         let mut runner = OperatorRunner::new();
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &InsetFaces,
-                &InsetFacesParams {
-                    faces: vec![face],
-                    factor: 0.35,
-                },
-            )
-            .expect("ngon inset should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![face],
+                factor: 0.35,
+            },
+        )
+        .expect("ngon inset should succeed");
         assert_eq!(mesh.faces().count(), 6);
         assert_eq!(mesh.vertices().count(), 10);
         assert!(mesh.validate_fast().is_empty());
@@ -836,30 +842,30 @@ mod tests {
     fn inset_succeeds_on_extruded_top_face() {
         let (mut mesh, face) = quad_mesh();
         let mut runner = OperatorRunner::new();
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &ExtrudeFaces,
-                &ExtrudeFacesParams {
-                    faces: vec![face],
-                    distance: 0.6,
-                },
-            )
-            .expect("extrude should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                distance: 0.6,
+            },
+        )
+        .expect("extrude should succeed");
         let top = mesh
             .faces()
             .max_by(|&a, &b| face_avg_z(&mesh, a).total_cmp(&face_avg_z(&mesh, b)))
             .expect("top face should exist");
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &InsetFaces,
-                &InsetFacesParams {
-                    faces: vec![top],
-                    factor: 0.3,
-                },
-            )
-            .expect("inset on extruded top should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![top],
+                factor: 0.3,
+            },
+        )
+        .expect("inset on extruded top should succeed");
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }
@@ -918,16 +924,16 @@ mod tests {
             .max_by(|&a, &b| face_avg_z(&mesh, a).total_cmp(&face_avg_z(&mesh, b)))
             .expect("target face should exist");
         let mut runner = OperatorRunner::new();
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &ExtrudeFaces,
-                &ExtrudeFacesParams {
-                    faces: vec![face],
-                    distance: 0.4,
-                },
-            )
-            .expect("extrude on closed box should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                distance: 0.4,
+            },
+        )
+        .expect("extrude on closed box should succeed");
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }

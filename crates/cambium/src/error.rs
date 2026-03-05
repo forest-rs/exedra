@@ -50,8 +50,8 @@ impl core::error::Error for OpErrorKind {}
 /// Structured operator error payload with context.
 ///
 /// Returned by operator application and runner execution paths
-/// ([`OperatorRunner::run_commit`](crate::OperatorRunner::run_commit),
-/// [`OperatorRunner::run_preview`](crate::OperatorRunner::run_preview)).
+/// ([`OperatorRunner::apply_in_place`](crate::OperatorRunner::apply_in_place),
+/// [`OperatorRunner::preview_on_clone`](crate::OperatorRunner::preview_on_clone)).
 #[derive(Clone, Debug)]
 pub struct OpError {
     /// Error classification.

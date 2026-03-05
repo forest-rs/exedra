@@ -17,9 +17,9 @@ mod tests {
             segments: [1, 1, 1],
         });
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut primitive.mesh,
+        let plan = runner
+            .compile(
+                &primitive.mesh,
                 &UvBox,
                 &UvBoxParams {
                     scope: UvScope::WholeMesh,
@@ -29,6 +29,9 @@ mod tests {
                     normal_epsilon: 1.0e-6,
                 },
             )
+            .expect("uv.box compile should succeed on primitive box");
+        let result = runner
+            .apply_in_place(&mut primitive.mesh, &UvBox, &plan)
             .expect("uv.box should succeed on primitive box");
 
         assert_eq!(result.report.stats.counters.faces_processed, 6);

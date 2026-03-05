@@ -235,6 +235,16 @@ mod tests {
     use super::{UvBox, UvBoxParams};
     use crate::{OperatorRunner, UvScope};
 
+    fn commit<O: crate::EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut exedra::Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     #[test]
     fn uv_box_projects_axis_aligned_face() {
         let mut builder = MeshBuilder::new();
@@ -248,19 +258,19 @@ mod tests {
         let mut mesh = builder.build().expect("build should succeed").mesh;
 
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &UvBox,
-                &UvBoxParams {
-                    scope: UvScope::WholeMesh,
-                    scale: 1.0,
-                    offset: [0.0, 0.0],
-                    write_missing_only: false,
-                    normal_epsilon: 1.0e-6,
-                },
-            )
-            .expect("uv.box should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &UvBox,
+            &UvBoxParams {
+                scope: UvScope::WholeMesh,
+                scale: 1.0,
+                offset: [0.0, 0.0],
+                write_missing_only: false,
+                normal_epsilon: 1.0e-6,
+            },
+        )
+        .expect("uv.box should succeed");
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.corners_written, 4);
     }
@@ -289,12 +299,8 @@ mod tests {
         let mut runner_a = OperatorRunner::new();
         let mut runner_b = OperatorRunner::new();
         let params = UvBoxParams::default();
-        let _ = runner_a
-            .run_commit(&mut mesh_a, &UvBox, &params)
-            .expect("run");
-        let _ = runner_b
-            .run_commit(&mut mesh_b, &UvBox, &params)
-            .expect("run");
+        let _ = commit(&mut runner_a, &mut mesh_a, &UvBox, &params).expect("run");
+        let _ = commit(&mut runner_b, &mut mesh_b, &UvBox, &params).expect("run");
 
         let (tri_a, stats_a) = mesh_a.to_trimesh(&exedra::ExtractParams::default());
         let (tri_b, stats_b) = mesh_b.to_trimesh(&exedra::ExtractParams::default());

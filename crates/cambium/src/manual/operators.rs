@@ -12,8 +12,7 @@
 //! 2. Runner compiles deterministic operator intent into an [`EditPlan`](crate::EditPlan).
 //! 3. Runner applies the plan to a clone (`preview_on_clone`) or in place
 //!    (`apply_in_place`).
-//! 4. `run_commit` / `run_preview` remain adapters during migration.
-//! 5. Runner attaches timings and performs optional post-run validation.
+//! 4. Runner attaches timings and performs optional post-run validation.
 //!
 //! # Reporting Discipline
 //!

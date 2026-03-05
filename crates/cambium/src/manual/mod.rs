@@ -11,8 +11,10 @@
 //! - [`selections`]: canonical face/edge selection semantics.
 //! - [`diagnostics`]: diagnostic and error classification conventions.
 //! - [`reporting`]: timings/stats/artifact reporting patterns.
+//! - [`surface`]: SDK-vs-engine API tier policy and exception process.
 
 pub mod diagnostics;
 pub mod operators;
 pub mod reporting;
 pub mod selections;
+pub mod surface;

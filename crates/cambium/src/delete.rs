@@ -125,15 +125,18 @@ pub struct DeleteVerticesOutput {
 ///     .expect("interior edge should exist");
 ///
 /// let mut runner = OperatorRunner::new();
-/// let result = runner
-///     .run_commit(
-///         &mut mesh,
+/// let plan = runner
+///     .compile(
+///         &mesh,
 ///         &DeleteEdges,
 ///         &DeleteEdgesParams {
 ///             edges: vec![edge],
 ///             policy: DeletePolicy::CleanupIsolated,
 ///         },
 ///     )
+///     .expect("compile should succeed");
+/// let result = runner
+///     .apply_in_place(&mut mesh, &DeleteEdges, &plan)
 ///     .expect("delete edges should succeed");
 /// assert_eq!(result.output.edges, vec![edge]);
 /// ```
@@ -228,15 +231,18 @@ impl EditOperator for DeleteEdges {
 /// let faces = mesh.faces().collect::<Vec<_>>();
 ///
 /// let mut runner = OperatorRunner::new();
-/// let result = runner
-///     .run_commit(
-///         &mut mesh,
+/// let plan = runner
+///     .compile(
+///         &mesh,
 ///         &DeleteFaces,
 ///         &DeleteFacesParams {
 ///             faces: vec![faces[0]],
 ///             policy: DeletePolicy::KeepIsolated,
 ///         },
 ///     )
+///     .expect("compile should succeed");
+/// let result = runner
+///     .apply_in_place(&mut mesh, &DeleteFaces, &plan)
 ///     .expect("delete faces should succeed");
 /// assert_eq!(result.output.faces, vec![faces[0]]);
 /// ```
@@ -351,14 +357,17 @@ impl EditOperator for DeleteFaces {
 /// let _v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
 ///
 /// let mut runner = OperatorRunner::new();
-/// let result = runner
-///     .run_commit(
-///         &mut mesh,
+/// let plan = runner
+///     .compile(
+///         &mesh,
 ///         &DeleteVertices,
 ///         &DeleteVerticesParams {
 ///             vertices: vec![v0],
 ///         },
 ///     )
+///     .expect("compile should succeed");
+/// let result = runner
+///     .apply_in_place(&mut mesh, &DeleteVertices, &plan)
 ///     .expect("delete vertices should succeed");
 /// assert_eq!(result.output.vertices, vec![v0]);
 /// ```
@@ -517,6 +526,16 @@ mod tests {
     };
     use crate::{OpErrorKind, OperatorRunner, mesh_signature};
 
+    fn commit<O: crate::EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut exedra::Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     fn two_tri_strip_mesh() -> exedra::Mesh {
         exedra::Mesh::from_indexed_triangles(
             &[
@@ -557,16 +576,16 @@ mod tests {
         let mut mesh = two_tri_strip_mesh();
         let edge = canonical_interior_edge(&mesh);
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &DeleteEdges,
-                &DeleteEdgesParams {
-                    edges: vec![edge],
-                    policy: exedra::DeletePolicy::CleanupIsolated,
-                },
-            )
-            .expect("delete edges should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteEdges,
+            &DeleteEdgesParams {
+                edges: vec![edge],
+                policy: exedra::DeletePolicy::CleanupIsolated,
+            },
+        )
+        .expect("delete edges should succeed");
         assert_eq!(
             result.output,
             DeleteEdgesOutput {
@@ -584,16 +603,16 @@ mod tests {
         let mut mesh = two_tri_strip_mesh();
         let stale = HalfEdgeId::from(Id::new(999, NonZeroU32::MIN));
         let mut runner = OperatorRunner::new();
-        let err = runner
-            .run_commit(
-                &mut mesh,
-                &DeleteEdges,
-                &DeleteEdgesParams {
-                    edges: vec![stale],
-                    policy: exedra::DeletePolicy::CleanupIsolated,
-                },
-            )
-            .expect_err("stale edge should fail");
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteEdges,
+            &DeleteEdgesParams {
+                edges: vec![stale],
+                policy: exedra::DeletePolicy::CleanupIsolated,
+            },
+        )
+        .expect_err("stale edge should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 
@@ -612,16 +631,16 @@ mod tests {
         .expect("quad build should succeed");
         let faces = mesh.faces().collect::<Vec<_>>();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &DeleteFaces,
-                &DeleteFacesParams {
-                    faces: vec![faces[1], faces[0]],
-                    policy: exedra::DeletePolicy::KeepIsolated,
-                },
-            )
-            .expect("delete faces should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteFaces,
+            &DeleteFacesParams {
+                faces: vec![faces[1], faces[0]],
+                policy: exedra::DeletePolicy::KeepIsolated,
+            },
+        )
+        .expect("delete faces should succeed");
         assert_eq!(
             result.output,
             DeleteFacesOutput {
@@ -636,16 +655,16 @@ mod tests {
     fn delete_faces_rejects_outside_face() {
         let mut mesh = exedra::Mesh::new();
         let mut runner = OperatorRunner::new();
-        let err = runner
-            .run_commit(
-                &mut mesh,
-                &DeleteFaces,
-                &DeleteFacesParams {
-                    faces: vec![FaceId::OUTSIDE],
-                    policy: exedra::DeletePolicy::CleanupIsolated,
-                },
-            )
-            .expect_err("outside face should fail");
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteFaces,
+            &DeleteFacesParams {
+                faces: vec![FaceId::OUTSIDE],
+                policy: exedra::DeletePolicy::CleanupIsolated,
+            },
+        )
+        .expect_err("outside face should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 
@@ -688,13 +707,13 @@ mod tests {
         let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
         let _v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &DeleteVertices,
-                &DeleteVerticesParams { vertices: vec![v0] },
-            )
-            .expect("delete vertices should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteVertices,
+            &DeleteVerticesParams { vertices: vec![v0] },
+        )
+        .expect("delete vertices should succeed");
         assert_eq!(result.output, DeleteVerticesOutput { vertices: vec![v0] });
         assert_eq!(result.report.stats.elements_deleted.vertices, 1);
         assert_eq!(mesh.vertices().count(), 1);
@@ -710,15 +729,15 @@ mod tests {
         .expect("triangle build should succeed");
         let vertex = mesh.vertices().next().expect("vertex should exist");
         let mut runner = OperatorRunner::new();
-        let err = runner
-            .run_commit(
-                &mut mesh,
-                &DeleteVertices,
-                &DeleteVerticesParams {
-                    vertices: vec![vertex],
-                },
-            )
-            .expect_err("non-isolated vertex should fail");
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteVertices,
+            &DeleteVerticesParams {
+                vertices: vec![vertex],
+            },
+        )
+        .expect_err("non-isolated vertex should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 }

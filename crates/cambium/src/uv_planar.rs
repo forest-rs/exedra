@@ -239,6 +239,16 @@ mod tests {
     use super::{UvPlanar, UvPlanarParams, UvPlane, UvScope};
     use crate::OperatorRunner;
 
+    fn commit<O: crate::EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut exedra::Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     #[test]
     fn uv_planar_writes_uvs_and_extracts_trimesh() {
         let mut builder = MeshBuilder::new();
@@ -252,20 +262,20 @@ mod tests {
         let mut mesh = builder.build().expect("build should succeed").mesh;
         let mut runner = OperatorRunner::new();
         let op = UvPlanar;
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &op,
-                &UvPlanarParams {
-                    scope: UvScope::WholeMesh,
-                    plane: UvPlane::WorldXY,
-                    scale: 2.0,
-                    offset: [0.5, 1.0],
-                    write_missing_only: false,
-                    normal_epsilon: 1.0e-6,
-                },
-            )
-            .expect("uv.planar should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &op,
+            &UvPlanarParams {
+                scope: UvScope::WholeMesh,
+                plane: UvPlane::WorldXY,
+                scale: 2.0,
+                offset: [0.5, 1.0],
+                write_missing_only: false,
+                normal_epsilon: 1.0e-6,
+            },
+        )
+        .expect("uv.planar should succeed");
 
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.corners_written, 4);
@@ -295,20 +305,20 @@ mod tests {
         }
 
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &UvPlanar,
-                &UvPlanarParams {
-                    scope: UvScope::WholeMesh,
-                    plane: UvPlane::WorldXY,
-                    scale: 1.0,
-                    offset: [0.0, 0.0],
-                    write_missing_only: true,
-                    normal_epsilon: 1.0e-6,
-                },
-            )
-            .expect("uv.planar should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &UvPlanar,
+            &UvPlanarParams {
+                scope: UvScope::WholeMesh,
+                plane: UvPlane::WorldXY,
+                scale: 1.0,
+                offset: [0.0, 0.0],
+                write_missing_only: true,
+                normal_epsilon: 1.0e-6,
+            },
+        )
+        .expect("uv.planar should succeed");
 
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.corners_written, 2);
@@ -332,20 +342,20 @@ mod tests {
             .expect("topology is valid even when geometry is degenerate");
         let mut mesh = builder.build().expect("build should succeed").mesh;
         let mut runner = OperatorRunner::new();
-        let _ = runner
-            .run_commit(
-                &mut mesh,
-                &UvPlanar,
-                &UvPlanarParams {
-                    scope: UvScope::WholeMesh,
-                    plane: UvPlane::PerFaceFromGeometry,
-                    scale: 1.0,
-                    offset: [0.0, 0.0],
-                    write_missing_only: false,
-                    normal_epsilon: 1.0e-6,
-                },
-            )
-            .expect("uv.planar should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &UvPlanar,
+            &UvPlanarParams {
+                scope: UvScope::WholeMesh,
+                plane: UvPlane::PerFaceFromGeometry,
+                scale: 1.0,
+                offset: [0.0, 0.0],
+                write_missing_only: false,
+                normal_epsilon: 1.0e-6,
+            },
+        )
+        .expect("uv.planar should succeed");
 
         assert!(runner.ctx.diagnostics.iter().any(|diag| {
             diag.level == crate::DiagLevel::Warn

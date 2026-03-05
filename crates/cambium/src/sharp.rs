@@ -78,6 +78,16 @@ mod tests {
     use super::{MarkEdgeSharp, MarkEdgeSharpParams};
     use crate::{EditOperator, OperatorRunner, test_support::shared_edge_mesh};
 
+    fn commit<O: EditOperator>(
+        runner: &mut OperatorRunner,
+        mesh: &mut exedra::Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<crate::OpResult<O::Output>, crate::OpError> {
+        let plan = runner.compile(mesh, op, params)?;
+        runner.apply_in_place(mesh, op, &plan)
+    }
+
     #[test]
     fn mark_edge_sharp_sets_and_clears_tag() {
         let (mut mesh, shared, twin) = shared_edge_mesh();
@@ -88,8 +98,7 @@ mod tests {
             edges: vec![twin],
             sharp: 2.5,
         };
-        let mut set_result = runner
-            .run_commit(&mut mesh, &op, &set_params)
+        let mut set_result = commit(&mut runner, &mut mesh, &op, &set_params)
             .expect("mark edge sharp should succeed");
         assert_eq!(set_result.report.name, op.name());
         assert_eq!(mesh.edge_sharpness(shared), Some(2.5));
@@ -102,8 +111,7 @@ mod tests {
             edges: vec![shared],
             sharp: 0.0,
         };
-        let _ = runner
-            .run_commit(&mut mesh, &op, &clear_params)
+        let _ = commit(&mut runner, &mut mesh, &op, &clear_params)
             .expect("clear edge sharp should succeed");
         assert_eq!(mesh.edge_sharpness(shared), Some(0.0));
         assert_eq!(mesh.edge_sharpness(twin), Some(0.0));
@@ -113,16 +121,16 @@ mod tests {
     fn mark_edge_sharp_canonicalizes_duplicate_selection() {
         let (mut mesh, shared, twin) = shared_edge_mesh();
         let mut runner = OperatorRunner::new();
-        let result = runner
-            .run_commit(
-                &mut mesh,
-                &MarkEdgeSharp,
-                &MarkEdgeSharpParams {
-                    edges: vec![shared, twin, shared],
-                    sharp: 1.0,
-                },
-            )
-            .expect("mark edge sharp should succeed");
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &MarkEdgeSharp,
+            &MarkEdgeSharpParams {
+                edges: vec![shared, twin, shared],
+                sharp: 1.0,
+            },
+        )
+        .expect("mark edge sharp should succeed");
         assert_eq!(result.report.stats.counters.selections_canonicalized, 2);
         assert_eq!(result.report.stats.counters.edges_written, 1);
         assert_eq!(result.report.stats.counters.corners_written, 0);

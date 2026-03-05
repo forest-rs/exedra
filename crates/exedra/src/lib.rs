@@ -10,9 +10,12 @@
 //! - transactional edits with deterministic change summaries,
 //! - deterministic render extraction ([`Mesh::to_trimesh`]).
 //!
-//! The intended public surface is the crate root (`exedra::...`) via
-//! re-exported core types like [`Mesh`], [`EditSession`], [`MeshBuilder`], and
-//! attribute/key APIs.
+//! Exedra is the engine tier. For workflow/operator authoring and end-user
+//! modeling flows, prefer the Cambium SDK crate (`cambium::...`).
+//!
+//! The intended engine surface is this crate root (`exedra::...`) via
+//! re-exported kernel types like [`Mesh`], [`EditSession`], [`MeshBuilder`],
+//! and attribute/key APIs.
 //!
 //! For deeper narrative docs, see [`manual`].
 //!

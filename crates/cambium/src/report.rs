@@ -78,7 +78,7 @@ pub struct TimeBucket {
 /// deterministically drops new distinct bucket names.
 ///
 /// You usually read this from [`OpReport::timings`], populated by
-/// [`crate::OperatorRunner`] during `run_commit`/`run_preview`.
+/// [`crate::OperatorRunner`] during `apply_in_place`/`preview_on_clone`.
 ///
 /// # Example
 /// ```rust
@@ -165,8 +165,8 @@ impl Default for Timings {
 /// [`PreviewResult`](crate::PreviewResult).
 ///
 /// In typical usage, obtain this as `result.report` from
-/// [`crate::OperatorRunner::run_commit`] or `preview.report` from
-/// [`crate::OperatorRunner::run_preview`].
+/// [`crate::OperatorRunner::apply_in_place`] or `preview.report` from
+/// [`crate::OperatorRunner::preview_on_clone`].
 #[derive(Clone, Debug)]
 pub struct OpReport {
     /// Stable operator name.
