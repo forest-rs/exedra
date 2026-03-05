@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use exedra::MeshBuilder;
 
-use crate::{Primitive, RegionId, SelectionName, common};
+use crate::{CapFill, Primitive, RegionId, SelectionName, common};
 
 /// Region ID for side faces.
 pub const REGION_SIDE: RegionId = RegionId(1);
@@ -26,8 +26,8 @@ pub struct CylinderParams {
     pub height: f32,
     /// Number of angular segments.
     pub segments: u32,
-    /// When true, emit top and bottom cap ngons.
-    pub capped: bool,
+    /// Cap face generation policy.
+    pub cap_fill: CapFill,
     /// When true, center the cylinder at the origin along Y.
     pub centered: bool,
 }
@@ -38,7 +38,7 @@ impl Default for CylinderParams {
             radius: 1.0,
             height: 1.0,
             segments: 16,
-            capped: true,
+            cap_fill: CapFill::Ngon,
             centered: true,
         }
     }
@@ -52,9 +52,9 @@ impl Default for CylinderParams {
 /// Selection semantics:
 /// - `edges.seam`: single side edge on the fixed longitude seam (`theta = 0`).
 /// - `edges.rim_top`: one edge per segment on the top side/cap interface
-///   (or side/OUTSIDE boundary when uncapped).
+///   (or side/OUTSIDE boundary when caps are disabled).
 /// - `edges.rim_bottom`: one edge per segment on the bottom side/cap interface
-///   (or side/OUTSIDE boundary when uncapped).
+///   (or side/OUTSIDE boundary when caps are disabled).
 ///
 /// # Panics
 ///
@@ -89,37 +89,69 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
             .expect("side quad should be valid");
     }
 
-    if params.capped {
-        let mut top = Vec::with_capacity(segments);
-        for i in 0..segments {
-            top.push(common::usize_to_u32(segments + i));
-        }
-        builder.add_face(&top).expect("top cap should be valid");
+    match params.cap_fill {
+        CapFill::None => {}
+        CapFill::Ngon => {
+            let mut top = Vec::with_capacity(segments);
+            for i in 0..segments {
+                top.push(common::usize_to_u32(segments + i));
+            }
+            builder.add_face(&top).expect("top cap should be valid");
 
-        let mut bottom = Vec::with_capacity(segments);
-        for i in (0..segments).rev() {
-            bottom.push(common::usize_to_u32(i));
+            let mut bottom = Vec::with_capacity(segments);
+            for i in (0..segments).rev() {
+                bottom.push(common::usize_to_u32(i));
+            }
+            builder
+                .add_face(&bottom)
+                .expect("bottom cap should be valid");
         }
-        builder
-            .add_face(&bottom)
-            .expect("bottom cap should be valid");
+        CapFill::TriangleFan => {
+            let top_center = builder.push_vertex([0.0, top_y, 0.0]);
+            let bottom_center = builder.push_vertex([0.0, bottom_y, 0.0]);
+            for i in 0..segments {
+                let next = (i + 1) % segments;
+                builder
+                    .add_face(&[
+                        top_center,
+                        common::usize_to_u32(segments + i),
+                        common::usize_to_u32(segments + next),
+                    ])
+                    .expect("top cap fan triangle should be valid");
+                builder
+                    .add_face(&[
+                        bottom_center,
+                        common::usize_to_u32(next),
+                        common::usize_to_u32(i),
+                    ])
+                    .expect("bottom cap fan triangle should be valid");
+            }
+        }
     }
 
     let build = builder.build().expect("cylinder topology must build");
     let face_ids = &build.face_ids;
     // Face order is coupled to the emission loops above:
-    // 0..segments are side faces, followed by optional top and bottom caps.
+    // 0..segments are side faces, followed by cap faces in insertion order.
     let side_faces = face_ids[..segments].to_vec();
-    let top_face = if params.capped {
-        Some(face_ids[segments])
-    } else {
-        None
-    };
-    let bottom_face = if params.capped {
-        Some(face_ids[segments + 1])
-    } else {
-        None
-    };
+    let mut top_faces = Vec::new();
+    let mut bottom_faces = Vec::new();
+    match params.cap_fill {
+        CapFill::None => {}
+        CapFill::Ngon => {
+            top_faces.push(face_ids[segments]);
+            bottom_faces.push(face_ids[segments + 1]);
+        }
+        CapFill::TriangleFan => {
+            let mut cursor = segments;
+            for _ in 0..segments {
+                top_faces.push(face_ids[cursor]);
+                cursor += 1;
+                bottom_faces.push(face_ids[cursor]);
+                cursor += 1;
+            }
+        }
+    }
 
     let seam_edges = vec![build.face_edge_ids[segments - 1][1]];
 
@@ -132,28 +164,22 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
         rim_top.push(build.face_edge_ids[i][2]);
     }
 
-    let mut assignments = Vec::with_capacity(segments + 2);
+    let mut assignments = Vec::with_capacity(segments + top_faces.len() + bottom_faces.len());
     for face in &side_faces {
         assignments.push((*face, REGION_SIDE));
     }
-    if let Some(face) = top_face {
-        assignments.push((face, REGION_CAP_TOP));
+    for face in &top_faces {
+        assignments.push((*face, REGION_CAP_TOP));
     }
-    if let Some(face) = bottom_face {
-        assignments.push((face, REGION_CAP_BOTTOM));
+    for face in &bottom_faces {
+        assignments.push((*face, REGION_CAP_BOTTOM));
     }
     let face_region = common::face_region_layer(face_ids, RegionId(0), &assignments);
 
     let face_sets = vec![
         (SelectionName("faces.side"), side_faces),
-        (
-            SelectionName("faces.cap_top"),
-            top_face.into_iter().collect(),
-        ),
-        (
-            SelectionName("faces.cap_bottom"),
-            bottom_face.into_iter().collect(),
-        ),
+        (SelectionName("faces.cap_top"), top_faces),
+        (SelectionName("faces.cap_bottom"), bottom_faces),
     ];
 
     common::primitive_from_parts(
@@ -184,7 +210,9 @@ mod tests {
 
     use exedra::{ExtractParams, FaceId, HalfEdgeId};
 
-    use super::{CylinderParams, REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE, cylinder};
+    use super::{
+        CapFill, CylinderParams, REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE, cylinder,
+    };
 
     fn incident_faces(primitive: &crate::Primitive, edge: HalfEdgeId) -> (FaceId, FaceId) {
         let face = primitive
@@ -200,12 +228,12 @@ mod tests {
     }
 
     #[test]
-    fn capped_cylinder_builds_expected_regions() {
+    fn ngon_capped_cylinder_builds_expected_regions() {
         let primitive = cylinder(&CylinderParams {
             radius: 1.0,
             height: 2.0,
             segments: 8,
-            capped: true,
+            cap_fill: CapFill::Ngon,
             centered: true,
         });
         assert!(primitive.mesh.validate_fast().is_empty());
@@ -222,7 +250,7 @@ mod tests {
     #[test]
     fn uncapped_cylinder_has_no_cap_faces() {
         let primitive = cylinder(&CylinderParams {
-            capped: false,
+            cap_fill: CapFill::None,
             segments: 6,
             ..CylinderParams::default()
         });
@@ -246,12 +274,49 @@ mod tests {
     }
 
     #[test]
+    fn triangle_fan_caps_emit_expected_face_counts_and_regions() {
+        let segments = 8_u32;
+        let primitive = cylinder(&CylinderParams {
+            segments,
+            cap_fill: CapFill::TriangleFan,
+            ..CylinderParams::default()
+        });
+        assert!(primitive.mesh.validate_fast().is_empty());
+        assert!(primitive.mesh.validate_deep().is_empty());
+        assert_eq!(primitive.mesh.faces().count(), (segments as usize) * 3);
+        let faces_cap_top = primitive
+            .selections
+            .face_sets
+            .iter()
+            .find(|(name, _)| name.0 == "faces.cap_top")
+            .expect("faces.cap_top must exist")
+            .1
+            .as_slice();
+        let faces_cap_bottom = primitive
+            .selections
+            .face_sets
+            .iter()
+            .find(|(name, _)| name.0 == "faces.cap_bottom")
+            .expect("faces.cap_bottom must exist")
+            .1
+            .as_slice();
+        assert_eq!(faces_cap_top.len(), segments as usize);
+        assert_eq!(faces_cap_bottom.len(), segments as usize);
+        for face in faces_cap_top {
+            assert_eq!(primitive.face_region.get(*face), REGION_CAP_TOP);
+        }
+        for face in faces_cap_bottom {
+            assert_eq!(primitive.face_region.get(*face), REGION_CAP_BOTTOM);
+        }
+    }
+
+    #[test]
     fn cylinder_is_deterministic() {
         let params = CylinderParams {
             radius: 1.5,
             height: 3.0,
             segments: 12,
-            capped: true,
+            cap_fill: CapFill::Ngon,
             centered: false,
         };
         let a = cylinder(&params);
@@ -269,7 +334,7 @@ mod tests {
     fn capped_cylinder_rim_and_seam_sets_match_contract() {
         let primitive = cylinder(&CylinderParams {
             segments: 8,
-            capped: true,
+            cap_fill: CapFill::Ngon,
             ..CylinderParams::default()
         });
         let seam = primitive
@@ -323,7 +388,7 @@ mod tests {
     fn uncapped_cylinder_rim_sets_are_side_to_outside_boundaries() {
         let primitive = cylinder(&CylinderParams {
             segments: 6,
-            capped: false,
+            cap_fill: CapFill::None,
             ..CylinderParams::default()
         });
         let rim_top = primitive

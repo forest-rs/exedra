@@ -19,7 +19,7 @@ use cambium::{
     flood_fill_faces_by_region, mesh_signature, select_faces_by_region,
 };
 use exedra::attr;
-use exedra_primitives::{BoxParams, CylinderParams, QuadParams, UvSphereParams};
+use exedra_primitives::{BoxParams, CapFill, CylinderParams, QuadParams, UvSphereParams};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -334,13 +334,24 @@ fn tag_faces(
     faces: Vec<cambium::FaceId>,
 ) -> Result<(), String> {
     let plan = runner
-        .compile(mesh, &TagFaceRegion, &TagFaceRegionParams { region_id, faces })
+        .compile(
+            mesh,
+            &TagFaceRegion,
+            &TagFaceRegionParams { region_id, faces },
+        )
         .map_err(format_op_error)?;
     let fp = plan.fingerprint.value();
     let result = runner
         .apply_in_place(mesh, &TagFaceRegion, &plan)
         .map_err(format_op_error)?;
-    steps.push(snapshot_from_report(mesh, label, "tag.face.region", fp, &result.report, runner));
+    steps.push(snapshot_from_report(
+        mesh,
+        label,
+        "tag.face.region",
+        fp,
+        &result.report,
+        runner,
+    ));
     Ok(())
 }
 
@@ -349,7 +360,7 @@ fn run_stepped_tower(options: &ScenarioOptions) -> Result<ScenarioResponse, Stri
         radius: 1.0,
         height: 0.6,
         segments: 8,
-        capped: true,
+        cap_fill: CapFill::Ngon,
         centered: false,
     });
     let face_region = primitive.face_region;
@@ -360,7 +371,12 @@ fn run_stepped_tower(options: &ScenarioOptions) -> Result<ScenarioResponse, Stri
 
     if options.include_initial {
         steps.push(snapshot_from_mesh(
-            &mesh, "initial", None, None, StepStats::default(), &[],
+            &mesh,
+            "initial",
+            None,
+            None,
+            StepStats::default(),
+            &[],
         ));
     }
 
@@ -371,21 +387,41 @@ fn run_stepped_tower(options: &ScenarioOptions) -> Result<ScenarioResponse, Stri
         .ok_or("stepped_tower: no faces".to_string())?;
 
     let inset1 = runner
-        .compile(&mesh, &InsetFaces, &InsetFacesParams { faces: vec![top_face], factor: 0.35 })
+        .compile(
+            &mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![top_face],
+                factor: 0.35,
+            },
+        )
         .map_err(format_op_error)?;
     let inset1_fp = inset1.fingerprint.value();
     let inset1_result = runner
         .apply_in_place(&mut mesh, &InsetFaces, &inset1)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "inset.tier1", "edit.face.inset", inset1_fp, &inset1_result.report, &runner,
+        &mesh,
+        "inset.tier1",
+        "edit.face.inset",
+        inset1_fp,
+        &inset1_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.ring1", 10, inset1_result.output.frame_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.ring1",
+        10,
+        inset1_result.output.frame_faces.clone(),
+    )?;
 
     let extrude1 = runner
         .compile(
-            &mesh, &ExtrudeFaces,
+            &mesh,
+            &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: inset1_result.output.inner_faces.clone(),
                 mode: ExtrudeMode::ShellOpen,
@@ -398,31 +434,67 @@ fn run_stepped_tower(options: &ScenarioOptions) -> Result<ScenarioResponse, Stri
         .apply_in_place(&mut mesh, &ExtrudeFaces, &extrude1)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "extrude.tier1", "edit.face.extrude", extrude1_fp, &extrude1_result.report, &runner,
+        &mesh,
+        "extrude.tier1",
+        "edit.face.extrude",
+        extrude1_fp,
+        &extrude1_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.walls1", 11, extrude1_result.output.wall_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.walls1",
+        11,
+        extrude1_result.output.wall_faces.clone(),
+    )?;
 
     // Tier 2: inset the new cap, extrude again.
-    let cap1 = extrude1_result.output.cap_faces.first().copied()
+    let cap1 = extrude1_result
+        .output
+        .cap_faces
+        .first()
+        .copied()
         .ok_or("stepped_tower: extrude produced no cap".to_string())?;
 
     let inset2 = runner
-        .compile(&mesh, &InsetFaces, &InsetFacesParams { faces: vec![cap1], factor: 0.30 })
+        .compile(
+            &mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![cap1],
+                factor: 0.30,
+            },
+        )
         .map_err(format_op_error)?;
     let inset2_fp = inset2.fingerprint.value();
     let inset2_result = runner
         .apply_in_place(&mut mesh, &InsetFaces, &inset2)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "inset.tier2", "edit.face.inset", inset2_fp, &inset2_result.report, &runner,
+        &mesh,
+        "inset.tier2",
+        "edit.face.inset",
+        inset2_fp,
+        &inset2_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.ring2", 20, inset2_result.output.frame_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.ring2",
+        20,
+        inset2_result.output.frame_faces.clone(),
+    )?;
 
     let extrude2 = runner
         .compile(
-            &mesh, &ExtrudeFaces,
+            &mesh,
+            &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: inset2_result.output.inner_faces.clone(),
                 mode: ExtrudeMode::ShellOpen,
@@ -435,11 +507,30 @@ fn run_stepped_tower(options: &ScenarioOptions) -> Result<ScenarioResponse, Stri
         .apply_in_place(&mut mesh, &ExtrudeFaces, &extrude2)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "extrude.tier2", "edit.face.extrude", extrude2_fp, &extrude2_result.report, &runner,
+        &mesh,
+        "extrude.tier2",
+        "edit.face.extrude",
+        extrude2_fp,
+        &extrude2_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.walls2", 21, extrude2_result.output.wall_faces.clone())?;
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.cap", 30, extrude2_result.output.cap_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.walls2",
+        21,
+        extrude2_result.output.wall_faces.clone(),
+    )?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.cap",
+        30,
+        extrude2_result.output.cap_faces.clone(),
+    )?;
 
     Ok(ScenarioResponse {
         scenario: "stepped_tower".to_string(),
@@ -462,7 +553,12 @@ fn run_pedestal(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
 
     if options.include_initial {
         steps.push(snapshot_from_mesh(
-            &mesh, "initial", None, None, StepStats::default(), &[],
+            &mesh,
+            "initial",
+            None,
+            None,
+            StepStats::default(),
+            &[],
         ));
     }
 
@@ -473,21 +569,41 @@ fn run_pedestal(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
         .ok_or("pedestal: no faces".to_string())?;
 
     let inset1 = runner
-        .compile(&mesh, &InsetFaces, &InsetFacesParams { faces: vec![top_face], factor: 0.25 })
+        .compile(
+            &mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![top_face],
+                factor: 0.25,
+            },
+        )
         .map_err(format_op_error)?;
     let inset1_fp = inset1.fingerprint.value();
     let inset1_result = runner
         .apply_in_place(&mut mesh, &InsetFaces, &inset1)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "inset.tier1", "edit.face.inset", inset1_fp, &inset1_result.report, &runner,
+        &mesh,
+        "inset.tier1",
+        "edit.face.inset",
+        inset1_fp,
+        &inset1_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.base", 1, inset1_result.output.frame_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.base",
+        1,
+        inset1_result.output.frame_faces.clone(),
+    )?;
 
     let extrude1 = runner
         .compile(
-            &mesh, &ExtrudeFaces,
+            &mesh,
+            &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: inset1_result.output.inner_faces.clone(),
                 mode: ExtrudeMode::ShellOpen,
@@ -500,31 +616,67 @@ fn run_pedestal(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
         .apply_in_place(&mut mesh, &ExtrudeFaces, &extrude1)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "extrude.tier1", "edit.face.extrude", extrude1_fp, &extrude1_result.report, &runner,
+        &mesh,
+        "extrude.tier1",
+        "edit.face.extrude",
+        extrude1_fp,
+        &extrude1_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.walls1", 2, extrude1_result.output.wall_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.walls1",
+        2,
+        extrude1_result.output.wall_faces.clone(),
+    )?;
 
     // Tier 2: inset the cap, extrude again (narrower, taller).
-    let cap1 = extrude1_result.output.cap_faces.first().copied()
+    let cap1 = extrude1_result
+        .output
+        .cap_faces
+        .first()
+        .copied()
         .ok_or("pedestal: extrude produced no cap".to_string())?;
 
     let inset2 = runner
-        .compile(&mesh, &InsetFaces, &InsetFacesParams { faces: vec![cap1], factor: 0.3 })
+        .compile(
+            &mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![cap1],
+                factor: 0.3,
+            },
+        )
         .map_err(format_op_error)?;
     let inset2_fp = inset2.fingerprint.value();
     let inset2_result = runner
         .apply_in_place(&mut mesh, &InsetFaces, &inset2)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "inset.tier2", "edit.face.inset", inset2_fp, &inset2_result.report, &runner,
+        &mesh,
+        "inset.tier2",
+        "edit.face.inset",
+        inset2_fp,
+        &inset2_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.ledge", 3, inset2_result.output.frame_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.ledge",
+        3,
+        inset2_result.output.frame_faces.clone(),
+    )?;
 
     let extrude2 = runner
         .compile(
-            &mesh, &ExtrudeFaces,
+            &mesh,
+            &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: inset2_result.output.inner_faces.clone(),
                 mode: ExtrudeMode::ShellOpen,
@@ -537,11 +689,30 @@ fn run_pedestal(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
         .apply_in_place(&mut mesh, &ExtrudeFaces, &extrude2)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
-        &mesh, "extrude.tier2", "edit.face.extrude", extrude2_fp, &extrude2_result.report, &runner,
+        &mesh,
+        "extrude.tier2",
+        "edit.face.extrude",
+        extrude2_fp,
+        &extrude2_result.report,
+        &runner,
     ));
 
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.walls2", 4, extrude2_result.output.wall_faces.clone())?;
-    tag_faces(&mut mesh, &mut runner, &mut steps, "tag.cap", 5, extrude2_result.output.cap_faces.clone())?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.walls2",
+        4,
+        extrude2_result.output.wall_faces.clone(),
+    )?;
+    tag_faces(
+        &mut mesh,
+        &mut runner,
+        &mut steps,
+        "tag.cap",
+        5,
+        extrude2_result.output.cap_faces.clone(),
+    )?;
 
     Ok(ScenarioResponse {
         scenario: "pedestal".to_string(),

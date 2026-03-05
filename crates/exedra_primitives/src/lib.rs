@@ -66,6 +66,17 @@ pub struct Primitive {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct RegionId(pub u32);
 
+/// Cap face generation mode for rotational primitives.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum CapFill {
+    /// Do not generate cap faces.
+    None,
+    /// Generate one ngon face per cap.
+    Ngon,
+    /// Generate one triangle fan per cap (shared center vertex).
+    TriangleFan,
+}
+
 /// Dense face-domain semantic region metadata produced by primitive constructors.
 ///
 /// Primitive generators assign stable region IDs (for example side/cap/pole) so
