@@ -15,10 +15,12 @@ use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
 use crate::{
-    DeleteFaces, DeleteFacesOutput, DeleteFacesParams, DeleteFacesPlan, ExtrudeFaces,
-    ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan,
-    OpError, OpErrorKind, OpReport, OperatorRunner, PreviewResult, Selection, SelectionKind,
-    TagFaceRegion, TagFaceRegionParams, canonicalize_face_set, flood_fill_faces_by_region,
+    DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
+    DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
+    EdgeSet, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams,
+    InsetFacesPlan, MarkEdgeSeam, MarkEdgeSeamParams, MarkEdgeSharp, MarkEdgeSharpParams, OpError,
+    OpErrorKind, OpReport, OperatorRunner, PreviewResult, Selection, SelectionKind, TagFaceRegion,
+    TagFaceRegionParams, VertexSet, canonicalize_face_set, flood_fill_faces_by_region,
     select_boundary_edge_loop, select_faces_by_region,
 };
 
@@ -27,7 +29,11 @@ enum MeshEditStep {
     Extrude { distance: f32 },
     Inset { factor: f32 },
     Tag { region_id: u32 },
-    Delete { policy: DeletePolicy },
+    MarkSeam { seam: bool },
+    MarkSharp { sharp: f32 },
+    DeleteFaces { policy: DeletePolicy },
+    DeleteEdges { policy: DeletePolicy },
+    DeleteVertices,
 }
 
 /// Deterministic compiled workflow plan for [`MeshEdit`].
@@ -52,8 +58,16 @@ pub enum MeshEditStepPlan {
     Inset(EditPlan<InsetFacesPlan>),
     /// Compiled `tag.face.region` plan.
     Tag(EditPlan<TagFaceRegionParams>),
+    /// Compiled `mark.edge.seam` plan.
+    MarkSeam(EditPlan<MarkEdgeSeamParams>),
+    /// Compiled `mark.edge.sharp` plan.
+    MarkSharp(EditPlan<MarkEdgeSharpParams>),
     /// Compiled `edit.delete.faces` plan.
-    Delete(EditPlan<DeleteFacesPlan>),
+    DeleteFaces(EditPlan<DeleteFacesPlan>),
+    /// Compiled `edit.delete.edges` plan.
+    DeleteEdges(EditPlan<DeleteEdgesParams>),
+    /// Compiled `edit.delete.vertices` plan.
+    DeleteVertices(EditPlan<DeleteVerticesParams>),
 }
 
 /// Result from [`MeshEdit::apply`] / [`MeshEdit::apply_with_plan`].
@@ -106,7 +120,7 @@ pub struct MeshEditPreview {
 ///     .extrude(0.25)
 ///     .inset(0.4)
 ///     .tag(7)
-///     .delete(DeletePolicy::KeepIsolated);
+///     .delete_faces(DeletePolicy::KeepIsolated);
 ///
 /// let mut runner = OperatorRunner::new();
 /// let plan = flow.plan(&mut runner, &mesh).expect("plan should compile");
@@ -120,7 +134,8 @@ pub struct MeshEditPreview {
 /// - `extrude` selects `cap_faces`,
 /// - `inset` selects `inner_faces`,
 /// - `tag` keeps selected faces,
-/// - `delete` clears selection.
+/// - `mark_seam` / `mark_sharp` keep selected edges,
+/// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection.
 ///
 /// Query helpers:
 /// - [`MeshEdit::select_faces_by_region`] seeds faces from region tags.
@@ -211,10 +226,38 @@ impl MeshEdit {
         self
     }
 
+    /// Adds one seam-tagging step using the current selected edges.
+    #[must_use]
+    pub fn mark_seam(mut self, seam: bool) -> Self {
+        self.steps.push(MeshEditStep::MarkSeam { seam });
+        self
+    }
+
+    /// Adds one sharpness-tagging step using the current selected edges.
+    #[must_use]
+    pub fn mark_sharp(mut self, sharp: f32) -> Self {
+        self.steps.push(MeshEditStep::MarkSharp { sharp });
+        self
+    }
+
     /// Adds one face-deletion step using the current selected faces.
     #[must_use]
-    pub fn delete(mut self, policy: DeletePolicy) -> Self {
-        self.steps.push(MeshEditStep::Delete { policy });
+    pub fn delete_faces(mut self, policy: DeletePolicy) -> Self {
+        self.steps.push(MeshEditStep::DeleteFaces { policy });
+        self
+    }
+
+    /// Adds one edge-deletion step using the current selected edges.
+    #[must_use]
+    pub fn delete_edges(mut self, policy: DeletePolicy) -> Self {
+        self.steps.push(MeshEditStep::DeleteEdges { policy });
+        self
+    }
+
+    /// Adds one vertex-deletion step using the current selected vertices.
+    #[must_use]
+    pub fn delete_vertices(mut self) -> Self {
+        self.steps.push(MeshEditStep::DeleteVertices);
         self
     }
 
@@ -266,7 +309,33 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output);
                     compiled_steps.push(MeshEditStepPlan::Tag(plan));
                 }
-                MeshEditStep::Delete { policy } => {
+                MeshEditStep::MarkSeam { seam } => {
+                    let current_edges =
+                        require_edge_selection(&current_selection, "mark.edge.seam")?;
+                    let params = MarkEdgeSeamParams {
+                        edges: current_edges,
+                        seam,
+                    };
+                    let op = MarkEdgeSeam;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output);
+                    compiled_steps.push(MeshEditStepPlan::MarkSeam(plan));
+                }
+                MeshEditStep::MarkSharp { sharp } => {
+                    let current_edges =
+                        require_edge_selection(&current_selection, "mark.edge.sharp")?;
+                    let params = MarkEdgeSharpParams {
+                        edges: current_edges,
+                        sharp,
+                    };
+                    let op = MarkEdgeSharp;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output);
+                    compiled_steps.push(MeshEditStepPlan::MarkSharp(plan));
+                }
+                MeshEditStep::DeleteFaces { policy } => {
                     let current_faces =
                         require_face_selection(&current_selection, "edit.delete.faces")?;
                     let params = DeleteFacesParams {
@@ -277,7 +346,32 @@ impl MeshEdit {
                     let plan = runner.compile(&working, &op, &params)?;
                     let _ = runner.apply_in_place(&mut working, &op, &plan)?;
                     current_selection = Selection::from(FaceSet::new());
-                    compiled_steps.push(MeshEditStepPlan::Delete(plan));
+                    compiled_steps.push(MeshEditStepPlan::DeleteFaces(plan));
+                }
+                MeshEditStep::DeleteEdges { policy } => {
+                    let current_edges =
+                        require_edge_selection(&current_selection, "edit.delete.edges")?;
+                    let params = DeleteEdgesParams {
+                        edges: current_edges,
+                        policy,
+                    };
+                    let op = DeleteEdges;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let _ = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(EdgeSet::new());
+                    compiled_steps.push(MeshEditStepPlan::DeleteEdges(plan));
+                }
+                MeshEditStep::DeleteVertices => {
+                    let current_vertices =
+                        require_vertex_selection(&current_selection, "edit.delete.vertices")?;
+                    let params = DeleteVerticesParams {
+                        vertices: current_vertices,
+                    };
+                    let op = DeleteVertices;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let _ = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(VertexSet::new());
+                    compiled_steps.push(MeshEditStepPlan::DeleteVertices(plan));
                 }
             }
         }
@@ -351,7 +445,29 @@ impl MeshEdit {
                     current_selection = Selection::from(output);
                     reports.push(report);
                 }
-                MeshEditStepPlan::Delete(compiled) => {
+                MeshEditStepPlan::MarkSeam(compiled) => {
+                    let op = MarkEdgeSeam;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output,
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(output);
+                    reports.push(report);
+                }
+                MeshEditStepPlan::MarkSharp(compiled) => {
+                    let op = MarkEdgeSharp;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output,
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(output);
+                    reports.push(report);
+                }
+                MeshEditStepPlan::DeleteFaces(compiled) => {
                     let op = DeleteFaces;
                     let PreviewResult {
                         preview_mesh: next_mesh,
@@ -360,6 +476,28 @@ impl MeshEdit {
                     } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
                     preview_mesh = next_mesh;
                     current_selection = Selection::from(FaceSet::new());
+                    reports.push(report);
+                }
+                MeshEditStepPlan::DeleteEdges(compiled) => {
+                    let op = DeleteEdges;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: DeleteEdgesOutput { .. },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(EdgeSet::new());
+                    reports.push(report);
+                }
+                MeshEditStepPlan::DeleteVertices(compiled) => {
+                    let op = DeleteVertices;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: DeleteVerticesOutput { .. },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(VertexSet::new());
                     reports.push(report);
                 }
             }
@@ -414,11 +552,37 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output);
                     reports.push(result.report);
                 }
-                MeshEditStepPlan::Delete(compiled) => {
+                MeshEditStepPlan::MarkSeam(compiled) => {
+                    let op = MarkEdgeSeam;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output);
+                    reports.push(result.report);
+                }
+                MeshEditStepPlan::MarkSharp(compiled) => {
+                    let op = MarkEdgeSharp;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output);
+                    reports.push(result.report);
+                }
+                MeshEditStepPlan::DeleteFaces(compiled) => {
                     let op = DeleteFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
                     let DeleteFacesOutput { .. } = result.output;
                     current_selection = Selection::from(FaceSet::new());
+                    reports.push(result.report);
+                }
+                MeshEditStepPlan::DeleteEdges(compiled) => {
+                    let op = DeleteEdges;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    let DeleteEdgesOutput { .. } = result.output;
+                    current_selection = Selection::from(EdgeSet::new());
+                    reports.push(result.report);
+                }
+                MeshEditStepPlan::DeleteVertices(compiled) => {
+                    let op = DeleteVertices;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    let DeleteVerticesOutput { .. } = result.output;
+                    current_selection = Selection::from(VertexSet::new());
                     reports.push(result.report);
                 }
             }
@@ -454,7 +618,23 @@ fn mesh_edit_fingerprint(
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
-            MeshEditStepPlan::Delete(plan) => {
+            MeshEditStepPlan::MarkSeam(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::MarkSharp(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::DeleteFaces(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::DeleteEdges(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::DeleteVertices(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -509,6 +689,50 @@ fn require_face_selection(
     })
 }
 
+fn require_edge_selection(
+    selection: &Selection,
+    operator: &'static str,
+) -> Result<EdgeSet, OpError> {
+    selection.require_edges().cloned().map_err(|mismatch| {
+        let message = alloc::format!(
+            "{operator} requires {} selection, got {}",
+            SelectionKind::Edges,
+            mismatch.actual
+        );
+        OpError::new(
+            OpErrorKind::PreconditionFailed,
+            vec![Diagnostic::new(
+                DiagLevel::Error,
+                DiagCode::PreconditionFailed,
+                message,
+            )],
+            Artifacts::default(),
+        )
+    })
+}
+
+fn require_vertex_selection(
+    selection: &Selection,
+    operator: &'static str,
+) -> Result<VertexSet, OpError> {
+    selection.require_vertices().cloned().map_err(|mismatch| {
+        let message = alloc::format!(
+            "{operator} requires {} selection, got {}",
+            SelectionKind::Vertices,
+            mismatch.actual
+        );
+        OpError::new(
+            OpErrorKind::PreconditionFailed,
+            vec![Diagnostic::new(
+                DiagLevel::Error,
+                DiagCode::PreconditionFailed,
+                message,
+            )],
+            Artifacts::default(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -520,6 +744,7 @@ mod tests {
     use crate::{
         ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
         OperatorRunner, Selection, TagFaceRegion, TagFaceRegionParams, mesh_signature,
+        test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -541,7 +766,7 @@ mod tests {
             .extrude(0.5)
             .inset(0.2)
             .tag(9)
-            .delete(DeletePolicy::KeepIsolated);
+            .delete_faces(DeletePolicy::KeepIsolated);
 
         let mut runner = OperatorRunner::new();
         let plan = flow.plan(&mut runner, &mesh).expect("plan should compile");
@@ -731,5 +956,77 @@ mod tests {
         let selection = MeshEdit::query_boundary_edge_loop(&mesh, seed)
             .expect("boundary loop query should succeed");
         assert!(matches!(selection, Selection::Edges(ref edges) if !edges.is_empty()));
+    }
+
+    #[test]
+    fn mesh_edit_edge_ops_accept_edge_selection() {
+        let (mut mesh, shared, _twin) = shared_edge_mesh();
+        let edge = mesh
+            .canonical_edge(shared)
+            .expect("shared edge should be live");
+        let flow = MeshEdit::new()
+            .select(Selection::from(vec![edge]))
+            .mark_seam(true)
+            .mark_sharp(2.0);
+
+        let mut runner = OperatorRunner::new();
+        let result = flow
+            .apply(&mut runner, &mut mesh)
+            .expect("edge flow should succeed");
+        assert!(matches!(result.selection, Selection::Edges(ref edges) if edges == &vec![edge]));
+        assert_eq!(mesh.edge_seam(edge), Some(true));
+        assert_eq!(mesh.edge_sharpness(edge), Some(2.0));
+    }
+
+    #[test]
+    fn mesh_edit_edge_op_rejects_face_selection() {
+        let (mesh, face) = one_quad_mesh();
+        let flow = MeshEdit::new()
+            .select(Selection::from(vec![face]))
+            .mark_seam(true);
+        let mut runner = OperatorRunner::new();
+        let err = flow
+            .plan(&mut runner, &mesh)
+            .expect_err("face selection should be rejected for edge op");
+        assert_eq!(err.kind, crate::OpErrorKind::PreconditionFailed);
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("requires edges selection"))
+        );
+    }
+
+    #[test]
+    fn mesh_edit_delete_vertices_accepts_vertex_selection() {
+        let mut mesh = exedra::Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let flow = MeshEdit::new()
+            .select(Selection::from(vec![v0]))
+            .delete_vertices();
+
+        let mut runner = OperatorRunner::new();
+        let result = flow
+            .apply(&mut runner, &mut mesh)
+            .expect("delete vertices flow should succeed");
+        assert!(
+            matches!(result.selection, Selection::Vertices(ref vertices) if vertices.is_empty())
+        );
+        assert_eq!(mesh.vertices().count(), 0);
+    }
+
+    #[test]
+    fn mesh_edit_delete_edges_clears_selection() {
+        let (mut mesh, shared, _twin) = shared_edge_mesh();
+        let edge = mesh
+            .canonical_edge(shared)
+            .expect("shared edge should be live");
+        let flow = MeshEdit::new()
+            .select(Selection::from(vec![edge]))
+            .delete_edges(DeletePolicy::KeepIsolated);
+        let mut runner = OperatorRunner::new();
+        let result = flow
+            .apply(&mut runner, &mut mesh)
+            .expect("delete edges flow should succeed");
+        assert!(matches!(result.selection, Selection::Edges(ref edges) if edges.is_empty()));
     }
 }
