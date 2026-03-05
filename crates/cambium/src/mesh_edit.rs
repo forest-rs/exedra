@@ -14,6 +14,7 @@ use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
 
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
+use crate::{CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan};
 use crate::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
@@ -26,16 +27,43 @@ use crate::{
 
 #[derive(Clone, Debug)]
 enum MeshEditStep {
-    SelectFacesByRegion { region_id: u32 },
-    FloodFacesByRegion { seed_face: FaceId },
-    SelectBoundaryEdgeLoop { seed_edge: HalfEdgeId },
-    Extrude { distance: f32 },
-    Inset { factor: f32 },
-    Tag { region_id: u32 },
-    MarkSeam { seam: bool },
-    MarkSharp { sharp: f32 },
-    DeleteFaces { policy: DeletePolicy },
-    DeleteEdges { policy: DeletePolicy },
+    SelectFacesByRegion {
+        region_id: u32,
+    },
+    FloodFacesByRegion {
+        seed_face: FaceId,
+    },
+    SelectBoundaryEdgeLoop {
+        seed_edge: HalfEdgeId,
+    },
+    Extrude {
+        distance: f32,
+    },
+    Inset {
+        factor: f32,
+    },
+    CutRect {
+        frame_origin: [f32; 3],
+        frame_u: [f32; 3],
+        frame_v: [f32; 3],
+        rect_min: [f32; 2],
+        rect_max: [f32; 2],
+    },
+    Tag {
+        region_id: u32,
+    },
+    MarkSeam {
+        seam: bool,
+    },
+    MarkSharp {
+        sharp: f32,
+    },
+    DeleteFaces {
+        policy: DeletePolicy,
+    },
+    DeleteEdges {
+        policy: DeletePolicy,
+    },
     DeleteVertices,
 }
 
@@ -61,6 +89,8 @@ pub enum MeshEditStepPlan {
     Extrude(EditPlan<ExtrudeFacesParams>),
     /// Compiled `edit.face.inset` plan.
     Inset(EditPlan<InsetFacesPlan>),
+    /// Compiled `edit.face.cut.rect` plan.
+    CutRect(EditPlan<CutRectFacePlan>),
     /// Compiled `tag.face.region` plan.
     Tag(EditPlan<TagFaceRegionParams>),
     /// Compiled `mark.edge.seam` plan.
@@ -126,7 +156,7 @@ pub struct MeshEditPreview {
 /// Typical sequence:
 /// 1. start with [`MeshEdit::new`],
 /// 2. seed a face selection with [`MeshEdit::select_faces`] (or [`MeshEdit::select`]),
-/// 3. append fluent steps (`extrude`, `inset`, `tag`, `delete`),
+/// 3. append fluent steps (`extrude`, `inset`, `cut_rect`, `tag`, `delete`),
 /// 4. run `plan`, `preview`, or `apply`.
 ///
 /// ```rust
@@ -166,6 +196,7 @@ pub struct MeshEditPreview {
 /// - `select_boundary_edge_loop` selects edges,
 /// - `extrude` selects `cap_faces`,
 /// - `inset` selects `inner_faces`,
+/// - `cut_rect` selects `inner_faces`,
 /// - `tag` keeps selected faces,
 /// - `mark_seam` / `mark_sharp` keep selected edges,
 /// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection.
@@ -244,6 +275,28 @@ impl MeshEdit {
     #[must_use]
     pub fn inset(mut self, factor: f32) -> Self {
         self.steps.push(MeshEditStep::Inset { factor });
+        self
+    }
+
+    /// Adds one rectangular face-cut step using the currently selected face.
+    ///
+    /// Exactly one face must be selected when this step compiles.
+    #[must_use]
+    pub fn cut_rect(
+        mut self,
+        frame_origin: [f32; 3],
+        frame_u: [f32; 3],
+        frame_v: [f32; 3],
+        rect_min: [f32; 2],
+        rect_max: [f32; 2],
+    ) -> Self {
+        self.steps.push(MeshEditStep::CutRect {
+            frame_origin,
+            frame_u,
+            frame_v,
+            rect_min,
+            rect_max,
+        });
         self
     }
 
@@ -353,6 +406,40 @@ impl MeshEdit {
                     let result = runner.apply_in_place(&mut working, &op, &plan)?;
                     current_selection = Selection::from(result.output.inner_faces);
                     compiled_steps.push(MeshEditStepPlan::Inset(plan));
+                }
+                MeshEditStep::CutRect {
+                    frame_origin,
+                    frame_u,
+                    frame_v,
+                    rect_min,
+                    rect_max,
+                } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.face.cut.rect")?;
+                    if current_faces.len() != 1 {
+                        return Err(OpError::new(
+                            OpErrorKind::PreconditionFailed,
+                            vec![Diagnostic::new(
+                                DiagLevel::Error,
+                                DiagCode::PreconditionFailed,
+                                "edit.face.cut.rect requires exactly one selected face",
+                            )],
+                            Artifacts::default(),
+                        ));
+                    }
+                    let params = CutRectFaceParams {
+                        face: current_faces[0],
+                        frame_origin,
+                        frame_u,
+                        frame_v,
+                        rect_min,
+                        rect_max,
+                    };
+                    let op = CutRectFace;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.inner_faces);
+                    compiled_steps.push(MeshEditStepPlan::CutRect(plan));
                 }
                 MeshEditStep::Tag { region_id } => {
                     let current_faces =
@@ -501,6 +588,17 @@ impl MeshEdit {
                     current_selection = Selection::from(output.inner_faces);
                     reports.push(report);
                 }
+                MeshEditStepPlan::CutRect(compiled) => {
+                    let op = CutRectFace;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: CutRectFaceOutput { inner_faces, .. },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(inner_faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::Tag(compiled) => {
                     let op = TagFaceRegion;
                     let PreviewResult {
@@ -622,6 +720,12 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output.inner_faces);
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::CutRect(compiled) => {
+                    let op = CutRectFace;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.inner_faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::Tag(compiled) => {
                     let op = TagFaceRegion;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -713,6 +817,10 @@ fn mesh_edit_fingerprint(
                 hasher.write_u64(plan.fingerprint.value());
             }
             MeshEditStepPlan::Inset(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::CutRect(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -844,9 +952,9 @@ mod tests {
 
     use super::MeshEdit;
     use crate::{
-        ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
-        OperatorRunner, Selection, TagFaceRegion, TagFaceRegionParams, mesh_signature,
-        test_support::shared_edge_mesh,
+        CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
+        InsetFacesParams, OperatorRunner, Selection, TagFaceRegion, TagFaceRegionParams,
+        mesh_signature, test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -989,6 +1097,48 @@ mod tests {
         assert_eq!(
             flow_result.selection,
             Selection::from(inset_result.output.inner_faces)
+        );
+    }
+
+    #[test]
+    fn mesh_edit_cut_rect_matches_manual_operator_sequence() {
+        let (base, face) = one_quad_mesh();
+
+        let flow = MeshEdit::new().select_faces(vec![face]).cut_rect(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.2, 0.25],
+            [0.8, 0.75],
+        );
+
+        let mut flow_runner = OperatorRunner::new();
+        let mut flow_mesh = base.clone();
+        let flow_result = flow
+            .apply(&mut flow_runner, &mut flow_mesh)
+            .expect("fluent cut_rect flow should succeed");
+
+        let mut direct_mesh = base.clone();
+        let mut direct_runner = OperatorRunner::new();
+        let params = CutRectFaceParams {
+            face,
+            frame_origin: [0.0, 0.0, 0.0],
+            frame_u: [1.0, 0.0, 0.0],
+            frame_v: [0.0, 1.0, 0.0],
+            rect_min: [0.2, 0.25],
+            rect_max: [0.8, 0.75],
+        };
+        let plan = direct_runner
+            .compile(&direct_mesh, &CutRectFace, &params)
+            .expect("cut_rect compile should succeed");
+        let direct_result = direct_runner
+            .apply_in_place(&mut direct_mesh, &CutRectFace, &plan)
+            .expect("cut_rect apply should succeed");
+
+        assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(
+            flow_result.selection,
+            Selection::from(direct_result.output.inner_faces)
         );
     }
 

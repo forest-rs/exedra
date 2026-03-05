@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`ExtrudeFaces`], [`InsetFaces`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -170,8 +170,9 @@ pub use delete::{
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
 };
 pub use face_edit::{
-    ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
-    InsetFacesOutput, InsetFacesParams, InsetFacesPlan,
+    CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, ExtrudeFaces,
+    ExtrudeFacesOutput, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesOutput,
+    InsetFacesParams, InsetFacesPlan,
 };
 pub use region::{
     EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection,
@@ -190,8 +191,8 @@ mod naming_tests {
     use alloc::collections::BTreeSet;
 
     use super::{
-        DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces, InsetFaces,
-        InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp,
+        CutRectFace, DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces,
+        InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp,
         SelectBoundaryEdgeLoop, TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
     };
 
@@ -201,6 +202,7 @@ mod naming_tests {
             DeleteEdges.name(),
             DeleteFaces.name(),
             DeleteVertices.name(),
+            CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
             InspectBounds.name(),
@@ -244,6 +246,7 @@ mod naming_tests {
             DeleteEdges.name(),
             DeleteFaces.name(),
             DeleteVertices.name(),
+            CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
             InspectBounds.name(),
@@ -261,6 +264,7 @@ mod naming_tests {
             "edit.delete.edges",
             "edit.delete.faces",
             "edit.delete.vertices",
+            "edit.face.cut.rect",
             "edit.face.extrude",
             "edit.face.inset",
             "inspect.bounds",

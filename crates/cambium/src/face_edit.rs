@@ -5,6 +5,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra::{AddFaceError, DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId};
@@ -12,7 +13,7 @@ use exedra::{AddFaceError, DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId
 use crate::math::FloatExt;
 use crate::op_common::op_error;
 use crate::plan::PlanHasher;
-use crate::selection::{FaceSet, canonicalize_face_set};
+use crate::selection::{EdgeSet, FaceSet, canonicalize_face_set};
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
     OpReport,
@@ -82,6 +83,57 @@ pub struct InsetFacesOutput {
     pub inner_faces: FaceSet,
     /// Created frame face IDs.
     pub frame_faces: FaceSet,
+}
+
+/// Parameters for [`CutRectFace`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct CutRectFaceParams {
+    /// Target source face to cut.
+    pub face: FaceId,
+    /// Rectangle frame origin in world space.
+    pub frame_origin: [f32; 3],
+    /// Rectangle frame U axis in world space.
+    pub frame_u: [f32; 3],
+    /// Rectangle frame V axis in world space.
+    pub frame_v: [f32; 3],
+    /// Rectangle minimum extents in local UV coordinates.
+    pub rect_min: [f32; 2],
+    /// Rectangle maximum extents in local UV coordinates.
+    pub rect_max: [f32; 2],
+}
+
+impl Default for CutRectFaceParams {
+    fn default() -> Self {
+        Self {
+            face: FaceId::OUTSIDE,
+            frame_origin: [0.0, 0.0, 0.0],
+            frame_u: [1.0, 0.0, 0.0],
+            frame_v: [0.0, 1.0, 0.0],
+            rect_min: [0.25, 0.25],
+            rect_max: [0.75, 0.75],
+        }
+    }
+}
+
+/// Deterministic compiled plan payload for [`CutRectFace`].
+#[derive(Clone, Debug)]
+pub struct CutRectFacePlan {
+    face: FaceId,
+    outer_vertices: [VertexId; 4],
+    inner_positions: [[f32; 3]; 4],
+    source_edge_attrs: [SourceEdgeAttrs; 4],
+    region: u32,
+}
+
+/// Typed output from [`CutRectFace`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CutRectFaceOutput {
+    /// Created inner cut face ID.
+    pub inner_faces: FaceSet,
+    /// Created rectangular frame face IDs.
+    pub frame_faces: FaceSet,
+    /// Created inner-loop boundary edge IDs (frame-side half-edges).
+    pub boundary_edges: EdgeSet,
 }
 
 /// Deterministic compiled plan payload for [`InsetFaces`].
@@ -600,6 +652,363 @@ impl EditOperator for InsetFaces {
     }
 }
 
+/// `edit.face.cut.rect` operator.
+///
+/// Cuts one rectangular inner face from a source quad face using an explicit
+/// world-space frame and rectangle extents.
+///
+/// v0.1 scope:
+/// - supports one live quad face,
+/// - requires rectangle corners to lie inside the source face,
+/// - propagates `face.region` and source outer-edge seam/sharpness to the
+///   corresponding frame outer edges.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct CutRectFace;
+
+impl EditOperator for CutRectFace {
+    type Params = CutRectFaceParams;
+    type Plan = CutRectFacePlan;
+    type Output = CutRectFaceOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.face.cut.rect"
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        if params.face == FaceId::OUTSIDE {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::PreconditionFailed,
+                DiagCode::PreconditionFailed,
+                "cut_rect requires one interior source face",
+            ));
+        }
+        let Some(face_edge) = mesh.face_edge(params.face) else {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::PreconditionFailed,
+                DiagCode::PreconditionFailed,
+                format!("cut_rect source face is stale: {}", params.face.index()),
+            ));
+        };
+        let corners = mesh.face_loop(params.face).collect::<Vec<_>>();
+        if corners.len() != 4 {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::PreconditionFailed,
+                DiagCode::PreconditionFailed,
+                "cut_rect currently supports quad faces only",
+            ));
+        }
+        let mut outer_vertices_vec = Vec::with_capacity(4);
+        let mut outer_positions = [[0.0_f32; 3]; 4];
+        let mut source_edge_attrs = [SourceEdgeAttrs::default(); 4];
+        for (index, corner) in corners.iter().copied().enumerate() {
+            let vertex = mesh.to_vertex(corner).ok_or_else(|| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InvalidMesh,
+                    DiagCode::InternalInvariantViolation,
+                    "cut_rect encountered corner with missing destination vertex",
+                )
+            })?;
+            let position = mesh.vertex_position(vertex).ok_or_else(|| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InvalidMesh,
+                    DiagCode::InternalInvariantViolation,
+                    "cut_rect encountered vertex with missing position",
+                )
+            })?;
+            outer_vertices_vec.push(vertex);
+            outer_positions[index] = *position;
+            source_edge_attrs[index] = SourceEdgeAttrs {
+                seam: mesh.edge_seam(corner),
+                sharpness: mesh.edge_sharpness(corner),
+            };
+        }
+        let outer_vertices: [VertexId; 4] = outer_vertices_vec
+            .try_into()
+            .expect("quad preflight must collect exactly four vertices");
+        let normal = normalized_face_normal(mesh, &outer_vertices).ok_or_else(|| {
+            op_error(
+                ctx,
+                OpErrorKind::NumericFailure,
+                DiagCode::NumericToleranceIssue,
+                "cut_rect requires non-degenerate source face",
+            )
+        })?;
+        let u_len = length3(params.frame_u);
+        let v_len = length3(params.frame_v);
+        if !(u_len.is_finite() && v_len.is_finite() && u_len > 0.0 && v_len > 0.0) {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::NumericFailure,
+                DiagCode::NumericToleranceIssue,
+                "cut_rect frame axes must be finite non-zero vectors",
+            ));
+        }
+        let u = scale3(params.frame_u, 1.0 / u_len);
+        let v = scale3(params.frame_v, 1.0 / v_len);
+        if dot3(normal, u).abs() > 1e-4 || dot3(normal, v).abs() > 1e-4 {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::PreconditionFailed,
+                DiagCode::PreconditionFailed,
+                "cut_rect frame axes must lie in source-face plane",
+            ));
+        }
+        if !params.rect_min[0].is_finite()
+            || !params.rect_min[1].is_finite()
+            || !params.rect_max[0].is_finite()
+            || !params.rect_max[1].is_finite()
+            || params.rect_min[0] >= params.rect_max[0]
+            || params.rect_min[1] >= params.rect_max[1]
+        {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::NumericFailure,
+                DiagCode::NumericToleranceIssue,
+                "cut_rect rect_min/rect_max must be finite and strictly ordered",
+            ));
+        }
+        let rect_local = [
+            [params.rect_min[0], params.rect_min[1]],
+            [params.rect_max[0], params.rect_min[1]],
+            [params.rect_max[0], params.rect_max[1]],
+            [params.rect_min[0], params.rect_max[1]],
+        ];
+        let mut inner_positions = [[0.0_f32; 3]; 4];
+        for (i, local) in rect_local.iter().copied().enumerate() {
+            let point = add3(
+                params.frame_origin,
+                add3(scale3(u, local[0]), scale3(v, local[1])),
+            );
+            if !point.iter().all(|value| value.is_finite()) {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::NumericFailure,
+                    DiagCode::NumericToleranceIssue,
+                    "cut_rect computed non-finite corner position",
+                ));
+            }
+            inner_positions[i] = point;
+        }
+
+        let basis_u =
+            normalize3(sub3(outer_positions[1], outer_positions[0])).ok_or_else(|| {
+                op_error(
+                    ctx,
+                    OpErrorKind::NumericFailure,
+                    DiagCode::NumericToleranceIssue,
+                    "cut_rect source face has degenerate edge",
+                )
+            })?;
+        let basis_v = cross3(normal, basis_u);
+        let outer_2d = outer_positions
+            .map(|p| project_to_basis(p, outer_positions[0], basis_u, basis_v))
+            .to_vec();
+        let inner_2d = inner_positions
+            .map(|p| project_to_basis(p, outer_positions[0], basis_u, basis_v))
+            .to_vec();
+        for point in &inner_2d {
+            if !point_in_convex_polygon_2d(*point, &outer_2d) {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::PreconditionFailed,
+                    DiagCode::PreconditionFailed,
+                    "cut_rect rectangle must lie fully inside source face",
+                ));
+            }
+        }
+
+        // Order rectangle corners to follow source face winding by nearest mapping.
+        let mut best_perm = [0_usize, 1, 2, 3];
+        let mut best_score = f32::INFINITY;
+        for perm in permutations4() {
+            let score = (0..4)
+                .map(|i| distance_sq3(outer_positions[i], inner_positions[perm[i]]))
+                .sum::<f32>();
+            if score < best_score {
+                best_score = score;
+                best_perm = perm;
+            }
+        }
+        let ordered_inner = [
+            inner_positions[best_perm[0]],
+            inner_positions[best_perm[1]],
+            inner_positions[best_perm[2]],
+            inner_positions[best_perm[3]],
+        ];
+
+        if mesh.face(face_edge) != Some(params.face) {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::InvalidMesh,
+                DiagCode::InternalInvariantViolation,
+                "cut_rect source face loop is unstable",
+            ));
+        }
+        let region = mesh
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .and_then(|layer| layer.get(params.face.as_id()).copied())
+            .unwrap_or(0);
+
+        Ok(CutRectFacePlan {
+            face: params.face,
+            outer_vertices,
+            inner_positions: ordered_inner,
+            source_edge_attrs,
+            region,
+        })
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let mut report = OpReport::new(
+            self.name(),
+            Artifacts::new(
+                ctx.policy.limits.max_artifact_items,
+                ctx.policy.limits.max_artifact_bytes,
+            ),
+        );
+
+        let mut inner_vertices = Vec::with_capacity(4);
+        for position in plan.inner_positions {
+            inner_vertices.push(txn.add_vertex(position));
+        }
+        let inner_vertices: [VertexId; 4] = inner_vertices
+            .try_into()
+            .expect("cut_rect should create exactly four inner vertices");
+
+        txn.delete_faces(&[plan.face], DeletePolicy::KeepIsolated)
+            .map_err(|err| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    format!("cut_rect delete failed unexpectedly: {err}"),
+                )
+            })?;
+
+        let mut frame_faces = Vec::with_capacity(4);
+        let mut frame_orientation = FrameOrientationState::default();
+        for i in 0..4 {
+            let current = plan.outer_vertices[i];
+            let next = plan.outer_vertices[(i + 1) % 4];
+            let current_inner = inner_vertices[i];
+            let next_inner = inner_vertices[(i + 1) % 4];
+            let frame_face = add_frame_face_with_orientation(
+                txn,
+                current,
+                next,
+                current_inner,
+                next_inner,
+                &mut frame_orientation,
+                ctx,
+                "cut_rect",
+            )?;
+            if !txn.set_face_region(frame_face, plan.region) {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    "failed to set cut_rect frame region",
+                ));
+            }
+            propagate_frame_edge_attrs(
+                txn,
+                frame_face,
+                current,
+                next,
+                current_inner,
+                next_inner,
+                plan.source_edge_attrs[i],
+                &ctx.policy.propagate,
+            );
+            frame_faces.push(frame_face);
+        }
+
+        let mut inner_loop = inner_vertices.to_vec();
+        if !frame_orientation.prefers_forward_outer_edge() {
+            inner_loop.reverse();
+        }
+        let inner_face = txn.add_face(&inner_loop).map_err(|err| {
+            op_error(
+                ctx,
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                format!("cut_rect inner face creation failed unexpectedly: {err}"),
+            )
+        })?;
+        if !txn.set_face_region(inner_face, plan.region) {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                "failed to set cut_rect inner face region",
+            ));
+        }
+
+        let mut boundary_edges = EdgeSet::with_capacity(4);
+        for inner_corner in txn.mesh().face_loop(inner_face) {
+            let Some(frame_side) = txn.mesh().twin(inner_corner) else {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::InvalidMesh,
+                    DiagCode::InternalInvariantViolation,
+                    "cut_rect produced inner edge without twin",
+                ));
+            };
+            boundary_edges.push(frame_side);
+        }
+        let _ = crate::selection::canonicalize_edge_set(&mut boundary_edges);
+
+        report.stats.counters.faces_processed = 1;
+        report.stats.elements_created.vertices = 4;
+        report.stats.elements_created.faces = 5;
+        report.stats.elements_deleted.faces = 1;
+        Ok((
+            report,
+            CutRectFaceOutput {
+                inner_faces: vec![inner_face],
+                frame_faces,
+                boundary_edges,
+            },
+        ))
+    }
+
+    fn plan_fingerprint(&self, plan: &Self::Plan) -> crate::PlanFingerprint {
+        let mut hasher = PlanHasher::new();
+        hasher.write_str(self.name());
+        hasher.write_u32(plan.face.index());
+        for vertex in plan.outer_vertices {
+            hasher.write_u32(vertex.index());
+        }
+        for position in plan.inner_positions {
+            hasher.write_f32_bits(position[0]);
+            hasher.write_f32_bits(position[1]);
+            hasher.write_f32_bits(position[2]);
+        }
+        for attrs in plan.source_edge_attrs {
+            hasher.write_u8(u8::from(attrs.seam.unwrap_or(false)));
+            hasher.write_f32_bits(attrs.sharpness.unwrap_or(0.0));
+        }
+        hasher.write_u32(plan.region);
+        hasher.finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct FacePlan {
     face: FaceId,
@@ -776,6 +1185,107 @@ fn boundary_edges_are_open_surface(
         }
     }
     true
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn scale3(a: [f32; 3], s: f32) -> [f32; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn length3(a: [f32; 3]) -> f32 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt_ext()
+}
+
+fn normalize3(a: [f32; 3]) -> Option<[f32; 3]> {
+    let len = length3(a);
+    (len > 0.0).then(|| scale3(a, 1.0 / len))
+}
+
+fn distance_sq3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let d = sub3(a, b);
+    dot3(d, d)
+}
+
+fn project_to_basis(
+    point: [f32; 3],
+    origin: [f32; 3],
+    basis_u: [f32; 3],
+    basis_v: [f32; 3],
+) -> [f32; 2] {
+    let delta = sub3(point, origin);
+    [dot3(delta, basis_u), dot3(delta, basis_v)]
+}
+
+fn point_in_convex_polygon_2d(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let mut has_pos = false;
+    let mut has_neg = false;
+    for i in 0..polygon.len() {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % polygon.len()];
+        let edge = [b[0] - a[0], b[1] - a[1]];
+        let rel = [point[0] - a[0], point[1] - a[1]];
+        let cross = edge[0] * rel[1] - edge[1] * rel[0];
+        if cross > 1e-6 {
+            has_pos = true;
+        } else if cross < -1e-6 {
+            has_neg = true;
+        }
+        if has_pos && has_neg {
+            return false;
+        }
+    }
+    true
+}
+
+fn permutations4() -> [[usize; 4]; 24] {
+    [
+        [0, 1, 2, 3],
+        [0, 1, 3, 2],
+        [0, 2, 1, 3],
+        [0, 2, 3, 1],
+        [0, 3, 1, 2],
+        [0, 3, 2, 1],
+        [1, 0, 2, 3],
+        [1, 0, 3, 2],
+        [1, 2, 0, 3],
+        [1, 2, 3, 0],
+        [1, 3, 0, 2],
+        [1, 3, 2, 0],
+        [2, 0, 1, 3],
+        [2, 0, 3, 1],
+        [2, 1, 0, 3],
+        [2, 1, 3, 0],
+        [2, 3, 0, 1],
+        [2, 3, 1, 0],
+        [3, 0, 1, 2],
+        [3, 0, 2, 1],
+        [3, 1, 0, 2],
+        [3, 1, 2, 0],
+        [3, 2, 0, 1],
+        [3, 2, 1, 0],
+    ]
 }
 
 fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
@@ -971,10 +1481,13 @@ mod tests {
 
     use exedra::{BuildParams, EdgeAttrPropagation, Mesh, PropagatePolicy};
 
-    use super::{ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams};
+    use super::{
+        CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
+        InsetFacesParams,
+    };
     use crate::{
-        OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature,
-        test_support::commit,
+        DeleteFaces, DeleteFacesParams, OpErrorKind, OperatorRunner, TagFaceRegion,
+        TagFaceRegionParams, mesh_signature, test_support::commit,
     };
 
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
@@ -1464,5 +1977,100 @@ mod tests {
         }
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn cut_rect_creates_inner_face_and_frame_faces() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &CutRectFace,
+            &CutRectFaceParams {
+                face,
+                frame_origin: [0.0, 0.0, 0.0],
+                frame_u: [1.0, 0.0, 0.0],
+                frame_v: [0.0, 1.0, 0.0],
+                rect_min: [0.25, 0.2],
+                rect_max: [0.75, 0.8],
+            },
+        )
+        .expect("cut_rect should succeed");
+
+        assert_eq!(result.output.inner_faces.len(), 1);
+        assert_eq!(result.output.frame_faces.len(), 4);
+        assert_eq!(result.output.boundary_edges.len(), 4);
+        assert_eq!(mesh.faces().count(), 5);
+        assert_eq!(mesh.vertices().count(), 8);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn cut_rect_inner_face_can_be_deleted_to_make_opening() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let cut = commit(
+            &mut runner,
+            &mut mesh,
+            &CutRectFace,
+            &CutRectFaceParams {
+                face,
+                frame_origin: [0.0, 0.0, 0.0],
+                frame_u: [1.0, 0.0, 0.0],
+                frame_v: [0.0, 1.0, 0.0],
+                rect_min: [0.2, 0.2],
+                rect_max: [0.8, 0.8],
+            },
+        )
+        .expect("cut_rect should succeed");
+        let inner = cut.output.inner_faces[0];
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteFaces,
+            &DeleteFacesParams {
+                faces: vec![inner],
+                policy: exedra::DeletePolicy::KeepIsolated,
+            },
+        )
+        .expect("delete inner cut face should succeed");
+
+        assert_eq!(mesh.faces().count(), 4);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn cut_rect_rejects_non_quad_face() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.5, 0.8, 0.0],
+                [0.5, 1.5, 0.0],
+                [-0.3, 0.8, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4]],
+        )
+        .expect("pentagon build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let mut runner = OperatorRunner::new();
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &CutRectFace,
+            &CutRectFaceParams {
+                face,
+                frame_origin: [0.0, 0.0, 0.0],
+                frame_u: [1.0, 0.0, 0.0],
+                frame_v: [0.0, 1.0, 0.0],
+                rect_min: [0.2, 0.2],
+                rect_max: [0.8, 0.8],
+            },
+        )
+        .expect_err("cut_rect should reject non-quad source face");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 }
