@@ -1,6 +1,6 @@
 ---
 id: cam-cuo5
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-05T09:59:41Z
@@ -19,8 +19,7 @@ Wrap select_boundary_edge_loop helper in an EditOperator with params { seed_edge
 
 ## Acceptance Criteria
 
-- select.edge_loop.boundary operator exists with stable name()
+- select.edgeloop.boundary operator exists with stable name()
 - compile/apply path returns canonical EdgeSet output
 - diagnostics for stale/interior seed edge
 - tests cover success and rejection
-

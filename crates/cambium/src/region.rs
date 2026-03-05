@@ -11,8 +11,8 @@ use exedra::{FaceId, HalfEdgeId};
 use crate::op_common::op_error;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
 use crate::{
-    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
-    OpReport, SmallCounters,
+    Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError,
+    OpErrorKind, OpReport, SmallCounters,
 };
 
 /// Default untagged face region.
@@ -91,6 +91,70 @@ impl EditOperator for TagFaceRegion {
         }
 
         Ok((report, tagged))
+    }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
+    }
+}
+
+/// Parameters for [`SelectBoundaryEdgeLoop`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectBoundaryEdgeLoopParams {
+    /// Boundary seed edge used to trace one full loop.
+    pub seed_edge: HalfEdgeId,
+}
+
+/// Deterministic boundary-loop selection operator.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SelectBoundaryEdgeLoop;
+
+impl EditOperator for SelectBoundaryEdgeLoop {
+    type Params = SelectBoundaryEdgeLoopParams;
+    type Plan = SelectBoundaryEdgeLoopParams;
+    type Output = EdgeSet;
+
+    fn name(&self) -> &'static str {
+        "select.edgeloop.boundary"
+    }
+
+    fn apply(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let selection = select_boundary_edge_loop(txn.mesh(), params.seed_edge)?;
+        let mut report = OpReport::new(
+            self.name(),
+            Artifacts::new(
+                ctx.policy.limits.max_artifact_items,
+                ctx.policy.limits.max_artifact_bytes,
+            ),
+        );
+        report.stats.counters.selections_canonicalized =
+            selection.counters.selections_canonicalized;
+        report.stats.elements_touched.half_edges =
+            u64::try_from(selection.edges.len()).expect("edge count should fit u64");
+        let _ = report.artifacts.push(Artifact::EdgeSet {
+            name: self.name().into(),
+            half_edges: selection.edges.clone(),
+        });
+        Ok((report, selection.edges))
     }
 
     fn compile(
@@ -371,9 +435,9 @@ mod tests {
     use exedra::{BuildParams, FaceId, HalfEdgeId, Id, Mesh, MeshBuilder};
 
     use super::{
-        EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, TagFaceRegion,
-        TagFaceRegionParams, flood_fill_faces_by_region, select_boundary_edge_loop,
-        select_faces_by_region,
+        EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, SelectBoundaryEdgeLoop,
+        SelectBoundaryEdgeLoopParams, TagFaceRegion, TagFaceRegionParams,
+        flood_fill_faces_by_region, select_boundary_edge_loop, select_faces_by_region,
     };
     use crate::{
         EdgeSet, EditOperator, OpErrorKind, OperatorRunner, SmallCounters, canonicalize_edge_set,
@@ -640,6 +704,61 @@ mod tests {
         let (mesh, _) = one_quad_mesh();
         let error = flood_fill_faces_by_region(&mesh, FaceId::OUTSIDE)
             .expect_err("outside seed should fail");
+        assert_eq!(error.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn select_boundary_edge_loop_operator_returns_edge_set() {
+        let (mut mesh, face) = one_quad_mesh();
+        let seed = mesh
+            .face_loop(face)
+            .next()
+            .expect("quad should provide one boundary edge");
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &SelectBoundaryEdgeLoop,
+            &SelectBoundaryEdgeLoopParams { seed_edge: seed },
+        )
+        .expect("operator should succeed");
+        assert_eq!(result.report.name, "select.edgeloop.boundary");
+        assert!(
+            result
+                .report
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.name() == "select.edgeloop.boundary")
+        );
+        let expected = boundary_edges(&mesh);
+        assert_eq!(result.output, expected);
+    }
+
+    #[test]
+    fn select_boundary_edge_loop_operator_rejects_interior_seed() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 4, 3], &[1, 2, 5, 4]],
+        )
+        .expect("mesh build should succeed");
+        let interior = first_interior_edge(&mesh);
+        let mut runner = OperatorRunner::new();
+        let error = commit(
+            &mut runner,
+            &mut mesh,
+            &SelectBoundaryEdgeLoop,
+            &SelectBoundaryEdgeLoopParams {
+                seed_edge: interior,
+            },
+        )
+        .expect_err("interior edge should fail");
         assert_eq!(error.kind, OpErrorKind::PreconditionFailed);
     }
 }

@@ -39,7 +39,7 @@
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
 //! - Operator families:
 //!   - `inspect.*`: [`InspectBounds`], [`ValidateMesh`]
-//!   - `select.*`: [`select_faces_by_region`], [`select_boundary_edge_loop`], [`flood_fill_faces_by_region`]
+//!   - `select.*`: [`SelectBoundaryEdgeLoop`], [`select_faces_by_region`], [`select_boundary_edge_loop`], [`flood_fill_faces_by_region`]
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
@@ -170,9 +170,9 @@ pub use face_edit::{
     InsetFacesOutput, InsetFacesParams, InsetFacesPlan,
 };
 pub use region::{
-    EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection, TagFaceRegion,
-    TagFaceRegionParams, flood_fill_faces_by_region, select_boundary_edge_loop,
-    select_faces_by_region,
+    EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection,
+    SelectBoundaryEdgeLoop, SelectBoundaryEdgeLoopParams, TagFaceRegion, TagFaceRegionParams,
+    flood_fill_faces_by_region, select_boundary_edge_loop, select_faces_by_region,
 };
 pub use seam::{MarkEdgeSeam, MarkEdgeSeamParams};
 pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};
@@ -187,8 +187,8 @@ mod naming_tests {
 
     use super::{
         DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces, InsetFaces,
-        InspectBounds, MarkEdgeSeam, MarkEdgeSharp, TagFaceRegion, UvBox, UvCylinder, UvPlanar,
-        ValidateMesh,
+        InspectBounds, MarkEdgeSeam, MarkEdgeSharp, SelectBoundaryEdgeLoop, TagFaceRegion, UvBox,
+        UvCylinder, UvPlanar, ValidateMesh,
     };
 
     #[test]
@@ -204,6 +204,7 @@ mod naming_tests {
             MarkEdgeSeam.name(),
             MarkEdgeSharp.name(),
             TagFaceRegion.name(),
+            SelectBoundaryEdgeLoop.name(),
             UvPlanar.name(),
             UvBox.name(),
             UvCylinder.name(),
@@ -218,7 +219,10 @@ mod naming_tests {
                 .next()
                 .expect("operator name must be non-empty");
             assert!(
-                matches!(prefix, "edit" | "inspect" | "mark" | "tag" | "uv"),
+                matches!(
+                    prefix,
+                    "edit" | "inspect" | "mark" | "select" | "tag" | "uv"
+                ),
                 "unexpected operator family prefix in `{name}`"
             );
             assert!(
@@ -242,6 +246,7 @@ mod naming_tests {
             MarkEdgeSeam.name(),
             MarkEdgeSharp.name(),
             TagFaceRegion.name(),
+            SelectBoundaryEdgeLoop.name(),
             UvPlanar.name(),
             UvBox.name(),
             UvCylinder.name(),
@@ -257,6 +262,7 @@ mod naming_tests {
             "mark.edge.seam",
             "mark.edge.sharp",
             "tag.face.region",
+            "select.edgeloop.boundary",
             "uv.planar",
             "uv.box",
             "uv.cylinder",

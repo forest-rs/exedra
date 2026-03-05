@@ -28,7 +28,7 @@
 //! | Stable Name | API | Params | Output | Reporting Notes |
 //! | --- | --- | --- | --- | --- |
 //! | `select.faces.by_region` | [`select_faces_by_region`](crate::select_faces_by_region) | `(&Mesh, region_id)` | [`RegionSelection`](crate::RegionSelection) | Query helper (not an `EditOperator`), deterministic selection/counters. |
-//! | `select.edge_loop.boundary` | [`select_boundary_edge_loop`](crate::select_boundary_edge_loop) | `(&Mesh, seed_edge)` | [`EdgeLoopSelection`](crate::EdgeLoopSelection) | Deterministic boundary-loop query (v0.1 scope). |
+//! | `select.edgeloop.boundary` | [`SelectBoundaryEdgeLoop`](crate::SelectBoundaryEdgeLoop) | [`SelectBoundaryEdgeLoopParams`](crate::SelectBoundaryEdgeLoopParams) | [`EdgeSet`](crate::EdgeSet) | Deterministic boundary-loop query wrapped as `EditOperator`. |
 //! | `select.faces.flood.region` | [`flood_fill_faces_by_region`](crate::flood_fill_faces_by_region) | `(&Mesh, seed_face)` | [`RegionFloodSelection`](crate::RegionFloodSelection) | Connected component query constrained to the seed face's region tag. |
 //!
 //! ## `tag.*`

@@ -703,7 +703,7 @@ fn mesh_edit_fingerprint(
                     seed_edge,
                     selection,
                 } => {
-                    hasher.write_str("select.edge_loop.boundary");
+                    hasher.write_str("select.edgeloop.boundary");
                     hasher.write_u32(seed_edge.index());
                     write_selection(&mut hasher, selection);
                 }
