@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use exedra::{AddFaceError, DeletePolicy, FaceId, VertexId};
+use exedra::{AddFaceError, DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId};
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
@@ -83,6 +83,12 @@ impl Default for InsetFacesParams {
 }
 
 /// `edit.face.extrude` operator.
+///
+/// v0.1 propagation behavior:
+/// - `face.region` is copied from source face to generated walls/cap,
+/// - generated corner UVs are copied from source per-vertex UVs when authored,
+/// - generated edge seam/sharpness follow [`OpContext::policy`](crate::OpContext::policy)
+///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ExtrudeFaces;
 
@@ -176,6 +182,29 @@ impl EditOperator for ExtrudeFaces {
                         "failed to set extrude wall region",
                     ));
                 }
+                propagate_frame_edge_attrs(
+                    txn,
+                    wall,
+                    current,
+                    next,
+                    current_cap,
+                    next_cap,
+                    plan.edge_attrs[i],
+                    &ctx.policy.propagate,
+                );
+                let mut uv_map = Vec::with_capacity(plan.vertices.len() * 2);
+                for (vertex, uv) in plan
+                    .vertices
+                    .iter()
+                    .copied()
+                    .zip(plan.vertex_uvs.iter().copied())
+                {
+                    uv_map.push((vertex, uv));
+                }
+                for (vertex, uv) in cap.iter().copied().zip(plan.vertex_uvs.iter().copied()) {
+                    uv_map.push((vertex, uv));
+                }
+                propagate_face_corner_uvs(txn, wall, &uv_map);
                 wall_faces.push(wall);
             }
 
@@ -199,6 +228,23 @@ impl EditOperator for ExtrudeFaces {
                     "failed to set extrude cap region",
                 ));
             }
+            for i in 0..cap.len() {
+                let current_cap = cap[i];
+                let next_cap = cap[(i + 1) % cap.len()];
+                propagate_edge_attrs_for_vertices(
+                    txn,
+                    top,
+                    current_cap,
+                    next_cap,
+                    plan.edge_attrs[i],
+                    &ctx.policy.propagate,
+                );
+            }
+            let mut cap_uv_map = Vec::with_capacity(cap.len());
+            for (vertex, uv) in cap.iter().copied().zip(plan.vertex_uvs.iter().copied()) {
+                cap_uv_map.push((vertex, uv));
+            }
+            propagate_face_corner_uvs(txn, top, &cap_uv_map);
             cap_faces.push(top);
 
             report.stats.counters.faces_processed =
@@ -244,6 +290,12 @@ impl EditOperator for ExtrudeFaces {
 }
 
 /// `edit.face.inset` operator.
+///
+/// v0.1 propagation behavior:
+/// - `face.region` is copied from source face to generated frame/inner faces,
+/// - generated corner UVs are copied from source per-vertex UVs when authored,
+/// - generated edge seam/sharpness follow [`OpContext::policy`](crate::OpContext::policy)
+///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct InsetFaces;
 
@@ -353,6 +405,33 @@ impl EditOperator for InsetFaces {
                         "failed to set inset frame face region",
                     ));
                 }
+                propagate_frame_edge_attrs(
+                    txn,
+                    frame,
+                    current,
+                    next,
+                    current_inset,
+                    next_inset,
+                    face_plan.edge_attrs[i],
+                    &ctx.policy.propagate,
+                );
+                let mut uv_map = Vec::with_capacity(face_plan.vertices.len() * 2);
+                for (vertex, uv) in face_plan
+                    .vertices
+                    .iter()
+                    .copied()
+                    .zip(face_plan.vertex_uvs.iter().copied())
+                {
+                    uv_map.push((vertex, uv));
+                }
+                for (vertex, uv) in inset_loop
+                    .iter()
+                    .copied()
+                    .zip(face_plan.vertex_uvs.iter().copied())
+                {
+                    uv_map.push((vertex, uv));
+                }
+                propagate_face_corner_uvs(txn, frame, &uv_map);
                 frame_faces.push(frame);
             }
 
@@ -379,6 +458,27 @@ impl EditOperator for InsetFaces {
                     "failed to set inset inner face region",
                 ));
             }
+            for i in 0..inset_loop.len() {
+                let current_inset = inset_loop[i];
+                let next_inset = inset_loop[(i + 1) % inset_loop.len()];
+                propagate_edge_attrs_for_vertices(
+                    txn,
+                    inner,
+                    current_inset,
+                    next_inset,
+                    face_plan.edge_attrs[i],
+                    &ctx.policy.propagate,
+                );
+            }
+            let mut inset_uv_map = Vec::with_capacity(inset_loop.len());
+            for (vertex, uv) in inset_loop
+                .iter()
+                .copied()
+                .zip(face_plan.vertex_uvs.iter().copied())
+            {
+                inset_uv_map.push((vertex, uv));
+            }
+            propagate_face_corner_uvs(txn, inner, &inset_uv_map);
             inner_faces.push(inner);
 
             report.stats.counters.faces_processed =
@@ -417,8 +517,16 @@ impl EditOperator for InsetFaces {
 struct FacePlan {
     face: FaceId,
     vertices: Vec<VertexId>,
+    vertex_uvs: Vec<Option<[f32; 2]>>,
+    edge_attrs: Vec<SourceEdgeAttrs>,
     normal: [f32; 3],
     region: u32,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+struct SourceEdgeAttrs {
+    seam: Option<bool>,
+    sharpness: Option<f32>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -452,6 +560,7 @@ fn preflight_face_plans(
             ));
         }
         let mut vertices = Vec::<VertexId>::new();
+        let mut corners = Vec::<HalfEdgeId>::new();
         for corner in mesh.face_loop(face) {
             let vertex = mesh.to_vertex(corner).ok_or_else(|| {
                 op_error(
@@ -462,6 +571,7 @@ fn preflight_face_plans(
                 )
             })?;
             vertices.push(vertex);
+            corners.push(corner);
         }
         if vertices.len() < 3 {
             return Err(op_error(
@@ -488,9 +598,27 @@ fn preflight_face_plans(
             .dense(exedra::attr::FACE_REGION)
             .and_then(|layer| layer.get(face.as_id()).copied())
             .unwrap_or(0);
+        let mut vertex_uvs = Vec::with_capacity(corners.len());
+        for &corner in &corners {
+            let uv = mesh
+                .attrs()
+                .sparse(exedra::attr::CORNER_UV)
+                .and_then(|layer| layer.get(corner.as_id()).copied());
+            vertex_uvs.push(uv);
+        }
+        let mut edge_attrs = Vec::with_capacity(vertices.len());
+        for i in 0..vertices.len() {
+            let edge_corner = corners[(i + 1) % corners.len()];
+            edge_attrs.push(SourceEdgeAttrs {
+                seam: mesh.edge_seam(edge_corner),
+                sharpness: mesh.edge_sharpness(edge_corner),
+            });
+        }
         plans.push(FacePlan {
             face,
             vertices,
+            vertex_uvs,
+            edge_attrs,
             normal,
             region,
         });
@@ -586,12 +714,110 @@ fn add_frame_face(
     }
 }
 
+fn propagate_face_corner_uvs(
+    txn: &mut exedra::EditSession<'_>,
+    face: FaceId,
+    uv_map: &[(VertexId, Option<[f32; 2]>)],
+) {
+    let corners = txn.mesh().face_loop(face).collect::<Vec<_>>();
+    for corner in corners {
+        let Some(to_vertex) = txn.mesh().to_vertex(corner) else {
+            continue;
+        };
+        let uv = uv_map
+            .iter()
+            .find_map(|(vertex, uv)| (*vertex == to_vertex).then_some(*uv))
+            .flatten();
+        if let Some(uv) = uv {
+            let _ = txn.set_corner_uv(corner, uv);
+        }
+    }
+}
+
+fn propagate_edge_attrs_for_vertices(
+    txn: &mut exedra::EditSession<'_>,
+    face: FaceId,
+    a: VertexId,
+    b: VertexId,
+    source: SourceEdgeAttrs,
+    policy: &exedra::PropagatePolicy,
+) {
+    let Some(corner) = find_face_edge_for_vertices(txn.mesh(), face, a, b) else {
+        return;
+    };
+    match policy.edge_attr {
+        EdgeAttrPropagation::Clear => {
+            let _ = txn.set_edge_seam(corner, false);
+            let _ = txn.set_edge_sharpness(corner, 0.0);
+        }
+        EdgeAttrPropagation::Inherit => {
+            let seam = source.seam.unwrap_or(false);
+            let sharpness = source.sharpness.unwrap_or(0.0);
+            let _ = txn.set_edge_seam(corner, seam);
+            let _ = txn.set_edge_sharpness(corner, sharpness);
+        }
+        EdgeAttrPropagation::DecayOnSplit => {
+            let seam = source.seam.unwrap_or(false);
+            let sharpness = source.sharpness.map_or(0.0, |value| (value - 1.0).max(0.0));
+            let _ = txn.set_edge_seam(corner, seam);
+            let _ = txn.set_edge_sharpness(corner, sharpness);
+        }
+    }
+}
+
+fn propagate_frame_edge_attrs(
+    txn: &mut exedra::EditSession<'_>,
+    face: FaceId,
+    current: VertexId,
+    next: VertexId,
+    current_inner: VertexId,
+    next_inner: VertexId,
+    source: SourceEdgeAttrs,
+    policy: &exedra::PropagatePolicy,
+) {
+    propagate_edge_attrs_for_vertices(txn, face, current, next, source, policy);
+    propagate_edge_attrs_for_vertices(txn, face, current_inner, next_inner, source, policy);
+    propagate_edge_attrs_for_vertices(
+        txn,
+        face,
+        current,
+        current_inner,
+        SourceEdgeAttrs::default(),
+        policy,
+    );
+    propagate_edge_attrs_for_vertices(
+        txn,
+        face,
+        next,
+        next_inner,
+        SourceEdgeAttrs::default(),
+        policy,
+    );
+}
+
+fn find_face_edge_for_vertices(
+    mesh: &exedra::Mesh,
+    face: FaceId,
+    a: VertexId,
+    b: VertexId,
+) -> Option<HalfEdgeId> {
+    mesh.face_loop(face).find(|&corner| {
+        let Some(from) = mesh.from_vertex(corner) else {
+            return false;
+        };
+        let Some(to) = mesh.to_vertex(corner) else {
+            return false;
+        };
+        (from == a && to == b) || (from == b && to == a)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::{BuildParams, Mesh};
+    use exedra::{BuildParams, EdgeAttrPropagation, Mesh, PropagatePolicy};
 
     use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
     use crate::{
@@ -917,6 +1143,92 @@ mod tests {
             },
         )
         .expect("extrude on closed box should succeed");
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn extrude_propagates_corner_uv_and_edge_attrs() {
+        let (mut mesh, face) = quad_mesh();
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            for (index, &corner) in corners.iter().enumerate() {
+                assert!(txn.set_corner_uv(corner, [index as f32, 0.0]));
+                assert!(txn.set_edge_seam(corner, true));
+                assert!(txn.set_edge_sharpness(corner, 2.5));
+            }
+            let _ = txn.commit();
+        }
+
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                distance: 0.5,
+            },
+        )
+        .expect("extrude should succeed");
+        let cap = result.output.cap_faces[0];
+
+        let uv_layer = mesh
+            .attrs()
+            .sparse(exedra::attr::CORNER_UV)
+            .expect("corner uv layer should exist");
+        for corner in mesh.face_loop(cap) {
+            assert!(uv_layer.get(corner.as_id()).is_some());
+            assert_eq!(mesh.edge_seam(corner), Some(true));
+            assert_eq!(mesh.edge_sharpness(corner), Some(2.5));
+        }
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn inset_clear_policy_resets_generated_edge_tags() {
+        let (mut mesh, face) = quad_mesh();
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        {
+            let mut txn = mesh.begin();
+            for &corner in &corners {
+                assert!(txn.set_edge_seam(corner, true));
+                assert!(txn.set_edge_sharpness(corner, 3.0));
+            }
+            let _ = txn.commit();
+        }
+
+        let mut runner = OperatorRunner::new();
+        runner.ctx.policy.propagate = PropagatePolicy {
+            edge_attr: EdgeAttrPropagation::Clear,
+            ..PropagatePolicy::default()
+        };
+
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![face],
+                factor: 0.3,
+            },
+        )
+        .expect("inset should succeed");
+
+        for generated_face in result
+            .output
+            .inner_faces
+            .iter()
+            .copied()
+            .chain(result.output.frame_faces.iter().copied())
+        {
+            for corner in mesh.face_loop(generated_face) {
+                assert_eq!(mesh.edge_seam(corner), Some(false));
+                assert_eq!(mesh.edge_sharpness(corner), Some(0.0));
+            }
+        }
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }

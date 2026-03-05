@@ -1,7 +1,7 @@
 ---
 id: cam-h7yk
 title: Face-edit attribute propagation parity
-status: open
+status: closed
 deps: [exe-cz8g]
 links: []
 created: 2026-03-04T12:54:57Z
