@@ -26,6 +26,9 @@ use crate::{
 
 #[derive(Clone, Debug)]
 enum MeshEditStep {
+    SelectFacesByRegion { region_id: u32 },
+    FloodFacesByRegion { seed_face: FaceId },
+    SelectBoundaryEdgeLoop { seed_edge: HalfEdgeId },
     Extrude { distance: f32 },
     Inset { factor: f32 },
     Tag { region_id: u32 },
@@ -52,6 +55,8 @@ pub struct MeshEditPlan {
 /// One compiled workflow step inside [`MeshEditPlan`].
 #[derive(Clone, Debug)]
 pub enum MeshEditStepPlan {
+    /// Compiled selection query step.
+    Select(SelectionStepPlan),
     /// Compiled `edit.face.extrude` plan.
     Extrude(EditPlan<ExtrudeFacesParams>),
     /// Compiled `edit.face.inset` plan.
@@ -68,6 +73,32 @@ pub enum MeshEditStepPlan {
     DeleteEdges(EditPlan<DeleteEdgesParams>),
     /// Compiled `edit.delete.vertices` plan.
     DeleteVertices(EditPlan<DeleteVerticesParams>),
+}
+
+/// One compiled selection-query step inside [`MeshEditPlan`].
+#[derive(Clone, Debug)]
+pub enum SelectionStepPlan {
+    /// Compiled `select.faces.by_region` transition.
+    FacesByRegion {
+        /// Queried region ID.
+        region_id: u32,
+        /// Resolved selection after this step.
+        selection: Selection,
+    },
+    /// Compiled region flood-fill transition.
+    FloodFacesByRegion {
+        /// Seed face used for flood fill.
+        seed_face: FaceId,
+        /// Resolved selection after this step.
+        selection: Selection,
+    },
+    /// Compiled boundary-loop transition.
+    BoundaryEdgeLoop {
+        /// Seed edge used for boundary-loop traversal.
+        seed_edge: HalfEdgeId,
+        /// Resolved selection after this step.
+        selection: Selection,
+    },
 }
 
 /// Result from [`MeshEdit::apply`] / [`MeshEdit::apply_with_plan`].
@@ -131,17 +162,15 @@ pub struct MeshEditPreview {
 /// ```
 ///
 /// Selection handoff rules:
+/// - `select_faces_by_region` / `flood_faces_by_region` select faces,
+/// - `select_boundary_edge_loop` selects edges,
 /// - `extrude` selects `cap_faces`,
 /// - `inset` selects `inner_faces`,
 /// - `tag` keeps selected faces,
 /// - `mark_seam` / `mark_sharp` keep selected edges,
 /// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection.
 ///
-/// Query helpers:
-/// - [`MeshEdit::select_faces_by_region`] seeds faces from region tags.
-/// - [`MeshEdit::flood_faces_by_region`] seeds connected region flood results.
-/// - [`MeshEdit::query_boundary_edge_loop`] exposes an edge-domain selection for
-///   composition outside this face-only fluent chain.
+/// Query helpers are compiled as explicit selection-transition steps.
 #[derive(Clone, Debug)]
 pub struct MeshEdit {
     selection: Selection,
@@ -180,29 +209,28 @@ impl MeshEdit {
         self
     }
 
-    /// Replaces the fluent face selection with all faces tagged `region_id`.
-    pub fn select_faces_by_region(self, mesh: &Mesh, region_id: u32) -> Result<Self, OpError> {
-        let selected = select_faces_by_region(mesh, region_id)?;
-        Ok(self.select_faces(selected.faces))
+    /// Adds one query step that replaces selection with faces tagged `region_id`.
+    #[must_use]
+    pub fn select_faces_by_region(mut self, region_id: u32) -> Self {
+        self.steps
+            .push(MeshEditStep::SelectFacesByRegion { region_id });
+        self
     }
 
-    /// Replaces the fluent face selection with a connected region flood-fill result.
-    pub fn flood_faces_by_region(self, mesh: &Mesh, seed_face: FaceId) -> Result<Self, OpError> {
-        let selected = flood_fill_faces_by_region(mesh, seed_face)?;
-        Ok(self.select_faces(selected.faces))
+    /// Adds one query step that replaces selection with region flood-fill results.
+    #[must_use]
+    pub fn flood_faces_by_region(mut self, seed_face: FaceId) -> Self {
+        self.steps
+            .push(MeshEditStep::FloodFacesByRegion { seed_face });
+        self
     }
 
-    /// Returns an edge-domain boundary-loop selection for `seed_edge`.
-    ///
-    /// This method is intentionally query-only: `MeshEdit` step chaining is
-    /// currently face-domain, so edge selections should be handed off through
-    /// domain-generic composition APIs.
-    pub fn query_boundary_edge_loop(
-        mesh: &Mesh,
-        seed_edge: HalfEdgeId,
-    ) -> Result<Selection, OpError> {
-        let selected = select_boundary_edge_loop(mesh, seed_edge)?;
-        Ok(Selection::from(selected.edges))
+    /// Adds one query step that replaces selection with a boundary edge loop.
+    #[must_use]
+    pub fn select_boundary_edge_loop(mut self, seed_edge: HalfEdgeId) -> Self {
+        self.steps
+            .push(MeshEditStep::SelectBoundaryEdgeLoop { seed_edge });
+        self
     }
 
     /// Adds one extrude step using the current selected faces.
@@ -269,6 +297,36 @@ impl MeshEdit {
 
         for step in &self.steps {
             match *step {
+                MeshEditStep::SelectFacesByRegion { region_id } => {
+                    let selected = select_faces_by_region(&working, region_id)?;
+                    current_selection = Selection::from(selected.faces);
+                    compiled_steps.push(MeshEditStepPlan::Select(
+                        SelectionStepPlan::FacesByRegion {
+                            region_id,
+                            selection: current_selection.clone(),
+                        },
+                    ));
+                }
+                MeshEditStep::FloodFacesByRegion { seed_face } => {
+                    let selected = flood_fill_faces_by_region(&working, seed_face)?;
+                    current_selection = Selection::from(selected.faces);
+                    compiled_steps.push(MeshEditStepPlan::Select(
+                        SelectionStepPlan::FloodFacesByRegion {
+                            seed_face,
+                            selection: current_selection.clone(),
+                        },
+                    ));
+                }
+                MeshEditStep::SelectBoundaryEdgeLoop { seed_edge } => {
+                    let selected = select_boundary_edge_loop(&working, seed_edge)?;
+                    current_selection = Selection::from(selected.edges);
+                    compiled_steps.push(MeshEditStepPlan::Select(
+                        SelectionStepPlan::BoundaryEdgeLoop {
+                            seed_edge,
+                            selection: current_selection.clone(),
+                        },
+                    ));
+                }
                 MeshEditStep::Extrude { distance } => {
                     let current_faces =
                         require_face_selection(&current_selection, "edit.face.extrude")?;
@@ -412,6 +470,15 @@ impl MeshEdit {
 
         for step in &plan.steps {
             match step {
+                MeshEditStepPlan::Select(selection_step) => {
+                    current_selection = match selection_step {
+                        SelectionStepPlan::FacesByRegion { selection, .. }
+                        | SelectionStepPlan::FloodFacesByRegion { selection, .. }
+                        | SelectionStepPlan::BoundaryEdgeLoop { selection, .. } => {
+                            selection.clone()
+                        }
+                    };
+                }
                 MeshEditStepPlan::Extrude(compiled) => {
                     let op = ExtrudeFaces;
                     let PreviewResult {
@@ -534,6 +601,15 @@ impl MeshEdit {
 
         for step in &plan.steps {
             match step {
+                MeshEditStepPlan::Select(selection_step) => {
+                    current_selection = match selection_step {
+                        SelectionStepPlan::FacesByRegion { selection, .. }
+                        | SelectionStepPlan::FloodFacesByRegion { selection, .. }
+                        | SelectionStepPlan::BoundaryEdgeLoop { selection, .. } => {
+                            selection.clone()
+                        }
+                    };
+                }
                 MeshEditStepPlan::Extrude(compiled) => {
                     let op = ExtrudeFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -606,6 +682,32 @@ fn mesh_edit_fingerprint(
     hasher.write_len(steps.len());
     for step in steps {
         match step {
+            MeshEditStepPlan::Select(step) => match step {
+                SelectionStepPlan::FacesByRegion {
+                    region_id,
+                    selection,
+                } => {
+                    hasher.write_str("select.faces.by_region");
+                    hasher.write_u32(*region_id);
+                    write_selection(&mut hasher, selection);
+                }
+                SelectionStepPlan::FloodFacesByRegion {
+                    seed_face,
+                    selection,
+                } => {
+                    hasher.write_str("select.faces.flood.region");
+                    hasher.write_u32(seed_face.index());
+                    write_selection(&mut hasher, selection);
+                }
+                SelectionStepPlan::BoundaryEdgeLoop {
+                    seed_edge,
+                    selection,
+                } => {
+                    hasher.write_str("select.edge_loop.boundary");
+                    hasher.write_u32(seed_edge.index());
+                    write_selection(&mut hasher, selection);
+                }
+            },
             MeshEditStepPlan::Extrude(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
@@ -905,10 +1007,7 @@ mod tests {
             .apply_in_place(&mut mesh, &TagFaceRegion, &tag_plan)
             .expect("tagging should succeed");
 
-        let flow = MeshEdit::new()
-            .select_faces_by_region(&mesh, 7)
-            .expect("region query should succeed")
-            .tag(9);
+        let flow = MeshEdit::new().select_faces_by_region(7).tag(9);
 
         let mut apply_runner = OperatorRunner::new();
         let result = flow
@@ -933,10 +1032,7 @@ mod tests {
         .expect("mesh build should succeed");
         let faces = mesh.faces().collect::<Vec<_>>();
 
-        let flow = MeshEdit::new()
-            .flood_faces_by_region(&mesh, faces[0])
-            .expect("flood query should succeed")
-            .tag(5);
+        let flow = MeshEdit::new().flood_faces_by_region(faces[0]).tag(5);
 
         let mut runner = OperatorRunner::new();
         let mut mesh = mesh;
@@ -947,15 +1043,20 @@ mod tests {
     }
 
     #[test]
-    fn mesh_edit_boundary_query_returns_edge_selection() {
-        let (mesh, face) = one_quad_mesh();
+    fn mesh_edit_boundary_query_step_can_feed_edge_ops() {
+        let (mut mesh, face) = one_quad_mesh();
         let seed = mesh
             .face_loop(face)
             .next()
             .expect("quad face should have a boundary edge");
-        let selection = MeshEdit::query_boundary_edge_loop(&mesh, seed)
-            .expect("boundary loop query should succeed");
-        assert!(matches!(selection, Selection::Edges(ref edges) if !edges.is_empty()));
+        let flow = MeshEdit::new()
+            .select_boundary_edge_loop(seed)
+            .mark_seam(true);
+        let mut runner = OperatorRunner::new();
+        let result = flow
+            .apply(&mut runner, &mut mesh)
+            .expect("boundary-query flow should succeed");
+        assert!(matches!(result.selection, Selection::Edges(ref edges) if !edges.is_empty()));
     }
 
     #[test]

@@ -156,7 +156,9 @@ pub use selection::{
 };
 
 // Fluent workflow layer.
-pub use mesh_edit::{MeshEdit, MeshEditPlan, MeshEditPreview, MeshEditResult, MeshEditStepPlan};
+pub use mesh_edit::{
+    MeshEdit, MeshEditPlan, MeshEditPreview, MeshEditResult, MeshEditStepPlan, SelectionStepPlan,
+};
 
 // Operator families (`inspect.*`, `select.*`, `tag.*`, `mark.*`, `uv.*`, `edit.*`).
 pub use delete::{
