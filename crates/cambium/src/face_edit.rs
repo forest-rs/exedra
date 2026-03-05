@@ -12,7 +12,10 @@ use crate::math::FloatExt;
 use crate::op_common::op_error;
 use crate::plan::PlanHasher;
 use crate::selection::{FaceSet, canonicalize_face_set};
-use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
+use crate::{
+    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
+    OpReport,
+};
 
 /// Parameters for [`ExtrudeFaces`].
 #[derive(Clone, Debug, PartialEq)]
@@ -157,23 +160,22 @@ impl EditOperator for ExtrudeFaces {
                     )
                 })?;
 
-            let mut wall_winding = None;
+            let mut wall_orientation = FrameOrientationState::default();
             for i in 0..plan.vertices.len() {
                 let current = plan.vertices[i];
                 let next = plan.vertices[(i + 1) % plan.vertices.len()];
                 let current_cap = cap[i];
                 let next_cap = cap[(i + 1) % cap.len()];
-                let (wall, used_winding) =
-                    add_frame_face(txn, current, next, current_cap, next_cap, wall_winding)
-                        .map_err(|err| {
-                            op_error(
-                                ctx,
-                                OpErrorKind::InternalInvariantViolation,
-                                DiagCode::InternalInvariantViolation,
-                                format!("extrude wall creation failed unexpectedly: {err}"),
-                            )
-                        })?;
-                wall_winding = Some(used_winding);
+                let wall = add_frame_face_with_orientation(
+                    txn,
+                    current,
+                    next,
+                    current_cap,
+                    next_cap,
+                    &mut wall_orientation,
+                    ctx,
+                    "extrude",
+                )?;
                 if !txn.set_face_region(wall, plan.region) {
                     return Err(op_error(
                         ctx,
@@ -209,7 +211,7 @@ impl EditOperator for ExtrudeFaces {
             }
 
             let mut cap_loop = cap.clone();
-            if wall_winding != Some(FrameWinding::UseForwardOuterEdge) {
+            if !wall_orientation.prefers_forward_outer_edge() {
                 cap_loop.reverse();
             }
             let top = txn.add_face(&cap_loop).map_err(|err| {
@@ -380,23 +382,22 @@ impl EditOperator for InsetFaces {
                     )
                 })?;
 
-            let mut frame_winding = None;
+            let mut frame_orientation = FrameOrientationState::default();
             for i in 0..face_plan.vertices.len() {
                 let current = face_plan.vertices[i];
                 let next = face_plan.vertices[(i + 1) % face_plan.vertices.len()];
                 let current_inset = inset_loop[i];
                 let next_inset = inset_loop[(i + 1) % inset_loop.len()];
-                let (frame, used_winding) =
-                    add_frame_face(txn, current, next, current_inset, next_inset, frame_winding)
-                        .map_err(|err| {
-                            op_error(
-                                ctx,
-                                OpErrorKind::InternalInvariantViolation,
-                                DiagCode::InternalInvariantViolation,
-                                format!("inset frame face creation failed unexpectedly: {err}"),
-                            )
-                        })?;
-                frame_winding = Some(used_winding);
+                let frame = add_frame_face_with_orientation(
+                    txn,
+                    current,
+                    next,
+                    current_inset,
+                    next_inset,
+                    &mut frame_orientation,
+                    ctx,
+                    "inset",
+                )?;
                 if !txn.set_face_region(frame, face_plan.region) {
                     return Err(op_error(
                         ctx,
@@ -439,7 +440,7 @@ impl EditOperator for InsetFaces {
             // loop orientation can consistently reuse the resulting OUTSIDE
             // boundary ring.
             let mut inner_loop = inset_loop.clone();
-            if frame_winding != Some(FrameWinding::UseForwardOuterEdge) {
+            if !frame_orientation.prefers_forward_outer_edge() {
                 inner_loop.reverse();
             }
             let inner = txn.add_face(&inner_loop).map_err(|err| {
@@ -533,6 +534,17 @@ struct SourceEdgeAttrs {
 enum FrameWinding {
     UseReverseOuterEdge,
     UseForwardOuterEdge,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+struct FrameOrientationState {
+    winding: Option<FrameWinding>,
+}
+
+impl FrameOrientationState {
+    const fn prefers_forward_outer_edge(self) -> bool {
+        matches!(self.winding, Some(FrameWinding::UseForwardOuterEdge))
+    }
 }
 
 fn preflight_face_plans(
@@ -685,33 +697,58 @@ fn normalized_face_normal(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<
     Some([nx * inv_len, ny * inv_len, nz * inv_len])
 }
 
-fn add_frame_face(
+fn add_frame_face_with_orientation(
     txn: &mut exedra::EditSession<'_>,
     current: VertexId,
     next: VertexId,
     current_inset: VertexId,
     next_inset: VertexId,
-    preferred: Option<FrameWinding>,
-) -> Result<(FaceId, FrameWinding), AddFaceError> {
+    orientation: &mut FrameOrientationState,
+    ctx: &mut OpContext,
+    op_name: &'static str,
+) -> Result<FaceId, OpError> {
     let reverse_outer = [next, current, current_inset, next_inset];
     let forward_outer = [current, next, next_inset, current_inset];
-    match preferred {
+    match orientation.winding {
         Some(FrameWinding::UseReverseOuterEdge) => txn
             .add_face(&reverse_outer)
-            .map(|face| (face, FrameWinding::UseReverseOuterEdge)),
+            .map_err(|err| frame_face_error(ctx, op_name, err)),
         Some(FrameWinding::UseForwardOuterEdge) => txn
             .add_face(&forward_outer)
-            .map(|face| (face, FrameWinding::UseForwardOuterEdge)),
+            .map_err(|err| frame_face_error(ctx, op_name, err)),
         None => match txn.add_face(&reverse_outer) {
-            Ok(face) => Ok((face, FrameWinding::UseReverseOuterEdge)),
-            // Relies on EditSession::add_face preflight returning NonManifoldEdge
-            // before mutation, so trying the alternate winding is safe.
-            Err(AddFaceError::NonManifoldEdge { .. }) => txn
-                .add_face(&forward_outer)
-                .map(|face| (face, FrameWinding::UseForwardOuterEdge)),
-            Err(err) => Err(err),
+            Ok(face) => {
+                orientation.winding = Some(FrameWinding::UseReverseOuterEdge);
+                Ok(face)
+            }
+            // EditSession::add_face performs full preflight before mutation,
+            // so this fallback remains deterministic and side-effect free.
+            Err(AddFaceError::NonManifoldEdge { .. }) => {
+                ctx.diagnostics.push(Diagnostic::new(
+                    DiagLevel::Warn,
+                    DiagCode::PreconditionFailed,
+                    alloc::format!(
+                        "{op_name}: frame winding fallback to forward orientation due to boundary reuse direction"
+                    ),
+                ));
+                let face = txn
+                    .add_face(&forward_outer)
+                    .map_err(|err| frame_face_error(ctx, op_name, err))?;
+                orientation.winding = Some(FrameWinding::UseForwardOuterEdge);
+                Ok(face)
+            }
+            Err(err) => Err(frame_face_error(ctx, op_name, err)),
         },
     }
+}
+
+fn frame_face_error(ctx: &OpContext, op_name: &'static str, err: AddFaceError) -> OpError {
+    op_error(
+        ctx,
+        OpErrorKind::InternalInvariantViolation,
+        DiagCode::InternalInvariantViolation,
+        format!("{op_name} frame face creation failed unexpectedly: {err}"),
+    )
 }
 
 fn propagate_face_corner_uvs(

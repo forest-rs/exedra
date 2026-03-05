@@ -63,6 +63,18 @@
 //! - `DecayOnSplit` applies subdivision-style decay,
 //! - `Clear` resets to `0.0`.
 //!
+//! # Face-Edit Winding Contract
+//!
+//! Face-edit operators (`extrude`/`inset`) build frame quads against newly
+//! created boundary rings after source-face deletion. Winding is resolved once
+//! per operator invocation and then reused for all generated frame faces:
+//! - try reverse-outer orientation first,
+//! - if Exedra preflight reports `NonManifoldEdge`, switch to forward-outer
+//!   orientation and keep that orientation for the rest of the run.
+//!
+//! This keeps orientation deterministic across open and closed manifold
+//! contexts and avoids per-face heuristic flipping.
+//!
 //! # Skeleton
 //!
 //! ```rust

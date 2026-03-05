@@ -1,7 +1,7 @@
 ---
 id: cam-mn4h
 title: Face-edit winding/orientation policy
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T12:54:50Z
