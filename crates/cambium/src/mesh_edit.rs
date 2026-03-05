@@ -7,15 +7,17 @@
 //! It compiles deterministic per-step plans and can then preview/apply the
 //! compiled workflow.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
 
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
+use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
 use crate::{
     DeleteFaces, DeleteFacesOutput, DeleteFacesParams, DeleteFacesPlan, ExtrudeFaces,
     ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan,
-    OpError, OpReport, OperatorRunner, PreviewResult, Selection, SelectionDomainError,
+    OpError, OpErrorKind, OpReport, OperatorRunner, PreviewResult, Selection, SelectionKind,
     TagFaceRegion, TagFaceRegionParams, canonicalize_face_set, flood_fill_faces_by_region,
     select_boundary_edge_loop, select_faces_by_region,
 };
@@ -31,12 +33,12 @@ enum MeshEditStep {
 /// Deterministic compiled workflow plan for [`MeshEdit`].
 #[derive(Clone, Debug)]
 pub struct MeshEditPlan {
-    /// Initial canonical face selection used by the fluent chain.
-    pub initial_faces: FaceSet,
+    /// Initial canonical selection used by the fluent chain.
+    pub initial_selection: Selection,
     /// Deterministic per-step plans in compile order.
     pub steps: Vec<MeshEditStepPlan>,
-    /// Final canonical face selection after replaying all steps.
-    pub final_faces: FaceSet,
+    /// Final canonical selection after replaying all steps.
+    pub final_selection: Selection,
     /// Deterministic workflow fingerprint.
     pub fingerprint: PlanFingerprint,
 }
@@ -101,7 +103,6 @@ pub struct MeshEditPreview {
 /// // Build once, then choose preview/apply entry points.
 /// let flow = MeshEdit::new()
 ///     .select(Selection::from(vec![face]))
-///     .expect("flow requires face-domain selection")
 ///     .extrude(0.25)
 ///     .inset(0.4)
 ///     .tag(7)
@@ -126,10 +127,19 @@ pub struct MeshEditPreview {
 /// - [`MeshEdit::flood_faces_by_region`] seeds connected region flood results.
 /// - [`MeshEdit::query_boundary_edge_loop`] exposes an edge-domain selection for
 ///   composition outside this face-only fluent chain.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct MeshEdit {
-    selected_faces: FaceSet,
+    selection: Selection,
     steps: Vec<MeshEditStep>,
+}
+
+impl Default for MeshEdit {
+    fn default() -> Self {
+        Self {
+            selection: Selection::from(FaceSet::new()),
+            steps: Vec::new(),
+        }
+    }
 }
 
 impl MeshEdit {
@@ -143,14 +153,16 @@ impl MeshEdit {
     #[must_use]
     pub fn select_faces(mut self, mut faces: FaceSet) -> Self {
         let _ = canonicalize_face_set(&mut faces);
-        self.selected_faces = faces;
+        self.selection = Selection::from(faces);
         self
     }
 
     /// Replaces the fluent selection from the generic [`Selection`] bridge.
-    pub fn select(self, selection: Selection) -> Result<Self, SelectionDomainError> {
-        let faces = selection.require_faces()?.clone();
-        Ok(self.select_faces(faces))
+    #[must_use]
+    pub fn select(mut self, mut selection: Selection) -> Self {
+        let _ = selection.canonicalize();
+        self.selection = selection;
+        self
     }
 
     /// Replaces the fluent face selection with all faces tagged `region_id`.
@@ -209,66 +221,74 @@ impl MeshEdit {
     /// Compiles deterministic per-step plans for this workflow.
     pub fn plan(&self, runner: &mut OperatorRunner, mesh: &Mesh) -> Result<MeshEditPlan, OpError> {
         let mut working = mesh.clone();
-        let mut current_faces = self.selected_faces.clone();
+        let mut current_selection = self.selection.clone();
         let mut compiled_steps = Vec::with_capacity(self.steps.len());
 
         for step in &self.steps {
             match *step {
                 MeshEditStep::Extrude { distance } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.face.extrude")?;
                     let params = ExtrudeFacesParams {
-                        faces: current_faces.clone(),
+                        faces: current_faces,
                         mode: ExtrudeMode::ShellOpen,
                         distance,
                     };
                     let op = ExtrudeFaces;
                     let plan = runner.compile(&working, &op, &params)?;
                     let result = runner.apply_in_place(&mut working, &op, &plan)?;
-                    current_faces = result.output.cap_faces;
+                    current_selection = Selection::from(result.output.cap_faces);
                     compiled_steps.push(MeshEditStepPlan::Extrude(plan));
                 }
                 MeshEditStep::Inset { factor } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.face.inset")?;
                     let params = InsetFacesParams {
-                        faces: current_faces.clone(),
+                        faces: current_faces,
                         factor,
                     };
                     let op = InsetFaces;
                     let plan = runner.compile(&working, &op, &params)?;
                     let result = runner.apply_in_place(&mut working, &op, &plan)?;
-                    current_faces = result.output.inner_faces;
+                    current_selection = Selection::from(result.output.inner_faces);
                     compiled_steps.push(MeshEditStepPlan::Inset(plan));
                 }
                 MeshEditStep::Tag { region_id } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "tag.face.region")?;
                     let params = TagFaceRegionParams {
                         region_id,
-                        faces: current_faces.clone(),
+                        faces: current_faces,
                     };
                     let op = TagFaceRegion;
                     let plan = runner.compile(&working, &op, &params)?;
                     let result = runner.apply_in_place(&mut working, &op, &plan)?;
-                    current_faces = result.output;
+                    current_selection = Selection::from(result.output);
                     compiled_steps.push(MeshEditStepPlan::Tag(plan));
                 }
                 MeshEditStep::Delete { policy } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.delete.faces")?;
                     let params = DeleteFacesParams {
-                        faces: current_faces.clone(),
+                        faces: current_faces,
                         policy,
                     };
                     let op = DeleteFaces;
                     let plan = runner.compile(&working, &op, &params)?;
                     let _ = runner.apply_in_place(&mut working, &op, &plan)?;
-                    current_faces.clear();
+                    current_selection = Selection::from(FaceSet::new());
                     compiled_steps.push(MeshEditStepPlan::Delete(plan));
                 }
             }
         }
 
         let fingerprint =
-            mesh_edit_fingerprint(&compiled_steps, &self.selected_faces, &current_faces);
+            mesh_edit_fingerprint(&compiled_steps, &self.selection, &current_selection);
 
         Ok(MeshEditPlan {
-            initial_faces: self.selected_faces.clone(),
+            initial_selection: self.selection.clone(),
             steps: compiled_steps,
-            final_faces: current_faces,
+            final_selection: current_selection,
             fingerprint,
         })
     }
@@ -294,7 +314,7 @@ impl MeshEdit {
     ) -> Result<MeshEditPreview, OpError> {
         let mut preview_mesh = mesh.clone();
         let mut reports = Vec::with_capacity(plan.steps.len());
-        let mut current_faces = plan.initial_faces.clone();
+        let mut current_selection = plan.initial_selection.clone();
 
         for step in &plan.steps {
             match step {
@@ -306,7 +326,7 @@ impl MeshEdit {
                         output,
                     } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
                     preview_mesh = next_mesh;
-                    current_faces = output.cap_faces;
+                    current_selection = Selection::from(output.cap_faces);
                     reports.push(report);
                 }
                 MeshEditStepPlan::Inset(compiled) => {
@@ -317,7 +337,7 @@ impl MeshEdit {
                         output,
                     } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
                     preview_mesh = next_mesh;
-                    current_faces = output.inner_faces;
+                    current_selection = Selection::from(output.inner_faces);
                     reports.push(report);
                 }
                 MeshEditStepPlan::Tag(compiled) => {
@@ -328,7 +348,7 @@ impl MeshEdit {
                         output,
                     } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
                     preview_mesh = next_mesh;
-                    current_faces = output;
+                    current_selection = Selection::from(output);
                     reports.push(report);
                 }
                 MeshEditStepPlan::Delete(compiled) => {
@@ -339,7 +359,7 @@ impl MeshEdit {
                         output: _,
                     } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
                     preview_mesh = next_mesh;
-                    current_faces.clear();
+                    current_selection = Selection::from(FaceSet::new());
                     reports.push(report);
                 }
             }
@@ -348,7 +368,7 @@ impl MeshEdit {
         Ok(MeshEditPreview {
             preview_mesh,
             reports,
-            selection: Selection::from(current_faces),
+            selection: current_selection,
         })
     }
 
@@ -372,33 +392,33 @@ impl MeshEdit {
         plan: &MeshEditPlan,
     ) -> Result<MeshEditResult, OpError> {
         let mut reports = Vec::with_capacity(plan.steps.len());
-        let mut current_faces = plan.initial_faces.clone();
+        let mut current_selection = plan.initial_selection.clone();
 
         for step in &plan.steps {
             match step {
                 MeshEditStepPlan::Extrude(compiled) => {
                     let op = ExtrudeFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
-                    current_faces = result.output.cap_faces;
+                    current_selection = Selection::from(result.output.cap_faces);
                     reports.push(result.report);
                 }
                 MeshEditStepPlan::Inset(compiled) => {
                     let op = InsetFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
-                    current_faces = result.output.inner_faces;
+                    current_selection = Selection::from(result.output.inner_faces);
                     reports.push(result.report);
                 }
                 MeshEditStepPlan::Tag(compiled) => {
                     let op = TagFaceRegion;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
-                    current_faces = result.output;
+                    current_selection = Selection::from(result.output);
                     reports.push(result.report);
                 }
                 MeshEditStepPlan::Delete(compiled) => {
                     let op = DeleteFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
                     let DeleteFacesOutput { .. } = result.output;
-                    current_faces.clear();
+                    current_selection = Selection::from(FaceSet::new());
                     reports.push(result.report);
                 }
             }
@@ -406,19 +426,19 @@ impl MeshEdit {
 
         Ok(MeshEditResult {
             reports,
-            selection: Selection::from(current_faces),
+            selection: current_selection,
         })
     }
 }
 
 fn mesh_edit_fingerprint(
     steps: &[MeshEditStepPlan],
-    initial_faces: &[FaceId],
-    final_faces: &[FaceId],
+    initial_selection: &Selection,
+    final_selection: &Selection,
 ) -> PlanFingerprint {
     let mut hasher = PlanHasher::new();
     hasher.write_str("mesh-edit-plan/v1");
-    hasher.write_face_set(initial_faces);
+    write_selection(&mut hasher, initial_selection);
     hasher.write_len(steps.len());
     for step in steps {
         match step {
@@ -440,8 +460,53 @@ fn mesh_edit_fingerprint(
             }
         }
     }
-    hasher.write_face_set(final_faces);
+    write_selection(&mut hasher, final_selection);
     hasher.finish()
+}
+
+fn write_selection(hasher: &mut PlanHasher, selection: &Selection) {
+    match selection {
+        Selection::Faces(faces) => {
+            hasher.write_u8(0);
+            hasher.write_face_set(faces);
+        }
+        Selection::Edges(edges) => {
+            hasher.write_u8(1);
+            hasher.write_len(edges.len());
+            for edge in edges {
+                hasher.write_u32(edge.index());
+            }
+        }
+        Selection::Vertices(vertices) => {
+            hasher.write_u8(2);
+            hasher.write_len(vertices.len());
+            for vertex in vertices {
+                hasher.write_u32(vertex.index());
+            }
+        }
+    }
+}
+
+fn require_face_selection(
+    selection: &Selection,
+    operator: &'static str,
+) -> Result<FaceSet, OpError> {
+    selection.require_faces().cloned().map_err(|mismatch| {
+        let message = alloc::format!(
+            "{operator} requires {} selection, got {}",
+            SelectionKind::Faces,
+            mismatch.actual
+        );
+        OpError::new(
+            OpErrorKind::PreconditionFailed,
+            vec![Diagnostic::new(
+                DiagLevel::Error,
+                DiagCode::PreconditionFailed,
+                message,
+            )],
+            Artifacts::default(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -525,10 +590,7 @@ mod tests {
     #[test]
     fn mesh_edit_select_accepts_bridge_selection_faces_only() {
         let (mesh, face) = one_quad_mesh();
-        let flow = MeshEdit::new()
-            .select(Selection::from(vec![face]))
-            .expect("face selection should be accepted")
-            .tag(7);
+        let flow = MeshEdit::new().select(Selection::from(vec![face])).tag(7);
 
         let mut runner = OperatorRunner::new();
         let mut mesh = mesh;
@@ -537,14 +599,22 @@ mod tests {
             .expect("flow should apply");
         assert!(matches!(result.selection, Selection::Faces(_)));
 
-        let err = MeshEdit::new()
+        let flow = MeshEdit::new()
             .select(Selection::from(vec![exedra::VertexId::new(
                 0,
                 core::num::NonZeroU32::MIN,
             )]))
-            .expect_err("vertex selection should be rejected");
-        assert_eq!(err.expected, crate::SelectionKind::Faces);
-        assert_eq!(err.actual, crate::SelectionKind::Vertices);
+            .tag(7);
+        let mut runner = OperatorRunner::new();
+        let err = flow
+            .plan(&mut runner, &mesh)
+            .expect_err("vertex selection should be rejected for face-domain tag op");
+        assert_eq!(err.kind, crate::OpErrorKind::PreconditionFailed);
+        assert!(
+            err.diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("requires faces selection"))
+        );
     }
 
     #[test]
