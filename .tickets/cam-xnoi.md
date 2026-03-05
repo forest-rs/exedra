@@ -1,6 +1,6 @@
 ---
 id: cam-xnoi
-status: open
+status: closed
 deps: [cam-mn4h, cam-h7yk]
 links: []
 created: 2026-03-05T08:05:03Z
@@ -21,3 +21,9 @@ Write a semantics matrix for face-edit families: extrude, inset, and solidify/th
 
 - Semantics matrix documented for open/closed contexts; - mode names and parameter contracts are explicit; - interaction with adjacency support and winding policy is defined; - cam-7u7l references this contract and implements against it.
 
+
+## Notes
+
+**2026-03-05T08:32:52Z**
+
+Semantics contract documented in crates/cambium/docs/briefs/12_face_edit_semantics_matrix.md. Defines Extrude modes (ShellOpen/KeepSource), Inset baseline mode, open/closed context outcomes, boundary/internal-edge handling, and propagation/invariant expectations. cam-1xjc and cam-7u7l implement against this brief.
