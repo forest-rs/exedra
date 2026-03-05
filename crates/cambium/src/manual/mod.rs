@@ -7,12 +7,14 @@
 //! This module is built only for docs (`cfg(doc)`).
 //!
 //! Current sections:
+//! - [`catalog`]: frozen v0.1 operator catalog (stable names, params, outputs).
 //! - [`operators`]: implementing deterministic edit operations and reports.
 //! - [`selections`]: canonical face/edge selection semantics.
 //! - [`diagnostics`]: diagnostic and error classification conventions.
 //! - [`reporting`]: timings/stats/artifact reporting patterns.
 //! - [`surface`]: SDK-vs-engine API tier policy and exception process.
 
+pub mod catalog;
 pub mod diagnostics;
 pub mod operators;
 pub mod reporting;

@@ -1,6 +1,6 @@
 ---
 id: cam-nyws
-status: open
+status: closed
 deps: [cam-inf3, cam-g3hn, cam-suy5]
 links: []
 created: 2026-03-04T04:27:35Z
@@ -23,3 +23,9 @@ Extend the doc-only manual with a catalog section/table listing each operator, s
 - Each catalog entry links to operator + params rustdoc
 - Catalog includes reporting expectations (timings/stats/artifacts)
 - Crate root links to catalog and authoring guide
+
+## Notes
+
+**2026-03-05T08:29:36Z**
+
+Added rustdoc-visible operator catalog module (manual::catalog) covering frozen v0.1 operators with stable names, params, outputs, lifecycle/reporting expectations; linked from crate root and manual index.

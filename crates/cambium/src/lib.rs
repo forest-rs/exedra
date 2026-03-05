@@ -26,7 +26,9 @@
 //! The intended public surface is this crate root (`cambium::...`) through
 //! re-exported operator/runtime types and functions.
 //!
-//! For a longer operator-authoring guide, see [`manual`].
+//! For manual docs, see:
+//! - [`manual::catalog`] for the frozen v0.1 operator catalog
+//! - [`manual::operators`] for operator authoring guidance
 //!
 //! # Where To Find X
 //! - Mesh + IDs: [`Mesh`], [`FaceId`], [`HalfEdgeId`], [`VertexId`]
@@ -42,6 +44,7 @@
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
 //!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`ExtrudeFaces`], [`InsetFaces`]
+//! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
 //! Operator stable IDs follow lowercase dot-separated families from the v0.1
