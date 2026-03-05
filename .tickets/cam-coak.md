@@ -1,6 +1,6 @@
 ---
 id: cam-coak
-status: open
+status: closed
 deps: [cam-mrwk, cam-gvmz, cam-inf3]
 links: []
 created: 2026-03-05T02:03:21Z

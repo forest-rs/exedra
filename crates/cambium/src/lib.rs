@@ -34,6 +34,7 @@
 //! - Planning lifecycle: [`OperatorRunner::compile`],
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
+//! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
 //! - Inspection: [`InspectBounds`], [`ValidateMesh`]
 //! - Editing operators: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`],
 //!   [`ExtrudeFaces`], [`InsetFaces`], [`TagFaceRegion`], [`MarkEdgeSeam`], [`MarkEdgeSharp`]
@@ -93,6 +94,7 @@ mod sharp;
 #[cfg(doc)]
 pub mod manual;
 mod math;
+mod mesh_edit;
 #[cfg(test)]
 mod test_support;
 mod timing;
@@ -123,6 +125,7 @@ pub use face_edit::{
     ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, InsetFaces, InsetFacesOutput,
     InsetFacesParams, InsetFacesPlan,
 };
+pub use mesh_edit::{MeshEdit, MeshEditPlan, MeshEditPreview, MeshEditResult, MeshEditStepPlan};
 pub use operator::EditOperator;
 pub use plan::{EditPlan, PlanFingerprint, mesh_signature};
 pub use policy::{
