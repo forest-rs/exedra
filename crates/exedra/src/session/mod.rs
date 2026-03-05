@@ -732,7 +732,7 @@ impl EditSession<'_> {
             .expect("new face must be live")
             .edge = loop_half_edges[0];
 
-        stitch_outside_loops(self.mesh);
+        stitch_outside_loops_for_vertices(self.mesh, loop_vertices);
         self.mesh.attrs.sync_capacities(
             self.mesh.vertices.slot_count(),
             self.mesh.faces.slot_count(),
@@ -1664,6 +1664,65 @@ fn stitch_outside_loops(mesh: &mut Mesh) {
         if candidates != 1 {
             panic!(
                 "mesh topology corruption: OUTSIDE stitch failed at vertex {} ({} candidates)",
+                to.index(),
+                candidates
+            );
+        }
+        let next = starts[range.start].1;
+        mesh.half_edges
+            .get_mut(half_edge.as_id())
+            .expect("boundary half-edge must be live")
+            .next = next;
+    }
+}
+
+fn stitch_outside_loops_for_vertices(mesh: &mut Mesh, affected_vertices: &[VertexId]) {
+    if affected_vertices.is_empty() {
+        return;
+    }
+
+    let mut affected = affected_vertices.to_vec();
+    sort_dedup(&mut affected);
+
+    let mut starts = Vec::<(VertexId, HalfEdgeId)>::new();
+    let mut impacted = Vec::<HalfEdgeId>::new();
+    for (id, edge) in mesh.half_edges.iter() {
+        if edge.face != FaceId::OUTSIDE {
+            continue;
+        }
+        let half_edge = HalfEdgeId::from(id);
+        let to = mesh
+            .to_vertex(half_edge)
+            .expect("boundary half-edge must have destination vertex");
+        let start = mesh
+            .twin(half_edge)
+            .and_then(|twin| mesh.to_vertex(twin))
+            .expect("boundary half-edge must have twin with destination vertex");
+        starts.push((start, half_edge));
+        if affected.binary_search(&to).is_ok() {
+            impacted.push(half_edge);
+        }
+    }
+
+    if impacted.is_empty() {
+        return;
+    }
+
+    starts.sort_unstable_by_key(|(start, boundary_half_edge)| (*start, *boundary_half_edge));
+    impacted.sort_unstable();
+    impacted.dedup();
+
+    for half_edge in impacted {
+        let to = mesh
+            .to_vertex(half_edge)
+            .expect("boundary half-edge must have destination vertex");
+        let range = equal_range_by_vertex(&starts, to);
+        let candidates = range.end.saturating_sub(range.start);
+        if candidates != 1 {
+            // Internal invariant: add_face preflight should prevent user-input
+            // ambiguity here. If this trips, topology state is inconsistent.
+            panic!(
+                "mesh topology corruption: OUTSIDE local stitch failed at vertex {} ({} candidates)",
                 to.index(),
                 candidates
             );
