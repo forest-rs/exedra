@@ -570,6 +570,50 @@ impl EditSession<'_> {
         find_boundary_half_edge_in_index(index, from, to)
     }
 
+    #[cfg(test)]
+    fn assert_outgoing_index_consistent(&mut self) {
+        let actual = self.ensure_outgoing_index().to_vec();
+        let expected = build_outgoing_index(self.mesh);
+
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "outgoing index entry count mismatch: actual={}, expected={}",
+            actual.len(),
+            expected.len()
+        );
+        for (position, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                a.from,
+                b.from,
+                "outgoing index mismatch at {position}: from actual={} expected={}",
+                a.from.index(),
+                b.from.index()
+            );
+            assert_eq!(
+                a.to,
+                b.to,
+                "outgoing index mismatch at {position}: to actual={} expected={}",
+                a.to.index(),
+                b.to.index()
+            );
+            assert_eq!(
+                a.half_edge,
+                b.half_edge,
+                "outgoing index mismatch at {position}: half-edge actual={} expected={}",
+                a.half_edge.index(),
+                b.half_edge.index()
+            );
+            assert_eq!(
+                a.face,
+                b.face,
+                "outgoing index mismatch at {position}: face actual={} expected={}",
+                a.face.index(),
+                b.face.index()
+            );
+        }
+    }
+
     /// Adds one interior polygon face loop from live vertex IDs.
     ///
     /// For each directed loop edge `from -> to`, behavior is:
@@ -2614,9 +2658,11 @@ mod tests {
 
         let mut txn = mesh.begin();
         let _ = txn.add_face(&[v0, v1, v2]).expect("first face should add");
+        txn.assert_outgoing_index_consistent();
         assert!(txn.find_boundary_half_edge(v1, v0).is_some());
 
         let _ = txn.add_face(&[v1, v3, v2]).expect("second face should add");
+        txn.assert_outgoing_index_consistent();
         assert!(txn.find_boundary_half_edge(v1, v2).is_none());
 
         let shared = find_half_edge(txn.mesh(), v1.index(), v2.index()).expect("shared edge");
@@ -2630,6 +2676,7 @@ mod tests {
             .expect("shared edge should have destination");
         assert!(txn.has_undirected_edge(from, to));
         let _ = txn.split_edge(shared).expect("split should succeed");
+        txn.assert_outgoing_index_consistent();
         assert!(!txn.has_undirected_edge(from, to));
     }
 
@@ -2791,6 +2838,19 @@ mod tests {
     }
 
     #[test]
+    fn outgoing_index_consistent_after_delete_vertices() {
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.begin();
+        let v0 = txn.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = txn.add_vertex([1.0, 0.0, 0.0]);
+        let mut vertices = vec![v1, v0];
+        vertices.sort_unstable();
+        txn.delete_vertices(&vertices)
+            .expect("delete_vertices should succeed");
+        txn.assert_outgoing_index_consistent();
+    }
+
+    #[test]
     fn delete_single_box_face_creates_one_boundary_loop_and_valid_mesh() {
         let (mut mesh, faces) = closed_box_mesh();
         let deleted = faces[0];
@@ -2803,6 +2863,15 @@ mod tests {
         assert_eq!(count_boundary_loops(&mesh), 1);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn outgoing_index_consistent_after_delete_faces() {
+        let (mut mesh, faces) = closed_box_mesh();
+        let mut txn = mesh.begin();
+        txn.delete_faces(&[faces[0]], DeletePolicy::CleanupIsolated)
+            .expect("delete_faces should succeed");
+        txn.assert_outgoing_index_consistent();
     }
 
     #[test]
