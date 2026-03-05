@@ -9,9 +9,11 @@
 //!
 //! Lifecycle:
 //! 1. Runner resets reusable context (`scratch`, diagnostics sink, clock).
-//! 2. Runner calls `op.apply(txn, params, ctx)`.
-//! 3. Runner commits (`run_commit`) or commits-and-discards (`run_preview`).
-//! 4. Runner attaches timings and performs optional post-run validation.
+//! 2. Runner compiles deterministic operator intent into an [`EditPlan`](crate::EditPlan).
+//! 3. Runner applies the plan to a clone (`preview_on_clone`) or in place
+//!    (`apply_in_place`).
+//! 4. `run_commit` / `run_preview` remain adapters during migration.
+//! 5. Runner attaches timings and performs optional post-run validation.
 //!
 //! # Reporting Discipline
 //!
@@ -75,6 +77,7 @@
 //!
 //! impl EditOperator for ExampleOp {
 //!     type Params = ExampleParams;
+//!     type Plan = ExampleParams;
 //!     type Output = ();
 //!
 //!     fn name(&self) -> &'static str {
@@ -113,6 +116,24 @@
 //!         }
 //!
 //!         Ok((report, ()))
+//!     }
+//!
+//!     fn compile(
+//!         &self,
+//!         _mesh: &exedra::Mesh,
+//!         params: &Self::Params,
+//!         _ctx: &mut OpContext,
+//!     ) -> Result<Self::Plan, OpError> {
+//!         Ok(*params)
+//!     }
+//!
+//!     fn apply_plan(
+//!         &self,
+//!         txn: &mut exedra::EditSession<'_>,
+//!         plan: &Self::Plan,
+//!         ctx: &mut OpContext,
+//!     ) -> Result<(OpReport, Self::Output), OpError> {
+//!         self.apply(txn, plan, ctx)
 //!     }
 //! }
 //! ```

@@ -36,7 +36,8 @@
 //! };
 //!
 //! // Preview runs on a clone and leaves `mesh` unchanged.
-//! let preview = runner.run_preview(&mesh, &op, &params)?;
+//! let plan = runner.compile(&mesh, &op, &params)?;
+//! let preview = runner.preview_on_clone(&mesh, &op, &plan)?;
 //! assert_eq!(preview.report.name, "inspect.validate.mesh");
 //! # Ok::<(), cambium::OpError>(())
 //! ```
@@ -59,6 +60,7 @@ mod error;
 mod face_edit;
 mod op_common;
 mod operator;
+mod plan;
 mod policy;
 mod region;
 mod report;
@@ -86,7 +88,7 @@ pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, Inspect
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
 pub use delete::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
-    DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
+    DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
 };
 pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
@@ -94,9 +96,10 @@ pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
 pub use face_edit::{
     ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, InsetFaces, InsetFacesOutput,
-    InsetFacesParams,
+    InsetFacesParams, InsetFacesPlan,
 };
 pub use operator::EditOperator;
+pub use plan::{EditPlan, PlanFingerprint, mesh_signature};
 pub use policy::{
     BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
     QualityPolicy, UvPolicy, ValidatePolicy, WorkBudget,

@@ -1,6 +1,6 @@
 ---
 id: cam-gvmz
-status: open
+status: closed
 deps: [cam-mrwk, exe-cz8g]
 links: []
 created: 2026-03-05T02:03:21Z

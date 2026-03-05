@@ -87,6 +87,7 @@ pub struct InspectBounds;
 
 impl EditOperator for InspectBounds {
     type Params = BoundsParams;
+    type Plan = BoundsParams;
     type Output = BoundsOutput;
 
     fn name(&self) -> &'static str {
@@ -182,6 +183,24 @@ impl EditOperator for InspectBounds {
                 face_count,
             },
         ))
+    }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
     }
 }
 

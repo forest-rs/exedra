@@ -9,6 +9,7 @@ use alloc::string::String;
 use exedra::{DeleteFacesError, DeletePolicy, DeleteVerticesError, FaceId, HalfEdgeId};
 
 use crate::op_common::op_error;
+use crate::plan::PlanHasher;
 use crate::selection::{
     EdgeSet, FaceSet, VertexSet, canonicalize_edge_set, canonicalize_face_set,
     canonicalize_vertex_set,
@@ -65,6 +66,17 @@ impl Default for DeleteFacesParams {
 pub struct DeleteFacesOutput {
     /// Canonical face selection that was applied.
     pub faces: FaceSet,
+}
+
+/// Deterministic compiled plan payload for [`DeleteFaces`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteFacesPlan {
+    /// Canonical interior face selection.
+    pub faces: FaceSet,
+    /// Isolated-vertex cleanup policy.
+    pub policy: DeletePolicy,
+    /// Whether face selection order/duplication changed during compile.
+    pub canonicalized: bool,
 }
 
 /// Parameters for [`DeleteVertices`].
@@ -130,6 +142,7 @@ pub struct DeleteEdges;
 
 impl EditOperator for DeleteEdges {
     type Params = DeleteEdgesParams;
+    type Plan = DeleteEdgesParams;
     type Output = DeleteEdgesOutput;
 
     fn name(&self) -> &'static str {
@@ -174,6 +187,24 @@ impl EditOperator for DeleteEdges {
 
         Ok((report, DeleteEdgesOutput { edges, faces }))
     }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
+    }
 }
 
 /// `edit.delete.faces` operator.
@@ -214,6 +245,7 @@ pub struct DeleteFaces;
 
 impl EditOperator for DeleteFaces {
     type Params = DeleteFacesParams;
+    type Plan = DeleteFacesPlan;
     type Output = DeleteFacesOutput;
 
     fn name(&self) -> &'static str {
@@ -226,9 +258,50 @@ impl EditOperator for DeleteFaces {
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
+        let plan = self.compile(txn.mesh(), params, ctx)?;
+        self.apply_plan(txn, &plan, ctx)
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
         let mut faces = params.faces.clone();
         let canonicalized = canonicalize_face_set(&mut faces);
-        txn.delete_faces(&faces, params.policy)
+        for &face in &faces {
+            if face == FaceId::OUTSIDE {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::PreconditionFailed,
+                    DiagCode::PreconditionFailed,
+                    "selection contains FaceId::OUTSIDE",
+                ));
+            }
+            if mesh.face_edge(face).is_none() {
+                return Err(op_error(
+                    ctx,
+                    OpErrorKind::PreconditionFailed,
+                    DiagCode::PreconditionFailed,
+                    format!("selection contains stale face id: {}", face.index()),
+                ));
+            }
+        }
+        Ok(DeleteFacesPlan {
+            faces,
+            policy: params.policy,
+            canonicalized,
+        })
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        txn.delete_faces(&plan.faces, plan.policy)
             .map_err(|err| map_delete_faces_error(ctx, err))?;
 
         let mut report = OpReport::new(
@@ -238,14 +311,31 @@ impl EditOperator for DeleteFaces {
                 ctx.policy.limits.max_artifact_bytes,
             ),
         );
-        if canonicalized {
+        if plan.canonicalized {
             report.stats.counters.selections_canonicalized = 1;
         }
         report.stats.counters.faces_processed =
-            u64::try_from(faces.len()).expect("face count should fit u64");
+            u64::try_from(plan.faces.len()).expect("face count should fit u64");
         report.stats.elements_touched.faces = report.stats.counters.faces_processed;
         report.stats.elements_deleted.faces = report.stats.counters.faces_processed;
-        Ok((report, DeleteFacesOutput { faces }))
+        Ok((
+            report,
+            DeleteFacesOutput {
+                faces: plan.faces.clone(),
+            },
+        ))
+    }
+
+    fn plan_fingerprint(&self, plan: &Self::Plan) -> crate::PlanFingerprint {
+        let mut hasher = PlanHasher::new();
+        hasher.write_str(self.name());
+        hasher.write_face_set(&plan.faces);
+        hasher.write_u8(match plan.policy {
+            DeletePolicy::KeepIsolated => 0,
+            DeletePolicy::CleanupIsolated => 1,
+        });
+        hasher.write_u8(u8::from(plan.canonicalized));
+        hasher.finish()
     }
 }
 
@@ -277,6 +367,7 @@ pub struct DeleteVertices;
 
 impl EditOperator for DeleteVertices {
     type Params = DeleteVerticesParams;
+    type Plan = DeleteVerticesParams;
     type Output = DeleteVerticesOutput;
 
     fn name(&self) -> &'static str {
@@ -308,6 +399,24 @@ impl EditOperator for DeleteVertices {
             u64::try_from(vertices.len()).expect("vertex count should fit u64");
         report.stats.elements_deleted.vertices = report.stats.elements_touched.vertices;
         Ok((report, DeleteVerticesOutput { vertices }))
+    }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
     }
 }
 
@@ -406,7 +515,7 @@ mod tests {
         DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
         DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
     };
-    use crate::{OpErrorKind, OperatorRunner};
+    use crate::{OpErrorKind, OperatorRunner, mesh_signature};
 
     fn two_tri_strip_mesh() -> exedra::Mesh {
         exedra::Mesh::from_indexed_triangles(
@@ -538,6 +647,39 @@ mod tests {
             )
             .expect_err("outside face should fail");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn delete_faces_compile_is_deterministic_for_identical_mesh_state() {
+        let mesh = exedra::Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("quad build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let params = DeleteFacesParams {
+            faces: vec![faces[1], faces[0], faces[1]],
+            policy: exedra::DeletePolicy::KeepIsolated,
+        };
+        let signature = mesh_signature(&mesh);
+
+        let mut runner = OperatorRunner::new();
+        let plan_a = runner
+            .compile(&mesh, &DeleteFaces, &params)
+            .expect("compile should succeed");
+        let plan_b = runner
+            .compile(&mesh, &DeleteFaces, &params)
+            .expect("compile should succeed");
+        assert_eq!(signature, mesh_signature(&mesh));
+        assert_eq!(plan_a.fingerprint, plan_b.fingerprint);
+        assert_eq!(plan_a.payload, plan_b.payload);
+        assert_eq!(plan_a.payload.faces, vec![faces[0], faces[1]]);
     }
 
     #[test]

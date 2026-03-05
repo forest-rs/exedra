@@ -46,6 +46,7 @@ pub struct UvBox;
 
 impl EditOperator for UvBox {
     type Params = UvBoxParams;
+    type Plan = UvBoxParams;
     type Output = crate::FaceSet;
 
     fn name(&self) -> &'static str {
@@ -131,6 +132,24 @@ impl EditOperator for UvBox {
             }
         }
         Ok((report, faces.faces))
+    }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
     }
 }
 

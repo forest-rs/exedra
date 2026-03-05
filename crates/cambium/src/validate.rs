@@ -51,6 +51,7 @@ pub struct ValidateMeshOutput {
 
 impl EditOperator for ValidateMesh {
     type Params = ValidateMeshParams;
+    type Plan = ValidateMeshParams;
     type Output = ValidateMeshOutput;
 
     fn name(&self) -> &'static str {
@@ -91,6 +92,24 @@ impl EditOperator for ValidateMesh {
             diagnostics_emitted: u64::try_from(emitted).expect("diagnostic count should fit u64"),
         };
         Ok((report, output))
+    }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(*params)
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
     }
 }
 

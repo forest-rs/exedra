@@ -10,6 +10,7 @@ use exedra::{AddFaceError, DeletePolicy, FaceId, VertexId};
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
+use crate::plan::PlanHasher;
 use crate::selection::{FaceSet, canonicalize_face_set};
 use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
 
@@ -63,6 +64,15 @@ pub struct InsetFacesOutput {
     pub frame_faces: FaceSet,
 }
 
+/// Deterministic compiled plan payload for [`InsetFaces`].
+#[derive(Clone, Debug)]
+pub struct InsetFacesPlan {
+    faces: FaceSet,
+    face_plans: Vec<FacePlan>,
+    factor: f32,
+    selections_canonicalized: bool,
+}
+
 impl Default for InsetFacesParams {
     fn default() -> Self {
         Self {
@@ -78,6 +88,7 @@ pub struct ExtrudeFaces;
 
 impl EditOperator for ExtrudeFaces {
     type Params = ExtrudeFacesParams;
+    type Plan = ExtrudeFacesParams;
     type Output = ExtrudeFacesOutput;
 
     fn name(&self) -> &'static str {
@@ -212,6 +223,24 @@ impl EditOperator for ExtrudeFaces {
             },
         ))
     }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
+    }
 }
 
 /// `edit.face.inset` operator.
@@ -220,6 +249,7 @@ pub struct InsetFaces;
 
 impl EditOperator for InsetFaces {
     type Params = InsetFacesParams;
+    type Plan = InsetFacesPlan;
     type Output = InsetFacesOutput;
 
     fn name(&self) -> &'static str {
@@ -232,6 +262,16 @@ impl EditOperator for InsetFaces {
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
+        let plan = self.compile(txn.mesh(), params, ctx)?;
+        self.apply_plan(txn, &plan, ctx)
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
         if !params.factor.is_finite() || !(0.0..1.0).contains(&params.factor) {
             return Err(op_error(
                 ctx,
@@ -242,7 +282,22 @@ impl EditOperator for InsetFaces {
         }
         let mut faces = params.faces.clone();
         let canonicalized = canonicalize_face_set(&mut faces);
-        let plans = preflight_face_plans(txn.mesh(), &faces, false, ctx)?;
+        let face_plans = preflight_face_plans(mesh, &faces, false, ctx)?;
+        Ok(InsetFacesPlan {
+            faces,
+            face_plans,
+            factor: params.factor,
+            selections_canonicalized: canonicalized,
+        })
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let plans = plan.face_plans.clone();
 
         let mut report = OpReport::new(
             self.name(),
@@ -251,29 +306,29 @@ impl EditOperator for InsetFaces {
                 ctx.policy.limits.max_artifact_bytes,
             ),
         );
-        if canonicalized {
+        if plan.selections_canonicalized {
             report.stats.counters.selections_canonicalized = 1;
         }
         let mut inner_faces = Vec::<FaceId>::new();
         let mut frame_faces = Vec::<FaceId>::new();
 
-        for plan in plans {
-            let centroid = centroid(txn.mesh(), &plan.vertices).expect("preflight validated");
-            let mut inset_loop = Vec::with_capacity(plan.vertices.len());
-            for &vertex in &plan.vertices {
+        for face_plan in plans {
+            let centroid = centroid(txn.mesh(), &face_plan.vertices).expect("preflight validated");
+            let mut inset_loop = Vec::with_capacity(face_plan.vertices.len());
+            for &vertex in &face_plan.vertices {
                 let position = txn
                     .mesh()
                     .vertex_position(vertex)
                     .expect("preflight-validated vertex must be live");
                 let inset = [
-                    position[0] + (centroid[0] - position[0]) * params.factor,
-                    position[1] + (centroid[1] - position[1]) * params.factor,
-                    position[2] + (centroid[2] - position[2]) * params.factor,
+                    position[0] + (centroid[0] - position[0]) * plan.factor,
+                    position[1] + (centroid[1] - position[1]) * plan.factor,
+                    position[2] + (centroid[2] - position[2]) * plan.factor,
                 ];
                 inset_loop.push(txn.add_vertex(inset));
             }
 
-            txn.delete_faces(&[plan.face], DeletePolicy::KeepIsolated)
+            txn.delete_faces(&[face_plan.face], DeletePolicy::KeepIsolated)
                 .map_err(|err| {
                     op_error(
                         ctx,
@@ -284,9 +339,9 @@ impl EditOperator for InsetFaces {
                 })?;
 
             let mut frame_winding = None;
-            for i in 0..plan.vertices.len() {
-                let current = plan.vertices[i];
-                let next = plan.vertices[(i + 1) % plan.vertices.len()];
+            for i in 0..face_plan.vertices.len() {
+                let current = face_plan.vertices[i];
+                let next = face_plan.vertices[(i + 1) % face_plan.vertices.len()];
                 let current_inset = inset_loop[i];
                 let next_inset = inset_loop[(i + 1) % inset_loop.len()];
                 let (frame, used_winding) =
@@ -300,7 +355,7 @@ impl EditOperator for InsetFaces {
                             )
                         })?;
                 frame_winding = Some(used_winding);
-                if !txn.set_face_region(frame, plan.region) {
+                if !txn.set_face_region(frame, face_plan.region) {
                     return Err(op_error(
                         ctx,
                         OpErrorKind::InternalInvariantViolation,
@@ -326,7 +381,7 @@ impl EditOperator for InsetFaces {
                     format!("inset inner face creation failed unexpectedly: {err}"),
                 )
             })?;
-            if !txn.set_face_region(inner, plan.region) {
+            if !txn.set_face_region(inner, face_plan.region) {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -356,6 +411,15 @@ impl EditOperator for InsetFaces {
                 frame_faces,
             },
         ))
+    }
+
+    fn plan_fingerprint(&self, plan: &Self::Plan) -> crate::PlanFingerprint {
+        let mut hasher = PlanHasher::new();
+        hasher.write_str(self.name());
+        hasher.write_face_set(&plan.faces);
+        hasher.write_f32_bits(plan.factor);
+        hasher.write_u8(u8::from(plan.selections_canonicalized));
+        hasher.finish()
     }
 }
 
@@ -540,7 +604,7 @@ mod tests {
     use exedra::{BuildParams, Mesh};
 
     use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
-    use crate::{OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams};
+    use crate::{OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature};
 
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
         let mesh = Mesh::from_polygons(
@@ -798,6 +862,28 @@ mod tests {
             .expect("inset on extruded top should succeed");
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn inset_compile_is_deterministic_for_identical_mesh_state() {
+        let (mesh, face) = quad_mesh();
+        let params = InsetFacesParams {
+            faces: vec![face],
+            factor: 0.3,
+        };
+        let signature = mesh_signature(&mesh);
+        let mut runner = OperatorRunner::new();
+
+        let plan_a = runner
+            .compile(&mesh, &InsetFaces, &params)
+            .expect("inset compile should succeed");
+        let plan_b = runner
+            .compile(&mesh, &InsetFaces, &params)
+            .expect("inset compile should succeed");
+        assert_eq!(signature, mesh_signature(&mesh));
+        assert_eq!(plan_a.fingerprint, plan_b.fingerprint);
+        assert_eq!(plan_a.payload.faces, vec![face]);
+        assert_eq!(plan_a.payload.factor, 0.3);
     }
 
     fn cube_mesh() -> Mesh {

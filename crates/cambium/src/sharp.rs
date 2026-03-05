@@ -27,6 +27,7 @@ pub struct MarkEdgeSharp;
 
 impl EditOperator for MarkEdgeSharp {
     type Params = MarkEdgeSharpParams;
+    type Plan = MarkEdgeSharpParams;
     type Output = EdgeSet;
 
     fn name(&self) -> &'static str {
@@ -48,6 +49,24 @@ impl EditOperator for MarkEdgeSharp {
             "edge set contains invalid/stale half-edge id",
             |txn, edge, sharp| txn.set_edge_sharpness(edge, sharp),
         )
+    }
+
+    fn compile(
+        &self,
+        _mesh: &exedra::Mesh,
+        params: &Self::Params,
+        _ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        Ok(params.clone())
+    }
+
+    fn apply_plan(
+        &self,
+        txn: &mut exedra::EditSession<'_>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
     }
 }
 

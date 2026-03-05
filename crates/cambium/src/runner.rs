@@ -3,6 +3,7 @@
 
 //! Operator runner for preview/commit execution.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra::{ChangeSet, Mesh, ValidationError};
@@ -13,7 +14,7 @@ use web_time::Instant;
 
 #[cfg(any(target_arch = "wasm32", feature = "std"))]
 use crate::timing::duration_nanos_u64;
-use crate::{Diagnostic, EditOperator, OpContext, OpError, OpReport};
+use crate::{Diagnostic, EditOperator, EditPlan, OpContext, OpError, OpErrorKind, OpReport};
 
 /// Result from [`OperatorRunner::run_commit`].
 #[derive(Clone, Debug)]
@@ -53,7 +54,42 @@ impl OperatorRunner {
         Self::default()
     }
 
+    /// Compiles one operator plan from immutable mesh state.
+    pub fn compile<O: EditOperator>(
+        &mut self,
+        mesh: &Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<EditPlan<O::Plan>, OpError> {
+        self.reset_for_run();
+        self.compile_with_ctx(mesh, op, params)
+    }
+
+    /// Applies one compiled operator plan in place.
+    pub fn apply_in_place<O: EditOperator>(
+        &mut self,
+        mesh: &mut Mesh,
+        op: &O,
+        plan: &EditPlan<O::Plan>,
+    ) -> Result<OpResult<O::Output>, OpError> {
+        self.reset_for_run();
+        self.apply_in_place_with_ctx(mesh, op, plan)
+    }
+
+    /// Applies one compiled operator plan to a cloned mesh.
+    pub fn preview_on_clone<O: EditOperator>(
+        &mut self,
+        mesh: &Mesh,
+        op: &O,
+        plan: &EditPlan<O::Plan>,
+    ) -> Result<PreviewResult<O::Output>, OpError> {
+        self.reset_for_run();
+        self.preview_on_clone_with_ctx(mesh, op, plan)
+    }
+
     /// Runs one operator in commit mode.
+    ///
+    /// This is an adapter over [`Self::compile`] + [`Self::apply_in_place`].
     ///
     /// Semantics:
     /// - mesh mutations are committed before optional post-commit validation
@@ -69,16 +105,69 @@ impl OperatorRunner {
         params: &O::Params,
     ) -> Result<OpResult<O::Output>, OpError> {
         self.reset_for_run();
+        let plan = self.compile_with_ctx(mesh, op, params)?;
+        self.apply_in_place_with_ctx(mesh, op, &plan)
+    }
+
+    /// Runs one operator in preview mode against a cloned mesh.
+    ///
+    /// This is an adapter over [`Self::compile`] + [`Self::preview_on_clone`].
+    ///
+    /// Preview isolation:
+    /// - any mutations to [`OpContext::cache_dirty`] performed during preview
+    ///   are discarded before returning, including error paths
+    pub fn run_preview<O: EditOperator>(
+        &mut self,
+        mesh: &Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<PreviewResult<O::Output>, OpError> {
+        self.reset_for_run();
+        let plan = self.compile_with_ctx(mesh, op, params)?;
+        self.preview_on_clone_with_ctx(mesh, op, &plan)
+    }
+
+    fn compile_with_ctx<O: EditOperator>(
+        &mut self,
+        mesh: &Mesh,
+        op: &O,
+        params: &O::Params,
+    ) -> Result<EditPlan<O::Plan>, OpError> {
+        #[cfg(any(target_arch = "wasm32", feature = "std"))]
+        let compile_start = Instant::now();
+        let payload = op
+            .compile(mesh, params, &mut self.ctx)
+            .map_err(|error| self.attach_context_diagnostics(error))?;
+        #[cfg(any(target_arch = "wasm32", feature = "std"))]
+        self.ctx
+            .clock
+            .add_nanos("op.compile", duration_nanos_u64(compile_start.elapsed()));
+        #[cfg(not(any(target_arch = "wasm32", feature = "std")))]
+        self.ctx.clock.add_nanos("op.compile", 0);
+
+        Ok(EditPlan {
+            operator: op.name(),
+            fingerprint: op.plan_fingerprint(&payload),
+            payload,
+        })
+    }
+
+    fn apply_in_place_with_ctx<O: EditOperator>(
+        &mut self,
+        mesh: &mut Mesh,
+        op: &O,
+        plan: &EditPlan<O::Plan>,
+    ) -> Result<OpResult<O::Output>, OpError> {
+        if plan.operator != op.name() {
+            return Err(self.plan_operator_mismatch_error(plan.operator, op.name()));
+        }
         let mut txn = mesh.begin();
 
         #[cfg(any(target_arch = "wasm32", feature = "std"))]
         let op_apply_start = Instant::now();
-        let (mut report, output) = {
-            match op.apply(&mut txn, params, &mut self.ctx) {
-                Ok(report) => report,
-                Err(error) => return Err(self.attach_context_diagnostics(error)),
-            }
-        };
+        let (mut report, output) = op
+            .apply_plan(&mut txn, &plan.payload, &mut self.ctx)
+            .map_err(|error| self.attach_context_diagnostics(error))?;
         #[cfg(any(target_arch = "wasm32", feature = "std"))]
         self.ctx
             .clock
@@ -109,18 +198,15 @@ impl OperatorRunner {
         })
     }
 
-    /// Runs one operator in preview mode against a cloned mesh.
-    ///
-    /// Preview isolation:
-    /// - any mutations to [`OpContext::cache_dirty`] performed during preview
-    ///   are discarded before returning, including error paths
-    pub fn run_preview<O: EditOperator>(
+    fn preview_on_clone_with_ctx<O: EditOperator>(
         &mut self,
         mesh: &Mesh,
         op: &O,
-        params: &O::Params,
+        plan: &EditPlan<O::Plan>,
     ) -> Result<PreviewResult<O::Output>, OpError> {
-        self.reset_for_run();
+        if plan.operator != op.name() {
+            return Err(self.plan_operator_mismatch_error(plan.operator, op.name()));
+        }
         let cache_dirty_before = self.ctx.cache_dirty.clone();
         let result = (|| {
             let mut preview_mesh = mesh.clone();
@@ -128,12 +214,9 @@ impl OperatorRunner {
 
             #[cfg(any(target_arch = "wasm32", feature = "std"))]
             let op_apply_start = Instant::now();
-            let (mut report, output) = {
-                match op.apply(&mut txn, params, &mut self.ctx) {
-                    Ok(report) => report,
-                    Err(error) => return Err(self.attach_context_diagnostics(error)),
-                }
-            };
+            let (mut report, output) = op
+                .apply_plan(&mut txn, &plan.payload, &mut self.ctx)
+                .map_err(|error| self.attach_context_diagnostics(error))?;
             #[cfg(any(target_arch = "wasm32", feature = "std"))]
             self.ctx
                 .clock
@@ -202,6 +285,27 @@ impl OperatorRunner {
         )
         .with_change_set(change_set)
     }
+
+    fn plan_operator_mismatch_error(
+        &self,
+        plan_operator: &str,
+        expected_operator: &str,
+    ) -> OpError {
+        OpError::new(
+            OpErrorKind::PreconditionFailed,
+            vec![Diagnostic::new(
+                crate::DiagLevel::Error,
+                crate::DiagCode::PreconditionFailed,
+                alloc::format!(
+                    "plan operator mismatch: plan is `{plan_operator}`, runner expected `{expected_operator}`"
+                ),
+            )],
+            crate::Artifacts::new(
+                self.ctx.policy.limits.max_artifact_items,
+                self.ctx.policy.limits.max_artifact_bytes,
+            ),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +322,7 @@ mod tests {
 
     impl EditOperator for AddVertexOperator {
         type Params = [f32; 3];
+        type Plan = [f32; 3];
         type Output = ();
 
         fn name(&self) -> &'static str {
@@ -234,6 +339,24 @@ mod tests {
             ctx.scratch.u32s.push(7);
             let _ = txn.add_vertex(*params);
             Ok((OpReport::new(self.name(), Artifacts::default()), ()))
+        }
+
+        fn compile(
+            &self,
+            _mesh: &exedra::Mesh,
+            params: &Self::Params,
+            _ctx: &mut OpContext,
+        ) -> Result<Self::Plan, OpError> {
+            Ok(*params)
+        }
+
+        fn apply_plan(
+            &self,
+            txn: &mut EditSession<'_>,
+            plan: &Self::Plan,
+            ctx: &mut OpContext,
+        ) -> Result<(OpReport, Self::Output), OpError> {
+            self.apply(txn, plan, ctx)
         }
     }
 
@@ -342,6 +465,7 @@ mod tests {
 
     impl EditOperator for MarksPreviewDirtyOperator {
         type Params = ();
+        type Plan = ();
         type Output = ();
 
         fn name(&self) -> &'static str {
@@ -356,6 +480,24 @@ mod tests {
         ) -> Result<(OpReport, Self::Output), OpError> {
             ctx.cache_dirty.mark_global(DirtyChannel::Selection);
             Ok((OpReport::new(self.name(), Artifacts::default()), ()))
+        }
+
+        fn compile(
+            &self,
+            _mesh: &exedra::Mesh,
+            _params: &Self::Params,
+            _ctx: &mut OpContext,
+        ) -> Result<Self::Plan, OpError> {
+            Ok(())
+        }
+
+        fn apply_plan(
+            &self,
+            txn: &mut EditSession<'_>,
+            _plan: &Self::Plan,
+            ctx: &mut OpContext,
+        ) -> Result<(OpReport, Self::Output), OpError> {
+            self.apply(txn, &(), ctx)
         }
     }
 
