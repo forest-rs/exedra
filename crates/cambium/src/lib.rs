@@ -35,10 +35,26 @@
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
-//! - Inspection: [`InspectBounds`], [`ValidateMesh`]
-//! - Editing operators: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`],
-//!   [`ExtrudeFaces`], [`InsetFaces`], [`TagFaceRegion`], [`MarkEdgeSeam`], [`MarkEdgeSharp`]
-//! - UV operators: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
+//! - Operator families:
+//!   - `inspect.*`: [`InspectBounds`], [`ValidateMesh`]
+//!   - `select.*`: [`select_faces_by_region`]
+//!   - `tag.*`: [`TagFaceRegion`]
+//!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
+//!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`ExtrudeFaces`], [`InsetFaces`]
+//!
+//! # Namespace Conventions
+//! Operator stable IDs follow lowercase dot-separated families from the v0.1
+//! taxonomy:
+//! - `inspect.*`
+//! - `select.*`
+//! - `tag.*`
+//! - `mark.*`
+//! - `uv.*`
+//! - `edit.*`
+//!
+//! See `docs/briefs/09_operator_taxonomy_v01_freeze.md` and
+//! `docs/briefs/10_operator_naming_conventions.md` for the canonical contract.
 //!
 //! # Typical Flow
 //! ```rust
@@ -107,41 +123,51 @@ mod validate;
 
 pub use artifact::{Artifact, Artifacts};
 pub use artifact::{DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACT_ITEMS};
-pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, InspectBounds};
+
+// Runtime and execution surface.
 pub use context::{Clock, ClockBucket, OpContext, Scratch};
-pub use delete::{
-    DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
-    DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
-};
 pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
+pub use operator::EditOperator;
+pub use plan::{EditPlan, PlanFingerprint, mesh_signature};
+pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
+pub use runner::{OpResult, OperatorRunner, PreviewResult};
+
+// Shared mesh/kernel types re-exported from Exedra.
 pub use exedra::{
     BuildParams, CornerId, DeletePolicy, ExtractParams, FaceId, HalfEdgeId, Mesh, MeshBuilder,
     TriMesh, VertexId,
+};
+
+// Policies and selection surface.
+pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, InspectBounds};
+pub use policy::{
+    BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
+    QualityPolicy, UvPolicy, ValidatePolicy, WorkBudget,
+};
+pub use selection::{
+    EdgeSet, FaceSet, Selection, SelectionDomainError, SelectionKind, VertexSet,
+    canonicalize_edge_set, canonicalize_face_set, canonicalize_vertex_set,
+};
+
+// Fluent workflow layer.
+pub use mesh_edit::{MeshEdit, MeshEditPlan, MeshEditPreview, MeshEditResult, MeshEditStepPlan};
+
+// Operator families (`inspect.*`, `select.*`, `tag.*`, `mark.*`, `uv.*`, `edit.*`).
+pub use delete::{
+    DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
+    DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
 };
 pub use face_edit::{
     ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, InsetFaces, InsetFacesOutput,
     InsetFacesParams, InsetFacesPlan,
 };
-pub use mesh_edit::{MeshEdit, MeshEditPlan, MeshEditPreview, MeshEditResult, MeshEditStepPlan};
-pub use operator::EditOperator;
-pub use plan::{EditPlan, PlanFingerprint, mesh_signature};
-pub use policy::{
-    BooleanParams, BooleanPolicy, LimitsPolicy, PolicySet, PropagatePolicy, QualityMode,
-    QualityPolicy, UvPolicy, ValidatePolicy, WorkBudget,
-};
 pub use region::{
     REGION_UNTAGGED, RegionSelection, TagFaceRegion, TagFaceRegionParams, select_faces_by_region,
 };
-pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
-pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use seam::{MarkEdgeSeam, MarkEdgeSeamParams};
-pub use selection::{
-    EdgeSet, FaceSet, Selection, SelectionDomainError, SelectionKind, VertexSet,
-    canonicalize_edge_set, canonicalize_face_set, canonicalize_vertex_set,
-};
 pub use sharp::{MarkEdgeSharp, MarkEdgeSharpParams};
 pub use uv_box::{UvBox, UvBoxParams};
 pub use uv_cylinder::{CylinderAxis, UvCylinder, UvCylinderParams};

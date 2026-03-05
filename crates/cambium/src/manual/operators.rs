@@ -47,6 +47,16 @@
 //! - Keep artifact ordering stable.
 //! - Keep timing bucket names stable across runs and versions.
 //!
+//! # Namespace Rules
+//!
+//! Stable operator IDs (`name()`) must use one of the v0.1 family prefixes:
+//! - `inspect.*`
+//! - `select.*`
+//! - `tag.*`
+//! - `mark.*`
+//! - `uv.*`
+//! - `edit.*`
+//!
 //! # Edge Sharpness Conventions
 //!
 //! Edge sharpness is numeric (`f32`) in Exedra/Cambium:
