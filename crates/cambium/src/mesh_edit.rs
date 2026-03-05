@@ -9,14 +9,15 @@
 
 use alloc::vec::Vec;
 
-use exedra::{DeletePolicy, Mesh};
+use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
 
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{
     DeleteFaces, DeleteFacesOutput, DeleteFacesParams, DeleteFacesPlan, ExtrudeFaces,
     ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan,
     OpError, OpReport, OperatorRunner, PreviewResult, Selection, SelectionDomainError,
-    TagFaceRegion, TagFaceRegionParams, canonicalize_face_set,
+    TagFaceRegion, TagFaceRegionParams, canonicalize_face_set, flood_fill_faces_by_region,
+    select_boundary_edge_loop, select_faces_by_region,
 };
 
 #[derive(Clone, Debug)]
@@ -119,6 +120,12 @@ pub struct MeshEditPreview {
 /// - `inset` selects `inner_faces`,
 /// - `tag` keeps selected faces,
 /// - `delete` clears selection.
+///
+/// Query helpers:
+/// - [`MeshEdit::select_faces_by_region`] seeds faces from region tags.
+/// - [`MeshEdit::flood_faces_by_region`] seeds connected region flood results.
+/// - [`MeshEdit::query_boundary_edge_loop`] exposes an edge-domain selection for
+///   composition outside this face-only fluent chain.
 #[derive(Clone, Debug, Default)]
 pub struct MeshEdit {
     selected_faces: FaceSet,
@@ -144,6 +151,31 @@ impl MeshEdit {
     pub fn select(self, selection: Selection) -> Result<Self, SelectionDomainError> {
         let faces = selection.require_faces()?.clone();
         Ok(self.select_faces(faces))
+    }
+
+    /// Replaces the fluent face selection with all faces tagged `region_id`.
+    pub fn select_faces_by_region(self, mesh: &Mesh, region_id: u32) -> Result<Self, OpError> {
+        let selected = select_faces_by_region(mesh, region_id)?;
+        Ok(self.select_faces(selected.faces))
+    }
+
+    /// Replaces the fluent face selection with a connected region flood-fill result.
+    pub fn flood_faces_by_region(self, mesh: &Mesh, seed_face: FaceId) -> Result<Self, OpError> {
+        let selected = flood_fill_faces_by_region(mesh, seed_face)?;
+        Ok(self.select_faces(selected.faces))
+    }
+
+    /// Returns an edge-domain boundary-loop selection for `seed_edge`.
+    ///
+    /// This method is intentionally query-only: `MeshEdit` step chaining is
+    /// currently face-domain, so edge selections should be handed off through
+    /// domain-generic composition APIs.
+    pub fn query_boundary_edge_loop(
+        mesh: &Mesh,
+        seed_edge: HalfEdgeId,
+    ) -> Result<Selection, OpError> {
+        let selected = select_boundary_edge_loop(mesh, seed_edge)?;
+        Ok(Selection::from(selected.edges))
     }
 
     /// Adds one extrude step using the current selected faces.
@@ -381,8 +413,8 @@ impl MeshEdit {
 
 fn mesh_edit_fingerprint(
     steps: &[MeshEditStepPlan],
-    initial_faces: &[exedra::FaceId],
-    final_faces: &[exedra::FaceId],
+    initial_faces: &[FaceId],
+    final_faces: &[FaceId],
 ) -> PlanFingerprint {
     let mut hasher = PlanHasher::new();
     hasher.write_str("mesh-edit-plan/v1");
@@ -415,13 +447,14 @@ fn mesh_edit_fingerprint(
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use exedra::{DeletePolicy, MeshBuilder};
 
     use super::MeshEdit;
     use crate::{
         ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
-        OperatorRunner, Selection, mesh_signature,
+        OperatorRunner, Selection, TagFaceRegion, TagFaceRegionParams, mesh_signature,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -560,5 +593,73 @@ mod tests {
             flow_result.selection,
             Selection::from(inset_result.output.inner_faces)
         );
+    }
+
+    #[test]
+    fn mesh_edit_can_seed_selection_from_region_query() {
+        let (mut mesh, face) = one_quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let tag_params = TagFaceRegionParams {
+            region_id: 7,
+            faces: vec![face],
+        };
+        let tag_plan = runner
+            .compile(&mesh, &TagFaceRegion, &tag_params)
+            .expect("tag compile should succeed");
+        let _ = runner
+            .apply_in_place(&mut mesh, &TagFaceRegion, &tag_plan)
+            .expect("tagging should succeed");
+
+        let flow = MeshEdit::new()
+            .select_faces_by_region(&mesh, 7)
+            .expect("region query should succeed")
+            .tag(9);
+
+        let mut apply_runner = OperatorRunner::new();
+        let result = flow
+            .apply(&mut apply_runner, &mut mesh)
+            .expect("flow should succeed");
+        assert!(matches!(result.selection, Selection::Faces(ref faces) if faces == &vec![face]));
+    }
+
+    #[test]
+    fn mesh_edit_can_seed_selection_from_region_flood() {
+        let mesh = exedra::Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 4, 3], &[1, 2, 5, 4]],
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let flow = MeshEdit::new()
+            .flood_faces_by_region(&mesh, faces[0])
+            .expect("flood query should succeed")
+            .tag(5);
+
+        let mut runner = OperatorRunner::new();
+        let mut mesh = mesh;
+        let result = flow
+            .apply(&mut runner, &mut mesh)
+            .expect("flow should succeed");
+        assert!(matches!(result.selection, Selection::Faces(_)));
+    }
+
+    #[test]
+    fn mesh_edit_boundary_query_returns_edge_selection() {
+        let (mesh, face) = one_quad_mesh();
+        let seed = mesh
+            .face_loop(face)
+            .next()
+            .expect("quad face should have a boundary edge");
+        let selection = MeshEdit::query_boundary_edge_loop(&mesh, seed)
+            .expect("boundary loop query should succeed");
+        assert!(matches!(selection, Selection::Edges(ref edges) if !edges.is_empty()));
     }
 }
