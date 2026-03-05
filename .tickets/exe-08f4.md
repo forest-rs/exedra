@@ -2,7 +2,7 @@
 id: exe-08f4
 title: Txn::add_face preflight/stitch performance pass
 status: open
-deps: []
+deps: [exe-23ot]
 links: []
 created: 2026-03-04T13:49:23Z
 type: task
@@ -23,4 +23,4 @@ Current add_face uses O(degree * total_half_edges) global scans (has_undirected_
 - Replace global edge scans with localized lookups
 - Avoid whole-mesh OUTSIDE restitch when only local boundary changed
 - Preserve add_face error semantics and deterministic behavior
-- Bench test shows reduced cost on repeated face creation
+- Bench test or focused perf test shows reduced cost on repeated face creation (wind tunnel regression scenario may land separately)

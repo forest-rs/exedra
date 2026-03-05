@@ -2,7 +2,7 @@
 id: cam-7u7l
 title: Extrude mode semantics (shell vs keep-source)
 status: open
-deps: [cam-mn4h, cam-1xjc]
+deps: [cam-mn4h, cam-1xjc, exe-cz8g]
 links: []
 created: 2026-03-04T12:54:57Z
 type: feature

@@ -1,7 +1,7 @@
 ---
 id: cam-nyws
 status: open
-deps: []
+deps: [cam-inf3]
 links: []
 created: 2026-03-04T04:27:35Z
 type: task

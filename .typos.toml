@@ -6,6 +6,11 @@
 # word is treated as always correct. If the value is an empty string, the word
 # is treated as always incorrect.
 
+# General dictionary behavior
+[default]
+# Ignore ticket IDs like exe-23ot/cam-gvmz in .tickets files and paths.
+extend-ignore-re = ["\\b[a-z]{3}-[0-9a-z]{4}\\b"]
+
 # Match Identifier - Case Sensitive
 [default.extend-identifiers]
 LOD = "LOD"

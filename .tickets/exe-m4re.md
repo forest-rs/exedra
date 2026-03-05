@@ -26,11 +26,12 @@ Wind tunnel scenarios:
 Each scenario measures: time, allocations, memory, element counts.
 Uses criterion or similar for benchmarking.
 Reports must be comparable across runs for regression detection.
+Wind tunnel acts as a regression oracle (scheduled/release/perf-triage), not a mandatory per-change merge gate.
 
 ## Acceptance Criteria
 
 - Wind tunnel crate exists in workspace
 - At least WT-1 scenario implemented
 - Benchmark harness produces comparable results
+- Includes determinism/stability check path suitable for Exedra scenarios (stable output signature across repeated runs for identical inputs)
 - No std dependency leaks into exedra core
-
