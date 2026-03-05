@@ -62,6 +62,17 @@ pub(crate) fn sin_cos(theta: f32) -> (f32, f32) {
     }
 }
 
+pub(crate) fn sqrt(value: f32) -> f32 {
+    #[cfg(feature = "std")]
+    {
+        value.sqrt()
+    }
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        libm::sqrtf(value)
+    }
+}
+
 pub(crate) fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("index overflowed u32")
 }

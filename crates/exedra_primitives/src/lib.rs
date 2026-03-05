@@ -5,9 +5,10 @@
 //!
 //! This crate provides a curated constructor surface at the crate root:
 //! - constructors: [`quad()`], [`grid()`], [`box_primitive()`], [`cylinder()`],
-//!   [`cone()`], [`torus()`], [`uv_sphere()`],
+//!   [`cone()`], [`torus()`], [`icosphere()`], [`uv_sphere()`],
 //! - parameter types: [`QuadParams`], [`GridParams`], [`BoxParams`],
-//!   [`CylinderParams`], [`ConeParams`], [`TorusParams`], [`UvSphereParams`],
+//!   [`CylinderParams`], [`ConeParams`], [`TorusParams`], [`IcosphereParams`],
+//!   [`UvSphereParams`],
 //! - semantic region/selection metadata in [`Primitive`].
 //!
 //! Primitive outputs are deterministic for fixed input parameters and include:
@@ -37,6 +38,7 @@ mod common;
 mod cone;
 mod cylinder;
 mod grid;
+mod icosphere;
 mod quad;
 mod torus;
 mod uv_sphere;
@@ -52,6 +54,7 @@ pub use cone::{
 pub use cylinder::{CylinderParams, cylinder};
 pub use cylinder::{REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE};
 pub use grid::{GridParams, REGION_GRID, grid};
+pub use icosphere::{IcosphereParams, REGION_BODY as REGION_ICOSPHERE_BODY, icosphere};
 pub use quad::{QuadParams, REGION_FACE, quad};
 pub use torus::{REGION_BODY as REGION_TORUS_BODY, TorusParams, torus};
 pub use uv_sphere::{REGION_BODY, REGION_POLE_BOTTOM, REGION_POLE_TOP};
