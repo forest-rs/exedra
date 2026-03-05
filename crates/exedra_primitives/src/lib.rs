@@ -4,9 +4,10 @@
 //! Deterministic primitive mesh generators for Exedra.
 //!
 //! This crate provides a curated constructor surface at the crate root:
-//! - constructors: [`quad()`], [`box_primitive()`], [`cylinder()`], [`uv_sphere()`],
-//! - parameter types: [`QuadParams`], [`BoxParams`], [`CylinderParams`],
-//!   [`UvSphereParams`],
+//! - constructors: [`quad()`], [`grid()`], [`box_primitive()`], [`cylinder()`],
+//!   [`uv_sphere()`],
+//! - parameter types: [`QuadParams`], [`GridParams`], [`BoxParams`],
+//!   [`CylinderParams`], [`UvSphereParams`],
 //! - semantic region/selection metadata in [`Primitive`].
 //!
 //! Primitive outputs are deterministic for fixed input parameters and include:
@@ -34,6 +35,7 @@ use exedra::{FaceId, HalfEdgeId, Mesh};
 mod box_primitive;
 mod common;
 mod cylinder;
+mod grid;
 mod quad;
 mod uv_sphere;
 
@@ -44,6 +46,7 @@ pub use box_primitive::{
 };
 pub use cylinder::{CylinderParams, cylinder};
 pub use cylinder::{REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE};
+pub use grid::{GridParams, REGION_GRID, grid};
 pub use quad::{QuadParams, REGION_FACE, quad};
 pub use uv_sphere::{REGION_BODY, REGION_POLE_BOTTOM, REGION_POLE_TOP};
 pub use uv_sphere::{UvSphereParams, uv_sphere};
