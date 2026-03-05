@@ -1,6 +1,6 @@
 ---
 id: cam-g3hn
-status: open
+status: closed
 deps: [cam-mrwk]
 links: []
 created: 2026-03-05T08:04:40Z
@@ -21,3 +21,9 @@ Create a catalog-oriented taxonomy (edit/mark/tag/select/inspect/uv/construct/re
 
 - Taxonomy doc exists and lists current operators by family; - v0.1 minimum operator set is explicitly listed and frozen; - deferred operator families are listed with rationale; - downstream naming/docs tickets reference this ticket.
 
+
+## Notes
+
+**2026-03-05T08:16:19Z**
+
+Taxonomy contract documented in crates/cambium/docs/briefs/09_operator_taxonomy_v01_freeze.md. Frozen v0.1 set established and mapped to downstream naming/discoverability/catalog tickets.
