@@ -10,6 +10,11 @@ use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
 
 use crate::sorted_merge::for_each_count_join;
 use crate::{CornerId, FaceId, HalfEdge, HalfEdgeId, Id, Mesh, VertexId, attr};
+use propagation::{
+    SplitEdgeUvSources, capture_edge_tags, clear_edge_tags, propagate_split_edge_corner_uvs,
+    propagate_split_edge_edge_attrs, propagate_split_face_diagonal_uvs,
+    split_face_diagonal_sharpness,
+};
 
 const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
@@ -17,6 +22,7 @@ const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 
 mod attrs;
 mod bookkeeping;
+mod propagation;
 
 /// Vertex-position propagation behavior for topology edits.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -826,90 +832,28 @@ impl EditSession<'_> {
         self.mark_vertex_dirty(new_vertex);
 
         // Propagate edge-domain authored tags from original undirected edge.
-        let seam = self
-            .mesh
-            .attrs()
-            .sparse(attr::EDGE_SEAM)
-            .and_then(|layer| layer.get(old_canonical_edge.as_id()).copied());
-        let sharp = self
-            .mesh
-            .attrs()
-            .sparse(attr::EDGE_SHARPNESS)
-            .and_then(|layer| layer.get(old_canonical_edge.as_id()).copied());
-        if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::EDGE_SEAM) {
-            let _ = layer.remove(old_canonical_edge.as_id());
-        }
-        if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::EDGE_SHARPNESS) {
-            let _ = layer.remove(old_canonical_edge.as_id());
-        }
-        match self.propagate_policy.edge_attr {
-            EdgeAttrPropagation::Inherit => {
-                if let Some(seam) = seam {
-                    let _ = self.set_edge_seam(half_edge, seam);
-                    let _ = self.set_edge_seam(child_h, seam);
-                }
-                if let Some(sharp) = sharp {
-                    let _ = self.set_edge_sharpness(half_edge, sharp);
-                    let _ = self.set_edge_sharpness(child_h, sharp);
-                }
-            }
-            EdgeAttrPropagation::DecayOnSplit => {
-                if let Some(seam) = seam {
-                    let _ = self.set_edge_seam(half_edge, seam);
-                    let _ = self.set_edge_seam(child_h, seam);
-                }
-                if let Some(sharp) = sharp {
-                    let split_sharp = (sharp - 1.0).max(0.0);
-                    let _ = self.set_edge_sharpness(half_edge, split_sharp);
-                    let _ = self.set_edge_sharpness(child_h, split_sharp);
-                }
-            }
-            EdgeAttrPropagation::Clear => {
-                let _ = self.set_edge_seam(half_edge, false);
-                let _ = self.set_edge_seam(child_h, false);
-                let _ = self.set_edge_sharpness(half_edge, 0.0);
-                let _ = self.set_edge_sharpness(child_h, 0.0);
-            }
-        }
+        let edge_tags = capture_edge_tags(self.mesh, old_canonical_edge);
+        clear_edge_tags(self.mesh, old_canonical_edge);
+        let policy = self.propagate_policy;
+        propagate_split_edge_edge_attrs(self, half_edge, child_h, edge_tags, &policy);
 
         // Propagate corner UVs for new corners.
         if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
-            // Child corners preserve their destination corner UVs from the
-            // source mesh (child_h -> old half_edge destination, child_t -> old twin destination).
-            if let Some(uv) = old_uv_h {
-                let _ = self.set_corner_uv(child_h, uv);
-            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
-                let _ = layer.remove(child_h.as_id());
-            }
-            if let Some(uv) = old_uv_t {
-                let _ = self.set_corner_uv(child_t, uv);
-            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
-                let _ = layer.remove(child_t.as_id());
-            }
-
-            // Parent corners now target the inserted midpoint vertex.
-            let h_uv_mid = match self.propagate_policy.uv {
-                UvPropagation::Midpoint => {
-                    let uv_b_fh = old_uv_h.unwrap_or([0.0, 0.0]);
-                    [
-                        0.5 * (uv_a_fh[0] + uv_b_fh[0]),
-                        0.5 * (uv_a_fh[1] + uv_b_fh[1]),
-                    ]
-                }
-                UvPropagation::CopyFromSide => old_uv_h.unwrap_or([0.0, 0.0]),
-            };
-            let t_uv_mid = match self.propagate_policy.uv {
-                UvPropagation::Midpoint => {
-                    let uv_a_ft = old_uv_t.unwrap_or([0.0, 0.0]);
-                    [
-                        0.5 * (uv_b_ft[0] + uv_a_ft[0]),
-                        0.5 * (uv_b_ft[1] + uv_a_ft[1]),
-                    ]
-                }
-                UvPropagation::CopyFromSide => old_uv_t.unwrap_or([0.0, 0.0]),
-            };
-            let _ = self.set_corner_uv(half_edge, h_uv_mid);
-            let _ = self.set_corner_uv(twin, t_uv_mid);
+            let policy = self.propagate_policy;
+            propagate_split_edge_corner_uvs(
+                self,
+                half_edge,
+                twin,
+                child_h,
+                child_t,
+                SplitEdgeUvSources {
+                    old_uv_h,
+                    old_uv_t,
+                    uv_a_fh,
+                    uv_b_ft,
+                },
+                &policy,
+            );
         }
 
         // Update cached degree for incident interior faces.
@@ -1094,27 +1038,15 @@ impl EditSession<'_> {
         if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
             let uv_a = self.corner_uv(corner_a);
             let uv_b = self.corner_uv(corner_b);
-            let uv_diag = match self.propagate_policy.uv {
-                UvPropagation::Midpoint => match (uv_a, uv_b) {
-                    (Some(a), Some(b)) => Some([0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]),
-                    _ => None,
-                },
-                UvPropagation::CopyFromSide => uv_b,
-            };
-            let uv_twin = match self.propagate_policy.uv {
-                UvPropagation::Midpoint => uv_diag,
-                UvPropagation::CopyFromSide => uv_a,
-            };
-            if let Some(uv) = uv_diag {
-                let _ = self.set_corner_uv(diagonal_a_b, uv);
-            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
-                let _ = layer.remove(diagonal_a_b.as_id());
-            }
-            if let Some(uv) = uv_twin {
-                let _ = self.set_corner_uv(diagonal_b_a, uv);
-            } else if let Some(layer) = self.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
-                let _ = layer.remove(diagonal_b_a.as_id());
-            }
+            let policy = self.propagate_policy;
+            propagate_split_face_diagonal_uvs(
+                self,
+                diagonal_a_b,
+                diagonal_b_a,
+                uv_a,
+                uv_b,
+                &policy,
+            );
         }
 
         // v0.1 diagonal sharpness derives from the two existing directed
@@ -1123,11 +1055,8 @@ impl EditSession<'_> {
             .edge_sharpness(corner_a)
             .unwrap_or(0.0)
             .max(self.edge_sharpness(corner_b).unwrap_or(0.0));
-        let diagonal_sharp = match self.propagate_policy.edge_attr {
-            EdgeAttrPropagation::Clear => 0.0,
-            EdgeAttrPropagation::Inherit => 0.0,
-            EdgeAttrPropagation::DecayOnSplit => (source_sharp - 1.0).max(0.0),
-        };
+        let policy = self.propagate_policy;
+        let diagonal_sharp = split_face_diagonal_sharpness(source_sharp, &policy);
         if diagonal_sharp > 0.0 {
             let _ = self.set_edge_sharpness(diagonal_a_b, diagonal_sharp);
         }

@@ -1,0 +1,165 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Shared attribute propagation helpers for topology kernels.
+
+use super::*;
+
+pub(super) fn capture_edge_tags(
+    mesh: &Mesh,
+    canonical_edge: HalfEdgeId,
+) -> (Option<bool>, Option<f32>) {
+    let seam = mesh
+        .attrs()
+        .sparse(attr::EDGE_SEAM)
+        .and_then(|layer| layer.get(canonical_edge.as_id()).copied());
+    let sharp = mesh
+        .attrs()
+        .sparse(attr::EDGE_SHARPNESS)
+        .and_then(|layer| layer.get(canonical_edge.as_id()).copied());
+    (seam, sharp)
+}
+
+pub(super) fn clear_edge_tags(mesh: &mut Mesh, canonical_edge: HalfEdgeId) {
+    if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SEAM) {
+        let _ = layer.remove(canonical_edge.as_id());
+    }
+    if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SHARPNESS) {
+        let _ = layer.remove(canonical_edge.as_id());
+    }
+}
+
+pub(super) fn propagate_split_edge_edge_attrs(
+    session: &mut EditSession<'_>,
+    parent: HalfEdgeId,
+    child: HalfEdgeId,
+    edge_tags: (Option<bool>, Option<f32>),
+    policy: &PropagatePolicy,
+) {
+    let (seam, sharp) = edge_tags;
+    match policy.edge_attr {
+        EdgeAttrPropagation::Inherit => {
+            if let Some(seam) = seam {
+                let _ = session.set_edge_seam(parent, seam);
+                let _ = session.set_edge_seam(child, seam);
+            }
+            if let Some(sharp) = sharp {
+                let _ = session.set_edge_sharpness(parent, sharp);
+                let _ = session.set_edge_sharpness(child, sharp);
+            }
+        }
+        EdgeAttrPropagation::DecayOnSplit => {
+            if let Some(seam) = seam {
+                let _ = session.set_edge_seam(parent, seam);
+                let _ = session.set_edge_seam(child, seam);
+            }
+            if let Some(sharp) = sharp {
+                let split_sharp = (sharp - 1.0).max(0.0);
+                let _ = session.set_edge_sharpness(parent, split_sharp);
+                let _ = session.set_edge_sharpness(child, split_sharp);
+            }
+        }
+        EdgeAttrPropagation::Clear => {
+            let _ = session.set_edge_seam(parent, false);
+            let _ = session.set_edge_seam(child, false);
+            let _ = session.set_edge_sharpness(parent, 0.0);
+            let _ = session.set_edge_sharpness(child, 0.0);
+        }
+    }
+}
+
+pub(super) struct SplitEdgeUvSources {
+    pub(super) old_uv_h: Option<[f32; 2]>,
+    pub(super) old_uv_t: Option<[f32; 2]>,
+    pub(super) uv_a_fh: [f32; 2],
+    pub(super) uv_b_ft: [f32; 2],
+}
+
+pub(super) fn propagate_split_edge_corner_uvs(
+    session: &mut EditSession<'_>,
+    half_edge: HalfEdgeId,
+    twin: HalfEdgeId,
+    child_h: HalfEdgeId,
+    child_t: HalfEdgeId,
+    sources: SplitEdgeUvSources,
+    policy: &PropagatePolicy,
+) {
+    let SplitEdgeUvSources {
+        old_uv_h,
+        old_uv_t,
+        uv_a_fh,
+        uv_b_ft,
+    } = sources;
+    if let Some(uv) = old_uv_h {
+        let _ = session.set_corner_uv(child_h, uv);
+    } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+        let _ = layer.remove(child_h.as_id());
+    }
+    if let Some(uv) = old_uv_t {
+        let _ = session.set_corner_uv(child_t, uv);
+    } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+        let _ = layer.remove(child_t.as_id());
+    }
+
+    let h_uv_mid = match policy.uv {
+        UvPropagation::Midpoint => {
+            let uv_b_fh = old_uv_h.unwrap_or([0.0, 0.0]);
+            [
+                0.5 * (uv_a_fh[0] + uv_b_fh[0]),
+                0.5 * (uv_a_fh[1] + uv_b_fh[1]),
+            ]
+        }
+        UvPropagation::CopyFromSide => old_uv_h.unwrap_or([0.0, 0.0]),
+    };
+    let t_uv_mid = match policy.uv {
+        UvPropagation::Midpoint => {
+            let uv_a_ft = old_uv_t.unwrap_or([0.0, 0.0]);
+            [
+                0.5 * (uv_b_ft[0] + uv_a_ft[0]),
+                0.5 * (uv_b_ft[1] + uv_a_ft[1]),
+            ]
+        }
+        UvPropagation::CopyFromSide => old_uv_t.unwrap_or([0.0, 0.0]),
+    };
+    let _ = session.set_corner_uv(half_edge, h_uv_mid);
+    let _ = session.set_corner_uv(twin, t_uv_mid);
+}
+
+pub(super) fn propagate_split_face_diagonal_uvs(
+    session: &mut EditSession<'_>,
+    diagonal_a_b: HalfEdgeId,
+    diagonal_b_a: HalfEdgeId,
+    uv_a: Option<[f32; 2]>,
+    uv_b: Option<[f32; 2]>,
+    policy: &PropagatePolicy,
+) {
+    let uv_diag = match policy.uv {
+        UvPropagation::Midpoint => match (uv_a, uv_b) {
+            (Some(a), Some(b)) => Some([0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]),
+            _ => None,
+        },
+        UvPropagation::CopyFromSide => uv_b,
+    };
+    let uv_twin = match policy.uv {
+        UvPropagation::Midpoint => uv_diag,
+        UvPropagation::CopyFromSide => uv_a,
+    };
+    if let Some(uv) = uv_diag {
+        let _ = session.set_corner_uv(diagonal_a_b, uv);
+    } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+        let _ = layer.remove(diagonal_a_b.as_id());
+    }
+    if let Some(uv) = uv_twin {
+        let _ = session.set_corner_uv(diagonal_b_a, uv);
+    } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+        let _ = layer.remove(diagonal_b_a.as_id());
+    }
+}
+
+pub(super) fn split_face_diagonal_sharpness(source_sharp: f32, policy: &PropagatePolicy) -> f32 {
+    match policy.edge_attr {
+        EdgeAttrPropagation::Clear => 0.0,
+        EdgeAttrPropagation::Inherit => 0.0,
+        EdgeAttrPropagation::DecayOnSplit => (source_sharp - 1.0).max(0.0),
+    }
+}
