@@ -1,7 +1,7 @@
 ---
 id: cam-1xjc
 title: Face-edit multi-face adjacency support
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T12:55:23Z
@@ -25,3 +25,9 @@ Current preflight rejects selections where faces share an edge. Add patch-aware 
 - Deterministic boundary-loop construction for selected patches
 - Tests for adjacent/non-adjacent/mixed selections
 - Behavior is documented as compatible with `cam-xnoi` / `cam-7u7l` mode semantics
+
+## Notes
+
+**2026-03-05T08:35:38Z**
+
+Implemented adjacency-aware extrude/inset patch behavior: internal shared edges collapsed (no duplicate internal walls/frames), outer boundary-only wall/frame generation, shared generated vertices across adjacent faces, deterministic edge counting, and new adjacent-selection regression tests.

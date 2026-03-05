@@ -3,6 +3,7 @@
 
 //! Face extrude/inset edit operators.
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 
@@ -134,38 +135,62 @@ impl EditOperator for ExtrudeFaces {
         }
         let mut cap_faces = Vec::<FaceId>::new();
         let mut wall_faces = Vec::<FaceId>::new();
-
-        for plan in plans {
-            let mut cap = Vec::with_capacity(plan.vertices.len());
+        let edge_counts = selected_edge_counts(&plans);
+        let mut summed_normals = BTreeMap::<VertexId, [f32; 3]>::new();
+        for plan in &plans {
             for &vertex in &plan.vertices {
-                let position = txn
-                    .mesh()
-                    .vertex_position(vertex)
-                    .expect("preflight-validated vertex must be live");
-                let extruded = [
-                    position[0] + plan.normal[0] * params.distance,
-                    position[1] + plan.normal[1] * params.distance,
-                    position[2] + plan.normal[2] * params.distance,
-                ];
-                cap.push(txn.add_vertex(extruded));
+                let sum = summed_normals.entry(vertex).or_insert([0.0, 0.0, 0.0]);
+                sum[0] += plan.normal[0];
+                sum[1] += plan.normal[1];
+                sum[2] += plan.normal[2];
             }
+        }
+        let mut cap_vertices = BTreeMap::<VertexId, VertexId>::new();
+        for (&vertex, sum) in &summed_normals {
+            let position = txn
+                .mesh()
+                .vertex_position(vertex)
+                .expect("preflight-validated vertex must be live");
+            let length_sq = sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2];
+            let direction = if length_sq <= 1e-12 {
+                [0.0, 0.0, 1.0]
+            } else {
+                let inv = 1.0 / length_sq.sqrt_ext();
+                [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+            };
+            let extruded = [
+                position[0] + direction[0] * params.distance,
+                position[1] + direction[1] * params.distance,
+                position[2] + direction[2] * params.distance,
+            ];
+            cap_vertices.insert(vertex, txn.add_vertex(extruded));
+        }
 
-            txn.delete_faces(&[plan.face], DeletePolicy::KeepIsolated)
-                .map_err(|err| {
-                    op_error(
-                        ctx,
-                        OpErrorKind::InternalInvariantViolation,
-                        DiagCode::InternalInvariantViolation,
-                        format!("extrude delete failed unexpectedly: {err}"),
-                    )
-                })?;
+        let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
+        txn.delete_faces(&faces_to_delete, DeletePolicy::KeepIsolated)
+            .map_err(|err| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    format!("extrude delete failed unexpectedly: {err}"),
+                )
+            })?;
 
-            let mut wall_orientation = FrameOrientationState::default();
+        let mut wall_orientation = FrameOrientationState::default();
+        for plan in &plans {
             for i in 0..plan.vertices.len() {
                 let current = plan.vertices[i];
                 let next = plan.vertices[(i + 1) % plan.vertices.len()];
-                let current_cap = cap[i];
-                let next_cap = cap[(i + 1) % cap.len()];
+                if !is_boundary_edge(current, next, &edge_counts) {
+                    continue;
+                }
+                let current_cap = *cap_vertices
+                    .get(&current)
+                    .expect("cap vertex should exist for source vertex");
+                let next_cap = *cap_vertices
+                    .get(&next)
+                    .expect("cap vertex should exist for source vertex");
                 let wall = add_frame_face_with_orientation(
                     txn,
                     current,
@@ -194,23 +219,29 @@ impl EditOperator for ExtrudeFaces {
                     plan.edge_attrs[i],
                     &ctx.policy.propagate,
                 );
-                let mut uv_map = Vec::with_capacity(plan.vertices.len() * 2);
-                for (vertex, uv) in plan
-                    .vertices
-                    .iter()
-                    .copied()
-                    .zip(plan.vertex_uvs.iter().copied())
-                {
-                    uv_map.push((vertex, uv));
-                }
-                for (vertex, uv) in cap.iter().copied().zip(plan.vertex_uvs.iter().copied()) {
-                    uv_map.push((vertex, uv));
-                }
+                let uv_current = plan.vertex_uvs[i];
+                let uv_next = plan.vertex_uvs[(i + 1) % plan.vertex_uvs.len()];
+                let uv_map = [
+                    (current, uv_current),
+                    (next, uv_next),
+                    (current_cap, uv_current),
+                    (next_cap, uv_next),
+                ];
                 propagate_face_corner_uvs(txn, wall, &uv_map);
                 wall_faces.push(wall);
             }
+        }
 
-            let mut cap_loop = cap.clone();
+        for plan in &plans {
+            let mut cap_loop = plan
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    *cap_vertices
+                        .get(vertex)
+                        .expect("cap vertex should exist for source vertex")
+                })
+                .collect::<Vec<_>>();
             if !wall_orientation.prefers_forward_outer_edge() {
                 cap_loop.reverse();
             }
@@ -230,9 +261,9 @@ impl EditOperator for ExtrudeFaces {
                     "failed to set extrude cap region",
                 ));
             }
-            for i in 0..cap.len() {
-                let current_cap = cap[i];
-                let next_cap = cap[(i + 1) % cap.len()];
+            for i in 0..cap_loop.len() {
+                let current_cap = cap_loop[i];
+                let next_cap = cap_loop[(i + 1) % cap_loop.len()];
                 propagate_edge_attrs_for_vertices(
                     txn,
                     top,
@@ -242,27 +273,23 @@ impl EditOperator for ExtrudeFaces {
                     &ctx.policy.propagate,
                 );
             }
-            let mut cap_uv_map = Vec::with_capacity(cap.len());
-            for (vertex, uv) in cap.iter().copied().zip(plan.vertex_uvs.iter().copied()) {
-                cap_uv_map.push((vertex, uv));
-            }
+            let cap_uv_map = cap_loop
+                .iter()
+                .copied()
+                .zip(plan.vertex_uvs.iter().copied())
+                .collect::<Vec<_>>();
             propagate_face_corner_uvs(txn, top, &cap_uv_map);
             cap_faces.push(top);
-
-            report.stats.counters.faces_processed =
-                report.stats.counters.faces_processed.saturating_add(1);
-            report.stats.elements_created.vertices = report
-                .stats
-                .elements_created
-                .vertices
-                .saturating_add(u64::try_from(cap.len()).expect("vertex count should fit u64"));
-            report.stats.elements_created.faces =
-                report.stats.elements_created.faces.saturating_add(
-                    u64::try_from(cap.len() + 1).expect("face count should fit u64"),
-                );
-            report.stats.elements_deleted.faces =
-                report.stats.elements_deleted.faces.saturating_add(1);
         }
+
+        report.stats.counters.faces_processed =
+            u64::try_from(plans.len()).expect("face count should fit u64");
+        report.stats.elements_created.vertices =
+            u64::try_from(cap_vertices.len()).expect("vertex count should fit u64");
+        report.stats.elements_created.faces =
+            u64::try_from(wall_faces.len() + cap_faces.len()).expect("face count should fit u64");
+        report.stats.elements_deleted.faces =
+            u64::try_from(plans.len()).expect("face count should fit u64");
         Ok((
             report,
             ExtrudeFacesOutput {
@@ -355,10 +382,11 @@ impl EditOperator for InsetFaces {
         }
         let mut inner_faces = Vec::<FaceId>::new();
         let mut frame_faces = Vec::<FaceId>::new();
-
-        for face_plan in plans {
+        let edge_counts = selected_edge_counts(&plans);
+        let mut inset_target_sum = BTreeMap::<VertexId, [f32; 3]>::new();
+        let mut inset_target_count = BTreeMap::<VertexId, u32>::new();
+        for face_plan in &plans {
             let centroid = centroid(txn.mesh(), &face_plan.vertices).expect("preflight validated");
-            let mut inset_loop = Vec::with_capacity(face_plan.vertices.len());
             for &vertex in &face_plan.vertices {
                 let position = txn
                     .mesh()
@@ -369,23 +397,52 @@ impl EditOperator for InsetFaces {
                     position[1] + (centroid[1] - position[1]) * plan.factor,
                     position[2] + (centroid[2] - position[2]) * plan.factor,
                 ];
-                inset_loop.push(txn.add_vertex(inset));
+                let sum = inset_target_sum.entry(vertex).or_insert([0.0, 0.0, 0.0]);
+                sum[0] += inset[0];
+                sum[1] += inset[1];
+                sum[2] += inset[2];
+                *inset_target_count.entry(vertex).or_insert(0) += 1;
             }
+        }
+        let mut inset_vertices = BTreeMap::<VertexId, VertexId>::new();
+        for (&vertex, sum) in &inset_target_sum {
+            let count = inset_target_count
+                .get(&vertex)
+                .copied()
+                .expect("inset count should exist");
+            let inv = 1.0 / (count as f32);
+            let averaged = [sum[0] * inv, sum[1] * inv, sum[2] * inv];
+            inset_vertices.insert(vertex, txn.add_vertex(averaged));
+        }
 
-            txn.delete_faces(&[face_plan.face], DeletePolicy::KeepIsolated)
-                .map_err(|err| {
-                    op_error(
-                        ctx,
-                        OpErrorKind::InternalInvariantViolation,
-                        DiagCode::InternalInvariantViolation,
-                        format!("inset delete failed unexpectedly: {err}"),
-                    )
-                })?;
+        let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
+        txn.delete_faces(&faces_to_delete, DeletePolicy::KeepIsolated)
+            .map_err(|err| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    format!("inset delete failed unexpectedly: {err}"),
+                )
+            })?;
 
-            let mut frame_orientation = FrameOrientationState::default();
+        let mut frame_orientation = FrameOrientationState::default();
+        for face_plan in &plans {
+            let inset_loop = face_plan
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    *inset_vertices
+                        .get(vertex)
+                        .expect("inset vertex should exist for source vertex")
+                })
+                .collect::<Vec<_>>();
             for i in 0..face_plan.vertices.len() {
                 let current = face_plan.vertices[i];
                 let next = face_plan.vertices[(i + 1) % face_plan.vertices.len()];
+                if !is_boundary_edge(current, next, &edge_counts) {
+                    continue;
+                }
                 let current_inset = inset_loop[i];
                 let next_inset = inset_loop[(i + 1) % inset_loop.len()];
                 let frame = add_frame_face_with_orientation(
@@ -416,30 +473,29 @@ impl EditOperator for InsetFaces {
                     face_plan.edge_attrs[i],
                     &ctx.policy.propagate,
                 );
-                let mut uv_map = Vec::with_capacity(face_plan.vertices.len() * 2);
-                for (vertex, uv) in face_plan
-                    .vertices
-                    .iter()
-                    .copied()
-                    .zip(face_plan.vertex_uvs.iter().copied())
-                {
-                    uv_map.push((vertex, uv));
-                }
-                for (vertex, uv) in inset_loop
-                    .iter()
-                    .copied()
-                    .zip(face_plan.vertex_uvs.iter().copied())
-                {
-                    uv_map.push((vertex, uv));
-                }
+                let uv_current = face_plan.vertex_uvs[i];
+                let uv_next = face_plan.vertex_uvs[(i + 1) % face_plan.vertex_uvs.len()];
+                let uv_map = [
+                    (current, uv_current),
+                    (next, uv_next),
+                    (current_inset, uv_current),
+                    (next_inset, uv_next),
+                ];
                 propagate_face_corner_uvs(txn, frame, &uv_map);
                 frame_faces.push(frame);
             }
+        }
 
-            // Fill the inset hole after frame faces are created so the inner
-            // loop orientation can consistently reuse the resulting OUTSIDE
-            // boundary ring.
-            let mut inner_loop = inset_loop.clone();
+        for face_plan in &plans {
+            let mut inner_loop = face_plan
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    *inset_vertices
+                        .get(vertex)
+                        .expect("inset vertex should exist for source vertex")
+                })
+                .collect::<Vec<_>>();
             if !frame_orientation.prefers_forward_outer_edge() {
                 inner_loop.reverse();
             }
@@ -459,9 +515,9 @@ impl EditOperator for InsetFaces {
                     "failed to set inset inner face region",
                 ));
             }
-            for i in 0..inset_loop.len() {
-                let current_inset = inset_loop[i];
-                let next_inset = inset_loop[(i + 1) % inset_loop.len()];
+            for i in 0..inner_loop.len() {
+                let current_inset = inner_loop[i];
+                let next_inset = inner_loop[(i + 1) % inner_loop.len()];
                 propagate_edge_attrs_for_vertices(
                     txn,
                     inner,
@@ -471,30 +527,23 @@ impl EditOperator for InsetFaces {
                     &ctx.policy.propagate,
                 );
             }
-            let mut inset_uv_map = Vec::with_capacity(inset_loop.len());
-            for (vertex, uv) in inset_loop
+            let inset_uv_map = inner_loop
                 .iter()
                 .copied()
                 .zip(face_plan.vertex_uvs.iter().copied())
-            {
-                inset_uv_map.push((vertex, uv));
-            }
+                .collect::<Vec<_>>();
             propagate_face_corner_uvs(txn, inner, &inset_uv_map);
             inner_faces.push(inner);
-
-            report.stats.counters.faces_processed =
-                report.stats.counters.faces_processed.saturating_add(1);
-            report.stats.elements_created.vertices =
-                report.stats.elements_created.vertices.saturating_add(
-                    u64::try_from(inset_loop.len()).expect("vertex count should fit u64"),
-                );
-            report.stats.elements_created.faces =
-                report.stats.elements_created.faces.saturating_add(
-                    u64::try_from(inset_loop.len() + 1).expect("face count should fit u64"),
-                );
-            report.stats.elements_deleted.faces =
-                report.stats.elements_deleted.faces.saturating_add(1);
         }
+
+        report.stats.counters.faces_processed =
+            u64::try_from(plans.len()).expect("face count should fit u64");
+        report.stats.elements_created.vertices =
+            u64::try_from(inset_vertices.len()).expect("vertex count should fit u64");
+        report.stats.elements_created.faces = u64::try_from(frame_faces.len() + inner_faces.len())
+            .expect("face count should fit u64");
+        report.stats.elements_deleted.faces =
+            u64::try_from(plans.len()).expect("face count should fit u64");
         Ok((
             report,
             InsetFacesOutput {
@@ -636,31 +685,34 @@ fn preflight_face_plans(
         });
     }
 
-    let mut edge_to_face = Vec::<(u32, u32, FaceId)>::new();
-    for plan in &plans {
-        for i in 0..plan.vertices.len() {
-            let a = plan.vertices[i].index();
-            let b = plan.vertices[(i + 1) % plan.vertices.len()].index();
-            edge_to_face.push((u32::min(a, b), u32::max(a, b), plan.face));
-        }
-    }
-    edge_to_face.sort_unstable_by_key(|(a, b, face)| (*a, *b, *face));
-    for pair in edge_to_face.windows(2) {
-        let (a0, b0, f0) = pair[0];
-        let (a1, b1, f1) = pair[1];
-        if a0 == a1 && b0 == b1 && f0 != f1 {
-            return Err(op_error(
-                ctx,
-                OpErrorKind::PreconditionFailed,
-                DiagCode::PreconditionFailed,
-                format!(
-                    "selected faces share an edge ({a0}, {b0}); adjacent selections are not supported"
-                ),
-            ));
-        }
-    }
-
     Ok(plans)
+}
+
+fn canonical_edge_key(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+fn selected_edge_counts(plans: &[FacePlan]) -> BTreeMap<(VertexId, VertexId), u32> {
+    let mut counts = BTreeMap::<(VertexId, VertexId), u32>::new();
+    for plan in plans {
+        for i in 0..plan.vertices.len() {
+            let current = plan.vertices[i];
+            let next = plan.vertices[(i + 1) % plan.vertices.len()];
+            let key = canonical_edge_key(current, next);
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn is_boundary_edge(
+    current: VertexId,
+    next: VertexId,
+    edge_counts: &BTreeMap<(VertexId, VertexId), u32>,
+) -> bool {
+    edge_counts
+        .get(&canonical_edge_key(current, next))
+        .is_some_and(|count| *count == 1)
 }
 
 fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
@@ -858,8 +910,7 @@ mod tests {
 
     use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
     use crate::{
-        OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature,
-        test_support::commit,
+        OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature, test_support::commit,
     };
 
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
@@ -1012,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn extrude_rejects_adjacent_face_selection() {
+    fn extrude_supports_adjacent_face_selection_without_duplicate_internal_walls() {
         let mut mesh = Mesh::from_indexed_triangles(
             &[
                 [0.0, 0.0, 0.0],
@@ -1026,7 +1077,7 @@ mod tests {
         .expect("mesh build should succeed");
         let faces = mesh.faces().collect::<Vec<_>>();
         let mut runner = OperatorRunner::new();
-        let err = commit(
+        let result = commit(
             &mut runner,
             &mut mesh,
             &ExtrudeFaces,
@@ -1035,8 +1086,41 @@ mod tests {
                 distance: 1.0,
             },
         )
-        .expect_err("adjacent selection should fail");
-        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+        .expect("adjacent selection should succeed");
+        assert_eq!(result.output.wall_faces.len(), 4);
+        assert_eq!(result.output.cap_faces.len(), 2);
+        assert_eq!(mesh.faces().count(), 6);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn inset_supports_adjacent_face_selection_without_duplicate_internal_frames() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams { faces, factor: 0.3 },
+        )
+        .expect("adjacent inset should succeed");
+        assert_eq!(result.output.frame_faces.len(), 4);
+        assert_eq!(result.output.inner_faces.len(), 2);
+        assert_eq!(mesh.faces().count(), 6);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
     }
 
     #[test]
