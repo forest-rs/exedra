@@ -23,11 +23,26 @@ use crate::{
 pub struct ExtrudeFacesParams {
     /// Canonical face selection.
     pub faces: FaceSet,
+    /// Extrude topology mode.
+    pub mode: ExtrudeMode,
     /// Distance along each face normal.
     ///
-    /// v0.1 semantics are shell-style: the source face is removed and replaced
-    /// by side walls + offset cap.
+    /// v0.1 semantics:
+    /// - [`ExtrudeMode::ShellOpen`]: source faces are removed and replaced by
+    ///   side walls + offset cap.
+    /// - [`ExtrudeMode::KeepSource`]: source faces are kept; valid only when
+    ///   selected patch boundary lies on mesh boundary.
     pub distance: f32,
+}
+
+/// Extrude topology mode.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum ExtrudeMode {
+    /// Remove source faces and create open-shell extrusion.
+    #[default]
+    ShellOpen,
+    /// Keep source faces and build a prism from an open-surface boundary.
+    KeepSource,
 }
 
 /// Typed output from [`ExtrudeFaces`].
@@ -43,6 +58,7 @@ impl Default for ExtrudeFacesParams {
     fn default() -> Self {
         Self {
             faces: FaceSet::default(),
+            mode: ExtrudeMode::ShellOpen,
             distance: 1.0,
         }
     }
@@ -93,6 +109,11 @@ impl Default for InsetFacesParams {
 /// - generated corner UVs are copied from source per-vertex UVs when authored,
 /// - generated edge seam/sharpness follow [`OpContext::policy`](crate::OpContext::policy)
 ///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear.
+///
+/// Mode behavior:
+/// - [`ExtrudeMode::ShellOpen`] removes source faces before creating walls/caps.
+/// - [`ExtrudeMode::KeepSource`] preserves source faces and requires all patch
+///   boundary edges to be mesh-boundary edges.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ExtrudeFaces;
 
@@ -136,6 +157,16 @@ impl EditOperator for ExtrudeFaces {
         let mut cap_faces = Vec::<FaceId>::new();
         let mut wall_faces = Vec::<FaceId>::new();
         let edge_counts = selected_edge_counts(&plans);
+        if params.mode == ExtrudeMode::KeepSource
+            && !boundary_edges_are_open_surface(txn.mesh(), &plans, &edge_counts)
+        {
+            return Err(op_error(
+                ctx,
+                OpErrorKind::PreconditionFailed,
+                DiagCode::PreconditionFailed,
+                "extrude KeepSource requires selected patch boundary to lie on mesh boundary",
+            ));
+        }
         let mut summed_normals = BTreeMap::<VertexId, [f32; 3]>::new();
         for plan in &plans {
             for &vertex in &plan.vertices {
@@ -166,16 +197,18 @@ impl EditOperator for ExtrudeFaces {
             cap_vertices.insert(vertex, txn.add_vertex(extruded));
         }
 
-        let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
-        txn.delete_faces(&faces_to_delete, DeletePolicy::KeepIsolated)
-            .map_err(|err| {
-                op_error(
-                    ctx,
-                    OpErrorKind::InternalInvariantViolation,
-                    DiagCode::InternalInvariantViolation,
-                    format!("extrude delete failed unexpectedly: {err}"),
-                )
-            })?;
+        if params.mode == ExtrudeMode::ShellOpen {
+            let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
+            txn.delete_faces(&faces_to_delete, DeletePolicy::KeepIsolated)
+                .map_err(|err| {
+                    op_error(
+                        ctx,
+                        OpErrorKind::InternalInvariantViolation,
+                        DiagCode::InternalInvariantViolation,
+                        format!("extrude delete failed unexpectedly: {err}"),
+                    )
+                })?;
+        }
 
         let mut wall_orientation = FrameOrientationState::default();
         for plan in &plans {
@@ -288,8 +321,12 @@ impl EditOperator for ExtrudeFaces {
             u64::try_from(cap_vertices.len()).expect("vertex count should fit u64");
         report.stats.elements_created.faces =
             u64::try_from(wall_faces.len() + cap_faces.len()).expect("face count should fit u64");
-        report.stats.elements_deleted.faces =
-            u64::try_from(plans.len()).expect("face count should fit u64");
+        report.stats.elements_deleted.faces = match params.mode {
+            ExtrudeMode::ShellOpen => {
+                u64::try_from(plans.len()).expect("face count should fit u64")
+            }
+            ExtrudeMode::KeepSource => 0,
+        };
         Ok((
             report,
             ExtrudeFacesOutput {
@@ -715,6 +752,32 @@ fn is_boundary_edge(
         .is_some_and(|count| *count == 1)
 }
 
+fn boundary_edges_are_open_surface(
+    mesh: &exedra::Mesh,
+    plans: &[FacePlan],
+    edge_counts: &BTreeMap<(VertexId, VertexId), u32>,
+) -> bool {
+    for plan in plans {
+        for i in 0..plan.vertices.len() {
+            let current = plan.vertices[i];
+            let next = plan.vertices[(i + 1) % plan.vertices.len()];
+            if !is_boundary_edge(current, next, edge_counts) {
+                continue;
+            }
+            let Some(edge) = find_face_edge_for_vertices(mesh, plan.face, current, next) else {
+                return false;
+            };
+            let Some(twin) = mesh.twin(edge) else {
+                return false;
+            };
+            if mesh.face(twin) != Some(FaceId::OUTSIDE) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
     if vertices.is_empty() {
         return None;
@@ -908,9 +971,10 @@ mod tests {
 
     use exedra::{BuildParams, EdgeAttrPropagation, Mesh, PropagatePolicy};
 
-    use super::{ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams};
+    use super::{ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams};
     use crate::{
-        OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature, test_support::commit,
+        OpErrorKind, OperatorRunner, TagFaceRegion, TagFaceRegionParams, mesh_signature,
+        test_support::commit,
     };
 
     fn quad_mesh() -> (Mesh, exedra::FaceId) {
@@ -935,6 +999,7 @@ mod tests {
         let op = ExtrudeFaces;
         let params = ExtrudeFacesParams {
             faces: vec![face],
+            mode: ExtrudeMode::ShellOpen,
             distance: 1.0,
         };
 
@@ -1000,6 +1065,7 @@ mod tests {
             &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: vec![face],
+                mode: ExtrudeMode::ShellOpen,
                 distance: 0.5,
             },
         )
@@ -1083,6 +1149,7 @@ mod tests {
             &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces,
+                mode: ExtrudeMode::ShellOpen,
                 distance: 1.0,
             },
         )
@@ -1178,6 +1245,7 @@ mod tests {
             &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: vec![face],
+                mode: ExtrudeMode::ShellOpen,
                 distance: 0.6,
             },
         )
@@ -1260,12 +1328,55 @@ mod tests {
             &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: vec![face],
+                mode: ExtrudeMode::ShellOpen,
                 distance: 0.4,
             },
         )
         .expect("extrude on closed box should succeed");
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn extrude_keep_source_succeeds_on_open_surface() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                mode: ExtrudeMode::KeepSource,
+                distance: 0.4,
+            },
+        )
+        .expect("keep-source extrude on open surface should succeed");
+        assert_eq!(mesh.faces().count(), 6);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn extrude_keep_source_rejects_closed_box_face() {
+        let mut mesh = cube_mesh();
+        let face = mesh
+            .faces()
+            .max_by(|&a, &b| face_avg_z(&mesh, a).total_cmp(&face_avg_z(&mesh, b)))
+            .expect("target face should exist");
+        let mut runner = OperatorRunner::new();
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                mode: ExtrudeMode::KeepSource,
+                distance: 0.25,
+            },
+        )
+        .expect_err("keep-source extrude on closed volume should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 
     #[test]
@@ -1289,6 +1400,7 @@ mod tests {
             &ExtrudeFaces,
             &ExtrudeFacesParams {
                 faces: vec![face],
+                mode: ExtrudeMode::ShellOpen,
                 distance: 0.5,
             },
         )

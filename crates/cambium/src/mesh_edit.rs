@@ -14,9 +14,9 @@ use exedra::{DeletePolicy, Mesh};
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{
     DeleteFaces, DeleteFacesOutput, DeleteFacesParams, DeleteFacesPlan, ExtrudeFaces,
-    ExtrudeFacesParams, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan, OpError, OpReport,
-    OperatorRunner, PreviewResult, Selection, SelectionDomainError, TagFaceRegion,
-    TagFaceRegionParams, canonicalize_face_set,
+    ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan,
+    OpError, OpReport, OperatorRunner, PreviewResult, Selection, SelectionDomainError,
+    TagFaceRegion, TagFaceRegionParams, canonicalize_face_set,
 };
 
 #[derive(Clone, Debug)]
@@ -185,6 +185,7 @@ impl MeshEdit {
                 MeshEditStep::Extrude { distance } => {
                     let params = ExtrudeFacesParams {
                         faces: current_faces.clone(),
+                        mode: ExtrudeMode::ShellOpen,
                         distance,
                     };
                     let op = ExtrudeFaces;
@@ -419,8 +420,8 @@ mod tests {
 
     use super::MeshEdit;
     use crate::{
-        ExtrudeFaces, ExtrudeFacesParams, InsetFaces, InsetFacesParams, OperatorRunner, Selection,
-        mesh_signature,
+        ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
+        OperatorRunner, Selection, mesh_signature,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -533,6 +534,7 @@ mod tests {
 
         let extrude_params = ExtrudeFacesParams {
             faces: vec![face],
+            mode: ExtrudeMode::ShellOpen,
             distance: 0.25,
         };
         let extrude_plan = direct_runner

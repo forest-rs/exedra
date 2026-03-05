@@ -164,8 +164,8 @@ pub use delete::{
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
 };
 pub use face_edit::{
-    ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, InsetFaces, InsetFacesOutput,
-    InsetFacesParams, InsetFacesPlan,
+    ExtrudeFaces, ExtrudeFacesOutput, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
+    InsetFacesOutput, InsetFacesParams, InsetFacesPlan,
 };
 pub use region::{
     REGION_UNTAGGED, RegionSelection, TagFaceRegion, TagFaceRegionParams, select_faces_by_region,
