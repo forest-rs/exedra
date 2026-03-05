@@ -299,6 +299,40 @@ impl fmt::Display for DeleteEdgesError {
 
 impl core::error::Error for DeleteEdgesError {}
 
+/// Structured vertex-deletion error from [`Mesh::delete_vertices`] and
+/// [`Txn::delete_vertices`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DeleteVerticesError {
+    /// Input vertex list must be sorted and deduplicated.
+    NonCanonicalVertexSet,
+    /// Vertex ID is stale/dead.
+    VertexNotLive {
+        /// Stale vertex index.
+        vertex: u32,
+    },
+    /// Vertex still has incident topology.
+    VertexNotIsolated {
+        /// Vertex index.
+        vertex: u32,
+    },
+}
+
+impl fmt::Display for DeleteVerticesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonCanonicalVertexSet => {
+                f.write_str("vertex set must be sorted and deduplicated")
+            }
+            Self::VertexNotLive { vertex } => write!(f, "vertex is not live: {vertex}"),
+            Self::VertexNotIsolated { vertex } => {
+                write!(f, "vertex is not isolated: {vertex}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for DeleteVerticesError {}
+
 /// Structured edge-split error from [`Txn::split_edge`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitEdgeError {
@@ -471,6 +505,18 @@ impl Mesh {
     ) -> Result<ChangeSet, DeleteEdgesError> {
         let mut txn = self.begin();
         txn.delete_edges(edges, policy)?;
+        Ok(txn.commit())
+    }
+
+    /// Deletes a canonical set of isolated vertices in one committed transaction.
+    ///
+    /// This is a convenience wrapper over [`Txn::delete_vertices`] + [`Txn::commit`].
+    pub fn delete_vertices(
+        &mut self,
+        vertices: &[VertexId],
+    ) -> Result<ChangeSet, DeleteVerticesError> {
+        let mut txn = self.begin();
+        txn.delete_vertices(vertices)?;
         Ok(txn.commit())
     }
 }
@@ -1435,6 +1481,35 @@ impl Txn<'_> {
             .map_err(DeleteEdgesError::FaceDeleteFailed)
     }
 
+    /// Deletes isolated vertices from the mesh.
+    ///
+    /// `vertices` must be canonical (sorted, deduplicated), contain only live
+    /// vertex IDs, and each vertex must have no incident half-edges.
+    pub fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError> {
+        if !is_canonical_vertex_set(vertices) {
+            return Err(DeleteVerticesError::NonCanonicalVertexSet);
+        }
+        for &vertex in vertices {
+            let Some(record) = self.mesh.vertices.get(vertex.as_id()) else {
+                return Err(DeleteVerticesError::VertexNotLive {
+                    vertex: vertex.index(),
+                });
+            };
+            if record.out != HalfEdgeId::INVALID || vertex_has_incident_half_edge(self.mesh, vertex)
+            {
+                return Err(DeleteVerticesError::VertexNotIsolated {
+                    vertex: vertex.index(),
+                });
+            }
+        }
+        for &vertex in vertices {
+            let removed = self.mesh.vertices.remove(vertex.as_id());
+            debug_assert!(removed.is_some(), "validated vertex should remove");
+            self.record_deleted_vertex(vertex);
+        }
+        Ok(())
+    }
+
     /// Marks a face dirty.
     pub fn mark_face_dirty(&mut self, face: FaceId) {
         self.dirty.mark_face(face);
@@ -1541,6 +1616,10 @@ fn is_canonical_face_set(faces: &[FaceId]) -> bool {
     faces.windows(2).all(|pair| pair[0] < pair[1])
 }
 
+fn is_canonical_vertex_set(vertices: &[VertexId]) -> bool {
+    vertices.windows(2).all(|pair| pair[0] < pair[1])
+}
+
 fn contains_face(faces: &[FaceId], target: FaceId) -> bool {
     faces.binary_search(&target).is_ok()
 }
@@ -1557,6 +1636,13 @@ fn half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId) -> Option<(VertexId, V
     let twin = mesh.twin(half_edge)?;
     let from = mesh.to_vertex(twin)?;
     Some((from, to))
+}
+
+fn vertex_has_incident_half_edge(mesh: &Mesh, vertex: VertexId) -> bool {
+    mesh.half_edges.iter().any(|(id, _)| {
+        half_edge_vertices(mesh, HalfEdgeId::from(id))
+            .is_some_and(|(from, to)| from == vertex || to == vertex)
+    })
 }
 
 fn has_undirected_edge(mesh: &Mesh, a: VertexId, b: VertexId) -> bool {
@@ -2840,6 +2926,63 @@ mod tests {
         assert_eq!(mesh.half_edges.len(), 0);
         assert_eq!(mesh.vertices().count(), 0);
         assert_eq!(changes.deleted_faces.len(), 3);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn delete_vertices_rejects_non_canonical_input() {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let err = mesh
+            .delete_vertices(&[v1, v0])
+            .expect_err("non-canonical vertex set must fail");
+        assert_eq!(err, DeleteVerticesError::NonCanonicalVertexSet);
+    }
+
+    #[test]
+    fn delete_vertices_rejects_stale_vertex() {
+        let mut mesh = Mesh::new();
+        let stale = VertexId::from(Id::new(999, NonZeroU32::MIN));
+        let err = mesh
+            .delete_vertices(&[stale])
+            .expect_err("stale vertex must fail");
+        assert_eq!(err, DeleteVerticesError::VertexNotLive { vertex: 999 });
+    }
+
+    #[test]
+    fn delete_vertices_rejects_non_isolated_vertex() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("triangle build should succeed");
+        let vertex = mesh.vertices().next().expect("vertex should exist");
+        let err = mesh
+            .delete_vertices(&[vertex])
+            .expect_err("non-isolated vertex must fail");
+        assert_eq!(
+            err,
+            DeleteVerticesError::VertexNotIsolated {
+                vertex: vertex.index()
+            }
+        );
+    }
+
+    #[test]
+    fn delete_vertices_removes_isolated_vertices_and_tracks_changes() {
+        let mut mesh = Mesh::new();
+        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v2 = mesh.add_vertex([2.0, 0.0, 0.0]);
+        let changes = mesh
+            .delete_vertices(&[v0, v2])
+            .expect("isolated vertices should delete");
+        assert_eq!(mesh.vertices().count(), 1);
+        assert_eq!(mesh.vertices().next(), Some(v1));
+        assert_eq!(changes.deleted_vertices, vec![v0, v2]);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }
