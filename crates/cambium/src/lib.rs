@@ -147,3 +147,87 @@ pub use uv_box::{UvBox, UvBoxParams};
 pub use uv_cylinder::{CylinderAxis, UvCylinder, UvCylinderParams};
 pub use uv_planar::{UvPlanar, UvPlanarParams, UvPlane, UvScope};
 pub use validate::{ValidateMesh, ValidateMeshMode, ValidateMeshOutput, ValidateMeshParams};
+
+#[cfg(test)]
+mod naming_tests {
+    use alloc::collections::BTreeSet;
+
+    use super::{
+        DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces, InsetFaces,
+        InspectBounds, MarkEdgeSeam, MarkEdgeSharp, TagFaceRegion, UvBox, UvCylinder, UvPlanar,
+        ValidateMesh,
+    };
+
+    #[test]
+    fn operator_names_are_unique_and_use_allowed_families() {
+        let names = [
+            DeleteEdges.name(),
+            DeleteFaces.name(),
+            DeleteVertices.name(),
+            ExtrudeFaces.name(),
+            InsetFaces.name(),
+            InspectBounds.name(),
+            ValidateMesh.name(),
+            MarkEdgeSeam.name(),
+            MarkEdgeSharp.name(),
+            TagFaceRegion.name(),
+            UvPlanar.name(),
+            UvBox.name(),
+            UvCylinder.name(),
+        ];
+
+        let unique = names.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), names.len(), "operator names must be unique");
+
+        for &name in &names {
+            let prefix = name
+                .split('.')
+                .next()
+                .expect("operator name must be non-empty");
+            assert!(
+                matches!(prefix, "edit" | "inspect" | "mark" | "tag" | "uv"),
+                "unexpected operator family prefix in `{name}`"
+            );
+            assert!(
+                name.chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.'),
+                "operator names must be lowercase ascii dot-separated: `{name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_v01_operator_names_match_contract() {
+        let actual = [
+            DeleteEdges.name(),
+            DeleteFaces.name(),
+            DeleteVertices.name(),
+            ExtrudeFaces.name(),
+            InsetFaces.name(),
+            InspectBounds.name(),
+            ValidateMesh.name(),
+            MarkEdgeSeam.name(),
+            MarkEdgeSharp.name(),
+            TagFaceRegion.name(),
+            UvPlanar.name(),
+            UvBox.name(),
+            UvCylinder.name(),
+        ];
+        let expected = [
+            "edit.delete.edges",
+            "edit.delete.faces",
+            "edit.delete.vertices",
+            "edit.face.extrude",
+            "edit.face.inset",
+            "inspect.bounds",
+            "inspect.validate.mesh",
+            "mark.edge.seam",
+            "mark.edge.sharp",
+            "tag.face.region",
+            "uv.planar",
+            "uv.box",
+            "uv.cylinder",
+        ];
+        assert_eq!(actual, expected);
+    }
+}

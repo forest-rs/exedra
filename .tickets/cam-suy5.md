@@ -1,6 +1,6 @@
 ---
 id: cam-suy5
-status: open
+status: closed
 deps: [cam-g3hn]
 links: []
 created: 2026-03-05T08:04:54Z
@@ -21,3 +21,9 @@ Audit all current Cambium operators for naming consistency across: Rust type nam
 
 - Naming convention documented with examples; - current operators audited against the convention; - required renames identified and ticketed/implemented; - rustdoc and naming-related tests updated to reflect final names.
 
+
+## Notes
+
+**2026-03-05T08:24:48Z**
+
+Completed naming audit against frozen v0.1 operator set in docs/briefs/10_operator_naming_conventions.md. No operator renames required for current set; added tests enforcing unique names, allowed family prefixes, and frozen stable IDs.
