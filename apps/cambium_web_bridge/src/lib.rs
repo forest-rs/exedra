@@ -19,7 +19,10 @@ use cambium::{
     flood_fill_faces_by_region, mesh_signature, select_faces_by_region,
 };
 use exedra::attr;
-use exedra_primitives::{BoxParams, CapFill, CylinderParams, QuadParams, UvSphereParams};
+use exedra_primitives::{
+    BoxParams, CapFill, ConeParams, CylinderParams, GridParams, IcosphereParams, QuadParams,
+    TorusParams, UvSphereParams,
+};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -84,7 +87,7 @@ pub struct MeshBuffers {
 }
 
 /// Deterministic operator-step counters.
-#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 pub struct StepStats {
     /// Faces processed by the operator.
     pub faces_processed: u64,
@@ -103,7 +106,7 @@ pub struct StepStats {
 }
 
 /// One diagnostic item from operator execution.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct StepDiagnostic {
     /// Severity level as a stable string.
     pub level: String,
@@ -1162,21 +1165,23 @@ fn run_topology_delete_repair(options: &ScenarioOptions) -> Result<ScenarioRespo
     })
 }
 
-fn run_primitive_gallery(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
+fn run_primitive_gallery(_options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
     let mut steps = Vec::<StepSnapshot>::new();
-    if options.include_initial {
-        let mesh = exedra_primitives::quad(&QuadParams::default()).mesh;
-        steps.push(snapshot_from_mesh(
-            &mesh,
-            "primitive.quad.initial",
-            Some("primitive.quad"),
-            None,
-            StepStats::default(),
-            &[],
-        ));
-    }
+    let quad_primitive = exedra_primitives::quad(&QuadParams::default());
+    let mut quad_mesh = quad_primitive.mesh;
+    apply_primitive_regions(&mut quad_mesh, &quad_primitive.face_region);
+    steps.push(snapshot_from_mesh(
+        &quad_mesh,
+        "primitive.quad",
+        Some("primitive.quad"),
+        None,
+        StepStats::default(),
+        &[],
+    ));
 
-    let box_mesh = exedra_primitives::box_primitive(&BoxParams::default()).mesh;
+    let box_primitive = exedra_primitives::box_primitive(&BoxParams::default());
+    let mut box_mesh = box_primitive.mesh;
+    apply_primitive_regions(&mut box_mesh, &box_primitive.face_region);
     steps.push(snapshot_from_mesh(
         &box_mesh,
         "primitive.box",
@@ -1186,7 +1191,9 @@ fn run_primitive_gallery(options: &ScenarioOptions) -> Result<ScenarioResponse, 
         &[],
     ));
 
-    let cylinder_mesh = exedra_primitives::cylinder(&CylinderParams::default()).mesh;
+    let cylinder_primitive = exedra_primitives::cylinder(&CylinderParams::default());
+    let mut cylinder_mesh = cylinder_primitive.mesh;
+    apply_primitive_regions(&mut cylinder_mesh, &cylinder_primitive.face_region);
     steps.push(snapshot_from_mesh(
         &cylinder_mesh,
         "primitive.cylinder",
@@ -1196,11 +1203,79 @@ fn run_primitive_gallery(options: &ScenarioOptions) -> Result<ScenarioResponse, 
         &[],
     ));
 
-    let sphere_mesh = exedra_primitives::uv_sphere(&UvSphereParams::default()).mesh;
+    let grid_primitive = exedra_primitives::grid(&GridParams {
+        size: [2.0, 1.5],
+        segments: [4, 3],
+        centered: true,
+    });
+    let mut grid_mesh = grid_primitive.mesh;
+    apply_primitive_regions(&mut grid_mesh, &grid_primitive.face_region);
+    steps.push(snapshot_from_mesh(
+        &grid_mesh,
+        "primitive.grid",
+        Some("primitive.grid"),
+        None,
+        StepStats::default(),
+        &[],
+    ));
+
+    let cone_primitive = exedra_primitives::cone(&ConeParams {
+        radius: 0.9,
+        height: 1.8,
+        segments: 24,
+        cap_fill: CapFill::TriangleFan,
+        centered: true,
+    });
+    let mut cone_mesh = cone_primitive.mesh;
+    apply_primitive_regions(&mut cone_mesh, &cone_primitive.face_region);
+    steps.push(snapshot_from_mesh(
+        &cone_mesh,
+        "primitive.cone",
+        Some("primitive.cone"),
+        None,
+        StepStats::default(),
+        &[],
+    ));
+
+    let torus_primitive = exedra_primitives::torus(&TorusParams {
+        major_radius: 1.1,
+        minor_radius: 0.35,
+        major_segments: 28,
+        minor_segments: 16,
+    });
+    let mut torus_mesh = torus_primitive.mesh;
+    apply_primitive_regions(&mut torus_mesh, &torus_primitive.face_region);
+    steps.push(snapshot_from_mesh(
+        &torus_mesh,
+        "primitive.torus",
+        Some("primitive.torus"),
+        None,
+        StepStats::default(),
+        &[],
+    ));
+
+    let sphere_primitive = exedra_primitives::uv_sphere(&UvSphereParams::default());
+    let mut sphere_mesh = sphere_primitive.mesh;
+    apply_primitive_regions(&mut sphere_mesh, &sphere_primitive.face_region);
     steps.push(snapshot_from_mesh(
         &sphere_mesh,
         "primitive.uv_sphere",
         Some("primitive.uv_sphere"),
+        None,
+        StepStats::default(),
+        &[],
+    ));
+
+    let icosphere_primitive = exedra_primitives::icosphere(&IcosphereParams {
+        radius: 1.0,
+        subdivisions: 2,
+    });
+    let mut icosphere_mesh = icosphere_primitive.mesh;
+    apply_primitive_regions(&mut icosphere_mesh, &icosphere_primitive.face_region);
+    steps.push(snapshot_from_mesh(
+        &icosphere_mesh,
+        "primitive.icosphere",
+        Some("primitive.icosphere"),
         None,
         StepStats::default(),
         &[],
@@ -1476,6 +1551,11 @@ mod tests {
                 assert_eq!(a.mesh_signature, b.mesh_signature);
                 assert_eq!(a.mesh.indices, b.mesh.indices);
                 assert_eq!(a.mesh.positions, b.mesh.positions);
+                assert_eq!(a.mesh.uvs, b.mesh.uvs);
+                assert_eq!(a.mesh.topology_lines, b.mesh.topology_lines);
+                assert_eq!(a.mesh.region_ids, b.mesh.region_ids);
+                assert_eq!(a.stats, b.stats);
+                assert_eq!(a.diagnostics, b.diagnostics);
             }
         }
     }
@@ -1497,5 +1577,52 @@ mod tests {
                 "scenario {scenario} should have at least 3 steps"
             );
         }
+    }
+
+    #[test]
+    fn primitive_gallery_carries_region_ids() {
+        let response = run_scenario_impl("primitive_gallery", &ScenarioOptions::default())
+            .expect("primitive gallery should run");
+        for step in response.steps {
+            assert!(
+                !step.mesh.region_ids.is_empty(),
+                "primitive gallery step {} should expose region ids",
+                step.label
+            );
+            assert!(
+                step.mesh.region_ids.iter().any(|&region| region != 0),
+                "primitive gallery step {} should contain non-default regions",
+                step.label
+            );
+        }
+    }
+
+    #[test]
+    fn primitive_gallery_ignores_include_initial_flag_for_contents() {
+        let response = run_scenario_impl(
+            "primitive_gallery",
+            &ScenarioOptions {
+                include_initial: false,
+            },
+        )
+        .expect("primitive gallery should run");
+        let labels = response
+            .steps
+            .iter()
+            .map(|step| step.label.as_str())
+            .collect::<alloc::vec::Vec<_>>();
+        assert_eq!(
+            labels,
+            alloc::vec![
+                "primitive.quad",
+                "primitive.box",
+                "primitive.cylinder",
+                "primitive.grid",
+                "primitive.cone",
+                "primitive.torus",
+                "primitive.uv_sphere",
+                "primitive.icosphere",
+            ]
+        );
     }
 }

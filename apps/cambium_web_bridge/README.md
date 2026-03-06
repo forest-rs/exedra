@@ -9,4 +9,4 @@ Current scenarios:
 - `region_select_flow`
 - `uv_projection_gallery`
 - `topology_delete_repair`
-- `primitive_gallery`
+- `primitive_gallery` (quad, box, cylinder, grid, cone, torus, uv_sphere, icosphere)

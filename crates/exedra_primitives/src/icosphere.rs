@@ -40,7 +40,7 @@ impl Default for IcosphereParams {
 /// - `faces.all`: all triangular faces.
 #[must_use]
 pub fn icosphere(params: &IcosphereParams) -> Primitive {
-    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let phi = (1.0 + common::sqrt(5.0)) * 0.5;
     let mut positions = vec![
         [-1.0, phi, 0.0],
         [1.0, phi, 0.0],

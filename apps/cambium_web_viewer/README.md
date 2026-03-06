@@ -32,7 +32,7 @@ The scenario picker currently includes:
 - `region_select_flow`: tag faces, select/flood by region, inspect deterministic counters.
 - `uv_projection_gallery`: planar/box/cylinder projection pass sequence.
 - `topology_delete_repair`: delete-face + delete-edge topology edits on a box.
-- `primitive_gallery`: quad, box, cylinder, uv-sphere constructor outputs.
+- `primitive_gallery`: quad, box, cylinder, grid, cone, torus, uv-sphere, and icosphere constructor outputs.
 
 ## Viewer Controls
 
