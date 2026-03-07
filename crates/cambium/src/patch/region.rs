@@ -8,8 +8,9 @@ use alloc::vec::Vec;
 
 use exedra::{FaceId, HalfEdgeId, VertexId};
 
-use crate::face_edit::{SourceEdgeAttrs, normalized_face_normal};
 use crate::op_common::op_error;
+use crate::patch::attrs::SourceEdgeAttrs;
+use crate::patch::geom::normalized_face_normal;
 use crate::{DiagCode, OpContext, OpError, OpErrorKind};
 
 #[derive(Clone, Debug)]

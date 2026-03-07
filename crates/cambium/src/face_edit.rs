@@ -8,19 +8,22 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::op::AddFaceError;
-use exedra::{DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
+use exedra::{DeletePolicy, FaceId, VertexId, op};
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
+use crate::patch::attrs::{
+    SourceEdgeAttrs, propagate_edge_attrs_for_vertices, propagate_face_corner_uvs,
+    propagate_frame_edge_attrs,
+};
+use crate::patch::connect::{FrameOrientationState, add_frame_face_with_orientation};
+use crate::patch::duplicate::create_vertex_copies;
+use crate::patch::geom::{centroid, normalized_face_normal};
 use crate::patch::loops::{BoundaryLoopError, extract_boundary_loops};
 use crate::patch::region::{SelectedFace, selected_face_region};
 use crate::plan::PlanHasher;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_face_set};
-use crate::{
-    Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
-    OpReport,
-};
+use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
 
 /// Parameters for [`ExtrudeFaces`].
 #[derive(Clone, Debug, PartialEq)]
@@ -270,7 +273,7 @@ impl EditOperator for ExtrudeFaces {
                 sum[2] += plan.normal[2];
             }
         }
-        let mut cap_vertices = BTreeMap::<VertexId, VertexId>::new();
+        let mut cap_positions = BTreeMap::<VertexId, [f32; 3]>::new();
         for (&vertex, sum) in &summed_normals {
             let position = txn
                 .mesh()
@@ -288,8 +291,9 @@ impl EditOperator for ExtrudeFaces {
                 position[1] + direction[1] * params.distance,
                 position[2] + direction[2] * params.distance,
             ];
-            cap_vertices.insert(vertex, op::add_vertex(txn, extruded));
+            cap_positions.insert(vertex, extruded);
         }
+        let cap_vertices = create_vertex_copies(txn, &cap_positions);
 
         if params.mode == ExtrudeMode::ShellOpen {
             let faces_to_delete = region
@@ -542,7 +546,7 @@ impl EditOperator for InsetFaces {
                 *inset_target_count.entry(vertex).or_insert(0) += 1;
             }
         }
-        let mut inset_vertices = BTreeMap::<VertexId, VertexId>::new();
+        let mut inset_positions = BTreeMap::<VertexId, [f32; 3]>::new();
         for (&vertex, sum) in &inset_target_sum {
             let count = inset_target_count
                 .get(&vertex)
@@ -550,8 +554,9 @@ impl EditOperator for InsetFaces {
                 .expect("inset count should exist");
             let inv = 1.0 / (count as f32);
             let averaged = [sum[0] * inv, sum[1] * inv, sum[2] * inv];
-            inset_vertices.insert(vertex, op::add_vertex(txn, averaged));
+            inset_positions.insert(vertex, averaged);
         }
+        let inset_vertices = create_vertex_copies(txn, &inset_positions);
 
         let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
         op::delete_faces(txn, &faces_to_delete, DeletePolicy::KeepIsolated).map_err(|err| {
@@ -1126,29 +1131,6 @@ impl EditOperator for CutRectFace {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct SourceEdgeAttrs {
-    pub(crate) seam: Option<bool>,
-    pub(crate) sharpness: Option<f32>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum FrameWinding {
-    UseReverseOuterEdge,
-    UseForwardOuterEdge,
-}
-
-#[derive(Copy, Clone, Debug, Default)]
-struct FrameOrientationState {
-    winding: Option<FrameWinding>,
-}
-
-impl FrameOrientationState {
-    const fn prefers_forward_outer_edge(self) -> bool {
-        matches!(self.winding, Some(FrameWinding::UseForwardOuterEdge))
-    }
-}
-
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -1250,96 +1232,6 @@ fn permutations4() -> [[usize; 4]; 24] {
     ]
 }
 
-fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
-    if vertices.is_empty() {
-        return None;
-    }
-    let mut sum = [0.0_f32, 0.0, 0.0];
-    for &vertex in vertices {
-        let position = mesh.vertex_position(vertex)?;
-        sum[0] += position[0];
-        sum[1] += position[1];
-        sum[2] += position[2];
-    }
-    let inv = 1.0 / (vertices.len() as f32);
-    Some([sum[0] * inv, sum[1] * inv, sum[2] * inv])
-}
-
-pub(crate) fn normalized_face_normal(
-    mesh: &exedra::Mesh,
-    vertices: &[VertexId],
-) -> Option<[f32; 3]> {
-    let mut nx = 0.0_f32;
-    let mut ny = 0.0_f32;
-    let mut nz = 0.0_f32;
-    for i in 0..vertices.len() {
-        let current = mesh.vertex_position(vertices[i])?;
-        let next = mesh.vertex_position(vertices[(i + 1) % vertices.len()])?;
-        nx += (current[1] - next[1]) * (current[2] + next[2]);
-        ny += (current[2] - next[2]) * (current[0] + next[0]);
-        nz += (current[0] - next[0]) * (current[1] + next[1]);
-    }
-    let length_sq = nx * nx + ny * ny + nz * nz;
-    if length_sq <= 1e-12 {
-        return None;
-    }
-    let inv_len = 1.0 / length_sq.sqrt_ext();
-    Some([nx * inv_len, ny * inv_len, nz * inv_len])
-}
-
-fn add_frame_face_with_orientation<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
-    current: VertexId,
-    next: VertexId,
-    current_inset: VertexId,
-    next_inset: VertexId,
-    orientation: &mut FrameOrientationState,
-    ctx: &mut OpContext,
-    op_name: &'static str,
-) -> Result<FaceId, OpError> {
-    let reverse_outer = [next, current, current_inset, next_inset];
-    let forward_outer = [current, next, next_inset, current_inset];
-    match orientation.winding {
-        Some(FrameWinding::UseReverseOuterEdge) => {
-            op::add_face(txn, &reverse_outer).map_err(|err| frame_face_error(ctx, op_name, err))
-        }
-        Some(FrameWinding::UseForwardOuterEdge) => {
-            op::add_face(txn, &forward_outer).map_err(|err| frame_face_error(ctx, op_name, err))
-        }
-        None => match op::add_face(txn, &reverse_outer) {
-            Ok(face) => {
-                orientation.winding = Some(FrameWinding::UseReverseOuterEdge);
-                Ok(face)
-            }
-            // add_face performs full preflight before mutation,
-            // so this fallback remains deterministic and side-effect free.
-            Err(AddFaceError::NonManifoldEdge { .. }) => {
-                ctx.diagnostics.push(Diagnostic::new(
-                    DiagLevel::Warn,
-                    DiagCode::PreconditionFailed,
-                    alloc::format!(
-                        "{op_name}: frame winding fallback to forward orientation due to boundary reuse direction"
-                    ),
-                ));
-                let face = op::add_face(txn, &forward_outer)
-                    .map_err(|err| frame_face_error(ctx, op_name, err))?;
-                orientation.winding = Some(FrameWinding::UseForwardOuterEdge);
-                Ok(face)
-            }
-            Err(err) => Err(frame_face_error(ctx, op_name, err)),
-        },
-    }
-}
-
-fn frame_face_error(ctx: &OpContext, op_name: &'static str, err: AddFaceError) -> OpError {
-    op_error(
-        ctx,
-        OpErrorKind::InternalInvariantViolation,
-        DiagCode::InternalInvariantViolation,
-        format!("{op_name} frame face creation failed unexpectedly: {err}"),
-    )
-}
-
 fn boundary_loop_error(ctx: &OpContext, op_name: &'static str, err: BoundaryLoopError) -> OpError {
     match err {
         BoundaryLoopError::AmbiguousBoundaryVertex { vertex, candidates } => op_error(
@@ -1362,104 +1254,6 @@ fn boundary_loop_error(ctx: &OpContext, op_name: &'static str, err: BoundaryLoop
             ),
         ),
     }
-}
-
-fn propagate_face_corner_uvs<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
-    face: FaceId,
-    uv_map: &[(VertexId, Option<[f32; 2]>)],
-) {
-    let corners = txn.mesh().face_loop(face).collect::<Vec<_>>();
-    for corner in corners {
-        let Some(to_vertex) = txn.mesh().to_vertex(corner) else {
-            continue;
-        };
-        let uv = uv_map
-            .iter()
-            .find_map(|(vertex, uv)| (*vertex == to_vertex).then_some(*uv))
-            .flatten();
-        if let Some(uv) = uv {
-            let _ = op::set_corner_uv(txn, corner, uv);
-        }
-    }
-}
-
-fn propagate_edge_attrs_for_vertices<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
-    face: FaceId,
-    a: VertexId,
-    b: VertexId,
-    source: SourceEdgeAttrs,
-    policy: &exedra::PropagatePolicy,
-) {
-    let Some(corner) = find_face_edge_for_vertices(txn.mesh(), face, a, b) else {
-        return;
-    };
-    match policy.edge_attr {
-        EdgeAttrPropagation::Clear => {
-            let _ = op::set_edge_seam(txn, corner, false);
-            let _ = op::set_edge_sharpness(txn, corner, 0.0);
-        }
-        EdgeAttrPropagation::Inherit => {
-            let seam = source.seam.unwrap_or(false);
-            let sharpness = source.sharpness.unwrap_or(0.0);
-            let _ = op::set_edge_seam(txn, corner, seam);
-            let _ = op::set_edge_sharpness(txn, corner, sharpness);
-        }
-        EdgeAttrPropagation::DecayOnSplit => {
-            let seam = source.seam.unwrap_or(false);
-            let sharpness = source.sharpness.map_or(0.0, |value| (value - 1.0).max(0.0));
-            let _ = op::set_edge_seam(txn, corner, seam);
-            let _ = op::set_edge_sharpness(txn, corner, sharpness);
-        }
-    }
-}
-
-fn propagate_frame_edge_attrs<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
-    face: FaceId,
-    current: VertexId,
-    next: VertexId,
-    current_inner: VertexId,
-    next_inner: VertexId,
-    source: SourceEdgeAttrs,
-    policy: &exedra::PropagatePolicy,
-) {
-    propagate_edge_attrs_for_vertices(txn, face, current, next, source, policy);
-    propagate_edge_attrs_for_vertices(txn, face, current_inner, next_inner, source, policy);
-    propagate_edge_attrs_for_vertices(
-        txn,
-        face,
-        current,
-        current_inner,
-        SourceEdgeAttrs::default(),
-        policy,
-    );
-    propagate_edge_attrs_for_vertices(
-        txn,
-        face,
-        next,
-        next_inner,
-        SourceEdgeAttrs::default(),
-        policy,
-    );
-}
-
-fn find_face_edge_for_vertices(
-    mesh: &exedra::Mesh,
-    face: FaceId,
-    a: VertexId,
-    b: VertexId,
-) -> Option<HalfEdgeId> {
-    mesh.face_loop(face).find(|&corner| {
-        let Some(from) = mesh.from_vertex(corner) else {
-            return false;
-        };
-        let Some(to) = mesh.to_vertex(corner) else {
-            return false;
-        };
-        (from == a && to == b) || (from == b && to == a)
-    })
 }
 
 #[cfg(test)]
