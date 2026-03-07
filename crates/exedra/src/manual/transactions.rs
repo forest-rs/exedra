@@ -1,37 +1,37 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Transactions and Change Sets
+//! Edit Scopes and Change Sets
 //!
 //! Exedra edits are performed through [`EditSession`](crate::EditSession), obtained from
-//! [`Mesh::begin`](crate::Mesh::begin).
+//! [`Mesh::edit`](crate::Mesh::edit) or [`Mesh::edit_with`](crate::Mesh::edit_with).
 //!
 //! ```rust
-//! use exedra::{op, Mesh};
+//! use exedra::{op, ChangeSetBuilder, Mesh};
 //!
 //! let mut mesh = Mesh::new();
-//! let mut txn = mesh.begin();
-//! let v = op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
-//! let v1 = op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
-//! let v2 = op::add_vertex(&mut txn, [0.0, 1.0, 0.0]);
-//! let face = op::add_face(&mut txn, &[v, v1, v2]).expect("triangle should be accepted");
-//! let change_set = txn.commit();
+//! let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+//! let v = op::add_vertex(&mut edit, [0.0, 0.0, 0.0]);
+//! let v1 = op::add_vertex(&mut edit, [1.0, 0.0, 0.0]);
+//! let v2 = op::add_vertex(&mut edit, [0.0, 1.0, 0.0]);
+//! let face = op::add_face(&mut edit, &[v, v1, v2]).expect("triangle should be accepted");
+//! let change_set = edit.finish();
 //!
 //! assert_eq!(change_set.created_vertices, vec![v, v1, v2]);
 //! assert_eq!(change_set.created_faces, vec![face]);
 //! ```
 //!
-//! [`EditSession`](crate::EditSession) is the transaction host. The public kernel operation catalog
+//! [`EditSession`](crate::EditSession) is the eager edit host. The public kernel operation catalog
 //! lives in [`crate::op`], which defines explicit topology edits such as
 //! [`crate::op::add_face`], [`crate::op::split_edge`], and [`crate::op::delete_faces`].
 //! `EditSession` is not a second public mutation catalog.
 //!
 //! # Eager Semantics
 //!
-//! Transactions are eager in v0.1:
-//! - mutating txn calls update the underlying mesh immediately,
-//! - dropping/aborting a transaction does not roll back mesh edits,
-//! - [`EditSession::commit`](crate::EditSession::commit) finalizes deterministic bookkeeping
+//! Edit scopes are eager in v0.1:
+//! - mutating calls update the underlying mesh immediately,
+//! - dropping an edit scope does not roll back mesh edits,
+//! - [`EditSession::finish`](crate::EditSession::finish) finalizes optional change recording
 //!   and increments mesh revision.
 //!
 //! # Change Summaries

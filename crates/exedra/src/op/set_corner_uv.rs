@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use crate::{CornerId, EditSession};
+use crate::{ChangeSink, CornerId, EditSession};
 
 /// Structured failure from [`set_corner_uv`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -26,8 +26,8 @@ impl fmt::Display for SetCornerUvError {
 impl core::error::Error for SetCornerUvError {}
 
 /// Writes one corner UV value.
-pub fn set_corner_uv(
-    session: &mut EditSession<'_>,
+pub fn set_corner_uv<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     corner: CornerId,
     uv: [f32; 2],
 ) -> Result<(), SetCornerUvError> {

@@ -10,13 +10,13 @@
 //! - no preview/runner abstraction.
 //!
 //! The boundary is:
-//! - [`EditSession`](crate::EditSession) owns transaction hosting, bookkeeping,
+//! - [`EditSession`](crate::EditSession) owns eager edit hosting, bookkeeping,
 //!   dirty tracking, and low-level mutation plumbing.
 //! - `exedra::op::*` owns the public kernel mutation catalog.
 //!
 //! # Example
 //! ```rust
-//! use exedra::{op, BuildParams, Mesh, PropagatePolicy};
+//! use exedra::{op, BuildParams, ChangeSetBuilder, Mesh, PropagatePolicy};
 //!
 //! let mut mesh = Mesh::from_indexed_triangles(
 //!     &[
@@ -42,10 +42,10 @@
 //!     })
 //!     .expect("interior edge should exist");
 //!
-//! let mut session = mesh.begin();
+//! let mut session = mesh.edit_with(ChangeSetBuilder::new());
 //! let inserted = op::split_edge(&mut session, half_edge, &PropagatePolicy::default())
 //!     .expect("split should succeed");
-//! let changes = session.commit();
+//! let changes = session.finish();
 //!
 //! assert!(mesh.vertex_position(inserted).is_some());
 //! assert_eq!(changes.created_vertices, vec![inserted]);
@@ -64,15 +64,15 @@ mod set_vertex_position;
 mod split_edge;
 mod split_face;
 
+pub use crate::session::{
+    AddFaceError, DeleteEdgesError, DeleteFacesError, DeleteVerticesError, SplitEdgeError,
+    SplitFaceError,
+};
 pub use add_face::add_face;
 pub use add_vertex::add_vertex;
 pub use delete_edges::delete_edges;
 pub use delete_faces::delete_faces;
 pub use delete_vertices::delete_vertices;
-pub use crate::session::{
-    AddFaceError, DeleteEdgesError, DeleteFacesError, DeleteVerticesError, SplitEdgeError,
-    SplitFaceError,
-};
 pub use set_corner_uv::{SetCornerUvError, set_corner_uv};
 pub use set_edge_seam::{SetEdgeSeamError, set_edge_seam};
 pub use set_edge_sharpness::{SetEdgeSharpnessError, set_edge_sharpness};
@@ -85,7 +85,9 @@ pub use split_face::split_face;
 mod tests {
     use alloc::vec;
 
-    use crate::{BuildParams, DeletePolicy, FaceId, Mesh, MeshBuilder, PropagatePolicy, op};
+    use crate::{
+        BuildParams, ChangeSetBuilder, DeletePolicy, FaceId, Mesh, MeshBuilder, PropagatePolicy, op,
+    };
 
     fn triangle_mesh() -> Mesh {
         Mesh::from_indexed_triangles(
@@ -111,13 +113,13 @@ mod tests {
     #[test]
     fn add_face_creates_face() {
         let mut mesh = MeshBuilder::new().build().expect("empty build").mesh;
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
         let v0 = op::add_vertex(&mut session, [0.0, 0.0, 0.0]);
         let v1 = op::add_vertex(&mut session, [1.0, 0.0, 0.0]);
         let v2 = op::add_vertex(&mut session, [0.0, 1.0, 0.0]);
 
         let face = op::add_face(&mut session, &[v0, v1, v2]).expect("add face should succeed");
-        let changes = session.commit();
+        let changes = session.finish();
 
         assert!(mesh.face_edge(face).is_some());
         assert_eq!(changes.created_faces, vec![face]);
@@ -132,11 +134,11 @@ mod tests {
             .flat_map(|face| mesh.face_loop(face))
             .next()
             .expect("triangle should have one face loop");
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
 
         let inserted = op::split_edge(&mut session, half_edge, &PropagatePolicy::default())
             .expect("split should succeed");
-        let changes = session.commit();
+        let changes = session.finish();
 
         assert!(mesh.vertex_position(inserted).is_some());
         assert_eq!(changes.created_vertices, vec![inserted]);
@@ -147,11 +149,11 @@ mod tests {
     fn delete_faces_succeeds() {
         let mut mesh = quad_mesh();
         let face = mesh.faces().next().expect("quad should have one face");
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
 
         op::delete_faces(&mut session, &[face], DeletePolicy::KeepIsolated)
             .expect("delete faces should succeed");
-        let changes = session.commit();
+        let changes = session.finish();
 
         assert_eq!(changes.deleted_faces, vec![face]);
         assert_eq!(mesh.faces().count(), 0);
@@ -163,7 +165,7 @@ mod tests {
         let mut mesh = quad_mesh();
         let face = mesh.faces().next().expect("quad should have one face");
         let corners = mesh.face_loop(face).collect::<vec::Vec<_>>();
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
 
         let new_face = op::split_face(
             &mut session,
@@ -172,7 +174,7 @@ mod tests {
             &PropagatePolicy::default(),
         )
         .expect("split face should succeed");
-        let changes = session.commit();
+        let changes = session.finish();
 
         assert_eq!(mesh.faces().count(), 2);
         assert_eq!(changes.created_faces, vec![new_face]);
@@ -204,11 +206,11 @@ mod tests {
                     && mesh.face(twin) != Some(FaceId::OUTSIDE)
             })
             .expect("interior edge should exist");
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
 
         op::delete_edges(&mut session, &[edge], DeletePolicy::KeepIsolated)
             .expect("delete edges should succeed");
-        let changes = session.commit();
+        let changes = session.finish();
 
         assert!(!changes.deleted_faces.is_empty());
         assert!(mesh.validate_deep().is_empty());
@@ -217,14 +219,14 @@ mod tests {
     #[test]
     fn delete_vertices_succeeds() {
         let mut mesh = MeshBuilder::new().build().expect("empty build").mesh;
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
         let vertex = op::add_vertex(&mut session, [0.0, 0.0, 0.0]);
-        let changes_before = session.commit();
+        let changes_before = session.finish();
         assert_eq!(changes_before.created_vertices, vec![vertex]);
 
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
         op::delete_vertices(&mut session, &[vertex]).expect("delete vertices should succeed");
-        let changes = session.commit();
+        let changes = session.finish();
 
         assert_eq!(changes.deleted_vertices, vec![vertex]);
         assert!(mesh.vertices().next().is_none());
@@ -241,7 +243,7 @@ mod tests {
         let vertex = mesh
             .to_vertex(corner)
             .expect("corner should have destination");
-        let mut session = mesh.begin();
+        let mut session = mesh.edit_with(ChangeSetBuilder::new());
 
         op::set_vertex_position(&mut session, vertex, [2.0, 3.0, 4.0])
             .expect("position write should succeed");
@@ -250,7 +252,7 @@ mod tests {
             .expect("corner uv write should succeed");
         op::set_edge_seam(&mut session, corner, true).expect("edge seam should succeed");
         op::set_edge_sharpness(&mut session, corner, 2.5).expect("edge sharpness should succeed");
-        let _ = session.commit();
+        let _ = session.finish();
 
         assert_eq!(mesh.vertex_position(vertex), Some(&[2.0, 3.0, 4.0]));
         assert_eq!(

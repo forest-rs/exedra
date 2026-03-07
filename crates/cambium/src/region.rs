@@ -40,9 +40,9 @@ impl EditOperator for TagFaceRegion {
         "tag.face.region"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -102,9 +102,9 @@ impl EditOperator for TagFaceRegion {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -132,9 +132,9 @@ impl EditOperator for SelectBoundaryEdgeLoop {
         "select.edgeloop.boundary"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -166,9 +166,9 @@ impl EditOperator for SelectBoundaryEdgeLoop {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {

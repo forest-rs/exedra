@@ -8,13 +8,13 @@ use crate::session::{
     find_outgoing_half_edge_linear_scan, preflight_boundary_continuation,
     should_use_global_outgoing_index, sort_dedup, stitch_outside_loops,
 };
-use crate::{DeletePolicy, EditSession, FaceId, HalfEdgeId, VertexId};
+use crate::{ChangeSink, DeletePolicy, EditSession, FaceId, HalfEdgeId, VertexId};
 
 use super::DeleteFacesError;
 
 /// Deletes a canonical set of interior faces.
-pub fn delete_faces(
-    session: &mut EditSession<'_>,
+pub fn delete_faces<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     faces: &[FaceId],
     policy: DeletePolicy,
 ) -> Result<(), DeleteFacesError> {

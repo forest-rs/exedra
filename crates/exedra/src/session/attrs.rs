@@ -3,7 +3,7 @@
 
 use super::*;
 
-impl EditSession<'_> {
+impl<S: ChangeSink> EditSession<'_, S> {
     /// Returns an immutable view of the mesh being edited.
     #[must_use]
     pub fn mesh(&self) -> &Mesh {
@@ -16,8 +16,8 @@ impl EditSession<'_> {
 
     pub(crate) fn add_vertex_impl(&mut self, position: [f32; 3]) -> VertexId {
         let vertex = self.mesh.add_vertex(position);
-        self.created_vertices.push(vertex);
-        self.dirty.mark_vertex(vertex);
+        self.sink.record_created_vertex(vertex);
+        self.sink.mark_vertex_dirty(vertex);
         vertex
     }
 
@@ -28,7 +28,7 @@ impl EditSession<'_> {
     ) -> bool {
         let updated = self.mesh.set_vertex_position(vertex, position);
         if updated {
-            self.dirty.mark_vertex(vertex);
+            self.sink.mark_vertex_dirty(vertex);
         }
         updated
     }
@@ -40,7 +40,7 @@ impl EditSession<'_> {
             .dense_mut(attr::FACE_REGION)
             .is_some_and(|layer| layer.set(face.as_id(), region));
         if updated {
-            self.dirty.mark_face(face);
+            self.sink.mark_face_dirty(face);
         }
         updated
     }
@@ -70,7 +70,7 @@ impl EditSession<'_> {
                 true
             });
         if updated {
-            self.dirty.mark_corner(corner);
+            self.sink.mark_corner_dirty(corner);
         }
         updated
     }
@@ -87,8 +87,8 @@ impl EditSession<'_> {
         };
         let updated = self.mesh.set_edge_seam(half_edge, seam);
         if updated {
-            self.dirty.mark_corner(half_edge);
-            self.dirty.mark_corner(twin);
+            self.sink.mark_corner_dirty(half_edge);
+            self.sink.mark_corner_dirty(twin);
         }
         updated
     }
@@ -105,8 +105,8 @@ impl EditSession<'_> {
         };
         let updated = self.mesh.set_edge_sharpness(half_edge, sharp);
         if updated {
-            self.dirty.mark_corner(half_edge);
-            self.dirty.mark_corner(twin);
+            self.sink.mark_corner_dirty(half_edge);
+            self.sink.mark_corner_dirty(twin);
         }
         updated
     }

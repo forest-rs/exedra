@@ -320,12 +320,12 @@ fn run_boxy_hat(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
 
 fn apply_primitive_regions(mesh: &mut Mesh, face_region: &exedra_primitives::FaceRegionLayer) {
     let faces: Vec<_> = mesh.faces().collect();
-    let mut txn = mesh.begin();
+    let mut txn = mesh.edit();
     for face in faces {
         let region = face_region.get(face);
         let _ = exedra::op::set_face_region(&mut txn, face, region.0);
     }
-    let _ = txn.commit();
+    let _: () = txn.finish();
 }
 
 fn tag_faces(

@@ -18,7 +18,7 @@ std = ["cambium/std"]
 [dev-dependencies]
 cambium.workspace = true
 exedra.workspace = true
-exedra_primitives = { workspace = true, features = ["std"] }
+exedra_primitives = { features = ["std"], workspace = true }
 
 [lints]
 workspace = true

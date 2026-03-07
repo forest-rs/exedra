@@ -272,7 +272,8 @@ impl core::error::Error for ValidationError {}
 
 /// Monotonic mesh revision counter.
 ///
-/// Revision increments exactly once per successful [`EditSession::commit`](crate::EditSession::commit).
+/// Revision increments exactly once per finished edit scope
+/// ([`EditSession::finish`](crate::EditSession::finish)).
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MeshRevision(u64);
 

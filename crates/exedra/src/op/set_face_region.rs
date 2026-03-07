@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use crate::{EditSession, FaceId};
+use crate::{ChangeSink, EditSession, FaceId};
 
 /// Structured failure from [`set_face_region`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -26,8 +26,8 @@ impl fmt::Display for SetFaceRegionError {
 impl core::error::Error for SetFaceRegionError {}
 
 /// Writes the built-in face-region layer.
-pub fn set_face_region(
-    session: &mut EditSession<'_>,
+pub fn set_face_region<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     face: FaceId,
     region: u32,
 ) -> Result<(), SetFaceRegionError> {

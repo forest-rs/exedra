@@ -7,8 +7,8 @@ use crate::op_common::op_error;
 use crate::selection::{EdgeSet, canonicalize_edge_set};
 use crate::{Artifacts, DiagCode, OpContext, OpError, OpErrorKind, OpReport};
 
-pub(crate) fn apply_edge_tag<T, F>(
-    txn: &mut exedra::EditSession<'_>,
+pub(crate) fn apply_edge_tag<S, T, F>(
+    txn: &mut exedra::EditSession<'_, S>,
     edges: &EdgeSet,
     value: T,
     ctx: &mut OpContext,
@@ -17,8 +17,9 @@ pub(crate) fn apply_edge_tag<T, F>(
     mut setter: F,
 ) -> Result<(OpReport, EdgeSet), OpError>
 where
+    S: exedra::ChangeSink,
     T: Copy,
-    F: FnMut(&mut exedra::EditSession<'_>, exedra::HalfEdgeId, T) -> bool,
+    F: FnMut(&mut exedra::EditSession<'_, S>, exedra::HalfEdgeId, T) -> bool,
 {
     let mut canonical_input = edges.clone();
     let mut report = OpReport::new(

@@ -6,13 +6,15 @@ use alloc::vec::Vec;
 use crate::session::propagation::{
     propagate_split_face_diagonal_uvs, split_face_diagonal_sharpness,
 };
-use crate::{CornerId, EditSession, FaceId, HalfEdge, HalfEdgeId, PropagatePolicy, attr};
+use crate::{
+    ChangeSink, CornerId, EditSession, FaceId, HalfEdge, HalfEdgeId, PropagatePolicy, attr,
+};
 
 use super::SplitFaceError;
 
 /// Splits one interior face with a new diagonal.
-pub fn split_face(
-    session: &mut EditSession<'_>,
+pub fn split_face<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     corner_a: CornerId,
     corner_b: CornerId,
     policy: &PropagatePolicy,

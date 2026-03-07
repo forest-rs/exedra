@@ -4,13 +4,13 @@
 use alloc::vec::Vec;
 
 use crate::session::sort_dedup;
-use crate::{DeletePolicy, EditSession, FaceId, HalfEdgeId};
+use crate::{ChangeSink, DeletePolicy, EditSession, FaceId, HalfEdgeId};
 
 use super::DeleteEdgesError;
 
 /// Deletes a canonical set of undirected edges.
-pub fn delete_edges(
-    session: &mut EditSession<'_>,
+pub fn delete_edges<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     edges: &[HalfEdgeId],
     policy: DeletePolicy,
 ) -> Result<(), DeleteEdgesError> {

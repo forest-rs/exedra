@@ -8,7 +8,7 @@
 //!
 //! Current sections:
 //! - [`model`]: half-edge model, OUTSIDE face semantics, IDs/corners.
-//! - [`transactions`]: eager transaction behavior and change summaries.
+//! - [`transactions`]: eager edit-scope behavior and optional change summaries.
 //! - [`attributes`]: dense/sparse layers, domains, and built-ins.
 //! - [`construction`]: mesh construction pathways and error semantics.
 //! - [`validation`]: `validate_fast` vs `validate_deep` usage.

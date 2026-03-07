@@ -30,7 +30,7 @@ pub(crate) fn clear_edge_tags(mesh: &mut Mesh, canonical_edge: HalfEdgeId) {
 }
 
 pub(crate) fn propagate_split_edge_edge_attrs(
-    session: &mut EditSession<'_>,
+    session: &mut EditSession<'_, impl ChangeSink>,
     parent: HalfEdgeId,
     child: HalfEdgeId,
     edge_tags: (Option<bool>, Option<f32>),
@@ -76,7 +76,7 @@ pub(crate) struct SplitEdgeUvSources {
 }
 
 pub(crate) fn propagate_split_edge_corner_uvs(
-    session: &mut EditSession<'_>,
+    session: &mut EditSession<'_, impl ChangeSink>,
     half_edge: HalfEdgeId,
     twin: HalfEdgeId,
     child_h: HalfEdgeId,
@@ -126,7 +126,7 @@ pub(crate) fn propagate_split_edge_corner_uvs(
 }
 
 pub(crate) fn propagate_split_face_diagonal_uvs(
-    session: &mut EditSession<'_>,
+    session: &mut EditSession<'_, impl ChangeSink>,
     diagonal_a_b: HalfEdgeId,
     diagonal_b_a: HalfEdgeId,
     uv_a: Option<[f32; 2]>,

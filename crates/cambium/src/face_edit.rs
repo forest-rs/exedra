@@ -8,8 +8,8 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{CornerId, DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
 use exedra::op::AddFaceError;
+use exedra::{DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
@@ -221,9 +221,9 @@ impl EditOperator for ExtrudeFaces {
         "edit.face.extrude"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -439,9 +439,9 @@ impl EditOperator for ExtrudeFaces {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -493,9 +493,9 @@ impl EditOperator for InsetFaces {
         })
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -728,9 +728,9 @@ impl EditOperator for SolidifyFaces {
         op.compile(mesh, &mapped, ctx)
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -976,9 +976,9 @@ impl EditOperator for CutRectFace {
         })
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -1428,8 +1428,8 @@ fn normalized_face_normal(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<
     Some([nx * inv_len, ny * inv_len, nz * inv_len])
 }
 
-fn add_frame_face_with_orientation(
-    txn: &mut exedra::EditSession<'_>,
+fn add_frame_face_with_orientation<S: exedra::ChangeSink>(
+    txn: &mut exedra::EditSession<'_, S>,
     current: VertexId,
     next: VertexId,
     current_inset: VertexId,
@@ -1481,8 +1481,8 @@ fn frame_face_error(ctx: &OpContext, op_name: &'static str, err: AddFaceError) -
     )
 }
 
-fn propagate_face_corner_uvs(
-    txn: &mut exedra::EditSession<'_>,
+fn propagate_face_corner_uvs<S: exedra::ChangeSink>(
+    txn: &mut exedra::EditSession<'_, S>,
     face: FaceId,
     uv_map: &[(VertexId, Option<[f32; 2]>)],
 ) {
@@ -1501,8 +1501,8 @@ fn propagate_face_corner_uvs(
     }
 }
 
-fn propagate_edge_attrs_for_vertices(
-    txn: &mut exedra::EditSession<'_>,
+fn propagate_edge_attrs_for_vertices<S: exedra::ChangeSink>(
+    txn: &mut exedra::EditSession<'_, S>,
     face: FaceId,
     a: VertexId,
     b: VertexId,
@@ -1532,8 +1532,8 @@ fn propagate_edge_attrs_for_vertices(
     }
 }
 
-fn propagate_frame_edge_attrs(
-    txn: &mut exedra::EditSession<'_>,
+fn propagate_frame_edge_attrs<S: exedra::ChangeSink>(
+    txn: &mut exedra::EditSession<'_, S>,
     face: FaceId,
     current: VertexId,
     next: VertexId,
@@ -2046,13 +2046,13 @@ mod tests {
         let (mut mesh, face) = quad_mesh();
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit();
             for (index, &corner) in corners.iter().enumerate() {
                 assert!(exedra::op::set_corner_uv(&mut txn, corner, [index as f32, 0.0]).is_ok());
                 assert!(exedra::op::set_edge_seam(&mut txn, corner, true).is_ok());
                 assert!(exedra::op::set_edge_sharpness(&mut txn, corner, 2.5).is_ok());
             }
-            let _ = txn.commit();
+            let _: () = txn.finish();
         }
 
         let mut runner = OperatorRunner::new();
@@ -2087,12 +2087,12 @@ mod tests {
         let (mut mesh, face) = quad_mesh();
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit();
             for &corner in &corners {
                 assert!(exedra::op::set_edge_seam(&mut txn, corner, true).is_ok());
                 assert!(exedra::op::set_edge_sharpness(&mut txn, corner, 3.0).is_ok());
             }
-            let _ = txn.commit();
+            let _: () = txn.finish();
         }
 
         let mut runner = OperatorRunner::new();

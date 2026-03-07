@@ -97,9 +97,9 @@ impl EditOperator for InspectBounds {
         "inspect.bounds"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -197,9 +197,9 @@ impl EditOperator for InspectBounds {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {

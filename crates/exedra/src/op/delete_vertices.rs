@@ -1,13 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{EditSession, HalfEdgeId, VertexId};
+use crate::{ChangeSink, EditSession, HalfEdgeId, VertexId};
 
 use super::DeleteVerticesError;
 
 /// Deletes a canonical set of isolated vertices.
-pub fn delete_vertices(
-    session: &mut EditSession<'_>,
+pub fn delete_vertices<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     vertices: &[VertexId],
 ) -> Result<(), DeleteVerticesError> {
     if !crate::session::is_canonical_vertex_set(vertices) {

@@ -1,12 +1,12 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Operator runner for preview/commit execution.
+//! Operator runner for compile/apply and preview execution.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{ChangeSet, Mesh, ValidationError};
+use exedra::{ChangeSet, ChangeSetBuilder, Mesh, ValidationError};
 #[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -19,7 +19,7 @@ use crate::{Diagnostic, EditOperator, EditPlan, OpContext, OpError, OpErrorKind,
 /// Result from [`OperatorRunner::apply_in_place`].
 #[derive(Clone, Debug)]
 pub struct OpResult<T = ()> {
-    /// Transaction commit summary.
+    /// Recorded Exedra edit summary.
     pub change_set: ChangeSet,
     /// Operator report for this run.
     pub report: OpReport,
@@ -121,7 +121,7 @@ impl OperatorRunner {
         if plan.operator != op.name() {
             return Err(self.plan_operator_mismatch_error(plan.operator, op.name()));
         }
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
 
         #[cfg(any(target_arch = "wasm32", feature = "std"))]
         let op_apply_start = Instant::now();
@@ -135,8 +135,8 @@ impl OperatorRunner {
         #[cfg(not(any(target_arch = "wasm32", feature = "std")))]
         self.ctx.clock.add_nanos("op.apply", 0);
         let change_set = {
-            let _bucket = self.ctx.clock.bucket("txn.commit");
-            txn.commit()
+            let _bucket = self.ctx.clock.bucket("edit.finish");
+            txn.finish()
         };
         report.stats.counters.deleted_vertices = u64::try_from(change_set.deleted_vertices.len())
             .expect("deleted vertex count should fit u64");
@@ -172,7 +172,7 @@ impl OperatorRunner {
         let cache_dirty_before = self.ctx.cache_dirty.clone();
         let result = (|| {
             let mut preview_mesh = mesh.clone();
-            let mut txn = preview_mesh.begin();
+            let mut txn = preview_mesh.edit();
 
             #[cfg(any(target_arch = "wasm32", feature = "std"))]
             let op_apply_start = Instant::now();
@@ -186,10 +186,11 @@ impl OperatorRunner {
             #[cfg(not(any(target_arch = "wasm32", feature = "std")))]
             self.ctx.clock.add_nanos("op.apply", 0);
             {
-                let _bucket = self.ctx.clock.bucket("txn.commit");
-                // Preview still runs the same transaction path to produce report
-                // timings; the preview change-set is intentionally discarded.
-                let _ = txn.commit();
+                let _bucket = self.ctx.clock.bucket("edit.finish");
+                // Preview still runs the same eager edit path to produce final
+                // timing/report data; the preview change recording is
+                // intentionally discarded.
+                let _: () = txn.finish();
             }
 
             if self.ctx.policy.validate.validate_on_preview {
@@ -291,9 +292,9 @@ mod tests {
             "test.add_vertex"
         }
 
-        fn apply(
+        fn apply<S: exedra::ChangeSink>(
             &self,
-            txn: &mut EditSession<'_>,
+            txn: &mut EditSession<'_, S>,
             params: &Self::Params,
             ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {
@@ -312,9 +313,9 @@ mod tests {
             Ok(*params)
         }
 
-        fn apply_plan(
+        fn apply_plan<S: exedra::ChangeSink>(
             &self,
-            txn: &mut EditSession<'_>,
+            txn: &mut EditSession<'_, S>,
             plan: &Self::Plan,
             ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {
@@ -350,7 +351,7 @@ mod tests {
                 .report
                 .timings
                 .iter()
-                .any(|bucket| bucket.name == "txn.commit")
+                .any(|bucket| bucket.name == "edit.finish")
         );
         let mut adjacency = Vec::new();
         runner
@@ -449,9 +450,9 @@ mod tests {
             "test.marks_preview_dirty"
         }
 
-        fn apply(
+        fn apply<S: exedra::ChangeSink>(
             &self,
-            _txn: &mut EditSession<'_>,
+            _txn: &mut EditSession<'_, S>,
             _params: &Self::Params,
             ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {
@@ -468,9 +469,9 @@ mod tests {
             Ok(())
         }
 
-        fn apply_plan(
+        fn apply_plan<S: exedra::ChangeSink>(
             &self,
-            txn: &mut EditSession<'_>,
+            txn: &mut EditSession<'_, S>,
             _plan: &Self::Plan,
             ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {

@@ -4,8 +4,8 @@
 //! Operator Authoring Guide
 //!
 //! Operators implement [`EditOperator`](crate::EditOperator) and mutate mesh
-//! state through an in-flight [`exedra::EditSession`]. The runner owns commit/preview
-//! orchestration.
+//! state through an in-flight [`exedra::EditSession`]. The runner owns
+//! apply/preview orchestration.
 //!
 //! Lifecycle:
 //! 1. Runner resets reusable context (`scratch`, diagnostics sink, clock).
@@ -37,8 +37,8 @@
 //!   [`OpErrorKind`](crate::OpErrorKind).
 //! - Use diagnostics for caller-actionable detail.
 //! - Treat stale IDs and missing required layers as precondition failures.
-//! - Exedra transactions are eager: mesh edits can already be applied before a
-//!   runner post-commit validation error is returned.
+//! - Exedra edit scopes are eager: mesh edits can already be applied before a
+//!   runner post-apply validation error is returned.
 //!
 //! # Determinism Rules
 //!
@@ -105,9 +105,9 @@
 //!         "example.op"
 //!     }
 //!
-//!     fn apply(
+//!     fn apply<S: exedra::ChangeSink>(
 //!         &self,
-//!         txn: &mut exedra::EditSession<'_>,
+//!         txn: &mut exedra::EditSession<'_, S>,
 //!         _params: &Self::Params,
 //!         ctx: &mut OpContext,
 //!     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -148,9 +148,9 @@
 //!         Ok(*params)
 //!     }
 //!
-//!     fn apply_plan(
+//!     fn apply_plan<S: exedra::ChangeSink>(
 //!         &self,
-//!         txn: &mut exedra::EditSession<'_>,
+//!         txn: &mut exedra::EditSession<'_, S>,
 //!         plan: &Self::Plan,
 //!         ctx: &mut OpContext,
 //!     ) -> Result<(OpReport, Self::Output), OpError> {

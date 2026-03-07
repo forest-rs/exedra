@@ -4,13 +4,13 @@
 use alloc::vec::Vec;
 
 use crate::session::stitch_outside_loops_for_vertices;
-use crate::{EditSession, FaceId, HalfEdge, HalfEdgeId, VertexId};
+use crate::{ChangeSink, EditSession, FaceId, HalfEdge, HalfEdgeId, VertexId};
 
 use super::AddFaceError;
 
 /// Adds one interior face from an ordered loop of live vertices.
-pub fn add_face(
-    session: &mut EditSession<'_>,
+pub fn add_face<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     loop_vertices: &[VertexId],
 ) -> Result<FaceId, AddFaceError> {
     if loop_vertices.len() < 3 {

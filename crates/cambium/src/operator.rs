@@ -11,9 +11,9 @@ use crate::{OpContext, OpError, OpReport};
 
 /// Primary operator trait for topology/attribute edits.
 ///
-/// Operators mutate mesh state through a transaction and return an operator
-/// report plus a typed output payload. Transaction commit/abort is
-/// orchestrated by the runner.
+/// Operators mutate mesh state through an Exedra edit scope and return an
+/// operator report plus a typed output payload. Scope finalization and optional
+/// change recording are orchestrated by the runner.
 ///
 /// Implemented by concrete operators such as [`UvPlanar`](crate::UvPlanar),
 /// [`UvBox`](crate::UvBox), [`UvCylinder`](crate::UvCylinder),
@@ -43,9 +43,9 @@ pub trait EditOperator {
     ) -> Result<Self::Plan, OpError>;
 
     /// Applies an already-compiled plan.
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut EditSession<'_>,
+        txn: &mut EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError>;
@@ -64,9 +64,9 @@ pub trait EditOperator {
     ///
     /// Default behavior uses the explicit lifecycle:
     /// `compile(txn.mesh(), params, ctx)` then `apply_plan(txn, plan, ctx)`.
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut EditSession<'_>,
+        txn: &mut EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -101,9 +101,9 @@ mod tests {
             Ok(())
         }
 
-        fn apply_plan(
+        fn apply_plan<S: exedra::ChangeSink>(
             &self,
-            _txn: &mut EditSession<'_>,
+            _txn: &mut EditSession<'_, S>,
             _plan: &Self::Plan,
             _ctx: &mut OpContext,
         ) -> Result<(OpReport, Self::Output), OpError> {

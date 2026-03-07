@@ -58,9 +58,9 @@ impl EditOperator for ValidateMesh {
         "inspect.validate.mesh"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -103,9 +103,9 @@ impl EditOperator for ValidateMesh {
         Ok(*params)
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn validate_mesh_reports_no_diagnostics_for_valid_mesh() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit();
         let op = ValidateMesh;
         let mut ctx = OpContext::default();
         let (report, output) = op
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn validate_mesh_fast_mode_runs_without_errors_for_valid_mesh() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit();
         let op = ValidateMesh;
         let mut ctx = OpContext::default();
         let (_, output) = op

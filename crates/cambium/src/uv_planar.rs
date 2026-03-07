@@ -78,9 +78,9 @@ impl EditOperator for UvPlanar {
         "uv.planar"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -178,9 +178,9 @@ impl EditOperator for UvPlanar {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -289,9 +289,9 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corner = mesh.face_loop(face).next().expect("corner should exist");
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit();
             assert!(exedra::op::set_corner_uv(&mut txn, corner, [9.0, 9.0]).is_ok());
-            let _ = txn.commit();
+            let _: () = txn.finish();
         }
 
         let mut runner = OperatorRunner::new();

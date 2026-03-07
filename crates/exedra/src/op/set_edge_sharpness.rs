@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use crate::{EditSession, HalfEdgeId};
+use crate::{ChangeSink, EditSession, HalfEdgeId};
 
 /// Structured failure from [`set_edge_sharpness`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,8 +28,8 @@ impl fmt::Display for SetEdgeSharpnessError {
 impl core::error::Error for SetEdgeSharpnessError {}
 
 /// Writes one explicit edge sharpness value.
-pub fn set_edge_sharpness(
-    session: &mut EditSession<'_>,
+pub fn set_edge_sharpness<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     half_edge: HalfEdgeId,
     sharpness: f32,
 ) -> Result<(), SetEdgeSharpnessError> {

@@ -1,9 +1,9 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Explicit mesh transactions and deterministic change summaries.
+//! Explicit eager edit scopes and deterministic change summaries.
 //!
-//! This module owns transaction hosting, bookkeeping, cache invalidation, and
+//! This module owns edit-session hosting, bookkeeping, cache invalidation, and
 //! shared mutation plumbing. Public kernel mutation entry points live in
 //! [`crate::op`].
 
@@ -124,7 +124,7 @@ impl Default for PropagatePolicy {
 /// domains. The primary consumption path is deterministic drain operations.
 ///
 /// Most callers consume this via [`ChangeSet::dirty`] after
-/// [`EditSession::commit`](crate::EditSession::commit).
+/// [`EditSession::finish`](crate::EditSession::finish).
 #[derive(Clone, Debug, Default)]
 pub struct DirtySet {
     inner: UnderstoryDirtySet<Id>,
@@ -198,9 +198,7 @@ impl DirtySet {
     }
 }
 
-/// Deterministic summary of mesh changes produced by a committed transaction.
-///
-/// Returned by [`EditSession::commit`].
+/// Deterministic summary of mesh changes produced by a recorded edit scope.
 #[derive(Clone, Debug, Default)]
 pub struct ChangeSet {
     /// Conservative invalidation summary.
@@ -217,6 +215,140 @@ pub struct ChangeSet {
     pub deleted_half_edges: Vec<HalfEdgeId>,
     /// Deleted faces in deterministic ID order.
     pub deleted_faces: Vec<FaceId>,
+}
+
+/// Sink for optional edit-scope change recording.
+///
+/// [`EditSession`] always mutates the mesh eagerly. A sink controls whether the
+/// session also records created/deleted IDs and dirty channels while edits are
+/// applied. [`ChangeSetBuilder`] is the standard sink for callers that need an
+/// Exedra [`ChangeSet`]; [`DiscardChanges`] is the default no-op sink used by
+/// [`Mesh::edit`].
+pub trait ChangeSink {
+    /// Final output returned by [`EditSession::finish`].
+    type Output;
+
+    /// Records one dirty face.
+    fn mark_face_dirty(&mut self, _face: FaceId) {}
+
+    /// Records one dirty vertex.
+    fn mark_vertex_dirty(&mut self, _vertex: VertexId) {}
+
+    /// Records one dirty corner.
+    fn mark_corner_dirty(&mut self, _corner: CornerId) {}
+
+    /// Records one created vertex.
+    fn record_created_vertex(&mut self, _vertex: VertexId) {}
+
+    /// Records one created half-edge.
+    fn record_created_half_edge(&mut self, _half_edge: HalfEdgeId) {}
+
+    /// Records one created face.
+    fn record_created_face(&mut self, _face: FaceId) {}
+
+    /// Records one deleted vertex.
+    fn record_deleted_vertex(&mut self, _vertex: VertexId) {}
+
+    /// Records one deleted half-edge.
+    fn record_deleted_half_edge(&mut self, _half_edge: HalfEdgeId) {}
+
+    /// Records one deleted face.
+    fn record_deleted_face(&mut self, _face: FaceId) {}
+
+    /// Finalizes the sink and returns its output.
+    fn finish(self) -> Self::Output;
+}
+
+/// Default no-op change sink used by [`Mesh::edit`].
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DiscardChanges;
+
+impl ChangeSink for DiscardChanges {
+    type Output = ();
+
+    fn finish(self) -> Self::Output {}
+}
+
+/// Builder sink that records a deterministic [`ChangeSet`].
+#[derive(Clone, Debug, Default)]
+pub struct ChangeSetBuilder {
+    dirty: DirtySet,
+    created_vertices: Vec<VertexId>,
+    created_half_edges: Vec<HalfEdgeId>,
+    created_faces: Vec<FaceId>,
+    deleted_vertices: Vec<VertexId>,
+    deleted_half_edges: Vec<HalfEdgeId>,
+    deleted_faces: Vec<FaceId>,
+}
+
+impl ChangeSetBuilder {
+    /// Creates an empty change-set builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ChangeSink for ChangeSetBuilder {
+    type Output = ChangeSet;
+
+    fn mark_face_dirty(&mut self, face: FaceId) {
+        self.dirty.mark_face(face);
+    }
+
+    fn mark_vertex_dirty(&mut self, vertex: VertexId) {
+        self.dirty.mark_vertex(vertex);
+    }
+
+    fn mark_corner_dirty(&mut self, corner: CornerId) {
+        self.dirty.mark_corner(corner);
+    }
+
+    fn record_created_vertex(&mut self, vertex: VertexId) {
+        self.created_vertices.push(vertex);
+    }
+
+    fn record_created_half_edge(&mut self, half_edge: HalfEdgeId) {
+        self.created_half_edges.push(half_edge);
+    }
+
+    fn record_created_face(&mut self, face: FaceId) {
+        self.created_faces.push(face);
+    }
+
+    fn record_deleted_vertex(&mut self, vertex: VertexId) {
+        self.deleted_vertices.push(vertex);
+        self.dirty.mark_vertex(vertex);
+    }
+
+    fn record_deleted_half_edge(&mut self, half_edge: HalfEdgeId) {
+        self.deleted_half_edges.push(half_edge);
+        self.dirty.mark_corner(half_edge);
+    }
+
+    fn record_deleted_face(&mut self, face: FaceId) {
+        self.deleted_faces.push(face);
+        self.dirty.mark_face(face);
+    }
+
+    fn finish(mut self) -> Self::Output {
+        sort_dedup(&mut self.created_vertices);
+        sort_dedup(&mut self.created_half_edges);
+        sort_dedup(&mut self.created_faces);
+        sort_dedup(&mut self.deleted_vertices);
+        sort_dedup(&mut self.deleted_half_edges);
+        sort_dedup(&mut self.deleted_faces);
+
+        ChangeSet {
+            dirty: self.dirty,
+            created_vertices: self.created_vertices,
+            created_half_edges: self.created_half_edges,
+            created_faces: self.created_faces,
+            deleted_vertices: self.deleted_vertices,
+            deleted_half_edges: self.deleted_half_edges,
+            deleted_faces: self.deleted_faces,
+        }
+    }
 }
 
 /// Face-deletion behavior for isolated vertices.
@@ -450,58 +582,59 @@ impl fmt::Display for AddFaceError {
 
 impl core::error::Error for AddFaceError {}
 
-/// Single-writer transaction host over a mesh.
+/// Single-writer eager edit scope over a mesh.
 ///
-/// [`EditSession`] owns eager mutation access, dirty/change bookkeeping, cache
+/// [`EditSession`] owns eager mutation access, optional change recording, cache
 /// invalidation, and internal topology helper plumbing.
 ///
-/// For the public kernel operation catalog, prefer [`crate::op`] and apply
-/// typed ops through an active session. Transitional topology methods remain on
-/// the session as forwarding wrappers, but the long-term public mutation
-/// boundary is `exedra::op::*`.
+/// For the public kernel operation catalog, use [`crate::op`] and apply
+/// mutation functions through an active session. `EditSession` is not a second
+/// public mutation catalog.
 ///
 /// Mutations are applied eagerly to the underlying mesh. Dropping a session
-/// does not roll back mesh changes; it only discards accumulated bookkeeping.
+/// does not roll back mesh changes; it only discards any accumulated sink
+/// state.
 ///
-/// Acquire via [`Mesh::begin`], apply mutating operations, then finish with
-/// [`EditSession::commit`] (or [`EditSession::abort`] to drop bookkeeping only).
+/// Acquire via [`Mesh::edit`] or [`Mesh::edit_with`], apply mutating operations,
+/// then close the scope with [`EditSession::finish`].
 #[derive(Debug)]
-pub struct EditSession<'a> {
+pub struct EditSession<'a, S: ChangeSink = DiscardChanges> {
     mesh: &'a mut Mesh,
     outgoing_index: Vec<OutgoingAdj>,
     outgoing_index_valid: bool,
-    dirty: DirtySet,
-    created_vertices: Vec<VertexId>,
-    created_half_edges: Vec<HalfEdgeId>,
-    created_faces: Vec<FaceId>,
-    deleted_vertices: Vec<VertexId>,
-    deleted_half_edges: Vec<HalfEdgeId>,
-    deleted_faces: Vec<FaceId>,
+    sink: S,
 }
 
 impl Mesh {
-    /// Begins a new transaction borrowing this mesh mutably.
+    /// Begins a new eager edit scope without change recording.
     ///
-    /// Mutations performed through the transaction update the mesh immediately.
-    /// Call [`EditSession::commit`] to materialize a [`ChangeSet`], or [`EditSession::abort`]
-    /// to explicitly discard bookkeeping without rollback.
-    pub fn begin(&mut self) -> EditSession<'_> {
+    /// Mutations performed through the session update the mesh immediately.
+    /// Call [`EditSession::finish`] to finalize the scope and bump
+    /// [`Mesh::revision`].
+    pub fn edit(&mut self) -> EditSession<'_> {
         EditSession {
             mesh: self,
             outgoing_index: Vec::new(),
             outgoing_index_valid: false,
-            dirty: DirtySet::new(),
-            created_vertices: Vec::new(),
-            created_half_edges: Vec::new(),
-            created_faces: Vec::new(),
-            deleted_vertices: Vec::new(),
-            deleted_half_edges: Vec::new(),
-            deleted_faces: Vec::new(),
+            sink: DiscardChanges,
+        }
+    }
+
+    /// Begins a new eager edit scope with explicit change recording.
+    ///
+    /// Use [`ChangeSetBuilder`] when you need a deterministic Exedra
+    /// [`ChangeSet`] at the end of the scope.
+    pub fn edit_with<S: ChangeSink>(&mut self, sink: S) -> EditSession<'_, S> {
+        EditSession {
+            mesh: self,
+            outgoing_index: Vec::new(),
+            outgoing_index_valid: false,
+            sink,
         }
     }
 }
 
-impl EditSession<'_> {
+impl<S: ChangeSink> EditSession<'_, S> {
     pub(crate) fn ensure_outgoing_index(&mut self) -> &[OutgoingAdj] {
         if !self.outgoing_index_valid {
             self.outgoing_index = build_outgoing_index(self.mesh);
@@ -1012,7 +1145,7 @@ mod tests {
         ) -> Result<ChangeSet, DeleteVerticesError>;
     }
 
-    impl SessionOpExt for EditSession<'_> {
+    impl<S: ChangeSink> SessionOpExt for EditSession<'_, S> {
         fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
             op::add_vertex(self, position)
         }
@@ -1105,9 +1238,9 @@ mod tests {
             faces: &[FaceId],
             policy: DeletePolicy,
         ) -> Result<ChangeSet, DeleteFacesError> {
-            let mut txn = self.begin();
+            let mut txn = self.edit_with(ChangeSetBuilder::new());
             op::delete_faces(&mut txn, faces, policy)?;
-            Ok(txn.commit())
+            Ok(txn.finish())
         }
 
         fn delete_edges(
@@ -1115,18 +1248,18 @@ mod tests {
             edges: &[HalfEdgeId],
             policy: DeletePolicy,
         ) -> Result<ChangeSet, DeleteEdgesError> {
-            let mut txn = self.begin();
+            let mut txn = self.edit_with(ChangeSetBuilder::new());
             op::delete_edges(&mut txn, edges, policy)?;
-            Ok(txn.commit())
+            Ok(txn.finish())
         }
 
         fn delete_vertices(
             &mut self,
             vertices: &[VertexId],
         ) -> Result<ChangeSet, DeleteVerticesError> {
-            let mut txn = self.begin();
+            let mut txn = self.edit_with(ChangeSetBuilder::new());
             op::delete_vertices(&mut txn, vertices)?;
-            Ok(txn.commit())
+            Ok(txn.finish())
         }
     }
 
@@ -1288,11 +1421,11 @@ mod tests {
         let (mut mesh, shared) = split_source_mesh();
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_edge_sharpness(shared, 3.0).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let decay = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::DecayOnSplit,
             ..PropagatePolicy::default()
@@ -1311,7 +1444,7 @@ mod tests {
         let _ = txn
             .split_edge(child_h, &clear)
             .expect("split with clear policy should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
 
         let child_t = mesh.next(twin).expect("split child should exist");
         let child_h_twin = mesh.twin(child_h).expect("split child should have twin");
@@ -1324,9 +1457,9 @@ mod tests {
     #[test]
     fn txn_add_vertex_commits_created_and_dirty() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let vertex = txn.add_vertex([1.0, 2.0, 3.0]);
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         assert_eq!(changes.created_vertices, vec![vertex]);
         assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
@@ -1338,9 +1471,9 @@ mod tests {
     fn txn_set_vertex_position_marks_vertex_dirty() {
         let mut mesh = Mesh::new();
         let vertex = mesh.add_vertex([0.0, 0.0, 0.0]);
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         assert!(txn.set_vertex_position(vertex, [4.0, 5.0, 6.0]).is_ok());
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
         assert_eq!(mesh.vertex_position(vertex), Some(&[4.0, 5.0, 6.0]));
@@ -1357,9 +1490,9 @@ mod tests {
         let mut mesh = built;
         let face = mesh.faces().next().expect("face should exist");
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         assert!(txn.set_face_region(face, 9).is_ok());
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         let region = mesh
             .attrs()
@@ -1383,10 +1516,10 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corner = mesh.face_loop(face).next().expect("corner should exist");
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         assert!(txn.set_corner_uv(corner, [0.25, 0.5]).is_ok());
         assert_eq!(txn.corner_uv(corner), Some([0.25, 0.5]));
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
         assert_eq!(drained_corners(&mut changes.dirty), vec![corner]);
     }
 
@@ -1406,12 +1539,12 @@ mod tests {
         let shared = find_half_edge(&mesh, 0, 2).expect("shared half-edge should exist");
         let shared_twin = mesh.twin(shared).expect("shared edge should have twin");
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         assert_eq!(txn.edge_seam(shared), Some(false));
         assert!(txn.set_edge_seam(shared_twin, true).is_ok());
         assert_eq!(txn.edge_seam(shared), Some(true));
         assert_eq!(txn.edge_seam(shared_twin), Some(true));
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         let mut corners = drained_corners(&mut changes.dirty);
         corners.sort_unstable();
@@ -1436,12 +1569,12 @@ mod tests {
         let shared = find_half_edge(&mesh, 0, 2).expect("shared half-edge should exist");
         let shared_twin = mesh.twin(shared).expect("shared edge should have twin");
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         assert_eq!(txn.edge_sharpness(shared), Some(0.0));
         assert!(txn.set_edge_sharpness(shared_twin, 2.5).is_ok());
         assert_eq!(txn.edge_sharpness(shared), Some(2.5));
         assert_eq!(txn.edge_sharpness(shared_twin), Some(2.5));
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         let mut corners = drained_corners(&mut changes.dirty);
         corners.sort_unstable();
@@ -1470,10 +1603,10 @@ mod tests {
         let t = mesh.twin(h).expect("twin should exist");
         let t_next = mesh.next(t).expect("next should exist");
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_corner_uv(h, [0.25, 0.0]).is_ok());
             assert!(txn.set_corner_uv(t_next, [0.75, 0.0]).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
         assert_eq!(mesh.is_uv_discontinuous(shared), Some(true));
     }
@@ -1497,7 +1630,7 @@ mod tests {
     #[test]
     fn split_edge_rejects_stale_half_edge() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let err = txn
             .split_edge(
                 HalfEdgeId::new(99, NonZeroU32::MIN),
@@ -1522,11 +1655,11 @@ mod tests {
         let vertices_before = mesh.vertices.len();
         let half_edges_before = mesh.half_edges.len();
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let inserted = txn
             .split_edge(shared, &PropagatePolicy::default())
             .expect("split should succeed");
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         assert_eq!(mesh.vertices.len(), vertices_before + 1);
         assert_eq!(mesh.half_edges.len(), half_edges_before + 2);
@@ -1578,17 +1711,17 @@ mod tests {
         let (mut mesh, shared) = split_source_mesh();
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_edge_seam(shared, true).is_ok());
             assert!(txn.set_edge_sharpness(shared, 2.5).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn
             .split_edge(shared, &PropagatePolicy::default())
             .expect("split should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
         assert_eq!(mesh.edge_seam(shared), Some(true));
@@ -1603,13 +1736,13 @@ mod tests {
 
         let (mut mesh, shared) = split_source_mesh();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_edge_seam(shared, true).is_ok());
             assert!(txn.set_edge_sharpness(shared, 2.5).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
         let twin = mesh.twin(shared).expect("shared edge should have twin");
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let policy = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::DecayOnSplit,
             ..PropagatePolicy::default()
@@ -1617,7 +1750,7 @@ mod tests {
         let _ = txn
             .split_edge(shared, &policy)
             .expect("split should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
         assert_eq!(mesh.edge_sharpness(shared), Some(1.5));
@@ -1628,13 +1761,13 @@ mod tests {
 
         let (mut mesh, shared) = split_source_mesh();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_edge_seam(shared, true).is_ok());
             assert!(txn.set_edge_sharpness(shared, 2.5).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
         let twin = mesh.twin(shared).expect("shared edge should have twin");
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let policy = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::Clear,
             ..PropagatePolicy::default()
@@ -1642,7 +1775,7 @@ mod tests {
         let _ = txn
             .split_edge(shared, &policy)
             .expect("split should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
         assert_eq!(mesh.edge_seam(shared), Some(false));
@@ -1661,17 +1794,17 @@ mod tests {
         let (mut mesh, shared) = split_source_mesh();
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_corner_uv(shared, [0.0, 0.25]).is_ok());
             assert!(txn.set_corner_uv(twin, [1.0, 0.75]).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn
             .split_edge(shared, &PropagatePolicy::default())
             .expect("split should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
         let uv_layer = mesh
@@ -1687,12 +1820,12 @@ mod tests {
         let (mut mesh, shared) = split_source_mesh();
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_corner_uv(shared, [0.0, 0.25]).is_ok());
             assert!(txn.set_corner_uv(twin, [1.0, 0.75]).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let policy = PropagatePolicy {
             uv: UvPropagation::CopyFromSide,
             ..PropagatePolicy::default()
@@ -1700,7 +1833,7 @@ mod tests {
         let _ = txn
             .split_edge(shared, &policy)
             .expect("split should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
         let child_h = mesh.next(shared).expect("split child should exist");
         let child_t = mesh.next(twin).expect("split child should exist");
         let uv_layer = mesh
@@ -1729,11 +1862,11 @@ mod tests {
         let interior_face = mesh.face(boundary).expect("boundary face should exist");
         assert_eq!(mesh.face(twin), Some(FaceId::OUTSIDE));
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let inserted = txn
             .split_edge(boundary, &PropagatePolicy::default())
             .expect("split should succeed");
-        let _ = txn.commit();
+        let _ = txn.finish();
 
         assert_eq!(
             mesh.faces
@@ -1764,11 +1897,11 @@ mod tests {
         let half_edges_before = mesh.half_edges.len();
         let faces_before = mesh.faces.len();
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let new_face = txn
             .split_face(corners[0], corners[2], &PropagatePolicy::default())
             .expect("split should succeed");
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         assert_eq!(mesh.faces.len(), faces_before + 1);
         assert_eq!(mesh.half_edges.len(), half_edges_before + 2);
@@ -1803,7 +1936,7 @@ mod tests {
         .expect("quad build should succeed");
         let face = mesh.faces().next().expect("face should exist");
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let err = txn
             .split_face(corners[0], corners[1], &PropagatePolicy::default())
             .expect_err("adjacent corners must fail");
@@ -1825,7 +1958,7 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let err = txn
             .split_face(corners[0], corners[0], &PropagatePolicy::default())
             .expect_err("identical corners must fail");
@@ -1853,7 +1986,7 @@ mod tests {
         let boundary_b = find_half_edge(&open, 1, 2).expect("boundary should exist");
         let outside_corner_a = open.twin(boundary_a).expect("outside corner should exist");
         let outside_corner_b = open.twin(boundary_b).expect("outside corner should exist");
-        let mut txn = open.begin();
+        let mut txn = open.edit_with(ChangeSetBuilder::new());
         let err = txn
             .split_face(
                 outside_corner_a,
@@ -1869,7 +2002,7 @@ mod tests {
         let f1 = faces[1];
         let c0 = closed.face_loop(f0).next().expect("corner 0");
         let c1 = closed.face_loop(f1).next().expect("corner 1");
-        let mut txn = closed.begin();
+        let mut txn = closed.edit_with(ChangeSetBuilder::new());
         let err = txn
             .split_face(c0, c1, &PropagatePolicy::default())
             .expect_err("cross-face split must fail");
@@ -1892,13 +2025,13 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_corner_uv(corners[0], [0.0, 0.0]).is_ok());
             assert!(txn.set_corner_uv(corners[2], [2.0, 1.0]).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let policy = PropagatePolicy {
             uv: UvPropagation::CopyFromSide,
             ..PropagatePolicy::default()
@@ -1906,7 +2039,7 @@ mod tests {
         let new_face = txn
             .split_face(corners[0], corners[2], &policy)
             .expect("split should succeed");
-        let changes = txn.commit();
+        let changes = txn.finish();
         assert_eq!(changes.created_faces, vec![new_face]);
 
         let new_edges = changes.created_half_edges;
@@ -1948,16 +2081,16 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_corner_uv(corners[0], [0.5, 0.25]).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn
             .split_face(corners[0], corners[2], &PropagatePolicy::default())
             .expect("split should succeed");
-        let changes = txn.commit();
+        let changes = txn.finish();
         let uv_layer = mesh
             .attrs()
             .sparse(attr::CORNER_UV)
@@ -1976,17 +2109,17 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
             assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn
             .split_face(corners[0], corners[2], &PropagatePolicy::default())
             .expect("split should succeed");
-        let changes = txn.commit();
+        let changes = txn.finish();
         let diagonal = changes.created_half_edges[0];
         assert_eq!(mesh.edge_sharpness(diagonal), Some(0.0));
 
@@ -1994,12 +2127,12 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
             assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let policy = PropagatePolicy {
             edge_attr: EdgeAttrPropagation::DecayOnSplit,
             ..PropagatePolicy::default()
@@ -2007,7 +2140,7 @@ mod tests {
         let _ = txn
             .split_face(corners[0], corners[2], &policy)
             .expect("split should succeed");
-        let changes = txn.commit();
+        let changes = txn.finish();
         let diagonal = changes.created_half_edges[0];
         assert_eq!(mesh.edge_sharpness(diagonal), Some(2.0));
     }
@@ -2015,14 +2148,14 @@ mod tests {
     #[test]
     fn add_face_creates_triangle_with_boundary_twins() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let v0 = txn.add_vertex([0.0, 0.0, 0.0]);
         let v1 = txn.add_vertex([1.0, 0.0, 0.0]);
         let v2 = txn.add_vertex([0.0, 1.0, 0.0]);
         let face = txn
             .add_face(&[v0, v1, v2])
             .expect("triangle face creation should succeed");
-        let changes = txn.commit();
+        let changes = txn.finish();
 
         assert_eq!(changes.created_faces, vec![face]);
         assert_eq!(changes.created_half_edges.len(), 6);
@@ -2051,11 +2184,11 @@ mod tests {
         .expect("source mesh should build");
         let vertices = mesh.vertices().collect::<Vec<_>>();
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let face = txn
             .add_face(&[vertices[0], vertices[2], vertices[1]])
             .expect("reversed triangle should consume existing boundary");
-        let changes = txn.commit();
+        let changes = txn.finish();
 
         assert_eq!(changes.created_faces, vec![face]);
         assert!(changes.created_half_edges.is_empty());
@@ -2074,7 +2207,7 @@ mod tests {
     #[test]
     fn add_face_rejects_invalid_input() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let v0 = txn.add_vertex([0.0, 0.0, 0.0]);
         let v1 = txn.add_vertex([1.0, 0.0, 0.0]);
         let v2 = txn.add_vertex([0.0, 1.0, 0.0]);
@@ -2101,14 +2234,14 @@ mod tests {
         .expect("source mesh should build");
         let vertices = mesh.vertices().collect::<Vec<_>>();
         {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
             let _ = txn
                 .add_face(&[vertices[0], vertices[2], vertices[1]])
                 .expect("second face should close boundary");
-            let _ = txn.commit();
+            let _ = txn.finish();
         }
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let err = txn
             .add_face(&[vertices[0], vertices[1], vertices[2]])
             .expect_err("third face on same edge set should fail");
@@ -2123,7 +2256,7 @@ mod tests {
         let v2 = mesh.add_vertex([0.0, 1.0, 0.0]);
         let v3 = mesh.add_vertex([1.0, 1.0, 0.0]);
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn.add_face(&[v0, v1, v2]).expect("first face should add");
         txn.assert_outgoing_index_consistent();
         assert!(txn.find_boundary_half_edge(v1, v0).is_some());
@@ -2161,7 +2294,7 @@ mod tests {
     #[test]
     fn delete_edges_rejects_stale_half_edge() {
         let mut mesh = two_tri_strip_mesh();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let stale = HalfEdgeId::from(Id::new(999, NonZeroU32::MIN));
         let err = txn
             .delete_edges(&[stale], DeletePolicy::CleanupIsolated)
@@ -2177,7 +2310,7 @@ mod tests {
             .copied()
             .expect("strip should have interior edge");
         let twin = mesh.twin(edge).expect("interior edge should have twin");
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let err = txn
             .delete_edges(&[twin], DeletePolicy::CleanupIsolated)
             .expect_err("non-canonical orientation should fail");
@@ -2188,7 +2321,7 @@ mod tests {
     fn delete_edges_rejects_non_canonical_order() {
         let mut mesh = three_tri_strip_mesh();
         let edges = canonical_interior_edges(&mesh);
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let err = txn
             .delete_edges(&[edges[1], edges[0]], DeletePolicy::CleanupIsolated)
             .expect_err("unsorted edge set should fail");
@@ -2309,7 +2442,7 @@ mod tests {
     #[test]
     fn outgoing_index_consistent_after_delete_vertices() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let v0 = txn.add_vertex([0.0, 0.0, 0.0]);
         let v1 = txn.add_vertex([1.0, 0.0, 0.0]);
         let mut vertices = vec![v1, v0];
@@ -2337,7 +2470,7 @@ mod tests {
     #[test]
     fn outgoing_index_consistent_after_delete_faces() {
         let (mut mesh, faces) = closed_box_mesh();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         txn.delete_faces(&[faces[0]], DeletePolicy::CleanupIsolated)
             .expect("delete_faces should succeed");
         txn.assert_outgoing_index_consistent();
@@ -2449,7 +2582,7 @@ mod tests {
     }
 
     #[test]
-    fn txn_commit_sorts_and_dedups_change_lists() {
+    fn finish_sorts_and_dedups_change_lists() {
         let mut mesh = Mesh::new();
         let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
         let v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
@@ -2459,7 +2592,7 @@ mod tests {
         let h0 = HalfEdgeId::from(Id::new(6, NonZeroU32::MIN));
         let h1 = HalfEdgeId::from(Id::new(2, NonZeroU32::MIN));
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         txn.record_deleted_vertex(v2);
         txn.record_deleted_vertex(v0);
         txn.record_deleted_vertex(v2);
@@ -2471,7 +2604,7 @@ mod tests {
         txn.record_created_half_edge(h1);
         txn.mark_corner_dirty(h1);
         txn.mark_face_dirty(f0);
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         assert_eq!(changes.deleted_vertices, vec![v0, v2]);
         assert_eq!(changes.created_faces, vec![f1, f0]);
@@ -2522,49 +2655,49 @@ mod tests {
     #[test]
     fn txn_mesh_view_reflects_mutations() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn.add_vertex([0.0, 0.0, 0.0]);
         assert_eq!(txn.mesh().vertices().count(), 1);
-        let _ = txn.commit();
+        let _ = txn.finish();
     }
 
     #[test]
-    fn txn_abort_keeps_eager_mesh_mutations() {
+    fn dropping_edit_scope_keeps_eager_mesh_mutations() {
         let mut mesh = Mesh::new();
         let before = mesh.revision();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let vertex = txn.add_vertex([0.0, 1.0, 2.0]);
-        txn.abort();
+        drop(txn);
 
         assert_eq!(mesh.vertex_position(vertex), Some(&[0.0, 1.0, 2.0]));
         assert_eq!(mesh.revision(), before);
     }
 
     #[test]
-    fn mesh_revision_increments_once_per_commit() {
+    fn mesh_revision_increments_once_per_finished_edit_scope() {
         let mut mesh = Mesh::new();
         assert_eq!(mesh.revision().value(), 0);
 
-        let _ = mesh.begin().commit();
+        let _ = mesh.edit_with(ChangeSetBuilder::new()).finish();
         assert_eq!(mesh.revision().value(), 1);
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let _ = txn.add_vertex([1.0, 0.0, 0.0]);
-        let _ = txn.commit();
+        let _ = txn.finish();
         assert_eq!(mesh.revision().value(), 2);
     }
 
     #[test]
     fn txn_can_record_deleted_topology_ids() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         let face = FaceId::from(Id::new(5, NonZeroU32::MIN));
         let edge = HalfEdgeId::from(Id::new(6, NonZeroU32::MIN));
         let vertex = VertexId::from(Id::new(7, NonZeroU32::MIN));
         txn.record_deleted_face(face);
         txn.record_deleted_half_edge(edge);
         txn.record_deleted_vertex(vertex);
-        let mut changes = txn.commit();
+        let mut changes = txn.finish();
 
         assert_eq!(changes.deleted_faces, vec![face]);
         assert_eq!(changes.deleted_half_edges, vec![edge]);
@@ -2577,7 +2710,7 @@ mod tests {
     #[test]
     fn txn_change_lists_are_deterministic_from_unsorted_records() {
         let mut mesh = Mesh::new();
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
 
         let face_a = FaceId::from(Id::new(9, NonZeroU32::MIN));
         let face_b = FaceId::from(Id::new(4, NonZeroU32::MIN));
@@ -2587,7 +2720,7 @@ mod tests {
         txn.record_created_face(face_b);
         txn.record_created_half_edge(edge_a);
         txn.record_created_half_edge(edge_b);
-        let changes = txn.commit();
+        let changes = txn.finish();
 
         assert_eq!(changes.created_faces, vec![face_b, face_a]);
         assert_eq!(changes.created_half_edges, vec![edge_b, edge_a]);
@@ -2607,10 +2740,10 @@ mod tests {
             twin: HalfEdgeId::INVALID,
         }));
 
-        let mut txn = mesh.begin();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
         txn.record_created_face(face);
         txn.record_created_half_edge(half_edge);
-        let changes = txn.commit();
+        let changes = txn.finish();
 
         assert_eq!(changes.created_faces, vec![face]);
         assert_eq!(changes.created_half_edges, vec![half_edge]);

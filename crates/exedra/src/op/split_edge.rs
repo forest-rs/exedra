@@ -7,13 +7,15 @@ use crate::session::propagation::{
     SplitEdgeUvSources, capture_edge_tags, clear_edge_tags, propagate_split_edge_corner_uvs,
     propagate_split_edge_edge_attrs,
 };
-use crate::{EditSession, FaceId, HalfEdge, HalfEdgeId, PropagatePolicy, VertexId, attr};
+use crate::{
+    ChangeSink, EditSession, FaceId, HalfEdge, HalfEdgeId, PropagatePolicy, VertexId, attr,
+};
 
 use super::SplitEdgeError;
 
 /// Splits one undirected edge by inserting a new vertex.
-pub fn split_edge(
-    session: &mut EditSession<'_>,
+pub fn split_edge<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     half_edge: HalfEdgeId,
     policy: &PropagatePolicy,
 ) -> Result<VertexId, SplitEdgeError> {

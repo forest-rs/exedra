@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use crate::{EditSession, VertexId};
+use crate::{ChangeSink, EditSession, VertexId};
 
 /// Structured failure from [`set_vertex_position`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -26,8 +26,8 @@ impl fmt::Display for SetVertexPositionError {
 impl core::error::Error for SetVertexPositionError {}
 
 /// Updates one live vertex position.
-pub fn set_vertex_position(
-    session: &mut EditSession<'_>,
+pub fn set_vertex_position<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     vertex: VertexId,
     position: [f32; 3],
 ) -> Result<(), SetVertexPositionError> {

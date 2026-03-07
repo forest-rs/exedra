@@ -6,8 +6,8 @@
 use alloc::format;
 use alloc::string::String;
 
-use exedra::{DeletePolicy, FaceId, HalfEdgeId, op};
 use exedra::op::{DeleteFacesError, DeleteVerticesError};
+use exedra::{DeletePolicy, FaceId, HalfEdgeId, op};
 
 use crate::op_common::op_error;
 use crate::plan::PlanHasher;
@@ -153,9 +153,9 @@ impl EditOperator for DeleteEdges {
         "edit.delete.edges"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -201,9 +201,9 @@ impl EditOperator for DeleteEdges {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -292,9 +292,9 @@ impl EditOperator for DeleteFaces {
         })
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -345,10 +345,10 @@ impl EditOperator for DeleteFaces {
 ///
 /// let mut mesh = Mesh::new();
 /// let v0 = {
-///     let mut txn = mesh.begin();
+///     let mut txn = mesh.edit();
 ///     let v0 = op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
 ///     let _v1 = op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
-///     let _ = txn.commit();
+///     let _: () = txn.finish();
 ///     v0
 /// };
 ///
@@ -379,9 +379,9 @@ impl EditOperator for DeleteVertices {
         "edit.delete.vertices"
     }
 
-    fn apply(
+    fn apply<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -414,9 +414,9 @@ impl EditOperator for DeleteVertices {
         Ok(params.clone())
     }
 
-    fn apply_plan(
+    fn apply_plan<S: exedra::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_>,
+        txn: &mut exedra::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -698,10 +698,10 @@ mod tests {
     fn delete_vertices_applies_and_returns_typed_output() {
         let mut mesh = exedra::Mesh::new();
         let v0 = {
-            let mut txn = mesh.begin();
+            let mut txn = mesh.edit();
             let v0 = exedra::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
             let _v1 = exedra::op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
-            let _ = txn.commit();
+            let _: () = txn.finish();
             v0
         };
         let mut runner = OperatorRunner::new();

@@ -7,7 +7,7 @@
 //! - stable generational IDs ([`VertexId`], [`HalfEdgeId`], [`FaceId`]),
 //! - half-edge topology with explicit OUTSIDE boundary modeling,
 //! - typed dense/sparse attribute layers,
-//! - transactional edits with deterministic change summaries,
+//! - eager edit scopes with optional deterministic change summaries,
 //! - deterministic render extraction ([`Mesh::to_trimesh`]).
 //!
 //! Exedra is the engine tier. For workflow/operator authoring and end-user
@@ -17,8 +17,8 @@
 //! re-exported kernel types like [`Mesh`], [`EditSession`], [`MeshBuilder`],
 //! and attribute/key APIs.
 //! Construction lives on [`MeshBuilder`] and mesh constructors. Public mutation
-//! lives in [`op`]. [`EditSession`] is the transaction host used to apply those
-//! mutation functions and commit deterministic [`ChangeSet`] summaries.
+//! lives in [`op`]. [`EditSession`] is the eager edit host used to apply those
+//! mutation functions and finish optional deterministic [`ChangeSet`] summaries.
 //!
 //! For deeper narrative docs, see [`manual`].
 //!
@@ -55,8 +55,9 @@ pub use mesh::{
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use session::{
-    ChangeSet, DeletePolicy, DirtySet, EdgeAttrPropagation, EditSession, FaceAttrPropagation,
-    NormalOverridePropagation, PositionPropagation, PropagatePolicy, UvPropagation,
+    ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,
+    EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,
+    PositionPropagation, PropagatePolicy, UvPropagation,
 };
 pub use topology::{Face, HalfEdge, Vertex};
 

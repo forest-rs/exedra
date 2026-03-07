@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use crate::{EditSession, HalfEdgeId};
+use crate::{ChangeSink, EditSession, HalfEdgeId};
 
 /// Structured failure from [`set_edge_seam`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,8 +28,8 @@ impl fmt::Display for SetEdgeSeamError {
 impl core::error::Error for SetEdgeSeamError {}
 
 /// Writes one explicit edge seam tag.
-pub fn set_edge_seam(
-    session: &mut EditSession<'_>,
+pub fn set_edge_seam<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
     half_edge: HalfEdgeId,
     seam: bool,
 ) -> Result<(), SetEdgeSeamError> {
