@@ -159,7 +159,7 @@ impl EditOperator for UvPlanar {
         {
             let _bucket = ctx.clock.bucket("attrs");
             for (corner, uv) in pending {
-                if txn.set_corner_uv(corner, uv) {
+                if exedra::op::set_corner_uv(txn, corner, uv).is_ok() {
                     report.stats.counters.corners_written =
                         report.stats.counters.corners_written.saturating_add(1);
                 }
@@ -290,7 +290,7 @@ mod tests {
         let corner = mesh.face_loop(face).next().expect("corner should exist");
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_corner_uv(corner, [9.0, 9.0]));
+            assert!(exedra::op::set_corner_uv(&mut txn, corner, [9.0, 9.0]).is_ok());
             let _ = txn.commit();
         }
 

@@ -125,7 +125,7 @@ impl EditOperator for UvBox {
         {
             let _bucket = ctx.clock.bucket("attrs");
             for (corner, uv) in pending {
-                if txn.set_corner_uv(corner, uv) {
+                if exedra::op::set_corner_uv(txn, corner, uv).is_ok() {
                     report.stats.counters.corners_written =
                         report.stats.counters.corners_written.saturating_add(1);
                 }

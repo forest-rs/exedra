@@ -201,8 +201,7 @@ impl DirtySet {
 
 /// Deterministic summary of mesh changes produced by a committed transaction.
 ///
-/// Returned by [`EditSession::commit`] and by convenience wrappers such as
-/// [`Mesh::delete_faces`].
+/// Returned by [`EditSession::commit`].
 #[derive(Clone, Debug, Default)]
 pub struct ChangeSet {
     /// Conservative invalidation summary.
@@ -223,7 +222,7 @@ pub struct ChangeSet {
 
 /// Face-deletion behavior for isolated vertices.
 ///
-/// Passed to [`Mesh::delete_faces`] or [`EditSession::delete_faces`].
+/// Passed to [`crate::op::delete_faces`] and [`crate::op::delete_edges`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum DeletePolicy {
     /// Remove isolated vertices after face deletion.
@@ -233,8 +232,7 @@ pub enum DeletePolicy {
     KeepIsolated,
 }
 
-/// Structured face-deletion error from [`Mesh::delete_faces`] and
-/// [`EditSession::delete_faces`].
+/// Structured face-deletion error from [`crate::op::delete_faces`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteFacesError {
     /// Input face list must be sorted and deduplicated.
@@ -277,8 +275,7 @@ impl fmt::Display for DeleteFacesError {
 
 impl core::error::Error for DeleteFacesError {}
 
-/// Structured edge-deletion error from [`Mesh::delete_edges`] and
-/// [`EditSession::delete_edges`].
+/// Structured edge-deletion error from [`crate::op::delete_edges`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteEdgesError {
     /// Input edge list must be sorted, deduplicated, and canonicalized.
@@ -316,8 +313,7 @@ impl fmt::Display for DeleteEdgesError {
 
 impl core::error::Error for DeleteEdgesError {}
 
-/// Structured vertex-deletion error from [`Mesh::delete_vertices`] and
-/// [`EditSession::delete_vertices`].
+/// Structured vertex-deletion error from [`crate::op::delete_vertices`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeleteVerticesError {
     /// Input vertex list must be sorted and deduplicated.
@@ -350,7 +346,7 @@ impl fmt::Display for DeleteVerticesError {
 
 impl core::error::Error for DeleteVerticesError {}
 
-/// Structured edge-split error from [`EditSession::split_edge`].
+/// Structured edge-split error from [`crate::op::split_edge`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitEdgeError {
     /// Half-edge must be live and have a live twin.
@@ -372,7 +368,7 @@ impl fmt::Display for SplitEdgeError {
 
 impl core::error::Error for SplitEdgeError {}
 
-/// Structured face-split error from [`EditSession::split_face`].
+/// Structured face-split error from [`crate::op::split_face`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitFaceError {
     /// Corner ID is stale or not live.
@@ -404,7 +400,7 @@ impl fmt::Display for SplitFaceError {
 
 impl core::error::Error for SplitFaceError {}
 
-/// Structured face-creation error from [`EditSession::add_face`].
+/// Structured face-creation error from [`crate::op::add_face`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AddFaceError {
     /// Face loop must have at least three vertices.
@@ -455,9 +451,17 @@ impl fmt::Display for AddFaceError {
 
 impl core::error::Error for AddFaceError {}
 
-/// Single-writer transaction over a mesh.
+/// Single-writer transaction host over a mesh.
 ///
-/// Mutations are applied eagerly to the underlying mesh. Dropping a transaction
+/// [`EditSession`] owns eager mutation access, dirty/change bookkeeping, cache
+/// invalidation, and internal topology helper plumbing.
+///
+/// For the public kernel operation catalog, prefer [`crate::op`] and apply
+/// typed ops through an active session. Transitional topology methods remain on
+/// the session as forwarding wrappers, but the long-term public mutation
+/// boundary is `exedra::op::*`.
+///
+/// Mutations are applied eagerly to the underlying mesh. Dropping a session
 /// does not roll back mesh changes; it only discards accumulated bookkeeping.
 ///
 /// Acquire via [`Mesh::begin`], apply mutating operations, then finish with
@@ -495,48 +499,6 @@ impl Mesh {
             deleted_half_edges: Vec::new(),
             deleted_faces: Vec::new(),
         }
-    }
-
-    /// Deletes a canonical set of interior faces in one committed transaction.
-    ///
-    /// This is a convenience wrapper over [`EditSession::delete_faces`] + [`EditSession::commit`].
-    ///
-    /// Note: transactions in Exedra are eager. This returns only precondition
-    /// errors before mutation begins. If internal boundary restitching cannot
-    /// produce a valid continuation, this function panics with diagnostics.
-    pub fn delete_faces(
-        &mut self,
-        faces: &[FaceId],
-        policy: DeletePolicy,
-    ) -> Result<ChangeSet, DeleteFacesError> {
-        let mut txn = self.begin();
-        txn.delete_faces(faces, policy)?;
-        Ok(txn.commit())
-    }
-
-    /// Deletes a canonical set of undirected edges in one committed transaction.
-    ///
-    /// This is a convenience wrapper over [`EditSession::delete_edges`] + [`EditSession::commit`].
-    pub fn delete_edges(
-        &mut self,
-        edges: &[HalfEdgeId],
-        policy: DeletePolicy,
-    ) -> Result<ChangeSet, DeleteEdgesError> {
-        let mut txn = self.begin();
-        txn.delete_edges(edges, policy)?;
-        Ok(txn.commit())
-    }
-
-    /// Deletes a canonical set of isolated vertices in one committed transaction.
-    ///
-    /// This is a convenience wrapper over [`EditSession::delete_vertices`] + [`EditSession::commit`].
-    pub fn delete_vertices(
-        &mut self,
-        vertices: &[VertexId],
-    ) -> Result<ChangeSet, DeleteVerticesError> {
-        let mut txn = self.begin();
-        txn.delete_vertices(vertices)?;
-        Ok(txn.commit())
     }
 }
 
@@ -621,7 +583,10 @@ impl EditSession<'_> {
     /// This supports edit operators that need to fill holes or create side-wall
     /// strips while preserving transaction bookkeeping and deterministic dirty
     /// summaries.
-    pub fn add_face(&mut self, loop_vertices: &[VertexId]) -> Result<FaceId, AddFaceError> {
+    pub(crate) fn add_face_impl(
+        &mut self,
+        loop_vertices: &[VertexId],
+    ) -> Result<FaceId, AddFaceError> {
         if loop_vertices.len() < 3 {
             return Err(AddFaceError::LoopTooShort);
         }
@@ -775,7 +740,7 @@ impl EditSession<'_> {
     /// - new corner UVs use midpoint interpolation when policy is
     ///   [`UvPropagation::Midpoint`] and side-copy for `CopyFromSide`,
     /// - face attributes are unchanged.
-    pub fn split_edge(
+    pub(crate) fn split_edge_impl(
         &mut self,
         half_edge: HalfEdgeId,
         policy: &PropagatePolicy,
@@ -837,7 +802,7 @@ impl EditSession<'_> {
             0.5 * (from_pos[2] + to_pos[2]),
         ];
 
-        let new_vertex = self.add_vertex(match policy.position {
+        let new_vertex = self.add_vertex_impl(match policy.position {
             PositionPropagation::Midpoint | PositionPropagation::WeightedMidpoint => midpoint,
         });
 
@@ -972,7 +937,7 @@ impl EditSession<'_> {
     ///   [`EdgeAttrPropagation::Inherit`] / [`EdgeAttrPropagation::Clear`],
     ///   and only derives from nearby authored sharpness under
     ///   [`EdgeAttrPropagation::DecayOnSplit`].
-    pub fn split_face(
+    pub(crate) fn split_face_impl(
         &mut self,
         corner_a: CornerId,
         corner_b: CornerId,
@@ -1135,7 +1100,7 @@ impl EditSession<'_> {
             .max(self.edge_sharpness(corner_b).unwrap_or(0.0));
         let diagonal_sharp = split_face_diagonal_sharpness(source_sharp, policy);
         if diagonal_sharp > 0.0 {
-            let _ = self.set_edge_sharpness(diagonal_a_b, diagonal_sharp);
+            let _ = self.set_edge_sharpness_impl(diagonal_a_b, diagonal_sharp);
         }
 
         self.mesh.attrs.sync_capacities(
@@ -1174,7 +1139,7 @@ impl EditSession<'_> {
     /// Note: transactions in Exedra are eager. This returns only precondition
     /// errors before mutation begins. If internal boundary restitching cannot
     /// produce a valid continuation, this function panics with diagnostics.
-    pub fn delete_faces(
+    pub(crate) fn delete_faces_impl(
         &mut self,
         faces: &[FaceId],
         policy: DeletePolicy,
@@ -1311,8 +1276,8 @@ impl EditSession<'_> {
     /// (`min(edge, twin)`) of an undirected edge.
     ///
     /// Each selected edge contributes its interior incident face(s), and this
-    /// kernel delegates topology mutation to [`EditSession::delete_faces`].
-    pub fn delete_edges(
+    /// kernel delegates topology mutation through [`crate::op::delete_faces`].
+    pub(crate) fn delete_edges_impl(
         &mut self,
         edges: &[HalfEdgeId],
         policy: DeletePolicy,
@@ -1364,15 +1329,13 @@ impl EditSession<'_> {
         }
 
         sort_dedup(&mut faces);
-        self.delete_faces(&faces, policy)
-            .map_err(DeleteEdgesError::FaceDeleteFailed)
+        crate::op::delete_faces(self, &faces, policy).map_err(DeleteEdgesError::FaceDeleteFailed)
     }
 
-    /// Deletes isolated vertices from the mesh.
-    ///
-    /// `vertices` must be canonical (sorted, deduplicated), contain only live
-    /// vertex IDs, and each vertex must have no incident half-edges.
-    pub fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError> {
+    pub(crate) fn delete_vertices_impl(
+        &mut self,
+        vertices: &[VertexId],
+    ) -> Result<(), DeleteVerticesError> {
         if !is_canonical_vertex_set(vertices) {
             return Err(DeleteVerticesError::NonCanonicalVertexSet);
         }
@@ -1742,9 +1705,196 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use crate::{Face, HalfEdge, Id, MeshBuilder};
+    use crate::{Face, HalfEdge, Id, MeshBuilder, op};
 
     use super::*;
+
+    trait SessionOpExt {
+        fn add_vertex(&mut self, position: [f32; 3]) -> VertexId;
+        fn set_vertex_position(
+            &mut self,
+            vertex: VertexId,
+            position: [f32; 3],
+        ) -> Result<(), op::SetVertexPositionError>;
+        fn set_face_region(
+            &mut self,
+            face: FaceId,
+            region: u32,
+        ) -> Result<(), op::SetFaceRegionError>;
+        fn set_corner_uv(
+            &mut self,
+            corner: CornerId,
+            uv: [f32; 2],
+        ) -> Result<(), op::SetCornerUvError>;
+        fn set_edge_seam(
+            &mut self,
+            half_edge: HalfEdgeId,
+            seam: bool,
+        ) -> Result<(), op::SetEdgeSeamError>;
+        fn set_edge_sharpness(
+            &mut self,
+            half_edge: HalfEdgeId,
+            sharpness: f32,
+        ) -> Result<(), op::SetEdgeSharpnessError>;
+        fn add_face(&mut self, loop_vertices: &[VertexId]) -> Result<FaceId, AddFaceError>;
+        fn split_edge(
+            &mut self,
+            half_edge: HalfEdgeId,
+            policy: &PropagatePolicy,
+        ) -> Result<VertexId, SplitEdgeError>;
+        fn split_face(
+            &mut self,
+            corner_a: CornerId,
+            corner_b: CornerId,
+            policy: &PropagatePolicy,
+        ) -> Result<FaceId, SplitFaceError>;
+        fn delete_faces(
+            &mut self,
+            faces: &[FaceId],
+            policy: DeletePolicy,
+        ) -> Result<(), DeleteFacesError>;
+        fn delete_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+            policy: DeletePolicy,
+        ) -> Result<(), DeleteEdgesError>;
+        fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError>;
+    }
+
+    trait MeshOpExt {
+        fn delete_faces(
+            &mut self,
+            faces: &[FaceId],
+            policy: DeletePolicy,
+        ) -> Result<ChangeSet, DeleteFacesError>;
+        fn delete_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+            policy: DeletePolicy,
+        ) -> Result<ChangeSet, DeleteEdgesError>;
+        fn delete_vertices(
+            &mut self,
+            vertices: &[VertexId],
+        ) -> Result<ChangeSet, DeleteVerticesError>;
+    }
+
+    impl SessionOpExt for EditSession<'_> {
+        fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
+            op::add_vertex(self, position)
+        }
+
+        fn set_vertex_position(
+            &mut self,
+            vertex: VertexId,
+            position: [f32; 3],
+        ) -> Result<(), op::SetVertexPositionError> {
+            op::set_vertex_position(self, vertex, position)
+        }
+
+        fn set_face_region(
+            &mut self,
+            face: FaceId,
+            region: u32,
+        ) -> Result<(), op::SetFaceRegionError> {
+            op::set_face_region(self, face, region)
+        }
+
+        fn set_corner_uv(
+            &mut self,
+            corner: CornerId,
+            uv: [f32; 2],
+        ) -> Result<(), op::SetCornerUvError> {
+            op::set_corner_uv(self, corner, uv)
+        }
+
+        fn set_edge_seam(
+            &mut self,
+            half_edge: HalfEdgeId,
+            seam: bool,
+        ) -> Result<(), op::SetEdgeSeamError> {
+            op::set_edge_seam(self, half_edge, seam)
+        }
+
+        fn set_edge_sharpness(
+            &mut self,
+            half_edge: HalfEdgeId,
+            sharpness: f32,
+        ) -> Result<(), op::SetEdgeSharpnessError> {
+            op::set_edge_sharpness(self, half_edge, sharpness)
+        }
+
+        fn add_face(&mut self, loop_vertices: &[VertexId]) -> Result<FaceId, AddFaceError> {
+            op::add_face(self, loop_vertices)
+        }
+
+        fn split_edge(
+            &mut self,
+            half_edge: HalfEdgeId,
+            policy: &PropagatePolicy,
+        ) -> Result<VertexId, SplitEdgeError> {
+            op::split_edge(self, half_edge, policy)
+        }
+
+        fn split_face(
+            &mut self,
+            corner_a: CornerId,
+            corner_b: CornerId,
+            policy: &PropagatePolicy,
+        ) -> Result<FaceId, SplitFaceError> {
+            op::split_face(self, corner_a, corner_b, policy)
+        }
+
+        fn delete_faces(
+            &mut self,
+            faces: &[FaceId],
+            policy: DeletePolicy,
+        ) -> Result<(), DeleteFacesError> {
+            op::delete_faces(self, faces, policy)
+        }
+
+        fn delete_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+            policy: DeletePolicy,
+        ) -> Result<(), DeleteEdgesError> {
+            op::delete_edges(self, edges, policy)
+        }
+
+        fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError> {
+            op::delete_vertices(self, vertices)
+        }
+    }
+
+    impl MeshOpExt for Mesh {
+        fn delete_faces(
+            &mut self,
+            faces: &[FaceId],
+            policy: DeletePolicy,
+        ) -> Result<ChangeSet, DeleteFacesError> {
+            let mut txn = self.begin();
+            op::delete_faces(&mut txn, faces, policy)?;
+            Ok(txn.commit())
+        }
+
+        fn delete_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+            policy: DeletePolicy,
+        ) -> Result<ChangeSet, DeleteEdgesError> {
+            let mut txn = self.begin();
+            op::delete_edges(&mut txn, edges, policy)?;
+            Ok(txn.commit())
+        }
+
+        fn delete_vertices(
+            &mut self,
+            vertices: &[VertexId],
+        ) -> Result<ChangeSet, DeleteVerticesError> {
+            let mut txn = self.begin();
+            op::delete_vertices(&mut txn, vertices)?;
+            Ok(txn.commit())
+        }
+    }
 
     fn drained_faces(dirty: &mut DirtySet) -> Vec<FaceId> {
         let mut values = Vec::new();
@@ -1905,7 +2055,7 @@ mod tests {
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_edge_sharpness(shared, 3.0));
+            assert!(txn.set_edge_sharpness(shared, 3.0).is_ok());
             let _ = txn.commit();
         }
         let mut txn = mesh.begin();
@@ -1955,7 +2105,7 @@ mod tests {
         let mut mesh = Mesh::new();
         let vertex = mesh.add_vertex([0.0, 0.0, 0.0]);
         let mut txn = mesh.begin();
-        assert!(txn.set_vertex_position(vertex, [4.0, 5.0, 6.0]));
+        assert!(txn.set_vertex_position(vertex, [4.0, 5.0, 6.0]).is_ok());
         let mut changes = txn.commit();
 
         assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
@@ -1974,7 +2124,7 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
 
         let mut txn = mesh.begin();
-        assert!(txn.set_face_region(face, 9));
+        assert!(txn.set_face_region(face, 9).is_ok());
         let mut changes = txn.commit();
 
         let region = mesh
@@ -2000,7 +2150,7 @@ mod tests {
         let corner = mesh.face_loop(face).next().expect("corner should exist");
 
         let mut txn = mesh.begin();
-        assert!(txn.set_corner_uv(corner, [0.25, 0.5]));
+        assert!(txn.set_corner_uv(corner, [0.25, 0.5]).is_ok());
         assert_eq!(txn.corner_uv(corner), Some([0.25, 0.5]));
         let mut changes = txn.commit();
         assert_eq!(drained_corners(&mut changes.dirty), vec![corner]);
@@ -2024,7 +2174,7 @@ mod tests {
 
         let mut txn = mesh.begin();
         assert_eq!(txn.edge_seam(shared), Some(false));
-        assert!(txn.set_edge_seam(shared_twin, true));
+        assert!(txn.set_edge_seam(shared_twin, true).is_ok());
         assert_eq!(txn.edge_seam(shared), Some(true));
         assert_eq!(txn.edge_seam(shared_twin), Some(true));
         let mut changes = txn.commit();
@@ -2054,7 +2204,7 @@ mod tests {
 
         let mut txn = mesh.begin();
         assert_eq!(txn.edge_sharpness(shared), Some(0.0));
-        assert!(txn.set_edge_sharpness(shared_twin, 2.5));
+        assert!(txn.set_edge_sharpness(shared_twin, 2.5).is_ok());
         assert_eq!(txn.edge_sharpness(shared), Some(2.5));
         assert_eq!(txn.edge_sharpness(shared_twin), Some(2.5));
         let mut changes = txn.commit();
@@ -2087,8 +2237,8 @@ mod tests {
         let t_next = mesh.next(t).expect("next should exist");
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_corner_uv(h, [0.25, 0.0]));
-            assert!(txn.set_corner_uv(t_next, [0.75, 0.0]));
+            assert!(txn.set_corner_uv(h, [0.25, 0.0]).is_ok());
+            assert!(txn.set_corner_uv(t_next, [0.75, 0.0]).is_ok());
             let _ = txn.commit();
         }
         assert_eq!(mesh.is_uv_discontinuous(shared), Some(true));
@@ -2195,8 +2345,8 @@ mod tests {
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_edge_seam(shared, true));
-            assert!(txn.set_edge_sharpness(shared, 2.5));
+            assert!(txn.set_edge_seam(shared, true).is_ok());
+            assert!(txn.set_edge_sharpness(shared, 2.5).is_ok());
             let _ = txn.commit();
         }
 
@@ -2220,8 +2370,8 @@ mod tests {
         let (mut mesh, shared) = split_source_mesh();
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_edge_seam(shared, true));
-            assert!(txn.set_edge_sharpness(shared, 2.5));
+            assert!(txn.set_edge_seam(shared, true).is_ok());
+            assert!(txn.set_edge_sharpness(shared, 2.5).is_ok());
             let _ = txn.commit();
         }
         let twin = mesh.twin(shared).expect("shared edge should have twin");
@@ -2245,8 +2395,8 @@ mod tests {
         let (mut mesh, shared) = split_source_mesh();
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_edge_seam(shared, true));
-            assert!(txn.set_edge_sharpness(shared, 2.5));
+            assert!(txn.set_edge_seam(shared, true).is_ok());
+            assert!(txn.set_edge_sharpness(shared, 2.5).is_ok());
             let _ = txn.commit();
         }
         let twin = mesh.twin(shared).expect("shared edge should have twin");
@@ -2278,8 +2428,8 @@ mod tests {
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_corner_uv(shared, [0.0, 0.25]));
-            assert!(txn.set_corner_uv(twin, [1.0, 0.75]));
+            assert!(txn.set_corner_uv(shared, [0.0, 0.25]).is_ok());
+            assert!(txn.set_corner_uv(twin, [1.0, 0.75]).is_ok());
             let _ = txn.commit();
         }
 
@@ -2304,8 +2454,8 @@ mod tests {
         let twin = mesh.twin(shared).expect("shared edge should have twin");
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_corner_uv(shared, [0.0, 0.25]));
-            assert!(txn.set_corner_uv(twin, [1.0, 0.75]));
+            assert!(txn.set_corner_uv(shared, [0.0, 0.25]).is_ok());
+            assert!(txn.set_corner_uv(twin, [1.0, 0.75]).is_ok());
             let _ = txn.commit();
         }
         let mut txn = mesh.begin();
@@ -2509,8 +2659,8 @@ mod tests {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_corner_uv(corners[0], [0.0, 0.0]));
-            assert!(txn.set_corner_uv(corners[2], [2.0, 1.0]));
+            assert!(txn.set_corner_uv(corners[0], [0.0, 0.0]).is_ok());
+            assert!(txn.set_corner_uv(corners[2], [2.0, 1.0]).is_ok());
             let _ = txn.commit();
         }
 
@@ -2565,7 +2715,7 @@ mod tests {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_corner_uv(corners[0], [0.5, 0.25]));
+            assert!(txn.set_corner_uv(corners[0], [0.5, 0.25]).is_ok());
             let _ = txn.commit();
         }
 
@@ -2593,8 +2743,8 @@ mod tests {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_edge_sharpness(corners[0], 3.0));
-            assert!(txn.set_edge_sharpness(corners[2], 2.0));
+            assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
+            assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
             let _ = txn.commit();
         }
 
@@ -2611,8 +2761,8 @@ mod tests {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         {
             let mut txn = mesh.begin();
-            assert!(txn.set_edge_sharpness(corners[0], 3.0));
-            assert!(txn.set_edge_sharpness(corners[2], 2.0));
+            assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
+            assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
             let _ = txn.commit();
         }
         let mut txn = mesh.begin();

@@ -40,30 +40,30 @@ pub(super) fn propagate_split_edge_edge_attrs(
     match policy.edge_attr {
         EdgeAttrPropagation::Inherit => {
             if let Some(seam) = seam {
-                let _ = session.set_edge_seam(parent, seam);
-                let _ = session.set_edge_seam(child, seam);
+                let _ = session.set_edge_seam_impl(parent, seam);
+                let _ = session.set_edge_seam_impl(child, seam);
             }
             if let Some(sharp) = sharp {
-                let _ = session.set_edge_sharpness(parent, sharp);
-                let _ = session.set_edge_sharpness(child, sharp);
+                let _ = session.set_edge_sharpness_impl(parent, sharp);
+                let _ = session.set_edge_sharpness_impl(child, sharp);
             }
         }
         EdgeAttrPropagation::DecayOnSplit => {
             if let Some(seam) = seam {
-                let _ = session.set_edge_seam(parent, seam);
-                let _ = session.set_edge_seam(child, seam);
+                let _ = session.set_edge_seam_impl(parent, seam);
+                let _ = session.set_edge_seam_impl(child, seam);
             }
             if let Some(sharp) = sharp {
                 let split_sharp = (sharp - 1.0).max(0.0);
-                let _ = session.set_edge_sharpness(parent, split_sharp);
-                let _ = session.set_edge_sharpness(child, split_sharp);
+                let _ = session.set_edge_sharpness_impl(parent, split_sharp);
+                let _ = session.set_edge_sharpness_impl(child, split_sharp);
             }
         }
         EdgeAttrPropagation::Clear => {
-            let _ = session.set_edge_seam(parent, false);
-            let _ = session.set_edge_seam(child, false);
-            let _ = session.set_edge_sharpness(parent, 0.0);
-            let _ = session.set_edge_sharpness(child, 0.0);
+            let _ = session.set_edge_seam_impl(parent, false);
+            let _ = session.set_edge_seam_impl(child, false);
+            let _ = session.set_edge_sharpness_impl(parent, 0.0);
+            let _ = session.set_edge_sharpness_impl(child, 0.0);
         }
     }
 }
@@ -91,12 +91,12 @@ pub(super) fn propagate_split_edge_corner_uvs(
         uv_b_ft,
     } = sources;
     if let Some(uv) = old_uv_h {
-        let _ = session.set_corner_uv(child_h, uv);
+        let _ = session.set_corner_uv_impl(child_h, uv);
     } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
         let _ = layer.remove(child_h.as_id());
     }
     if let Some(uv) = old_uv_t {
-        let _ = session.set_corner_uv(child_t, uv);
+        let _ = session.set_corner_uv_impl(child_t, uv);
     } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
         let _ = layer.remove(child_t.as_id());
     }
@@ -121,8 +121,8 @@ pub(super) fn propagate_split_edge_corner_uvs(
         }
         UvPropagation::CopyFromSide => old_uv_t.unwrap_or([0.0, 0.0]),
     };
-    let _ = session.set_corner_uv(half_edge, h_uv_mid);
-    let _ = session.set_corner_uv(twin, t_uv_mid);
+    let _ = session.set_corner_uv_impl(half_edge, h_uv_mid);
+    let _ = session.set_corner_uv_impl(twin, t_uv_mid);
 }
 
 pub(super) fn propagate_split_face_diagonal_uvs(
@@ -145,12 +145,12 @@ pub(super) fn propagate_split_face_diagonal_uvs(
         UvPropagation::CopyFromSide => uv_a,
     };
     if let Some(uv) = uv_diag {
-        let _ = session.set_corner_uv(diagonal_a_b, uv);
+        let _ = session.set_corner_uv_impl(diagonal_a_b, uv);
     } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
         let _ = layer.remove(diagonal_a_b.as_id());
     }
     if let Some(uv) = uv_twin {
-        let _ = session.set_corner_uv(diagonal_b_a, uv);
+        let _ = session.set_corner_uv_impl(diagonal_b_a, uv);
     } else if let Some(layer) = session.mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
         let _ = layer.remove(diagonal_b_a.as_id());
     }

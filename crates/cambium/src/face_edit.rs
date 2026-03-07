@@ -8,7 +8,8 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{AddFaceError, DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId};
+use exedra::{DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
+use exedra::op::AddFaceError;
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
@@ -18,6 +19,26 @@ use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
     OpReport,
 };
+
+fn add_vertex(txn: &mut exedra::EditSession<'_>, position: [f32; 3]) -> VertexId {
+    op::add_vertex(txn, position)
+}
+
+fn set_face_region(txn: &mut exedra::EditSession<'_>, face: FaceId, region: u32) -> bool {
+    op::set_face_region(txn, face, region).is_ok()
+}
+
+fn set_corner_uv(txn: &mut exedra::EditSession<'_>, corner: exedra::CornerId, uv: [f32; 2]) {
+    let _ = op::set_corner_uv(txn, corner, uv);
+}
+
+fn set_edge_seam(txn: &mut exedra::EditSession<'_>, half_edge: HalfEdgeId, seam: bool) {
+    let _ = op::set_edge_seam(txn, half_edge, seam);
+}
+
+fn set_edge_sharpness(txn: &mut exedra::EditSession<'_>, half_edge: HalfEdgeId, sharpness: f32) {
+    let _ = op::set_edge_sharpness(txn, half_edge, sharpness);
+}
 
 /// Parameters for [`ExtrudeFaces`].
 #[derive(Clone, Debug, PartialEq)]
@@ -288,20 +309,19 @@ impl EditOperator for ExtrudeFaces {
                 position[1] + direction[1] * params.distance,
                 position[2] + direction[2] * params.distance,
             ];
-            cap_vertices.insert(vertex, txn.add_vertex(extruded));
+            cap_vertices.insert(vertex, add_vertex(txn, extruded));
         }
 
         if params.mode == ExtrudeMode::ShellOpen {
             let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
-            txn.delete_faces(&faces_to_delete, DeletePolicy::KeepIsolated)
-                .map_err(|err| {
-                    op_error(
-                        ctx,
-                        OpErrorKind::InternalInvariantViolation,
-                        DiagCode::InternalInvariantViolation,
-                        format!("extrude delete failed unexpectedly: {err}"),
-                    )
-                })?;
+            op::delete_faces(txn, &faces_to_delete, DeletePolicy::KeepIsolated).map_err(|err| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InternalInvariantViolation,
+                    DiagCode::InternalInvariantViolation,
+                    format!("extrude delete failed unexpectedly: {err}"),
+                )
+            })?;
         }
 
         let mut wall_orientation = FrameOrientationState::default();
@@ -328,7 +348,7 @@ impl EditOperator for ExtrudeFaces {
                     ctx,
                     "extrude",
                 )?;
-                if !txn.set_face_region(wall, plan.region) {
+                if !set_face_region(txn, wall, plan.region) {
                     return Err(op_error(
                         ctx,
                         OpErrorKind::InternalInvariantViolation,
@@ -372,7 +392,7 @@ impl EditOperator for ExtrudeFaces {
             if !wall_orientation.prefers_forward_outer_edge() {
                 cap_loop.reverse();
             }
-            let top = txn.add_face(&cap_loop).map_err(|err| {
+            let top = op::add_face(txn, &cap_loop).map_err(|err| {
                 op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -380,7 +400,7 @@ impl EditOperator for ExtrudeFaces {
                     format!("extrude cap creation failed unexpectedly: {err}"),
                 )
             })?;
-            if !txn.set_face_region(top, plan.region) {
+            if !set_face_region(txn, top, plan.region) {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -543,19 +563,18 @@ impl EditOperator for InsetFaces {
                 .expect("inset count should exist");
             let inv = 1.0 / (count as f32);
             let averaged = [sum[0] * inv, sum[1] * inv, sum[2] * inv];
-            inset_vertices.insert(vertex, txn.add_vertex(averaged));
+            inset_vertices.insert(vertex, add_vertex(txn, averaged));
         }
 
         let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
-        txn.delete_faces(&faces_to_delete, DeletePolicy::KeepIsolated)
-            .map_err(|err| {
-                op_error(
-                    ctx,
-                    OpErrorKind::InternalInvariantViolation,
-                    DiagCode::InternalInvariantViolation,
-                    format!("inset delete failed unexpectedly: {err}"),
-                )
-            })?;
+        op::delete_faces(txn, &faces_to_delete, DeletePolicy::KeepIsolated).map_err(|err| {
+            op_error(
+                ctx,
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                format!("inset delete failed unexpectedly: {err}"),
+            )
+        })?;
 
         let mut frame_orientation = FrameOrientationState::default();
         for face_plan in &plans {
@@ -586,7 +605,7 @@ impl EditOperator for InsetFaces {
                     ctx,
                     "inset",
                 )?;
-                if !txn.set_face_region(frame, face_plan.region) {
+                if !set_face_region(txn, frame, face_plan.region) {
                     return Err(op_error(
                         ctx,
                         OpErrorKind::InternalInvariantViolation,
@@ -630,7 +649,7 @@ impl EditOperator for InsetFaces {
             if !frame_orientation.prefers_forward_outer_edge() {
                 inner_loop.reverse();
             }
-            let inner = txn.add_face(&inner_loop).map_err(|err| {
+            let inner = op::add_face(txn, &inner_loop).map_err(|err| {
                 op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -638,7 +657,7 @@ impl EditOperator for InsetFaces {
                     format!("inset inner face creation failed unexpectedly: {err}"),
                 )
             })?;
-            if !txn.set_face_region(inner, face_plan.region) {
+            if !set_face_region(txn, inner, face_plan.region) {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -993,21 +1012,20 @@ impl EditOperator for CutRectFace {
 
         let mut inner_vertices = Vec::with_capacity(4);
         for position in plan.inner_positions {
-            inner_vertices.push(txn.add_vertex(position));
+            inner_vertices.push(add_vertex(txn, position));
         }
         let inner_vertices: [VertexId; 4] = inner_vertices
             .try_into()
             .expect("cut_rect should create exactly four inner vertices");
 
-        txn.delete_faces(&[plan.face], DeletePolicy::KeepIsolated)
-            .map_err(|err| {
-                op_error(
-                    ctx,
-                    OpErrorKind::InternalInvariantViolation,
-                    DiagCode::InternalInvariantViolation,
-                    format!("cut_rect delete failed unexpectedly: {err}"),
-                )
-            })?;
+        op::delete_faces(txn, &[plan.face], DeletePolicy::KeepIsolated).map_err(|err| {
+            op_error(
+                ctx,
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                format!("cut_rect delete failed unexpectedly: {err}"),
+            )
+        })?;
 
         let mut frame_faces = Vec::with_capacity(4);
         let mut frame_orientation = FrameOrientationState::default();
@@ -1026,7 +1044,7 @@ impl EditOperator for CutRectFace {
                 ctx,
                 "cut_rect",
             )?;
-            if !txn.set_face_region(frame_face, plan.region) {
+            if !set_face_region(txn, frame_face, plan.region) {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -1051,7 +1069,7 @@ impl EditOperator for CutRectFace {
         if !frame_orientation.prefers_forward_outer_edge() {
             inner_loop.reverse();
         }
-        let inner_face = txn.add_face(&inner_loop).map_err(|err| {
+        let inner_face = op::add_face(txn, &inner_loop).map_err(|err| {
             op_error(
                 ctx,
                 OpErrorKind::InternalInvariantViolation,
@@ -1059,7 +1077,7 @@ impl EditOperator for CutRectFace {
                 format!("cut_rect inner face creation failed unexpectedly: {err}"),
             )
         })?;
-        if !txn.set_face_region(inner_face, plan.region) {
+        if !set_face_region(txn, inner_face, plan.region) {
             return Err(op_error(
                 ctx,
                 OpErrorKind::InternalInvariantViolation,
@@ -1443,18 +1461,18 @@ fn add_frame_face_with_orientation(
     let reverse_outer = [next, current, current_inset, next_inset];
     let forward_outer = [current, next, next_inset, current_inset];
     match orientation.winding {
-        Some(FrameWinding::UseReverseOuterEdge) => txn
-            .add_face(&reverse_outer)
-            .map_err(|err| frame_face_error(ctx, op_name, err)),
-        Some(FrameWinding::UseForwardOuterEdge) => txn
-            .add_face(&forward_outer)
-            .map_err(|err| frame_face_error(ctx, op_name, err)),
-        None => match txn.add_face(&reverse_outer) {
+        Some(FrameWinding::UseReverseOuterEdge) => {
+            op::add_face(txn, &reverse_outer).map_err(|err| frame_face_error(ctx, op_name, err))
+        }
+        Some(FrameWinding::UseForwardOuterEdge) => {
+            op::add_face(txn, &forward_outer).map_err(|err| frame_face_error(ctx, op_name, err))
+        }
+        None => match op::add_face(txn, &reverse_outer) {
             Ok(face) => {
                 orientation.winding = Some(FrameWinding::UseReverseOuterEdge);
                 Ok(face)
             }
-            // EditSession::add_face performs full preflight before mutation,
+            // add_face performs full preflight before mutation,
             // so this fallback remains deterministic and side-effect free.
             Err(AddFaceError::NonManifoldEdge { .. }) => {
                 ctx.diagnostics.push(Diagnostic::new(
@@ -1464,8 +1482,7 @@ fn add_frame_face_with_orientation(
                         "{op_name}: frame winding fallback to forward orientation due to boundary reuse direction"
                     ),
                 ));
-                let face = txn
-                    .add_face(&forward_outer)
+                let face = op::add_face(txn, &forward_outer)
                     .map_err(|err| frame_face_error(ctx, op_name, err))?;
                 orientation.winding = Some(FrameWinding::UseForwardOuterEdge);
                 Ok(face)
@@ -1499,7 +1516,7 @@ fn propagate_face_corner_uvs(
             .find_map(|(vertex, uv)| (*vertex == to_vertex).then_some(*uv))
             .flatten();
         if let Some(uv) = uv {
-            let _ = txn.set_corner_uv(corner, uv);
+            set_corner_uv(txn, corner, uv);
         }
     }
 }
@@ -1517,20 +1534,20 @@ fn propagate_edge_attrs_for_vertices(
     };
     match policy.edge_attr {
         EdgeAttrPropagation::Clear => {
-            let _ = txn.set_edge_seam(corner, false);
-            let _ = txn.set_edge_sharpness(corner, 0.0);
+            set_edge_seam(txn, corner, false);
+            set_edge_sharpness(txn, corner, 0.0);
         }
         EdgeAttrPropagation::Inherit => {
             let seam = source.seam.unwrap_or(false);
             let sharpness = source.sharpness.unwrap_or(0.0);
-            let _ = txn.set_edge_seam(corner, seam);
-            let _ = txn.set_edge_sharpness(corner, sharpness);
+            set_edge_seam(txn, corner, seam);
+            set_edge_sharpness(txn, corner, sharpness);
         }
         EdgeAttrPropagation::DecayOnSplit => {
             let seam = source.seam.unwrap_or(false);
             let sharpness = source.sharpness.map_or(0.0, |value| (value - 1.0).max(0.0));
-            let _ = txn.set_edge_seam(corner, seam);
-            let _ = txn.set_edge_sharpness(corner, sharpness);
+            set_edge_seam(txn, corner, seam);
+            set_edge_sharpness(txn, corner, sharpness);
         }
     }
 }
@@ -2051,9 +2068,9 @@ mod tests {
         {
             let mut txn = mesh.begin();
             for (index, &corner) in corners.iter().enumerate() {
-                assert!(txn.set_corner_uv(corner, [index as f32, 0.0]));
-                assert!(txn.set_edge_seam(corner, true));
-                assert!(txn.set_edge_sharpness(corner, 2.5));
+                assert!(exedra::op::set_corner_uv(&mut txn, corner, [index as f32, 0.0]).is_ok());
+                assert!(exedra::op::set_edge_seam(&mut txn, corner, true).is_ok());
+                assert!(exedra::op::set_edge_sharpness(&mut txn, corner, 2.5).is_ok());
             }
             let _ = txn.commit();
         }
@@ -2092,8 +2109,8 @@ mod tests {
         {
             let mut txn = mesh.begin();
             for &corner in &corners {
-                assert!(txn.set_edge_seam(corner, true));
-                assert!(txn.set_edge_sharpness(corner, 3.0));
+                assert!(exedra::op::set_edge_seam(&mut txn, corner, true).is_ok());
+                assert!(exedra::op::set_edge_sharpness(&mut txn, corner, 3.0).is_ok());
             }
             let _ = txn.commit();
         }

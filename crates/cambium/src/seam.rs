@@ -42,7 +42,7 @@ impl EditOperator for MarkEdgeSeam {
             ctx,
             self.name(),
             "edge set contains invalid/stale half-edge id",
-            |txn, edge, seam| txn.set_edge_seam(edge, seam),
+            |txn, edge, seam| exedra::op::set_edge_seam(txn, edge, seam).is_ok(),
         )
     }
 

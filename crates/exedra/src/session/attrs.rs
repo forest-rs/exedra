@@ -10,16 +10,18 @@ impl EditSession<'_> {
         self.mesh
     }
 
-    /// Adds a vertex and records deterministic change bookkeeping.
-    pub fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
+    pub(crate) fn add_vertex_impl(&mut self, position: [f32; 3]) -> VertexId {
         let vertex = self.mesh.add_vertex(position);
         self.created_vertices.push(vertex);
         self.dirty.mark_vertex(vertex);
         vertex
     }
 
-    /// Sets a vertex position and marks affected data dirty on success.
-    pub fn set_vertex_position(&mut self, vertex: VertexId, position: [f32; 3]) -> bool {
+    pub(crate) fn set_vertex_position_impl(
+        &mut self,
+        vertex: VertexId,
+        position: [f32; 3],
+    ) -> bool {
         let updated = self.mesh.set_vertex_position(vertex, position);
         if updated {
             self.dirty.mark_vertex(vertex);
@@ -27,10 +29,7 @@ impl EditSession<'_> {
         updated
     }
 
-    /// Sets the built-in face region value and marks the face dirty on success.
-    ///
-    /// Returns `true` when `face` is live and writable.
-    pub fn set_face_region(&mut self, face: FaceId, region: u32) -> bool {
+    pub(crate) fn set_face_region_impl(&mut self, face: FaceId, region: u32) -> bool {
         let updated = self
             .mesh
             .attrs_mut()
@@ -51,10 +50,7 @@ impl EditSession<'_> {
             .and_then(|layer| layer.get(corner.as_id()).copied())
     }
 
-    /// Sets corner UV for `corner`, defining the sparse layer on first use.
-    ///
-    /// Returns `true` when `corner` is live and writable.
-    pub fn set_corner_uv(&mut self, corner: CornerId, uv: [f32; 2]) -> bool {
+    pub(crate) fn set_corner_uv_impl(&mut self, corner: CornerId, uv: [f32; 2]) -> bool {
         if self.mesh.half_edges.get(corner.as_id()).is_none() {
             return false;
         }
@@ -81,10 +77,7 @@ impl EditSession<'_> {
         self.mesh.edge_seam(half_edge)
     }
 
-    /// Sets explicit seam state for an undirected edge.
-    ///
-    /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_seam(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
+    pub(crate) fn set_edge_seam_impl(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
         let Some(twin) = self.mesh.twin(half_edge) else {
             return false;
         };
@@ -102,10 +95,7 @@ impl EditSession<'_> {
         self.mesh.edge_sharpness(half_edge)
     }
 
-    /// Sets explicit sharpness value for an undirected edge.
-    ///
-    /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
+    pub(crate) fn set_edge_sharpness_impl(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
         let Some(twin) = self.mesh.twin(half_edge) else {
             return false;
         };

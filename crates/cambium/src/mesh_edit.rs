@@ -1349,7 +1349,12 @@ mod tests {
     #[test]
     fn mesh_edit_delete_vertices_accepts_vertex_selection() {
         let mut mesh = exedra::Mesh::new();
-        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let v0 = {
+            let mut txn = mesh.begin();
+            let v0 = exedra::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
+            let _ = txn.commit();
+            v0
+        };
         let flow = MeshEdit::new()
             .select(Selection::from(vec![v0]))
             .delete_vertices();

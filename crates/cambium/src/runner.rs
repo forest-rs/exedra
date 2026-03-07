@@ -299,7 +299,7 @@ mod tests {
         ) -> Result<(OpReport, Self::Output), OpError> {
             assert!(ctx.scratch.u32s.is_empty());
             ctx.scratch.u32s.push(7);
-            let _ = txn.add_vertex(*params);
+            let _ = exedra::op::add_vertex(txn, *params);
             Ok((OpReport::new(self.name(), Artifacts::default()), ()))
         }
 

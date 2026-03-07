@@ -7,15 +7,23 @@
 //! [`Mesh::begin`](crate::Mesh::begin).
 //!
 //! ```rust
-//! use exedra::Mesh;
+//! use exedra::{op, Mesh};
 //!
 //! let mut mesh = Mesh::new();
 //! let mut txn = mesh.begin();
-//! let v = txn.add_vertex([0.0, 0.0, 0.0]);
+//! let v = op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
+//! let v1 = op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
+//! let v2 = op::add_vertex(&mut txn, [0.0, 1.0, 0.0]);
+//! let face = op::add_face(&mut txn, &[v, v1, v2]).expect("triangle should be accepted");
 //! let change_set = txn.commit();
 //!
-//! assert_eq!(change_set.created_vertices, vec![v]);
+//! assert_eq!(change_set.created_vertices, vec![v, v1, v2]);
+//! assert_eq!(change_set.created_faces, vec![face]);
 //! ```
+//!
+//! [`EditSession`](crate::EditSession) is the transaction host. The public kernel operation catalog
+//! lives in [`crate::op`], which defines explicit topology edits such as
+//! [`crate::op::add_face`], [`crate::op::split_edge`], and [`crate::op::delete_faces`].
 //!
 //! # Eager Semantics
 //!
@@ -39,20 +47,20 @@
 //! Edit kernels that create/transform topology consume
 //! [`PropagatePolicy`](crate::PropagatePolicy) as explicit per-call input.
 //!
-//! `split_edge` is the first topology-transforming kernel using this policy:
-//! [`EditSession::split_edge`](crate::EditSession::split_edge). It inserts a midpoint vertex,
+//! `split_edge` is a topology-transforming kernel available through
+//! [`crate::op::split_edge`]. It inserts a midpoint vertex,
 //! rewires the local half-edge pair, updates dirty/change tracking, and applies
 //! propagation defaults/overrides for edge/corner attributes.
 //!
-//! [`EditSession::split_face`](crate::EditSession::split_face) inserts a diagonal between two
+//! [`crate::op::split_face`] inserts a diagonal between two
 //! non-adjacent corners of one interior face and creates a second face.
 //! Existing corners keep authored values; diagonal corners are populated from
 //! policy rules while preserving sparse missingness.
 //!
-//! [`EditSession::add_face`](crate::EditSession::add_face) builds a new interior polygon loop
-//! from live [`VertexId`](crate::VertexId)s. It reuses compatible OUTSIDE
-//! half-edges when filling/opening boundaries and creates new interior+OUTSIDE
-//! pairs otherwise.
+//! [`crate::op::add_face`] builds a new interior polygon loop from live
+//! [`VertexId`](crate::VertexId)s. It reuses compatible OUTSIDE half-edges
+//! when filling/opening boundaries and creates new interior+OUTSIDE pairs
+//! otherwise.
 //!
 //! For edge sharpness in v0.1:
 //! - [`EdgeAttrPropagation::Inherit`](crate::EdgeAttrPropagation::Inherit)

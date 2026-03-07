@@ -83,7 +83,7 @@ macro_rules! define_id_type {
 
 define_id_type!(
     VertexId,
-    "Stable ID for a [`Vertex`](crate::Vertex) arena slot, returned by APIs like [`Mesh::add_vertex`](crate::Mesh::add_vertex)."
+    "Stable ID for a [`Vertex`](crate::Vertex) arena slot, returned by mesh construction and mutation APIs."
 );
 define_id_type!(
     HalfEdgeId,

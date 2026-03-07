@@ -360,9 +360,8 @@ impl Mesh {
         &self.attrs
     }
 
-    /// Returns mutable attribute storage.
     #[must_use]
-    pub fn attrs_mut(&mut self) -> &mut Attributes {
+    pub(crate) fn attrs_mut(&mut self) -> &mut Attributes {
         &mut self.attrs
     }
 
@@ -370,7 +369,7 @@ impl Mesh {
     ///
     /// The vertex position is written into the required dense
     /// [`attr::VERTEX_POSITION`] layer.
-    pub fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
+    pub(crate) fn add_vertex(&mut self, position: [f32; 3]) -> VertexId {
         let id = VertexId::from(self.vertices.insert(Vertex {
             out: HalfEdgeId::INVALID,
         }));
@@ -395,7 +394,7 @@ impl Mesh {
     /// Sets the required position for a vertex.
     ///
     /// Returns `true` if the vertex slot exists in the position layer.
-    pub fn set_vertex_position(&mut self, vertex: VertexId, position: [f32; 3]) -> bool {
+    pub(crate) fn set_vertex_position(&mut self, vertex: VertexId, position: [f32; 3]) -> bool {
         self.attrs
             .dense_mut(attr::VERTEX_POSITION)
             .is_some_and(|layer| layer.set(vertex.as_id(), position))
@@ -467,7 +466,7 @@ impl Mesh {
     /// Sets the explicit seam tag for an edge.
     ///
     /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_seam(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
+    pub(crate) fn set_edge_seam(&mut self, half_edge: HalfEdgeId, seam: bool) -> bool {
         let Some(canonical) = self.canonical_edge(half_edge) else {
             return false;
         };
@@ -497,7 +496,7 @@ impl Mesh {
     /// Sets the explicit sharpness value for an edge.
     ///
     /// Returns `true` when `half_edge` is live and writable.
-    pub fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
+    pub(crate) fn set_edge_sharpness(&mut self, half_edge: HalfEdgeId, sharp: f32) -> bool {
         let Some(canonical) = self.canonical_edge(half_edge) else {
             return false;
         };

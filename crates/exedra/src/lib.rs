@@ -23,6 +23,7 @@
 //! - Attributes and domains: [`attributes`]
 //! - Built-in attribute keys: [`attr`]
 //! - Mesh construction/traversal: [`Mesh`], [`MeshBuilder`]
+//! - Kernel operation catalog: [`op`]
 //! - Render extraction: [`ExtractParams`], [`TriMesh`]
 
 #![no_std]
@@ -36,6 +37,7 @@ mod id;
 pub mod manual;
 pub mod mesh;
 mod numeric;
+pub mod op;
 mod render;
 mod session;
 mod sorted_merge;
@@ -50,9 +52,8 @@ pub use mesh::{
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use session::{
-    AddFaceError, ChangeSet, DeleteEdgesError, DeleteFacesError, DeletePolicy, DeleteVerticesError,
-    DirtySet, EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,
-    PositionPropagation, PropagatePolicy, SplitEdgeError, SplitFaceError, UvPropagation,
+    ChangeSet, DeletePolicy, DirtySet, EdgeAttrPropagation, EditSession, FaceAttrPropagation,
+    NormalOverridePropagation, PositionPropagation, PropagatePolicy, UvPropagation,
 };
 pub use topology::{Face, HalfEdge, Vertex};
 

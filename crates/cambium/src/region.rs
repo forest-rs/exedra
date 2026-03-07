@@ -77,7 +77,7 @@ impl EditOperator for TagFaceRegion {
             if face == FaceId::OUTSIDE {
                 continue;
             }
-            if !txn.set_face_region(face, params.region_id) {
+            if exedra::op::set_face_region(txn, face, params.region_id).is_err() {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::PreconditionFailed,

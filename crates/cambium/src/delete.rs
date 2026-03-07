@@ -6,7 +6,8 @@
 use alloc::format;
 use alloc::string::String;
 
-use exedra::{DeleteFacesError, DeletePolicy, DeleteVerticesError, FaceId, HalfEdgeId};
+use exedra::{DeletePolicy, FaceId, HalfEdgeId, op};
+use exedra::op::{DeleteFacesError, DeleteVerticesError};
 
 use crate::op_common::op_error;
 use crate::plan::PlanHasher;
@@ -169,7 +170,7 @@ impl EditOperator for DeleteEdges {
             )
         })?;
 
-        txn.delete_faces(&faces, params.policy)
+        op::delete_faces(txn, &faces, params.policy)
             .map_err(|err| map_delete_faces_error(ctx, err))?;
 
         let mut report = OpReport::new(
@@ -297,7 +298,7 @@ impl EditOperator for DeleteFaces {
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
-        txn.delete_faces(&plan.faces, plan.policy)
+        op::delete_faces(txn, &plan.faces, plan.policy)
             .map_err(|err| map_delete_faces_error(ctx, err))?;
 
         let mut report = OpReport::new(
@@ -340,11 +341,16 @@ impl EditOperator for DeleteFaces {
 /// # Example
 /// ```rust
 /// use cambium::{DeleteVertices, DeleteVerticesParams, OperatorRunner};
-/// use exedra::Mesh;
+/// use exedra::{op, Mesh};
 ///
 /// let mut mesh = Mesh::new();
-/// let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
-/// let _v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+/// let v0 = {
+///     let mut txn = mesh.begin();
+///     let v0 = op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
+///     let _v1 = op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
+///     let _ = txn.commit();
+///     v0
+/// };
 ///
 /// let mut runner = OperatorRunner::new();
 /// let plan = runner
@@ -381,8 +387,7 @@ impl EditOperator for DeleteVertices {
     ) -> Result<(OpReport, Self::Output), OpError> {
         let mut vertices = params.vertices.clone();
         let canonicalized = canonicalize_vertex_set(&mut vertices);
-        txn.delete_vertices(&vertices)
-            .map_err(|err| map_delete_vertices_error(ctx, err))?;
+        op::delete_vertices(txn, &vertices).map_err(|err| map_delete_vertices_error(ctx, err))?;
 
         let mut report = OpReport::new(
             self.name(),
@@ -692,8 +697,13 @@ mod tests {
     #[test]
     fn delete_vertices_applies_and_returns_typed_output() {
         let mut mesh = exedra::Mesh::new();
-        let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
-        let _v1 = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let v0 = {
+            let mut txn = mesh.begin();
+            let v0 = exedra::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
+            let _v1 = exedra::op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
+            let _ = txn.commit();
+            v0
+        };
         let mut runner = OperatorRunner::new();
         let result = commit(
             &mut runner,

@@ -132,8 +132,8 @@
 //!
 //!         {
 //!             let _bucket = ctx.clock.bucket("attrs");
-//!             // Write through txn APIs.
-//!             let _ = txn.add_vertex([0.0, 0.0, 0.0]);
+//!             // Write through Exedra kernel ops.
+//!             let _ = exedra::op::add_vertex(txn, [0.0, 0.0, 0.0]);
 //!         }
 //!
 //!         Ok((report, ()))

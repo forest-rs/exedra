@@ -47,7 +47,7 @@ impl EditOperator for MarkEdgeSharp {
             ctx,
             self.name(),
             "edge set contains invalid/stale half-edge id",
-            |txn, edge, sharp| txn.set_edge_sharpness(edge, sharp),
+            |txn, edge, sharp| exedra::op::set_edge_sharpness(txn, edge, sharp).is_ok(),
         )
     }
 
