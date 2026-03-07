@@ -102,6 +102,7 @@ mod face_edit;
 mod inspect_selection;
 mod op_common;
 mod operator;
+mod patch;
 mod plan;
 mod policy;
 mod region;

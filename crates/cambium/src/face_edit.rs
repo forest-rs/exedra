@@ -13,6 +13,7 @@ use exedra::{DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
+use crate::patch::region::{SelectedFace, selected_face_region};
 use crate::plan::PlanHasher;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_face_set};
 use crate::{
@@ -183,7 +184,7 @@ pub struct CutRectFaceOutput {
 #[derive(Clone, Debug)]
 pub struct InsetFacesPlan {
     faces: FaceSet,
-    face_plans: Vec<FacePlan>,
+    face_plans: Vec<SelectedFace>,
     factor: f32,
     selections_canonicalized: bool,
 }
@@ -237,7 +238,7 @@ impl EditOperator for ExtrudeFaces {
         }
         let mut faces = params.faces.clone();
         let canonicalized = canonicalize_face_set(&mut faces);
-        let plans = preflight_face_plans(txn.mesh(), &faces, true, ctx)?;
+        let region = selected_face_region(txn.mesh(), &faces, true, ctx)?;
 
         let mut report = OpReport::new(
             self.name(),
@@ -251,10 +252,7 @@ impl EditOperator for ExtrudeFaces {
         }
         let mut cap_faces = Vec::<FaceId>::new();
         let mut wall_faces = Vec::<FaceId>::new();
-        let edge_counts = selected_edge_counts(&plans);
-        if params.mode == ExtrudeMode::KeepSource
-            && !boundary_edges_are_open_surface(txn.mesh(), &plans, &edge_counts)
-        {
+        if params.mode == ExtrudeMode::KeepSource && !region.boundary_lies_on_mesh_boundary {
             return Err(op_error(
                 ctx,
                 OpErrorKind::PreconditionFailed,
@@ -263,7 +261,7 @@ impl EditOperator for ExtrudeFaces {
             ));
         }
         let mut summed_normals = BTreeMap::<VertexId, [f32; 3]>::new();
-        for plan in &plans {
+        for plan in &region.faces {
             for &vertex in &plan.vertices {
                 let sum = summed_normals.entry(vertex).or_insert([0.0, 0.0, 0.0]);
                 sum[0] += plan.normal[0];
@@ -293,7 +291,11 @@ impl EditOperator for ExtrudeFaces {
         }
 
         if params.mode == ExtrudeMode::ShellOpen {
-            let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
+            let faces_to_delete = region
+                .faces
+                .iter()
+                .map(|plan| plan.face)
+                .collect::<Vec<_>>();
             op::delete_faces(txn, &faces_to_delete, DeletePolicy::KeepIsolated).map_err(|err| {
                 op_error(
                     ctx,
@@ -305,11 +307,15 @@ impl EditOperator for ExtrudeFaces {
         }
 
         let mut wall_orientation = FrameOrientationState::default();
-        for plan in &plans {
+        for plan in &region.faces {
             for i in 0..plan.vertices.len() {
                 let current = plan.vertices[i];
                 let next = plan.vertices[(i + 1) % plan.vertices.len()];
-                if !is_boundary_edge(current, next, &edge_counts) {
+                if !region
+                    .boundary_edges
+                    .iter()
+                    .any(|edge| edge.face == plan.face && edge.from == current && edge.to == next)
+                {
                     continue;
                 }
                 let current_cap = *cap_vertices
@@ -359,7 +365,7 @@ impl EditOperator for ExtrudeFaces {
             }
         }
 
-        for plan in &plans {
+        for plan in &region.faces {
             let mut cap_loop = plan
                 .vertices
                 .iter()
@@ -410,14 +416,14 @@ impl EditOperator for ExtrudeFaces {
         }
 
         report.stats.counters.faces_processed =
-            u64::try_from(plans.len()).expect("face count should fit u64");
+            u64::try_from(region.faces.len()).expect("face count should fit u64");
         report.stats.elements_created.vertices =
             u64::try_from(cap_vertices.len()).expect("vertex count should fit u64");
         report.stats.elements_created.faces =
             u64::try_from(wall_faces.len() + cap_faces.len()).expect("face count should fit u64");
         report.stats.elements_deleted.faces = match params.mode {
             ExtrudeMode::ShellOpen => {
-                u64::try_from(plans.len()).expect("face count should fit u64")
+                u64::try_from(region.faces.len()).expect("face count should fit u64")
             }
             ExtrudeMode::KeepSource => 0,
         };
@@ -484,10 +490,10 @@ impl EditOperator for InsetFaces {
         }
         let mut faces = params.faces.clone();
         let canonicalized = canonicalize_face_set(&mut faces);
-        let face_plans = preflight_face_plans(mesh, &faces, false, ctx)?;
+        let region = selected_face_region(mesh, &faces, false, ctx)?;
         Ok(InsetFacesPlan {
             faces,
-            face_plans,
+            face_plans: region.faces,
             factor: params.factor,
             selections_canonicalized: canonicalized,
         })
@@ -513,7 +519,7 @@ impl EditOperator for InsetFaces {
         }
         let mut inner_faces = Vec::<FaceId>::new();
         let mut frame_faces = Vec::<FaceId>::new();
-        let edge_counts = selected_edge_counts(&plans);
+        let region = selected_face_region(txn.mesh(), &plan.faces, false, ctx)?;
         let mut inset_target_sum = BTreeMap::<VertexId, [f32; 3]>::new();
         let mut inset_target_count = BTreeMap::<VertexId, u32>::new();
         for face_plan in &plans {
@@ -570,7 +576,9 @@ impl EditOperator for InsetFaces {
             for i in 0..face_plan.vertices.len() {
                 let current = face_plan.vertices[i];
                 let next = face_plan.vertices[(i + 1) % face_plan.vertices.len()];
-                if !is_boundary_edge(current, next, &edge_counts) {
+                if !region.boundary_edges.iter().any(|edge| {
+                    edge.face == face_plan.face && edge.from == current && edge.to == next
+                }) {
                     continue;
                 }
                 let current_inset = inset_loop[i];
@@ -1115,20 +1123,10 @@ impl EditOperator for CutRectFace {
     }
 }
 
-#[derive(Clone, Debug)]
-struct FacePlan {
-    face: FaceId,
-    vertices: Vec<VertexId>,
-    vertex_uvs: Vec<Option<[f32; 2]>>,
-    edge_attrs: Vec<SourceEdgeAttrs>,
-    normal: [f32; 3],
-    region: u32,
-}
-
 #[derive(Copy, Clone, Debug, Default)]
-struct SourceEdgeAttrs {
-    seam: Option<bool>,
-    sharpness: Option<f32>,
+pub(crate) struct SourceEdgeAttrs {
+    pub(crate) seam: Option<bool>,
+    pub(crate) sharpness: Option<f32>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1146,151 +1144,6 @@ impl FrameOrientationState {
     const fn prefers_forward_outer_edge(self) -> bool {
         matches!(self.winding, Some(FrameWinding::UseForwardOuterEdge))
     }
-}
-
-fn preflight_face_plans(
-    mesh: &exedra::Mesh,
-    faces: &[FaceId],
-    require_normal: bool,
-    ctx: &OpContext,
-) -> Result<Vec<FacePlan>, OpError> {
-    let mut plans = Vec::<FacePlan>::with_capacity(faces.len());
-    for &face in faces {
-        if face == FaceId::OUTSIDE {
-            return Err(op_error(
-                ctx,
-                OpErrorKind::PreconditionFailed,
-                DiagCode::PreconditionFailed,
-                "selection contains FaceId::OUTSIDE",
-            ));
-        }
-        if mesh.face_edge(face).is_none() {
-            return Err(op_error(
-                ctx,
-                OpErrorKind::PreconditionFailed,
-                DiagCode::PreconditionFailed,
-                format!("selection contains stale face id: {}", face.index()),
-            ));
-        }
-        let mut vertices = Vec::<VertexId>::new();
-        let mut corners = Vec::<HalfEdgeId>::new();
-        for corner in mesh.face_loop(face) {
-            let vertex = mesh.to_vertex(corner).ok_or_else(|| {
-                op_error(
-                    ctx,
-                    OpErrorKind::InvalidMesh,
-                    DiagCode::InternalInvariantViolation,
-                    "face loop contains corner with missing destination vertex",
-                )
-            })?;
-            vertices.push(vertex);
-            corners.push(corner);
-        }
-        if vertices.len() < 3 {
-            return Err(op_error(
-                ctx,
-                OpErrorKind::InvalidMesh,
-                DiagCode::InternalInvariantViolation,
-                "face loop degree is less than 3",
-            ));
-        }
-        let normal = if require_normal {
-            normalized_face_normal(mesh, &vertices).ok_or_else(|| {
-                op_error(
-                    ctx,
-                    OpErrorKind::NumericFailure,
-                    DiagCode::NumericToleranceIssue,
-                    format!("cannot extrude degenerate face {}", face.index()),
-                )
-            })?
-        } else {
-            [0.0, 0.0, 0.0]
-        };
-        let region = mesh
-            .attrs()
-            .dense(exedra::attr::FACE_REGION)
-            .and_then(|layer| layer.get(face.as_id()).copied())
-            .unwrap_or(0);
-        let mut vertex_uvs = Vec::with_capacity(corners.len());
-        for &corner in &corners {
-            let uv = mesh
-                .attrs()
-                .sparse(exedra::attr::CORNER_UV)
-                .and_then(|layer| layer.get(corner.as_id()).copied());
-            vertex_uvs.push(uv);
-        }
-        let mut edge_attrs = Vec::with_capacity(vertices.len());
-        for i in 0..vertices.len() {
-            let edge_corner = corners[(i + 1) % corners.len()];
-            edge_attrs.push(SourceEdgeAttrs {
-                seam: mesh.edge_seam(edge_corner),
-                sharpness: mesh.edge_sharpness(edge_corner),
-            });
-        }
-        plans.push(FacePlan {
-            face,
-            vertices,
-            vertex_uvs,
-            edge_attrs,
-            normal,
-            region,
-        });
-    }
-
-    Ok(plans)
-}
-
-fn canonical_edge_key(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
-    if a <= b { (a, b) } else { (b, a) }
-}
-
-fn selected_edge_counts(plans: &[FacePlan]) -> BTreeMap<(VertexId, VertexId), u32> {
-    let mut counts = BTreeMap::<(VertexId, VertexId), u32>::new();
-    for plan in plans {
-        for i in 0..plan.vertices.len() {
-            let current = plan.vertices[i];
-            let next = plan.vertices[(i + 1) % plan.vertices.len()];
-            let key = canonical_edge_key(current, next);
-            *counts.entry(key).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
-fn is_boundary_edge(
-    current: VertexId,
-    next: VertexId,
-    edge_counts: &BTreeMap<(VertexId, VertexId), u32>,
-) -> bool {
-    edge_counts
-        .get(&canonical_edge_key(current, next))
-        .is_some_and(|count| *count == 1)
-}
-
-fn boundary_edges_are_open_surface(
-    mesh: &exedra::Mesh,
-    plans: &[FacePlan],
-    edge_counts: &BTreeMap<(VertexId, VertexId), u32>,
-) -> bool {
-    for plan in plans {
-        for i in 0..plan.vertices.len() {
-            let current = plan.vertices[i];
-            let next = plan.vertices[(i + 1) % plan.vertices.len()];
-            if !is_boundary_edge(current, next, edge_counts) {
-                continue;
-            }
-            let Some(edge) = find_face_edge_for_vertices(mesh, plan.face, current, next) else {
-                return false;
-            };
-            let Some(twin) = mesh.twin(edge) else {
-                return false;
-            };
-            if mesh.face(twin) != Some(FaceId::OUTSIDE) {
-                return false;
-            }
-        }
-    }
-    true
 }
 
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -1409,7 +1262,10 @@ fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
     Some([sum[0] * inv, sum[1] * inv, sum[2] * inv])
 }
 
-fn normalized_face_normal(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
+pub(crate) fn normalized_face_normal(
+    mesh: &exedra::Mesh,
+    vertices: &[VertexId],
+) -> Option<[f32; 3]> {
     let mut nx = 0.0_f32;
     let mut ny = 0.0_f32;
     let mut nz = 0.0_f32;
