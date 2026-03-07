@@ -17,7 +17,7 @@ use crate::patch::attrs::{
     propagate_frame_edge_attrs,
 };
 use crate::patch::connect::{FrameOrientationState, add_frame_face_with_orientation};
-use crate::patch::duplicate::create_vertex_copies;
+use crate::patch::duplicate::{create_vertex_copies, map_vertex_loop};
 use crate::patch::geom::{centroid, normalized_face_normal};
 use crate::patch::loops::{BoundaryLoopError, extract_boundary_loops};
 use crate::patch::region::{SelectedFace, selected_face_region};
@@ -313,13 +313,16 @@ impl EditOperator for ExtrudeFaces {
 
         let boundary_loops = extract_boundary_loops(&region)
             .map_err(|err| boundary_loop_error(ctx, "extrude", err))?;
+        let face_lookup = region
+            .faces
+            .iter()
+            .map(|plan| (plan.face, plan))
+            .collect::<BTreeMap<_, _>>();
         let mut wall_orientation = FrameOrientationState::default();
         for boundary_loop in &boundary_loops {
             for boundary in &boundary_loop.edges {
-                let plan = region
-                    .faces
-                    .iter()
-                    .find(|plan| plan.face == boundary.face)
+                let plan = *face_lookup
+                    .get(&boundary.face)
                     .expect("boundary edge should belong to selected face");
                 let current = boundary.from;
                 let next = boundary.to;
@@ -371,15 +374,7 @@ impl EditOperator for ExtrudeFaces {
         }
 
         for plan in &region.faces {
-            let mut cap_loop = plan
-                .vertices
-                .iter()
-                .map(|vertex| {
-                    *cap_vertices
-                        .get(vertex)
-                        .expect("cap vertex should exist for source vertex")
-                })
-                .collect::<Vec<_>>();
+            let mut cap_loop = map_vertex_loop(&plan.vertices, &cap_vertices);
             if !wall_orientation.prefers_forward_outer_edge() {
                 cap_loop.reverse();
             }
@@ -570,22 +565,17 @@ impl EditOperator for InsetFaces {
 
         let boundary_loops = extract_boundary_loops(&region)
             .map_err(|err| boundary_loop_error(ctx, "inset", err))?;
+        let plan_lookup = plans
+            .iter()
+            .map(|plan| (plan.face, plan))
+            .collect::<BTreeMap<_, _>>();
         let mut frame_orientation = FrameOrientationState::default();
         for boundary_loop in &boundary_loops {
             for boundary in &boundary_loop.edges {
-                let face_plan = plans
-                    .iter()
-                    .find(|plan| plan.face == boundary.face)
+                let face_plan = *plan_lookup
+                    .get(&boundary.face)
                     .expect("boundary edge should belong to selected face");
-                let inset_loop = face_plan
-                    .vertices
-                    .iter()
-                    .map(|vertex| {
-                        *inset_vertices
-                            .get(vertex)
-                            .expect("inset vertex should exist for source vertex")
-                    })
-                    .collect::<Vec<_>>();
+                let inset_loop = map_vertex_loop(&face_plan.vertices, &inset_vertices);
                 let current = boundary.from;
                 let next = boundary.to;
                 let current_inset = inset_loop[boundary.edge_index];
@@ -633,15 +623,7 @@ impl EditOperator for InsetFaces {
         }
 
         for face_plan in &plans {
-            let mut inner_loop = face_plan
-                .vertices
-                .iter()
-                .map(|vertex| {
-                    *inset_vertices
-                        .get(vertex)
-                        .expect("inset vertex should exist for source vertex")
-                })
-                .collect::<Vec<_>>();
+            let mut inner_loop = map_vertex_loop(&face_plan.vertices, &inset_vertices);
             if !frame_orientation.prefers_forward_outer_edge() {
                 inner_loop.reverse();
             }
