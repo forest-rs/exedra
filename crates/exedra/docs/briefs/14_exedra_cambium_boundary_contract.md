@@ -25,7 +25,7 @@ A crisp contract preserves modularity and replaceability.
    - no hash iteration leakage into public outputs
 3. **Explicit mutation**:
    - mutations occur via `EditSession`
-   - `commit()` returns `ChangeSet` with `DirtySet`
+   - finishing a recorded edit scope returns `ChangeSet` with `DirtySet`
 4. **Attribute domains and built-ins**:
    - vertex/face/edge/corner domains are stable concepts
    - built-in keys exist for core layers:
@@ -41,7 +41,7 @@ A crisp contract preserves modularity and replaceability.
 
 ## What Cambium may do (allowed responsibilities)
 - Define meaning/workflows (“basilica”, “dome”, “ruinization”).
-- Compose Exedra edits inside transactions; supply propagation policies intentionally.
+- Compose Exedra edits inside eager edit scopes; supply propagation policies intentionally.
 - Orchestrate preview/commit (clone/COW/undo later) without mutating the committed base mesh in preview.
 - Maintain operator-local caches keyed by (mesh version/change set, params hash).
 - Use `understory_dirty` for Cambium-runtime cache invalidation (not for kernel dirtiness).
@@ -69,4 +69,4 @@ Objects crossing the boundary and expected to remain stable:
 
 ## Non-goals / deferrals
 - A monolithic scene graph that owns both kernel and operators.
-- Allowing Cambium to bypass the transaction/changeset contract for performance.
+- Allowing Cambium to bypass the edit-scope/change-set contract for performance.

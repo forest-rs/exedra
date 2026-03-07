@@ -9,8 +9,9 @@ procedural workflows.
 
 ## Core concepts
 
-- **Edit operators** apply changes via Exedra transactions and return
-  structured ChangeSets. This is the primary execution path.
+- **Edit operators** apply changes via Exedra edit scopes and can return
+  structured ChangeSets when the runner requests recorded changes. This is the
+  primary execution path.
 - **Preview/commit** separation is first-class — preview may be
   budgeted and approximate, commit is reproducible.
 - **Operator reports** with deterministic stats, bounded artifacts, and

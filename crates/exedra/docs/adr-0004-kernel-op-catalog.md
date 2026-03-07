@@ -8,7 +8,7 @@
 Exedra's topology-editing surface currently lives mostly on
 [`EditSession`](crate::EditSession). That makes one type act as:
 
-1. transaction host,
+1. edit host,
 2. bookkeeping/change-set owner,
 3. low-level topology helper namespace,
 4. public catalog of kernel edits.
@@ -23,7 +23,7 @@ catalog.
 
 The boundary is:
 
-- `session/*` owns transaction hosting, bookkeeping, dirty/change tracking,
+- `session/*` owns eager edit hosting, bookkeeping, dirty/change tracking,
   cache invalidation, and low-level mutation helpers.
 - `op/*` owns public kernel mutation functions over `&mut EditSession`.
 - `cambium` owns compile/apply plans, diagnostics, reports, artifacts, and
@@ -47,7 +47,7 @@ hierarchy, runner layer, or command-object representation in Exedra.
 - Public mutation entry points live in `exedra::op::*`.
 - `MeshBuilder` remains the construction API; `Mesh` is no longer a mutation
   convenience surface for topology edits.
-- `EditSession` is the transaction host and internal plumbing seam, not a
+- `EditSession` is the eager edit host and internal plumbing seam, not a
   second public mutation catalog.
 - Topology operation bodies live in `op/*`; `session/*` retains bookkeeping,
   cache invalidation, propagation helpers, and other mutation plumbing.

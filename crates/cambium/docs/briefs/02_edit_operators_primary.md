@@ -1,7 +1,10 @@
 # Brief: EditOperators are the primary Cambium execution path
 
 ## Decision
-Cambium operators are primarily **edit-based**: they apply changes through Exedra transactions and return an Exedra `ChangeSet` on commit. “Pure operators” (mesh-in/mesh-out) are secondary for offline/batch use.
+Cambium operators are primarily **edit-based**: they apply changes through
+Exedra edit scopes and can return an Exedra `ChangeSet` when the runner uses a
+recording sink. “Pure operators” (mesh-in/mesh-out) are secondary for
+offline/batch use.
 
 ## Why
 Edit-based execution aligns with Exedra’s kernel contract:
@@ -16,7 +19,7 @@ Edit-based execution aligns with Exedra’s kernel contract:
 - **Operators mutate mesh directly without EditSession**: breaks the contract and makes invalidation brittle.
 
 ## Implications
-- OperatorRunner commits transactions and standardizes preview/commit behavior.
+- OperatorRunner finishes edit scopes and standardizes preview/apply behavior.
 - Operators focus on “what edits to apply,” not on bookkeeping.
 - Policies (propagation, budgets, validation) flow through the runner/context.
 

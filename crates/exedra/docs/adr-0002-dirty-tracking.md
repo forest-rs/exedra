@@ -5,8 +5,8 @@
 
 ## Context
 
-Exedra's kernel boundary contract requires explicit dirty tracking: transactions
-produce a `ChangeSet` containing a `DirtySet` that tells higher layers which
+Exedra's kernel boundary contract requires explicit dirty tracking: recorded
+edit scopes produce a `ChangeSet` containing a `DirtySet` that tells higher layers which
 faces, vertices, and corners need derived data recomputed. Cambium consumes
 these dirty sets for incremental workflows.
 
