@@ -13,6 +13,7 @@ use exedra::{DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
+use crate::patch::loops::{BoundaryLoopError, extract_boundary_loops};
 use crate::patch::region::{SelectedFace, selected_face_region};
 use crate::plan::PlanHasher;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_face_set};
@@ -306,18 +307,18 @@ impl EditOperator for ExtrudeFaces {
             })?;
         }
 
+        let boundary_loops = extract_boundary_loops(&region)
+            .map_err(|err| boundary_loop_error(ctx, "extrude", err))?;
         let mut wall_orientation = FrameOrientationState::default();
-        for plan in &region.faces {
-            for i in 0..plan.vertices.len() {
-                let current = plan.vertices[i];
-                let next = plan.vertices[(i + 1) % plan.vertices.len()];
-                if !region
-                    .boundary_edges
+        for boundary_loop in &boundary_loops {
+            for boundary in &boundary_loop.edges {
+                let plan = region
+                    .faces
                     .iter()
-                    .any(|edge| edge.face == plan.face && edge.from == current && edge.to == next)
-                {
-                    continue;
-                }
+                    .find(|plan| plan.face == boundary.face)
+                    .expect("boundary edge should belong to selected face");
+                let current = boundary.from;
+                let next = boundary.to;
                 let current_cap = *cap_vertices
                     .get(&current)
                     .expect("cap vertex should exist for source vertex");
@@ -349,11 +350,11 @@ impl EditOperator for ExtrudeFaces {
                     next,
                     current_cap,
                     next_cap,
-                    plan.edge_attrs[i],
+                    plan.edge_attrs[boundary.edge_index],
                     &ctx.policy.propagate,
                 );
-                let uv_current = plan.vertex_uvs[i];
-                let uv_next = plan.vertex_uvs[(i + 1) % plan.vertex_uvs.len()];
+                let uv_current = plan.vertex_uvs[boundary.edge_index];
+                let uv_next = plan.vertex_uvs[(boundary.edge_index + 1) % plan.vertex_uvs.len()];
                 let uv_map = [
                     (current, uv_current),
                     (next, uv_next),
@@ -562,27 +563,28 @@ impl EditOperator for InsetFaces {
             )
         })?;
 
+        let boundary_loops = extract_boundary_loops(&region)
+            .map_err(|err| boundary_loop_error(ctx, "inset", err))?;
         let mut frame_orientation = FrameOrientationState::default();
-        for face_plan in &plans {
-            let inset_loop = face_plan
-                .vertices
-                .iter()
-                .map(|vertex| {
-                    *inset_vertices
-                        .get(vertex)
-                        .expect("inset vertex should exist for source vertex")
-                })
-                .collect::<Vec<_>>();
-            for i in 0..face_plan.vertices.len() {
-                let current = face_plan.vertices[i];
-                let next = face_plan.vertices[(i + 1) % face_plan.vertices.len()];
-                if !region.boundary_edges.iter().any(|edge| {
-                    edge.face == face_plan.face && edge.from == current && edge.to == next
-                }) {
-                    continue;
-                }
-                let current_inset = inset_loop[i];
-                let next_inset = inset_loop[(i + 1) % inset_loop.len()];
+        for boundary_loop in &boundary_loops {
+            for boundary in &boundary_loop.edges {
+                let face_plan = plans
+                    .iter()
+                    .find(|plan| plan.face == boundary.face)
+                    .expect("boundary edge should belong to selected face");
+                let inset_loop = face_plan
+                    .vertices
+                    .iter()
+                    .map(|vertex| {
+                        *inset_vertices
+                            .get(vertex)
+                            .expect("inset vertex should exist for source vertex")
+                    })
+                    .collect::<Vec<_>>();
+                let current = boundary.from;
+                let next = boundary.to;
+                let current_inset = inset_loop[boundary.edge_index];
+                let next_inset = inset_loop[(boundary.edge_index + 1) % inset_loop.len()];
                 let frame = add_frame_face_with_orientation(
                     txn,
                     current,
@@ -608,11 +610,12 @@ impl EditOperator for InsetFaces {
                     next,
                     current_inset,
                     next_inset,
-                    face_plan.edge_attrs[i],
+                    face_plan.edge_attrs[boundary.edge_index],
                     &ctx.policy.propagate,
                 );
-                let uv_current = face_plan.vertex_uvs[i];
-                let uv_next = face_plan.vertex_uvs[(i + 1) % face_plan.vertex_uvs.len()];
+                let uv_current = face_plan.vertex_uvs[boundary.edge_index];
+                let uv_next =
+                    face_plan.vertex_uvs[(boundary.edge_index + 1) % face_plan.vertex_uvs.len()];
                 let uv_map = [
                     (current, uv_current),
                     (next, uv_next),
@@ -1335,6 +1338,30 @@ fn frame_face_error(ctx: &OpContext, op_name: &'static str, err: AddFaceError) -
         DiagCode::InternalInvariantViolation,
         format!("{op_name} frame face creation failed unexpectedly: {err}"),
     )
+}
+
+fn boundary_loop_error(ctx: &OpContext, op_name: &'static str, err: BoundaryLoopError) -> OpError {
+    match err {
+        BoundaryLoopError::AmbiguousBoundaryVertex { vertex, candidates } => op_error(
+            ctx,
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!(
+                "{op_name} selection boundary is ambiguous at vertex {} ({candidates} outgoing boundary edges)",
+                vertex.index()
+            ),
+        ),
+        BoundaryLoopError::OpenBoundaryChain { start, end } => op_error(
+            ctx,
+            OpErrorKind::InvalidMesh,
+            DiagCode::InternalInvariantViolation,
+            format!(
+                "{op_name} boundary loop extraction found open chain from {} to {}",
+                start.index(),
+                end.index()
+            ),
+        ),
+    }
 }
 
 fn propagate_face_corner_uvs<S: exedra::ChangeSink>(
