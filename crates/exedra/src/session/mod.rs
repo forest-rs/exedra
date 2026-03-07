@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Explicit mesh transactions and deterministic change summaries.
+//!
+//! This module owns transaction hosting, bookkeeping, cache invalidation, and
+//! shared mutation plumbing. Public kernel mutation entry points live in
+//! [`crate::op`].
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -9,19 +13,14 @@ use core::fmt;
 use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
 
 use crate::sorted_merge::for_each_count_join;
-use crate::{CornerId, FaceId, HalfEdge, HalfEdgeId, Id, Mesh, VertexId, attr};
-use propagation::{
-    SplitEdgeUvSources, capture_edge_tags, clear_edge_tags, propagate_split_edge_corner_uvs,
-    propagate_split_edge_edge_attrs, propagate_split_face_diagonal_uvs,
-    split_face_diagonal_sharpness,
-};
+use crate::{CornerId, FaceId, HalfEdgeId, Id, Mesh, VertexId, attr};
 
 const DIRTY_FACES_CHANNEL: Channel = Channel::new(0);
 const DIRTY_VERTICES_CHANNEL: Channel = Channel::new(1);
 const DIRTY_CORNERS_CHANNEL: Channel = Channel::new(2);
 
 #[derive(Copy, Clone, Debug)]
-struct OutgoingAdj {
+pub(crate) struct OutgoingAdj {
     from: VertexId,
     to: VertexId,
     half_edge: HalfEdgeId,
@@ -30,7 +29,7 @@ struct OutgoingAdj {
 
 mod attrs;
 mod bookkeeping;
-mod propagation;
+pub(crate) mod propagation;
 
 /// Vertex-position propagation behavior for topology edits.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -503,7 +502,7 @@ impl Mesh {
 }
 
 impl EditSession<'_> {
-    fn ensure_outgoing_index(&mut self) -> &[OutgoingAdj] {
+    pub(crate) fn ensure_outgoing_index(&mut self) -> &[OutgoingAdj] {
         if !self.outgoing_index_valid {
             self.outgoing_index = build_outgoing_index(self.mesh);
             self.outgoing_index_valid = true;
@@ -511,21 +510,25 @@ impl EditSession<'_> {
         &self.outgoing_index
     }
 
-    fn invalidate_outgoing_index(&mut self) {
+    pub(crate) fn invalidate_outgoing_index(&mut self) {
         self.outgoing_index_valid = false;
     }
 
-    fn vertex_has_incident_half_edge(&mut self, vertex: VertexId) -> bool {
+    pub(crate) fn vertex_has_incident_half_edge(&mut self, vertex: VertexId) -> bool {
         let index = self.ensure_outgoing_index();
         vertex_has_incident_half_edge_in_index(index, vertex)
     }
 
-    fn has_undirected_edge(&mut self, a: VertexId, b: VertexId) -> bool {
+    pub(crate) fn has_undirected_edge(&mut self, a: VertexId, b: VertexId) -> bool {
         let index = self.ensure_outgoing_index();
         has_undirected_edge_in_index(index, a, b)
     }
 
-    fn find_boundary_half_edge(&mut self, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
+    pub(crate) fn find_boundary_half_edge(
+        &mut self,
+        from: VertexId,
+        to: VertexId,
+    ) -> Option<HalfEdgeId> {
         let index = self.ensure_outgoing_index();
         find_boundary_half_edge_in_index(index, from, to)
     }
@@ -573,795 +576,9 @@ impl EditSession<'_> {
             );
         }
     }
-
-    /// Adds one interior polygon face loop from live vertex IDs.
-    ///
-    /// For each directed loop edge `from -> to`, behavior is:
-    /// - reuse an existing matching OUTSIDE half-edge when present,
-    /// - otherwise create a new interior half-edge and a new OUTSIDE twin.
-    ///
-    /// This supports edit operators that need to fill holes or create side-wall
-    /// strips while preserving transaction bookkeeping and deterministic dirty
-    /// summaries.
-    pub(crate) fn add_face_impl(
-        &mut self,
-        loop_vertices: &[VertexId],
-    ) -> Result<FaceId, AddFaceError> {
-        if loop_vertices.len() < 3 {
-            return Err(AddFaceError::LoopTooShort);
-        }
-        for &vertex in loop_vertices {
-            if self.mesh.vertices.get(vertex.as_id()).is_none() {
-                return Err(AddFaceError::VertexNotLive {
-                    vertex: vertex.index(),
-                });
-            }
-        }
-        for pair in loop_vertices.windows(2) {
-            if pair[0] == pair[1] {
-                return Err(AddFaceError::ZeroLengthEdge {
-                    from: pair[0].index(),
-                    to: pair[1].index(),
-                });
-            }
-        }
-        if loop_vertices.first() == loop_vertices.last() {
-            let first = loop_vertices[0];
-            return Err(AddFaceError::ZeroLengthEdge {
-                from: first.index(),
-                to: first.index(),
-            });
-        }
-        for i in 0..loop_vertices.len() {
-            let a = loop_vertices[i];
-            for &b in &loop_vertices[(i + 1)..] {
-                if a == b {
-                    return Err(AddFaceError::RepeatedVertex { vertex: a.index() });
-                }
-            }
-        }
-
-        let mut reuse_boundary = Vec::<Option<HalfEdgeId>>::with_capacity(loop_vertices.len());
-        for i in 0..loop_vertices.len() {
-            let from = loop_vertices[i];
-            let to = loop_vertices[(i + 1) % loop_vertices.len()];
-            let reuse = self.find_boundary_half_edge(from, to);
-            if reuse.is_none() && self.has_undirected_edge(from, to) {
-                return Err(AddFaceError::NonManifoldEdge {
-                    a: u32::min(from.index(), to.index()),
-                    b: u32::max(from.index(), to.index()),
-                });
-            }
-            reuse_boundary.push(reuse);
-        }
-
-        let degree =
-            u32::try_from(loop_vertices.len()).expect("face loop length should fit into u32");
-        let face = FaceId::from(self.mesh.faces.insert(crate::Face {
-            edge: HalfEdgeId::INVALID,
-            degree,
-        }));
-        let mut loop_half_edges = Vec::<HalfEdgeId>::with_capacity(loop_vertices.len());
-        for i in 0..loop_vertices.len() {
-            let from = loop_vertices[i];
-            let to = loop_vertices[(i + 1) % loop_vertices.len()];
-            if let Some(boundary) = reuse_boundary[i] {
-                self.mesh
-                    .half_edges
-                    .get_mut(boundary.as_id())
-                    .expect("preflight-validated boundary half-edge must be live")
-                    .face = face;
-                loop_half_edges.push(boundary);
-                self.mark_corner_dirty(boundary);
-                continue;
-            }
-
-            let interior = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-                to,
-                face,
-                next: HalfEdgeId::INVALID,
-                twin: HalfEdgeId::INVALID,
-            }));
-            let boundary = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-                to: from,
-                face: FaceId::OUTSIDE,
-                next: HalfEdgeId::INVALID,
-                twin: interior,
-            }));
-            self.mesh
-                .half_edges
-                .get_mut(interior.as_id())
-                .expect("new interior half-edge must be live")
-                .twin = boundary;
-            loop_half_edges.push(interior);
-            self.record_created_half_edge(interior);
-            self.record_created_half_edge(boundary);
-            self.mark_corner_dirty(interior);
-            self.mark_corner_dirty(boundary);
-        }
-
-        for i in 0..loop_half_edges.len() {
-            let current = loop_half_edges[i];
-            let next = loop_half_edges[(i + 1) % loop_half_edges.len()];
-            self.mesh
-                .half_edges
-                .get_mut(current.as_id())
-                .expect("new face loop half-edge must be live")
-                .next = next;
-        }
-        self.mesh
-            .faces
-            .get_mut(face.as_id())
-            .expect("new face must be live")
-            .edge = loop_half_edges[0];
-
-        stitch_outside_loops_for_vertices(self.mesh, loop_vertices);
-        self.mesh.attrs.sync_capacities(
-            self.mesh.vertices.slot_count(),
-            self.mesh.faces.slot_count(),
-            self.mesh.half_edges.slot_count(),
-        );
-
-        self.record_created_face(face);
-        self.mark_face_dirty(face);
-        for &vertex in loop_vertices {
-            self.mark_vertex_dirty(vertex);
-        }
-        for &corner in &loop_half_edges {
-            self.mark_corner_dirty(corner);
-            if let Some(twin) = self.mesh.twin(corner) {
-                self.mark_corner_dirty(twin);
-            }
-        }
-
-        self.invalidate_outgoing_index();
-        Ok(face)
-    }
-
-    /// Splits an undirected edge by inserting a new midpoint vertex.
-    ///
-    /// Topology update:
-    /// - original directed pair `(h, twin(h))` is replaced by
-    ///   `(h -> child_h)` and `(twin(h) -> child_twin)`,
-    /// - each adjacent face loop gains one corner,
-    /// - midpoint vertex is inserted and used by the new child half-edges.
-    ///
-    /// Attribute/default propagation in v0.1:
-    /// - vertex position follows [`PropagatePolicy::position`]
-    ///   (`Midpoint`/`WeightedMidpoint` currently both use midpoint),
-    /// - edge seam inherited to both child undirected edges when
-    ///   policy is [`EdgeAttrPropagation::Inherit`] or
-    ///   [`EdgeAttrPropagation::DecayOnSplit`], cleared for `Clear`,
-    /// - edge sharpness propagation is policy-dependent:
-    ///   - [`EdgeAttrPropagation::Inherit`]: preserve source value,
-    ///   - [`EdgeAttrPropagation::DecayOnSplit`]: decay by `1.0` on split
-    ///     (clamped to `0.0`),
-    ///   - [`EdgeAttrPropagation::Clear`]: reset to `0.0`,
-    /// - new corner UVs use midpoint interpolation when policy is
-    ///   [`UvPropagation::Midpoint`] and side-copy for `CopyFromSide`,
-    /// - face attributes are unchanged.
-    pub(crate) fn split_edge_impl(
-        &mut self,
-        half_edge: HalfEdgeId,
-        policy: &PropagatePolicy,
-    ) -> Result<VertexId, SplitEdgeError> {
-        let twin = self
-            .mesh
-            .twin(half_edge)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-        if self.mesh.half_edges.get(half_edge.as_id()).is_none()
-            || self.mesh.half_edges.get(twin.as_id()).is_none()
-        {
-            return Err(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            });
-        }
-
-        let from = self
-            .mesh
-            .from_vertex(half_edge)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-        let to = self
-            .mesh
-            .to_vertex(half_edge)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-        let h_next = self
-            .mesh
-            .next(half_edge)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-        let t_next = self
-            .mesh
-            .next(twin)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-
-        let from_pos = *self
-            .mesh
-            .vertex_position(from)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-        let to_pos = *self
-            .mesh
-            .vertex_position(to)
-            .ok_or(SplitEdgeError::HalfEdgeNotLive {
-                half_edge: half_edge.index(),
-            })?;
-        let midpoint = [
-            0.5 * (from_pos[0] + to_pos[0]),
-            0.5 * (from_pos[1] + to_pos[1]),
-            0.5 * (from_pos[2] + to_pos[2]),
-        ];
-
-        let new_vertex = self.add_vertex_impl(match policy.position {
-            PositionPropagation::Midpoint | PositionPropagation::WeightedMidpoint => midpoint,
-        });
-
-        let h_face = self.mesh.face(half_edge).expect("validated edge face");
-        let t_face = self.mesh.face(twin).expect("validated twin face");
-        let old_canonical_edge = core::cmp::min(half_edge, twin);
-
-        // Capture source corner UVs before rewiring. Corner UV is stored at the
-        // destination corner vertex per-face.
-        let old_uv_h = self.corner_uv(half_edge);
-        let old_uv_t = self.corner_uv(twin);
-        let uv_a_fh = corner_uv_for_face_to_vertex(self.mesh, h_face, from).unwrap_or([0.0, 0.0]);
-        let uv_b_ft = corner_uv_for_face_to_vertex(self.mesh, t_face, to).unwrap_or([0.0, 0.0]);
-
-        let child_h = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-            to,
-            face: h_face,
-            next: h_next,
-            twin,
-        }));
-        let child_t = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-            to: from,
-            face: t_face,
-            next: t_next,
-            twin: half_edge,
-        }));
-
-        self.mesh
-            .half_edges
-            .get_mut(half_edge.as_id())
-            .expect("validated half-edge")
-            .to = new_vertex;
-        self.mesh
-            .half_edges
-            .get_mut(half_edge.as_id())
-            .expect("validated half-edge")
-            .next = child_h;
-        self.mesh
-            .half_edges
-            .get_mut(half_edge.as_id())
-            .expect("validated half-edge")
-            .twin = child_t;
-
-        self.mesh
-            .half_edges
-            .get_mut(twin.as_id())
-            .expect("validated twin")
-            .to = new_vertex;
-        self.mesh
-            .half_edges
-            .get_mut(twin.as_id())
-            .expect("validated twin")
-            .next = child_t;
-        self.mesh
-            .half_edges
-            .get_mut(twin.as_id())
-            .expect("validated twin")
-            .twin = child_h;
-        self.mesh
-            .vertices
-            .get_mut(new_vertex.as_id())
-            .expect("new vertex must be live")
-            .out = child_h;
-        self.mesh.attrs.sync_capacities(
-            self.mesh.vertices.slot_count(),
-            self.mesh.faces.slot_count(),
-            self.mesh.half_edges.slot_count(),
-        );
-
-        self.record_created_half_edge(child_h);
-        self.record_created_half_edge(child_t);
-        self.mark_corner_dirty(half_edge);
-        self.mark_corner_dirty(twin);
-        self.mark_corner_dirty(child_h);
-        self.mark_corner_dirty(child_t);
-        self.mark_vertex_dirty(from);
-        self.mark_vertex_dirty(to);
-        self.mark_vertex_dirty(new_vertex);
-
-        // Propagate edge-domain authored tags from original undirected edge.
-        let edge_tags = capture_edge_tags(self.mesh, old_canonical_edge);
-        clear_edge_tags(self.mesh, old_canonical_edge);
-        propagate_split_edge_edge_attrs(self, half_edge, child_h, edge_tags, policy);
-
-        // Propagate corner UVs for new corners.
-        if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
-            propagate_split_edge_corner_uvs(
-                self,
-                half_edge,
-                twin,
-                child_h,
-                child_t,
-                SplitEdgeUvSources {
-                    old_uv_h,
-                    old_uv_t,
-                    uv_a_fh,
-                    uv_b_ft,
-                },
-                policy,
-            );
-        }
-
-        // Update cached degree for incident interior faces.
-        if h_face != FaceId::OUTSIDE {
-            if let Some(face) = self.mesh.faces.get_mut(h_face.as_id()) {
-                face.degree = face.degree.saturating_add(1);
-            }
-            self.mark_face_dirty(h_face);
-        }
-        if t_face != FaceId::OUTSIDE && t_face != h_face {
-            if let Some(face) = self.mesh.faces.get_mut(t_face.as_id()) {
-                face.degree = face.degree.saturating_add(1);
-            }
-            self.mark_face_dirty(t_face);
-        }
-
-        self.invalidate_outgoing_index();
-        Ok(new_vertex)
-    }
-
-    /// Splits one interior face by inserting a diagonal between two corners.
-    ///
-    /// `corner_a` and `corner_b` must be distinct, non-adjacent corners on
-    /// the same interior face loop.
-    ///
-    /// Propagation/default behavior in v0.1:
-    /// - new face inherits source face-region value,
-    /// - existing corner UVs are preserved,
-    /// - diagonal corner UVs follow [`PropagatePolicy::uv`] while preserving
-    ///   sparse missingness (missing sources stay missing),
-    /// - diagonal edge sharpness defaults to smooth for
-    ///   [`EdgeAttrPropagation::Inherit`] / [`EdgeAttrPropagation::Clear`],
-    ///   and only derives from nearby authored sharpness under
-    ///   [`EdgeAttrPropagation::DecayOnSplit`].
-    pub(crate) fn split_face_impl(
-        &mut self,
-        corner_a: CornerId,
-        corner_b: CornerId,
-        policy: &PropagatePolicy,
-    ) -> Result<FaceId, SplitFaceError> {
-        if corner_a == corner_b {
-            return Err(SplitFaceError::IdenticalCorners);
-        }
-        if self.mesh.half_edges.get(corner_a.as_id()).is_none() {
-            return Err(SplitFaceError::CornerNotLive {
-                corner: corner_a.index(),
-            });
-        }
-        if self.mesh.half_edges.get(corner_b.as_id()).is_none() {
-            return Err(SplitFaceError::CornerNotLive {
-                corner: corner_b.index(),
-            });
-        }
-        let face = self
-            .mesh
-            .face(corner_a)
-            .ok_or(SplitFaceError::CornerNotLive {
-                corner: corner_a.index(),
-            })?;
-        let face_b = self
-            .mesh
-            .face(corner_b)
-            .ok_or(SplitFaceError::CornerNotLive {
-                corner: corner_b.index(),
-            })?;
-        if face != face_b {
-            return Err(SplitFaceError::CornersNotOnSameFace);
-        }
-        if face == FaceId::OUTSIDE {
-            return Err(SplitFaceError::OutsideFaceNotAllowed);
-        }
-
-        let loop_edges = self.mesh.face_loop(face).collect::<Vec<_>>();
-        let degree = loop_edges.len();
-        let ia = loop_edges
-            .iter()
-            .position(|&corner| corner == corner_a)
-            .ok_or(SplitFaceError::CornersNotOnSameFace)?;
-        let ib = loop_edges
-            .iter()
-            .position(|&corner| corner == corner_b)
-            .ok_or(SplitFaceError::CornersNotOnSameFace)?;
-        let a_next_index = (ia + 1) % degree;
-        let b_next_index = (ib + 1) % degree;
-        if a_next_index == ib || b_next_index == ia {
-            return Err(SplitFaceError::AdjacentCorners);
-        }
-
-        let corner_a_next = loop_edges[a_next_index];
-        let corner_b_next = loop_edges[b_next_index];
-        let vertex_a = self
-            .mesh
-            .to_vertex(corner_a)
-            .expect("validated corner has destination vertex");
-        let vertex_b = self
-            .mesh
-            .to_vertex(corner_b)
-            .expect("validated corner has destination vertex");
-
-        // Ordered path from `corner_a_next` through `corner_b` (inclusive) becomes new face.
-        let mut new_face_path = Vec::<CornerId>::with_capacity(degree);
-        let mut cursor = corner_a_next;
-        for _ in 0..degree {
-            new_face_path.push(cursor);
-            if cursor == corner_b {
-                break;
-            }
-            cursor = self
-                .mesh
-                .next(cursor)
-                .expect("face loop should have valid next pointers");
-        }
-        debug_assert_eq!(
-            new_face_path.last().copied(),
-            Some(corner_b),
-            "face loop path should reach target corner"
-        );
-
-        let diagonal_a_b = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-            to: vertex_b,
-            face,
-            next: corner_b_next,
-            twin: HalfEdgeId::INVALID,
-        }));
-        let new_face = FaceId::from(self.mesh.faces.insert(crate::Face {
-            edge: corner_b,
-            degree: 0,
-        }));
-        let diagonal_b_a = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-            to: vertex_a,
-            face: new_face,
-            next: corner_a_next,
-            twin: diagonal_a_b,
-        }));
-        self.mesh
-            .half_edges
-            .get_mut(diagonal_a_b.as_id())
-            .expect("new diagonal half-edge must be live")
-            .twin = diagonal_b_a;
-
-        self.mesh
-            .half_edges
-            .get_mut(corner_a.as_id())
-            .expect("validated corner must be live")
-            .next = diagonal_a_b;
-        self.mesh
-            .half_edges
-            .get_mut(corner_b.as_id())
-            .expect("validated corner must be live")
-            .next = diagonal_b_a;
-
-        for &corner in &new_face_path {
-            self.mesh
-                .half_edges
-                .get_mut(corner.as_id())
-                .expect("validated loop corner must be live")
-                .face = new_face;
-        }
-        let new_face_path_len =
-            u32::try_from(new_face_path.len()).expect("face path length should fit u32");
-        let face_degree = u32::try_from(degree).expect("face degree should fit u32");
-        let new_face_degree = new_face_path_len + 1;
-        let old_face_degree = face_degree - new_face_path_len + 1;
-        {
-            let source_face = self
-                .mesh
-                .faces
-                .get_mut(face.as_id())
-                .expect("source face must be live");
-            source_face.edge = corner_a;
-            source_face.degree = old_face_degree;
-        }
-        self.mesh
-            .faces
-            .get_mut(new_face.as_id())
-            .expect("new face must be live")
-            .degree = new_face_degree;
-
-        if let Some(region_layer) = self.mesh.attrs_mut().dense_mut(attr::FACE_REGION) {
-            let region = region_layer.get(face.as_id()).copied().unwrap_or(0);
-            let _ = region_layer.set(new_face.as_id(), region);
-        }
-
-        if self.mesh.attrs().sparse(attr::CORNER_UV).is_some() {
-            let uv_a = self.corner_uv(corner_a);
-            let uv_b = self.corner_uv(corner_b);
-            propagate_split_face_diagonal_uvs(self, diagonal_a_b, diagonal_b_a, uv_a, uv_b, policy);
-        }
-
-        // v0.1 diagonal sharpness derives from the two existing directed
-        // edges that leave the split endpoints (`corner_a`, `corner_b`).
-        let source_sharp = self
-            .edge_sharpness(corner_a)
-            .unwrap_or(0.0)
-            .max(self.edge_sharpness(corner_b).unwrap_or(0.0));
-        let diagonal_sharp = split_face_diagonal_sharpness(source_sharp, policy);
-        if diagonal_sharp > 0.0 {
-            let _ = self.set_edge_sharpness_impl(diagonal_a_b, diagonal_sharp);
-        }
-
-        self.mesh.attrs.sync_capacities(
-            self.mesh.vertices.slot_count(),
-            self.mesh.faces.slot_count(),
-            self.mesh.half_edges.slot_count(),
-        );
-
-        self.record_created_face(new_face);
-        self.record_created_half_edge(diagonal_a_b);
-        self.record_created_half_edge(diagonal_b_a);
-        self.mark_face_dirty(face);
-        self.mark_face_dirty(new_face);
-        self.mark_corner_dirty(corner_a);
-        self.mark_corner_dirty(corner_b);
-        self.mark_corner_dirty(diagonal_a_b);
-        self.mark_corner_dirty(diagonal_b_a);
-        // Conservative dirty marking: include the full original loop to keep
-        // incremental consumers correct even when only face ownership changed.
-        for corner in loop_edges {
-            if let Some(to) = self.mesh.to_vertex(corner) {
-                self.mark_vertex_dirty(to);
-            }
-            self.mark_corner_dirty(corner);
-        }
-
-        self.invalidate_outgoing_index();
-        Ok(new_face)
-    }
-
-    /// Deletes interior faces from the mesh.
-    ///
-    /// `faces` must be canonical (sorted, deduplicated), contain only live
-    /// interior face IDs, and never include [`FaceId::OUTSIDE`].
-    ///
-    /// Note: transactions in Exedra are eager. This returns only precondition
-    /// errors before mutation begins. If internal boundary restitching cannot
-    /// produce a valid continuation, this function panics with diagnostics.
-    pub(crate) fn delete_faces_impl(
-        &mut self,
-        faces: &[FaceId],
-        policy: DeletePolicy,
-    ) -> Result<(), DeleteFacesError> {
-        if !is_canonical_face_set(faces) {
-            return Err(DeleteFacesError::NonCanonicalFaceSet);
-        }
-        for &face in faces {
-            if face == FaceId::OUTSIDE {
-                return Err(DeleteFacesError::OutsideFaceNotAllowed);
-            }
-            if self.mesh.faces.get(face.as_id()).is_none() {
-                return Err(DeleteFacesError::FaceNotLive { face: face.index() });
-            }
-        }
-        if faces.is_empty() {
-            return Ok(());
-        }
-
-        let mut dirty_faces = Vec::<FaceId>::new();
-        let mut dirty_vertices = Vec::<VertexId>::new();
-        let mut boundary_replacements = Vec::<HalfEdgeId>::new();
-        let mut deleted_half_edges = Vec::<HalfEdgeId>::new();
-
-        for &face in faces {
-            let loop_edges = self.mesh.face_loop(face).collect::<Vec<_>>();
-            for half_edge in loop_edges {
-                let twin = self
-                    .mesh
-                    .twin(half_edge)
-                    .expect("valid mesh must provide a twin for each half-edge");
-                let twin_face = self
-                    .mesh
-                    .face(twin)
-                    .expect("valid mesh must provide an owning face for each half-edge");
-                deleted_half_edges.push(half_edge);
-                if twin_face == FaceId::OUTSIDE {
-                    deleted_half_edges.push(twin);
-                } else if !contains_face(faces, twin_face) {
-                    boundary_replacements.push(twin);
-                    dirty_faces.push(twin_face);
-                }
-                collect_half_edge_vertices(self.mesh, half_edge, &mut dirty_vertices);
-            }
-        }
-        sort_dedup(&mut deleted_half_edges);
-        sort_dedup(&mut boundary_replacements);
-        sort_dedup(&mut dirty_faces);
-        sort_dedup(&mut dirty_vertices);
-        preflight_boundary_continuation(self.mesh, &deleted_half_edges, &boundary_replacements)?;
-
-        for &face in faces {
-            let removed = self.mesh.faces.remove(face.as_id());
-            debug_assert!(removed.is_some(), "validated face should remove");
-            self.record_deleted_face(face);
-        }
-        for half_edge in deleted_half_edges {
-            let removed = self.mesh.half_edges.remove(half_edge.as_id());
-            debug_assert!(removed.is_some(), "validated half-edge should remove");
-            self.record_deleted_half_edge(half_edge);
-            clear_deleted_corner_attrs(self.mesh, half_edge);
-        }
-
-        for twin in boundary_replacements {
-            let from = self
-                .mesh
-                .from_vertex(twin)
-                .expect("surviving interior half-edge must have an origin");
-            let boundary = HalfEdgeId::from(self.mesh.half_edges.insert(HalfEdge {
-                to: from,
-                face: FaceId::OUTSIDE,
-                next: HalfEdgeId::INVALID,
-                twin,
-            }));
-            self.mesh
-                .half_edges
-                .get_mut(twin.as_id())
-                .expect("surviving interior half-edge must be live")
-                .twin = boundary;
-            self.record_created_half_edge(boundary);
-            collect_half_edge_vertices(self.mesh, boundary, &mut dirty_vertices);
-        }
-        sort_dedup(&mut dirty_vertices);
-
-        stitch_outside_loops(self.mesh);
-
-        for face in dirty_faces {
-            self.mark_face_dirty(face);
-            let corners = self.mesh.face_loop(face).collect::<Vec<_>>();
-            for corner in corners {
-                self.mark_corner_dirty(corner);
-            }
-        }
-        let mut isolated = Vec::<VertexId>::new();
-        let use_global_index =
-            should_use_global_outgoing_index(dirty_vertices.len(), self.mesh.half_edges.len());
-        let outgoing_index = use_global_index.then(|| build_outgoing_index(self.mesh));
-        for &vertex in &dirty_vertices {
-            let new_out = outgoing_index
-                .as_deref()
-                .and_then(|index| find_outgoing_half_edge(index, vertex))
-                .or_else(|| find_outgoing_half_edge_linear_scan(self.mesh, vertex));
-            let Some(record) = self.mesh.vertices.get_mut(vertex.as_id()) else {
-                continue;
-            };
-            let previous = record.out;
-            record.out = new_out.unwrap_or(HalfEdgeId::INVALID);
-            if record.out != previous {
-                self.mark_vertex_dirty(vertex);
-            }
-            if new_out.is_none() {
-                isolated.push(vertex);
-            }
-        }
-        for vertex in dirty_vertices {
-            self.mark_vertex_dirty(vertex);
-        }
-
-        if policy == DeletePolicy::CleanupIsolated {
-            for vertex in isolated {
-                if self.mesh.vertices.remove(vertex.as_id()).is_some() {
-                    self.record_deleted_vertex(vertex);
-                }
-            }
-        }
-        self.invalidate_outgoing_index();
-        Ok(())
-    }
-
-    /// Deletes canonical undirected edges by deleting all incident interior faces.
-    ///
-    /// `edges` must be canonical (sorted, deduplicated) and contain only live
-    /// half-edge IDs where each ID is the canonical representative
-    /// (`min(edge, twin)`) of an undirected edge.
-    ///
-    /// Each selected edge contributes its interior incident face(s), and this
-    /// kernel delegates topology mutation through [`crate::op::delete_faces`].
-    pub(crate) fn delete_edges_impl(
-        &mut self,
-        edges: &[HalfEdgeId],
-        policy: DeletePolicy,
-    ) -> Result<(), DeleteEdgesError> {
-        let mut faces = Vec::<FaceId>::new();
-        let mut previous = None;
-
-        for &half_edge in edges {
-            if let Some(prev) = previous
-                && prev >= half_edge
-            {
-                return Err(DeleteEdgesError::NonCanonicalEdgeSet);
-            }
-            previous = Some(half_edge);
-
-            let twin = self
-                .mesh
-                .twin(half_edge)
-                .ok_or(DeleteEdgesError::HalfEdgeNotLive {
-                    half_edge: half_edge.index(),
-                })?;
-            if core::cmp::min(half_edge, twin) != half_edge {
-                return Err(DeleteEdgesError::NonCanonicalEdgeSet);
-            }
-
-            let face = self
-                .mesh
-                .face(half_edge)
-                .ok_or(DeleteEdgesError::HalfEdgeNotLive {
-                    half_edge: half_edge.index(),
-                })?;
-            let twin_face = self
-                .mesh
-                .face(twin)
-                .ok_or(DeleteEdgesError::HalfEdgeNotLive {
-                    half_edge: half_edge.index(),
-                })?;
-            if face != FaceId::OUTSIDE {
-                faces.push(face);
-            }
-            if twin_face != FaceId::OUTSIDE {
-                faces.push(twin_face);
-            }
-            if face == FaceId::OUTSIDE && twin_face == FaceId::OUTSIDE {
-                return Err(DeleteEdgesError::EdgeHasNoInteriorFace {
-                    half_edge: half_edge.index(),
-                });
-            }
-        }
-
-        sort_dedup(&mut faces);
-        crate::op::delete_faces(self, &faces, policy).map_err(DeleteEdgesError::FaceDeleteFailed)
-    }
-
-    pub(crate) fn delete_vertices_impl(
-        &mut self,
-        vertices: &[VertexId],
-    ) -> Result<(), DeleteVerticesError> {
-        if !is_canonical_vertex_set(vertices) {
-            return Err(DeleteVerticesError::NonCanonicalVertexSet);
-        }
-        for &vertex in vertices {
-            let Some(record) = self.mesh.vertices.get(vertex.as_id()) else {
-                return Err(DeleteVerticesError::VertexNotLive {
-                    vertex: vertex.index(),
-                });
-            };
-            if record.out != HalfEdgeId::INVALID || self.vertex_has_incident_half_edge(vertex) {
-                return Err(DeleteVerticesError::VertexNotIsolated {
-                    vertex: vertex.index(),
-                });
-            }
-        }
-        for &vertex in vertices {
-            let removed = self.mesh.vertices.remove(vertex.as_id());
-            debug_assert!(removed.is_some(), "validated vertex should remove");
-            self.record_deleted_vertex(vertex);
-        }
-        self.invalidate_outgoing_index();
-        Ok(())
-    }
 }
 
-fn sort_dedup<T: Ord>(values: &mut Vec<T>) {
+pub(crate) fn sort_dedup<T: Ord>(values: &mut Vec<T>) {
     values.sort_unstable();
     values.dedup();
 }
@@ -1375,19 +592,23 @@ where
     out.sort_unstable();
 }
 
-fn is_canonical_face_set(faces: &[FaceId]) -> bool {
+pub(crate) fn is_canonical_face_set(faces: &[FaceId]) -> bool {
     faces.windows(2).all(|pair| pair[0] < pair[1])
 }
 
-fn is_canonical_vertex_set(vertices: &[VertexId]) -> bool {
+pub(crate) fn is_canonical_vertex_set(vertices: &[VertexId]) -> bool {
     vertices.windows(2).all(|pair| pair[0] < pair[1])
 }
 
-fn contains_face(faces: &[FaceId], target: FaceId) -> bool {
+pub(crate) fn contains_face(faces: &[FaceId], target: FaceId) -> bool {
     faces.binary_search(&target).is_ok()
 }
 
-fn collect_half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId, out: &mut Vec<VertexId>) {
+pub(crate) fn collect_half_edge_vertices(
+    mesh: &Mesh,
+    half_edge: HalfEdgeId,
+    out: &mut Vec<VertexId>,
+) {
     if let Some((from, to)) = half_edge_vertices(mesh, half_edge) {
         out.push(from);
         out.push(to);
@@ -1453,7 +674,10 @@ fn build_outgoing_index(mesh: &Mesh) -> Vec<OutgoingAdj> {
     pairs
 }
 
-fn find_outgoing_half_edge_linear_scan(mesh: &Mesh, vertex: VertexId) -> Option<HalfEdgeId> {
+pub(crate) fn find_outgoing_half_edge_linear_scan(
+    mesh: &Mesh,
+    vertex: VertexId,
+) -> Option<HalfEdgeId> {
     mesh.half_edges.iter().find_map(|(id, _)| {
         let half_edge = HalfEdgeId::from(id);
         (half_edge_vertices(mesh, half_edge).is_some_and(|(from, _)| from == vertex))
@@ -1461,7 +685,10 @@ fn find_outgoing_half_edge_linear_scan(mesh: &Mesh, vertex: VertexId) -> Option<
     })
 }
 
-fn find_outgoing_half_edge(outgoing_index: &[OutgoingAdj], vertex: VertexId) -> Option<HalfEdgeId> {
+pub(crate) fn find_outgoing_half_edge(
+    outgoing_index: &[OutgoingAdj],
+    vertex: VertexId,
+) -> Option<HalfEdgeId> {
     let range = equal_range_in_outgoing(outgoing_index, vertex);
     outgoing_index.get(range.start).map(|entry| entry.half_edge)
 }
@@ -1475,7 +702,10 @@ fn equal_range_in_outgoing(
     lower..upper
 }
 
-fn should_use_global_outgoing_index(affected_vertices: usize, total_half_edges: usize) -> bool {
+pub(crate) fn should_use_global_outgoing_index(
+    affected_vertices: usize,
+    total_half_edges: usize,
+) -> bool {
     if affected_vertices == 0 || total_half_edges == 0 {
         return false;
     }
@@ -1485,7 +715,11 @@ fn should_use_global_outgoing_index(affected_vertices: usize, total_half_edges: 
     affected_vertices.saturating_mul(8) > total_half_edges
 }
 
-fn corner_uv_for_face_to_vertex(mesh: &Mesh, face: FaceId, vertex: VertexId) -> Option<[f32; 2]> {
+pub(crate) fn corner_uv_for_face_to_vertex(
+    mesh: &Mesh,
+    face: FaceId,
+    vertex: VertexId,
+) -> Option<[f32; 2]> {
     if face == FaceId::OUTSIDE {
         return None;
     }
@@ -1497,7 +731,7 @@ fn corner_uv_for_face_to_vertex(mesh: &Mesh, face: FaceId, vertex: VertexId) -> 
         .and_then(|layer| layer.get(corner.as_id()).copied())
 }
 
-fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
+pub(crate) fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
     if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
         let _ = layer.remove(half_edge.as_id());
     }
@@ -1509,7 +743,7 @@ fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
     }
 }
 
-fn preflight_boundary_continuation(
+pub(crate) fn preflight_boundary_continuation(
     mesh: &Mesh,
     deleted_half_edges: &[HalfEdgeId],
     boundary_replacements: &[HalfEdgeId],
@@ -1582,7 +816,7 @@ fn count_vertices(mut values: Vec<VertexId>) -> Vec<(VertexId, usize)> {
     counts
 }
 
-fn stitch_outside_loops(mesh: &mut Mesh) {
+pub(crate) fn stitch_outside_loops(mesh: &mut Mesh) {
     let boundary = mesh
         .half_edges
         .iter()
@@ -1631,7 +865,7 @@ fn stitch_outside_loops(mesh: &mut Mesh) {
     }
 }
 
-fn stitch_outside_loops_for_vertices(mesh: &mut Mesh, affected_vertices: &[VertexId]) {
+pub(crate) fn stitch_outside_loops_for_vertices(mesh: &mut Mesh, affected_vertices: &[VertexId]) {
     if affected_vertices.is_empty() {
         return;
     }

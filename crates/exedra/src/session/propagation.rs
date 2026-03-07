@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) fn capture_edge_tags(
+pub(crate) fn capture_edge_tags(
     mesh: &Mesh,
     canonical_edge: HalfEdgeId,
 ) -> (Option<bool>, Option<f32>) {
@@ -20,7 +20,7 @@ pub(super) fn capture_edge_tags(
     (seam, sharp)
 }
 
-pub(super) fn clear_edge_tags(mesh: &mut Mesh, canonical_edge: HalfEdgeId) {
+pub(crate) fn clear_edge_tags(mesh: &mut Mesh, canonical_edge: HalfEdgeId) {
     if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SEAM) {
         let _ = layer.remove(canonical_edge.as_id());
     }
@@ -29,7 +29,7 @@ pub(super) fn clear_edge_tags(mesh: &mut Mesh, canonical_edge: HalfEdgeId) {
     }
 }
 
-pub(super) fn propagate_split_edge_edge_attrs(
+pub(crate) fn propagate_split_edge_edge_attrs(
     session: &mut EditSession<'_>,
     parent: HalfEdgeId,
     child: HalfEdgeId,
@@ -68,14 +68,14 @@ pub(super) fn propagate_split_edge_edge_attrs(
     }
 }
 
-pub(super) struct SplitEdgeUvSources {
-    pub(super) old_uv_h: Option<[f32; 2]>,
-    pub(super) old_uv_t: Option<[f32; 2]>,
-    pub(super) uv_a_fh: [f32; 2],
-    pub(super) uv_b_ft: [f32; 2],
+pub(crate) struct SplitEdgeUvSources {
+    pub(crate) old_uv_h: Option<[f32; 2]>,
+    pub(crate) old_uv_t: Option<[f32; 2]>,
+    pub(crate) uv_a_fh: [f32; 2],
+    pub(crate) uv_b_ft: [f32; 2],
 }
 
-pub(super) fn propagate_split_edge_corner_uvs(
+pub(crate) fn propagate_split_edge_corner_uvs(
     session: &mut EditSession<'_>,
     half_edge: HalfEdgeId,
     twin: HalfEdgeId,
@@ -125,7 +125,7 @@ pub(super) fn propagate_split_edge_corner_uvs(
     let _ = session.set_corner_uv_impl(twin, t_uv_mid);
 }
 
-pub(super) fn propagate_split_face_diagonal_uvs(
+pub(crate) fn propagate_split_face_diagonal_uvs(
     session: &mut EditSession<'_>,
     diagonal_a_b: HalfEdgeId,
     diagonal_b_a: HalfEdgeId,
@@ -156,7 +156,7 @@ pub(super) fn propagate_split_face_diagonal_uvs(
     }
 }
 
-pub(super) fn split_face_diagonal_sharpness(source_sharp: f32, policy: &PropagatePolicy) -> f32 {
+pub(crate) fn split_face_diagonal_sharpness(source_sharp: f32, policy: &PropagatePolicy) -> f32 {
     match policy.edge_attr {
         EdgeAttrPropagation::Clear => 0.0,
         EdgeAttrPropagation::Inherit => 0.0,

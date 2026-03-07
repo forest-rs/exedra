@@ -1,6 +1,6 @@
 ---
 id: exe-clpr
-status: open
+status: closed
 deps: [exe-43xn]
 links: []
 created: 2026-03-07T15:14:25Z

@@ -10,6 +10,10 @@ impl EditSession<'_> {
         self.mesh
     }
 
+    pub(crate) fn mesh_mut(&mut self) -> &mut Mesh {
+        self.mesh
+    }
+
     pub(crate) fn add_vertex_impl(&mut self, position: [f32; 3]) -> VertexId {
         let vertex = self.mesh.add_vertex(position);
         self.created_vertices.push(vertex);
