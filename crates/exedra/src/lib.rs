@@ -16,6 +16,9 @@
 //! The intended engine surface is this crate root (`exedra::...`) via
 //! re-exported kernel types like [`Mesh`], [`EditSession`], [`MeshBuilder`],
 //! and attribute/key APIs.
+//! Construction lives on [`MeshBuilder`] and mesh constructors. Public mutation
+//! lives in [`op`]. [`EditSession`] is the transaction host used to apply those
+//! mutation functions and commit deterministic [`ChangeSet`] summaries.
 //!
 //! For deeper narrative docs, see [`manual`].
 //!

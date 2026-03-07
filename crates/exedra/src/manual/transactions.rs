@@ -24,6 +24,7 @@
 //! [`EditSession`](crate::EditSession) is the transaction host. The public kernel operation catalog
 //! lives in [`crate::op`], which defines explicit topology edits such as
 //! [`crate::op::add_face`], [`crate::op::split_edge`], and [`crate::op::delete_faces`].
+//! `EditSession` is not a second public mutation catalog.
 //!
 //! # Eager Semantics
 //!

@@ -49,5 +49,5 @@ hierarchy, runner layer, or command-object representation in Exedra.
   convenience surface for topology edits.
 - `EditSession` is the transaction host and internal plumbing seam, not a
   second public mutation catalog.
-- Future work may move more operation bodies from `session/*` into `op/*`, but
-  the public API shape is now the function-based catalog.
+- Topology operation bodies live in `op/*`; `session/*` retains bookkeeping,
+  cache invalidation, propagation helpers, and other mutation plumbing.

@@ -1,6 +1,6 @@
 ---
 id: exe-v3y7
-status: open
+status: closed
 deps: [exe-clpr]
 links: []
 created: 2026-03-07T15:14:31Z
