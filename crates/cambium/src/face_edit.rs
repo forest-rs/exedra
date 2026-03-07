@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
+use exedra::{CornerId, DeletePolicy, EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
 use exedra::op::AddFaceError;
 
 use crate::math::FloatExt;
@@ -19,26 +19,6 @@ use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpErrorKind,
     OpReport,
 };
-
-fn add_vertex(txn: &mut exedra::EditSession<'_>, position: [f32; 3]) -> VertexId {
-    op::add_vertex(txn, position)
-}
-
-fn set_face_region(txn: &mut exedra::EditSession<'_>, face: FaceId, region: u32) -> bool {
-    op::set_face_region(txn, face, region).is_ok()
-}
-
-fn set_corner_uv(txn: &mut exedra::EditSession<'_>, corner: exedra::CornerId, uv: [f32; 2]) {
-    let _ = op::set_corner_uv(txn, corner, uv);
-}
-
-fn set_edge_seam(txn: &mut exedra::EditSession<'_>, half_edge: HalfEdgeId, seam: bool) {
-    let _ = op::set_edge_seam(txn, half_edge, seam);
-}
-
-fn set_edge_sharpness(txn: &mut exedra::EditSession<'_>, half_edge: HalfEdgeId, sharpness: f32) {
-    let _ = op::set_edge_sharpness(txn, half_edge, sharpness);
-}
 
 /// Parameters for [`ExtrudeFaces`].
 #[derive(Clone, Debug, PartialEq)]
@@ -309,7 +289,7 @@ impl EditOperator for ExtrudeFaces {
                 position[1] + direction[1] * params.distance,
                 position[2] + direction[2] * params.distance,
             ];
-            cap_vertices.insert(vertex, add_vertex(txn, extruded));
+            cap_vertices.insert(vertex, op::add_vertex(txn, extruded));
         }
 
         if params.mode == ExtrudeMode::ShellOpen {
@@ -348,7 +328,7 @@ impl EditOperator for ExtrudeFaces {
                     ctx,
                     "extrude",
                 )?;
-                if !set_face_region(txn, wall, plan.region) {
+                if op::set_face_region(txn, wall, plan.region).is_err() {
                     return Err(op_error(
                         ctx,
                         OpErrorKind::InternalInvariantViolation,
@@ -400,7 +380,7 @@ impl EditOperator for ExtrudeFaces {
                     format!("extrude cap creation failed unexpectedly: {err}"),
                 )
             })?;
-            if !set_face_region(txn, top, plan.region) {
+            if op::set_face_region(txn, top, plan.region).is_err() {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -563,7 +543,7 @@ impl EditOperator for InsetFaces {
                 .expect("inset count should exist");
             let inv = 1.0 / (count as f32);
             let averaged = [sum[0] * inv, sum[1] * inv, sum[2] * inv];
-            inset_vertices.insert(vertex, add_vertex(txn, averaged));
+            inset_vertices.insert(vertex, op::add_vertex(txn, averaged));
         }
 
         let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
@@ -605,7 +585,7 @@ impl EditOperator for InsetFaces {
                     ctx,
                     "inset",
                 )?;
-                if !set_face_region(txn, frame, face_plan.region) {
+                if op::set_face_region(txn, frame, face_plan.region).is_err() {
                     return Err(op_error(
                         ctx,
                         OpErrorKind::InternalInvariantViolation,
@@ -657,7 +637,7 @@ impl EditOperator for InsetFaces {
                     format!("inset inner face creation failed unexpectedly: {err}"),
                 )
             })?;
-            if !set_face_region(txn, inner, face_plan.region) {
+            if op::set_face_region(txn, inner, face_plan.region).is_err() {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -1012,7 +992,7 @@ impl EditOperator for CutRectFace {
 
         let mut inner_vertices = Vec::with_capacity(4);
         for position in plan.inner_positions {
-            inner_vertices.push(add_vertex(txn, position));
+            inner_vertices.push(op::add_vertex(txn, position));
         }
         let inner_vertices: [VertexId; 4] = inner_vertices
             .try_into()
@@ -1044,7 +1024,7 @@ impl EditOperator for CutRectFace {
                 ctx,
                 "cut_rect",
             )?;
-            if !set_face_region(txn, frame_face, plan.region) {
+            if op::set_face_region(txn, frame_face, plan.region).is_err() {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::InternalInvariantViolation,
@@ -1077,7 +1057,7 @@ impl EditOperator for CutRectFace {
                 format!("cut_rect inner face creation failed unexpectedly: {err}"),
             )
         })?;
-        if !set_face_region(txn, inner_face, plan.region) {
+        if op::set_face_region(txn, inner_face, plan.region).is_err() {
             return Err(op_error(
                 ctx,
                 OpErrorKind::InternalInvariantViolation,
@@ -1516,7 +1496,7 @@ fn propagate_face_corner_uvs(
             .find_map(|(vertex, uv)| (*vertex == to_vertex).then_some(*uv))
             .flatten();
         if let Some(uv) = uv {
-            set_corner_uv(txn, corner, uv);
+            let _ = op::set_corner_uv(txn, corner, uv);
         }
     }
 }
@@ -1534,20 +1514,20 @@ fn propagate_edge_attrs_for_vertices(
     };
     match policy.edge_attr {
         EdgeAttrPropagation::Clear => {
-            set_edge_seam(txn, corner, false);
-            set_edge_sharpness(txn, corner, 0.0);
+            let _ = op::set_edge_seam(txn, corner, false);
+            let _ = op::set_edge_sharpness(txn, corner, 0.0);
         }
         EdgeAttrPropagation::Inherit => {
             let seam = source.seam.unwrap_or(false);
             let sharpness = source.sharpness.unwrap_or(0.0);
-            set_edge_seam(txn, corner, seam);
-            set_edge_sharpness(txn, corner, sharpness);
+            let _ = op::set_edge_seam(txn, corner, seam);
+            let _ = op::set_edge_sharpness(txn, corner, sharpness);
         }
         EdgeAttrPropagation::DecayOnSplit => {
             let seam = source.seam.unwrap_or(false);
             let sharpness = source.sharpness.map_or(0.0, |value| (value - 1.0).max(0.0));
-            set_edge_seam(txn, corner, seam);
-            set_edge_sharpness(txn, corner, sharpness);
+            let _ = op::set_edge_seam(txn, corner, seam);
+            let _ = op::set_edge_sharpness(txn, corner, sharpness);
         }
     }
 }
