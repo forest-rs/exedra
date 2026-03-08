@@ -11,8 +11,8 @@ use crate::{DiagCode, DiagLevel, Diagnostic, OpContext, OpError, OpErrorKind};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum FrameWinding {
-    UseReverseOuterEdge,
     UseForwardOuterEdge,
+    UseReverseOuterEdge,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -36,18 +36,18 @@ pub(crate) fn add_frame_face_with_orientation<S: exedra::ChangeSink>(
     ctx: &mut OpContext,
     op_name: &'static str,
 ) -> Result<FaceId, OpError> {
-    let reverse_outer = [next, current, current_inner, next_inner];
     let forward_outer = [current, next, next_inner, current_inner];
+    let reverse_outer = [next, current, current_inner, next_inner];
     match orientation.winding {
-        Some(FrameWinding::UseReverseOuterEdge) => {
-            op::add_face(txn, &reverse_outer).map_err(|err| frame_face_error(ctx, op_name, err))
-        }
         Some(FrameWinding::UseForwardOuterEdge) => {
             op::add_face(txn, &forward_outer).map_err(|err| frame_face_error(ctx, op_name, err))
         }
-        None => match op::add_face(txn, &reverse_outer) {
+        Some(FrameWinding::UseReverseOuterEdge) => {
+            op::add_face(txn, &reverse_outer).map_err(|err| frame_face_error(ctx, op_name, err))
+        }
+        None => match op::add_face(txn, &forward_outer) {
             Ok(face) => {
-                orientation.winding = Some(FrameWinding::UseReverseOuterEdge);
+                orientation.winding = Some(FrameWinding::UseForwardOuterEdge);
                 Ok(face)
             }
             Err(AddFaceError::NonManifoldEdge { .. }) => {
@@ -55,12 +55,12 @@ pub(crate) fn add_frame_face_with_orientation<S: exedra::ChangeSink>(
                     DiagLevel::Warn,
                     DiagCode::PreconditionFailed,
                     format!(
-                        "{op_name}: frame winding fallback to forward orientation due to boundary reuse direction"
+                        "{op_name}: frame winding fallback to reverse orientation due to boundary reuse direction"
                     ),
                 ));
-                let face = op::add_face(txn, &forward_outer)
+                let face = op::add_face(txn, &reverse_outer)
                     .map_err(|err| frame_face_error(ctx, op_name, err))?;
-                orientation.winding = Some(FrameWinding::UseForwardOuterEdge);
+                orientation.winding = Some(FrameWinding::UseReverseOuterEdge);
                 Ok(face)
             }
             Err(err) => Err(frame_face_error(ctx, op_name, err)),

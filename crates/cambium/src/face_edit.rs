@@ -1515,6 +1515,27 @@ mod tests {
         (mesh, face)
     }
 
+    fn face_normal(mesh: &Mesh, face: exedra::FaceId) -> [f32; 3] {
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        let mut sum = [0.0_f32, 0.0_f32, 0.0_f32];
+        for i in 0..corners.len() {
+            let a = mesh
+                .to_vertex(corners[i])
+                .and_then(|vertex| mesh.vertex_position(vertex))
+                .expect("corner position should exist");
+            let b = mesh
+                .to_vertex(corners[(i + 1) % corners.len()])
+                .and_then(|vertex| mesh.vertex_position(vertex))
+                .expect("corner position should exist");
+            sum[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            sum[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            sum[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        let len = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+        assert!(len > 0.0, "face normal should be non-degenerate");
+        [sum[0] / len, sum[1] / len, sum[2] / len]
+    }
+
     #[test]
     fn extrude_creates_cap_and_side_walls() {
         let (mut mesh, face) = quad_mesh();
@@ -1540,6 +1561,33 @@ mod tests {
         assert_eq!(result.output.wall_faces.len(), 4);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn extrude_preserves_source_face_normal_direction_on_cap() {
+        let (mut mesh, face) = quad_mesh();
+        let source_normal = face_normal(&mesh, face);
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                mode: ExtrudeMode::ShellOpen,
+                distance: 1.0,
+            },
+        )
+        .expect("extrude should succeed");
+        let cap = result.output.cap_faces[0];
+        let cap_normal = face_normal(&mesh, cap);
+        let dot = source_normal[0] * cap_normal[0]
+            + source_normal[1] * cap_normal[1]
+            + source_normal[2] * cap_normal[2];
+        assert!(
+            dot > 0.99,
+            "cap face normal should match source orientation"
+        );
     }
 
     #[test]
@@ -1742,6 +1790,32 @@ mod tests {
         assert_eq!(mesh.vertices().count(), 10);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn inset_preserves_source_face_normal_direction_on_quad() {
+        let (mut mesh, face) = quad_mesh();
+        let source_normal = face_normal(&mesh, face);
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![face],
+                factor: 0.25,
+            },
+        )
+        .expect("inset should succeed");
+        let inner = result.output.inner_faces[0];
+        let inner_normal = face_normal(&mesh, inner);
+        let dot = source_normal[0] * inner_normal[0]
+            + source_normal[1] * inner_normal[1]
+            + source_normal[2] * inner_normal[2];
+        assert!(
+            dot > 0.99,
+            "inner face normal should match source orientation"
+        );
     }
 
     #[test]
