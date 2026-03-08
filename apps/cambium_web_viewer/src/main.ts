@@ -15,10 +15,13 @@ import {
   LineSegments,
   Mesh,
   MeshStandardMaterial,
+  PCFSoftShadowMap,
+  PlaneGeometry,
   PerspectiveCamera,
   RepeatWrapping,
   SRGBColorSpace,
   Scene,
+  ShadowMaterial,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -101,11 +104,15 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
 renderer.outputColorSpace = SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = PCFSoftShadowMap;
 
 const ambient = new AmbientLight(0xffffff, 0.18);
 const hemisphere = new HemisphereLight(0xf7fbff, 0xc8d0dd, 0.72);
 const keyLight = new DirectionalLight(0xfff6eb, 1.75);
 keyLight.position.set(1.6, 2.1, 2.4);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
 const fillLight = new DirectionalLight(0xd9e8ff, 0.75);
 fillLight.position.set(-1.4, 0.8, 1.2);
 const rimLight = new DirectionalLight(0xffffff, 0.55);
@@ -178,9 +185,17 @@ const regionMaterial = new MeshStandardMaterial({
   side: DoubleSide,
   wireframe: false,
 });
+const clayMaterial = new MeshStandardMaterial({
+  color: new Color(0xd8b48a),
+  roughness: 0.92,
+  metalness: 0.0,
+  side: DoubleSide,
+  wireframe: false,
+});
 
 let currentMesh: Mesh<BufferGeometry, MeshStandardMaterial> | null = null;
 let currentTopologyLines: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
+let currentGround: Mesh<PlaneGeometry, ShadowMaterial> | null = null;
 let currentModelRoot: Group | null = null;
 let currentResponse: ScenarioResponse | null = null;
 
@@ -197,6 +212,11 @@ function clearCurrentModel(): void {
     currentTopologyLines.geometry.dispose();
     currentTopologyLines.material.dispose();
     currentTopologyLines = null;
+  }
+  if (currentGround) {
+    currentGround.geometry.dispose();
+    currentGround.material.dispose();
+    currentGround = null;
   }
 }
 
@@ -288,6 +308,25 @@ function fitCameraToMesh(mesh: Mesh<BufferGeometry, MeshStandardMaterial>): void
   controls.update();
 }
 
+function addGroundPlane(mesh: Mesh<BufferGeometry, MeshStandardMaterial>): void {
+  if (currentResponse?.scenario !== "poked_grid") {
+    return;
+  }
+  const box = new Box3().setFromObject(mesh);
+  const center = box.getCenter(new Vector3());
+  const size = box.getSize(new Vector3());
+  const planeSize = Math.max(size.x, size.y) * 1.8;
+  const plane = new Mesh(
+    new PlaneGeometry(planeSize, planeSize),
+    new ShadowMaterial({ color: 0x000000, opacity: 0.22 }),
+  );
+  plane.position.set(center.x, center.y, box.min.z - 0.05);
+  plane.receiveShadow = true;
+  plane.renderOrder = 0;
+  currentGround = plane;
+  currentModelRoot?.add(plane);
+}
+
 function formatDelta(value: number): string {
   if (value > 0) return `+${value}`;
   if (value < 0) return `${value}`;
@@ -327,13 +366,20 @@ function renderStep(stepIndex: number): void {
   clearCurrentModel();
 
   const geometry = stepToGeometry(step, regionColorsToggle.checked);
-  const material = regionColorsToggle.checked ? regionMaterial : shadedMaterial;
+  const material = regionColorsToggle.checked
+    ? regionMaterial
+    : currentResponse.scenario === "poked_grid"
+      ? clayMaterial
+      : shadedMaterial;
   material.wireframe = wireframeToggle.checked;
 
   currentMesh = new Mesh(geometry, material);
+  currentMesh.castShadow = true;
+  currentMesh.receiveShadow = true;
   currentMesh.renderOrder = 1;
   currentModelRoot = new Group();
   currentModelRoot.add(currentMesh);
+  addGroundPlane(currentMesh);
   if (step.mesh.topology_lines.length > 0 && topologyLinesToggle.checked) {
     const lineGeometry = new BufferGeometry();
     lineGeometry.setAttribute(

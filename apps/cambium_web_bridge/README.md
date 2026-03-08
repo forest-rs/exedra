@@ -6,6 +6,7 @@ returns step snapshots as JSON for browser demos.
 Current scenarios:
 - `boxy_hat`
 - `wall_openings`
+- `poked_grid`
 - `region_select_flow`
 - `uv_projection_gallery`
 - `topology_dissolve_repair` (planar grid strip showing split-edge, dissolve-vertex, then dissolve-edge simplification)

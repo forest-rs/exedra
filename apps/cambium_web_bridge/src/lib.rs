@@ -14,10 +14,10 @@ use cambium::{
     CutRectFace, CutRectFaceParams, CylinderAxis, DeleteFaces, DeleteFacesParams, DiagCode,
     DiagLevel, DissolveEdges, DissolveEdgesParams, DissolveVertices, DissolveVerticesParams,
     ExtractParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
-    Mesh, OperatorRunner, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
-    TagFaceRegionParams, UvBox, UvBoxParams, UvCylinder, UvCylinderParams, UvPlanar,
-    UvPlanarParams, UvPlane, UvScope, flood_fill_faces_by_region, mesh_signature,
-    select_faces_by_region,
+    Mesh, OperatorRunner, PokeFaces, PokeFacesParams, SolidifyFaces, SolidifyFacesParams,
+    SolidifyMode, TagFaceRegion, TagFaceRegionParams, UvBox, UvBoxParams, UvCylinder,
+    UvCylinderParams, UvPlanar, UvPlanarParams, UvPlane, UvScope, flood_fill_faces_by_region,
+    mesh_signature, select_faces_by_region,
 };
 use exedra::attr;
 use exedra::{ChangeSetBuilder, op};
@@ -126,6 +126,7 @@ pub fn list_scenarios_json() -> String {
         "stepped_tower",
         "pedestal",
         "wall_openings",
+        "poked_grid",
         "region_select_flow",
         "uv_projection_gallery",
         "topology_dissolve_repair",
@@ -159,6 +160,7 @@ fn run_scenario_impl(name: &str, options: &ScenarioOptions) -> Result<ScenarioRe
         "stepped_tower" => run_stepped_tower(options),
         "pedestal" => run_pedestal(options),
         "wall_openings" => run_wall_openings(options),
+        "poked_grid" => run_poked_grid(options),
         "region_select_flow" => run_region_select_flow(options),
         "uv_projection_gallery" => run_uv_projection_gallery(options),
         "topology_dissolve_repair" => run_topology_dissolve_repair(options),
@@ -1216,6 +1218,73 @@ fn run_topology_dissolve_repair(options: &ScenarioOptions) -> Result<ScenarioRes
     })
 }
 
+fn run_poked_grid(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
+    let mut mesh = exedra_primitives::grid(&GridParams {
+        size: [4.0, 3.0],
+        segments: [5, 5],
+        centered: true,
+    })
+    .mesh;
+    let mut steps = Vec::<StepSnapshot>::new();
+    let mut runner = OperatorRunner::new();
+
+    if options.include_initial {
+        steps.push(snapshot_from_mesh(
+            &mesh,
+            "initial",
+            None,
+            None,
+            StepStats::default(),
+            &[],
+        ));
+    }
+
+    let faces = mesh.faces().collect::<Vec<_>>();
+    if faces.len() < 25 {
+        return Err("poked_grid expected at least twenty-five grid faces".to_string());
+    }
+    for (label, face, height) in [
+        ("poke.face.upper_left", faces[6], 0.35_f32),
+        ("poke.face.center", faces[12], 0.7_f32),
+        ("poke.face.lower_right", faces[18], 0.45_f32),
+    ] {
+        let plan = runner
+            .compile(&mesh, &PokeFaces, &PokeFacesParams { faces: vec![face] })
+            .map_err(format_op_error)?;
+        let fingerprint = plan.fingerprint.value();
+        let result = runner
+            .apply_in_place(&mut mesh, &PokeFaces, &plan)
+            .map_err(format_op_error)?;
+        let center = result
+            .output
+            .center_vertices
+            .first()
+            .copied()
+            .ok_or("poked_grid poke produced no center vertex".to_string())?;
+        let position = mesh
+            .vertex_position(center)
+            .ok_or("poked_grid center vertex should stay live".to_string())?;
+        let raised = [position[0], position[1], position[2] + height];
+        let mut edit = mesh.edit();
+        op::set_vertex_position(&mut edit, center, raised)
+            .map_err(|err| format!("poked_grid center raise failed unexpectedly: {err}"))?;
+        let _: () = edit.finish();
+        steps.push(snapshot_from_report(
+            &mesh,
+            label,
+            "edit.face.poke + kernel.vertex.set_position",
+            fingerprint,
+            &result.report,
+            &runner,
+        ));
+    }
+
+    Ok(ScenarioResponse {
+        scenario: "poked_grid".to_string(),
+        steps,
+    })
+}
+
 fn run_primitive_gallery(_options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
     let mut steps = Vec::<StepSnapshot>::new();
     let quad_primitive = exedra_primitives::quad(&QuadParams::default());
@@ -1555,6 +1624,7 @@ mod tests {
         "stepped_tower",
         "pedestal",
         "wall_openings",
+        "poked_grid",
         "region_select_flow",
         "uv_projection_gallery",
         "topology_dissolve_repair",
@@ -1658,6 +1728,28 @@ mod tests {
                 "primitive.uv_sphere",
                 "primitive.icosphere",
             ]
+        );
+    }
+
+    #[test]
+    fn poked_grid_raises_center_vertices() {
+        let response =
+            run_scenario_impl("poked_grid", &ScenarioOptions::default()).expect("scenario runs");
+        assert_eq!(response.scenario, "poked_grid");
+        assert!(
+            response.steps.len() >= 4,
+            "poked_grid should include initial plus three poke steps"
+        );
+
+        let final_step = response.steps.last().expect("final step should exist");
+        let max_z = final_step.mesh.positions[2..]
+            .iter()
+            .step_by(3)
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max_z > 0.0,
+            "poked_grid should raise center vertices above the plane"
         );
     }
 }
