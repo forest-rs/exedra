@@ -4,7 +4,8 @@
 use alloc::vec::Vec;
 
 use crate::session::propagation::{
-    propagate_split_face_diagonal_uvs, split_face_diagonal_sharpness,
+    propagate_split_face_diagonal_normals, propagate_split_face_diagonal_uvs,
+    split_face_diagonal_sharpness,
 };
 use crate::{
     ChangeSink, CornerId, EditSession, FaceId, HalfEdge, HalfEdgeId, PropagatePolicy, attr,
@@ -170,6 +171,23 @@ pub fn split_face<S: ChangeSink>(
         let uv_a = session.corner_uv(corner_a);
         let uv_b = session.corner_uv(corner_b);
         propagate_split_face_diagonal_uvs(session, diagonal_a_b, diagonal_b_a, uv_a, uv_b, policy);
+    }
+    if session
+        .mesh()
+        .attrs()
+        .sparse(attr::CORNER_NORMAL_OVERRIDE)
+        .is_some()
+    {
+        let normal_a = session.corner_normal_override(corner_a);
+        let normal_b = session.corner_normal_override(corner_b);
+        propagate_split_face_diagonal_normals(
+            session,
+            diagonal_a_b,
+            diagonal_b_a,
+            normal_a,
+            normal_b,
+            policy,
+        );
     }
 
     let source_sharp = session

@@ -75,6 +75,53 @@ impl<S: ChangeSink> EditSession<'_, S> {
         updated
     }
 
+    /// Returns the authored corner normal override for `corner`, when present.
+    #[must_use]
+    pub fn corner_normal_override(&self, corner: CornerId) -> Option<[f32; 3]> {
+        self.mesh
+            .attrs()
+            .sparse(attr::CORNER_NORMAL_OVERRIDE)
+            .and_then(|layer| layer.get(corner.as_id()).copied())
+    }
+
+    pub(crate) fn set_corner_normal_override_impl(
+        &mut self,
+        corner: CornerId,
+        normal: Option<[f32; 3]>,
+    ) -> bool {
+        if self.mesh.half_edges.get(corner.as_id()).is_none() {
+            return false;
+        }
+        if self
+            .mesh
+            .attrs()
+            .sparse(attr::CORNER_NORMAL_OVERRIDE)
+            .is_none()
+        {
+            let _ = self
+                .mesh
+                .attrs_mut()
+                .define_sparse(attr::CORNER_NORMAL_OVERRIDE);
+        }
+        let updated = self
+            .mesh
+            .attrs_mut()
+            .sparse_mut(attr::CORNER_NORMAL_OVERRIDE)
+            .is_some_and(|layer| {
+                match normal {
+                    Some(value) => layer.set(corner.as_id(), value),
+                    None => {
+                        let _ = layer.remove(corner.as_id());
+                    }
+                }
+                true
+            });
+        if updated {
+            self.sink.mark_corner_dirty(corner);
+        }
+        updated
+    }
+
     /// Returns explicit seam state for an undirected edge.
     #[must_use]
     pub fn edge_seam(&self, half_edge: HalfEdgeId) -> Option<bool> {

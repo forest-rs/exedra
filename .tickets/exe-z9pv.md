@@ -1,7 +1,7 @@
 ---
 id: exe-z9pv
 title: Custom corner normal override layer
-status: open
+status: closed
 deps: [exe-o4iu]
 links: []
 created: 2026-03-03T05:38:14Z

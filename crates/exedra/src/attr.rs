@@ -15,6 +15,10 @@ pub const VERTEX_POSITION: AttrKey<[f32; 3]> = AttrKey::new(Domain::Vertex, "ver
 /// Optional corner UV coordinates.
 pub const CORNER_UV: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.uv");
 
+/// Optional authored corner normal overrides.
+pub const CORNER_NORMAL_OVERRIDE: AttrKey<[f32; 3]> =
+    AttrKey::new(Domain::HalfEdge, "corner.normal_override");
+
 /// Optional explicit edge seam tag.
 ///
 /// Stored sparsely on canonical half-edge IDs (one per undirected edge).

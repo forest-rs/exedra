@@ -1020,8 +1020,27 @@ pub(crate) fn corner_uv_for_face_to_vertex(
         .and_then(|layer| layer.get(corner.as_id()).copied())
 }
 
+pub(crate) fn corner_normal_override_for_face_to_vertex(
+    mesh: &Mesh,
+    face: FaceId,
+    vertex: VertexId,
+) -> Option<[f32; 3]> {
+    if face == FaceId::OUTSIDE {
+        return None;
+    }
+    let corner = mesh
+        .face_loop(face)
+        .find(|&candidate| mesh.to_vertex(candidate) == Some(vertex))?;
+    mesh.attrs()
+        .sparse(attr::CORNER_NORMAL_OVERRIDE)
+        .and_then(|layer| layer.get(corner.as_id()).copied())
+}
+
 pub(crate) fn clear_deleted_corner_attrs(mesh: &mut Mesh, half_edge: HalfEdgeId) {
     if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::CORNER_UV) {
+        let _ = layer.remove(half_edge.as_id());
+    }
+    if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::CORNER_NORMAL_OVERRIDE) {
         let _ = layer.remove(half_edge.as_id());
     }
     if let Some(layer) = mesh.attrs_mut().sparse_mut(attr::EDGE_SEAM) {

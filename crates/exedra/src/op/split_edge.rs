@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::PositionPropagation;
-use crate::session::corner_uv_for_face_to_vertex;
 use crate::session::propagation::{
-    SplitEdgeUvSources, capture_edge_tags, clear_edge_tags, propagate_split_edge_corner_uvs,
+    SplitEdgeNormalSources, SplitEdgeUvSources, capture_edge_tags, clear_edge_tags,
+    propagate_split_edge_corner_normals, propagate_split_edge_corner_uvs,
     propagate_split_edge_edge_attrs,
 };
+use crate::session::{corner_normal_override_for_face_to_vertex, corner_uv_for_face_to_vertex};
 use crate::{
     ChangeSink, EditSession, FaceId, HalfEdge, HalfEdgeId, PropagatePolicy, VertexId, attr,
 };
@@ -89,6 +90,10 @@ pub fn split_edge<S: ChangeSink>(
     let old_uv_t = session.corner_uv(twin);
     let uv_a_fh = corner_uv_for_face_to_vertex(session.mesh(), h_face, from).unwrap_or([0.0, 0.0]);
     let uv_b_ft = corner_uv_for_face_to_vertex(session.mesh(), t_face, to).unwrap_or([0.0, 0.0]);
+    let old_normal_h = session.corner_normal_override(half_edge);
+    let old_normal_t = session.corner_normal_override(twin);
+    let normal_a_fh = corner_normal_override_for_face_to_vertex(session.mesh(), h_face, from);
+    let normal_b_ft = corner_normal_override_for_face_to_vertex(session.mesh(), t_face, to);
 
     let child_h = HalfEdgeId::from(session.mesh_mut().half_edges.insert(HalfEdge {
         to,
@@ -163,6 +168,27 @@ pub fn split_edge<S: ChangeSink>(
                 old_uv_t,
                 uv_a_fh,
                 uv_b_ft,
+            },
+            policy,
+        );
+    }
+    if session
+        .mesh()
+        .attrs()
+        .sparse(attr::CORNER_NORMAL_OVERRIDE)
+        .is_some()
+    {
+        propagate_split_edge_corner_normals(
+            session,
+            half_edge,
+            twin,
+            child_h,
+            child_t,
+            SplitEdgeNormalSources {
+                old_normal_h,
+                old_normal_t,
+                normal_a_fh,
+                normal_b_ft,
             },
             policy,
         );

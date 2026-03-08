@@ -75,6 +75,13 @@ pub(crate) struct SplitEdgeUvSources {
     pub(crate) uv_b_ft: [f32; 2],
 }
 
+pub(crate) struct SplitEdgeNormalSources {
+    pub(crate) old_normal_h: Option<[f32; 3]>,
+    pub(crate) old_normal_t: Option<[f32; 3]>,
+    pub(crate) normal_a_fh: Option<[f32; 3]>,
+    pub(crate) normal_b_ft: Option<[f32; 3]>,
+}
+
 pub(crate) fn propagate_split_edge_corner_uvs(
     session: &mut EditSession<'_, impl ChangeSink>,
     half_edge: HalfEdgeId,
@@ -125,6 +132,38 @@ pub(crate) fn propagate_split_edge_corner_uvs(
     let _ = session.set_corner_uv_impl(twin, t_uv_mid);
 }
 
+pub(crate) fn propagate_split_edge_corner_normals(
+    session: &mut EditSession<'_, impl ChangeSink>,
+    half_edge: HalfEdgeId,
+    twin: HalfEdgeId,
+    child_h: HalfEdgeId,
+    child_t: HalfEdgeId,
+    sources: SplitEdgeNormalSources,
+    policy: &PropagatePolicy,
+) {
+    let SplitEdgeNormalSources {
+        old_normal_h,
+        old_normal_t,
+        normal_a_fh,
+        normal_b_ft,
+    } = sources;
+    let _ = session.set_corner_normal_override_impl(child_h, old_normal_h);
+    let _ = session.set_corner_normal_override_impl(child_t, old_normal_t);
+
+    let h_mid = match policy.normal_override {
+        NormalOverridePropagation::Clear => None,
+        NormalOverridePropagation::CopyFromSide => old_normal_h,
+        NormalOverridePropagation::Average => average_optional_vec3(normal_a_fh, old_normal_h),
+    };
+    let t_mid = match policy.normal_override {
+        NormalOverridePropagation::Clear => None,
+        NormalOverridePropagation::CopyFromSide => old_normal_t,
+        NormalOverridePropagation::Average => average_optional_vec3(normal_b_ft, old_normal_t),
+    };
+    let _ = session.set_corner_normal_override_impl(half_edge, h_mid);
+    let _ = session.set_corner_normal_override_impl(twin, t_mid);
+}
+
 pub(crate) fn propagate_split_face_diagonal_uvs(
     session: &mut EditSession<'_, impl ChangeSink>,
     diagonal_a_b: HalfEdgeId,
@@ -156,10 +195,43 @@ pub(crate) fn propagate_split_face_diagonal_uvs(
     }
 }
 
+pub(crate) fn propagate_split_face_diagonal_normals(
+    session: &mut EditSession<'_, impl ChangeSink>,
+    diagonal_a_b: HalfEdgeId,
+    diagonal_b_a: HalfEdgeId,
+    normal_a: Option<[f32; 3]>,
+    normal_b: Option<[f32; 3]>,
+    policy: &PropagatePolicy,
+) {
+    let normal_diag = match policy.normal_override {
+        NormalOverridePropagation::Clear => None,
+        NormalOverridePropagation::CopyFromSide => normal_b,
+        NormalOverridePropagation::Average => average_optional_vec3(normal_a, normal_b),
+    };
+    let normal_twin = match policy.normal_override {
+        NormalOverridePropagation::Clear => None,
+        NormalOverridePropagation::CopyFromSide => normal_a,
+        NormalOverridePropagation::Average => normal_diag,
+    };
+    let _ = session.set_corner_normal_override_impl(diagonal_a_b, normal_diag);
+    let _ = session.set_corner_normal_override_impl(diagonal_b_a, normal_twin);
+}
+
 pub(crate) fn split_face_diagonal_sharpness(source_sharp: f32, policy: &PropagatePolicy) -> f32 {
     match policy.edge_attr {
         EdgeAttrPropagation::Clear => 0.0,
         EdgeAttrPropagation::Inherit => 0.0,
         EdgeAttrPropagation::DecayOnSplit => (source_sharp - 1.0).max(0.0),
+    }
+}
+
+fn average_optional_vec3(a: Option<[f32; 3]>, b: Option<[f32; 3]>) -> Option<[f32; 3]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            0.5 * (a[0] + b[0]),
+            0.5 * (a[1] + b[1]),
+            0.5 * (a[2] + b[2]),
+        ]),
+        _ => None,
     }
 }

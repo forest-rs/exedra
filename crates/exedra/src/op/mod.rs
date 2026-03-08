@@ -58,6 +58,7 @@ mod delete_faces;
 mod delete_vertices;
 mod dissolve_edges;
 mod dissolve_vertices;
+mod set_corner_normal_override;
 mod set_corner_uv;
 mod set_edge_seam;
 mod set_edge_sharpness;
@@ -77,6 +78,7 @@ pub use delete_faces::delete_faces;
 pub use delete_vertices::delete_vertices;
 pub use dissolve_edges::dissolve_edges;
 pub use dissolve_vertices::dissolve_vertices;
+pub use set_corner_normal_override::{SetCornerNormalOverrideError, set_corner_normal_override};
 pub use set_corner_uv::{SetCornerUvError, set_corner_uv};
 pub use set_edge_seam::{SetEdgeSeamError, set_edge_seam};
 pub use set_edge_sharpness::{SetEdgeSharpnessError, set_edge_sharpness};
@@ -291,6 +293,8 @@ mod tests {
         op::set_face_region(&mut session, face, 7).expect("region write should succeed");
         op::set_corner_uv(&mut session, corner, [0.25, 0.75])
             .expect("corner uv write should succeed");
+        op::set_corner_normal_override(&mut session, corner, Some([0.0, 0.0, 1.0]))
+            .expect("corner normal override should succeed");
         op::set_edge_seam(&mut session, corner, true).expect("edge seam should succeed");
         op::set_edge_sharpness(&mut session, corner, 2.5).expect("edge sharpness should succeed");
         let _ = session.finish();
@@ -304,6 +308,12 @@ mod tests {
         );
         assert_eq!(mesh.edge_seam(corner), Some(true));
         assert_eq!(mesh.edge_sharpness(corner), Some(2.5));
+        assert_eq!(
+            mesh.attrs()
+                .sparse(crate::attr::CORNER_NORMAL_OVERRIDE)
+                .and_then(|l| l.get(corner.as_id())),
+            Some(&[0.0, 0.0, 1.0])
+        );
     }
 
     #[test]

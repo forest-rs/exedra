@@ -632,6 +632,15 @@ mod tests {
     }
 
     #[test]
+    fn corner_normal_override_builtin_key_has_expected_shape() {
+        assert_eq!(attr::CORNER_NORMAL_OVERRIDE.domain(), Domain::HalfEdge);
+        assert_eq!(
+            attr::CORNER_NORMAL_OVERRIDE.name(),
+            "corner.normal_override"
+        );
+    }
+
+    #[test]
     fn edge_seam_builtin_key_has_expected_shape() {
         assert_eq!(attr::EDGE_SEAM.domain(), Domain::HalfEdge);
         assert_eq!(attr::EDGE_SEAM.name(), "edge.seam");
