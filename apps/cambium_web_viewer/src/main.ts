@@ -91,6 +91,7 @@ const wireframeToggle = document.getElementById("wireframe") as HTMLInputElement
 const regionColorsToggle = document.getElementById("region-colors") as HTMLInputElement;
 const topologyLinesToggle = document.getElementById("topology-lines") as HTMLInputElement;
 const normalDebugToggle = document.getElementById("normal-debug") as HTMLInputElement;
+const normalLinesToggle = document.getElementById("normal-lines") as HTMLInputElement;
 const viewport = document.getElementById("viewport") as HTMLDivElement;
 
 const scene = new Scene();
@@ -201,6 +202,7 @@ const normalDebugMaterial = new MeshNormalMaterial({
 
 let currentMesh: Mesh<BufferGeometry, MeshStandardMaterial> | null = null;
 let currentTopologyLines: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
+let currentNormalLines: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
 let currentGround: Mesh<PlaneGeometry, ShadowMaterial> | null = null;
 let currentModelRoot: Group | null = null;
 let currentResponse: ScenarioResponse | null = null;
@@ -218,6 +220,11 @@ function clearCurrentModel(): void {
     currentTopologyLines.geometry.dispose();
     currentTopologyLines.material.dispose();
     currentTopologyLines = null;
+  }
+  if (currentNormalLines) {
+    currentNormalLines.geometry.dispose();
+    currentNormalLines.material.dispose();
+    currentNormalLines = null;
   }
   if (currentGround) {
     currentGround.geometry.dispose();
@@ -342,6 +349,47 @@ function formatDelta(value: number): string {
   return "0";
 }
 
+function buildNormalLines(geometry: BufferGeometry): LineSegments<BufferGeometry, LineBasicMaterial> | null {
+  const positions = geometry.getAttribute("position");
+  const normals = geometry.getAttribute("normal");
+  if (!positions || !normals || positions.count !== normals.count) {
+    return null;
+  }
+  if (!geometry.boundingBox) {
+    geometry.computeBoundingBox();
+  }
+  const diag = geometry.boundingBox?.getSize(new Vector3()).length() ?? 1.0;
+  const scale = Math.max(diag * 0.025, 0.02);
+  const segments = new Float32Array(positions.count * 6);
+  for (let i = 0; i < positions.count; i += 1) {
+    const px = positions.getX(i);
+    const py = positions.getY(i);
+    const pz = positions.getZ(i);
+    const nx = normals.getX(i);
+    const ny = normals.getY(i);
+    const nz = normals.getZ(i);
+    const base = i * 6;
+    segments[base] = px;
+    segments[base + 1] = py;
+    segments[base + 2] = pz;
+    segments[base + 3] = px + nx * scale;
+    segments[base + 4] = py + ny * scale;
+    segments[base + 5] = pz + nz * scale;
+  }
+  const lineGeometry = new BufferGeometry();
+  lineGeometry.setAttribute("position", new Float32BufferAttribute(segments, 3));
+  const lineMaterial = new LineBasicMaterial({
+    color: 0x111111,
+    transparent: true,
+    opacity: 0.9,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const lines = new LineSegments(lineGeometry, lineMaterial);
+  lines.renderOrder = 3;
+  return lines;
+}
+
 function updatePanel(step: StepSnapshot, index: number, total: number): void {
   stepLabel.textContent = `Step ${index + 1}/${total}: ${step.label}`;
   operatorLabel.textContent = `Operator: ${step.operator ?? "none"}`;
@@ -407,6 +455,12 @@ function renderStep(stepIndex: number): void {
     currentTopologyLines = new LineSegments(lineGeometry, lineMaterial);
     currentTopologyLines.renderOrder = 2;
     currentModelRoot.add(currentTopologyLines);
+  }
+  if (normalLinesToggle.checked) {
+    currentNormalLines = buildNormalLines(geometry);
+    if (currentNormalLines) {
+      currentModelRoot.add(currentNormalLines);
+    }
   }
   scene.add(currentModelRoot);
   fitCameraToMesh(currentMesh);
@@ -490,6 +544,9 @@ async function bootstrap(): Promise<void> {
     renderStep(Number.parseInt(stepSlider.value, 10) || 0);
   });
   normalDebugToggle.addEventListener("change", () => {
+    renderStep(Number.parseInt(stepSlider.value, 10) || 0);
+  });
+  normalLinesToggle.addEventListener("change", () => {
     renderStep(Number.parseInt(stepSlider.value, 10) || 0);
   });
 
