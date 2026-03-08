@@ -68,7 +68,8 @@
 //! - you want to express a deterministic user-facing chain,
 //! - one step's output selection should feed the next step,
 //! - the flow reads more clearly as `select -> extrude -> inset` or
-//!   `select -> cut_rect -> delete_faces`.
+//!   `select -> cut_rect -> delete_faces` or
+//!   `select -> bake_face_normals -> clear_corner_normals`.
 //!
 //! `MeshEdit` is a workflow convenience layer; it does not replace
 //! [`EditOperator`](crate::EditOperator) as the implementation surface.
@@ -88,6 +89,17 @@
 //! - `Inherit` preserves sharpness,
 //! - `DecayOnSplit` applies subdivision-style decay,
 //! - `Clear` resets to `0.0`.
+//!
+//! # Corner Normal Overrides
+//!
+//! Exedra exposes derived normals plus authored corner overrides. Cambium's
+//! first normal-editing slice is face-scoped:
+//! - [`ClearCornerNormals`](crate::ClearCornerNormals) clears authored overrides
+//!   so extraction falls back to derived normals,
+//! - [`BakeFaceNormals`](crate::BakeFaceNormals) writes flat face normals into
+//!   selected face corners,
+//! - [`BakeDerivedNormals`](crate::BakeDerivedNormals) freezes the current
+//!   derived corner normals as authored overrides.
 //!
 //! # Face-Edit Winding Contract
 //!

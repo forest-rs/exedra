@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`], [`ClearCornerNormals`], [`BakeFaceNormals`], [`BakeDerivedNormals`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -116,6 +116,7 @@ mod sharp;
 pub mod manual;
 mod math;
 mod mesh_edit;
+mod normal_edit;
 #[cfg(test)]
 mod test_support;
 mod timing;
@@ -143,7 +144,7 @@ pub use runner::{OpResult, OperatorRunner, PreviewResult};
 // Shared mesh/kernel types re-exported from Exedra.
 pub use exedra::{
     BuildParams, CornerId, DeletePolicy, ExtractParams, FaceId, HalfEdgeId, Mesh, MeshBuilder,
-    TriMesh, VertexId,
+    NormalParams, NormalWeightMode, NormalsSource, TriMesh, VertexId,
 };
 
 // Policies and selection surface.
@@ -178,6 +179,11 @@ pub use face_edit::{
     InsetFacesParams, InsetFacesPlan, PokeFaces, PokeFacesOutput, PokeFacesParams, PokeFacesPlan,
     SolidifyFaces, SolidifyFacesOutput, SolidifyFacesParams, SolidifyMode,
 };
+pub use normal_edit::{
+    BakeDerivedNormals, BakeDerivedNormalsParams, BakeDerivedNormalsPlan, BakeFaceNormals,
+    BakeFaceNormalsParams, BakeFaceNormalsPlan, ClearCornerNormals, ClearCornerNormalsParams,
+    ClearCornerNormalsPlan, NormalFacesOutput,
+};
 pub use region::{
     EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection,
     SelectBoundaryEdgeLoop, SelectBoundaryEdgeLoopParams, TagFaceRegion, TagFaceRegionParams,
@@ -195,10 +201,11 @@ mod naming_tests {
     use alloc::collections::BTreeSet;
 
     use super::{
-        CutRectFace, DeleteEdges, DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices,
-        EditOperator, ExtrudeFaces, InsetFaces, InspectBounds, InspectSelectionSummary,
-        MarkEdgeSeam, MarkEdgeSharp, PokeFaces, SelectBoundaryEdgeLoop, SolidifyFaces,
-        TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
+        BakeDerivedNormals, BakeFaceNormals, ClearCornerNormals, CutRectFace, DeleteEdges,
+        DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices, EditOperator, ExtrudeFaces,
+        InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp, PokeFaces,
+        SelectBoundaryEdgeLoop, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder, UvPlanar,
+        ValidateMesh,
     };
 
     #[test]
@@ -219,6 +226,9 @@ mod naming_tests {
             ValidateMesh.name(),
             MarkEdgeSeam.name(),
             MarkEdgeSharp.name(),
+            ClearCornerNormals.name(),
+            BakeFaceNormals.name(),
+            BakeDerivedNormals.name(),
             TagFaceRegion.name(),
             SelectBoundaryEdgeLoop.name(),
             UvPlanar.name(),

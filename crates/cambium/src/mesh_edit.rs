@@ -10,10 +10,15 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
+use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh, NormalParams};
 
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
+use crate::{
+    BakeDerivedNormals, BakeDerivedNormalsParams, BakeDerivedNormalsPlan, BakeFaceNormals,
+    BakeFaceNormalsParams, BakeFaceNormalsPlan, ClearCornerNormals, ClearCornerNormalsParams,
+    ClearCornerNormalsPlan, NormalFacesOutput,
+};
 use crate::{
     CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, PokeFaces, PokeFacesOutput,
     PokeFacesParams, PokeFacesPlan, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
@@ -68,6 +73,11 @@ enum MeshEditStep {
     MarkSharp {
         sharp: f32,
     },
+    ClearCornerNormals,
+    BakeFaceNormals,
+    BakeDerivedNormals {
+        normal_params: NormalParams,
+    },
     DeleteFaces {
         policy: DeletePolicy,
     },
@@ -113,6 +123,12 @@ pub enum MeshEditStepPlan {
     MarkSeam(EditPlan<MarkEdgeSeamParams>),
     /// Compiled `mark.edge.sharp` plan.
     MarkSharp(EditPlan<MarkEdgeSharpParams>),
+    /// Compiled `edit.normal.clear` plan.
+    ClearCornerNormals(EditPlan<ClearCornerNormalsPlan>),
+    /// Compiled `edit.normal.face` plan.
+    BakeFaceNormals(EditPlan<BakeFaceNormalsPlan>),
+    /// Compiled `edit.normal.average` plan.
+    BakeDerivedNormals(EditPlan<BakeDerivedNormalsPlan>),
     /// Compiled `edit.delete.faces` plan.
     DeleteFaces(EditPlan<DeleteFacesPlan>),
     /// Compiled `edit.delete.edges` plan.
@@ -314,6 +330,8 @@ pub struct MeshEditPreview {
 /// - `solidify` selects `cap_faces`,
 /// - `cut_rect` selects `inner_faces`,
 /// - `tag` keeps selected faces,
+/// - `clear_corner_normals` / `bake_face_normals` / `bake_derived_normals`
+///   keep selected faces,
 /// - `mark_seam` / `mark_sharp` keep selected edges,
 /// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection,
 /// - `dissolve_edges` selects merged faces.
@@ -462,6 +480,28 @@ impl MeshEdit {
     #[must_use]
     pub fn mark_sharp(mut self, sharp: f32) -> Self {
         self.steps.push(MeshEditStep::MarkSharp { sharp });
+        self
+    }
+
+    /// Clears authored corner normal overrides on the current selected faces.
+    #[must_use]
+    pub fn clear_corner_normals(mut self) -> Self {
+        self.steps.push(MeshEditStep::ClearCornerNormals);
+        self
+    }
+
+    /// Bakes one flat face normal into every selected face corner.
+    #[must_use]
+    pub fn bake_face_normals(mut self) -> Self {
+        self.steps.push(MeshEditStep::BakeFaceNormals);
+        self
+    }
+
+    /// Bakes current derived corner normals into authored overrides.
+    #[must_use]
+    pub fn bake_derived_normals(mut self, normal_params: NormalParams) -> Self {
+        self.steps
+            .push(MeshEditStep::BakeDerivedNormals { normal_params });
         self
     }
 
@@ -664,6 +704,43 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output);
                     compiled_steps.push(MeshEditStepPlan::MarkSharp(plan));
                 }
+                MeshEditStep::ClearCornerNormals => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.normal.clear")?;
+                    let params = ClearCornerNormalsParams {
+                        faces: current_faces,
+                    };
+                    let op = ClearCornerNormals;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.faces);
+                    compiled_steps.push(MeshEditStepPlan::ClearCornerNormals(plan));
+                }
+                MeshEditStep::BakeFaceNormals => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.normal.face")?;
+                    let params = BakeFaceNormalsParams {
+                        faces: current_faces,
+                    };
+                    let op = BakeFaceNormals;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.faces);
+                    compiled_steps.push(MeshEditStepPlan::BakeFaceNormals(plan));
+                }
+                MeshEditStep::BakeDerivedNormals { normal_params } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.normal.average")?;
+                    let params = BakeDerivedNormalsParams {
+                        faces: current_faces,
+                        normal_params,
+                    };
+                    let op = BakeDerivedNormals;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.faces);
+                    compiled_steps.push(MeshEditStepPlan::BakeDerivedNormals(plan));
+                }
                 MeshEditStep::DeleteFaces { policy } => {
                     let current_faces =
                         require_face_selection(&current_selection, "edit.delete.faces")?;
@@ -862,6 +939,39 @@ impl MeshEdit {
                     current_selection = Selection::from(output);
                     reports.push(report);
                 }
+                MeshEditStepPlan::ClearCornerNormals(compiled) => {
+                    let op = ClearCornerNormals;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: NormalFacesOutput { faces },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(faces);
+                    reports.push(report);
+                }
+                MeshEditStepPlan::BakeFaceNormals(compiled) => {
+                    let op = BakeFaceNormals;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: NormalFacesOutput { faces },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(faces);
+                    reports.push(report);
+                }
+                MeshEditStepPlan::BakeDerivedNormals(compiled) => {
+                    let op = BakeDerivedNormals;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: NormalFacesOutput { faces },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::DeleteFaces(compiled) => {
                     let op = DeleteFaces;
                     let PreviewResult {
@@ -1008,6 +1118,24 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output);
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::ClearCornerNormals(compiled) => {
+                    let op = ClearCornerNormals;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.faces);
+                    reports.push(result.report);
+                }
+                MeshEditStepPlan::BakeFaceNormals(compiled) => {
+                    let op = BakeFaceNormals;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.faces);
+                    reports.push(result.report);
+                }
+                MeshEditStepPlan::BakeDerivedNormals(compiled) => {
+                    let op = BakeDerivedNormals;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::DeleteFaces(compiled) => {
                     let op = DeleteFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -1117,6 +1245,18 @@ fn mesh_edit_fingerprint(
                 hasher.write_u64(plan.fingerprint.value());
             }
             MeshEditStepPlan::MarkSharp(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::ClearCornerNormals(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::BakeFaceNormals(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::BakeDerivedNormals(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -1244,6 +1384,7 @@ mod tests {
 
     use super::MeshEdit;
     use crate::{
+        BakeFaceNormals, BakeFaceNormalsParams, ClearCornerNormals, ClearCornerNormalsParams,
         CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, DissolveEdges,
         DissolveEdgesParams, DissolveVertices, DissolveVerticesParams, ExtrudeFaces,
         ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
@@ -1450,6 +1591,48 @@ mod tests {
             flow_result.selection,
             Selection::from(direct.output.fan_faces)
         );
+    }
+
+    #[test]
+    fn mesh_edit_bake_face_normals_then_clear_matches_manual_sequence() {
+        let (mesh, face) = one_quad_mesh();
+
+        let flow = MeshEdit::new()
+            .select_faces(vec![face])
+            .bake_face_normals()
+            .clear_corner_normals();
+
+        let mut fluent_runner = OperatorRunner::new();
+        let mut fluent_mesh = mesh.clone();
+        let fluent = flow
+            .apply(&mut fluent_runner, &mut fluent_mesh)
+            .expect("fluent normal workflow should succeed");
+
+        let mut direct_runner = OperatorRunner::new();
+        let mut direct_mesh = mesh.clone();
+        let bake_plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &BakeFaceNormals,
+                &BakeFaceNormalsParams { faces: vec![face] },
+            )
+            .expect("bake compile should succeed");
+        let _ = direct_runner
+            .apply_in_place(&mut direct_mesh, &BakeFaceNormals, &bake_plan)
+            .expect("bake should succeed");
+        let clear_plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &ClearCornerNormals,
+                &ClearCornerNormalsParams { faces: vec![face] },
+            )
+            .expect("clear compile should succeed");
+        let _ = direct_runner
+            .apply_in_place(&mut direct_mesh, &ClearCornerNormals, &clear_plan)
+            .expect("clear should succeed");
+
+        assert_eq!(mesh_signature(&fluent_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(fluent.selection, Selection::from(vec![face]));
     }
 
     #[test]

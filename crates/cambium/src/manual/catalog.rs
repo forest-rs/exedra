@@ -68,6 +68,11 @@
 //! | `edit.face.poke` | [`PokeFaces`](crate::PokeFaces) | [`PokeFacesParams`](crate::PokeFacesParams) | [`PokeFacesOutput`](crate::PokeFacesOutput) | Replaces each selected face with a triangle fan around one new center vertex. |
 //! | `edit.face.solidify` | [`SolidifyFaces`](crate::SolidifyFaces) | [`SolidifyFacesParams`](crate::SolidifyFacesParams) (`mode`: [`SolidifyMode`](crate::SolidifyMode)) | [`SolidifyFacesOutput`](crate::SolidifyFacesOutput) | Explicit shell-thickness operation over selected faces. |
 //!
+//! Additional normal-editing operators:
+//! - `edit.normal.clear`: [`ClearCornerNormals`](crate::ClearCornerNormals)
+//! - `edit.normal.face`: [`BakeFaceNormals`](crate::BakeFaceNormals)
+//! - `edit.normal.average`: [`BakeDerivedNormals`](crate::BakeDerivedNormals)
+//!
 //! # Fluent Chains
 //!
 //! For user-facing multi-step modeling flows, prefer [`MeshEdit`](crate::MeshEdit)
