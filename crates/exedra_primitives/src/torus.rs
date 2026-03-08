@@ -84,7 +84,7 @@ pub fn torus(params: &TorusParams) -> Primitive {
             let c = common::usize_to_u32(next_i * minor + next_j);
             let d = common::usize_to_u32(i * minor + next_j);
             builder
-                .add_face(&[a, b, c, d])
+                .add_face(&[a, d, c, b])
                 .expect("torus quad should be valid");
         }
     }
@@ -199,6 +199,38 @@ mod tests {
         assert_eq!(tri_a.positions, tri_b.positions);
         assert_eq!(a.face_region, b.face_region);
         assert_eq!(a.selections, b.selections);
+    }
+
+    #[test]
+    fn torus_default_extracted_normals_point_outward() {
+        let primitive = torus(&TorusParams {
+            major_radius: 1.0,
+            minor_radius: 0.25,
+            major_segments: 12,
+            minor_segments: 8,
+        });
+        let (tri, _) = primitive.mesh.to_trimesh(&ExtractParams::default());
+        let pos = tri.positions[0];
+        let normal = tri.normals[0];
+        let major_len = (pos[0] * pos[0] + pos[2] * pos[2]).sqrt();
+        let center = [pos[0] / major_len, 0.0, pos[2] / major_len];
+        let expected = [pos[0] - center[0], pos[1] - center[1], pos[2] - center[2]];
+        let expected_len =
+            (expected[0] * expected[0] + expected[1] * expected[1] + expected[2] * expected[2])
+                .sqrt();
+        let expected = [
+            expected[0] / expected_len,
+            expected[1] / expected_len,
+            expected[2] / expected_len,
+        ];
+        let dot = normal[0] * expected[0] + normal[1] * expected[1] + normal[2] * expected[2];
+        assert!(
+            dot > 0.95,
+            "torus normal should point outward: normal {:?}, expected {:?}, dot {}",
+            normal,
+            expected,
+            dot
+        );
     }
 
     #[test]
