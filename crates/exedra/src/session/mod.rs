@@ -477,6 +477,74 @@ impl fmt::Display for DeleteVerticesError {
 
 impl core::error::Error for DeleteVerticesError {}
 
+/// Structured edge-dissolve error from [`crate::op::dissolve_edges`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DissolveEdgesError {
+    /// Input edge list must be sorted, deduplicated, and canonicalized.
+    NonCanonicalEdgeSet,
+    /// Half-edge ID is stale/dead or has no live twin.
+    HalfEdgeNotLive {
+        /// Stale half-edge index.
+        half_edge: u32,
+    },
+    /// Boundary edges cannot be dissolved into a merged face.
+    BoundaryEdgeNotDissolvable {
+        /// Half-edge index.
+        half_edge: u32,
+    },
+    /// Multiple selected edges touch the same source face.
+    OverlappingEdgeSet,
+    /// The merged perimeter would be too short to form a face.
+    MergedLoopTooShort {
+        /// Half-edge index.
+        half_edge: u32,
+    },
+    /// The merged perimeter repeats a vertex and cannot form one simple face.
+    MergedLoopRepeatedVertex {
+        /// Half-edge index.
+        half_edge: u32,
+        /// Repeated vertex index.
+        vertex: u32,
+    },
+    /// Source-face deletion failed.
+    FaceDeleteFailed(DeleteFacesError),
+    /// Recreating the merged face failed.
+    FaceCreateFailed(AddFaceError),
+}
+
+impl fmt::Display for DissolveEdgesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonCanonicalEdgeSet => f.write_str(
+                "edge set must be sorted, deduplicated, and use canonical undirected edge IDs",
+            ),
+            Self::HalfEdgeNotLive { half_edge } => {
+                write!(f, "half-edge is not live or has no live twin: {half_edge}")
+            }
+            Self::BoundaryEdgeNotDissolvable { half_edge } => {
+                write!(f, "boundary edge cannot be dissolved: {half_edge}")
+            }
+            Self::OverlappingEdgeSet => {
+                f.write_str("dissolve edge set must not contain edges that share a source face")
+            }
+            Self::MergedLoopTooShort { half_edge } => {
+                write!(
+                    f,
+                    "dissolving edge would not leave a valid face loop: {half_edge}"
+                )
+            }
+            Self::MergedLoopRepeatedVertex { half_edge, vertex } => write!(
+                f,
+                "dissolving edge {half_edge} would create a repeated-vertex face loop at vertex {vertex}"
+            ),
+            Self::FaceDeleteFailed(err) => write!(f, "failed to delete source faces: {err}"),
+            Self::FaceCreateFailed(err) => write!(f, "failed to create merged face: {err}"),
+        }
+    }
+}
+
+impl core::error::Error for DissolveEdgesError {}
+
 /// Structured edge-split error from [`crate::op::split_edge`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitEdgeError {
@@ -1125,6 +1193,10 @@ mod tests {
             edges: &[HalfEdgeId],
             policy: DeletePolicy,
         ) -> Result<(), DeleteEdgesError>;
+        fn dissolve_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+        ) -> Result<Vec<FaceId>, DissolveEdgesError>;
         fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError>;
     }
 
@@ -1139,6 +1211,8 @@ mod tests {
             edges: &[HalfEdgeId],
             policy: DeletePolicy,
         ) -> Result<ChangeSet, DeleteEdgesError>;
+        fn dissolve_edges(&mut self, edges: &[HalfEdgeId])
+        -> Result<ChangeSet, DissolveEdgesError>;
         fn delete_vertices(
             &mut self,
             vertices: &[VertexId],
@@ -1227,6 +1301,13 @@ mod tests {
             op::delete_edges(self, edges, policy)
         }
 
+        fn dissolve_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+        ) -> Result<Vec<FaceId>, DissolveEdgesError> {
+            op::dissolve_edges(self, edges)
+        }
+
         fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError> {
             op::delete_vertices(self, vertices)
         }
@@ -1250,6 +1331,15 @@ mod tests {
         ) -> Result<ChangeSet, DeleteEdgesError> {
             let mut txn = self.edit_with(ChangeSetBuilder::new());
             op::delete_edges(&mut txn, edges, policy)?;
+            Ok(txn.finish())
+        }
+
+        fn dissolve_edges(
+            &mut self,
+            edges: &[HalfEdgeId],
+        ) -> Result<ChangeSet, DissolveEdgesError> {
+            let mut txn = self.edit_with(ChangeSetBuilder::new());
+            let _ = op::dissolve_edges(&mut txn, edges)?;
             Ok(txn.finish())
         }
 
@@ -2380,6 +2470,75 @@ mod tests {
         assert_eq!(changes.deleted_faces.len(), 3);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn dissolve_edges_single_interior_edge_merges_faces() {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edges(&mesh)
+            .first()
+            .copied()
+            .expect("strip should have interior edge");
+        let changes = mesh
+            .dissolve_edges(&[edge])
+            .expect("interior edge dissolve should succeed");
+        assert_eq!(mesh.faces().count(), 1);
+        assert_eq!(
+            mesh.face_loop(mesh.faces().next().expect("merged face"))
+                .count(),
+            4
+        );
+        assert_eq!(changes.deleted_faces.len(), 2);
+        assert_eq!(changes.created_faces.len(), 1);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn dissolve_edges_session_entry_returns_created_face() {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edges(&mesh)
+            .first()
+            .copied()
+            .expect("strip should have interior edge");
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        let created = txn
+            .dissolve_edges(&[edge])
+            .expect("session dissolve should succeed");
+        let changes = txn.finish();
+        assert_eq!(created.len(), 1);
+        assert_eq!(changes.created_faces, created);
+    }
+
+    #[test]
+    fn dissolve_edges_rejects_boundary_edge() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("triangle mesh should build");
+        let edge = canonical_boundary_edge(&mesh);
+        let err = mesh
+            .dissolve_edges(&[edge])
+            .expect_err("boundary dissolve should fail");
+        assert_eq!(
+            err,
+            DissolveEdgesError::BoundaryEdgeNotDissolvable {
+                half_edge: edge.index()
+            }
+        );
+    }
+
+    #[test]
+    fn dissolve_edges_rejects_overlapping_edge_set() {
+        let mut mesh = three_tri_strip_mesh();
+        let edges = canonical_interior_edges(&mesh);
+        assert_eq!(edges.len(), 2);
+        let err = mesh
+            .dissolve_edges(&edges)
+            .expect_err("overlapping dissolve set should fail");
+        assert_eq!(err, DissolveEdgesError::OverlappingEdgeSet);
     }
 
     #[test]
