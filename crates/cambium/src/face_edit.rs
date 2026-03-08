@@ -602,7 +602,12 @@ impl EditOperator for ExtrudeFaces {
                     next,
                     current_cap,
                     next_cap,
-                    params.mode == ExtrudeMode::KeepSource,
+                    params.mode == ExtrudeMode::KeepSource
+                        || txn
+                            .mesh()
+                            .twin(boundary.edge)
+                            .and_then(|twin| txn.mesh().face(twin))
+                            .is_some_and(|face| face != FaceId::OUTSIDE),
                     true,
                 );
                 let uv_current = plan.vertex_uvs[boundary.edge_index];
@@ -710,7 +715,8 @@ impl EditOperator for ExtrudeFaces {
 ///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear.
 ///
 /// v0.1 default shading semantics:
-/// - inset remains smooth by default; it does not mark frame boundaries sharp.
+/// - the inset inner perimeter is marked sharp by default,
+/// - inset columns/outer frame edges remain smooth by default.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct InsetFaces;
 
@@ -857,6 +863,16 @@ impl EditOperator for InsetFaces {
                     face_plan.edge_attrs[boundary.edge_index],
                     &ctx.policy.propagate,
                 );
+                mark_frame_feature_edges_sharp(
+                    txn,
+                    frame,
+                    current,
+                    next,
+                    current_inset,
+                    next_inset,
+                    false,
+                    true,
+                );
                 let uv_current = face_plan.vertex_uvs[boundary.edge_index];
                 let uv_next =
                     face_plan.vertex_uvs[(boundary.edge_index + 1) % face_plan.vertex_uvs.len()];
@@ -903,6 +919,7 @@ impl EditOperator for InsetFaces {
                     face_plan.edge_attrs[i],
                     &ctx.policy.propagate,
                 );
+                set_face_edge_sharpness_for_vertices(txn, inner, current_inset, next_inset, 1.0);
             }
             let inset_uv_map = inner_loop
                 .iter()
@@ -2284,6 +2301,51 @@ mod tests {
     }
 
     #[test]
+    fn inset_then_shell_extrude_marks_step_boundary_sharp() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let inset = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![face],
+                factor: 0.25,
+            },
+        )
+        .expect("inset should succeed");
+        let extrude = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: inset.output.inner_faces.clone(),
+                mode: ExtrudeMode::ShellOpen,
+                distance: 0.5,
+            },
+        )
+        .expect("extrude should succeed");
+
+        for wall in &extrude.output.wall_faces {
+            let edges = wall_edge_sharpness_classes(&mesh, *wall);
+            let horizontal = edges
+                .iter()
+                .filter(|(from, to, _)| (from[2] - to[2]).abs() < 1e-5)
+                .collect::<Vec<_>>();
+            let vertical = edges
+                .iter()
+                .filter(|(from, to, _)| (from[2] - to[2]).abs() >= 1e-5)
+                .collect::<Vec<_>>();
+            assert_eq!(horizontal.len(), 2);
+            assert_eq!(vertical.len(), 2);
+            assert_eq!(horizontal[0].2, 1.0);
+            assert_eq!(horizontal[1].2, 1.0);
+            assert_eq!(vertical[0].2, 0.0);
+            assert_eq!(vertical[1].2, 0.0);
+        }
+    }
+
+    #[test]
     fn inset_clear_policy_resets_generated_edge_tags() {
         let (mut mesh, face) = quad_mesh();
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
@@ -2313,20 +2375,49 @@ mod tests {
         )
         .expect("inset should succeed");
 
-        for generated_face in result
-            .output
-            .inner_faces
-            .iter()
-            .copied()
-            .chain(result.output.frame_faces.iter().copied())
-        {
-            for corner in mesh.face_loop(generated_face) {
+        let inner = result.output.inner_faces[0];
+        for corner in mesh.face_loop(inner) {
+            assert_eq!(mesh.edge_seam(corner), Some(false));
+            assert_eq!(mesh.edge_sharpness(corner), Some(1.0));
+        }
+        for frame in &result.output.frame_faces {
+            let edges = wall_edge_sharpness_classes(&mesh, *frame);
+            let sharp_count = edges
+                .iter()
+                .filter(|(_, _, sharpness)| (*sharpness - 1.0).abs() < 1e-5)
+                .count();
+            let smooth_count = edges
+                .iter()
+                .filter(|(_, _, sharpness)| sharpness.abs() < 1e-5)
+                .count();
+            assert_eq!(sharp_count, 1);
+            assert_eq!(smooth_count, 3);
+            for corner in mesh.face_loop(*frame) {
                 assert_eq!(mesh.edge_seam(corner), Some(false));
-                assert_eq!(mesh.edge_sharpness(corner), Some(0.0));
             }
         }
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn inset_marks_inner_perimeter_sharp_by_default() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &InsetFaces,
+            &InsetFacesParams {
+                faces: vec![face],
+                factor: 0.3,
+            },
+        )
+        .expect("inset should succeed");
+        let inner = result.output.inner_faces[0];
+        for corner in mesh.face_loop(inner) {
+            assert_eq!(mesh.edge_sharpness(corner), Some(1.0));
+        }
     }
 
     #[test]
@@ -2380,6 +2471,68 @@ mod tests {
         for corner in mesh.face_loop(inner) {
             assert_eq!(mesh.edge_sharpness(corner), Some(1.0));
         }
+    }
+
+    #[test]
+    fn wall_opening_then_solidify_keeps_opening_side_boundaries_hard() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 3.0, 0.0],
+                [0.0, 3.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("wall build should succeed");
+        let face = mesh.faces().next().expect("wall face should exist");
+        let mut runner = OperatorRunner::new();
+        let cut = commit(
+            &mut runner,
+            &mut mesh,
+            &CutRectFace,
+            &CutRectFaceParams {
+                face,
+                frame_origin: [0.0, 0.0, 0.0],
+                frame_u: [2.0, 0.0, 0.0],
+                frame_v: [0.0, 3.0, 0.0],
+                rect_min: [0.25, 0.2],
+                rect_max: [0.75, 0.8],
+            },
+        )
+        .expect("cut_rect should succeed");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteFaces,
+            &DeleteFacesParams {
+                faces: cut.output.inner_faces.clone(),
+                policy: exedra::DeletePolicy::KeepIsolated,
+            },
+        )
+        .expect("delete inner face should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let solidify = commit(
+            &mut runner,
+            &mut mesh,
+            &SolidifyFaces,
+            &SolidifyFacesParams {
+                faces,
+                mode: SolidifyMode::KeepSource,
+                thickness: 0.15,
+            },
+        )
+        .expect("solidify should succeed");
+
+        assert!(
+            solidify.output.wall_faces.iter().any(|wall| {
+                wall_edge_sharpness_classes(&mesh, *wall)
+                    .iter()
+                    .filter(|(from, to, _)| (from[2] - to[2]).abs() < 1e-5)
+                    .all(|(_, _, sharpness)| (*sharpness - 1.0).abs() < 1e-5)
+            }),
+            "opening side walls should have hard horizontal feature edges"
+        );
     }
 
     #[test]
