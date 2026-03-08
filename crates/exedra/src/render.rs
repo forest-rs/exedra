@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use crate::attributes::SparseLayer;
-use crate::{CornerId, FaceId, Mesh, VertexId, attr};
+use crate::{CornerId, FaceId, Mesh, NormalParams, NormalsSource, VertexId, attr};
 
 /// Triangle mesh suitable for GPU upload.
 ///
@@ -25,9 +25,7 @@ pub struct TriMesh {
     pub positions: Vec<[f32; 3]>,
     /// Render-vertex UVs.
     pub uvs: Vec<[f32; 2]>,
-    /// Render-vertex normals (placeholder in v0.1).
-    ///
-    /// v0.1 always emits one zero normal per render vertex.
+    /// Render-vertex normals.
     pub normals: Vec<[f32; 3]>,
 }
 
@@ -45,25 +43,36 @@ pub enum ExtractMode {
 ///
 /// In v0.1, [`ExtractMode::Incremental`] behaves as full rebuild.
 ///
+/// `normals` selects whether extraction uses derived geometry normals,
+/// authored corner overrides, or a hybrid of both.
+///
 /// # Example
 /// ```rust
-/// use exedra::{ExtractMode, ExtractParams};
+/// use exedra::{ExtractMode, ExtractParams, NormalsSource};
 ///
 /// let params = ExtractParams {
 ///     mode: ExtractMode::FullRebuild,
+///     normals: NormalsSource::Derived,
+///     normal_params: Default::default(),
 /// };
 /// assert_eq!(params.mode, ExtractMode::FullRebuild);
 /// ```
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ExtractParams {
     /// Extraction mode.
     pub mode: ExtractMode,
+    /// Normal source policy used for emitted render vertices.
+    pub normals: NormalsSource,
+    /// Parameters used when deriving geometry normals.
+    pub normal_params: NormalParams,
 }
 
 impl Default for ExtractParams {
     fn default() -> Self {
         Self {
             mode: ExtractMode::FullRebuild,
+            normals: NormalsSource::Derived,
+            normal_params: NormalParams::default(),
         }
     }
 }
@@ -77,12 +86,17 @@ pub struct ExtractStats {
     pub render_vertex_count: u64,
     /// Number of seam-driven render-vertex splits.
     pub split_count: u64,
+    /// Number of UV-driven render-vertex splits.
+    pub uv_split_count: u64,
+    /// Number of normal-driven render-vertex splits.
+    pub normal_split_count: u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct RenderVertexKey {
     vertex: VertexId,
     uv_bits: [u32; 2],
+    normal_bits: [u32; 3],
 }
 
 impl Mesh {
@@ -94,8 +108,8 @@ impl Mesh {
     /// - render vertices appended on first encounter during traversal
     ///
     /// Render vertex splitting:
-    /// - keys are `(VertexId, corner_uv_bits)`
-    /// - shared topology vertices split when corner UVs differ
+    /// - keys are `(VertexId, corner_uv_bits, corner_normal_bits)`
+    /// - shared topology vertices split when corner UVs or corner normals differ
     ///
     /// # Example
     /// ```rust
@@ -122,20 +136,25 @@ impl Mesh {
             );
         }
         let corner_uvs = self.attrs().sparse(attr::CORNER_UV);
+        let derived_normals = self.derive_corner_normals(&params.normal_params);
+        let normal_overrides = self.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
 
         let mut mesh = TriMesh::default();
         let mut stats = ExtractStats::default();
         let mut keys = Vec::<RenderVertexKey>::new();
-        let mut seen_vertex_uv = Vec::<(VertexId, [u32; 2])>::new();
+        let mut seen_variants = Vec::<(VertexId, [u32; 2], [u32; 3])>::new();
 
         for face in self.faces() {
             emit_face(
                 self,
                 face,
                 corner_uvs,
+                normal_overrides,
+                &derived_normals,
+                params.normals,
                 &mut mesh,
                 &mut keys,
-                &mut seen_vertex_uv,
+                &mut seen_variants,
                 &mut stats,
             );
         }
@@ -149,9 +168,12 @@ fn emit_face(
     source: &Mesh,
     face: FaceId,
     corner_uvs: Option<&SparseLayer<[f32; 2]>>,
+    normal_overrides: Option<&SparseLayer<[f32; 3]>>,
+    derived_normals: &crate::DerivedCornerNormals,
+    normals_source: NormalsSource,
     mesh: &mut TriMesh,
     keys: &mut Vec<RenderVertexKey>,
-    seen_vertex_uv: &mut Vec<(VertexId, [u32; 2])>,
+    seen_variants: &mut Vec<(VertexId, [u32; 2], [u32; 3])>,
     stats: &mut ExtractStats,
 ) {
     for triangle in source.triangulate_face_fan(face) {
@@ -160,9 +182,12 @@ fn emit_face(
                 source,
                 corner,
                 corner_uvs,
+                normal_overrides,
+                derived_normals,
+                normals_source,
                 mesh,
                 keys,
-                seen_vertex_uv,
+                seen_variants,
                 stats,
             );
             mesh.indices.push(index);
@@ -175,20 +200,29 @@ fn resolve_render_vertex(
     source: &Mesh,
     corner: CornerId,
     corner_uvs: Option<&SparseLayer<[f32; 2]>>,
+    normal_overrides: Option<&SparseLayer<[f32; 3]>>,
+    derived_normals: &crate::DerivedCornerNormals,
+    normals_source: NormalsSource,
     mesh: &mut TriMesh,
     keys: &mut Vec<RenderVertexKey>,
-    seen_vertex_uv: &mut Vec<(VertexId, [u32; 2])>,
+    seen_variants: &mut Vec<(VertexId, [u32; 2], [u32; 3])>,
     stats: &mut ExtractStats,
 ) -> u32 {
     let vertex = source
-        .from_vertex(corner)
-        .expect("face triangulation corner must have origin vertex");
+        .to_vertex(corner)
+        .expect("face triangulation corner must have destination vertex");
     let uv = corner_uvs
         .and_then(|layer| layer.get(corner.as_id()).copied())
         .unwrap_or([0.0, 0.0]);
+    let normal = effective_corner_normal(corner, normal_overrides, derived_normals, normals_source);
     let key = RenderVertexKey {
         vertex,
         uv_bits: [uv[0].to_bits(), uv[1].to_bits()],
+        normal_bits: [
+            normal[0].to_bits(),
+            normal[1].to_bits(),
+            normal[2].to_bits(),
+        ],
     };
 
     // TODO(exe-qcmn): replace linear key scan with a hash map for large meshes.
@@ -199,18 +233,22 @@ fn resolve_render_vertex(
     // v0.1 split semantics: count every new UV variant encountered for a
     // previously seen topology vertex.
     // TODO(exe-qcmn): replace linear scans with per-vertex variant tracking.
-    if seen_vertex_uv
+    let uv_split = seen_variants
         .iter()
-        .any(|(seen_vertex, seen_uv)| *seen_vertex == vertex && *seen_uv != key.uv_bits)
-    {
+        .any(|(seen_vertex, seen_uv, _)| *seen_vertex == vertex && *seen_uv != key.uv_bits);
+    let normal_split = seen_variants.iter().any(|(seen_vertex, _, seen_normal)| {
+        *seen_vertex == vertex && *seen_normal != key.normal_bits
+    });
+    if uv_split || normal_split {
         stats.split_count = stats.split_count.saturating_add(1);
+        if uv_split {
+            stats.uv_split_count = stats.uv_split_count.saturating_add(1);
+        }
+        if normal_split {
+            stats.normal_split_count = stats.normal_split_count.saturating_add(1);
+        }
     }
-    if !seen_vertex_uv
-        .iter()
-        .any(|(seen_vertex, _)| *seen_vertex == vertex)
-    {
-        seen_vertex_uv.push((vertex, key.uv_bits));
-    }
+    seen_variants.push((vertex, key.uv_bits, key.normal_bits));
 
     let position = *source
         .vertex_position(vertex)
@@ -218,8 +256,24 @@ fn resolve_render_vertex(
     keys.push(key);
     mesh.positions.push(position);
     mesh.uvs.push(uv);
-    mesh.normals.push([0.0, 0.0, 0.0]);
+    mesh.normals.push(normal);
     u32::try_from(mesh.positions.len() - 1).expect("render vertex index overflowed u32")
+}
+
+fn effective_corner_normal(
+    corner: CornerId,
+    normal_overrides: Option<&SparseLayer<[f32; 3]>>,
+    derived_normals: &crate::DerivedCornerNormals,
+    source: NormalsSource,
+) -> [f32; 3] {
+    let override_normal = normal_overrides.and_then(|layer| layer.get(corner.as_id()).copied());
+    match source {
+        NormalsSource::Derived => derived_normals.get(corner).unwrap_or([0.0, 0.0, 0.0]),
+        NormalsSource::CustomOrDerived => override_normal
+            .or_else(|| derived_normals.get(corner))
+            .unwrap_or([0.0, 0.0, 0.0]),
+        NormalsSource::CustomOnly => override_normal.unwrap_or([0.0, 0.0, 0.0]),
+    }
 }
 
 #[cfg(test)]
@@ -227,7 +281,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{ExtractParams, MeshBuilder, attr};
+    use crate::{ExtractParams, MeshBuilder, NormalsSource, attr, op};
 
     #[test]
     fn to_trimesh_triangle_without_uvs_uses_zero_uvs() {
@@ -244,6 +298,7 @@ mod tests {
         assert_eq!(mesh.indices, vec![0, 1, 2]);
         assert_eq!(mesh.positions.len(), 3);
         assert_eq!(mesh.uvs, vec![[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
+        assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0]; 3]);
         assert_eq!(stats.triangle_count, 1);
         assert_eq!(stats.render_vertex_count, 3);
         assert_eq!(stats.split_count, 0);
@@ -276,6 +331,8 @@ mod tests {
         assert_eq!(stats.triangle_count, 2);
         assert_eq!(stats.render_vertex_count, 4);
         assert_eq!(stats.split_count, 0);
+        assert_eq!(stats.uv_split_count, 0);
+        assert_eq!(stats.normal_split_count, 0);
     }
 
     #[test]
@@ -302,7 +359,7 @@ mod tests {
             .find(|corner| {
                 built
                     .mesh
-                    .from_vertex(*corner)
+                    .to_vertex(*corner)
                     .is_some_and(|v| v.index() == 1)
             })
             .expect("shared vertex corner should exist");
@@ -312,7 +369,7 @@ mod tests {
             .find(|corner| {
                 built
                     .mesh
-                    .from_vertex(*corner)
+                    .to_vertex(*corner)
                     .is_some_and(|v| v.index() == 1)
             })
             .expect("shared vertex corner should exist");
@@ -327,8 +384,90 @@ mod tests {
         let (mesh, stats) = built.mesh.to_trimesh(&ExtractParams::default());
         assert_eq!(stats.triangle_count, 2);
         assert!(stats.split_count >= 1);
+        assert!(stats.uv_split_count >= 1);
         assert!(stats.render_vertex_count > 4);
         assert_eq!(mesh.indices.len(), 6);
+    }
+
+    #[test]
+    fn to_trimesh_splits_vertices_on_normal_discontinuity() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]); // 0
+        builder.push_vertex([1.0, 0.0, 0.0]); // 1 shared
+        builder.push_vertex([0.0, 1.0, 0.0]); // 2
+        builder.push_vertex([1.0, 1.0, 0.0]); // 3
+        builder
+            .add_face(&[0, 1, 2])
+            .expect("triangle face should be valid");
+        builder
+            .add_face(&[2, 1, 3])
+            .expect("triangle face should be valid");
+        let mut built = builder.build().expect("build should succeed");
+        let face0 = built.face_ids[0];
+        let face1 = built.face_ids[1];
+        let corner0 = built
+            .mesh
+            .face_loop(face0)
+            .find(|corner| {
+                built
+                    .mesh
+                    .to_vertex(*corner)
+                    .is_some_and(|v| v.index() == 1)
+            })
+            .expect("shared vertex corner should exist");
+        let corner1 = built
+            .mesh
+            .face_loop(face1)
+            .find(|corner| {
+                built
+                    .mesh
+                    .to_vertex(*corner)
+                    .is_some_and(|v| v.index() == 1)
+            })
+            .expect("shared vertex corner should exist");
+        let mut edit = built.mesh.edit();
+        op::set_corner_normal_override(&mut edit, corner0, Some([1.0, 0.0, 0.0]))
+            .expect("corner override write should succeed");
+        op::set_corner_normal_override(&mut edit, corner1, Some([0.0, 1.0, 0.0]))
+            .expect("corner override write should succeed");
+        let _: () = edit.finish();
+
+        let (mesh, stats) = built.mesh.to_trimesh(&ExtractParams {
+            normals: NormalsSource::CustomOrDerived,
+            ..ExtractParams::default()
+        });
+        assert!(stats.split_count >= 1);
+        assert!(stats.normal_split_count >= 1);
+        assert!(stats.render_vertex_count > 4);
+        assert_eq!(mesh.indices.len(), 6);
+    }
+
+    #[test]
+    fn to_trimesh_custom_only_uses_authored_normals_when_present() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder
+            .add_face(&[0, 1, 2])
+            .expect("triangle should be valid");
+        let mut built = builder.build().expect("build should succeed");
+        let corner = built
+            .mesh
+            .faces()
+            .flat_map(|face| built.mesh.face_loop(face))
+            .next()
+            .expect("triangle should have a corner");
+        let mut edit = built.mesh.edit();
+        op::set_corner_normal_override(&mut edit, corner, Some([1.0, 0.0, 0.0]))
+            .expect("corner override write should succeed");
+        let _: () = edit.finish();
+
+        let (mesh, _) = built.mesh.to_trimesh(&ExtractParams {
+            normals: NormalsSource::CustomOnly,
+            ..ExtractParams::default()
+        });
+        assert_eq!(mesh.normals[0], [1.0, 0.0, 0.0]);
     }
 
     #[test]

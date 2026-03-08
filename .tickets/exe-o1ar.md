@@ -1,7 +1,7 @@
 ---
 id: exe-o1ar
 title: Extended render extraction (normals + full vertex splitting)
-status: open
+status: closed
 deps: [exe-o4iu, exe-z9pv]
 links: []
 created: 2026-03-03T05:40:41Z
