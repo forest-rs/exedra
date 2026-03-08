@@ -65,6 +65,17 @@
 //! | `edit.face.inset` | [`InsetFaces`](crate::InsetFaces) | [`InsetFacesParams`](crate::InsetFacesParams) | [`InsetFacesOutput`](crate::InsetFacesOutput) | Face-edit counters + generated inner/frame outputs. |
 //! | `edit.face.solidify` | [`SolidifyFaces`](crate::SolidifyFaces) | [`SolidifyFacesParams`](crate::SolidifyFacesParams) (`mode`: [`SolidifyMode`](crate::SolidifyMode)) | [`SolidifyFacesOutput`](crate::SolidifyFacesOutput) | Explicit shell-thickness operation over selected faces. |
 //!
+//! # Fluent Chains
+//!
+//! For user-facing multi-step modeling flows, prefer [`MeshEdit`](crate::MeshEdit)
+//! over manually threading operator outputs:
+//! - "boxy hat": `select_faces -> extrude -> inset`
+//! - "wall opening": `select_faces -> cut_rect -> delete_faces`
+//! - shelling: `select_faces -> solidify`
+//!
+//! `MeshEdit` preserves deterministic compile/preview/apply behavior while
+//! making the selection handoff between these face-edit operators explicit.
+//!
 //! # Reporting Expectations
 //!
 //! All catalog operators should:

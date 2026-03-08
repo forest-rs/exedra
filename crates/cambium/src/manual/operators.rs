@@ -57,6 +57,22 @@
 //! - `uv.*`
 //! - `edit.*`
 //!
+//! # Raw Operators Vs MeshEdit
+//!
+//! Use raw operators when:
+//! - you are implementing a new operator,
+//! - you need direct access to typed outputs and per-step reports,
+//! - you are testing one operator in isolation.
+//!
+//! Use [`MeshEdit`](crate::MeshEdit) when:
+//! - you want to express a deterministic user-facing chain,
+//! - one step's output selection should feed the next step,
+//! - the flow reads more clearly as `select -> extrude -> inset` or
+//!   `select -> cut_rect -> delete_faces`.
+//!
+//! `MeshEdit` is a workflow convenience layer; it does not replace
+//! [`EditOperator`](crate::EditOperator) as the implementation surface.
+//!
 //! # Edge Sharpness Conventions
 //!
 //! Edge sharpness is numeric (`f32`) in Exedra/Cambium:

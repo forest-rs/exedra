@@ -200,6 +200,73 @@ pub struct MeshEditPreview {
 /// assert!(matches!(preview.selection, Selection::Faces(_)));
 /// ```
 ///
+/// "Boxy hat" workflow:
+///
+/// ```rust
+/// use cambium::{MeshEdit, OperatorRunner};
+///
+/// let mut mesh = exedra::Mesh::from_polygons(
+///     &[
+///         [0.0, 0.0, 0.0],
+///         [1.0, 0.0, 0.0],
+///         [1.0, 1.0, 0.0],
+///         [0.0, 1.0, 0.0],
+///     ],
+///     &[&[0, 1, 2, 3]],
+/// )
+/// .expect("quad mesh should build");
+/// let face = mesh.faces().next().expect("face should exist");
+///
+/// // The selection handoff is the point:
+/// // extrude -> cap face selection
+/// // inset   -> inner face selection
+/// let flow = MeshEdit::new()
+///     .select_faces(vec![face])
+///     .extrude(0.25)
+///     .inset(0.4);
+///
+/// let mut runner = OperatorRunner::new();
+/// let result = flow.apply(&mut runner, &mut mesh).expect("flow should succeed");
+/// assert!(matches!(result.selection, cambium::Selection::Faces(_)));
+/// # Ok::<(), cambium::OpError>(())
+/// ```
+///
+/// Wall opening workflow:
+///
+/// ```rust
+/// use cambium::{DeletePolicy, MeshEdit, OperatorRunner};
+///
+/// let mut mesh = exedra::Mesh::from_polygons(
+///     &[
+///         [0.0, 0.0, 0.0],
+///         [4.0, 0.0, 0.0],
+///         [4.0, 3.0, 0.0],
+///         [0.0, 3.0, 0.0],
+///     ],
+///     &[&[0, 1, 2, 3]],
+/// )
+/// .expect("wall mesh should build");
+/// let wall = mesh.faces().next().expect("wall face should exist");
+///
+/// // cut_rect selects the newly created inner face.
+/// // delete_faces then removes it, leaving an opening.
+/// let flow = MeshEdit::new()
+///     .select_faces(vec![wall])
+///     .cut_rect(
+///         [0.0, 0.0, 0.0],
+///         [1.0, 0.0, 0.0],
+///         [0.0, 1.0, 0.0],
+///         [1.2, 0.4],
+///         [2.8, 2.2],
+///     )
+///     .delete_faces(DeletePolicy::KeepIsolated);
+///
+/// let mut runner = OperatorRunner::new();
+/// let result = flow.apply(&mut runner, &mut mesh).expect("flow should succeed");
+/// assert!(matches!(result.selection, cambium::Selection::Faces(ref faces) if faces.is_empty()));
+/// # Ok::<(), cambium::OpError>(())
+/// ```
+///
 /// Selection handoff rules:
 /// - `select_faces_by_region` / `flood_faces_by_region` select faces,
 /// - `select_boundary_edge_loop` selects edges,
@@ -1016,10 +1083,10 @@ mod tests {
 
     use super::MeshEdit;
     use crate::{
-        CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
-        InsetFacesParams, OperatorRunner, Selection, SolidifyFaces, SolidifyFacesParams,
-        SolidifyMode, TagFaceRegion, TagFaceRegionParams, mesh_signature,
-        test_support::shared_edge_mesh,
+        CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, ExtrudeFaces,
+        ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
+        Selection, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
+        TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1205,6 +1272,59 @@ mod tests {
             flow_result.selection,
             Selection::from(direct_result.output.inner_faces)
         );
+    }
+
+    #[test]
+    fn mesh_edit_cut_rect_then_delete_faces_matches_manual_sequence() {
+        let (base, face) = one_quad_mesh();
+
+        let flow = MeshEdit::new()
+            .select_faces(vec![face])
+            .cut_rect(
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.2, 0.25],
+                [0.8, 0.75],
+            )
+            .delete_faces(DeletePolicy::KeepIsolated);
+
+        let mut flow_runner = OperatorRunner::new();
+        let mut flow_mesh = base.clone();
+        let flow_result = flow
+            .apply(&mut flow_runner, &mut flow_mesh)
+            .expect("fluent opening flow should succeed");
+
+        let mut direct_mesh = base.clone();
+        let mut direct_runner = OperatorRunner::new();
+        let cut_params = CutRectFaceParams {
+            face,
+            frame_origin: [0.0, 0.0, 0.0],
+            frame_u: [1.0, 0.0, 0.0],
+            frame_v: [0.0, 1.0, 0.0],
+            rect_min: [0.2, 0.25],
+            rect_max: [0.8, 0.75],
+        };
+        let cut_plan = direct_runner
+            .compile(&direct_mesh, &CutRectFace, &cut_params)
+            .expect("cut_rect compile should succeed");
+        let cut_result = direct_runner
+            .apply_in_place(&mut direct_mesh, &CutRectFace, &cut_plan)
+            .expect("cut_rect apply should succeed");
+
+        let delete_params = DeleteFacesParams {
+            faces: cut_result.output.inner_faces.clone(),
+            policy: DeletePolicy::KeepIsolated,
+        };
+        let delete_plan = direct_runner
+            .compile(&direct_mesh, &DeleteFaces, &delete_params)
+            .expect("delete compile should succeed");
+        let _ = direct_runner
+            .apply_in_place(&mut direct_mesh, &DeleteFaces, &delete_plan)
+            .expect("delete apply should succeed");
+
+        assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(flow_result.selection, Selection::from(FaceSet::new()));
     }
 
     #[test]
