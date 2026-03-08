@@ -14,6 +14,7 @@ import {
   LineBasicMaterial,
   LineSegments,
   Mesh,
+  MeshNormalMaterial,
   MeshStandardMaterial,
   PCFSoftShadowMap,
   PlaneGeometry,
@@ -89,6 +90,7 @@ const diagnosticsPre = document.getElementById("diagnostics") as HTMLPreElement;
 const wireframeToggle = document.getElementById("wireframe") as HTMLInputElement;
 const regionColorsToggle = document.getElementById("region-colors") as HTMLInputElement;
 const topologyLinesToggle = document.getElementById("topology-lines") as HTMLInputElement;
+const normalDebugToggle = document.getElementById("normal-debug") as HTMLInputElement;
 const viewport = document.getElementById("viewport") as HTMLDivElement;
 
 const scene = new Scene();
@@ -189,6 +191,10 @@ const clayMaterial = new MeshStandardMaterial({
   color: new Color(0xd8b48a),
   roughness: 0.92,
   metalness: 0.0,
+  side: DoubleSide,
+  wireframe: false,
+});
+const normalDebugMaterial = new MeshNormalMaterial({
   side: DoubleSide,
   wireframe: false,
 });
@@ -369,11 +375,13 @@ function renderStep(stepIndex: number): void {
   clearCurrentModel();
 
   const geometry = stepToGeometry(step, regionColorsToggle.checked);
-  const material = regionColorsToggle.checked
-    ? regionMaterial
-    : currentResponse.scenario === "poked_grid" || currentResponse.scenario === "cylinder_normals"
-      ? clayMaterial
-      : shadedMaterial;
+  const material = normalDebugToggle.checked
+    ? normalDebugMaterial
+    : regionColorsToggle.checked
+      ? regionMaterial
+      : currentResponse.scenario === "poked_grid" || currentResponse.scenario === "cylinder_normals"
+        ? clayMaterial
+        : shadedMaterial;
   material.wireframe = wireframeToggle.checked;
 
   currentMesh = new Mesh(geometry, material);
@@ -479,6 +487,9 @@ async function bootstrap(): Promise<void> {
     renderStep(Number.parseInt(stepSlider.value, 10) || 0);
   });
   topologyLinesToggle.addEventListener("change", () => {
+    renderStep(Number.parseInt(stepSlider.value, 10) || 0);
+  });
+  normalDebugToggle.addEventListener("change", () => {
     renderStep(Number.parseInt(stepSlider.value, 10) || 0);
   });
 
