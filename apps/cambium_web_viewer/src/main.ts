@@ -359,7 +359,8 @@ function buildNormalLines(geometry: BufferGeometry): LineSegments<BufferGeometry
     geometry.computeBoundingBox();
   }
   const diag = geometry.boundingBox?.getSize(new Vector3()).length() ?? 1.0;
-  const scale = Math.max(diag * 0.025, 0.02);
+  const scale = Math.max(diag * 0.06, 0.05);
+  const startBias = scale * 0.15;
   const segments = new Float32Array(positions.count * 6);
   for (let i = 0; i < positions.count; i += 1) {
     const px = positions.getX(i);
@@ -369,19 +370,19 @@ function buildNormalLines(geometry: BufferGeometry): LineSegments<BufferGeometry
     const ny = normals.getY(i);
     const nz = normals.getZ(i);
     const base = i * 6;
-    segments[base] = px;
-    segments[base + 1] = py;
-    segments[base + 2] = pz;
-    segments[base + 3] = px + nx * scale;
-    segments[base + 4] = py + ny * scale;
-    segments[base + 5] = pz + nz * scale;
+    segments[base] = px + nx * startBias;
+    segments[base + 1] = py + ny * startBias;
+    segments[base + 2] = pz + nz * startBias;
+    segments[base + 3] = px + nx * (startBias + scale);
+    segments[base + 4] = py + ny * (startBias + scale);
+    segments[base + 5] = pz + nz * (startBias + scale);
   }
   const lineGeometry = new BufferGeometry();
   lineGeometry.setAttribute("position", new Float32BufferAttribute(segments, 3));
   const lineMaterial = new LineBasicMaterial({
-    color: 0x111111,
+    color: 0xff5a36,
     transparent: true,
-    opacity: 0.9,
+    opacity: 1.0,
     depthTest: false,
     depthWrite: false,
   });
