@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra::{FaceId, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -195,8 +195,33 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
     }
     let face_region = common::face_region_layer(face_ids, RegionId(0), &assignments);
 
+    let mut mesh = build.mesh;
+    let sharp_edges = mesh
+        .faces()
+        .flat_map(|face| mesh.face_loop(face))
+        .filter(|&edge| {
+            let Some(twin) = mesh.twin(edge) else {
+                return false;
+            };
+            if core::cmp::min(edge, twin) != edge {
+                return false;
+            }
+            let Some(face) = mesh.face(edge) else {
+                return false;
+            };
+            let Some(twin_face) = mesh.face(twin) else {
+                return false;
+            };
+            if face == FaceId::OUTSIDE || twin_face == FaceId::OUTSIDE {
+                return false;
+            }
+            face_region.get(face) != face_region.get(twin_face)
+        })
+        .collect::<Vec<_>>();
+    common::mark_edges_sharp(&mut mesh, &sharp_edges);
+
     common::primitive_from_parts(
-        build.mesh,
+        mesh,
         face_region,
         vec![
             (SelectionName("faces.all"), face_ids.clone()),
@@ -325,6 +350,23 @@ mod tests {
         for face in side_z_neg.1.as_slice() {
             assert_eq!(primitive.face_region.get(*face), REGION_SIDE_Z_NEG);
         }
+    }
+
+    #[test]
+    fn default_box_marks_outer_feature_edges_sharp() {
+        let primitive = box_primitive(&BoxParams::default());
+        let sharp_edges = primitive
+            .mesh
+            .faces()
+            .flat_map(|face| primitive.mesh.face_loop(face))
+            .filter(|&edge| {
+                primitive.mesh.twin(edge).is_some_and(|twin| {
+                    core::cmp::min(edge, twin) == edge
+                        && primitive.mesh.edge_sharpness(edge) == Some(1.0)
+                })
+            })
+            .count();
+        assert_eq!(sharp_edges, 12);
     }
 
     #[test]

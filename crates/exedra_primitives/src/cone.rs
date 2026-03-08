@@ -127,8 +127,13 @@ pub fn cone(params: &ConeParams) -> Primitive {
     }
     let face_region = common::face_region_layer(face_ids, RegionId(0), &assignments);
 
+    let mut mesh = build.mesh;
+    if params.cap_fill != CapFill::None {
+        common::mark_edges_sharp(&mut mesh, &rim_bottom);
+    }
+
     common::primitive_from_parts(
-        build.mesh,
+        mesh,
         face_region,
         vec![
             (SelectionName("faces.side"), side_faces),
@@ -248,5 +253,23 @@ mod tests {
         assert_eq!(tri_a.positions, tri_b.positions);
         assert_eq!(a.face_region, b.face_region);
         assert_eq!(a.selections, b.selections);
+    }
+
+    #[test]
+    fn capped_cone_marks_bottom_rim_sharp() {
+        let primitive = cone(&ConeParams {
+            segments: 8,
+            cap_fill: CapFill::Ngon,
+            ..ConeParams::default()
+        });
+        let rim = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_bottom")
+            .expect("edges.rim_bottom should exist");
+        for &edge in rim.1.as_slice() {
+            assert_eq!(primitive.mesh.edge_sharpness(edge), Some(1.0));
+        }
     }
 }

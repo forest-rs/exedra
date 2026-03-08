@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{FaceId, HalfEdgeId, Mesh};
+use exedra::{ChangeSetBuilder, FaceId, HalfEdgeId, Mesh, op};
 
 use crate::{EdgeSet, FaceRegionLayer, FaceSet, Primitive, RegionId, SelectionName, Selections};
 
@@ -29,6 +29,14 @@ pub(crate) fn primitive_from_parts(
                 .collect(),
         },
     }
+}
+
+pub(crate) fn mark_edges_sharp(mesh: &mut Mesh, edges: &[HalfEdgeId]) {
+    let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+    for &edge in edges {
+        let _ = op::set_edge_sharpness(&mut edit, edge, 1.0);
+    }
+    let _ = edit.finish();
 }
 
 pub(crate) fn face_region_layer(

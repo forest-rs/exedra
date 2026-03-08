@@ -183,8 +183,15 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
         (SelectionName("faces.cap_bottom"), bottom_faces),
     ];
 
+    let mut mesh = build.mesh;
+    if params.cap_fill != CapFill::None {
+        let mut sharp_edges = rim_top.clone();
+        sharp_edges.extend_from_slice(&rim_bottom);
+        common::mark_edges_sharp(&mut mesh, &sharp_edges);
+    }
+
     common::primitive_from_parts(
-        build.mesh,
+        mesh,
         face_region,
         face_sets,
         vec![
@@ -425,5 +432,39 @@ mod tests {
             assert_eq!(outside, FaceId::OUTSIDE);
             assert_eq!(primitive.face_region.get(side), REGION_SIDE);
         }
+    }
+
+    #[test]
+    fn capped_cylinder_marks_cap_rims_sharp_and_side_seam_smooth() {
+        let primitive = cylinder(&CylinderParams {
+            segments: 8,
+            cap_fill: CapFill::Ngon,
+            ..CylinderParams::default()
+        });
+        let seam = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.seam")
+            .expect("edges.seam should exist");
+        let rim_top = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_top")
+            .expect("edges.rim_top should exist");
+        let rim_bottom = primitive
+            .selections
+            .edge_sets
+            .iter()
+            .find(|(name, _)| name.0 == "edges.rim_bottom")
+            .expect("edges.rim_bottom should exist");
+        for &edge in rim_top.1.as_slice().iter().chain(rim_bottom.1.as_slice()) {
+            assert_eq!(primitive.mesh.edge_sharpness(edge), Some(1.0));
+        }
+        assert_eq!(
+            primitive.mesh.edge_sharpness(seam.1.as_slice()[0]),
+            Some(0.0)
+        );
     }
 }
