@@ -82,9 +82,9 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
         builder
             .add_face(&[
                 common::usize_to_u32(i),
-                common::usize_to_u32(next),
-                common::usize_to_u32(segments + next),
                 common::usize_to_u32(segments + i),
+                common::usize_to_u32(segments + next),
+                common::usize_to_u32(next),
             ])
             .expect("side quad should be valid");
     }
@@ -93,13 +93,13 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
         CapFill::None => {}
         CapFill::Ngon => {
             let mut top = Vec::with_capacity(segments);
-            for i in 0..segments {
+            for i in (0..segments).rev() {
                 top.push(common::usize_to_u32(segments + i));
             }
             builder.add_face(&top).expect("top cap should be valid");
 
             let mut bottom = Vec::with_capacity(segments);
-            for i in (0..segments).rev() {
+            for i in 0..segments {
                 bottom.push(common::usize_to_u32(i));
             }
             builder
@@ -114,15 +114,15 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
                 builder
                     .add_face(&[
                         top_center,
-                        common::usize_to_u32(segments + i),
                         common::usize_to_u32(segments + next),
+                        common::usize_to_u32(segments + i),
                     ])
                     .expect("top cap fan triangle should be valid");
                 builder
                     .add_face(&[
                         bottom_center,
-                        common::usize_to_u32(next),
                         common::usize_to_u32(i),
+                        common::usize_to_u32(next),
                     ])
                     .expect("bottom cap fan triangle should be valid");
             }
@@ -153,15 +153,16 @@ pub fn cylinder(params: &CylinderParams) -> Primitive {
         }
     }
 
-    let seam_edges = vec![build.face_edge_ids[segments - 1][1]];
+    let seam_edges = vec![build.face_edge_ids[segments - 1][2]];
 
     let mut rim_top = Vec::with_capacity(segments);
     let mut rim_bottom = Vec::with_capacity(segments);
-    // edge[0] is bottom rim and edge[2] is top rim for each side quad emitted
-    // as [bottom_i, bottom_next, top_next, top_i].
+    // edge[0] is the vertical seam candidate, edge[1] is top rim, edge[2] is
+    // the opposite vertical edge, and edge[3] is bottom rim for each side
+    // quad emitted as [bottom_i, top_i, top_next, bottom_next].
     for i in 0..segments {
-        rim_bottom.push(build.face_edge_ids[i][0]);
-        rim_top.push(build.face_edge_ids[i][2]);
+        rim_top.push(build.face_edge_ids[i][1]);
+        rim_bottom.push(build.face_edge_ids[i][3]);
     }
 
     let mut assignments = Vec::with_capacity(segments + top_faces.len() + bottom_faces.len());

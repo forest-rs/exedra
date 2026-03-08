@@ -99,7 +99,9 @@
 //! - [`BakeFaceNormals`](crate::BakeFaceNormals) writes flat face normals into
 //!   selected face corners,
 //! - [`BakeDerivedNormals`](crate::BakeDerivedNormals) freezes the current
-//!   derived corner normals as authored overrides.
+//!   derived corner normals as authored overrides,
+//! - [`SmoothFaceNormals`](crate::SmoothFaceNormals) rebakes selected faces
+//!   with explicit smoothing parameters.
 //!
 //! # Face-Edit Winding Contract
 //!

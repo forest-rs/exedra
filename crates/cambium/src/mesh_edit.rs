@@ -17,7 +17,8 @@ use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
 use crate::{
     BakeDerivedNormals, BakeDerivedNormalsParams, BakeDerivedNormalsPlan, BakeFaceNormals,
     BakeFaceNormalsParams, BakeFaceNormalsPlan, ClearCornerNormals, ClearCornerNormalsParams,
-    ClearCornerNormalsPlan, NormalFacesOutput,
+    ClearCornerNormalsPlan, NormalFacesOutput, SmoothFaceNormals, SmoothFaceNormalsParams,
+    SmoothFaceNormalsPlan,
 };
 use crate::{
     CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, PokeFaces, PokeFacesOutput,
@@ -78,6 +79,9 @@ enum MeshEditStep {
     BakeDerivedNormals {
         normal_params: NormalParams,
     },
+    SmoothFaceNormals {
+        normal_params: NormalParams,
+    },
     DeleteFaces {
         policy: DeletePolicy,
     },
@@ -129,6 +133,8 @@ pub enum MeshEditStepPlan {
     BakeFaceNormals(EditPlan<BakeFaceNormalsPlan>),
     /// Compiled `edit.normal.average` plan.
     BakeDerivedNormals(EditPlan<BakeDerivedNormalsPlan>),
+    /// Compiled `edit.normal.smooth` plan.
+    SmoothFaceNormals(EditPlan<SmoothFaceNormalsPlan>),
     /// Compiled `edit.delete.faces` plan.
     DeleteFaces(EditPlan<DeleteFacesPlan>),
     /// Compiled `edit.delete.edges` plan.
@@ -330,8 +336,8 @@ pub struct MeshEditPreview {
 /// - `solidify` selects `cap_faces`,
 /// - `cut_rect` selects `inner_faces`,
 /// - `tag` keeps selected faces,
-/// - `clear_corner_normals` / `bake_face_normals` / `bake_derived_normals`
-///   keep selected faces,
+/// - `clear_corner_normals` / `bake_face_normals` / `bake_derived_normals` /
+///   `smooth_face_normals` keep selected faces,
 /// - `mark_seam` / `mark_sharp` keep selected edges,
 /// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection,
 /// - `dissolve_edges` selects merged faces.
@@ -502,6 +508,14 @@ impl MeshEdit {
     pub fn bake_derived_normals(mut self, normal_params: NormalParams) -> Self {
         self.steps
             .push(MeshEditStep::BakeDerivedNormals { normal_params });
+        self
+    }
+
+    /// Rebakes selected faces with smoothed derived normals.
+    #[must_use]
+    pub fn smooth_face_normals(mut self, normal_params: NormalParams) -> Self {
+        self.steps
+            .push(MeshEditStep::SmoothFaceNormals { normal_params });
         self
     }
 
@@ -741,6 +755,19 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output.faces);
                     compiled_steps.push(MeshEditStepPlan::BakeDerivedNormals(plan));
                 }
+                MeshEditStep::SmoothFaceNormals { normal_params } => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.normal.smooth")?;
+                    let params = SmoothFaceNormalsParams {
+                        faces: current_faces,
+                        normal_params,
+                    };
+                    let op = SmoothFaceNormals;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.faces);
+                    compiled_steps.push(MeshEditStepPlan::SmoothFaceNormals(plan));
+                }
                 MeshEditStep::DeleteFaces { policy } => {
                     let current_faces =
                         require_face_selection(&current_selection, "edit.delete.faces")?;
@@ -972,6 +999,17 @@ impl MeshEdit {
                     current_selection = Selection::from(faces);
                     reports.push(report);
                 }
+                MeshEditStepPlan::SmoothFaceNormals(compiled) => {
+                    let op = SmoothFaceNormals;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: NormalFacesOutput { faces },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::DeleteFaces(compiled) => {
                     let op = DeleteFaces;
                     let PreviewResult {
@@ -1136,6 +1174,12 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output.faces);
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::SmoothFaceNormals(compiled) => {
+                    let op = SmoothFaceNormals;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::DeleteFaces(compiled) => {
                     let op = DeleteFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -1260,6 +1304,10 @@ fn mesh_edit_fingerprint(
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
+            MeshEditStepPlan::SmoothFaceNormals(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
             MeshEditStepPlan::DeleteFaces(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
@@ -1380,7 +1428,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::{DeletePolicy, MeshBuilder};
+    use exedra::{DeletePolicy, MeshBuilder, NormalParams};
 
     use super::MeshEdit;
     use crate::{
@@ -1388,8 +1436,9 @@ mod tests {
         CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, DissolveEdges,
         DissolveEdgesParams, DissolveVertices, DissolveVerticesParams, ExtrudeFaces,
         ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
-        PokeFaces, PokeFacesParams, Selection, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
-        TagFaceRegion, TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
+        PokeFaces, PokeFacesParams, Selection, SmoothFaceNormals, SmoothFaceNormalsParams,
+        SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion, TagFaceRegionParams,
+        mesh_signature, test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1630,6 +1679,44 @@ mod tests {
         let _ = direct_runner
             .apply_in_place(&mut direct_mesh, &ClearCornerNormals, &clear_plan)
             .expect("clear should succeed");
+
+        assert_eq!(mesh_signature(&fluent_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(fluent.selection, Selection::from(vec![face]));
+    }
+
+    #[test]
+    fn mesh_edit_smooth_face_normals_matches_manual_sequence() {
+        let (mesh, face) = one_quad_mesh();
+        let params = NormalParams {
+            auto_sharp_angle_degrees: Some(60.0),
+            ..NormalParams::default()
+        };
+
+        let flow = MeshEdit::new()
+            .select_faces(vec![face])
+            .smooth_face_normals(params);
+
+        let mut fluent_runner = OperatorRunner::new();
+        let mut fluent_mesh = mesh.clone();
+        let fluent = flow
+            .apply(&mut fluent_runner, &mut fluent_mesh)
+            .expect("fluent smooth workflow should succeed");
+
+        let mut direct_runner = OperatorRunner::new();
+        let mut direct_mesh = mesh.clone();
+        let smooth_plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &SmoothFaceNormals,
+                &SmoothFaceNormalsParams {
+                    faces: vec![face],
+                    normal_params: params,
+                },
+            )
+            .expect("smooth compile should succeed");
+        let _ = direct_runner
+            .apply_in_place(&mut direct_mesh, &SmoothFaceNormals, &smooth_plan)
+            .expect("smooth apply should succeed");
 
         assert_eq!(mesh_signature(&fluent_mesh), mesh_signature(&direct_mesh));
         assert_eq!(fluent.selection, Selection::from(vec![face]));

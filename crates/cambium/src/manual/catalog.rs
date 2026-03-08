@@ -72,6 +72,7 @@
 //! - `edit.normal.clear`: [`ClearCornerNormals`](crate::ClearCornerNormals)
 //! - `edit.normal.face`: [`BakeFaceNormals`](crate::BakeFaceNormals)
 //! - `edit.normal.average`: [`BakeDerivedNormals`](crate::BakeDerivedNormals)
+//! - `edit.normal.smooth`: [`SmoothFaceNormals`](crate::SmoothFaceNormals)
 //!
 //! # Fluent Chains
 //!

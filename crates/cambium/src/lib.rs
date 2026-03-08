@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`], [`ClearCornerNormals`], [`BakeFaceNormals`], [`BakeDerivedNormals`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`], [`ClearCornerNormals`], [`BakeFaceNormals`], [`BakeDerivedNormals`], [`SmoothFaceNormals`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -182,7 +182,8 @@ pub use face_edit::{
 pub use normal_edit::{
     BakeDerivedNormals, BakeDerivedNormalsParams, BakeDerivedNormalsPlan, BakeFaceNormals,
     BakeFaceNormalsParams, BakeFaceNormalsPlan, ClearCornerNormals, ClearCornerNormalsParams,
-    ClearCornerNormalsPlan, NormalFacesOutput,
+    ClearCornerNormalsPlan, NormalFacesOutput, SmoothFaceNormals, SmoothFaceNormalsParams,
+    SmoothFaceNormalsPlan,
 };
 pub use region::{
     EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection,
@@ -204,8 +205,8 @@ mod naming_tests {
         BakeDerivedNormals, BakeFaceNormals, ClearCornerNormals, CutRectFace, DeleteEdges,
         DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices, EditOperator, ExtrudeFaces,
         InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp, PokeFaces,
-        SelectBoundaryEdgeLoop, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder, UvPlanar,
-        ValidateMesh,
+        SelectBoundaryEdgeLoop, SmoothFaceNormals, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder,
+        UvPlanar, ValidateMesh,
     };
 
     #[test]
@@ -229,6 +230,7 @@ mod naming_tests {
             ClearCornerNormals.name(),
             BakeFaceNormals.name(),
             BakeDerivedNormals.name(),
+            SmoothFaceNormals.name(),
             TagFaceRegion.name(),
             SelectBoundaryEdgeLoop.name(),
             UvPlanar.name(),

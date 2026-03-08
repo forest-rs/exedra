@@ -37,6 +37,14 @@ pub struct BakeDerivedNormalsPlan {
     selections_canonicalized: bool,
 }
 
+/// Deterministic compiled plan payload for [`SmoothFaceNormals`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SmoothFaceNormalsPlan {
+    faces: FaceSet,
+    writes: Vec<(CornerId, Option<[f32; 3]>)>,
+    selections_canonicalized: bool,
+}
+
 /// Shared typed output from face-scoped normal editing operators.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NormalFacesOutput {
@@ -278,6 +286,96 @@ impl EditOperator for BakeDerivedNormals {
     }
 }
 
+/// Parameters for [`SmoothFaceNormals`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SmoothFaceNormalsParams {
+    /// Canonical face selection.
+    pub faces: FaceSet,
+    /// Parameters used to derive smoothed normals before baking.
+    pub normal_params: NormalParams,
+}
+
+/// `edit.normal.smooth` operator.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SmoothFaceNormals;
+
+impl EditOperator for SmoothFaceNormals {
+    type Params = SmoothFaceNormalsParams;
+    type Plan = SmoothFaceNormalsPlan;
+    type Output = NormalFacesOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.normal.smooth"
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        let mut faces = params.faces.clone();
+        let canonicalized = canonicalize_face_set(&mut faces);
+        validate_faces(mesh, &faces, self.name(), ctx)?;
+        let derived =
+            derive_normals_with_selection_boundary_hardened(mesh, &faces, &params.normal_params)
+                .map_err(|err| {
+                    op_error(
+                        ctx,
+                        OpErrorKind::InternalInvariantViolation,
+                        DiagCode::InternalInvariantViolation,
+                        format!(
+                            "edit.normal.smooth failed to prepare selection-local normals: {err}"
+                        ),
+                    )
+                })?;
+        let mut writes = Vec::new();
+        for &face in &faces {
+            for corner in mesh.face_loop(face) {
+                let normal = derived.get(corner).ok_or_else(|| {
+                    op_error(
+                        ctx,
+                        OpErrorKind::PreconditionFailed,
+                        DiagCode::PreconditionFailed,
+                        format!("selected face {} has no derived normal", face.index()),
+                    )
+                })?;
+                writes.push((corner, Some(normal)));
+            }
+        }
+        Ok(SmoothFaceNormalsPlan {
+            faces,
+            writes,
+            selections_canonicalized: canonicalized,
+        })
+    }
+
+    fn apply_plan<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        apply_normal_writes(
+            self.name(),
+            &plan.faces,
+            &plan.writes,
+            plan.selections_canonicalized,
+            txn,
+            ctx,
+        )
+    }
+
+    fn plan_fingerprint(&self, plan: &Self::Plan) -> crate::PlanFingerprint {
+        fingerprint_plan(
+            self.name(),
+            &plan.faces,
+            &plan.writes,
+            plan.selections_canonicalized,
+        )
+    }
+}
+
 fn validate_faces(
     mesh: &exedra::Mesh,
     faces: &[FaceId],
@@ -306,6 +404,34 @@ fn validate_faces(
         }
     }
     Ok(())
+}
+
+fn derive_normals_with_selection_boundary_hardened(
+    mesh: &exedra::Mesh,
+    faces: &[FaceId],
+    params: &NormalParams,
+) -> Result<exedra::DerivedCornerNormals, op::SetEdgeSharpnessError> {
+    let mut working = mesh.clone();
+    let mut boundary_edges = Vec::new();
+    for &face in faces {
+        for corner in working.face_loop(face) {
+            let Some(twin) = working.twin(corner) else {
+                continue;
+            };
+            let Some(twin_face) = working.face(twin) else {
+                continue;
+            };
+            if twin_face == FaceId::OUTSIDE || faces.binary_search(&twin_face).is_err() {
+                boundary_edges.push(corner);
+            }
+        }
+    }
+    let mut edit = working.edit();
+    for corner in boundary_edges {
+        op::set_edge_sharpness(&mut edit, corner, 1.0)?;
+    }
+    let _: () = edit.finish();
+    Ok(working.derive_corner_normals(params))
 }
 
 fn apply_normal_writes<S: exedra::ChangeSink>(
@@ -384,9 +510,13 @@ mod tests {
     use crate::{
         BakeDerivedNormals, BakeDerivedNormalsParams, BakeFaceNormals, BakeFaceNormalsParams,
         ClearCornerNormals, ClearCornerNormalsParams, ExtractParams, NormalsSource, OpErrorKind,
-        OperatorRunner,
+        OperatorRunner, SmoothFaceNormals, SmoothFaceNormalsParams,
     };
-    use exedra::{BuildParams, Mesh, NormalParams, attr, op};
+    use exedra::{BuildParams, FaceId, Mesh, NormalParams, attr, op};
+
+    fn usize_to_u32(value: usize) -> u32 {
+        u32::try_from(value).expect("test mesh index should fit u32")
+    }
 
     fn shared_strip_mesh() -> Mesh {
         Mesh::from_indexed_triangles(
@@ -400,6 +530,38 @@ mod tests {
             &BuildParams::default(),
         )
         .expect("strip mesh should build")
+    }
+
+    fn capped_cylinder_mesh(segments: usize) -> (Mesh, Vec<FaceId>) {
+        let mut positions = Vec::with_capacity(segments * 2);
+        for ring in [0.0_f32, 1.0_f32] {
+            for i in 0..segments {
+                let theta = (i as f32) * core::f32::consts::TAU / (segments as f32);
+                positions.push([theta.cos(), ring, theta.sin()]);
+            }
+        }
+
+        let mut polys = Vec::<Vec<u32>>::with_capacity(segments + 2);
+        for i in 0..segments {
+            let next = (i + 1) % segments;
+            polys.push(vec![
+                usize_to_u32(i),
+                usize_to_u32(segments + i),
+                usize_to_u32(segments + next),
+                usize_to_u32(next),
+            ]);
+        }
+        polys.push(
+            (0..segments)
+                .rev()
+                .map(|i| usize_to_u32(segments + i))
+                .collect(),
+        );
+        polys.push((0..segments).map(usize_to_u32).collect());
+        let poly_refs = polys.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let mesh = Mesh::from_polygons(&positions, &poly_refs).expect("cylinder mesh should build");
+        let side_faces = mesh.faces().take(segments).collect::<Vec<_>>();
+        (mesh, side_faces)
     }
 
     #[test]
@@ -449,7 +611,7 @@ mod tests {
     #[test]
     fn clear_corner_normals_compile_rejects_stale_face() {
         let mesh = Mesh::new();
-        let stale = exedra::FaceId::from(exedra::Id::new(
+        let stale = FaceId::from(exedra::Id::new(
             42,
             core::num::NonZeroU32::new(1).expect("1 is non-zero"),
         ));
@@ -549,6 +711,109 @@ mod tests {
                         .and_then(|layer| layer.get(corner.as_id()))
                         .copied(),
                     expected.get(corner)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_face_normals_matches_current_derived_values() {
+        let mut mesh = shared_strip_mesh();
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let params = NormalParams {
+            auto_sharp_angle_degrees: Some(35.0),
+            ..NormalParams::default()
+        };
+
+        let face_plan = OperatorRunner::new()
+            .compile(
+                &mesh,
+                &BakeFaceNormals,
+                &BakeFaceNormalsParams {
+                    faces: faces.clone(),
+                },
+            )
+            .expect("face-normal plan should compile");
+        let mut runner = OperatorRunner::new();
+        runner
+            .apply_in_place(&mut mesh, &BakeFaceNormals, &face_plan)
+            .expect("face-normal bake should succeed");
+
+        let expected = mesh.derive_corner_normals(&params);
+        let smooth_plan = runner
+            .compile(
+                &mesh,
+                &SmoothFaceNormals,
+                &SmoothFaceNormalsParams {
+                    faces: faces.clone(),
+                    normal_params: params,
+                },
+            )
+            .expect("smooth plan should compile");
+        let result = runner
+            .apply_in_place(&mut mesh, &SmoothFaceNormals, &smooth_plan)
+            .expect("smooth apply should succeed");
+        assert_eq!(result.output.faces, faces);
+        for face in mesh.faces() {
+            for corner in mesh.face_loop(face) {
+                assert_eq!(
+                    mesh.attrs()
+                        .sparse(attr::CORNER_NORMAL_OVERRIDE)
+                        .and_then(|layer| layer.get(corner.as_id()))
+                        .copied(),
+                    expected.get(corner)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_face_normals_on_cylinder_sides_stay_radial() {
+        let (mut mesh, side_faces) = capped_cylinder_mesh(12);
+        let params = NormalParams::default();
+        let mut runner = OperatorRunner::new();
+        let plan = runner
+            .compile(
+                &mesh,
+                &SmoothFaceNormals,
+                &SmoothFaceNormalsParams {
+                    faces: side_faces.clone(),
+                    normal_params: params,
+                },
+            )
+            .expect("smooth compile should succeed");
+        runner
+            .apply_in_place(&mut mesh, &SmoothFaceNormals, &plan)
+            .expect("smooth apply should succeed");
+
+        for face in side_faces {
+            for corner in mesh.face_loop(face) {
+                let vertex = mesh.to_vertex(corner).expect("corner vertex should exist");
+                let position = mesh
+                    .vertex_position(vertex)
+                    .copied()
+                    .expect("vertex position should exist");
+                let expected = {
+                    let xz_len = (position[0] * position[0] + position[2] * position[2]).sqrt();
+                    [position[0] / xz_len, 0.0, position[2] / xz_len]
+                };
+                let normal = mesh
+                    .attrs()
+                    .sparse(attr::CORNER_NORMAL_OVERRIDE)
+                    .and_then(|layer| layer.get(corner.as_id()))
+                    .copied()
+                    .expect("smoothed side face should have authored normal");
+                assert!(
+                    normal[1].abs() < 1.0e-4,
+                    "side normal should not tilt into the cap: {:?}",
+                    normal
+                );
+                assert!(
+                    (normal[0] - expected[0]).abs() < 1.0e-4
+                        && (normal[2] - expected[2]).abs() < 1.0e-4,
+                    "side normal should stay radial: actual {:?}, expected {:?}",
+                    normal,
+                    expected
                 );
             }
         }
