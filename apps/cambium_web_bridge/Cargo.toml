@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cambium = { features = ["libm"], workspace = true }
-exedra.workspace = true
+exedra = { features = ["libm"], workspace = true }
 exedra_primitives = { features = ["libm"], workspace = true }
 serde = { default-features = false, features = ["alloc", "derive"], version = "1.0.228" }
 serde_json = { default-features = false, features = ["alloc"], version = "1.0.145" }

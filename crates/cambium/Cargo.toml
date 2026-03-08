@@ -10,14 +10,14 @@ keywords = ["mesh", "modeling", "operators", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
-exedra.workspace = true
+exedra = { features = ["std"], workspace = true }
 libm = { optional = true, workspace = true }
 understory_dirty.workspace = true
 
 [features]
 default = ["std"]
-libm = ["dep:libm"]
-std = []
+libm = ["dep:libm", "exedra/libm"]
+std = ["exedra/std"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time.workspace = true

@@ -10,13 +10,13 @@ keywords = ["mesh", "primitives", "geometry", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
-exedra = { path = "../exedra" }
+exedra = { default-features = false, path = "../exedra" }
 libm = { optional = true, workspace = true }
 
 [features]
 default = ["std"]
-libm = ["dep:libm"]
-std = []
+libm = ["dep:libm", "exedra/libm"]
+std = ["exedra/std"]
 
 [lints]
 workspace = true

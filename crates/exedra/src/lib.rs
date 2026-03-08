@@ -31,6 +31,11 @@
 
 #![no_std]
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(not(any(feature = "std", feature = "libm")))]
+compile_error!("exedra requires either the `std` or `libm` feature");
 
 mod arena;
 pub mod attr;
@@ -38,7 +43,9 @@ pub mod attributes;
 mod id;
 #[cfg(doc)]
 pub mod manual;
+mod math;
 pub mod mesh;
+mod normals;
 mod numeric;
 pub mod op;
 mod render;
@@ -52,6 +59,7 @@ pub use mesh::{
     BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder, MeshRevision,
     ValidationError,
 };
+pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use session::{

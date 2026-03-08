@@ -10,10 +10,16 @@ keywords = ["mesh", "half-edge", "topology", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+libm = { optional = true, workspace = true }
 understory_dirty.workspace = true
 
+[features]
+default = ["std"]
+libm = ["dep:libm"]
+std = []
+
 [dev-dependencies]
-exedra_testkit.workspace = true
+exedra_testkit = { features = ["std"], workspace = true }
 
 [lints]
 workspace = true

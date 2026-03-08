@@ -1,7 +1,7 @@
 ---
 id: exe-o4iu
 title: Derived corner normals
-status: open
+status: closed
 deps: [exe-k3nb, exe-qcmn, exe-0wv0, cam-26fl]
 links: []
 created: 2026-03-03T05:37:58Z
