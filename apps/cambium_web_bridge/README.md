@@ -7,6 +7,7 @@ Current scenarios:
 - `boxy_hat`
 - `wall_openings`
 - `poked_grid`
+- `cylinder_normals` (cylinder side faces rebaked from flat to smooth authored normals)
 - `region_select_flow`
 - `uv_projection_gallery`
 - `topology_dissolve_repair` (planar grid strip showing split-edge, dissolve-vertex, then dissolve-edge simplification)

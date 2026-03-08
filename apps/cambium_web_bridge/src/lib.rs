@@ -11,13 +11,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use cambium::{
-    CutRectFace, CutRectFaceParams, CylinderAxis, DeleteFaces, DeleteFacesParams, DiagCode,
-    DiagLevel, DissolveEdges, DissolveEdgesParams, DissolveVertices, DissolveVerticesParams,
-    ExtractParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
-    Mesh, OperatorRunner, PokeFaces, PokeFacesParams, SolidifyFaces, SolidifyFacesParams,
-    SolidifyMode, TagFaceRegion, TagFaceRegionParams, UvBox, UvBoxParams, UvCylinder,
-    UvCylinderParams, UvPlanar, UvPlanarParams, UvPlane, UvScope, flood_fill_faces_by_region,
-    mesh_signature, select_faces_by_region,
+    BakeFaceNormals, BakeFaceNormalsParams, CutRectFace, CutRectFaceParams, CylinderAxis,
+    DeleteFaces, DeleteFacesParams, DiagCode, DiagLevel, DissolveEdges, DissolveEdgesParams,
+    DissolveVertices, DissolveVerticesParams, ExtractParams, ExtrudeFaces, ExtrudeFacesParams,
+    ExtrudeMode, InsetFaces, InsetFacesParams, Mesh, NormalParams, NormalsSource, OperatorRunner,
+    PokeFaces, PokeFacesParams, SmoothFaceNormals, SmoothFaceNormalsParams, SolidifyFaces,
+    SolidifyFacesParams, SolidifyMode, TagFaceRegion, TagFaceRegionParams, UvBox, UvBoxParams,
+    UvCylinder, UvCylinderParams, UvPlanar, UvPlanarParams, UvPlane, UvScope,
+    flood_fill_faces_by_region, mesh_signature, select_faces_by_region,
 };
 use exedra::attr;
 use exedra::{ChangeSetBuilder, op};
@@ -127,6 +128,7 @@ pub fn list_scenarios_json() -> String {
         "pedestal",
         "wall_openings",
         "poked_grid",
+        "cylinder_normals",
         "region_select_flow",
         "uv_projection_gallery",
         "topology_dissolve_repair",
@@ -161,6 +163,7 @@ fn run_scenario_impl(name: &str, options: &ScenarioOptions) -> Result<ScenarioRe
         "pedestal" => run_pedestal(options),
         "wall_openings" => run_wall_openings(options),
         "poked_grid" => run_poked_grid(options),
+        "cylinder_normals" => run_cylinder_normals(options),
         "region_select_flow" => run_region_select_flow(options),
         "uv_projection_gallery" => run_uv_projection_gallery(options),
         "topology_dissolve_repair" => run_topology_dissolve_repair(options),
@@ -1285,6 +1288,78 @@ fn run_poked_grid(options: &ScenarioOptions) -> Result<ScenarioResponse, String>
     })
 }
 
+fn run_cylinder_normals(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
+    let primitive = exedra_primitives::cylinder(&CylinderParams::default());
+    let mut mesh = primitive.mesh;
+    apply_primitive_regions(&mut mesh, &primitive.face_region);
+    let mut steps = Vec::<StepSnapshot>::new();
+    let mut runner = OperatorRunner::new();
+
+    if options.include_initial {
+        steps.push(snapshot_from_mesh(
+            &mesh,
+            "initial",
+            None,
+            None,
+            StepStats::default(),
+            &[],
+        ));
+    }
+
+    let side_faces =
+        select_faces_by_region(&mesh, exedra_primitives::REGION_SIDE.0).map_err(format_op_error)?;
+
+    let flat_plan = runner
+        .compile(
+            &mesh,
+            &BakeFaceNormals,
+            &BakeFaceNormalsParams {
+                faces: side_faces.faces.clone(),
+            },
+        )
+        .map_err(format_op_error)?;
+    let flat_fingerprint = flat_plan.fingerprint.value();
+    let flat_result = runner
+        .apply_in_place(&mut mesh, &BakeFaceNormals, &flat_plan)
+        .map_err(format_op_error)?;
+    steps.push(snapshot_from_report(
+        &mesh,
+        "normal.face.side",
+        "edit.normal.face",
+        flat_fingerprint,
+        &flat_result.report,
+        &runner,
+    ));
+
+    let smooth_plan = runner
+        .compile(
+            &mesh,
+            &SmoothFaceNormals,
+            &SmoothFaceNormalsParams {
+                faces: side_faces.faces,
+                normal_params: NormalParams::default(),
+            },
+        )
+        .map_err(format_op_error)?;
+    let smooth_fingerprint = smooth_plan.fingerprint.value();
+    let smooth_result = runner
+        .apply_in_place(&mut mesh, &SmoothFaceNormals, &smooth_plan)
+        .map_err(format_op_error)?;
+    steps.push(snapshot_from_report(
+        &mesh,
+        "normal.smooth.side",
+        "edit.normal.smooth",
+        smooth_fingerprint,
+        &smooth_result.report,
+        &runner,
+    ));
+
+    Ok(ScenarioResponse {
+        scenario: "cylinder_normals".to_string(),
+        steps,
+    })
+}
+
 fn run_primitive_gallery(_options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
     let mut steps = Vec::<StepSnapshot>::new();
     let quad_primitive = exedra_primitives::quad(&QuadParams::default());
@@ -1447,7 +1522,10 @@ fn snapshot_from_mesh(
     stats: StepStats,
     diagnostics: &[StepDiagnostic],
 ) -> StepSnapshot {
-    let (tri, _) = mesh.to_trimesh(&ExtractParams::default());
+    let (tri, _) = mesh.to_trimesh(&ExtractParams {
+        normals: NormalsSource::CustomOrDerived,
+        ..ExtractParams::default()
+    });
     let positions = tri
         .positions
         .into_iter()
@@ -1625,6 +1703,7 @@ mod tests {
         "pedestal",
         "wall_openings",
         "poked_grid",
+        "cylinder_normals",
         "region_select_flow",
         "uv_projection_gallery",
         "topology_dissolve_repair",
@@ -1750,6 +1829,34 @@ mod tests {
         assert!(
             max_z > 0.0,
             "poked_grid should raise center vertices above the plane"
+        );
+    }
+
+    #[test]
+    fn cylinder_normals_scenario_shows_flat_then_smooth_steps() {
+        let response = run_scenario_impl("cylinder_normals", &ScenarioOptions::default())
+            .expect("scenario runs");
+        assert_eq!(response.scenario, "cylinder_normals");
+        let labels = response
+            .steps
+            .iter()
+            .map(|step| step.label.as_str())
+            .collect::<alloc::vec::Vec<_>>();
+        assert_eq!(
+            labels,
+            alloc::vec!["initial", "normal.face.side", "normal.smooth.side"]
+        );
+        assert_eq!(
+            response.steps[1].operator.as_deref(),
+            Some("edit.normal.face")
+        );
+        assert_eq!(
+            response.steps[2].operator.as_deref(),
+            Some("edit.normal.smooth")
+        );
+        assert_ne!(
+            response.steps[1].mesh.normals, response.steps[2].mesh.normals,
+            "flat and smooth steps should produce different normals"
         );
     }
 }

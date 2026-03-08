@@ -371,7 +371,7 @@ function renderStep(stepIndex: number): void {
   const geometry = stepToGeometry(step, regionColorsToggle.checked);
   const material = regionColorsToggle.checked
     ? regionMaterial
-    : currentResponse.scenario === "poked_grid"
+    : currentResponse.scenario === "poked_grid" || currentResponse.scenario === "cylinder_normals"
       ? clayMaterial
       : shadedMaterial;
   material.wireframe = wireframeToggle.checked;

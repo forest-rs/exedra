@@ -30,6 +30,7 @@ The scenario picker currently includes:
 - `boxy_hat`: inset + extrude progression over a quad.
 - `wall_openings`: wall, rectangular cuts, deletes to open door/window, solidify.
 - `poked_grid`: planar grid with three deterministic poke-and-raise steps for terrain-style topology buildup.
+- `cylinder_normals`: cylinder side faces rebaked from flat to smooth authored normals with unchanged geometry.
 - `region_select_flow`: tag faces, select/flood by region, inspect deterministic counters.
 - `uv_projection_gallery`: planar/box/cylinder projection pass sequence.
 - `topology_dissolve_repair`: planar grid-strip topology story showing split-edge, dissolve-vertex, then dissolve-edge simplification.
