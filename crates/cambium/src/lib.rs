@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DeleteVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`SolidifyFaces`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`SolidifyFaces`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -169,6 +169,7 @@ pub use mesh_edit::{
 pub use delete::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
+    DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams,
 };
 pub use face_edit::{
     CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, ExtrudeFaces,
@@ -193,16 +194,17 @@ mod naming_tests {
     use alloc::collections::BTreeSet;
 
     use super::{
-        CutRectFace, DeleteEdges, DeleteFaces, DeleteVertices, EditOperator, ExtrudeFaces,
-        InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp,
-        SelectBoundaryEdgeLoop, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder, UvPlanar,
-        ValidateMesh,
+        CutRectFace, DeleteEdges, DeleteFaces, DeleteVertices, DissolveEdges, EditOperator,
+        ExtrudeFaces, InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam,
+        MarkEdgeSharp, SelectBoundaryEdgeLoop, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder,
+        UvPlanar, ValidateMesh,
     };
 
     #[test]
     fn operator_names_are_unique_and_use_allowed_families() {
         let names = [
             DeleteEdges.name(),
+            DissolveEdges.name(),
             DeleteFaces.name(),
             DeleteVertices.name(),
             CutRectFace.name(),
@@ -248,6 +250,7 @@ mod naming_tests {
     fn frozen_v01_operator_names_match_contract() {
         let actual = [
             DeleteEdges.name(),
+            DissolveEdges.name(),
             DeleteFaces.name(),
             DeleteVertices.name(),
             CutRectFace.name(),
@@ -267,6 +270,7 @@ mod naming_tests {
         ];
         let expected = [
             "edit.delete.edges",
+            "edit.dissolve.edges",
             "edit.delete.faces",
             "edit.delete.vertices",
             "edit.face.cut.rect",

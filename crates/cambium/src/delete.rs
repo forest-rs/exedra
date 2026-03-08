@@ -1,12 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Face/edge deletion edit operators.
+//! Face/edge deletion and dissolve edit operators.
 
+use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 
-use exedra::op::{DeleteFacesError, DeleteVerticesError};
+use exedra::op::{DeleteFacesError, DeleteVerticesError, DissolveEdgesError};
 use exedra::{DeletePolicy, FaceId, HalfEdgeId, op};
 
 use crate::op_common::op_error;
@@ -41,6 +42,22 @@ pub struct DeleteEdgesOutput {
     /// Canonical edge selection that was applied.
     pub edges: EdgeSet,
     /// Canonical interior face set deleted as a consequence.
+    pub faces: FaceSet,
+}
+
+/// Parameters for [`DissolveEdges`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DissolveEdgesParams {
+    /// Canonical undirected edge selection.
+    pub edges: EdgeSet,
+}
+
+/// Typed output from [`DissolveEdges`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DissolveEdgesOutput {
+    /// Canonical edge selection that was applied.
+    pub edges: EdgeSet,
+    /// Canonical merged face set produced by the dissolve.
     pub faces: FaceSet,
 }
 
@@ -199,6 +216,115 @@ impl EditOperator for DeleteEdges {
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
+    }
+
+    fn apply_plan<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
+    }
+}
+
+/// `edit.dissolve.edges` operator.
+///
+/// # Example
+/// ```rust
+/// use cambium::{DissolveEdges, DissolveEdgesParams, OperatorRunner};
+/// use exedra::{BuildParams, FaceId, Mesh};
+///
+/// let mut mesh = Mesh::from_indexed_triangles(
+///     &[
+///         [0.0, 0.0, 0.0],
+///         [1.0, 0.0, 0.0],
+///         [0.0, 1.0, 0.0],
+///         [1.0, 1.0, 0.0],
+///     ],
+///     &[[0, 1, 2], [2, 1, 3]],
+///     &BuildParams::default(),
+/// )
+/// .expect("strip build should succeed");
+/// let edge = mesh
+///     .faces()
+///     .flat_map(|face| mesh.face_loop(face))
+///     .find(|&half_edge| {
+///         let Some(twin) = mesh.twin(half_edge) else {
+///             return false;
+///         };
+///         core::cmp::min(half_edge, twin) == half_edge
+///             && mesh.face(half_edge) != Some(FaceId::OUTSIDE)
+///             && mesh.face(twin) != Some(FaceId::OUTSIDE)
+///     })
+///     .expect("interior edge should exist");
+///
+/// let mut runner = OperatorRunner::new();
+/// let plan = runner
+///     .compile(&mesh, &DissolveEdges, &DissolveEdgesParams { edges: vec![edge] })
+///     .expect("compile should succeed");
+/// let result = runner
+///     .apply_in_place(&mut mesh, &DissolveEdges, &plan)
+///     .expect("dissolve edges should succeed");
+/// assert_eq!(result.output.edges, vec![edge]);
+/// assert_eq!(result.output.faces.len(), 1);
+/// ```
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DissolveEdges;
+
+impl EditOperator for DissolveEdges {
+    type Params = DissolveEdgesParams;
+    type Plan = DissolveEdgesParams;
+    type Output = DissolveEdgesOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.dissolve.edges"
+    }
+
+    fn apply<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let mut edges = params.edges.clone();
+        let canonicalized = canonicalize_edge_set(&mut edges);
+        let faces =
+            op::dissolve_edges(txn, &edges).map_err(|err| map_dissolve_edges_error(ctx, err))?;
+
+        let mut report = OpReport::new(
+            self.name(),
+            Artifacts::new(
+                ctx.policy.limits.max_artifact_items,
+                ctx.policy.limits.max_artifact_bytes,
+            ),
+        );
+        if canonicalized {
+            report.stats.counters.selections_canonicalized = 1;
+        }
+        report.stats.elements_touched.half_edges =
+            u64::try_from(edges.len()).expect("edge count should fit u64");
+        report.stats.elements_touched.faces =
+            u64::try_from(edges.len() * 2).expect("face count should fit u64");
+        report.stats.elements_deleted.faces = report.stats.elements_touched.faces;
+        report.stats.elements_created.faces =
+            u64::try_from(faces.len()).expect("face count should fit u64");
+        report.stats.counters.faces_processed = report.stats.elements_touched.faces;
+
+        Ok((report, DissolveEdgesOutput { edges, faces }))
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        let mut edges = params.edges.clone();
+        let _ = canonicalize_edge_set(&mut edges);
+        validate_dissolve_edges_selection(mesh, &edges)
+            .map_err(|err| map_dissolve_edges_error(ctx, err))?;
+        Ok(DissolveEdgesParams { edges })
     }
 
     fn apply_plan<S: exedra::ChangeSink>(
@@ -507,6 +633,76 @@ fn map_delete_vertices_error(ctx: &OpContext, err: DeleteVerticesError) -> OpErr
     op_error(ctx, kind, code, message)
 }
 
+fn map_dissolve_edges_error(ctx: &OpContext, err: DissolveEdgesError) -> OpError {
+    let (kind, code, message) = match err {
+        DissolveEdgesError::NonCanonicalEdgeSet => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            String::from("edge set must be sorted and deduplicated"),
+        ),
+        DissolveEdgesError::HalfEdgeNotLive { half_edge } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("edge selection contains stale half-edge id: {half_edge}"),
+        ),
+        DissolveEdgesError::BoundaryEdgeNotDissolvable { half_edge } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("boundary edge cannot be dissolved: {half_edge}"),
+        ),
+        DissolveEdgesError::OverlappingEdgeSet => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            String::from("edge set contains overlapping dissolve regions"),
+        ),
+        DissolveEdgesError::MergedLoopTooShort { .. }
+        | DissolveEdgesError::MergedLoopRepeatedVertex { .. } => (
+            OpErrorKind::InvalidMesh,
+            DiagCode::NonManifoldInput,
+            format!("edge dissolve failed: {err}"),
+        ),
+        DissolveEdgesError::FaceDeleteFailed(inner) => {
+            return map_delete_faces_error(ctx, inner);
+        }
+        DissolveEdgesError::FaceCreateFailed(_) => (
+            OpErrorKind::InvalidMesh,
+            DiagCode::NonManifoldInput,
+            format!("edge dissolve failed: {err}"),
+        ),
+    };
+    op_error(ctx, kind, code, message)
+}
+
+fn validate_dissolve_edges_selection(
+    mesh: &exedra::Mesh,
+    edges: &[HalfEdgeId],
+) -> Result<(), DissolveEdgesError> {
+    let mut touched_faces = BTreeSet::<FaceId>::new();
+    for &edge in edges {
+        let twin = mesh.twin(edge).ok_or(DissolveEdgesError::HalfEdgeNotLive {
+            half_edge: edge.index(),
+        })?;
+        if core::cmp::min(edge, twin) != edge {
+            return Err(DissolveEdgesError::NonCanonicalEdgeSet);
+        }
+        let face = mesh.face(edge).ok_or(DissolveEdgesError::HalfEdgeNotLive {
+            half_edge: edge.index(),
+        })?;
+        let twin_face = mesh.face(twin).ok_or(DissolveEdgesError::HalfEdgeNotLive {
+            half_edge: edge.index(),
+        })?;
+        if face == FaceId::OUTSIDE || twin_face == FaceId::OUTSIDE {
+            return Err(DissolveEdgesError::BoundaryEdgeNotDissolvable {
+                half_edge: edge.index(),
+            });
+        }
+        if !touched_faces.insert(face) || !touched_faces.insert(twin_face) {
+            return Err(DissolveEdgesError::OverlappingEdgeSet);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -518,6 +714,7 @@ mod tests {
     use super::{
         DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
         DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
+        DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams,
     };
     use crate::{OpErrorKind, OperatorRunner, mesh_signature, test_support::commit};
 
@@ -602,6 +799,82 @@ mod tests {
             },
         )
         .expect_err("stale edge should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn dissolve_edges_applies_and_returns_typed_output() {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edge(&mesh);
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &DissolveEdges,
+            &DissolveEdgesParams { edges: vec![edge] },
+        )
+        .expect("dissolve edges should succeed");
+        assert_eq!(
+            result.output,
+            DissolveEdgesOutput {
+                edges: vec![edge],
+                faces: result.output.faces.clone(),
+            }
+        );
+        assert_eq!(result.output.faces.len(), 1);
+        assert_eq!(mesh.faces().count(), 1);
+        assert_eq!(result.report.stats.elements_deleted.faces, 2);
+        assert_eq!(result.report.stats.elements_created.faces, 1);
+    }
+
+    #[test]
+    fn dissolve_edges_rejects_boundary_edge() {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = mesh
+            .face_loop(mesh.faces().next().expect("face should exist"))
+            .find(|&half_edge| {
+                let twin = mesh
+                    .twin(half_edge)
+                    .expect("live half-edge should have twin");
+                mesh.face(twin) == Some(FaceId::OUTSIDE)
+            })
+            .expect("boundary edge should exist");
+        let mut runner = OperatorRunner::new();
+        let err = commit(
+            &mut runner,
+            &mut mesh,
+            &DissolveEdges,
+            &DissolveEdgesParams { edges: vec![edge] },
+        )
+        .expect_err("boundary edge should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn dissolve_edges_compile_canonicalizes_and_rejects_stale_edge() {
+        let mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edge(&mesh);
+        let stale = HalfEdgeId::from(Id::new(999, NonZeroU32::MIN));
+        let mut runner = OperatorRunner::new();
+
+        let plan = runner
+            .compile(
+                &mesh,
+                &DissolveEdges,
+                &DissolveEdgesParams {
+                    edges: vec![edge, edge],
+                },
+            )
+            .expect("compile should canonicalize duplicate edge selection");
+        assert_eq!(plan.payload.edges, vec![edge]);
+
+        let err = runner
+            .compile(
+                &mesh,
+                &DissolveEdges,
+                &DissolveEdgesParams { edges: vec![stale] },
+            )
+            .expect_err("stale edge should fail at compile time");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 

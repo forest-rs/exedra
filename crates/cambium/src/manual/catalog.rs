@@ -59,6 +59,7 @@
 //! | --- | --- | --- | --- | --- |
 //! | `edit.delete.faces` | [`DeleteFaces`](crate::DeleteFaces) | [`DeleteFacesParams`](crate::DeleteFacesParams) | [`DeleteFacesOutput`](crate::DeleteFacesOutput) | Deletion counters + selection canonicalization. |
 //! | `edit.delete.edges` | [`DeleteEdges`](crate::DeleteEdges) | [`DeleteEdgesParams`](crate::DeleteEdgesParams) | [`DeleteEdgesOutput`](crate::DeleteEdgesOutput) | Includes impacted face set in output. |
+//! | `edit.dissolve.edges` | [`DissolveEdges`](crate::DissolveEdges) | [`DissolveEdgesParams`](crate::DissolveEdgesParams) | [`DissolveEdgesOutput`](crate::DissolveEdgesOutput) | Merges adjacent face pairs and hands off merged faces for follow-on modeling. |
 //! | `edit.delete.vertices` | [`DeleteVertices`](crate::DeleteVertices) | [`DeleteVerticesParams`](crate::DeleteVerticesParams) | [`DeleteVerticesOutput`](crate::DeleteVerticesOutput) | Valid only for isolated vertices. |
 //! | `edit.face.cut.rect` | [`CutRectFace`](crate::CutRectFace) | [`CutRectFaceParams`](crate::CutRectFaceParams) | [`CutRectFaceOutput`](crate::CutRectFaceOutput) | Cuts one rectangular inner face from one quad face for opening workflows. |
 //! | `edit.face.extrude` | [`ExtrudeFaces`](crate::ExtrudeFaces) | [`ExtrudeFacesParams`](crate::ExtrudeFacesParams) (`mode`: [`ExtrudeMode`](crate::ExtrudeMode)) | [`ExtrudeFacesOutput`](crate::ExtrudeFacesOutput) | Face-edit counters + generated cap/wall outputs; mode controls source-face retention. |

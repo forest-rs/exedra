@@ -21,9 +21,10 @@ use crate::{
 use crate::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
-    EdgeSet, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams,
-    InsetFacesPlan, MarkEdgeSeam, MarkEdgeSeamParams, MarkEdgeSharp, MarkEdgeSharpParams, OpError,
-    OpErrorKind, OpReport, OperatorRunner, PreviewResult, Selection, SelectionKind, TagFaceRegion,
+    DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams, EdgeSet, ExtrudeFaces,
+    ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan,
+    MarkEdgeSeam, MarkEdgeSeamParams, MarkEdgeSharp, MarkEdgeSharpParams, OpError, OpErrorKind,
+    OpReport, OperatorRunner, PreviewResult, Selection, SelectionKind, TagFaceRegion,
     TagFaceRegionParams, VertexSet, canonicalize_face_set, flood_fill_faces_by_region,
     select_boundary_edge_loop, select_faces_by_region,
 };
@@ -71,6 +72,7 @@ enum MeshEditStep {
     DeleteEdges {
         policy: DeletePolicy,
     },
+    DissolveEdges,
     DeleteVertices,
 }
 
@@ -110,6 +112,8 @@ pub enum MeshEditStepPlan {
     DeleteFaces(EditPlan<DeleteFacesPlan>),
     /// Compiled `edit.delete.edges` plan.
     DeleteEdges(EditPlan<DeleteEdgesParams>),
+    /// Compiled `edit.dissolve.edges` plan.
+    DissolveEdges(EditPlan<DissolveEdgesParams>),
     /// Compiled `edit.delete.vertices` plan.
     DeleteVertices(EditPlan<DeleteVerticesParams>),
 }
@@ -276,7 +280,8 @@ pub struct MeshEditPreview {
 /// - `cut_rect` selects `inner_faces`,
 /// - `tag` keeps selected faces,
 /// - `mark_seam` / `mark_sharp` keep selected edges,
-/// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection.
+/// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection,
+/// - `dissolve_edges` selects merged faces.
 ///
 /// Query helpers are compiled as explicit selection-transition steps.
 #[derive(Clone, Debug)]
@@ -428,6 +433,13 @@ impl MeshEdit {
     #[must_use]
     pub fn delete_edges(mut self, policy: DeletePolicy) -> Self {
         self.steps.push(MeshEditStep::DeleteEdges { policy });
+        self
+    }
+
+    /// Adds one edge-dissolve step using the current selected edges.
+    #[must_use]
+    pub fn dissolve_edges(mut self) -> Self {
+        self.steps.push(MeshEditStep::DissolveEdges);
         self
     }
 
@@ -616,6 +628,18 @@ impl MeshEdit {
                     current_selection = Selection::from(EdgeSet::new());
                     compiled_steps.push(MeshEditStepPlan::DeleteEdges(plan));
                 }
+                MeshEditStep::DissolveEdges => {
+                    let current_edges =
+                        require_edge_selection(&current_selection, "edit.dissolve.edges")?;
+                    let params = DissolveEdgesParams {
+                        edges: current_edges,
+                    };
+                    let op = DissolveEdges;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.faces);
+                    compiled_steps.push(MeshEditStepPlan::DissolveEdges(plan));
+                }
                 MeshEditStep::DeleteVertices => {
                     let current_vertices =
                         require_vertex_selection(&current_selection, "edit.delete.vertices")?;
@@ -775,6 +799,17 @@ impl MeshEdit {
                     current_selection = Selection::from(EdgeSet::new());
                     reports.push(report);
                 }
+                MeshEditStepPlan::DissolveEdges(compiled) => {
+                    let op = DissolveEdges;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: DissolveEdgesOutput { faces, .. },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::DeleteVertices(compiled) => {
                     let op = DeleteVertices;
                     let PreviewResult {
@@ -885,6 +920,12 @@ impl MeshEdit {
                     current_selection = Selection::from(EdgeSet::new());
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::DissolveEdges(compiled) => {
+                    let op = DissolveEdges;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::DeleteVertices(compiled) => {
                     let op = DeleteVertices;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -972,6 +1013,10 @@ fn mesh_edit_fingerprint(
                 hasher.write_u64(plan.fingerprint.value());
             }
             MeshEditStepPlan::DeleteEdges(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::DissolveEdges(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -1083,10 +1128,11 @@ mod tests {
 
     use super::MeshEdit;
     use crate::{
-        CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, ExtrudeFaces,
-        ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
-        Selection, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
-        TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
+        CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, DissolveEdges,
+        DissolveEdgesParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces,
+        InsetFacesParams, OperatorRunner, Selection, SolidifyFaces, SolidifyFacesParams,
+        SolidifyMode, TagFaceRegion, TagFaceRegionParams, mesh_signature,
+        test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1182,6 +1228,37 @@ mod tests {
                 .iter()
                 .any(|diag| diag.message.contains("requires faces selection"))
         );
+    }
+
+    #[test]
+    fn mesh_edit_dissolve_edges_matches_direct_operator() {
+        let (mesh, _, edge) = shared_edge_mesh();
+
+        let flow = MeshEdit::new()
+            .select(Selection::from(vec![edge]))
+            .dissolve_edges();
+
+        let mut flow_runner = OperatorRunner::new();
+        let mut flow_mesh = mesh.clone();
+        let flow_result = flow
+            .apply(&mut flow_runner, &mut flow_mesh)
+            .expect("fluent dissolve should succeed");
+
+        let mut direct_runner = OperatorRunner::new();
+        let mut direct_mesh = mesh.clone();
+        let direct_plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &DissolveEdges,
+                &DissolveEdgesParams { edges: vec![edge] },
+            )
+            .expect("direct dissolve compile should succeed");
+        let direct = direct_runner
+            .apply_in_place(&mut direct_mesh, &DissolveEdges, &direct_plan)
+            .expect("direct dissolve should succeed");
+
+        assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(flow_result.selection, Selection::from(direct.output.faces));
     }
 
     #[test]
