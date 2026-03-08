@@ -92,6 +92,19 @@ pub(crate) fn propagate_frame_edge_attrs<S: exedra::ChangeSink>(
     );
 }
 
+pub(crate) fn set_face_edge_sharpness_for_vertices<S: exedra::ChangeSink>(
+    txn: &mut exedra::EditSession<'_, S>,
+    face: FaceId,
+    a: VertexId,
+    b: VertexId,
+    sharpness: f32,
+) {
+    let Some(corner) = find_face_edge_for_vertices(txn.mesh(), face, a, b) else {
+        return;
+    };
+    let _ = op::set_edge_sharpness(txn, corner, sharpness);
+}
+
 fn find_face_edge_for_vertices(
     mesh: &exedra::Mesh,
     face: FaceId,

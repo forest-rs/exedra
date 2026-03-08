@@ -14,7 +14,7 @@ use crate::math::FloatExt;
 use crate::op_common::op_error;
 use crate::patch::attrs::{
     SourceEdgeAttrs, propagate_edge_attrs_for_vertices, propagate_face_corner_uvs,
-    propagate_frame_edge_attrs,
+    propagate_frame_edge_attrs, set_face_edge_sharpness_for_vertices,
 };
 use crate::patch::connect::{FrameOrientationState, add_frame_face_with_orientation};
 use crate::patch::duplicate::{create_vertex_copies, map_vertex_loop};
@@ -440,7 +440,10 @@ impl EditOperator for PokeFaces {
 /// - `face.region` is copied from source face to generated walls/cap,
 /// - generated corner UVs are copied from source per-vertex UVs when authored,
 /// - generated edge seam/sharpness follow [`OpContext::policy`](crate::OpContext::policy)
-///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear.
+///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear,
+/// - semantic feature boundaries are marked sharp by default: cap-to-wall
+///   boundaries are hard, wall columns remain smooth, and keep-source
+///   source-to-wall boundaries are hard.
 ///
 /// Mode behavior:
 /// - [`ExtrudeMode::ShellOpen`] removes source faces before creating walls/caps.
@@ -592,6 +595,16 @@ impl EditOperator for ExtrudeFaces {
                     plan.edge_attrs[boundary.edge_index],
                     &ctx.policy.propagate,
                 );
+                mark_frame_feature_edges_sharp(
+                    txn,
+                    wall,
+                    current,
+                    next,
+                    current_cap,
+                    next_cap,
+                    params.mode == ExtrudeMode::KeepSource,
+                    true,
+                );
                 let uv_current = plan.vertex_uvs[boundary.edge_index];
                 let uv_next = plan.vertex_uvs[(boundary.edge_index + 1) % plan.vertex_uvs.len()];
                 let uv_map = [
@@ -637,6 +650,7 @@ impl EditOperator for ExtrudeFaces {
                     plan.edge_attrs[i],
                     &ctx.policy.propagate,
                 );
+                set_face_edge_sharpness_for_vertices(txn, top, current_cap, next_cap, 1.0);
             }
             let cap_uv_map = cap_loop
                 .iter()
@@ -694,6 +708,9 @@ impl EditOperator for ExtrudeFaces {
 /// - generated corner UVs are copied from source per-vertex UVs when authored,
 /// - generated edge seam/sharpness follow [`OpContext::policy`](crate::OpContext::policy)
 ///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear.
+///
+/// v0.1 default shading semantics:
+/// - inset remains smooth by default; it does not mark frame boundaries sharp.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct InsetFaces;
 
@@ -927,6 +944,10 @@ impl EditOperator for InsetFaces {
 ///
 /// This is a dedicated shell-thickness operator built on the face-edit kernel
 /// path used by [`ExtrudeFaces`], with a stable user-facing name and defaults.
+///
+/// v0.1 default shading semantics:
+/// - shell feature boundaries are marked sharp by default,
+/// - wall columns remain smooth.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SolidifyFaces;
 
@@ -998,7 +1019,8 @@ impl EditOperator for SolidifyFaces {
 /// - supports one live quad face,
 /// - requires rectangle corners to lie inside the source face,
 /// - propagates `face.region` and source outer-edge seam/sharpness to the
-///   corresponding frame outer edges.
+///   corresponding frame outer edges,
+/// - marks the generated opening perimeter sharp by default.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct CutRectFace;
 
@@ -1272,6 +1294,16 @@ impl EditOperator for CutRectFace {
                 plan.source_edge_attrs[i],
                 &ctx.policy.propagate,
             );
+            mark_frame_feature_edges_sharp(
+                txn,
+                frame_face,
+                current,
+                next,
+                current_inner,
+                next_inner,
+                false,
+                true,
+            );
             frame_faces.push(frame_face);
         }
 
@@ -1481,6 +1513,24 @@ fn average_uv(uvs: &[Option<[f32; 2]>]) -> Option<[f32; 2]> {
     Some([sum[0] * inv, sum[1] * inv])
 }
 
+fn mark_frame_feature_edges_sharp<S: exedra::ChangeSink>(
+    txn: &mut exedra::EditSession<'_, S>,
+    face: FaceId,
+    current: VertexId,
+    next: VertexId,
+    current_inner: VertexId,
+    next_inner: VertexId,
+    mark_outer: bool,
+    mark_inner: bool,
+) {
+    if mark_outer {
+        set_face_edge_sharpness_for_vertices(txn, face, current, next, 1.0);
+    }
+    if mark_inner {
+        set_face_edge_sharpness_for_vertices(txn, face, current_inner, next_inner, 1.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -1534,6 +1584,28 @@ mod tests {
         let len = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
         assert!(len > 0.0, "face normal should be non-degenerate");
         [sum[0] / len, sum[1] / len, sum[2] / len]
+    }
+
+    fn wall_edge_sharpness_classes(
+        mesh: &Mesh,
+        face: exedra::FaceId,
+    ) -> Vec<([f32; 3], [f32; 3], f32)> {
+        mesh.face_loop(face)
+            .map(|corner| {
+                let from = mesh
+                    .from_vertex(corner)
+                    .and_then(|vertex| mesh.vertex_position(vertex).copied())
+                    .expect("from position should exist");
+                let to = mesh
+                    .to_vertex(corner)
+                    .and_then(|vertex| mesh.vertex_position(vertex).copied())
+                    .expect("to position should exist");
+                let sharpness = mesh
+                    .edge_sharpness(corner)
+                    .expect("sharpness layer should exist on generated edge");
+                (from, to, sharpness)
+            })
+            .collect::<Vec<_>>()
     }
 
     #[test]
@@ -2071,6 +2143,41 @@ mod tests {
     }
 
     #[test]
+    fn solidify_marks_shell_feature_boundaries_sharp_by_default() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &SolidifyFaces,
+            &SolidifyFacesParams {
+                faces: vec![face],
+                mode: SolidifyMode::KeepSource,
+                thickness: 0.3,
+            },
+        )
+        .expect("solidify should succeed");
+
+        for wall in &result.output.wall_faces {
+            let edges = wall_edge_sharpness_classes(&mesh, *wall);
+            let horizontal = edges
+                .iter()
+                .filter(|(from, to, _)| (from[2] - to[2]).abs() < 1e-5)
+                .map(|(_, _, sharpness)| *sharpness)
+                .collect::<Vec<_>>();
+            let vertical = edges
+                .iter()
+                .filter(|(from, to, _)| (from[2] - to[2]).abs() >= 1e-5)
+                .map(|(_, _, sharpness)| *sharpness)
+                .collect::<Vec<_>>();
+            assert_eq!(horizontal.len(), 2);
+            assert_eq!(vertical.len(), 2);
+            assert_eq!(horizontal, vec![1.0, 1.0]);
+            assert_eq!(vertical, vec![0.0, 0.0]);
+        }
+    }
+
+    #[test]
     fn solidify_keep_source_rejects_closed_box_face() {
         let mut mesh = cube_mesh();
         let face = mesh
@@ -2127,10 +2234,53 @@ mod tests {
         for corner in mesh.face_loop(cap) {
             assert!(uv_layer.get(corner.as_id()).is_some());
             assert_eq!(mesh.edge_seam(corner), Some(true));
-            assert_eq!(mesh.edge_sharpness(corner), Some(2.5));
+            assert_eq!(mesh.edge_sharpness(corner), Some(1.0));
         }
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn extrude_marks_cap_boundary_sharp_and_wall_columns_smooth_by_default() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &ExtrudeFaces,
+            &ExtrudeFacesParams {
+                faces: vec![face],
+                mode: ExtrudeMode::ShellOpen,
+                distance: 0.5,
+            },
+        )
+        .expect("extrude should succeed");
+
+        for wall in &result.output.wall_faces {
+            let edges = wall_edge_sharpness_classes(&mesh, *wall);
+            let horizontal = edges
+                .iter()
+                .filter(|(from, to, _)| (from[2] - to[2]).abs() < 1e-5)
+                .collect::<Vec<_>>();
+            let vertical = edges
+                .iter()
+                .filter(|(from, to, _)| (from[2] - to[2]).abs() >= 1e-5)
+                .collect::<Vec<_>>();
+            assert_eq!(horizontal.len(), 2);
+            assert_eq!(vertical.len(), 2);
+            let top = horizontal
+                .iter()
+                .find(|(from, to, _)| from[2] > 1e-5 && to[2] > 1e-5)
+                .expect("top wall edge should exist");
+            let bottom = horizontal
+                .iter()
+                .find(|(from, to, _)| from[2].abs() < 1e-5 && to[2].abs() < 1e-5)
+                .expect("bottom wall edge should exist");
+            assert_eq!(top.2, 1.0);
+            assert_eq!(bottom.2, 0.0);
+            assert_eq!(vertical[0].2, 0.0);
+            assert_eq!(vertical[1].2, 0.0);
+        }
     }
 
     #[test]
@@ -2205,6 +2355,31 @@ mod tests {
         assert_eq!(mesh.vertices().count(), 8);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn cut_rect_marks_opening_perimeter_sharp_by_default() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &CutRectFace,
+            &CutRectFaceParams {
+                face,
+                frame_origin: [0.0, 0.0, 0.0],
+                frame_u: [1.0, 0.0, 0.0],
+                frame_v: [0.0, 1.0, 0.0],
+                rect_min: [0.25, 0.2],
+                rect_max: [0.75, 0.8],
+            },
+        )
+        .expect("cut_rect should succeed");
+
+        let inner = result.output.inner_faces[0];
+        for corner in mesh.face_loop(inner) {
+            assert_eq!(mesh.edge_sharpness(corner), Some(1.0));
+        }
     }
 
     #[test]
