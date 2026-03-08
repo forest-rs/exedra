@@ -442,8 +442,8 @@ impl EditOperator for PokeFaces {
 /// - generated edge seam/sharpness follow [`OpContext::policy`](crate::OpContext::policy)
 ///   `propagate.edge_attr` for boundary-parallel edges; support edges default clear,
 /// - semantic feature boundaries are marked sharp by default: cap-to-wall
-///   boundaries are hard, wall columns remain smooth, and keep-source
-///   source-to-wall boundaries are hard.
+///   boundaries, wall columns, and keep-source source-to-wall boundaries are
+///   hard.
 ///
 /// Mode behavior:
 /// - [`ExtrudeMode::ShellOpen`] removes source faces before creating walls/caps.
@@ -608,6 +608,7 @@ impl EditOperator for ExtrudeFaces {
                             .twin(boundary.edge)
                             .and_then(|twin| txn.mesh().face(twin))
                             .is_some_and(|face| face != FaceId::OUTSIDE),
+                    true,
                     true,
                 );
                 let uv_current = plan.vertex_uvs[boundary.edge_index];
@@ -872,6 +873,7 @@ impl EditOperator for InsetFaces {
                     next_inset,
                     false,
                     true,
+                    false,
                 );
                 let uv_current = face_plan.vertex_uvs[boundary.edge_index];
                 let uv_next =
@@ -963,8 +965,7 @@ impl EditOperator for InsetFaces {
 /// path used by [`ExtrudeFaces`], with a stable user-facing name and defaults.
 ///
 /// v0.1 default shading semantics:
-/// - shell feature boundaries are marked sharp by default,
-/// - wall columns remain smooth.
+/// - shell feature boundaries and wall columns are marked sharp by default.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SolidifyFaces;
 
@@ -1320,6 +1321,7 @@ impl EditOperator for CutRectFace {
                 next_inner,
                 false,
                 true,
+                false,
             );
             frame_faces.push(frame_face);
         }
@@ -1539,12 +1541,17 @@ fn mark_frame_feature_edges_sharp<S: exedra::ChangeSink>(
     next_inner: VertexId,
     mark_outer: bool,
     mark_inner: bool,
+    mark_columns: bool,
 ) {
     if mark_outer {
         set_face_edge_sharpness_for_vertices(txn, face, current, next, 1.0);
     }
     if mark_inner {
         set_face_edge_sharpness_for_vertices(txn, face, current_inner, next_inner, 1.0);
+    }
+    if mark_columns {
+        set_face_edge_sharpness_for_vertices(txn, face, current, current_inner, 1.0);
+        set_face_edge_sharpness_for_vertices(txn, face, next, next_inner, 1.0);
     }
 }
 
@@ -2190,7 +2197,7 @@ mod tests {
             assert_eq!(horizontal.len(), 2);
             assert_eq!(vertical.len(), 2);
             assert_eq!(horizontal, vec![1.0, 1.0]);
-            assert_eq!(vertical, vec![0.0, 0.0]);
+            assert_eq!(vertical, vec![1.0, 1.0]);
         }
     }
 
@@ -2258,7 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn extrude_marks_cap_boundary_sharp_and_wall_columns_smooth_by_default() {
+    fn extrude_marks_cap_boundary_and_wall_columns_sharp_by_default() {
         let (mut mesh, face) = quad_mesh();
         let mut runner = OperatorRunner::new();
         let result = commit(
@@ -2295,8 +2302,8 @@ mod tests {
                 .expect("bottom wall edge should exist");
             assert_eq!(top.2, 1.0);
             assert_eq!(bottom.2, 0.0);
-            assert_eq!(vertical[0].2, 0.0);
-            assert_eq!(vertical[1].2, 0.0);
+            assert_eq!(vertical[0].2, 1.0);
+            assert_eq!(vertical[1].2, 1.0);
         }
     }
 
@@ -2340,8 +2347,8 @@ mod tests {
             assert_eq!(vertical.len(), 2);
             assert_eq!(horizontal[0].2, 1.0);
             assert_eq!(horizontal[1].2, 1.0);
-            assert_eq!(vertical[0].2, 0.0);
-            assert_eq!(vertical[1].2, 0.0);
+            assert_eq!(vertical[0].2, 1.0);
+            assert_eq!(vertical[1].2, 1.0);
         }
     }
 
@@ -2528,10 +2535,104 @@ mod tests {
             solidify.output.wall_faces.iter().any(|wall| {
                 wall_edge_sharpness_classes(&mesh, *wall)
                     .iter()
-                    .filter(|(from, to, _)| (from[2] - to[2]).abs() < 1e-5)
                     .all(|(_, _, sharpness)| (*sharpness - 1.0).abs() < 1e-5)
             }),
-            "opening side walls should have hard horizontal feature edges"
+            "opening side walls should have hard feature edges"
+        );
+    }
+
+    fn normal_variants_at_position(mesh: &Mesh, position: [f32; 3]) -> Vec<[u32; 3]> {
+        let (tri, _) = mesh.to_trimesh(&exedra::ExtractParams::default());
+        let mut variants = tri
+            .positions
+            .iter()
+            .zip(tri.normals.iter())
+            .filter_map(|(candidate, normal)| {
+                ((candidate[0] - position[0]).abs() < 1.0e-5
+                    && (candidate[1] - position[1]).abs() < 1.0e-5
+                    && (candidate[2] - position[2]).abs() < 1.0e-5)
+                    .then_some([
+                        normal[0].to_bits(),
+                        normal[1].to_bits(),
+                        normal[2].to_bits(),
+                    ])
+            })
+            .collect::<Vec<_>>();
+        variants.sort_unstable();
+        variants.dedup();
+        variants
+    }
+
+    #[test]
+    fn wall_opening_corner_extracts_three_normal_variants() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 3.0, 0.0],
+                [0.0, 3.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("wall build should succeed");
+        let face = mesh.faces().next().expect("wall face should exist");
+        let mut runner = OperatorRunner::new();
+        let cut = commit(
+            &mut runner,
+            &mut mesh,
+            &CutRectFace,
+            &CutRectFaceParams {
+                face,
+                frame_origin: [0.0, 0.0, 0.0],
+                frame_u: [2.0, 0.0, 0.0],
+                frame_v: [0.0, 3.0, 0.0],
+                rect_min: [0.25, 0.2],
+                rect_max: [0.75, 0.8],
+            },
+        )
+        .expect("cut_rect should succeed");
+        let top_left_opening_corner = cut
+            .output
+            .boundary_edges
+            .iter()
+            .filter_map(|&edge| {
+                let vertex = mesh.to_vertex(edge)?;
+                let position = mesh.vertex_position(vertex).copied()?;
+                Some(position)
+            })
+            .min_by(|a, b| {
+                b[1].total_cmp(&a[1])
+                    .then_with(|| a[0].total_cmp(&b[0]))
+                    .then_with(|| a[2].total_cmp(&b[2]))
+            })
+            .expect("cut output should expose opening boundary vertices");
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &DeleteFaces,
+            &DeleteFacesParams {
+                faces: cut.output.inner_faces.clone(),
+                policy: exedra::DeletePolicy::KeepIsolated,
+            },
+        )
+        .expect("delete inner face should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let _ = commit(
+            &mut runner,
+            &mut mesh,
+            &SolidifyFaces,
+            &SolidifyFacesParams {
+                faces,
+                mode: SolidifyMode::KeepSource,
+                thickness: 0.15,
+            },
+        )
+        .expect("solidify should succeed");
+        let variants = normal_variants_at_position(&mesh, top_left_opening_corner);
+        assert_eq!(
+            variants.len(),
+            3,
+            "variants at {top_left_opening_corner:?}: {variants:?}"
         );
     }
 
