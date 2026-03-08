@@ -99,9 +99,9 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
         for z in 0..seg_z {
             let face = [
                 vertex(seg_x, y, z, &mut builder),
-                vertex(seg_x, y, z + 1, &mut builder),
-                vertex(seg_x, y + 1, z + 1, &mut builder),
                 vertex(seg_x, y + 1, z, &mut builder),
+                vertex(seg_x, y + 1, z + 1, &mut builder),
+                vertex(seg_x, y, z + 1, &mut builder),
             ];
             builder.add_face(&face).expect("+X");
         }
@@ -110,9 +110,9 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
         for z in 0..seg_z {
             let face = [
                 vertex(0, y, z + 1, &mut builder),
-                vertex(0, y, z, &mut builder),
-                vertex(0, y + 1, z, &mut builder),
                 vertex(0, y + 1, z + 1, &mut builder),
+                vertex(0, y + 1, z, &mut builder),
+                vertex(0, y, z, &mut builder),
             ];
             builder.add_face(&face).expect("-X");
         }
@@ -121,9 +121,9 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
         for z in 0..seg_z {
             let face = [
                 vertex(x, seg_y, z, &mut builder),
-                vertex(x + 1, seg_y, z, &mut builder),
-                vertex(x + 1, seg_y, z + 1, &mut builder),
                 vertex(x, seg_y, z + 1, &mut builder),
+                vertex(x + 1, seg_y, z + 1, &mut builder),
+                vertex(x + 1, seg_y, z, &mut builder),
             ];
             builder.add_face(&face).expect("+Y");
         }
@@ -132,9 +132,9 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
         for z in 0..seg_z {
             let face = [
                 vertex(x, 0, z, &mut builder),
-                vertex(x, 0, z + 1, &mut builder),
-                vertex(x + 1, 0, z + 1, &mut builder),
                 vertex(x + 1, 0, z, &mut builder),
+                vertex(x + 1, 0, z + 1, &mut builder),
+                vertex(x, 0, z + 1, &mut builder),
             ];
             builder.add_face(&face).expect("-Y");
         }
@@ -143,9 +143,9 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
         for y in 0..seg_y {
             let face = [
                 vertex(x, y, seg_z, &mut builder),
-                vertex(x, y + 1, seg_z, &mut builder),
-                vertex(x + 1, y + 1, seg_z, &mut builder),
                 vertex(x + 1, y, seg_z, &mut builder),
+                vertex(x + 1, y + 1, seg_z, &mut builder),
+                vertex(x, y + 1, seg_z, &mut builder),
             ];
             builder.add_face(&face).expect("+Z");
         }
@@ -154,9 +154,9 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
         for y in 0..seg_y {
             let face = [
                 vertex(x, y, 0, &mut builder),
-                vertex(x + 1, y, 0, &mut builder),
-                vertex(x + 1, y + 1, 0, &mut builder),
                 vertex(x, y + 1, 0, &mut builder),
+                vertex(x + 1, y + 1, 0, &mut builder),
+                vertex(x + 1, y, 0, &mut builder),
             ];
             builder.add_face(&face).expect("-Z");
         }
@@ -254,6 +254,27 @@ mod tests {
         BoxParams, REGION_SIDE_X_NEG, REGION_SIDE_X_POS, REGION_SIDE_Y_NEG, REGION_SIDE_Y_POS,
         REGION_SIDE_Z_NEG, REGION_SIDE_Z_POS, box_primitive,
     };
+
+    fn face_normal(mesh: &exedra::Mesh, face: exedra::FaceId) -> [f32; 3] {
+        let corners = mesh.face_loop(face).collect::<Vec<_>>();
+        let mut sum = [0.0_f32, 0.0_f32, 0.0_f32];
+        for i in 0..corners.len() {
+            let a = mesh
+                .to_vertex(corners[i])
+                .and_then(|vertex| mesh.vertex_position(vertex))
+                .expect("corner position should exist");
+            let b = mesh
+                .to_vertex(corners[(i + 1) % corners.len()])
+                .and_then(|vertex| mesh.vertex_position(vertex))
+                .expect("corner position should exist");
+            sum[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            sum[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            sum[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        let len = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+        assert!(len > 0.0, "face normal should be non-degenerate");
+        [sum[0] / len, sum[1] / len, sum[2] / len]
+    }
 
     #[test]
     fn box_primitive_builds_six_face_mesh() {
@@ -367,6 +388,23 @@ mod tests {
             })
             .count();
         assert_eq!(sharp_edges, 12);
+    }
+
+    #[test]
+    fn box_faces_are_wound_outward_by_region() {
+        let primitive = box_primitive(&BoxParams::default());
+        for face in primitive.mesh.faces() {
+            let normal = face_normal(&primitive.mesh, face);
+            match primitive.face_region.get(face) {
+                REGION_SIDE_X_POS => assert!(normal[0] > 0.99, "+X face should point outward"),
+                REGION_SIDE_X_NEG => assert!(normal[0] < -0.99, "-X face should point outward"),
+                REGION_SIDE_Y_POS => assert!(normal[1] > 0.99, "+Y face should point outward"),
+                REGION_SIDE_Y_NEG => assert!(normal[1] < -0.99, "-Y face should point outward"),
+                REGION_SIDE_Z_POS => assert!(normal[2] > 0.99, "+Z face should point outward"),
+                REGION_SIDE_Z_NEG => assert!(normal[2] < -0.99, "-Z face should point outward"),
+                other => panic!("unexpected region {other:?}"),
+            }
+        }
     }
 
     #[test]
