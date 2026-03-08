@@ -11,14 +11,16 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use cambium::{
-    BakeFaceNormals, BakeFaceNormalsParams, CutRectFace, CutRectFaceParams, CylinderAxis,
-    DeleteFaces, DeleteFacesParams, DiagCode, DiagLevel, DissolveEdges, DissolveEdgesParams,
-    DissolveVertices, DissolveVerticesParams, ExtractParams, ExtrudeFaces, ExtrudeFacesParams,
-    ExtrudeMode, InsetFaces, InsetFacesParams, Mesh, NormalParams, NormalsSource, OperatorRunner,
-    PokeFaces, PokeFacesParams, SmoothFaceNormals, SmoothFaceNormalsParams, SolidifyFaces,
-    SolidifyFacesParams, SolidifyMode, TagFaceRegion, TagFaceRegionParams, UvBox, UvBoxParams,
-    UvCylinder, UvCylinderParams, UvPlanar, UvPlanarParams, UvPlane, UvScope,
-    flood_fill_faces_by_region, mesh_signature, select_faces_by_region,
+    BakeFaceNormals, BakeFaceNormalsParams, BridgeBoundaryLoops, BridgeBoundaryLoopsParams,
+    CutRectFace, CutRectFaceParams, CylinderAxis, DeleteFaces, DeleteFacesParams, DiagCode,
+    DiagLevel, DissolveEdges, DissolveEdgesParams, DissolveVertices, DissolveVerticesParams,
+    ExtractParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
+    Mesh, NormalParams, NormalsSource, OperatorRunner, PokeFaces, PokeFacesParams,
+    SelectBoundaryEdgeLoop, SelectBoundaryEdgeLoopParams, SmoothFaceNormals,
+    SmoothFaceNormalsParams, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
+    TagFaceRegionParams, UvBox, UvBoxParams, UvCylinder, UvCylinderParams, UvPlanar,
+    UvPlanarParams, UvPlane, UvScope, flood_fill_faces_by_region, mesh_signature,
+    select_faces_by_region,
 };
 use exedra::attr;
 use exedra::{ChangeSetBuilder, op};
@@ -128,6 +130,7 @@ pub fn list_scenarios_json() -> String {
         "pedestal",
         "wall_openings",
         "poked_grid",
+        "bridge_loops",
         "cylinder_normals",
         "region_select_flow",
         "uv_projection_gallery",
@@ -163,6 +166,7 @@ fn run_scenario_impl(name: &str, options: &ScenarioOptions) -> Result<ScenarioRe
         "pedestal" => run_pedestal(options),
         "wall_openings" => run_wall_openings(options),
         "poked_grid" => run_poked_grid(options),
+        "bridge_loops" => run_bridge_loops(options),
         "cylinder_normals" => run_cylinder_normals(options),
         "region_select_flow" => run_region_select_flow(options),
         "uv_projection_gallery" => run_uv_projection_gallery(options),
@@ -1288,6 +1292,143 @@ fn run_poked_grid(options: &ScenarioOptions) -> Result<ScenarioResponse, String>
     })
 }
 
+fn run_bridge_loops(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
+    let mut mesh = Mesh::from_polygons(
+        &[
+            [-1.20, 0.00, 0.00],
+            [-1.41, 0.49, 0.00],
+            [-1.90, 0.70, 0.00],
+            [-2.39, 0.49, 0.00],
+            [-2.60, 0.00, 0.00],
+            [-2.39, -0.49, 0.00],
+            [-1.90, -0.70, 0.00],
+            [-1.41, -0.49, 0.00],
+            [2.00, 0.20, 0.80],
+            [1.80, 0.69, 0.80],
+            [1.31, 0.90, 0.80],
+            [0.82, 0.69, 0.80],
+            [0.60, 0.20, 0.80],
+            [0.82, -0.29, 0.80],
+            [1.31, -0.50, 0.80],
+            [1.80, -0.29, 0.80],
+        ],
+        &[&[0, 1, 2, 3, 4, 5, 6, 7], &[8, 15, 14, 13, 12, 11, 10, 9]],
+    )
+    .map_err(|err| format!("bridge_loops setup failed: {err}"))?;
+    let mut steps = Vec::<StepSnapshot>::new();
+    let mut runner = OperatorRunner::new();
+
+    if options.include_initial {
+        steps.push(snapshot_from_mesh(
+            &mesh,
+            "initial",
+            None,
+            None,
+            StepStats::default(),
+            &[],
+        ));
+    }
+
+    let faces = mesh.faces().collect::<Vec<_>>();
+    if faces.len() != 2 {
+        return Err("bridge_loops requires exactly two source faces".to_string());
+    }
+    let left_seed = mesh
+        .face_edge(faces[0])
+        .ok_or("bridge_loops missing left face edge")?;
+    let right_seed = mesh
+        .face_edge(faces[1])
+        .ok_or("bridge_loops missing right face edge")?;
+
+    let select_plan = runner
+        .compile(
+            &mesh,
+            &SelectBoundaryEdgeLoop,
+            &SelectBoundaryEdgeLoopParams {
+                seed_edge: left_seed,
+            },
+        )
+        .map_err(format_op_error)?;
+    let select_fp = select_plan.fingerprint.value();
+    let select_result = runner
+        .apply_in_place(&mut mesh, &SelectBoundaryEdgeLoop, &select_plan)
+        .map_err(format_op_error)?;
+    let loop_a = select_result.output;
+    steps.push(snapshot_from_report(
+        &mesh,
+        "select.loop.left",
+        "select.edgeloop.boundary",
+        select_fp,
+        &select_result.report,
+        &runner,
+    ));
+
+    let loop_b = runner
+        .compile(
+            &mesh,
+            &SelectBoundaryEdgeLoop,
+            &SelectBoundaryEdgeLoopParams {
+                seed_edge: right_seed,
+            },
+        )
+        .map_err(format_op_error)
+        .and_then(|plan| {
+            runner
+                .apply_in_place(&mut mesh, &SelectBoundaryEdgeLoop, &plan)
+                .map_err(format_op_error)
+        })?
+        .output;
+
+    let bridge_plan = runner
+        .compile(
+            &mesh,
+            &BridgeBoundaryLoops,
+            &BridgeBoundaryLoopsParams { loop_a, loop_b },
+        )
+        .map_err(format_op_error)?;
+    let bridge_fp = bridge_plan.fingerprint.value();
+    let bridge_result = runner
+        .apply_in_place(&mut mesh, &BridgeBoundaryLoops, &bridge_plan)
+        .map_err(format_op_error)?;
+    let bridge_faces = bridge_result.output.bridge_faces.clone();
+    steps.push(snapshot_from_report(
+        &mesh,
+        "bridge.loops",
+        "edit.bridge.loops",
+        bridge_fp,
+        &bridge_result.report,
+        &runner,
+    ));
+
+    let tag_plan = runner
+        .compile(
+            &mesh,
+            &TagFaceRegion,
+            &TagFaceRegionParams {
+                region_id: 42,
+                faces: bridge_faces,
+            },
+        )
+        .map_err(format_op_error)?;
+    let tag_fp = tag_plan.fingerprint.value();
+    let tag_result = runner
+        .apply_in_place(&mut mesh, &TagFaceRegion, &tag_plan)
+        .map_err(format_op_error)?;
+    steps.push(snapshot_from_report(
+        &mesh,
+        "tag.bridge",
+        "tag.face.region",
+        tag_fp,
+        &tag_result.report,
+        &runner,
+    ));
+
+    Ok(ScenarioResponse {
+        scenario: "bridge_loops".to_string(),
+        steps,
+    })
+}
+
 fn run_cylinder_normals(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
     let primitive = exedra_primitives::cylinder(&CylinderParams::default());
     let mut mesh = primitive.mesh;
@@ -1703,6 +1844,7 @@ mod tests {
         "pedestal",
         "wall_openings",
         "poked_grid",
+        "bridge_loops",
         "cylinder_normals",
         "region_select_flow",
         "uv_projection_gallery",
@@ -1857,6 +1999,34 @@ mod tests {
         assert_ne!(
             response.steps[1].mesh.normals, response.steps[2].mesh.normals,
             "flat and smooth steps should produce different normals"
+        );
+    }
+
+    #[test]
+    fn bridge_loops_scenario_selects_then_bridges_then_tags() {
+        let response =
+            run_scenario_impl("bridge_loops", &ScenarioOptions::default()).expect("scenario runs");
+        assert_eq!(response.scenario, "bridge_loops");
+        let labels = response
+            .steps
+            .iter()
+            .map(|step| step.label.as_str())
+            .collect::<alloc::vec::Vec<_>>();
+        assert_eq!(
+            labels,
+            alloc::vec!["initial", "select.loop.left", "bridge.loops", "tag.bridge"]
+        );
+        assert_eq!(
+            response.steps[1].operator.as_deref(),
+            Some("select.edgeloop.boundary")
+        );
+        assert_eq!(
+            response.steps[2].operator.as_deref(),
+            Some("edit.bridge.loops")
+        );
+        assert_eq!(
+            response.steps[3].operator.as_deref(),
+            Some("tag.face.region")
         );
     }
 }

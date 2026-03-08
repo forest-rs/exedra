@@ -7,6 +7,7 @@ Current scenarios:
 - `boxy_hat`
 - `wall_openings`
 - `poked_grid`
+- `bridge_loops` (select left boundary loop, bridge two parallel loops, then tag the bridge strip)
 - `cylinder_normals` (cylinder side faces rebaked from flat to smooth authored normals)
 - `region_select_flow`
 - `uv_projection_gallery`
