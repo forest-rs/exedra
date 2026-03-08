@@ -240,10 +240,12 @@ function stepToGeometry(step: StepSnapshot, regionMode: boolean): BufferGeometry
   if (step.mesh.uvs.length > 0) {
     geometry.setAttribute("uv", new Float32BufferAttribute(step.mesh.uvs, 2));
   }
+  if (step.mesh.normals.length === step.mesh.positions.length) {
+    geometry.setAttribute("normal", new Float32BufferAttribute(step.mesh.normals, 3));
+  }
 
   if (regionMode) {
     const deindexed = geometry.toNonIndexed();
-    deindexed.computeVertexNormals();
     const position = deindexed.getAttribute("position");
     const colors = new Float32Array(position.count * 3);
     // Map region IDs to distinct hues via golden-angle spacing.
@@ -291,8 +293,9 @@ function stepToGeometry(step: StepSnapshot, regionMode: boolean): BufferGeometry
     return deindexed;
   }
 
-  // v0.1 bridge emits zero normals; always compute from geometry.
-  geometry.computeVertexNormals();
+  if (!geometry.getAttribute("normal")) {
+    geometry.computeVertexNormals();
+  }
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;
