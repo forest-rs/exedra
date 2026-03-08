@@ -31,7 +31,7 @@ The scenario picker currently includes:
 - `wall_openings`: wall, rectangular cuts, deletes to open door/window, solidify.
 - `region_select_flow`: tag faces, select/flood by region, inspect deterministic counters.
 - `uv_projection_gallery`: planar/box/cylinder projection pass sequence.
-- `topology_delete_repair`: delete-face + delete-edge topology edits on a box.
+- `topology_dissolve_repair`: planar grid-strip topology story showing split-edge, dissolve-vertex, then dissolve-edge simplification.
 - `primitive_gallery`: quad, box, cylinder, grid, cone, torus, uv-sphere, and icosphere constructor outputs.
 
 ## Viewer Controls

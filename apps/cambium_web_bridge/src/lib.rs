@@ -11,14 +11,16 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use cambium::{
-    CutRectFace, CutRectFaceParams, CylinderAxis, DeleteEdges, DeleteEdgesParams, DeleteFaces,
-    DeleteFacesParams, DiagCode, DiagLevel, ExtractParams, ExtrudeFaces, ExtrudeFacesParams,
-    ExtrudeMode, InsetFaces, InsetFacesParams, Mesh, OperatorRunner, SolidifyFaces,
-    SolidifyFacesParams, SolidifyMode, TagFaceRegion, TagFaceRegionParams, UvBox, UvBoxParams,
-    UvCylinder, UvCylinderParams, UvPlanar, UvPlanarParams, UvPlane, UvScope,
-    flood_fill_faces_by_region, mesh_signature, select_faces_by_region,
+    CutRectFace, CutRectFaceParams, CylinderAxis, DeleteFaces, DeleteFacesParams, DiagCode,
+    DiagLevel, DissolveEdges, DissolveEdgesParams, DissolveVertices, DissolveVerticesParams,
+    ExtractParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesParams,
+    Mesh, OperatorRunner, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
+    TagFaceRegionParams, UvBox, UvBoxParams, UvCylinder, UvCylinderParams, UvPlanar,
+    UvPlanarParams, UvPlane, UvScope, flood_fill_faces_by_region, mesh_signature,
+    select_faces_by_region,
 };
 use exedra::attr;
+use exedra::{ChangeSetBuilder, op};
 use exedra_primitives::{
     BoxParams, CapFill, ConeParams, CylinderParams, GridParams, IcosphereParams, QuadParams,
     TorusParams, UvSphereParams,
@@ -126,7 +128,7 @@ pub fn list_scenarios_json() -> String {
         "wall_openings",
         "region_select_flow",
         "uv_projection_gallery",
-        "topology_delete_repair",
+        "topology_dissolve_repair",
         "primitive_gallery",
     ])
     .expect("scenario list should serialize")
@@ -159,7 +161,7 @@ fn run_scenario_impl(name: &str, options: &ScenarioOptions) -> Result<ScenarioRe
         "wall_openings" => run_wall_openings(options),
         "region_select_flow" => run_region_select_flow(options),
         "uv_projection_gallery" => run_uv_projection_gallery(options),
-        "topology_delete_repair" => run_topology_delete_repair(options),
+        "topology_dissolve_repair" => run_topology_dissolve_repair(options),
         "primitive_gallery" => run_primitive_gallery(options),
         _ => Err(format!("unknown scenario `{name}`")),
     }
@@ -323,7 +325,7 @@ fn apply_primitive_regions(mesh: &mut Mesh, face_region: &exedra_primitives::Fac
     let mut txn = mesh.edit();
     for face in faces {
         let region = face_region.get(face);
-        let _ = exedra::op::set_face_region(&mut txn, face, region.0);
+        let _ = op::set_face_region(&mut txn, face, region.0);
     }
     let _: () = txn.finish();
 }
@@ -1091,14 +1093,15 @@ fn run_uv_projection_gallery(options: &ScenarioOptions) -> Result<ScenarioRespon
     })
 }
 
-fn run_topology_delete_repair(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
-    let mut mesh = exedra_primitives::box_primitive(&BoxParams::default()).mesh;
+fn run_topology_dissolve_repair(options: &ScenarioOptions) -> Result<ScenarioResponse, String> {
+    let mut mesh = exedra_primitives::grid(&GridParams {
+        size: [3.0, 1.0],
+        segments: [3, 1],
+        centered: true,
+    })
+    .mesh;
     let mut steps = Vec::<StepSnapshot>::new();
     let mut runner = OperatorRunner::new();
-    let cap_face = mesh
-        .faces()
-        .max_by(|a, b| face_centroid_z(&mesh, *a).total_cmp(&face_centroid_z(&mesh, *b)))
-        .ok_or("topology_delete_repair setup produced no faces".to_string())?;
 
     if options.include_initial {
         steps.push(snapshot_from_mesh(
@@ -1111,56 +1114,104 @@ fn run_topology_delete_repair(options: &ScenarioOptions) -> Result<ScenarioRespo
         ));
     }
 
-    let delete_face_plan = runner
+    let edge = find_canonical_interior_edge(&mesh)
+        .ok_or("topology_dissolve_repair expected one canonical interior edge".to_string())?;
+    let split_stats = {
+        let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+        let inserted = op::split_edge(&mut edit, edge, &exedra::PropagatePolicy::default())
+            .map_err(|err| err.to_string())?;
+        let changes = edit.finish();
+        steps.push(snapshot_from_mesh(
+            &mesh,
+            "split.edge.center",
+            Some("kernel.edge.split"),
+            None,
+            StepStats {
+                faces_processed: 0,
+                created_vertices: u64::try_from(changes.created_vertices.len())
+                    .expect("count should fit u64"),
+                created_faces: u64::try_from(changes.created_faces.len())
+                    .expect("count should fit u64"),
+                deleted_faces: u64::try_from(changes.deleted_faces.len())
+                    .expect("count should fit u64"),
+                deleted_vertices: u64::try_from(changes.deleted_vertices.len())
+                    .expect("count should fit u64"),
+                corners_written: 0,
+                edges_written: 0,
+            },
+            &[],
+        ));
+        inserted
+    };
+
+    let dissolve_vertex_plan = runner
         .compile(
             &mesh,
-            &DeleteFaces,
-            &DeleteFacesParams {
-                faces: vec![cap_face],
-                policy: cambium::DeletePolicy::KeepIsolated,
+            &DissolveVertices,
+            &DissolveVerticesParams {
+                vertices: vec![split_stats],
             },
         )
         .map_err(format_op_error)?;
-    let delete_face_fp = delete_face_plan.fingerprint.value();
-    let delete_face_result = runner
-        .apply_in_place(&mut mesh, &DeleteFaces, &delete_face_plan)
+    let dissolve_vertex_fp = dissolve_vertex_plan.fingerprint.value();
+    let dissolve_vertex_result = runner
+        .apply_in_place(&mut mesh, &DissolveVertices, &dissolve_vertex_plan)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
         &mesh,
-        "delete.face.cap",
-        "edit.delete.faces",
-        delete_face_fp,
-        &delete_face_result.report,
+        "dissolve.vertex.center",
+        "edit.dissolve.vertices",
+        dissolve_vertex_fp,
+        &dissolve_vertex_result.report,
         &runner,
     ));
 
     let edge = find_canonical_interior_edge(&mesh)
-        .ok_or("topology_delete_repair expected one canonical interior edge".to_string())?;
-    let delete_edge_plan = runner
+        .ok_or("topology_dissolve_repair expected one canonical interior edge".to_string())?;
+    let first_dissolve_plan = runner
         .compile(
             &mesh,
-            &DeleteEdges,
-            &DeleteEdgesParams {
-                edges: vec![edge],
-                policy: cambium::DeletePolicy::KeepIsolated,
-            },
+            &DissolveEdges,
+            &DissolveEdgesParams { edges: vec![edge] },
         )
         .map_err(format_op_error)?;
-    let delete_edge_fp = delete_edge_plan.fingerprint.value();
-    let delete_edge_result = runner
-        .apply_in_place(&mut mesh, &DeleteEdges, &delete_edge_plan)
+    let first_dissolve_fp = first_dissolve_plan.fingerprint.value();
+    let first_dissolve_result = runner
+        .apply_in_place(&mut mesh, &DissolveEdges, &first_dissolve_plan)
         .map_err(format_op_error)?;
     steps.push(snapshot_from_report(
         &mesh,
-        "delete.edge.span",
-        "edit.delete.edges",
-        delete_edge_fp,
-        &delete_edge_result.report,
+        "dissolve.edge.left",
+        "edit.dissolve.edges",
+        first_dissolve_fp,
+        &first_dissolve_result.report,
+        &runner,
+    ));
+
+    let edge = find_canonical_interior_edge(&mesh)
+        .ok_or("topology_dissolve_repair expected a second canonical interior edge".to_string())?;
+    let second_dissolve_plan = runner
+        .compile(
+            &mesh,
+            &DissolveEdges,
+            &DissolveEdgesParams { edges: vec![edge] },
+        )
+        .map_err(format_op_error)?;
+    let second_dissolve_fp = second_dissolve_plan.fingerprint.value();
+    let second_dissolve_result = runner
+        .apply_in_place(&mut mesh, &DissolveEdges, &second_dissolve_plan)
+        .map_err(format_op_error)?;
+    steps.push(snapshot_from_report(
+        &mesh,
+        "dissolve.edge.right",
+        "edit.dissolve.edges",
+        second_dissolve_fp,
+        &second_dissolve_result.report,
         &runner,
     ));
 
     Ok(ScenarioResponse {
-        scenario: "topology_delete_repair".to_string(),
+        scenario: "topology_dissolve_repair".to_string(),
         steps,
     })
 }
@@ -1429,22 +1480,6 @@ fn face_centroid_y(mesh: &Mesh, face: cambium::FaceId) -> f32 {
     if count == 0 { 0.0 } else { sum / count as f32 }
 }
 
-fn face_centroid_z(mesh: &Mesh, face: cambium::FaceId) -> f32 {
-    let mut sum = 0.0_f32;
-    let mut count = 0_u32;
-    for corner in mesh.face_loop(face) {
-        let Some(vertex) = mesh.to_vertex(corner) else {
-            continue;
-        };
-        let Some(position) = mesh.vertex_position(vertex) else {
-            continue;
-        };
-        sum += position[2];
-        count = count.saturating_add(1);
-    }
-    if count == 0 { 0.0 } else { sum / count as f32 }
-}
-
 fn find_canonical_interior_edge(mesh: &Mesh) -> Option<cambium::HalfEdgeId> {
     mesh.faces()
         .flat_map(|face| mesh.face_loop(face))
@@ -1522,7 +1557,7 @@ mod tests {
         "wall_openings",
         "region_select_flow",
         "uv_projection_gallery",
-        "topology_delete_repair",
+        "topology_dissolve_repair",
         "primitive_gallery",
     ];
 
