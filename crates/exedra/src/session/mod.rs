@@ -545,6 +545,94 @@ impl fmt::Display for DissolveEdgesError {
 
 impl core::error::Error for DissolveEdgesError {}
 
+/// Structured vertex-dissolve error from [`crate::op::dissolve_vertices`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DissolveVerticesError {
+    /// Vertex set must be sorted and deduplicated.
+    NonCanonicalVertexSet,
+    /// Vertex ID is stale or not live.
+    VertexNotLive {
+        /// Stale vertex index.
+        vertex: u32,
+    },
+    /// Boundary vertices are not supported in v0.1 dissolve.
+    BoundaryVertexNotDissolvable {
+        /// Boundary vertex index.
+        vertex: u32,
+    },
+    /// Only interior valence-2 vertices are supported in v0.1 dissolve.
+    UnsupportedVertexDegree {
+        /// Vertex index.
+        vertex: u32,
+        /// Incident half-edge count observed during preflight.
+        degree: usize,
+    },
+    /// Vertex star topology is not supported for dissolve.
+    UnsupportedVertexTopology {
+        /// Vertex index.
+        vertex: u32,
+    },
+    /// One affected face would become too small after removing the vertex.
+    IncidentFaceTooSmall {
+        /// Vertex index.
+        vertex: u32,
+        /// Face index.
+        face: u32,
+        /// Face degree before dissolve.
+        degree: usize,
+    },
+    /// Selected vertices must not touch the same source face.
+    OverlappingVertexSet,
+    /// Deleting the source faces failed.
+    FaceDeleteFailed(DeleteFacesError),
+    /// Deleting the dissolved vertices failed.
+    VertexDeleteFailed(DeleteVerticesError),
+    /// Rebuilding one shortened face failed.
+    FaceCreateFailed(AddFaceError),
+}
+
+impl fmt::Display for DissolveVerticesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonCanonicalVertexSet => {
+                f.write_str("vertex set must be sorted and deduplicated")
+            }
+            Self::VertexNotLive { vertex } => write!(f, "vertex is not live: {vertex}"),
+            Self::BoundaryVertexNotDissolvable { vertex } => {
+                write!(f, "boundary vertex cannot be dissolved: {vertex}")
+            }
+            Self::UnsupportedVertexDegree { vertex, degree } => write!(
+                f,
+                "vertex dissolve requires an interior valence-2 vertex: {vertex} has degree {degree}"
+            ),
+            Self::UnsupportedVertexTopology { vertex } => {
+                write!(
+                    f,
+                    "vertex dissolve does not support this vertex star: {vertex}"
+                )
+            }
+            Self::IncidentFaceTooSmall {
+                vertex,
+                face,
+                degree,
+            } => write!(
+                f,
+                "dissolving vertex {vertex} would shrink face {face} below a valid polygon (degree {degree})"
+            ),
+            Self::OverlappingVertexSet => f.write_str(
+                "dissolve vertex set must not contain vertices that share a source face",
+            ),
+            Self::FaceDeleteFailed(err) => write!(f, "failed to delete source faces: {err}"),
+            Self::VertexDeleteFailed(err) => {
+                write!(f, "failed to delete dissolved vertices: {err}")
+            }
+            Self::FaceCreateFailed(err) => write!(f, "failed to recreate dissolved face: {err}"),
+        }
+    }
+}
+
+impl core::error::Error for DissolveVerticesError {}
+
 /// Structured edge-split error from [`crate::op::split_edge`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SplitEdgeError {
@@ -1197,6 +1285,10 @@ mod tests {
             &mut self,
             edges: &[HalfEdgeId],
         ) -> Result<Vec<FaceId>, DissolveEdgesError>;
+        fn dissolve_vertices(
+            &mut self,
+            vertices: &[VertexId],
+        ) -> Result<Vec<FaceId>, DissolveVerticesError>;
         fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError>;
     }
 
@@ -1213,6 +1305,10 @@ mod tests {
         ) -> Result<ChangeSet, DeleteEdgesError>;
         fn dissolve_edges(&mut self, edges: &[HalfEdgeId])
         -> Result<ChangeSet, DissolveEdgesError>;
+        fn dissolve_vertices(
+            &mut self,
+            vertices: &[VertexId],
+        ) -> Result<ChangeSet, DissolveVerticesError>;
         fn delete_vertices(
             &mut self,
             vertices: &[VertexId],
@@ -1308,6 +1404,13 @@ mod tests {
             op::dissolve_edges(self, edges)
         }
 
+        fn dissolve_vertices(
+            &mut self,
+            vertices: &[VertexId],
+        ) -> Result<Vec<FaceId>, DissolveVerticesError> {
+            op::dissolve_vertices(self, vertices)
+        }
+
         fn delete_vertices(&mut self, vertices: &[VertexId]) -> Result<(), DeleteVerticesError> {
             op::delete_vertices(self, vertices)
         }
@@ -1340,6 +1443,15 @@ mod tests {
         ) -> Result<ChangeSet, DissolveEdgesError> {
             let mut txn = self.edit_with(ChangeSetBuilder::new());
             let _ = op::dissolve_edges(&mut txn, edges)?;
+            Ok(txn.finish())
+        }
+
+        fn dissolve_vertices(
+            &mut self,
+            vertices: &[VertexId],
+        ) -> Result<ChangeSet, DissolveVerticesError> {
+            let mut txn = self.edit_with(ChangeSetBuilder::new());
+            let _ = op::dissolve_vertices(&mut txn, vertices)?;
             Ok(txn.finish())
         }
 
@@ -1447,6 +1559,24 @@ mod tests {
             &crate::mesh::BuildParams::default(),
         )
         .expect("three-triangle strip should build")
+    }
+
+    fn two_disjoint_strips_mesh() -> Mesh {
+        Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [4.0, 1.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+            &crate::mesh::BuildParams::default(),
+        )
+        .expect("two disjoint strips should build")
     }
 
     fn canonical_interior_edges(mesh: &Mesh) -> Vec<HalfEdgeId> {
@@ -2539,6 +2669,115 @@ mod tests {
             .dissolve_edges(&edges)
             .expect_err("overlapping dissolve set should fail");
         assert_eq!(err, DissolveEdgesError::OverlappingEdgeSet);
+    }
+
+    #[test]
+    fn dissolve_vertices_split_edge_inverse_restores_valid_strip() {
+        let (mut mesh, shared) = split_source_mesh();
+        let inserted = {
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+            let inserted = txn
+                .split_edge(shared, &PropagatePolicy::default())
+                .expect("split should succeed");
+            let _ = txn.finish();
+            inserted
+        };
+
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        let faces = txn
+            .dissolve_vertices(&[inserted])
+            .expect("dissolve should succeed");
+        let mut changes = txn.finish();
+
+        assert_eq!(faces.len(), 2);
+        assert_eq!(mesh.faces().count(), 2);
+        assert_eq!(mesh.vertices().count(), 4);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+        assert_eq!(changes.deleted_vertices, vec![inserted]);
+        assert_eq!(drained_faces(&mut changes.dirty).len(), 4);
+    }
+
+    #[test]
+    fn dissolve_vertices_rejects_boundary_vertex() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad build should succeed");
+        let vertex = mesh.vertices().next().expect("vertex should exist");
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        let err = txn
+            .dissolve_vertices(&[vertex])
+            .expect_err("boundary vertex must fail");
+        assert_eq!(
+            err,
+            DissolveVerticesError::BoundaryVertexNotDissolvable {
+                vertex: vertex.index()
+            }
+        );
+    }
+
+    #[test]
+    fn dissolve_vertices_mesh_entry_tracks_deleted_vertex() {
+        let (mut mesh, shared) = split_source_mesh();
+        let inserted = {
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+            let inserted = txn
+                .split_edge(shared, &PropagatePolicy::default())
+                .expect("split should succeed");
+            let _ = txn.finish();
+            inserted
+        };
+
+        let changes = mesh
+            .dissolve_vertices(&[inserted])
+            .expect("mesh entry dissolve should succeed");
+        assert_eq!(changes.deleted_vertices, vec![inserted]);
+        assert_eq!(mesh.vertices().count(), 4);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn dissolve_vertices_accepts_disjoint_batch() {
+        let mut mesh = two_disjoint_strips_mesh();
+        let edges = canonical_interior_edges(&mesh);
+        assert_eq!(edges.len(), 2);
+        let inserted = {
+            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+            let mut inserted = edges
+                .iter()
+                .map(|&edge| {
+                    txn.split_edge(edge, &PropagatePolicy::default())
+                        .expect("split should succeed")
+                })
+                .collect::<Vec<_>>();
+            let _ = txn.finish();
+            inserted.sort_unstable();
+            inserted
+        };
+
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        let faces = txn
+            .dissolve_vertices(&inserted)
+            .expect("disjoint dissolve batch should succeed");
+        let mut changes = txn.finish();
+
+        assert_eq!(faces.len(), 4);
+        assert_eq!(mesh.faces().count(), 4);
+        assert_eq!(mesh.vertices().count(), 8);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+        assert_eq!(changes.deleted_vertices, inserted);
+        assert_eq!(changes.deleted_faces.len(), 4);
+        assert_eq!(changes.created_faces.len(), 4);
+        assert_eq!(drained_faces(&mut changes.dirty).len(), 8);
     }
 
     #[test]

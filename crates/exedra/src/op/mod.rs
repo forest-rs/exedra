@@ -57,6 +57,7 @@ mod delete_edges;
 mod delete_faces;
 mod delete_vertices;
 mod dissolve_edges;
+mod dissolve_vertices;
 mod set_corner_uv;
 mod set_edge_seam;
 mod set_edge_sharpness;
@@ -67,7 +68,7 @@ mod split_face;
 
 pub use crate::session::{
     AddFaceError, DeleteEdgesError, DeleteFacesError, DeleteVerticesError, DissolveEdgesError,
-    SplitEdgeError, SplitFaceError,
+    DissolveVerticesError, SplitEdgeError, SplitFaceError,
 };
 pub use add_face::add_face;
 pub use add_vertex::add_vertex;
@@ -75,6 +76,7 @@ pub use delete_edges::delete_edges;
 pub use delete_faces::delete_faces;
 pub use delete_vertices::delete_vertices;
 pub use dissolve_edges::dissolve_edges;
+pub use dissolve_vertices::dissolve_vertices;
 pub use set_corner_uv::{SetCornerUvError, set_corner_uv};
 pub use set_edge_seam::{SetEdgeSeamError, set_edge_seam};
 pub use set_edge_sharpness::{SetEdgeSharpnessError, set_edge_sharpness};
@@ -302,5 +304,47 @@ mod tests {
         );
         assert_eq!(mesh.edge_seam(corner), Some(true));
         assert_eq!(mesh.edge_sharpness(corner), Some(2.5));
+    }
+
+    #[test]
+    fn dissolve_vertices_succeeds() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [2, 1, 3]],
+            &BuildParams::default(),
+        )
+        .expect("strip build should succeed");
+        let shared = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .find(|&half_edge| {
+                let Some(twin) = mesh.twin(half_edge) else {
+                    return false;
+                };
+                core::cmp::min(half_edge, twin) == half_edge
+                    && mesh.face(half_edge) != Some(FaceId::OUTSIDE)
+                    && mesh.face(twin) != Some(FaceId::OUTSIDE)
+            })
+            .expect("interior edge should exist");
+
+        let mut session = mesh.edit();
+        let inserted = op::split_edge(&mut session, shared, &PropagatePolicy::default())
+            .expect("split should succeed");
+        let _: () = session.finish();
+
+        let mut session = mesh.edit();
+        let faces =
+            op::dissolve_vertices(&mut session, &[inserted]).expect("dissolve should succeed");
+        let _: () = session.finish();
+
+        assert_eq!(faces.len(), 2);
+        assert_eq!(mesh.faces().count(), 2);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
     }
 }
