@@ -21,12 +21,13 @@ use crate::{
 use crate::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
     DeleteFacesParams, DeleteFacesPlan, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
-    DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams, EdgeSet, ExtrudeFaces,
-    ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan,
-    MarkEdgeSeam, MarkEdgeSeamParams, MarkEdgeSharp, MarkEdgeSharpParams, OpError, OpErrorKind,
-    OpReport, OperatorRunner, PreviewResult, Selection, SelectionKind, TagFaceRegion,
-    TagFaceRegionParams, VertexSet, canonicalize_face_set, flood_fill_faces_by_region,
-    select_boundary_edge_loop, select_faces_by_region,
+    DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams, DissolveVertices,
+    DissolveVerticesOutput, DissolveVerticesParams, EdgeSet, ExtrudeFaces, ExtrudeFacesParams,
+    ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, InsetFacesPlan, MarkEdgeSeam,
+    MarkEdgeSeamParams, MarkEdgeSharp, MarkEdgeSharpParams, OpError, OpErrorKind, OpReport,
+    OperatorRunner, PreviewResult, Selection, SelectionKind, TagFaceRegion, TagFaceRegionParams,
+    VertexSet, canonicalize_face_set, flood_fill_faces_by_region, select_boundary_edge_loop,
+    select_faces_by_region,
 };
 
 #[derive(Clone, Debug)]
@@ -74,6 +75,7 @@ enum MeshEditStep {
     },
     DissolveEdges,
     DeleteVertices,
+    DissolveVertices,
 }
 
 /// Deterministic compiled workflow plan for [`MeshEdit`].
@@ -116,6 +118,8 @@ pub enum MeshEditStepPlan {
     DissolveEdges(EditPlan<DissolveEdgesParams>),
     /// Compiled `edit.delete.vertices` plan.
     DeleteVertices(EditPlan<DeleteVerticesParams>),
+    /// Compiled `edit.dissolve.vertices` plan.
+    DissolveVertices(EditPlan<DissolveVerticesParams>),
 }
 
 /// One compiled selection-query step inside [`MeshEditPlan`].
@@ -282,6 +286,7 @@ pub struct MeshEditPreview {
 /// - `mark_seam` / `mark_sharp` keep selected edges,
 /// - `delete_faces` / `delete_edges` / `delete_vertices` clear selection,
 /// - `dissolve_edges` selects merged faces.
+/// - `dissolve_vertices` selects rebuilt faces.
 ///
 /// Query helpers are compiled as explicit selection-transition steps.
 #[derive(Clone, Debug)]
@@ -447,6 +452,13 @@ impl MeshEdit {
     #[must_use]
     pub fn delete_vertices(mut self) -> Self {
         self.steps.push(MeshEditStep::DeleteVertices);
+        self
+    }
+
+    /// Adds one vertex-dissolve step using the current selected vertices.
+    #[must_use]
+    pub fn dissolve_vertices(mut self) -> Self {
+        self.steps.push(MeshEditStep::DissolveVertices);
         self
     }
 
@@ -652,6 +664,18 @@ impl MeshEdit {
                     current_selection = Selection::from(VertexSet::new());
                     compiled_steps.push(MeshEditStepPlan::DeleteVertices(plan));
                 }
+                MeshEditStep::DissolveVertices => {
+                    let current_vertices =
+                        require_vertex_selection(&current_selection, "edit.dissolve.vertices")?;
+                    let params = DissolveVerticesParams {
+                        vertices: current_vertices,
+                    };
+                    let op = DissolveVertices;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.faces);
+                    compiled_steps.push(MeshEditStepPlan::DissolveVertices(plan));
+                }
             }
         }
 
@@ -821,6 +845,17 @@ impl MeshEdit {
                     current_selection = Selection::from(VertexSet::new());
                     reports.push(report);
                 }
+                MeshEditStepPlan::DissolveVertices(compiled) => {
+                    let op = DissolveVertices;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: DissolveVerticesOutput { faces, .. },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(faces);
+                    reports.push(report);
+                }
             }
         }
 
@@ -933,6 +968,12 @@ impl MeshEdit {
                     current_selection = Selection::from(VertexSet::new());
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::DissolveVertices(compiled) => {
+                    let op = DissolveVertices;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.faces);
+                    reports.push(result.report);
+                }
             }
         }
 
@@ -1021,6 +1062,10 @@ fn mesh_edit_fingerprint(
                 hasher.write_u64(plan.fingerprint.value());
             }
             MeshEditStepPlan::DeleteVertices(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::DissolveVertices(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -1129,10 +1174,10 @@ mod tests {
     use super::MeshEdit;
     use crate::{
         CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, DissolveEdges,
-        DissolveEdgesParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces,
-        InsetFacesParams, OperatorRunner, Selection, SolidifyFaces, SolidifyFacesParams,
-        SolidifyMode, TagFaceRegion, TagFaceRegionParams, mesh_signature,
-        test_support::shared_edge_mesh,
+        DissolveEdgesParams, DissolveVertices, DissolveVerticesParams, ExtrudeFaces,
+        ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
+        Selection, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
+        TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1255,6 +1300,49 @@ mod tests {
             .expect("direct dissolve compile should succeed");
         let direct = direct_runner
             .apply_in_place(&mut direct_mesh, &DissolveEdges, &direct_plan)
+            .expect("direct dissolve should succeed");
+
+        assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(flow_result.selection, Selection::from(direct.output.faces));
+    }
+
+    #[test]
+    fn mesh_edit_dissolve_vertices_matches_direct_operator() {
+        let (mesh, _, edge) = shared_edge_mesh();
+        let inserted = {
+            let mut working = mesh.clone();
+            let mut edit = working.edit();
+            let inserted =
+                exedra::op::split_edge(&mut edit, edge, &exedra::PropagatePolicy::default())
+                    .expect("split should succeed");
+            let _: () = edit.finish();
+            (working, inserted)
+        };
+        let (mesh, inserted) = inserted;
+
+        let flow = MeshEdit::new()
+            .select(Selection::from(vec![inserted]))
+            .dissolve_vertices();
+
+        let mut flow_runner = OperatorRunner::new();
+        let mut flow_mesh = mesh.clone();
+        let flow_result = flow
+            .apply(&mut flow_runner, &mut flow_mesh)
+            .expect("fluent dissolve should succeed");
+
+        let mut direct_runner = OperatorRunner::new();
+        let mut direct_mesh = mesh.clone();
+        let direct_plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &DissolveVertices,
+                &DissolveVerticesParams {
+                    vertices: vec![inserted],
+                },
+            )
+            .expect("direct dissolve compile should succeed");
+        let direct = direct_runner
+            .apply_in_place(&mut direct_mesh, &DissolveVertices, &direct_plan)
             .expect("direct dissolve should succeed");
 
         assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));

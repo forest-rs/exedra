@@ -6,8 +6,11 @@
 use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
-use exedra::op::{DeleteFacesError, DeleteVerticesError, DissolveEdgesError};
+use exedra::op::{
+    DeleteFacesError, DeleteVerticesError, DissolveEdgesError, DissolveVerticesError,
+};
 use exedra::{DeletePolicy, FaceId, HalfEdgeId, op};
 
 use crate::op_common::op_error;
@@ -109,6 +112,22 @@ pub struct DeleteVerticesParams {
 pub struct DeleteVerticesOutput {
     /// Canonical vertex selection that was applied.
     pub vertices: VertexSet,
+}
+
+/// Parameters for [`DissolveVertices`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DissolveVerticesParams {
+    /// Canonical vertex selection to dissolve.
+    pub vertices: VertexSet,
+}
+
+/// Typed output from [`DissolveVertices`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DissolveVerticesOutput {
+    /// Canonical vertex selection that was applied.
+    pub vertices: VertexSet,
+    /// Canonical rebuilt face set produced by the dissolve.
+    pub faces: FaceSet,
 }
 
 /// `edit.delete.edges` operator.
@@ -550,6 +569,132 @@ impl EditOperator for DeleteVertices {
     }
 }
 
+/// `edit.dissolve.vertices` operator.
+///
+/// # Example
+/// ```rust
+/// use cambium::{DissolveVertices, DissolveVerticesParams, OperatorRunner};
+/// use exedra::{BuildParams, Mesh, PropagatePolicy, op};
+///
+/// let mut mesh = Mesh::from_indexed_triangles(
+///     &[
+///         [0.0, 0.0, 0.0],
+///         [1.0, 0.0, 0.0],
+///         [0.0, 1.0, 0.0],
+///         [1.0, 1.0, 0.0],
+///     ],
+///     &[[0, 1, 2], [2, 1, 3]],
+///     &BuildParams::default(),
+/// )
+/// .expect("strip build should succeed");
+/// let edge = mesh
+///     .faces()
+///     .flat_map(|face| mesh.face_loop(face))
+///     .find(|&half_edge| {
+///         let Some(twin) = mesh.twin(half_edge) else {
+///             return false;
+///         };
+///         core::cmp::min(half_edge, twin) == half_edge
+///             && mesh.face(half_edge) != Some(exedra::FaceId::OUTSIDE)
+///             && mesh.face(twin) != Some(exedra::FaceId::OUTSIDE)
+///     })
+///     .expect("interior edge should exist");
+/// let inserted = {
+///     let mut edit = mesh.edit();
+///     let vertex = op::split_edge(&mut edit, edge, &PropagatePolicy::default())
+///         .expect("split should succeed");
+///     let _: () = edit.finish();
+///     vertex
+/// };
+///
+/// let mut runner = OperatorRunner::new();
+/// let plan = runner
+///     .compile(
+///         &mesh,
+///         &DissolveVertices,
+///         &DissolveVerticesParams {
+///             vertices: vec![inserted],
+///         },
+///     )
+///     .expect("compile should succeed");
+/// let result = runner
+///     .apply_in_place(&mut mesh, &DissolveVertices, &plan)
+///     .expect("dissolve vertices should succeed");
+/// assert_eq!(result.output.vertices, vec![inserted]);
+/// assert_eq!(result.output.faces.len(), 2);
+/// ```
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DissolveVertices;
+
+impl EditOperator for DissolveVertices {
+    type Params = DissolveVerticesParams;
+    type Plan = DissolveVerticesParams;
+    type Output = DissolveVerticesOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.dissolve.vertices"
+    }
+
+    fn apply<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let mut vertices = params.vertices.clone();
+        let canonicalized = canonicalize_vertex_set(&mut vertices);
+        let mut faces = op::dissolve_vertices(txn, &vertices)
+            .map_err(|err| map_dissolve_vertices_error(ctx, err))?;
+        canonicalize_face_set(&mut faces);
+
+        let mut report = OpReport::new(
+            self.name(),
+            Artifacts::new(
+                ctx.policy.limits.max_artifact_items,
+                ctx.policy.limits.max_artifact_bytes,
+            ),
+        );
+        if canonicalized {
+            report.stats.counters.selections_canonicalized = 1;
+        }
+        report.stats.elements_touched.vertices =
+            u64::try_from(vertices.len()).expect("vertex count should fit u64");
+        report.stats.elements_touched.faces =
+            u64::try_from(faces.len()).expect("face count should fit u64");
+        report.stats.elements_deleted.vertices = report.stats.elements_touched.vertices;
+        report.stats.elements_deleted.faces =
+            u64::try_from(faces.len()).expect("face count should fit u64");
+        report.stats.elements_created.faces =
+            u64::try_from(faces.len()).expect("face count should fit u64");
+        report.stats.counters.faces_processed =
+            u64::try_from(faces.len()).expect("face count should fit u64");
+
+        Ok((report, DissolveVerticesOutput { vertices, faces }))
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        let mut vertices = params.vertices.clone();
+        let _ = canonicalize_vertex_set(&mut vertices);
+        validate_dissolve_vertices_selection(mesh, &vertices)
+            .map_err(|err| map_dissolve_vertices_error(ctx, err))?;
+        Ok(DissolveVerticesParams { vertices })
+    }
+
+    fn apply_plan<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        self.apply(txn, plan, ctx)
+    }
+}
+
 fn incident_faces_for_edges(mesh: &exedra::Mesh, edges: &[HalfEdgeId]) -> Result<FaceSet, String> {
     let mut faces = FaceSet::new();
     for &edge in edges {
@@ -633,6 +778,175 @@ fn map_delete_vertices_error(ctx: &OpContext, err: DeleteVerticesError) -> OpErr
     op_error(ctx, kind, code, message)
 }
 
+fn map_dissolve_vertices_error(ctx: &OpContext, err: DissolveVerticesError) -> OpError {
+    let (kind, code, message) = match err {
+        DissolveVerticesError::NonCanonicalVertexSet => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            String::from("vertex set must be sorted and deduplicated"),
+        ),
+        DissolveVerticesError::VertexNotLive { vertex } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("vertex selection contains stale vertex id: {vertex}"),
+        ),
+        DissolveVerticesError::BoundaryVertexNotDissolvable { vertex } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("boundary vertex cannot be dissolved: {vertex}"),
+        ),
+        DissolveVerticesError::UnsupportedVertexDegree { vertex, degree } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!(
+                "vertex dissolve requires an interior valence-2 vertex: {vertex} has degree {degree}"
+            ),
+        ),
+        DissolveVerticesError::UnsupportedVertexTopology { vertex } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("vertex dissolve does not support this vertex star: {vertex}"),
+        ),
+        DissolveVerticesError::IncidentFaceTooSmall { .. } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("vertex dissolve failed: {err}"),
+        ),
+        DissolveVerticesError::OverlappingVertexSet => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            String::from("vertex set contains overlapping dissolve regions"),
+        ),
+        DissolveVerticesError::FaceDeleteFailed(inner) => {
+            return map_delete_faces_error(ctx, inner);
+        }
+        DissolveVerticesError::VertexDeleteFailed(inner) => {
+            return map_delete_vertices_error(ctx, inner);
+        }
+        DissolveVerticesError::FaceCreateFailed(_) => (
+            OpErrorKind::InvalidMesh,
+            DiagCode::NonManifoldInput,
+            format!("vertex dissolve failed: {err}"),
+        ),
+    };
+    op_error(ctx, kind, code, message)
+}
+
+fn validate_dissolve_vertices_selection(
+    mesh: &exedra::Mesh,
+    vertices: &[exedra::VertexId],
+) -> Result<(), DissolveVerticesError> {
+    let mut touched_faces = BTreeSet::<FaceId>::new();
+    for &vertex in vertices {
+        if mesh.vertex_position(vertex).is_none() {
+            return Err(DissolveVerticesError::VertexNotLive {
+                vertex: vertex.index(),
+            });
+        }
+        let star = mesh.vertex_star(vertex).collect::<Vec<_>>();
+        if star.len() != 2 {
+            return Err(DissolveVerticesError::UnsupportedVertexDegree {
+                vertex: vertex.index(),
+                degree: star.len(),
+            });
+        }
+        let mut faces = FaceSet::new();
+        for half_edge in star {
+            let face = mesh
+                .face(half_edge)
+                .ok_or(DissolveVerticesError::VertexNotLive {
+                    vertex: vertex.index(),
+                })?;
+            if face == FaceId::OUTSIDE {
+                return Err(DissolveVerticesError::BoundaryVertexNotDissolvable {
+                    vertex: vertex.index(),
+                });
+            }
+            if !faces.contains(&face) {
+                let degree = mesh.face_loop(face).count();
+                if degree < 4 {
+                    return Err(DissolveVerticesError::IncidentFaceTooSmall {
+                        vertex: vertex.index(),
+                        face: face.index(),
+                        degree,
+                    });
+                }
+                faces.push(face);
+            }
+        }
+        canonicalize_face_set(&mut faces);
+        if faces.len() != 2 {
+            return Err(DissolveVerticesError::UnsupportedVertexTopology {
+                vertex: vertex.index(),
+            });
+        }
+        for face in faces {
+            if !touched_faces.insert(face) {
+                return Err(DissolveVerticesError::OverlappingVertexSet);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn two_disjoint_strip_mesh() -> exedra::Mesh {
+    exedra::Mesh::from_indexed_triangles(
+        &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 1.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ],
+        &[[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+        &exedra::BuildParams::default(),
+    )
+    .expect("two disjoint strips should build")
+}
+
+#[cfg(test)]
+fn split_disjoint_strip_vertices() -> (exedra::Mesh, VertexSet) {
+    let mut mesh = two_disjoint_strip_mesh();
+    let mut edges = mesh
+        .faces()
+        .flat_map(|face| mesh.face_loop(face))
+        .filter(|&half_edge| {
+            let Some(twin) = mesh.twin(half_edge) else {
+                return false;
+            };
+            if core::cmp::min(half_edge, twin) != half_edge {
+                return false;
+            }
+            let Some(face) = mesh.face(half_edge) else {
+                return false;
+            };
+            let Some(twin_face) = mesh.face(twin) else {
+                return false;
+            };
+            face != FaceId::OUTSIDE && twin_face != FaceId::OUTSIDE
+        })
+        .collect::<Vec<_>>();
+    edges.sort_unstable();
+    let vertices = {
+        let mut edit = mesh.edit();
+        let mut inserted = edges
+            .into_iter()
+            .map(|edge| {
+                op::split_edge(&mut edit, edge, &exedra::PropagatePolicy::default())
+                    .expect("split should succeed")
+            })
+            .collect::<Vec<_>>();
+        let _: () = edit.finish();
+        inserted.sort_unstable();
+        inserted
+    };
+    (mesh, vertices)
+}
+
 fn map_dissolve_edges_error(ctx: &OpContext, err: DissolveEdgesError) -> OpError {
     let (kind, code, message) = match err {
         DissolveEdgesError::NonCanonicalEdgeSet => (
@@ -709,12 +1023,13 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, FaceId, HalfEdgeId, Id};
+    use exedra::{BuildParams, FaceId, HalfEdgeId, Id, PropagatePolicy, VertexId};
 
     use super::{
         DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
         DeleteFacesParams, DeleteVertices, DeleteVerticesOutput, DeleteVerticesParams,
-        DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams,
+        DissolveEdges, DissolveEdgesOutput, DissolveEdgesParams, DissolveVertices,
+        DissolveVerticesOutput, DissolveVerticesParams,
     };
     use crate::{OpErrorKind, OperatorRunner, mesh_signature, test_support::commit};
 
@@ -751,6 +1066,19 @@ mod tests {
                 face != FaceId::OUTSIDE && twin_face != FaceId::OUTSIDE
             })
             .expect("strip should have one canonical interior edge")
+    }
+
+    fn split_strip_vertex() -> (exedra::Mesh, VertexId) {
+        let mut mesh = two_tri_strip_mesh();
+        let edge = canonical_interior_edge(&mesh);
+        let inserted = {
+            let mut edit = mesh.edit();
+            let inserted = exedra::op::split_edge(&mut edit, edge, &PropagatePolicy::default())
+                .expect("split should succeed");
+            let _: () = edit.finish();
+            inserted
+        };
+        (mesh, inserted)
     }
 
     #[test]
@@ -876,6 +1204,115 @@ mod tests {
             )
             .expect_err("stale edge should fail at compile time");
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn dissolve_vertices_applies_and_returns_typed_output() {
+        let (mut mesh, inserted) = split_strip_vertex();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &DissolveVertices,
+            &DissolveVerticesParams {
+                vertices: vec![inserted],
+            },
+        )
+        .expect("dissolve vertices should succeed");
+        assert_eq!(
+            result.output,
+            DissolveVerticesOutput {
+                vertices: vec![inserted],
+                faces: result.output.faces.clone(),
+            }
+        );
+        assert_eq!(result.output.faces.len(), 2);
+        assert_eq!(mesh.vertices().count(), 4);
+        assert_eq!(result.report.stats.elements_deleted.vertices, 1);
+        assert_eq!(result.report.stats.elements_created.faces, 2);
+    }
+
+    #[test]
+    fn dissolve_vertices_compile_rejects_boundary_vertex() {
+        let mesh = exedra::Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad build should succeed");
+        let vertex = mesh.vertices().next().expect("vertex should exist");
+        let mut runner = OperatorRunner::new();
+        let err = runner
+            .compile(
+                &mesh,
+                &DissolveVertices,
+                &DissolveVerticesParams {
+                    vertices: vec![vertex],
+                },
+            )
+            .expect_err("boundary vertex should fail at compile time");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn dissolve_vertices_compile_canonicalizes_and_rejects_stale_vertex() {
+        let (mesh, inserted) = split_strip_vertex();
+        let stale = VertexId::from(Id::new(999, NonZeroU32::MIN));
+        let mut runner = OperatorRunner::new();
+
+        let plan = runner
+            .compile(
+                &mesh,
+                &DissolveVertices,
+                &DissolveVerticesParams {
+                    vertices: vec![inserted, inserted],
+                },
+            )
+            .expect("compile should canonicalize duplicate vertex selection");
+        assert_eq!(plan.payload.vertices, vec![inserted]);
+
+        let err = runner
+            .compile(
+                &mesh,
+                &DissolveVertices,
+                &DissolveVerticesParams {
+                    vertices: vec![stale],
+                },
+            )
+            .expect_err("stale vertex should fail at compile time");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
+    fn dissolve_vertices_applies_disjoint_batch_and_reports_deleted_faces() {
+        let (mut mesh, inserted) = super::split_disjoint_strip_vertices();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &DissolveVertices,
+            &DissolveVerticesParams {
+                vertices: inserted.clone(),
+            },
+        )
+        .expect("disjoint batch dissolve should succeed");
+        assert_eq!(
+            result.output,
+            DissolveVerticesOutput {
+                vertices: inserted,
+                faces: result.output.faces.clone(),
+            }
+        );
+        assert_eq!(result.output.faces.len(), 4);
+        assert_eq!(mesh.faces().count(), 4);
+        assert_eq!(mesh.vertices().count(), 8);
+        assert_eq!(result.report.stats.elements_deleted.vertices, 2);
+        assert_eq!(result.report.stats.elements_deleted.faces, 4);
+        assert_eq!(result.report.stats.elements_created.faces, 4);
     }
 
     #[test]
