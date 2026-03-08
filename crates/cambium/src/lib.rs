@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`], [`ClearCornerNormals`], [`BakeFaceNormals`], [`BakeDerivedNormals`], [`SmoothFaceNormals`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`BridgeBoundaryLoops`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`], [`ClearCornerNormals`], [`BakeFaceNormals`], [`BakeDerivedNormals`], [`SmoothFaceNormals`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -92,6 +92,7 @@ compile_error!("cambium requires either the `std` or `libm` feature");
 
 mod artifact;
 mod bounds;
+mod bridge;
 mod context;
 mod delete;
 mod diag;
@@ -149,6 +150,10 @@ pub use exedra::{
 
 // Policies and selection surface.
 pub use bounds::{BoundsOutput, BoundsParams, BoundsScope, BoundsSummary, InspectBounds};
+pub use bridge::{
+    BridgeBoundaryLoops, BridgeBoundaryLoopsOutput, BridgeBoundaryLoopsParams,
+    BridgeBoundaryLoopsPlan,
+};
 pub use inspect_selection::{
     InspectSelectionSummary, SelectionSummaryDetail, SelectionSummaryOutput, SelectionSummaryParams,
 };
@@ -202,11 +207,11 @@ mod naming_tests {
     use alloc::collections::BTreeSet;
 
     use super::{
-        BakeDerivedNormals, BakeFaceNormals, ClearCornerNormals, CutRectFace, DeleteEdges,
-        DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices, EditOperator, ExtrudeFaces,
-        InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam, MarkEdgeSharp, PokeFaces,
-        SelectBoundaryEdgeLoop, SmoothFaceNormals, SolidifyFaces, TagFaceRegion, UvBox, UvCylinder,
-        UvPlanar, ValidateMesh,
+        BakeDerivedNormals, BakeFaceNormals, BridgeBoundaryLoops, ClearCornerNormals, CutRectFace,
+        DeleteEdges, DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices, EditOperator,
+        ExtrudeFaces, InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam,
+        MarkEdgeSharp, PokeFaces, SelectBoundaryEdgeLoop, SmoothFaceNormals, SolidifyFaces,
+        TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
     };
 
     #[test]
@@ -217,6 +222,7 @@ mod naming_tests {
             DeleteFaces.name(),
             DeleteVertices.name(),
             DissolveVertices.name(),
+            BridgeBoundaryLoops.name(),
             CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
@@ -269,6 +275,7 @@ mod naming_tests {
             DeleteFaces.name(),
             DeleteVertices.name(),
             DissolveVertices.name(),
+            BridgeBoundaryLoops.name(),
             CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
@@ -291,6 +298,7 @@ mod naming_tests {
             "edit.delete.faces",
             "edit.delete.vertices",
             "edit.dissolve.vertices",
+            "edit.bridge.loops",
             "edit.face.cut.rect",
             "edit.face.extrude",
             "edit.face.inset",

@@ -21,8 +21,10 @@ use crate::{
     SmoothFaceNormalsPlan,
 };
 use crate::{
-    CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, PokeFaces, PokeFacesOutput,
-    PokeFacesParams, PokeFacesPlan, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
+    BridgeBoundaryLoops, BridgeBoundaryLoopsOutput, BridgeBoundaryLoopsParams,
+    BridgeBoundaryLoopsPlan, CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan,
+    PokeFaces, PokeFacesOutput, PokeFacesParams, PokeFacesPlan, SolidifyFaces, SolidifyFacesParams,
+    SolidifyMode,
 };
 use crate::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
@@ -46,6 +48,9 @@ enum MeshEditStep {
     },
     SelectBoundaryEdgeLoop {
         seed_edge: HalfEdgeId,
+    },
+    BridgeBoundaryLoops {
+        loop_b: EdgeSet,
     },
     Extrude {
         distance: f32,
@@ -113,6 +118,8 @@ pub enum MeshEditStepPlan {
     Select(SelectionStepPlan),
     /// Compiled `edit.face.extrude` plan.
     Extrude(EditPlan<ExtrudeFacesParams>),
+    /// Compiled `edit.bridge.loops` plan.
+    BridgeBoundaryLoops(EditPlan<BridgeBoundaryLoopsPlan>),
     /// Compiled `edit.face.inset` plan.
     Inset(EditPlan<InsetFacesPlan>),
     /// Compiled `edit.face.solidify` plan.
@@ -406,6 +413,15 @@ impl MeshEdit {
         self
     }
 
+    /// Adds one bridge step using the current selected boundary loop and `loop_b`.
+    #[must_use]
+    pub fn bridge_boundary_loops(mut self, mut loop_b: EdgeSet) -> Self {
+        let _ = crate::canonicalize_edge_set(&mut loop_b);
+        self.steps
+            .push(MeshEditStep::BridgeBoundaryLoops { loop_b });
+        self
+    }
+
     /// Adds one extrude step using the current selected faces.
     #[must_use]
     pub fn extrude(mut self, distance: f32) -> Self {
@@ -591,6 +607,18 @@ impl MeshEdit {
                             selection: current_selection.clone(),
                         },
                     ));
+                }
+                MeshEditStep::BridgeBoundaryLoops { ref loop_b } => {
+                    let loop_a = require_edge_selection(&current_selection, "edit.bridge.loops")?;
+                    let params = BridgeBoundaryLoopsParams {
+                        loop_a,
+                        loop_b: loop_b.clone(),
+                    };
+                    let op = BridgeBoundaryLoops;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.bridge_faces);
+                    compiled_steps.push(MeshEditStepPlan::BridgeBoundaryLoops(plan));
                 }
                 MeshEditStep::Extrude { distance } => {
                     let current_faces =
@@ -889,6 +917,17 @@ impl MeshEdit {
                     current_selection = Selection::from(output.cap_faces);
                     reports.push(report);
                 }
+                MeshEditStepPlan::BridgeBoundaryLoops(compiled) => {
+                    let op = BridgeBoundaryLoops;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: BridgeBoundaryLoopsOutput { bridge_faces },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(bridge_faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::Inset(compiled) => {
                     let op = InsetFaces;
                     let PreviewResult {
@@ -1114,6 +1153,12 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output.cap_faces);
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::BridgeBoundaryLoops(compiled) => {
+                    let op = BridgeBoundaryLoops;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.bridge_faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::Inset(compiled) => {
                     let op = InsetFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -1261,6 +1306,10 @@ fn mesh_edit_fingerprint(
                 }
             },
             MeshEditStepPlan::Extrude(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::BridgeBoundaryLoops(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -1432,13 +1481,13 @@ mod tests {
 
     use super::MeshEdit;
     use crate::{
-        BakeFaceNormals, BakeFaceNormalsParams, ClearCornerNormals, ClearCornerNormalsParams,
-        CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, DissolveEdges,
-        DissolveEdgesParams, DissolveVertices, DissolveVerticesParams, ExtrudeFaces,
-        ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
-        PokeFaces, PokeFacesParams, Selection, SmoothFaceNormals, SmoothFaceNormalsParams,
-        SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion, TagFaceRegionParams,
-        mesh_signature, test_support::shared_edge_mesh,
+        BakeFaceNormals, BakeFaceNormalsParams, BridgeBoundaryLoops, BridgeBoundaryLoopsParams,
+        ClearCornerNormals, ClearCornerNormalsParams, CutRectFace, CutRectFaceParams, DeleteFaces,
+        DeleteFacesParams, DissolveEdges, DissolveEdgesParams, DissolveVertices,
+        DissolveVerticesParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces,
+        InsetFacesParams, OperatorRunner, PokeFaces, PokeFacesParams, Selection, SmoothFaceNormals,
+        SmoothFaceNormalsParams, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
+        TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1964,6 +2013,68 @@ mod tests {
             .apply(&mut runner, &mut mesh)
             .expect("boundary-query flow should succeed");
         assert!(matches!(result.selection, Selection::Edges(ref edges) if !edges.is_empty()));
+    }
+
+    #[test]
+    fn mesh_edit_bridge_matches_direct_operator() {
+        let mesh = exedra::Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ],
+            &[&[0, 1, 2, 3], &[4, 7, 6, 5]],
+        )
+        .expect("parallel quads should build");
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let loop_a = crate::select_boundary_edge_loop(
+            &mesh,
+            mesh.face_edge(faces[0]).expect("face edge should exist"),
+        )
+        .expect("loop query should succeed")
+        .edges;
+        let loop_b = crate::select_boundary_edge_loop(
+            &mesh,
+            mesh.face_edge(faces[1]).expect("face edge should exist"),
+        )
+        .expect("loop query should succeed")
+        .edges;
+
+        let mut direct_mesh = mesh.clone();
+        let mut direct_runner = OperatorRunner::new();
+        let plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &BridgeBoundaryLoops,
+                &BridgeBoundaryLoopsParams {
+                    loop_a: loop_a.clone(),
+                    loop_b: loop_b.clone(),
+                },
+            )
+            .expect("bridge compile should succeed");
+        let direct_result = direct_runner
+            .apply_in_place(&mut direct_mesh, &BridgeBoundaryLoops, &plan)
+            .expect("bridge apply should succeed");
+
+        let flow = MeshEdit::new()
+            .select(Selection::from(loop_a))
+            .bridge_boundary_loops(loop_b);
+        let mut fluent_runner = OperatorRunner::new();
+        let mut fluent_mesh = mesh.clone();
+        let fluent_result = flow
+            .apply(&mut fluent_runner, &mut fluent_mesh)
+            .expect("fluent bridge should succeed");
+
+        assert_eq!(mesh_signature(&fluent_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(
+            fluent_result.selection,
+            Selection::from(direct_result.output.bridge_faces)
+        );
     }
 
     #[test]

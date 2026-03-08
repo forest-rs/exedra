@@ -62,6 +62,7 @@
 //! | `edit.dissolve.edges` | [`DissolveEdges`](crate::DissolveEdges) | [`DissolveEdgesParams`](crate::DissolveEdgesParams) | [`DissolveEdgesOutput`](crate::DissolveEdgesOutput) | Merges adjacent face pairs and hands off merged faces for follow-on modeling. |
 //! | `edit.delete.vertices` | [`DeleteVertices`](crate::DeleteVertices) | [`DeleteVerticesParams`](crate::DeleteVerticesParams) | [`DeleteVerticesOutput`](crate::DeleteVerticesOutput) | Valid only for isolated vertices. |
 //! | `edit.dissolve.vertices` | [`DissolveVertices`](crate::DissolveVertices) | [`DissolveVerticesParams`](crate::DissolveVerticesParams) | [`DissolveVerticesOutput`](crate::DissolveVerticesOutput) | Dissolves interior valence-2 vertices and hands off rebuilt faces. |
+//! | `edit.bridge.loops` | [`BridgeBoundaryLoops`](crate::BridgeBoundaryLoops) | [`BridgeBoundaryLoopsParams`](crate::BridgeBoundaryLoopsParams) | [`BridgeBoundaryLoopsOutput`](crate::BridgeBoundaryLoopsOutput) | Bridges two explicit equal-length boundary loops into a deterministic quad strip. |
 //! | `edit.face.cut.rect` | [`CutRectFace`](crate::CutRectFace) | [`CutRectFaceParams`](crate::CutRectFaceParams) | [`CutRectFaceOutput`](crate::CutRectFaceOutput) | Cuts one rectangular inner face from one quad face for opening workflows. |
 //! | `edit.face.extrude` | [`ExtrudeFaces`](crate::ExtrudeFaces) | [`ExtrudeFacesParams`](crate::ExtrudeFacesParams) (`mode`: [`ExtrudeMode`](crate::ExtrudeMode)) | [`ExtrudeFacesOutput`](crate::ExtrudeFacesOutput) | Face-edit counters + generated cap/wall outputs; mode controls source-face retention. |
 //! | `edit.face.inset` | [`InsetFaces`](crate::InsetFaces) | [`InsetFacesParams`](crate::InsetFacesParams) | [`InsetFacesOutput`](crate::InsetFacesOutput) | Face-edit counters + generated inner/frame outputs. |
@@ -81,6 +82,7 @@
 //! - "boxy hat": `select_faces -> extrude -> inset`
 //! - "wall opening": `select_faces -> cut_rect -> delete_faces`
 //! - shelling: `select_faces -> solidify`
+//! - loop bridge: `select_boundary_edge_loop -> bridge_boundary_loops`
 //!
 //! `MeshEdit` preserves deterministic compile/preview/apply behavior while
 //! making the selection handoff between these face-edit operators explicit.
