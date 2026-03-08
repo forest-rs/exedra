@@ -15,8 +15,8 @@ use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh};
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
 use crate::{
-    CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, SolidifyFaces,
-    SolidifyFacesParams, SolidifyMode,
+    CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, PokeFaces, PokeFacesOutput,
+    PokeFacesParams, PokeFacesPlan, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
 };
 use crate::{
     DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
@@ -47,6 +47,7 @@ enum MeshEditStep {
     Inset {
         factor: f32,
     },
+    Poke,
     Solidify {
         thickness: f32,
         mode: SolidifyMode,
@@ -102,6 +103,8 @@ pub enum MeshEditStepPlan {
     Inset(EditPlan<InsetFacesPlan>),
     /// Compiled `edit.face.solidify` plan.
     Solidify(EditPlan<ExtrudeFacesParams>),
+    /// Compiled `edit.face.poke` plan.
+    Poke(EditPlan<PokeFacesPlan>),
     /// Compiled `edit.face.cut.rect` plan.
     CutRect(EditPlan<CutRectFacePlan>),
     /// Compiled `tag.face.region` plan.
@@ -173,7 +176,7 @@ pub struct MeshEditPreview {
 /// Typical sequence:
 /// 1. start with [`MeshEdit::new`],
 /// 2. seed a face selection with [`MeshEdit::select_faces`] (or [`MeshEdit::select`]),
-/// 3. append fluent steps (`extrude`, `inset`, `solidify`, `cut_rect`, `tag`, `delete`),
+/// 3. append fluent steps (`extrude`, `inset`, `poke`, `solidify`, `cut_rect`, `tag`, `delete`),
 /// 4. run `plan`, `preview`, or `apply`.
 ///
 /// ```rust
@@ -239,6 +242,33 @@ pub struct MeshEditPreview {
 /// # Ok::<(), cambium::OpError>(())
 /// ```
 ///
+/// Poke workflow:
+///
+/// ```rust
+/// use cambium::{MeshEdit, OperatorRunner};
+///
+/// let mut mesh = exedra::Mesh::from_polygons(
+///     &[
+///         [0.0, 0.0, 0.0],
+///         [1.0, 0.0, 0.0],
+///         [1.0, 1.0, 0.0],
+///         [0.0, 1.0, 0.0],
+///     ],
+///     &[&[0, 1, 2, 3]],
+/// )
+/// .expect("quad mesh should build");
+/// let face = mesh.faces().next().expect("face should exist");
+///
+/// // poke replaces the selected face with a triangle fan and
+/// // hands the new fan faces to the next step.
+/// let flow = MeshEdit::new().select_faces(vec![face]).poke();
+///
+/// let mut runner = OperatorRunner::new();
+/// let result = flow.apply(&mut runner, &mut mesh).expect("flow should succeed");
+/// assert!(matches!(result.selection, cambium::Selection::Faces(ref faces) if faces.len() == 4));
+/// # Ok::<(), cambium::OpError>(())
+/// ```
+///
 /// Wall opening workflow:
 ///
 /// ```rust
@@ -280,6 +310,7 @@ pub struct MeshEditPreview {
 /// - `select_boundary_edge_loop` selects edges,
 /// - `extrude` selects `cap_faces`,
 /// - `inset` selects `inner_faces`,
+/// - `poke` selects `fan_faces`,
 /// - `solidify` selects `cap_faces`,
 /// - `cut_rect` selects `inner_faces`,
 /// - `tag` keeps selected faces,
@@ -362,6 +393,13 @@ impl MeshEdit {
     #[must_use]
     pub fn inset(mut self, factor: f32) -> Self {
         self.steps.push(MeshEditStep::Inset { factor });
+        self
+    }
+
+    /// Adds one poke step using the current selected faces.
+    #[must_use]
+    pub fn poke(mut self) -> Self {
+        self.steps.push(MeshEditStep::Poke);
         self
     }
 
@@ -526,6 +564,18 @@ impl MeshEdit {
                     let result = runner.apply_in_place(&mut working, &op, &plan)?;
                     current_selection = Selection::from(result.output.inner_faces);
                     compiled_steps.push(MeshEditStepPlan::Inset(plan));
+                }
+                MeshEditStep::Poke => {
+                    let current_faces =
+                        require_face_selection(&current_selection, "edit.face.poke")?;
+                    let params = PokeFacesParams {
+                        faces: current_faces,
+                    };
+                    let op = PokeFaces;
+                    let plan = runner.compile(&working, &op, &params)?;
+                    let result = runner.apply_in_place(&mut working, &op, &plan)?;
+                    current_selection = Selection::from(result.output.fan_faces);
+                    compiled_steps.push(MeshEditStepPlan::Poke(plan));
                 }
                 MeshEditStep::Solidify { thickness, mode } => {
                     let current_faces =
@@ -746,6 +796,17 @@ impl MeshEdit {
                     current_selection = Selection::from(output.inner_faces);
                     reports.push(report);
                 }
+                MeshEditStepPlan::Poke(compiled) => {
+                    let op = PokeFaces;
+                    let PreviewResult {
+                        preview_mesh: next_mesh,
+                        report,
+                        output: PokeFacesOutput { fan_faces, .. },
+                    } = runner.preview_on_clone(&preview_mesh, &op, compiled)?;
+                    preview_mesh = next_mesh;
+                    current_selection = Selection::from(fan_faces);
+                    reports.push(report);
+                }
                 MeshEditStepPlan::Solidify(compiled) => {
                     let op = SolidifyFaces;
                     let PreviewResult {
@@ -911,6 +972,12 @@ impl MeshEdit {
                     current_selection = Selection::from(result.output.inner_faces);
                     reports.push(result.report);
                 }
+                MeshEditStepPlan::Poke(compiled) => {
+                    let op = PokeFaces;
+                    let result = runner.apply_in_place(mesh, &op, compiled)?;
+                    current_selection = Selection::from(result.output.fan_faces);
+                    reports.push(result.report);
+                }
                 MeshEditStepPlan::Solidify(compiled) => {
                     let op = SolidifyFaces;
                     let result = runner.apply_in_place(mesh, &op, compiled)?;
@@ -1026,6 +1093,10 @@ fn mesh_edit_fingerprint(
                 hasher.write_u64(plan.fingerprint.value());
             }
             MeshEditStepPlan::Inset(plan) => {
+                hasher.write_str(plan.operator);
+                hasher.write_u64(plan.fingerprint.value());
+            }
+            MeshEditStepPlan::Poke(plan) => {
                 hasher.write_str(plan.operator);
                 hasher.write_u64(plan.fingerprint.value());
             }
@@ -1176,8 +1247,8 @@ mod tests {
         CutRectFace, CutRectFaceParams, DeleteFaces, DeleteFacesParams, DissolveEdges,
         DissolveEdgesParams, DissolveVertices, DissolveVerticesParams, ExtrudeFaces,
         ExtrudeFacesParams, ExtrudeMode, FaceSet, InsetFaces, InsetFacesParams, OperatorRunner,
-        Selection, SolidifyFaces, SolidifyFacesParams, SolidifyMode, TagFaceRegion,
-        TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
+        PokeFaces, PokeFacesParams, Selection, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
+        TagFaceRegion, TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
     };
 
     fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
@@ -1347,6 +1418,38 @@ mod tests {
 
         assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
         assert_eq!(flow_result.selection, Selection::from(direct.output.faces));
+    }
+
+    #[test]
+    fn mesh_edit_poke_matches_direct_operator() {
+        let (mesh, face) = one_quad_mesh();
+
+        let flow = MeshEdit::new().select_faces(vec![face]).poke();
+
+        let mut flow_runner = OperatorRunner::new();
+        let mut flow_mesh = mesh.clone();
+        let flow_result = flow
+            .apply(&mut flow_runner, &mut flow_mesh)
+            .expect("fluent poke should succeed");
+
+        let mut direct_runner = OperatorRunner::new();
+        let mut direct_mesh = mesh.clone();
+        let direct_plan = direct_runner
+            .compile(
+                &direct_mesh,
+                &PokeFaces,
+                &PokeFacesParams { faces: vec![face] },
+            )
+            .expect("direct poke compile should succeed");
+        let direct = direct_runner
+            .apply_in_place(&mut direct_mesh, &PokeFaces, &direct_plan)
+            .expect("direct poke should succeed");
+
+        assert_eq!(mesh_signature(&flow_mesh), mesh_signature(&direct_mesh));
+        assert_eq!(
+            flow_result.selection,
+            Selection::from(direct.output.fan_faces)
+        );
     }
 
     #[test]

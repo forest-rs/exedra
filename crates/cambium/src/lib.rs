@@ -11,7 +11,7 @@
 //! - policy-controlled execution,
 //! - deterministic region/selection helpers,
 //! - deterministic UV/tagging operators,
-//! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`]).
+//! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`]).
 //!
 //! API tiers:
 //! - SDK tier (`cambium`): workflows, operators, planning lifecycle, reporting.
@@ -43,7 +43,7 @@
 //!   - `tag.*`: [`TagFaceRegion`]
 //!   - `mark.*`: [`MarkEdgeSeam`], [`MarkEdgeSharp`]
 //!   - `uv.*`: [`UvPlanar`], [`UvBox`], [`UvCylinder`]
-//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`SolidifyFaces`]
+//!   - `edit.*`: [`DeleteFaces`], [`DeleteEdges`], [`DissolveEdges`], [`DeleteVertices`], [`DissolveVertices`], [`CutRectFace`], [`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`], [`SolidifyFaces`]
 //! - Operator catalog + authoring map: [`manual::catalog`], [`manual::operators`]
 //!
 //! # Namespace Conventions
@@ -175,8 +175,8 @@ pub use delete::{
 pub use face_edit::{
     CutRectFace, CutRectFaceOutput, CutRectFaceParams, CutRectFacePlan, ExtrudeFaces,
     ExtrudeFacesOutput, ExtrudeFacesParams, ExtrudeMode, InsetFaces, InsetFacesOutput,
-    InsetFacesParams, InsetFacesPlan, SolidifyFaces, SolidifyFacesOutput, SolidifyFacesParams,
-    SolidifyMode,
+    InsetFacesParams, InsetFacesPlan, PokeFaces, PokeFacesOutput, PokeFacesParams, PokeFacesPlan,
+    SolidifyFaces, SolidifyFacesOutput, SolidifyFacesParams, SolidifyMode,
 };
 pub use region::{
     EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, RegionSelection,
@@ -197,8 +197,8 @@ mod naming_tests {
     use super::{
         CutRectFace, DeleteEdges, DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices,
         EditOperator, ExtrudeFaces, InsetFaces, InspectBounds, InspectSelectionSummary,
-        MarkEdgeSeam, MarkEdgeSharp, SelectBoundaryEdgeLoop, SolidifyFaces, TagFaceRegion, UvBox,
-        UvCylinder, UvPlanar, ValidateMesh,
+        MarkEdgeSeam, MarkEdgeSharp, PokeFaces, SelectBoundaryEdgeLoop, SolidifyFaces,
+        TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
     };
 
     #[test]
@@ -212,6 +212,7 @@ mod naming_tests {
             CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
+            PokeFaces.name(),
             SolidifyFaces.name(),
             InspectBounds.name(),
             InspectSelectionSummary.name(),
@@ -259,6 +260,7 @@ mod naming_tests {
             CutRectFace.name(),
             ExtrudeFaces.name(),
             InsetFaces.name(),
+            PokeFaces.name(),
             SolidifyFaces.name(),
             InspectBounds.name(),
             InspectSelectionSummary.name(),
@@ -280,6 +282,7 @@ mod naming_tests {
             "edit.face.cut.rect",
             "edit.face.extrude",
             "edit.face.inset",
+            "edit.face.poke",
             "edit.face.solidify",
             "inspect.bounds",
             "inspect.select.summary",

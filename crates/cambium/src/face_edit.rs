@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Face-edit operators (extrude, inset, cut, solidify).
+//! Face-edit operators (extrude, inset, poke, cut, solidify).
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -193,12 +193,244 @@ pub struct InsetFacesPlan {
     selections_canonicalized: bool,
 }
 
+/// Parameters for [`PokeFaces`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PokeFacesParams {
+    /// Canonical face selection.
+    pub faces: FaceSet,
+}
+
+/// Deterministic compiled plan payload for [`PokeFaces`].
+#[derive(Clone, Debug)]
+pub struct PokeFacesPlan {
+    faces: FaceSet,
+    face_plans: Vec<SelectedFace>,
+    center_positions: Vec<[f32; 3]>,
+    center_uvs: Vec<Option<[f32; 2]>>,
+    selections_canonicalized: bool,
+}
+
+/// Typed output from [`PokeFaces`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PokeFacesOutput {
+    /// Canonical source face selection that was poked.
+    pub source_faces: FaceSet,
+    /// Created center vertices, one per source face.
+    pub center_vertices: Vec<VertexId>,
+    /// Created triangle-fan face IDs.
+    pub fan_faces: FaceSet,
+}
+
 impl Default for InsetFacesParams {
     fn default() -> Self {
         Self {
             faces: FaceSet::default(),
             factor: 0.2,
         }
+    }
+}
+
+/// `edit.face.poke` operator.
+///
+/// Poke splits each selected face into a triangle fan around one new center
+/// vertex. The source face is deleted and replaced by `N` triangles for a face
+/// of degree `N`.
+///
+/// v0.1 propagation behavior:
+/// - `face.region` is copied to all generated fan triangles,
+/// - outer-edge corner UVs are copied from the source face when authored,
+/// - center UV is the arithmetic average when all source corner UVs exist,
+/// - preserved perimeter edge attrs follow source edges,
+/// - new radial edges default clear.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct PokeFaces;
+
+impl EditOperator for PokeFaces {
+    type Params = PokeFacesParams;
+    type Plan = PokeFacesPlan;
+    type Output = PokeFacesOutput;
+
+    fn name(&self) -> &'static str {
+        "edit.face.poke"
+    }
+
+    fn compile(
+        &self,
+        mesh: &exedra::Mesh,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<Self::Plan, OpError> {
+        let mut faces = params.faces.clone();
+        let canonicalized = canonicalize_face_set(&mut faces);
+        let region = selected_face_region(mesh, &faces, false, ctx)?;
+
+        let mut center_positions = Vec::with_capacity(region.faces.len());
+        let mut center_uvs = Vec::with_capacity(region.faces.len());
+        for face_plan in &region.faces {
+            let center = centroid(mesh, &face_plan.vertices).ok_or_else(|| {
+                op_error(
+                    ctx,
+                    OpErrorKind::InvalidMesh,
+                    DiagCode::InternalInvariantViolation,
+                    format!(
+                        "cannot compute centroid for face {}",
+                        face_plan.face.index()
+                    ),
+                )
+            })?;
+            center_positions.push(center);
+            center_uvs.push(average_uv(&face_plan.vertex_uvs));
+        }
+
+        Ok(PokeFacesPlan {
+            faces,
+            face_plans: region.faces,
+            center_positions,
+            center_uvs,
+            selections_canonicalized: canonicalized,
+        })
+    }
+
+    fn apply_plan<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        plan: &Self::Plan,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let faces_to_delete = plan.faces.clone();
+        op::delete_faces(txn, &faces_to_delete, DeletePolicy::KeepIsolated).map_err(|err| {
+            op_error(
+                ctx,
+                OpErrorKind::InternalInvariantViolation,
+                DiagCode::InternalInvariantViolation,
+                format!("poke delete failed unexpectedly: {err}"),
+            )
+        })?;
+
+        let mut report = OpReport::new(
+            self.name(),
+            Artifacts::new(
+                ctx.policy.limits.max_artifact_items,
+                ctx.policy.limits.max_artifact_bytes,
+            ),
+        );
+        if plan.selections_canonicalized {
+            report.stats.counters.selections_canonicalized = 1;
+        }
+
+        let mut center_vertices = Vec::with_capacity(plan.face_plans.len());
+        let mut fan_faces = Vec::new();
+        for (face_index, face_plan) in plan.face_plans.iter().enumerate() {
+            let center = op::add_vertex(txn, plan.center_positions[face_index]);
+            center_vertices.push(center);
+            let center_uv = plan.center_uvs[face_index];
+            let count = face_plan.vertices.len();
+            for i in 0..count {
+                let current = face_plan.vertices[i];
+                let next = face_plan.vertices[(i + 1) % count];
+                let triangle = op::add_face(txn, &[current, next, center]).map_err(|err| {
+                    op_error(
+                        ctx,
+                        OpErrorKind::InternalInvariantViolation,
+                        DiagCode::InternalInvariantViolation,
+                        format!("poke triangle creation failed unexpectedly: {err}"),
+                    )
+                })?;
+                if op::set_face_region(txn, triangle, face_plan.region).is_err() {
+                    return Err(op_error(
+                        ctx,
+                        OpErrorKind::InternalInvariantViolation,
+                        DiagCode::InternalInvariantViolation,
+                        "failed to set poke triangle region",
+                    ));
+                }
+                propagate_edge_attrs_for_vertices(
+                    txn,
+                    triangle,
+                    current,
+                    next,
+                    face_plan.edge_attrs[i],
+                    &ctx.policy.propagate,
+                );
+                let clear = SourceEdgeAttrs::default();
+                propagate_edge_attrs_for_vertices(
+                    txn,
+                    triangle,
+                    next,
+                    center,
+                    clear,
+                    &ctx.policy.propagate,
+                );
+                propagate_edge_attrs_for_vertices(
+                    txn,
+                    triangle,
+                    center,
+                    current,
+                    clear,
+                    &ctx.policy.propagate,
+                );
+                let uv_map = [
+                    (current, face_plan.vertex_uvs[i]),
+                    (next, face_plan.vertex_uvs[(i + 1) % count]),
+                    (center, center_uv),
+                ];
+                propagate_face_corner_uvs(txn, triangle, &uv_map);
+                fan_faces.push(triangle);
+            }
+        }
+
+        report.stats.counters.faces_processed =
+            u64::try_from(plan.face_plans.len()).expect("face count should fit u64");
+        report.stats.elements_deleted.faces =
+            u64::try_from(plan.face_plans.len()).expect("face count should fit u64");
+        report.stats.elements_created.vertices =
+            u64::try_from(center_vertices.len()).expect("vertex count should fit u64");
+        report.stats.elements_created.faces =
+            u64::try_from(fan_faces.len()).expect("face count should fit u64");
+
+        Ok((
+            report,
+            PokeFacesOutput {
+                source_faces: plan.faces.clone(),
+                center_vertices,
+                fan_faces,
+            },
+        ))
+    }
+
+    fn apply<S: exedra::ChangeSink>(
+        &self,
+        txn: &mut exedra::EditSession<'_, S>,
+        params: &Self::Params,
+        ctx: &mut OpContext,
+    ) -> Result<(OpReport, Self::Output), OpError> {
+        let plan = self.compile(txn.mesh(), params, ctx)?;
+        self.apply_plan(txn, &plan, ctx)
+    }
+
+    fn plan_fingerprint(&self, plan: &Self::Plan) -> crate::PlanFingerprint {
+        let mut hasher = PlanHasher::new();
+        hasher.write_str(self.name());
+        hasher.write_len(plan.faces.len());
+        for face in &plan.faces {
+            hasher.write_u32(face.index());
+        }
+        for position in &plan.center_positions {
+            hasher.write_f32_bits(position[0]);
+            hasher.write_f32_bits(position[1]);
+            hasher.write_f32_bits(position[2]);
+        }
+        for uv in &plan.center_uvs {
+            match uv {
+                Some(uv) => {
+                    hasher.write_u8(1);
+                    hasher.write_f32_bits(uv[0]);
+                    hasher.write_f32_bits(uv[1]);
+                }
+                None => hasher.write_u8(0),
+            }
+        }
+        hasher.finish()
     }
 }
 
@@ -1238,16 +1470,30 @@ fn boundary_loop_error(ctx: &OpContext, op_name: &'static str, err: BoundaryLoop
     }
 }
 
+fn average_uv(uvs: &[Option<[f32; 2]>]) -> Option<[f32; 2]> {
+    let mut sum = [0.0_f32, 0.0];
+    for uv in uvs {
+        let uv = (*uv)?;
+        sum[0] += uv[0];
+        sum[1] += uv[1];
+    }
+    let inv = 1.0 / (uvs.len() as f32);
+    Some([sum[0] * inv, sum[1] * inv])
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::{BuildParams, EdgeAttrPropagation, Mesh, PropagatePolicy};
+    use core::num::NonZeroU32;
+
+    use exedra::{BuildParams, EdgeAttrPropagation, Id, Mesh, PropagatePolicy};
 
     use super::{
         CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
-        InsetFacesParams, SolidifyFaces, SolidifyFacesParams, SolidifyMode,
+        InsetFacesParams, PokeFaces, PokeFacesParams, SolidifyFaces, SolidifyFacesParams,
+        SolidifyMode,
     };
     use crate::{
         DeleteFaces, DeleteFacesParams, OpErrorKind, OperatorRunner, TagFaceRegion,
@@ -1496,6 +1742,78 @@ mod tests {
         assert_eq!(mesh.vertices().count(), 10);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn poke_creates_triangle_fan_from_quad() {
+        let (mut mesh, face) = quad_mesh();
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &PokeFaces,
+            &PokeFacesParams { faces: vec![face] },
+        )
+        .expect("poke should succeed");
+        assert_eq!(result.output.source_faces, vec![face]);
+        assert_eq!(result.output.center_vertices.len(), 1);
+        assert_eq!(result.output.fan_faces.len(), 4);
+        assert_eq!(mesh.faces().count(), 4);
+        assert_eq!(mesh.vertices().count(), 5);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn poke_handles_ngon_face() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.5, 0.8, 0.0],
+                [0.5, 1.5, 0.0],
+                [-0.3, 0.8, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4]],
+        )
+        .expect("pentagon build should succeed");
+        let face = mesh.faces().next().expect("face should exist");
+        let mut runner = OperatorRunner::new();
+        let result = commit(
+            &mut runner,
+            &mut mesh,
+            &PokeFaces,
+            &PokeFacesParams { faces: vec![face] },
+        )
+        .expect("poke should succeed");
+        assert_eq!(result.output.fan_faces.len(), 5);
+        assert_eq!(mesh.faces().count(), 5);
+        assert_eq!(mesh.vertices().count(), 6);
+        assert!(mesh.validate_fast().is_empty());
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn poke_compile_canonicalizes_and_rejects_stale_face() {
+        let (mesh, face) = quad_mesh();
+        let stale = exedra::FaceId::from(Id::new(999, NonZeroU32::MIN));
+        let mut runner = OperatorRunner::new();
+
+        let plan = runner
+            .compile(
+                &mesh,
+                &PokeFaces,
+                &PokeFacesParams {
+                    faces: vec![face, face],
+                },
+            )
+            .expect("compile should canonicalize duplicate face selection");
+        assert_eq!(plan.payload.faces, vec![face]);
+
+        let err = runner
+            .compile(&mesh, &PokeFaces, &PokeFacesParams { faces: vec![stale] })
+            .expect_err("stale face should fail at compile time");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 
     fn face_avg_z(mesh: &Mesh, face: exedra::FaceId) -> f32 {
