@@ -10,8 +10,10 @@
 //! Lifecycle:
 //! 1. Runner resets reusable context (`scratch`, diagnostics sink, clock).
 //! 2. Runner compiles deterministic operator intent into an [`EditPlan`](crate::EditPlan).
+//!    The plan is bound to the mesh revision and full mesh-state signature it
+//!    was compiled from.
 //! 3. Runner applies the plan to a clone (`preview_on_clone`) or in place
-//!    (`apply_in_place`).
+//!    (`apply_in_place`), rejecting stale or drifted source state first.
 //! 4. Runner attaches timings and performs optional post-run validation.
 //!
 //! # Reporting Discipline

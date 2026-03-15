@@ -35,6 +35,7 @@
 //! - Build/extract helpers: [`BuildParams`], [`ExtractParams`], [`TriMesh`]
 //! - Planning lifecycle: [`OperatorRunner::compile`],
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
+//! - Operator domains: [`OperatorDomain`]
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
 //! - Operator families:
@@ -61,7 +62,9 @@
 //!
 //! # Typical Flow
 //! ```rust
-//! use cambium::{Mesh, OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams};
+//! use cambium::{
+//!     EditOperator, Mesh, OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams,
+//! };
 //!
 //! // Start from any Exedra mesh (empty is fine for this flow example).
 //! let mesh = Mesh::new();
@@ -76,12 +79,17 @@
 //! let plan = runner.compile(&mesh, &op, &params)?;
 //! let preview = runner.preview_on_clone(&mesh, &op, &plan)?;
 //! assert_eq!(preview.report.name, "inspect.validate.mesh");
+//! assert_eq!(op.domain(), cambium::OperatorDomain::Mesh);
 //! # Ok::<(), cambium::OpError>(())
 //! ```
 //!
 //! # Migration Note
 //! `run_commit` / `run_preview` were removed in favor of explicit lifecycle
 //! calls: `compile` -> `apply_in_place` / `preview_on_clone`.
+//!
+//! `EditOperator::domain()` and [`OperatorDomain`] are additive metadata used by
+//! the multi-domain architecture work. Existing mesh operators continue to
+//! default to [`OperatorDomain::Mesh`].
 
 #![no_std]
 extern crate alloc;
@@ -137,8 +145,10 @@ pub use diag::DEFAULT_MAX_DIAGNOSTICS;
 pub use diag::{DiagCode, DiagLevel, DiagSpan, Diagnostic, DiagnosticsSink};
 pub use dirty::{CacheDirtySet, DirtyChannel, DirtyKey};
 pub use error::{OpError, OpErrorKind};
-pub use operator::EditOperator;
-pub use plan::{EditPlan, PlanFingerprint, mesh_signature};
+pub use operator::{EditOperator, OperatorDomain};
+pub use plan::{
+    EditPlan, PlanFingerprint, PlanSourceState, mesh_signature, mesh_topology_signature,
+};
 pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 
@@ -210,8 +220,8 @@ mod naming_tests {
         BakeDerivedNormals, BakeFaceNormals, BridgeBoundaryLoops, ClearCornerNormals, CutRectFace,
         DeleteEdges, DeleteFaces, DeleteVertices, DissolveEdges, DissolveVertices, EditOperator,
         ExtrudeFaces, InsetFaces, InspectBounds, InspectSelectionSummary, MarkEdgeSeam,
-        MarkEdgeSharp, PokeFaces, SelectBoundaryEdgeLoop, SmoothFaceNormals, SolidifyFaces,
-        TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
+        MarkEdgeSharp, OperatorDomain, PokeFaces, SelectBoundaryEdgeLoop, SmoothFaceNormals,
+        SolidifyFaces, TagFaceRegion, UvBox, UvCylinder, UvPlanar, ValidateMesh,
     };
 
     #[test]
@@ -316,5 +326,38 @@ mod naming_tests {
             "uv.cylinder",
         ];
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn frozen_v01_operator_domains_are_mesh() {
+        let domains = [
+            DeleteEdges.domain(),
+            DissolveEdges.domain(),
+            DeleteFaces.domain(),
+            DeleteVertices.domain(),
+            DissolveVertices.domain(),
+            BridgeBoundaryLoops.domain(),
+            CutRectFace.domain(),
+            ExtrudeFaces.domain(),
+            InsetFaces.domain(),
+            PokeFaces.domain(),
+            SolidifyFaces.domain(),
+            InspectBounds.domain(),
+            InspectSelectionSummary.domain(),
+            ValidateMesh.domain(),
+            MarkEdgeSeam.domain(),
+            MarkEdgeSharp.domain(),
+            ClearCornerNormals.domain(),
+            BakeFaceNormals.domain(),
+            BakeDerivedNormals.domain(),
+            SmoothFaceNormals.domain(),
+            TagFaceRegion.domain(),
+            SelectBoundaryEdgeLoop.domain(),
+            UvPlanar.domain(),
+            UvBox.domain(),
+            UvCylinder.domain(),
+        ];
+
+        assert!(domains.iter().all(|domain| *domain == OperatorDomain::Mesh));
     }
 }

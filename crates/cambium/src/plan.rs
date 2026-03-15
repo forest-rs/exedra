@@ -1,11 +1,12 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Deterministic operator plans and fingerprints.
+//! Deterministic operator plans, source-state bindings, and signatures.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use exedra::{FaceId, Mesh};
+use exedra::{FaceId, HalfEdgeId, Mesh, MeshRevision, attr};
 
 /// Deterministic fingerprint for a compiled [`EditPlan`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -30,10 +31,35 @@ impl PlanFingerprint {
 pub struct EditPlan<P> {
     /// Stable operator identifier (for example `edit.delete.faces`).
     pub operator: &'static str,
+    /// Mesh state the plan was compiled against.
+    pub source_state: PlanSourceState,
     /// Deterministic plan fingerprint.
     pub fingerprint: PlanFingerprint,
     /// Operator-specific compiled payload.
     pub payload: P,
+}
+
+/// Mesh state binding captured when compiling an [`EditPlan`].
+///
+/// Plans are intentionally bound to the mesh state they were compiled from so
+/// runners can reject stale or drifted plans before mutation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PlanSourceState {
+    /// Monotonic mesh revision observed at compile time.
+    pub revision: MeshRevision,
+    /// Deterministic full mesh-state signature observed at compile time.
+    pub mesh_state_signature: u64,
+}
+
+impl PlanSourceState {
+    /// Captures the current source state for `mesh`.
+    #[must_use]
+    pub fn capture(mesh: &Mesh) -> Self {
+        Self {
+            revision: mesh.revision(),
+            mesh_state_signature: mesh_signature(mesh),
+        }
+    }
 }
 
 /// Deterministic FNV-1a hasher used for plan fingerprinting.
@@ -114,14 +140,14 @@ impl Default for PlanHasher {
     }
 }
 
-/// Stable mesh signature used by determinism tests.
+/// Stable topology-only mesh signature used by determinism tests and caches
+/// that intentionally ignore authored attributes.
 ///
-/// This intentionally walks topology and attributes in sorted ID order so test
-/// cases can assert "identical mesh state" before comparing compiled plans.
+/// This intentionally walks live topology in deterministic ID/loop order.
 #[must_use]
-pub fn mesh_signature(mesh: &Mesh) -> u64 {
+pub fn mesh_topology_signature(mesh: &Mesh) -> u64 {
     let mut hasher = PlanHasher::new();
-    hasher.write_str("mesh-signature/v1");
+    hasher.write_str("mesh-topology-signature/v1");
 
     let mut vertices: Vec<_> = mesh.vertices().collect();
     vertices.sort_unstable();
@@ -140,8 +166,7 @@ pub fn mesh_signature(mesh: &Mesh) -> u64 {
     faces.sort_unstable();
     for face in faces {
         hasher.write_u32(face.index());
-        let mut loop_edges: Vec<_> = mesh.face_loop(face).collect();
-        loop_edges.sort_unstable();
+        let loop_edges: Vec<_> = mesh.face_loop(face).collect();
         hasher.write_len(loop_edges.len());
         for edge in loop_edges {
             hasher.write_u32(edge.index());
@@ -149,4 +174,180 @@ pub fn mesh_signature(mesh: &Mesh) -> u64 {
     }
 
     hasher.finish().value()
+}
+
+/// Stable full mesh-state signature used by plan binding and state-equivalence
+/// tests.
+///
+/// This extends [`mesh_topology_signature`] with built-in authored attributes
+/// that materially affect mesh semantics:
+/// - [`attr::FACE_REGION`]
+/// - [`attr::CORNER_UV`]
+/// - [`attr::CORNER_NORMAL_OVERRIDE`]
+/// - [`attr::EDGE_SEAM`]
+/// - [`attr::EDGE_SHARPNESS`]
+#[must_use]
+pub fn mesh_signature(mesh: &Mesh) -> u64 {
+    let mut hasher = PlanHasher::new();
+    hasher.write_str("mesh-signature/v2");
+    hasher.write_u64(mesh_topology_signature(mesh));
+
+    let face_regions = mesh.attrs().dense(attr::FACE_REGION);
+    let mut faces: Vec<_> = mesh.faces().collect();
+    faces.sort_unstable();
+    for face in &faces {
+        hasher.write_u32(face.index());
+        hasher.write_u32(
+            face_regions
+                .and_then(|layer| layer.get(face.as_id()).copied())
+                .unwrap_or(0),
+        );
+    }
+
+    let corner_uvs = mesh.attrs().sparse(attr::CORNER_UV);
+    let corner_normals = mesh.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
+    for face in &faces {
+        for corner in mesh.face_loop(*face) {
+            hasher.write_u32(corner.index());
+            write_optional_vec2(
+                &mut hasher,
+                corner_uvs.and_then(|layer| layer.get(corner.as_id()).copied()),
+            );
+            write_optional_vec3(
+                &mut hasher,
+                corner_normals.and_then(|layer| layer.get(corner.as_id()).copied()),
+            );
+        }
+    }
+
+    let mut canonical_edges = BTreeSet::<HalfEdgeId>::new();
+    for face in faces {
+        for edge in mesh.face_loop(face) {
+            let canonical = mesh
+                .canonical_edge(edge)
+                .expect("face loop half-edge should resolve to a canonical edge");
+            let _ = canonical_edges.insert(canonical);
+        }
+    }
+    for edge in canonical_edges {
+        hasher.write_u32(edge.index());
+        hasher.write_u8(u8::from(
+            mesh.edge_seam(edge)
+                .expect("canonical edge should have readable seam state"),
+        ));
+        hasher.write_f32_bits(
+            mesh.edge_sharpness(edge)
+                .expect("canonical edge should have readable sharpness state"),
+        );
+    }
+
+    hasher.finish().value()
+}
+
+fn write_optional_vec2(hasher: &mut PlanHasher, value: Option<[f32; 2]>) {
+    match value {
+        Some([x, y]) => {
+            hasher.write_u8(1);
+            hasher.write_f32_bits(x);
+            hasher.write_f32_bits(y);
+        }
+        None => hasher.write_u8(0),
+    }
+}
+
+fn write_optional_vec3(hasher: &mut PlanHasher, value: Option<[f32; 3]>) {
+    match value {
+        Some([x, y, z]) => {
+            hasher.write_u8(1);
+            hasher.write_f32_bits(x);
+            hasher.write_f32_bits(y);
+            hasher.write_f32_bits(z);
+        }
+        None => hasher.write_u8(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use exedra::{Mesh, op};
+
+    use super::{mesh_signature, mesh_topology_signature};
+
+    fn quad_mesh() -> Mesh {
+        Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad mesh should build")
+    }
+
+    #[test]
+    fn mesh_signature_changes_when_face_region_changes() {
+        let mut mesh = quad_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let topology_before = mesh_topology_signature(&mesh);
+        let signature_before = mesh_signature(&mesh);
+
+        let mut edit = mesh.edit();
+        op::set_face_region(&mut edit, face, 7).expect("face region write should succeed");
+        let _: () = edit.finish();
+
+        assert_eq!(mesh_topology_signature(&mesh), topology_before);
+        assert_ne!(mesh_signature(&mesh), signature_before);
+    }
+
+    #[test]
+    fn mesh_signature_changes_when_corner_uv_changes() {
+        let mut mesh = quad_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let corner = mesh.face_loop(face).next().expect("corner should exist");
+        let topology_before = mesh_topology_signature(&mesh);
+        let signature_before = mesh_signature(&mesh);
+
+        let mut edit = mesh.edit();
+        op::set_corner_uv(&mut edit, corner, [0.25, 0.75]).expect("corner uv write should work");
+        let _: () = edit.finish();
+
+        assert_eq!(mesh_topology_signature(&mesh), topology_before);
+        assert_ne!(mesh_signature(&mesh), signature_before);
+    }
+
+    #[test]
+    fn mesh_signature_changes_when_corner_normal_override_changes() {
+        let mut mesh = quad_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let corner = mesh.face_loop(face).next().expect("corner should exist");
+        let topology_before = mesh_topology_signature(&mesh);
+        let signature_before = mesh_signature(&mesh);
+
+        let mut edit = mesh.edit();
+        op::set_corner_normal_override(&mut edit, corner, Some([0.0, 0.0, 1.0]))
+            .expect("corner normal write should work");
+        let _: () = edit.finish();
+
+        assert_eq!(mesh_topology_signature(&mesh), topology_before);
+        assert_ne!(mesh_signature(&mesh), signature_before);
+    }
+
+    #[test]
+    fn mesh_signature_changes_when_edge_attributes_change() {
+        let mut mesh = quad_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let edge = mesh.face_loop(face).next().expect("edge should exist");
+        let topology_before = mesh_topology_signature(&mesh);
+        let signature_before = mesh_signature(&mesh);
+
+        let mut edit = mesh.edit();
+        op::set_edge_seam(&mut edit, edge, true).expect("edge seam write should work");
+        op::set_edge_sharpness(&mut edit, edge, 2.5).expect("edge sharpness write should work");
+        let _: () = edit.finish();
+
+        assert_eq!(mesh_topology_signature(&mesh), topology_before);
+        assert_ne!(mesh_signature(&mesh), signature_before);
+    }
 }

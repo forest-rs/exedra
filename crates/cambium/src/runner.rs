@@ -14,7 +14,9 @@ use web_time::Instant;
 
 #[cfg(any(target_arch = "wasm32", feature = "std"))]
 use crate::timing::duration_nanos_u64;
-use crate::{Diagnostic, EditOperator, EditPlan, OpContext, OpError, OpErrorKind, OpReport};
+use crate::{
+    Diagnostic, EditOperator, EditPlan, OpContext, OpError, OpErrorKind, OpReport, PlanSourceState,
+};
 
 /// Result from [`OperatorRunner::apply_in_place`].
 #[derive(Clone, Debug)]
@@ -107,6 +109,7 @@ impl OperatorRunner {
 
         Ok(EditPlan {
             operator: op.name(),
+            source_state: PlanSourceState::capture(mesh),
             fingerprint: op.plan_fingerprint(&payload),
             payload,
         })
@@ -121,6 +124,7 @@ impl OperatorRunner {
         if plan.operator != op.name() {
             return Err(self.plan_operator_mismatch_error(plan.operator, op.name()));
         }
+        self.ensure_plan_matches_mesh_state(mesh, plan)?;
         let mut txn = mesh.edit_with(ChangeSetBuilder::new());
 
         #[cfg(any(target_arch = "wasm32", feature = "std"))]
@@ -169,6 +173,7 @@ impl OperatorRunner {
         if plan.operator != op.name() {
             return Err(self.plan_operator_mismatch_error(plan.operator, op.name()));
         }
+        self.ensure_plan_matches_mesh_state(mesh, plan)?;
         let cache_dirty_before = self.ctx.cache_dirty.clone();
         let result = (|| {
             let mut preview_mesh = mesh.clone();
@@ -269,6 +274,44 @@ impl OperatorRunner {
             ),
         )
     }
+
+    fn ensure_plan_matches_mesh_state<P>(
+        &self,
+        mesh: &Mesh,
+        plan: &EditPlan<P>,
+    ) -> Result<(), OpError> {
+        let actual = PlanSourceState::capture(mesh);
+        if actual == plan.source_state {
+            return Ok(());
+        }
+        Err(self.plan_source_state_mismatch_error(plan.operator, plan.source_state, actual))
+    }
+
+    fn plan_source_state_mismatch_error(
+        &self,
+        operator: &str,
+        expected: PlanSourceState,
+        actual: PlanSourceState,
+    ) -> OpError {
+        OpError::new(
+            OpErrorKind::PreconditionFailed,
+            vec![Diagnostic::new(
+                crate::DiagLevel::Error,
+                crate::DiagCode::PreconditionFailed,
+                alloc::format!(
+                    "plan source mesh state mismatch for `{operator}`: compiled at revision {} / signature {:016x}, current mesh is revision {} / signature {:016x}",
+                    expected.revision.value(),
+                    expected.mesh_state_signature,
+                    actual.revision.value(),
+                    actual.mesh_state_signature,
+                ),
+            )],
+            crate::Artifacts::new(
+                self.ctx.policy.limits.max_artifact_items,
+                self.ctx.policy.limits.max_artifact_bytes,
+            ),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -279,9 +322,25 @@ mod tests {
     use exedra::EditSession;
 
     use super::OperatorRunner;
-    use crate::{Artifacts, DirtyChannel, EditOperator, OpContext, OpError, OpReport};
+    use crate::{
+        Artifacts, DirtyChannel, EditOperator, OpContext, OpError, OpErrorKind, OpReport,
+        mesh_signature,
+    };
 
     struct AddVertexOperator;
+
+    fn quad_mesh() -> exedra::Mesh {
+        exedra::Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad mesh should build")
+    }
 
     impl EditOperator for AddVertexOperator {
         type Params = [f32; 3];
@@ -384,6 +443,23 @@ mod tests {
     }
 
     #[test]
+    fn compile_records_plan_source_state() {
+        let mesh = quad_mesh();
+        let op = AddVertexOperator;
+        let mut runner = OperatorRunner::new();
+
+        let plan = runner
+            .compile(&mesh, &op, &[1.0, 2.0, 3.0])
+            .expect("compile should succeed");
+
+        assert_eq!(plan.source_state.revision, mesh.revision());
+        assert_eq!(
+            plan.source_state.mesh_state_signature,
+            mesh_signature(&mesh)
+        );
+    }
+
+    #[test]
     fn scratch_is_cleared_before_each_run() {
         let mut mesh = exedra::Mesh::new();
         let op = AddVertexOperator;
@@ -401,6 +477,55 @@ mod tests {
         let _ = runner
             .apply_in_place(&mut mesh, &op, &plan_b)
             .expect("second run should succeed");
+    }
+
+    #[test]
+    fn apply_in_place_rejects_stale_plan_after_mesh_mutation() {
+        let mut mesh = quad_mesh();
+        let op = AddVertexOperator;
+        let mut runner = OperatorRunner::new();
+        let plan = runner
+            .compile(&mesh, &op, &[1.0, 2.0, 3.0])
+            .expect("compile should succeed");
+
+        let mut edit = mesh.edit();
+        let _ = exedra::op::add_vertex(&mut edit, [2.0, 2.0, 0.0]);
+        let _: () = edit.finish();
+
+        let err = runner
+            .apply_in_place(&mut mesh, &op, &plan)
+            .expect_err("stale plan should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+        assert!(
+            err.diagnostics[0]
+                .message
+                .contains("plan source mesh state mismatch")
+        );
+    }
+
+    #[test]
+    fn preview_on_clone_rejects_plan_after_attribute_only_change() {
+        let mut mesh = quad_mesh();
+        let face = mesh.faces().next().expect("face should exist");
+        let op = AddVertexOperator;
+        let mut runner = OperatorRunner::new();
+        let plan = runner
+            .compile(&mesh, &op, &[1.0, 2.0, 3.0])
+            .expect("compile should succeed");
+
+        let mut edit = mesh.edit();
+        exedra::op::set_face_region(&mut edit, face, 9).expect("region write should succeed");
+        let _: () = edit.finish();
+
+        let err = runner
+            .preview_on_clone(&mesh, &op, &plan)
+            .expect_err("attribute drift should fail");
+        assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
+        assert!(
+            err.diagnostics[0]
+                .message
+                .contains("plan source mesh state mismatch")
+        );
     }
 
     #[test]
