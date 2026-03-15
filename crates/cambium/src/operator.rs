@@ -9,6 +9,25 @@ use exedra::Mesh;
 use crate::plan::{PlanFingerprint, PlanHasher};
 use crate::{OpContext, OpError, OpReport};
 
+/// Canonical geometry domain owned by an operator.
+///
+/// This is intentionally separate from the operator's stable name. Stable names
+/// describe discoverability and workflow identity; the domain tells Cambium
+/// which canonical head owns the state being operated on.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum OperatorDomain {
+    /// Polygon topology and authored mesh attributes (`exedra`).
+    Mesh,
+    /// Exact-ish analytic topology/geometry (future sibling crate).
+    Analytic,
+    /// Implicit field / scalar-field domain.
+    Implicit,
+    /// Point/curve domain.
+    Points,
+    /// Explicit conversion between canonical domains.
+    Convert,
+}
+
 /// Primary operator trait for topology/attribute edits.
 ///
 /// Operators mutate mesh state through an Exedra edit scope and return an
@@ -33,6 +52,13 @@ pub trait EditOperator {
 
     /// Stable dot-separated operator identifier (for example: `"uv.planar"`).
     fn name(&self) -> &'static str;
+
+    /// Canonical geometry domain owned by this operator.
+    ///
+    /// v0.1 operators are mesh-native by default.
+    fn domain(&self) -> OperatorDomain {
+        OperatorDomain::Mesh
+    }
 
     /// Compiles deterministic operator intent from immutable mesh state.
     fn compile(
@@ -77,7 +103,7 @@ pub trait EditOperator {
 
 #[cfg(test)]
 mod tests {
-    use super::EditOperator;
+    use super::{EditOperator, OperatorDomain};
     use crate::{Artifacts, OpContext, OpError, OpReport};
     use exedra::{EditSession, Mesh};
 
@@ -115,5 +141,11 @@ mod tests {
     fn operator_name_uses_stable_namespace_shape() {
         let op = NoopOperator;
         assert_eq!(op.name(), "test.noop");
+    }
+
+    #[test]
+    fn operator_domain_defaults_to_mesh() {
+        let op = NoopOperator;
+        assert_eq!(op.domain(), OperatorDomain::Mesh);
     }
 }

@@ -3,7 +3,7 @@ id: exe-xgtv
 title: Implicit surface meshing epic (dual contouring pipeline)
 status: open
 deps: []
-links: []
+links: [cam-t6z7, exe-h2rh]
 created: 2026-03-04T06:57:13Z
 type: epic
 priority: 2
