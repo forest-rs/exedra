@@ -8,6 +8,8 @@
 //! - Every half-edge has a twin; boundary twins use [`FaceId::OUTSIDE`].
 //! - Boundary half-edges always have `face == FaceId::OUTSIDE`.
 
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -270,6 +272,123 @@ impl fmt::Display for ValidationError {
 
 impl core::error::Error for ValidationError {}
 
+/// Boundary-loop traversal error returned by [`Mesh::boundary_loop`] and
+/// [`Mesh::boundary_loops`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BoundaryLoopError {
+    /// Seed half-edge is stale or references stale topology.
+    StaleHalfEdge,
+    /// Seed half-edge is not on a boundary.
+    NotBoundaryEdge,
+    /// Boundary traversal encountered a non-OUTSIDE half-edge.
+    NonBoundaryHalfEdge {
+        /// Half-edge index that broke the boundary invariant.
+        half_edge: u32,
+    },
+    /// Boundary traversal encountered a missing `next` pointer.
+    MissingNext {
+        /// Half-edge index missing a `next` pointer.
+        half_edge: u32,
+    },
+    /// Boundary traversal revisited a non-start half-edge.
+    RevisitedHalfEdge {
+        /// Traversal seed index.
+        start: u32,
+        /// Revisited half-edge index.
+        half_edge: u32,
+    },
+}
+
+impl fmt::Display for BoundaryLoopError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StaleHalfEdge => f.write_str("boundary loop seed is stale"),
+            Self::NotBoundaryEdge => f.write_str("half-edge is not on a boundary loop"),
+            Self::NonBoundaryHalfEdge { half_edge } => {
+                write!(
+                    f,
+                    "boundary traversal encountered non-OUTSIDE half-edge {half_edge}"
+                )
+            }
+            Self::MissingNext { half_edge } => {
+                write!(
+                    f,
+                    "boundary traversal encountered missing next on {half_edge}"
+                )
+            }
+            Self::RevisitedHalfEdge { start, half_edge } => write!(
+                f,
+                "boundary traversal from {start} revisited non-start half-edge {half_edge}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for BoundaryLoopError {}
+
+/// Selected-face boundary-loop extraction error returned by
+/// [`Mesh::selected_face_boundary_loops`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SelectedFaceBoundaryError {
+    /// Selection contains [`FaceId::OUTSIDE`].
+    OutsideFaceInSelection,
+    /// Selection contains a stale face ID.
+    StaleFace {
+        /// Stale face ID.
+        face: FaceId,
+    },
+    /// A selected face loop could not provide stable boundary vertices.
+    InvalidFaceLoop {
+        /// Face whose loop data was invalid.
+        face: FaceId,
+    },
+    /// Selected-patch boundary had more than one outgoing continuation.
+    AmbiguousBoundaryVertex {
+        /// Boundary vertex where traversal became ambiguous.
+        vertex: VertexId,
+        /// Number of candidate outgoing boundary edges.
+        candidates: usize,
+    },
+    /// Selected-patch boundary traversal found an open chain instead of a loop.
+    OpenBoundaryChain {
+        /// Start vertex of the open chain.
+        start: VertexId,
+        /// End vertex where traversal stopped.
+        end: VertexId,
+    },
+}
+
+impl fmt::Display for SelectedFaceBoundaryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutsideFaceInSelection => f.write_str("selected patch contains FaceId::OUTSIDE"),
+            Self::StaleFace { face } => {
+                write!(f, "selected patch contains stale face {}", face.index())
+            }
+            Self::InvalidFaceLoop { face } => {
+                write!(
+                    f,
+                    "selected patch has invalid face loop on face {}",
+                    face.index()
+                )
+            }
+            Self::AmbiguousBoundaryVertex { vertex, candidates } => write!(
+                f,
+                "selected patch boundary is ambiguous at vertex {} ({candidates} candidates)",
+                vertex.index()
+            ),
+            Self::OpenBoundaryChain { start, end } => write!(
+                f,
+                "selected patch boundary has open chain from {} to {}",
+                start.index(),
+                end.index()
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SelectedFaceBoundaryError {}
+
 /// Monotonic mesh revision counter.
 ///
 /// Revision increments exactly once per finished edit scope
@@ -528,6 +647,202 @@ impl Mesh {
             .map(|record| record.face)
     }
 
+    /// Returns one full boundary loop containing `seed_edge`.
+    ///
+    /// The seed may be either the OUTSIDE half-edge itself or its interior
+    /// twin. Returned half-edges are the OUTSIDE loop half-edges in traversal
+    /// order, starting from the normalized OUTSIDE seed.
+    pub fn boundary_loop(
+        &self,
+        seed_edge: HalfEdgeId,
+    ) -> Result<Vec<HalfEdgeId>, BoundaryLoopError> {
+        let start = self.normalize_boundary_seed(seed_edge)?;
+        let mut visited = BTreeSet::new();
+        let mut loop_edges = Vec::new();
+        let mut current = start;
+
+        loop {
+            if !visited.insert(current) {
+                if current == start {
+                    break;
+                }
+                return Err(BoundaryLoopError::RevisitedHalfEdge {
+                    start: start.index(),
+                    half_edge: current.index(),
+                });
+            }
+            if self.face(current) != Some(FaceId::OUTSIDE) {
+                return Err(BoundaryLoopError::NonBoundaryHalfEdge {
+                    half_edge: current.index(),
+                });
+            }
+            loop_edges.push(current);
+            let next = self.next(current).ok_or(BoundaryLoopError::MissingNext {
+                half_edge: current.index(),
+            })?;
+            if next == start {
+                break;
+            }
+            current = next;
+        }
+
+        Ok(loop_edges)
+    }
+
+    /// Returns all boundary loops in deterministic seed order.
+    pub fn boundary_loops(&self) -> Result<Vec<Vec<HalfEdgeId>>, BoundaryLoopError> {
+        let mut visited = vec![false; self.half_edges.slot_count()];
+        let mut loops = Vec::new();
+
+        for (id, half_edge) in self.half_edges.iter() {
+            if half_edge.face != FaceId::OUTSIDE || visited[id.index() as usize] {
+                continue;
+            }
+            let boundary_loop = self.boundary_loop(HalfEdgeId::from(id))?;
+            for edge in &boundary_loop {
+                visited[edge.index() as usize] = true;
+            }
+            loops.push(boundary_loop);
+        }
+
+        Ok(loops)
+    }
+
+    /// Returns boundary loops around a selected face patch.
+    ///
+    /// Returned half-edges are the selected-face-side half-edges in traversal
+    /// order. Input faces may be unsorted and may contain duplicates; the
+    /// extraction order is still deterministic.
+    pub fn selected_face_boundary_loops(
+        &self,
+        faces: &[FaceId],
+    ) -> Result<Vec<Vec<HalfEdgeId>>, SelectedFaceBoundaryError> {
+        #[derive(Copy, Clone)]
+        struct BoundaryEdge {
+            edge: HalfEdgeId,
+            face: FaceId,
+            edge_index: usize,
+            from: VertexId,
+            to: VertexId,
+        }
+
+        let mut selected = BTreeSet::<FaceId>::new();
+        for &face in faces {
+            if face == FaceId::OUTSIDE {
+                return Err(SelectedFaceBoundaryError::OutsideFaceInSelection);
+            }
+            if self.face_edge(face).is_none() {
+                return Err(SelectedFaceBoundaryError::StaleFace { face });
+            }
+            let _ = selected.insert(face);
+        }
+
+        let mut boundary_edges = Vec::<BoundaryEdge>::new();
+        for &face in &selected {
+            let corners = self.face_loop(face).collect::<Vec<_>>();
+            if corners.len() < 3 {
+                return Err(SelectedFaceBoundaryError::InvalidFaceLoop { face });
+            }
+            for (edge_index, &edge) in corners.iter().enumerate() {
+                let twin = self
+                    .twin(edge)
+                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
+                let adjacent = self
+                    .face(twin)
+                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
+                if selected.contains(&adjacent) {
+                    continue;
+                }
+                let from = self
+                    .from_vertex(edge)
+                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
+                let to = self
+                    .to_vertex(edge)
+                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
+                boundary_edges.push(BoundaryEdge {
+                    edge,
+                    face,
+                    edge_index,
+                    from,
+                    to,
+                });
+            }
+        }
+
+        boundary_edges.sort_by_key(|edge| (edge.face.index(), edge.edge_index, edge.edge.index()));
+
+        let mut outgoing = BTreeMap::<VertexId, Vec<usize>>::new();
+        for (index, edge) in boundary_edges.iter().enumerate() {
+            outgoing.entry(edge.from).or_default().push(index);
+        }
+        for candidates in outgoing.values_mut() {
+            candidates.sort_by_key(|&index| {
+                let edge = boundary_edges[index];
+                (edge.face.index(), edge.edge_index, edge.edge.index())
+            });
+        }
+
+        let mut visited = vec![false; boundary_edges.len()];
+        let mut loops = Vec::<Vec<HalfEdgeId>>::new();
+        for seed_index in 0..boundary_edges.len() {
+            if visited[seed_index] {
+                continue;
+            }
+            let seed = boundary_edges[seed_index];
+            let mut current = seed;
+            let mut current_index = seed_index;
+            let mut loop_edges = Vec::<HalfEdgeId>::new();
+
+            loop {
+                visited[current_index] = true;
+                loop_edges.push(current.edge);
+
+                if current.to == seed.from {
+                    break;
+                }
+
+                let candidates = outgoing
+                    .get(&current.to)
+                    .map(|indices| {
+                        indices
+                            .iter()
+                            .copied()
+                            .filter(|&index| !visited[index])
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                match candidates.as_slice() {
+                    [next_index] => {
+                        current_index = *next_index;
+                        current = boundary_edges[*next_index];
+                    }
+                    [] => {
+                        return Err(SelectedFaceBoundaryError::OpenBoundaryChain {
+                            start: seed.from,
+                            end: current.to,
+                        });
+                    }
+                    many => {
+                        return Err(SelectedFaceBoundaryError::AmbiguousBoundaryVertex {
+                            vertex: current.to,
+                            candidates: many.len(),
+                        });
+                    }
+                }
+            }
+
+            loops.push(loop_edges);
+        }
+
+        loops.sort_by_key(|boundary_loop| {
+            boundary_loop
+                .first()
+                .copied()
+                .expect("selected-face boundary loops are never empty")
+        });
+        Ok(loops)
+    }
+
     /// Returns the destination vertex for a half-edge.
     #[must_use]
     pub fn to_vertex(&self, half_edge: HalfEdgeId) -> Option<VertexId> {
@@ -658,6 +973,27 @@ impl Mesh {
             triangles.push([c0, corners[i], corners[i + 1]]);
         }
         triangles
+    }
+
+    fn normalize_boundary_seed(
+        &self,
+        seed_edge: HalfEdgeId,
+    ) -> Result<HalfEdgeId, BoundaryLoopError> {
+        let twin = self
+            .twin(seed_edge)
+            .ok_or(BoundaryLoopError::StaleHalfEdge)?;
+        let seed_face = self
+            .face(seed_edge)
+            .ok_or(BoundaryLoopError::StaleHalfEdge)?;
+        let twin_face = self.face(twin).ok_or(BoundaryLoopError::StaleHalfEdge)?;
+
+        if seed_face == FaceId::OUTSIDE {
+            Ok(seed_edge)
+        } else if twin_face == FaceId::OUTSIDE {
+            Ok(twin)
+        } else {
+            Err(BoundaryLoopError::NotBoundaryEdge)
+        }
     }
 
     /// Builds a mesh from indexed triangles.
@@ -1477,8 +1813,12 @@ fn index_to_u32(index: usize) -> u32 {
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::num::NonZeroU32;
 
-    use super::{BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder, ValidationError};
+    use super::{
+        BoundaryLoopError, BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder,
+        SelectedFaceBoundaryError, ValidationError,
+    };
     use crate::attributes::{AttrKey, Domain};
     use crate::{Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
 
@@ -1745,7 +2085,7 @@ mod tests {
     #[test]
     fn traversal_accessors_work_on_triangle() {
         let mesh = triangle_mesh();
-        let face = FaceId::from(Id::new(0, core::num::NonZeroU32::MIN));
+        let face = FaceId::from(Id::new(0, NonZeroU32::MIN));
         let loop_ids: Vec<_> = mesh.face_loop(face).collect();
         assert_eq!(loop_ids.len(), 3);
         let h0 = loop_ids[0];
@@ -1766,7 +2106,7 @@ mod tests {
     #[test]
     fn vertex_star_includes_boundary_half_edges_for_open_mesh() {
         let (mesh, _) = quad_mesh_open_boundary();
-        let v0 = VertexId::from(Id::new(0, core::num::NonZeroU32::MIN));
+        let v0 = VertexId::from(Id::new(0, NonZeroU32::MIN));
         let star: Vec<_> = mesh.vertex_star(v0).collect();
         assert_eq!(star.len(), 2);
         assert!(
@@ -1805,8 +2145,8 @@ mod tests {
             .add_face(&[1, 4, 5, 2])
             .expect("face should be valid");
         let mut mesh = builder.build().expect("mesh should build").mesh;
-        let f0 = FaceId::from(Id::new(0, core::num::NonZeroU32::MIN));
-        let f1 = FaceId::from(Id::new(1, core::num::NonZeroU32::MIN));
+        let f0 = FaceId::from(Id::new(0, NonZeroU32::MIN));
+        let f1 = FaceId::from(Id::new(1, NonZeroU32::MIN));
         let removed = mesh.faces.remove(f0.as_id());
         assert!(removed.is_some());
         let f2 = FaceId::from(mesh.faces.insert(Face {
@@ -2219,24 +2559,9 @@ mod tests {
     }
 
     fn count_boundary_loops(mesh: &Mesh) -> usize {
-        let mut visited = vec![false; mesh.half_edges.slot_count()];
-        let mut loops = 0_usize;
-        for (id, half_edge) in mesh.half_edges.iter() {
-            if half_edge.face != FaceId::OUTSIDE || visited[id.index() as usize] {
-                continue;
-            }
-            loops += 1;
-            let start = HalfEdgeId::from(id);
-            let mut cursor = start;
-            loop {
-                visited[cursor.index() as usize] = true;
-                cursor = mesh.next(cursor).expect("boundary next exists");
-                if cursor == start {
-                    break;
-                }
-            }
-        }
-        loops
+        mesh.boundary_loops()
+            .expect("boundary loops should extract")
+            .len()
     }
 
     #[test]
@@ -2263,6 +2588,137 @@ mod tests {
             4
         );
         assert_eq!(count_boundary_loops(&mesh), 1);
+    }
+
+    #[test]
+    fn boundary_loop_accepts_interior_seed_by_normalizing_to_outside() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("open quad should build");
+        let face = mesh.faces().next().expect("face should exist");
+        let interior_seed = mesh.face_loop(face).next().expect("face loop not empty");
+
+        let boundary_loop = mesh
+            .boundary_loop(interior_seed)
+            .expect("boundary loop should extract");
+        assert_eq!(boundary_loop.len(), 4);
+        assert!(
+            boundary_loop
+                .iter()
+                .all(|edge| mesh.face(*edge) == Some(FaceId::OUTSIDE))
+        );
+    }
+
+    #[test]
+    fn boundary_loop_rejects_non_boundary_seed() {
+        let mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 4, 3], &[1, 2, 5, 4]],
+        )
+        .expect("mesh build should succeed");
+        let interior_edge = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .find(|edge| {
+                mesh.twin(*edge)
+                    .and_then(|twin| mesh.face(twin))
+                    .is_some_and(|adjacent| adjacent != FaceId::OUTSIDE)
+            })
+            .expect("expected interior edge");
+
+        let error = mesh
+            .boundary_loop(interior_edge)
+            .expect_err("interior edge should be rejected");
+        assert_eq!(error, BoundaryLoopError::NotBoundaryEdge);
+    }
+
+    #[test]
+    fn selected_face_boundary_loops_extract_single_patch_loop() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("open quad should build");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let loops = mesh
+            .selected_face_boundary_loops(&faces)
+            .expect("selected patch boundary should extract");
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].len(), 4);
+    }
+
+    #[test]
+    fn selected_face_boundary_loops_extract_disjoint_loops_in_stable_order() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [4.0, 1.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [4, 5, 6]],
+            &BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let loops = mesh
+            .selected_face_boundary_loops(&faces)
+            .expect("selected patch boundary should extract");
+        assert_eq!(loops.len(), 2);
+        assert!(
+            loops[0][0] < loops[1][0],
+            "loop ordering should follow stable seed ordering"
+        );
+    }
+
+    #[test]
+    fn selected_face_boundary_loops_reject_stale_face() {
+        let mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad mesh should build");
+
+        let stale_face = FaceId::new(999, NonZeroU32::MIN);
+        let error = mesh
+            .selected_face_boundary_loops(&[stale_face])
+            .expect_err("stale face should be rejected");
+        assert_eq!(
+            error,
+            SelectedFaceBoundaryError::StaleFace { face: stale_face }
+        );
     }
 
     #[test]

@@ -1,8 +1,6 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use alloc::collections::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra::VertexId;
@@ -23,84 +21,57 @@ impl BoundaryLoop {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BoundaryLoopError {
+    InvalidSelectedPatch,
     AmbiguousBoundaryVertex { vertex: VertexId, candidates: usize },
     OpenBoundaryChain { start: VertexId, end: VertexId },
 }
 
 pub(crate) fn extract_boundary_loops(
+    mesh: &exedra::Mesh,
     region: &SelectedFaceRegion,
 ) -> Result<Vec<BoundaryLoop>, BoundaryLoopError> {
-    let mut outgoing = BTreeMap::<VertexId, Vec<usize>>::new();
-    for (index, edge) in region.boundary_edges.iter().enumerate() {
-        outgoing.entry(edge.from).or_default().push(index);
-    }
-    for candidates in outgoing.values_mut() {
-        candidates.sort_by_key(|&index| {
-            let edge = region.boundary_edges[index];
-            (edge.face.index(), edge.edge_index, edge.edge.index())
-        });
-    }
+    let selected_faces = region
+        .faces
+        .iter()
+        .map(|face| face.face)
+        .collect::<Vec<_>>();
+    let boundary_loops = mesh
+        .selected_face_boundary_loops(&selected_faces)
+        .map_err(map_boundary_error)?;
 
-    let mut visited = vec![false; region.boundary_edges.len()];
-    let mut loops = Vec::<BoundaryLoop>::new();
-    for seed_index in 0..region.boundary_edges.len() {
-        if visited[seed_index] {
-            continue;
-        }
-        let seed = region.boundary_edges[seed_index];
-        let mut current = seed;
-        let mut current_index = seed_index;
-        let mut loop_edges = Vec::<FaceEdgeRef>::new();
-
-        loop {
-            visited[current_index] = true;
-            loop_edges.push(current);
-
-            if current.to == seed.from {
-                break;
-            }
-
-            let candidates = outgoing
-                .get(&current.to)
-                .map(|indices| {
-                    indices
+    boundary_loops
+        .into_iter()
+        .map(|boundary_loop| {
+            let edges = boundary_loop
+                .into_iter()
+                .map(|edge| {
+                    region
+                        .boundary_edges
                         .iter()
                         .copied()
-                        .filter(|&index| !visited[index])
-                        .collect::<Vec<_>>()
+                        .find(|candidate| candidate.edge == edge)
+                        .ok_or(BoundaryLoopError::InvalidSelectedPatch)
                 })
-                .unwrap_or_default();
-            match candidates.as_slice() {
-                [next_index] => {
-                    current_index = *next_index;
-                    current = region.boundary_edges[*next_index];
-                }
-                [] => {
-                    return Err(BoundaryLoopError::OpenBoundaryChain {
-                        start: seed.from,
-                        end: current.to,
-                    });
-                }
-                many => {
-                    return Err(BoundaryLoopError::AmbiguousBoundaryVertex {
-                        vertex: current.to,
-                        candidates: many.len(),
-                    });
-                }
-            }
+                .collect::<Result<Vec<FaceEdgeRef>, _>>()?;
+            Ok(BoundaryLoop { edges })
+        })
+        .collect()
+}
+
+fn map_boundary_error(error: exedra::SelectedFaceBoundaryError) -> BoundaryLoopError {
+    match error {
+        exedra::SelectedFaceBoundaryError::AmbiguousBoundaryVertex { vertex, candidates } => {
+            BoundaryLoopError::AmbiguousBoundaryVertex { vertex, candidates }
         }
-
-        loops.push(BoundaryLoop { edges: loop_edges });
+        exedra::SelectedFaceBoundaryError::OpenBoundaryChain { start, end } => {
+            BoundaryLoopError::OpenBoundaryChain { start, end }
+        }
+        exedra::SelectedFaceBoundaryError::OutsideFaceInSelection
+        | exedra::SelectedFaceBoundaryError::StaleFace { .. }
+        | exedra::SelectedFaceBoundaryError::InvalidFaceLoop { .. } => {
+            BoundaryLoopError::InvalidSelectedPatch
+        }
     }
-
-    loops.sort_by_key(|boundary_loop| {
-        let seed = boundary_loop
-            .edges
-            .first()
-            .expect("boundary loops always contain at least one edge");
-        (seed.face.index(), seed.edge_index, seed.edge.index())
-    });
-    Ok(loops)
 }
 
 #[cfg(test)]
@@ -129,7 +100,7 @@ mod tests {
         let ctx = OpContext::default();
         let region = selected_face_region(&mesh, &[face], false, &ctx).expect("region should load");
 
-        let loops = extract_boundary_loops(&region).expect("loop extraction should succeed");
+        let loops = extract_boundary_loops(&mesh, &region).expect("loop extraction should succeed");
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].edges.len(), 4);
         assert_eq!(loops[0].vertices().len(), 4);
@@ -152,7 +123,7 @@ mod tests {
         let ctx = OpContext::default();
         let region = selected_face_region(&mesh, &faces, false, &ctx).expect("region should load");
 
-        let loops = extract_boundary_loops(&region).expect("loop extraction should succeed");
+        let loops = extract_boundary_loops(&mesh, &region).expect("loop extraction should succeed");
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].edges.len(), 4);
     }
@@ -178,7 +149,7 @@ mod tests {
         let ctx = OpContext::default();
         let region = selected_face_region(&mesh, &faces, false, &ctx).expect("region should load");
 
-        let loops = extract_boundary_loops(&region).expect("loop extraction should succeed");
+        let loops = extract_boundary_loops(&mesh, &region).expect("loop extraction should succeed");
         assert_eq!(loops.len(), 2);
         assert_eq!(loops[0].edges.len(), 3);
         assert_eq!(loops[1].edges.len(), 3);

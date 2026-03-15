@@ -252,62 +252,12 @@ pub fn select_boundary_edge_loop(
     mesh: &exedra::Mesh,
     seed_edge: HalfEdgeId,
 ) -> Result<EdgeLoopSelection, OpError> {
-    let twin = mesh.twin(seed_edge).ok_or_else(|| {
-        query_error(
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            "edge loop seed is stale or missing twin",
-        )
-    })?;
-    let seed_face = mesh.face(seed_edge).ok_or_else(|| {
-        query_error(
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            "edge loop seed is stale",
-        )
-    })?;
-    let twin_face = mesh.face(twin).ok_or_else(|| {
-        query_error(
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            "edge loop seed has stale twin face",
-        )
-    })?;
-
-    let start = if seed_face == FaceId::OUTSIDE {
-        seed_edge
-    } else if twin_face == FaceId::OUTSIDE {
-        twin
-    } else {
-        return Err(query_error(
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            "edge loop selection currently supports boundary edges only",
-        ));
-    };
-
     let mut result = EdgeLoopSelection::default();
-    let mut visited = BTreeSet::new();
-    let mut current = start;
-    loop {
-        if !visited.insert(current) {
-            if current == start {
-                break;
-            }
-            return Err(query_error(
-                OpErrorKind::InternalInvariantViolation,
-                DiagCode::InternalInvariantViolation,
-                "boundary loop traversal revisited a non-start half-edge",
-            ));
-        }
-        if mesh.face(current) != Some(FaceId::OUTSIDE) {
-            return Err(query_error(
-                OpErrorKind::InternalInvariantViolation,
-                DiagCode::InternalInvariantViolation,
-                "boundary loop traversal encountered non-OUTSIDE half-edge",
-            ));
-        }
-        let canonical = mesh.canonical_edge(current).ok_or_else(|| {
+    for boundary_edge in mesh
+        .boundary_loop(seed_edge)
+        .map_err(map_boundary_loop_error)?
+    {
+        let canonical = mesh.canonical_edge(boundary_edge).ok_or_else(|| {
             query_error(
                 OpErrorKind::InternalInvariantViolation,
                 DiagCode::InternalInvariantViolation,
@@ -315,17 +265,6 @@ pub fn select_boundary_edge_loop(
             )
         })?;
         result.edges.push(canonical);
-        let next = mesh.next(current).ok_or_else(|| {
-            query_error(
-                OpErrorKind::InternalInvariantViolation,
-                DiagCode::InternalInvariantViolation,
-                "boundary loop traversal encountered missing next pointer",
-            )
-        })?;
-        if next == start {
-            break;
-        }
-        current = next;
     }
 
     if canonicalize_edge_set(&mut result.edges) {
@@ -424,6 +363,28 @@ fn query_error(kind: OpErrorKind, code: DiagCode, message: &'static str) -> OpEr
         vec![Diagnostic::new(DiagLevel::Error, code, message)],
         Artifacts::default(),
     )
+}
+
+fn map_boundary_loop_error(error: exedra::BoundaryLoopError) -> OpError {
+    match error {
+        exedra::BoundaryLoopError::StaleHalfEdge => query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "edge loop seed is stale or missing twin",
+        ),
+        exedra::BoundaryLoopError::NotBoundaryEdge => query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "edge loop selection currently supports boundary edges only",
+        ),
+        exedra::BoundaryLoopError::NonBoundaryHalfEdge { .. }
+        | exedra::BoundaryLoopError::MissingNext { .. }
+        | exedra::BoundaryLoopError::RevisitedHalfEdge { .. } => query_error(
+            OpErrorKind::InternalInvariantViolation,
+            DiagCode::InternalInvariantViolation,
+            "boundary loop traversal encountered invalid mesh boundary state",
+        ),
+    }
 }
 
 #[cfg(test)]

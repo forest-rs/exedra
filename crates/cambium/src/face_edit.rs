@@ -529,6 +529,8 @@ impl EditOperator for ExtrudeFaces {
             cap_positions.insert(vertex, extruded);
         }
         let cap_vertices = create_vertex_copies(txn, &cap_positions);
+        let boundary_loops = extract_boundary_loops(txn.mesh(), &region)
+            .map_err(|err| boundary_loop_error(ctx, "extrude", err))?;
 
         if params.mode == ExtrudeMode::ShellOpen {
             let faces_to_delete = region
@@ -545,9 +547,6 @@ impl EditOperator for ExtrudeFaces {
                 )
             })?;
         }
-
-        let boundary_loops = extract_boundary_loops(&region)
-            .map_err(|err| boundary_loop_error(ctx, "extrude", err))?;
         let face_lookup = region
             .faces
             .iter()
@@ -808,6 +807,8 @@ impl EditOperator for InsetFaces {
             inset_positions.insert(vertex, averaged);
         }
         let inset_vertices = create_vertex_copies(txn, &inset_positions);
+        let boundary_loops = extract_boundary_loops(txn.mesh(), &region)
+            .map_err(|err| boundary_loop_error(ctx, "inset", err))?;
 
         let faces_to_delete = plans.iter().map(|plan| plan.face).collect::<Vec<_>>();
         op::delete_faces(txn, &faces_to_delete, DeletePolicy::KeepIsolated).map_err(|err| {
@@ -818,9 +819,6 @@ impl EditOperator for InsetFaces {
                 format!("inset delete failed unexpectedly: {err}"),
             )
         })?;
-
-        let boundary_loops = extract_boundary_loops(&region)
-            .map_err(|err| boundary_loop_error(ctx, "inset", err))?;
         let plan_lookup = plans
             .iter()
             .map(|plan| (plan.face, plan))
@@ -1499,6 +1497,12 @@ fn permutations4() -> [[usize; 4]; 24] {
 
 fn boundary_loop_error(ctx: &OpContext, op_name: &'static str, err: BoundaryLoopError) -> OpError {
     match err {
+        BoundaryLoopError::InvalidSelectedPatch => op_error(
+            ctx,
+            OpErrorKind::InvalidMesh,
+            DiagCode::InternalInvariantViolation,
+            format!("{op_name} selection patch is internally inconsistent"),
+        ),
         BoundaryLoopError::AmbiguousBoundaryVertex { vertex, candidates } => op_error(
             ctx,
             OpErrorKind::PreconditionFailed,
