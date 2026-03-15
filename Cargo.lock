@@ -56,6 +56,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_analytic"
+version = "0.1.0"
+dependencies = [
+ "exedra",
+ "libm",
+]
+
+[[package]]
 name = "exedra_primitives"
 version = "0.1.0"
 dependencies = [

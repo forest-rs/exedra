@@ -5,6 +5,7 @@ members = [
     "crates/cambium",
     "crates/cambium_testkit",
     "crates/exedra",
+    "crates/exedra_analytic",
     "crates/exedra_primitives",
     "crates/exedra_testkit",
 ]
@@ -73,6 +74,7 @@ rust.unsafe_code = "deny"
 cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
+exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 libm = "0.2.15"

@@ -1,0 +1,22 @@
+[package]
+name = "exedra_analytic"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Planar analytic topology spike for Exedra"
+keywords = ["geometry", "analytic", "tessellation", "no_std"]
+categories = ["data-structures", "algorithms"]
+
+[dependencies]
+exedra = { default-features = false, path = "../exedra" }
+libm = { optional = true, workspace = true }
+
+[features]
+default = ["std"]
+libm = ["dep:libm", "exedra/libm"]
+std = ["exedra/std"]
+
+[lints]
+workspace = true

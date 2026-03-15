@@ -11,6 +11,11 @@ This workspace contains two core crates:
 
 Exedra is the calm, stable foundation. Cambium moves faster on top of it.
 
+Experimental domain spikes may sit beside the core crates when they earn a
+clear architectural slice. The current example is
+**[exedra_analytic](crates/exedra_analytic/)**, a planar analytic-topology MVP
+that tessellates deterministically into Exedra meshes.
+
 ## Architecture
 
 Exedra provides a polygonal half-edge mesh with:
