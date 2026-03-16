@@ -19,12 +19,14 @@ full CAD scope.
 - line-segment coedges only,
 - shell/loop/coedge topology,
 - explicit planar opening loops,
+- narrow face-level mutation for regions and XY rectangular openings,
 - deterministic tessellation into `exedra::Mesh`.
 
 The first slice explicitly does not support:
 
 - curved edges,
 - general trims beyond explicit opening loops,
+- arbitrary 3D opening editing outside XY-aligned planar faces,
 - booleans,
 - reverse conversion from polygon mesh into analytic state.
 

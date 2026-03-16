@@ -9,6 +9,7 @@
 //! - line-segment coedges,
 //! - shell/loop/coedge topology,
 //! - explicit planar opening loops,
+//! - face-level mutation for regions and XY rectangular openings,
 //! - deterministic tessellation into [`exedra::Mesh`].
 //!
 //! It is not a general CAD kernel. Curved edges, booleans, and reverse
@@ -28,6 +29,15 @@ use exedra::{FaceId, Mesh, MeshBuilder};
 /// Region ID carried by analytic faces and written into tessellated meshes.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct RegionId(pub u32);
+
+/// Parameters for adding one rectangular opening on an XY-aligned planar face.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RectOpeningParams {
+    /// Rectangle minimum corner in the face's XY plane.
+    pub min: [f32; 2],
+    /// Rectangle maximum corner in the face's XY plane.
+    pub max: [f32; 2],
+}
 
 macro_rules! analytic_id {
     ($name:ident) => {
@@ -133,6 +143,18 @@ impl AnalyticShell {
         &self.faces
     }
 
+    /// Returns one face by stable ID.
+    #[must_use]
+    pub fn face(&self, face: AnalyticFaceId) -> Option<&PlanarFace> {
+        self.faces.get(face.index() as usize)
+    }
+
+    /// Returns the current region carried by one face.
+    #[must_use]
+    pub fn face_region(&self, face: AnalyticFaceId) -> Option<RegionId> {
+        self.face(face).map(|record| record.region)
+    }
+
     /// Returns the vertex IDs for one face's outer loop in deterministic order.
     pub fn face_vertices(&self, face: AnalyticFaceId) -> Option<Vec<AnalyticVertexId>> {
         let face_record = self.faces.get(face.index() as usize)?;
@@ -150,6 +172,61 @@ impl AnalyticShell {
             .iter()
             .map(|opening| self.loop_vertices(*opening).ok())
             .collect()
+    }
+
+    /// Sets the semantic region for one existing face.
+    pub fn set_face_region(
+        &mut self,
+        face: AnalyticFaceId,
+        region: RegionId,
+    ) -> Result<(), EditError> {
+        let record = self
+            .faces
+            .get_mut(face.index() as usize)
+            .ok_or(EditError::MissingFace { face })?;
+        record.region = region;
+        Ok(())
+    }
+
+    /// Adds one rectangular opening to an existing XY-aligned planar face.
+    pub fn add_rect_opening_xy(
+        &mut self,
+        face: AnalyticFaceId,
+        params: &RectOpeningParams,
+    ) -> Result<AnalyticLoopId, EditError> {
+        if params.min[0] >= params.max[0] || params.min[1] >= params.max[1] {
+            return Err(EditError::InvalidRectBounds);
+        }
+
+        let face_record = self.face(face).ok_or(EditError::MissingFace { face })?;
+        let z = xy_plane_z(face, face_record.plane)?;
+        let outer = self
+            .face_vertices(face)
+            .ok_or(EditError::InvalidFaceTopology { face })?;
+        let openings = self
+            .face_opening_vertices(face)
+            .ok_or(EditError::InvalidFaceTopology { face })?;
+
+        let rect_loop = rect_loop_vertices(params, z);
+        validate_rect_opening_xy(self, face, &outer, &openings, &rect_loop)?;
+
+        let new_vertices = rect_loop
+            .iter()
+            .map(|position| {
+                let id = AnalyticVertexId::from_index(usize_to_u32(self.vertices.len()));
+                self.vertices.push(AnalyticVertex {
+                    position: [position[0], position[1], z],
+                });
+                id
+            })
+            .collect::<Vec<_>>();
+        let opening = push_loop(&mut self.coedges, &mut self.loops, &new_vertices);
+        let record = self
+            .faces
+            .get_mut(face.index() as usize)
+            .ok_or(EditError::MissingFace { face })?;
+        record.openings.push(opening);
+        Ok(opening)
     }
 
     /// Tessellates the analytic shell into an Exedra mesh.
@@ -302,12 +379,20 @@ impl AnalyticShellBuilder {
         let plane = Plane::from_points(&outer_positions).ok_or(BuildError::DegenerateLoop)?;
         validate_planar_loop(&outer_positions, plane)?;
 
-        let outer = self.push_loop(outer_vertices);
+        let outer = push_loop(
+            &mut self.shell.coedges,
+            &mut self.shell.loops,
+            outer_vertices,
+        );
         let mut openings = Vec::with_capacity(opening_loops.len());
         for opening in opening_loops {
             let opening_positions = self.validate_loop_vertices(opening)?;
             validate_planar_loop(&opening_positions, plane)?;
-            openings.push(self.push_loop(opening));
+            openings.push(push_loop(
+                &mut self.shell.coedges,
+                &mut self.shell.loops,
+                opening,
+            ));
         }
 
         let face_id = AnalyticFaceId::from_index(usize_to_u32(self.shell.faces.len()));
@@ -346,28 +431,6 @@ impl AnalyticShellBuilder {
                     .ok_or(BuildError::MissingVertex(*vertex))
             })
             .collect()
-    }
-
-    fn push_loop(&mut self, loop_vertices: &[AnalyticVertexId]) -> AnalyticLoopId {
-        let first_coedge = AnalyticCoedgeId::from_index(usize_to_u32(self.shell.coedges.len()));
-        let loop_len = usize_to_u32(loop_vertices.len());
-        for index in 0..loop_vertices.len() {
-            let start = loop_vertices[index];
-            let end = loop_vertices[(index + 1) % loop_vertices.len()];
-            let next = if index + 1 == loop_vertices.len() {
-                first_coedge
-            } else {
-                AnalyticCoedgeId::from_index(usize_to_u32(self.shell.coedges.len()) + 1)
-            };
-            self.shell.coedges.push(AnalyticCoedge { start, end, next });
-        }
-
-        let loop_id = AnalyticLoopId::from_index(usize_to_u32(self.shell.loops.len()));
-        self.shell.loops.push(AnalyticLoop {
-            first: first_coedge,
-            len: loop_len,
-        });
-        loop_id
     }
 }
 
@@ -495,6 +558,38 @@ pub enum BuildError {
     InvalidRectFrame,
 }
 
+/// Analytic face-mutation error.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum EditError {
+    /// Face does not exist.
+    MissingFace {
+        /// Missing face ID.
+        face: AnalyticFaceId,
+    },
+    /// Face loop or opening topology could not be read.
+    InvalidFaceTopology {
+        /// Face with invalid topology.
+        face: AnalyticFaceId,
+    },
+    /// Rectangle bounds are degenerate or inverted.
+    InvalidRectBounds,
+    /// Face is not aligned with the XY plane.
+    FaceNotXyAligned {
+        /// Face that rejected the XY-only operation.
+        face: AnalyticFaceId,
+    },
+    /// Opening lies outside the face interior or intersects its boundary.
+    OpeningOutsideFace {
+        /// Face that rejected the opening.
+        face: AnalyticFaceId,
+    },
+    /// Opening overlaps or intersects an existing opening on the face.
+    OpeningOverlapsExisting {
+        /// Face that rejected the opening.
+        face: AnalyticFaceId,
+    },
+}
+
 /// Tessellation-time error.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TessellateError {
@@ -593,6 +688,129 @@ fn validate_planar_loop(positions: &[[f32; 3]], plane: Plane) -> Result<(), Buil
         }
     }
     Ok(())
+}
+
+fn push_loop(
+    coedges: &mut Vec<AnalyticCoedge>,
+    loops: &mut Vec<AnalyticLoop>,
+    loop_vertices: &[AnalyticVertexId],
+) -> AnalyticLoopId {
+    let first_coedge = AnalyticCoedgeId::from_index(usize_to_u32(coedges.len()));
+    let loop_len = usize_to_u32(loop_vertices.len());
+    for index in 0..loop_vertices.len() {
+        let start = loop_vertices[index];
+        let end = loop_vertices[(index + 1) % loop_vertices.len()];
+        let next = if index + 1 == loop_vertices.len() {
+            first_coedge
+        } else {
+            AnalyticCoedgeId::from_index(usize_to_u32(coedges.len()) + 1)
+        };
+        coedges.push(AnalyticCoedge { start, end, next });
+    }
+
+    let loop_id = AnalyticLoopId::from_index(usize_to_u32(loops.len()));
+    loops.push(AnalyticLoop {
+        first: first_coedge,
+        len: loop_len,
+    });
+    loop_id
+}
+
+fn xy_plane_z(face: AnalyticFaceId, plane: Plane) -> Result<f32, EditError> {
+    if plane.normal[0].abs() > PLANAR_EPSILON
+        || plane.normal[1].abs() > PLANAR_EPSILON
+        || (plane.normal[2].abs() - 1.0).abs() > PLANAR_EPSILON
+    {
+        return Err(EditError::FaceNotXyAligned { face });
+    }
+    Ok(plane.distance / plane.normal[2])
+}
+
+fn rect_loop_vertices(params: &RectOpeningParams, z: f32) -> [[f32; 3]; 4] {
+    [
+        [params.min[0], params.min[1], z],
+        [params.min[0], params.max[1], z],
+        [params.max[0], params.max[1], z],
+        [params.max[0], params.min[1], z],
+    ]
+}
+
+fn validate_rect_opening_xy(
+    shell: &AnalyticShell,
+    face: AnalyticFaceId,
+    outer: &[AnalyticVertexId],
+    openings: &[Vec<AnalyticVertexId>],
+    rect_loop: &[[f32; 3]; 4],
+) -> Result<(), EditError> {
+    let outer_projected =
+        project_xy_vertex_loop(shell, outer).ok_or(EditError::InvalidFaceTopology { face })?;
+    let opening_projected = openings
+        .iter()
+        .map(|opening| {
+            project_xy_vertex_loop(shell, opening).ok_or(EditError::InvalidFaceTopology { face })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let rect_projected = project_xy_point_loop(rect_loop);
+
+    if rect_projected.iter().any(|corner| {
+        !point_in_polygon(corner.point, &outer_projected)
+            || point_on_polygon_edge(corner.point, &outer_projected)
+    }) {
+        return Err(EditError::OpeningOutsideFace { face });
+    }
+    if polygon_edges(&rect_projected).iter().any(|edge| {
+        polygon_edges(&outer_projected).iter().any(|outer_edge| {
+            !shares_endpoint(edge.0, edge.1, outer_edge.0, outer_edge.1)
+                && segments_intersect(edge.0, edge.1, outer_edge.0, outer_edge.1)
+        })
+    }) {
+        return Err(EditError::OpeningOutsideFace { face });
+    }
+
+    for opening in &opening_projected {
+        if rect_projected.iter().any(|corner| {
+            point_in_polygon(corner.point, opening) || point_on_polygon_edge(corner.point, opening)
+        }) || opening.iter().any(|corner| {
+            point_in_polygon(corner.point, &rect_projected)
+                || point_on_polygon_edge(corner.point, &rect_projected)
+        }) || polygon_edges(&rect_projected).iter().any(|edge| {
+            polygon_edges(opening).iter().any(|opening_edge| {
+                !shares_endpoint(edge.0, edge.1, opening_edge.0, opening_edge.1)
+                    && segments_intersect(edge.0, edge.1, opening_edge.0, opening_edge.1)
+            })
+        }) {
+            return Err(EditError::OpeningOverlapsExisting { face });
+        }
+    }
+
+    Ok(())
+}
+
+fn project_xy_vertex_loop(
+    shell: &AnalyticShell,
+    loop_vertices: &[AnalyticVertexId],
+) -> Option<Vec<ProjectedVertex>> {
+    loop_vertices
+        .iter()
+        .map(|vertex| {
+            let position = shell.vertices.get(vertex.index() as usize)?.position;
+            Some(ProjectedVertex {
+                id: *vertex,
+                point: [position[0], position[1]],
+            })
+        })
+        .collect()
+}
+
+fn project_xy_point_loop(points: &[[f32; 3]]) -> Vec<ProjectedVertex> {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| ProjectedVertex {
+            id: AnalyticVertexId::from_index(usize_to_u32(index)),
+            point: [point[0], point[1]],
+        })
+        .collect()
 }
 
 fn triangulate_face_with_openings(
@@ -855,6 +1073,12 @@ fn point_in_polygon(point: [f32; 2], polygon: &[ProjectedVertex]) -> bool {
     inside
 }
 
+fn point_on_polygon_edge(point: [f32; 2], polygon: &[ProjectedVertex]) -> bool {
+    polygon_edges(polygon)
+        .iter()
+        .any(|edge| on_segment(edge.0, edge.1, point))
+}
+
 fn prune_ring(loop_vertices: &[ProjectedVertex]) -> Vec<ProjectedVertex> {
     let mut pruned = Vec::with_capacity(loop_vertices.len());
     for &vertex in loop_vertices {
@@ -983,8 +1207,8 @@ mod tests {
     use exedra::ExtractParams;
 
     use super::{
-        AnalyticFaceId, AnalyticShellBuilder, BuildError, RectFrameParams, RegionId,
-        TessellateParams, rect_frame_xy,
+        AnalyticFaceId, AnalyticShellBuilder, BuildError, EditError, RectFrameParams,
+        RectOpeningParams, RegionId, TessellateParams, rect_frame_xy,
     };
 
     #[test]
@@ -1082,6 +1306,93 @@ mod tests {
         })
         .expect_err("opening must stay inside outer frame");
         assert_eq!(error, BuildError::InvalidRectFrame);
+    }
+
+    #[test]
+    fn set_face_region_updates_existing_face() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([2.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([2.0, 1.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 1.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(3))
+            .expect("quad should build");
+        let mut shell = builder.build();
+
+        shell
+            .set_face_region(face, RegionId(9))
+            .expect("region update should succeed");
+        assert_eq!(shell.face_region(face), Some(RegionId(9)));
+    }
+
+    #[test]
+    fn add_rect_opening_xy_mutates_existing_face() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([4.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([4.0, 3.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 3.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(5))
+            .expect("outer face should build");
+        let mut shell = builder.build();
+
+        let opening = shell
+            .add_rect_opening_xy(
+                face,
+                &RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [3.0, 2.0],
+                },
+            )
+            .expect("opening should be added");
+
+        let openings = shell
+            .face_opening_vertices(face)
+            .expect("opening loop should exist");
+        assert_eq!(openings.len(), 1);
+        assert_eq!(openings[0].len(), 4);
+        assert_eq!(
+            shell
+                .face(face)
+                .expect("face should still exist")
+                .openings
+                .first()
+                .copied(),
+            Some(opening)
+        );
+
+        let tessellated = shell
+            .to_exedra_mesh(&TessellateParams::default())
+            .expect("mutated shell should tessellate");
+        assert!(tessellated.mesh.validate_fast().is_empty());
+        assert!(tessellated.mesh.validate_deep().is_empty());
+        assert_eq!(tessellated.mesh.faces().count(), 8);
+    }
+
+    #[test]
+    fn add_rect_opening_xy_rejects_out_of_bounds_opening() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([4.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([4.0, 3.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 3.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(5))
+            .expect("outer face should build");
+        let mut shell = builder.build();
+
+        let error = shell
+            .add_rect_opening_xy(
+                face,
+                &RectOpeningParams {
+                    min: [3.5, 1.0],
+                    max: [4.5, 2.0],
+                },
+            )
+            .expect_err("opening outside outer face should fail");
+        assert_eq!(error, EditError::OpeningOutsideFace { face });
     }
 
     #[test]
