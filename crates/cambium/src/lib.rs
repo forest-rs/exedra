@@ -10,6 +10,7 @@
 //! - structured diagnostics/artifacts/reports,
 //! - policy-controlled execution,
 //! - deterministic region/selection helpers,
+//! - explicit cross-domain conversion helpers ([`convert`]),
 //! - deterministic UV/tagging operators,
 //! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`]).
 //!
@@ -36,6 +37,7 @@
 //! - Planning lifecycle: [`OperatorRunner::compile`],
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
 //! - Operator domains: [`OperatorDomain`]
+//! - Explicit conversions: [`convert::analytic_shell_to_mesh`], [`convert::rect_frame_to_mesh`]
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
 //! - Operator families:
@@ -90,6 +92,9 @@
 //! `EditOperator::domain()` and [`OperatorDomain`] are additive metadata used by
 //! the multi-domain architecture work. Existing mesh operators continue to
 //! default to [`OperatorDomain::Mesh`].
+//!
+//! Analytic conversion stays explicit in [`convert`] rather than being forced
+//! through the mesh-only operator runtime.
 
 #![no_std]
 extern crate alloc;
@@ -102,6 +107,7 @@ mod artifact;
 mod bounds;
 mod bridge;
 mod context;
+pub mod convert;
 mod delete;
 mod diag;
 mod dirty;

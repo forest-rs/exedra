@@ -11,13 +11,14 @@ categories = ["data-structures", "algorithms"]
 
 [dependencies]
 exedra = { features = ["std"], workspace = true }
+exedra_analytic = { features = ["std"], workspace = true }
 libm = { optional = true, workspace = true }
 understory_dirty.workspace = true
 
 [features]
 default = ["std"]
-libm = ["dep:libm", "exedra/libm"]
-std = ["exedra/std"]
+libm = ["dep:libm", "exedra/libm", "exedra_analytic/libm"]
+std = ["exedra/std", "exedra_analytic/std"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time.workspace = true
