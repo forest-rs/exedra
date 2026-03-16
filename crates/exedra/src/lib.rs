@@ -56,8 +56,8 @@ mod topology;
 pub use arena::Arena;
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
-    BoundaryLoopError, BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuildResult,
-    MeshBuilder, MeshRevision, SelectedFaceBoundaryError, ValidationError,
+    BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceLoopErrorKind, Mesh,
+    MeshBuildResult, MeshBuilder, MeshRevision, SelectedFaceBoundaryError, ValidationError,
 };
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;

@@ -3,7 +3,6 @@
 
 //! Region-tagging operators and helpers.
 
-use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec;
 
 use exedra::{FaceId, HalfEdgeId};
@@ -278,20 +277,9 @@ pub fn flood_fill_faces_by_region(
     mesh: &exedra::Mesh,
     seed_face: FaceId,
 ) -> Result<RegionFloodSelection, OpError> {
-    if seed_face == FaceId::OUTSIDE {
-        return Err(query_error(
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            "region flood fill seed cannot be FaceId::OUTSIDE",
-        ));
-    }
-    let _seed_edge = mesh.face_edge(seed_face).ok_or_else(|| {
-        query_error(
-            OpErrorKind::PreconditionFailed,
-            DiagCode::PreconditionFailed,
-            "region flood fill seed face is stale",
-        )
-    })?;
+    let faces = mesh
+        .connected_face_region(seed_face)
+        .map_err(map_connected_face_region_error)?;
     let layer = mesh
         .attrs()
         .dense(exedra::attr::FACE_REGION)
@@ -309,47 +297,13 @@ pub fn flood_fill_faces_by_region(
             "seed face missing face.region value",
         )
     })?;
-
-    let mut visited = BTreeSet::new();
-    visited.insert(seed_face);
-    let mut queue = VecDeque::new();
-    queue.push_back(seed_face);
-
     let mut result = RegionFloodSelection {
         region_id,
         ..RegionFloodSelection::default()
     };
-
-    while let Some(face) = queue.pop_front() {
-        result.counters.faces_processed = result.counters.faces_processed.saturating_add(1);
-        result.faces.push(face);
-        for corner in mesh.face_loop(face) {
-            let twin = mesh.twin(corner).ok_or_else(|| {
-                query_error(
-                    OpErrorKind::InternalInvariantViolation,
-                    DiagCode::InternalInvariantViolation,
-                    "region flood fill encountered stale twin",
-                )
-            })?;
-            let adjacent = mesh.face(twin).ok_or_else(|| {
-                query_error(
-                    OpErrorKind::InternalInvariantViolation,
-                    DiagCode::InternalInvariantViolation,
-                    "region flood fill encountered stale adjacent face",
-                )
-            })?;
-            if adjacent == FaceId::OUTSIDE || visited.contains(&adjacent) {
-                continue;
-            }
-            if layer
-                .get(adjacent.as_id())
-                .is_some_and(|value| *value == region_id)
-            {
-                visited.insert(adjacent);
-                queue.push_back(adjacent);
-            }
-        }
-    }
+    result.faces = faces;
+    result.counters.faces_processed =
+        u64::try_from(result.faces.len()).expect("face count should fit u64");
 
     if canonicalize_face_set(&mut result.faces) {
         result.counters.selections_canonicalized = 1;
@@ -383,6 +337,32 @@ fn map_boundary_loop_error(error: exedra::BoundaryLoopError) -> OpError {
             OpErrorKind::InternalInvariantViolation,
             DiagCode::InternalInvariantViolation,
             "boundary loop traversal encountered invalid mesh boundary state",
+        ),
+    }
+}
+
+fn map_connected_face_region_error(error: exedra::ConnectedFaceRegionError) -> OpError {
+    match error {
+        exedra::ConnectedFaceRegionError::OutsideSeedFace => query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "region flood fill seed cannot be FaceId::OUTSIDE",
+        ),
+        exedra::ConnectedFaceRegionError::StaleSeedFace { .. } => query_error(
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "region flood fill seed face is stale",
+        ),
+        exedra::ConnectedFaceRegionError::MissingFaceRegionAttribute => query_error(
+            OpErrorKind::MissingAttribute,
+            DiagCode::MissingRequiredAttribute,
+            "missing required dense face.region layer",
+        ),
+        exedra::ConnectedFaceRegionError::MissingFaceRegionValue { .. }
+        | exedra::ConnectedFaceRegionError::BrokenAdjacency { .. } => query_error(
+            OpErrorKind::InternalInvariantViolation,
+            DiagCode::InternalInvariantViolation,
+            "region flood fill encountered invalid mesh region state",
         ),
     }
 }

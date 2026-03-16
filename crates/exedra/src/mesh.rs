@@ -8,7 +8,7 @@
 //! - Every half-edge has a twin; boundary twins use [`FaceId::OUTSIDE`].
 //! - Boundary half-edges always have `face == FaceId::OUTSIDE`.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -388,6 +388,61 @@ impl fmt::Display for SelectedFaceBoundaryError {
 }
 
 impl core::error::Error for SelectedFaceBoundaryError {}
+
+/// Connected face-region query error returned by [`Mesh::connected_face_region`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ConnectedFaceRegionError {
+    /// Seed face cannot be [`FaceId::OUTSIDE`].
+    OutsideSeedFace,
+    /// Seed face is stale.
+    StaleSeedFace {
+        /// Stale face ID.
+        face: FaceId,
+    },
+    /// Required dense `face.region` attribute layer is missing.
+    MissingFaceRegionAttribute,
+    /// A face in the connected component had no `face.region` value.
+    MissingFaceRegionValue {
+        /// Face missing a region value.
+        face: FaceId,
+    },
+    /// Region traversal encountered broken adjacency on a face loop.
+    BrokenAdjacency {
+        /// Face whose loop traversal encountered invalid adjacency.
+        face: FaceId,
+        /// Half-edge that failed adjacency lookup.
+        half_edge: HalfEdgeId,
+    },
+}
+
+impl fmt::Display for ConnectedFaceRegionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutsideSeedFace => {
+                f.write_str("connected face-region seed cannot be FaceId::OUTSIDE")
+            }
+            Self::StaleSeedFace { face } => {
+                write!(f, "connected face-region seed is stale: {}", face.index())
+            }
+            Self::MissingFaceRegionAttribute => {
+                f.write_str("missing required dense face.region layer")
+            }
+            Self::MissingFaceRegionValue { face } => write!(
+                f,
+                "connected face-region face is missing a region value: {}",
+                face.index()
+            ),
+            Self::BrokenAdjacency { face, half_edge } => write!(
+                f,
+                "connected face-region traversal encountered broken adjacency on face {} at half-edge {}",
+                face.index(),
+                half_edge.index()
+            ),
+        }
+    }
+}
+
+impl core::error::Error for ConnectedFaceRegionError {}
 
 /// Monotonic mesh revision counter.
 ///
@@ -841,6 +896,64 @@ impl Mesh {
                 .expect("selected-face boundary loops are never empty")
         });
         Ok(loops)
+    }
+
+    /// Returns the connected interior faces that share the seed face's region.
+    ///
+    /// Returned faces are sorted in deterministic [`FaceId`] order.
+    pub fn connected_face_region(
+        &self,
+        seed_face: FaceId,
+    ) -> Result<Vec<FaceId>, ConnectedFaceRegionError> {
+        if seed_face == FaceId::OUTSIDE {
+            return Err(ConnectedFaceRegionError::OutsideSeedFace);
+        }
+        if self.face_edge(seed_face).is_none() {
+            return Err(ConnectedFaceRegionError::StaleSeedFace { face: seed_face });
+        }
+
+        let region_layer = self
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .ok_or(ConnectedFaceRegionError::MissingFaceRegionAttribute)?;
+        let seed_region = region_layer
+            .get(seed_face.as_id())
+            .copied()
+            .ok_or(ConnectedFaceRegionError::MissingFaceRegionValue { face: seed_face })?;
+
+        let mut visited = BTreeSet::new();
+        let mut queue = VecDeque::new();
+        let mut faces = Vec::new();
+
+        visited.insert(seed_face);
+        queue.push_back(seed_face);
+
+        while let Some(face) = queue.pop_front() {
+            faces.push(face);
+            for half_edge in self.face_loop(face) {
+                let twin = self
+                    .twin(half_edge)
+                    .ok_or(ConnectedFaceRegionError::BrokenAdjacency { face, half_edge })?;
+                let adjacent = self
+                    .face(twin)
+                    .ok_or(ConnectedFaceRegionError::BrokenAdjacency { face, half_edge })?;
+                if adjacent == FaceId::OUTSIDE || visited.contains(&adjacent) {
+                    continue;
+                }
+                let adjacent_region = region_layer
+                    .get(adjacent.as_id())
+                    .copied()
+                    .ok_or(ConnectedFaceRegionError::MissingFaceRegionValue { face: adjacent })?;
+                if adjacent_region == seed_region {
+                    let inserted = visited.insert(adjacent);
+                    debug_assert!(inserted, "visited faces must remain unique");
+                    queue.push_back(adjacent);
+                }
+            }
+        }
+
+        faces.sort_unstable();
+        Ok(faces)
     }
 
     /// Returns the destination vertex for a half-edge.
@@ -1816,11 +1929,13 @@ mod tests {
     use core::num::NonZeroU32;
 
     use super::{
-        BoundaryLoopError, BuildError, BuildParams, FaceLoopErrorKind, Mesh, MeshBuilder,
-        SelectedFaceBoundaryError, ValidationError,
+        BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceLoopErrorKind,
+        Mesh, MeshBuilder, SelectedFaceBoundaryError, ValidationError,
     };
     use crate::attributes::{AttrKey, Domain};
-    use crate::{Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId};
+    use crate::{
+        ChangeSetBuilder, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId, op::set_face_region,
+    };
 
     fn triangle_mesh() -> Mesh {
         let mut mesh = Mesh::new();
@@ -2718,6 +2833,85 @@ mod tests {
         assert_eq!(
             error,
             SelectedFaceBoundaryError::StaleFace { face: stale_face }
+        );
+    }
+
+    #[test]
+    fn connected_face_region_returns_sorted_connected_component() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 5, 4], &[1, 2, 6, 5], &[2, 3, 7, 6]],
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+        set_face_region(&mut edit, faces[0], 11).expect("set region on first face");
+        set_face_region(&mut edit, faces[1], 11).expect("set region on second face");
+        set_face_region(&mut edit, faces[2], 11).expect("set region on third face");
+        let _ = edit.finish();
+
+        let connected = mesh
+            .connected_face_region(faces[1])
+            .expect("connected face region should extract");
+        assert_eq!(connected, vec![faces[0], faces[1], faces[2]]);
+    }
+
+    #[test]
+    fn connected_face_region_respects_region_boundaries() {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 4, 3], &[1, 2, 5, 4]],
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+        set_face_region(&mut edit, faces[0], 7).expect("set region on first face");
+        set_face_region(&mut edit, faces[1], 9).expect("set region on second face");
+        let _ = edit.finish();
+
+        let connected = mesh
+            .connected_face_region(faces[1])
+            .expect("connected face region should extract");
+        assert_eq!(connected, vec![faces[1]]);
+    }
+
+    #[test]
+    fn connected_face_region_rejects_outside_seed() {
+        let (mesh, _) = quad_mesh_open_boundary();
+        let error = mesh
+            .connected_face_region(FaceId::OUTSIDE)
+            .expect_err("outside seed should fail");
+        assert_eq!(error, ConnectedFaceRegionError::OutsideSeedFace);
+    }
+
+    #[test]
+    fn connected_face_region_rejects_stale_seed() {
+        let (mesh, _) = quad_mesh_open_boundary();
+        let stale_face = FaceId::new(0, NonZeroU32::new(99).expect("literal should be non-zero"));
+        let error = mesh
+            .connected_face_region(stale_face)
+            .expect_err("stale seed should fail");
+        assert_eq!(
+            error,
+            ConnectedFaceRegionError::StaleSeedFace { face: stale_face }
         );
     }
 
