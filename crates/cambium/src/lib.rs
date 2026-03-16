@@ -10,6 +10,7 @@
 //! - structured diagnostics/artifacts/reports,
 //! - policy-controlled execution,
 //! - deterministic region/selection helpers,
+//! - typed analytic workflow helpers ([`analytic`]),
 //! - explicit cross-domain conversion helpers ([`convert`]),
 //! - deterministic UV/tagging operators,
 //! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`]).
@@ -37,6 +38,7 @@
 //! - Planning lifecycle: [`OperatorRunner::compile`],
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
 //! - Operator domains: [`OperatorDomain`]
+//! - Analytic edits: [`analytic::set_face_region`], [`analytic::add_rect_opening_xy`]
 //! - Explicit conversions: [`convert::analytic_shell_to_mesh`], [`convert::rect_frame_to_mesh`]
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
@@ -93,8 +95,9 @@
 //! the multi-domain architecture work. Existing mesh operators continue to
 //! default to [`OperatorDomain::Mesh`].
 //!
-//! Analytic conversion stays explicit in [`convert`] rather than being forced
-//! through the mesh-only operator runtime.
+//! Analytic mutation currently lives in [`analytic`] helper APIs and
+//! conversion stays explicit in [`convert`] rather than being forced through
+//! the mesh-only operator runtime.
 
 #![no_std]
 extern crate alloc;
@@ -103,6 +106,7 @@ extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("cambium requires either the `std` or `libm` feature");
 
+pub mod analytic;
 mod artifact;
 mod bounds;
 mod bridge;
@@ -162,6 +166,14 @@ pub use runner::{OpResult, OperatorRunner, PreviewResult};
 pub use exedra::{
     BuildParams, CornerId, DeletePolicy, ExtractParams, FaceId, HalfEdgeId, Mesh, MeshBuilder,
     NormalParams, NormalWeightMode, NormalsSource, TriMesh, VertexId,
+};
+
+// Analytic workflow surface.
+pub use analytic::{
+    ADD_RECT_OPENING_XY_NAME, AddRectOpeningOutput, AddRectOpeningParams, AnalyticEditError,
+    AnalyticFaceId, AnalyticLoopId, AnalyticRegionId, AnalyticShell, RectOpeningParams,
+    SET_FACE_REGION_NAME, SetFaceRegionOutput, SetFaceRegionParams, add_rect_opening_xy,
+    set_face_region,
 };
 
 // Policies and selection surface.
