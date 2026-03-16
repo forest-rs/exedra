@@ -1,8 +1,6 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::vec::Vec;
 
@@ -23,24 +21,8 @@ pub(crate) struct SelectedFace {
     pub(crate) region: u32,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FaceEdgeRef {
-    pub(crate) face: FaceId,
-    pub(crate) edge: HalfEdgeId,
-    pub(crate) from: VertexId,
-    pub(crate) to: VertexId,
-    pub(crate) edge_index: usize,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SharedRegionEdge {
-    pub(crate) key: (VertexId, VertexId),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by downstream loop/adjacency helpers")
-    )]
-    pub(crate) incidences: Vec<FaceEdgeRef>,
-}
+pub(crate) type FaceEdgeRef = exedra::SelectedFacePatchEdge;
+pub(crate) type SharedRegionEdge = exedra::SelectedFacePatchSharedEdge;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SelectedFaceRegion {
@@ -66,27 +48,11 @@ pub(crate) fn selected_face_region(
     ctx: &OpContext,
 ) -> Result<SelectedFaceRegion, OpError> {
     let mut selected_faces = Vec::<SelectedFace>::with_capacity(faces.len());
-    let mut incident_vertices = BTreeSet::<VertexId>::new();
-    let mut edge_membership = BTreeMap::<(VertexId, VertexId), Vec<FaceEdgeRef>>::new();
+    let patch = mesh
+        .selected_face_patch_topology(faces)
+        .map_err(|error| map_selected_face_patch_error(error, ctx))?;
 
     for &face in faces {
-        if face == FaceId::OUTSIDE {
-            return Err(op_error(
-                ctx,
-                OpErrorKind::PreconditionFailed,
-                DiagCode::PreconditionFailed,
-                "selection contains FaceId::OUTSIDE",
-            ));
-        }
-        if mesh.face_edge(face).is_none() {
-            return Err(op_error(
-                ctx,
-                OpErrorKind::PreconditionFailed,
-                DiagCode::PreconditionFailed,
-                format!("selection contains stale face id: {}", face.index()),
-            ));
-        }
-
         let mut vertices = Vec::<VertexId>::new();
         let mut corners = Vec::<HalfEdgeId>::new();
         for corner in mesh.face_loop(face) {
@@ -98,7 +64,6 @@ pub(crate) fn selected_face_region(
                     "face loop contains corner with missing destination vertex",
                 )
             })?;
-            incident_vertices.insert(vertex);
             vertices.push(vertex);
             corners.push(corner);
         }
@@ -143,16 +108,6 @@ pub(crate) fn selected_face_region(
                 seam: mesh.edge_seam(edge_corner),
                 sharpness: mesh.edge_sharpness(edge_corner),
             });
-            let from = vertices[i];
-            let to = vertices[(i + 1) % vertices.len()];
-            let key = canonical_edge_key(from, to);
-            edge_membership.entry(key).or_default().push(FaceEdgeRef {
-                face,
-                edge: edge_corner,
-                from,
-                to,
-                edge_index: i,
-            });
         }
 
         selected_faces.push(SelectedFace {
@@ -165,36 +120,39 @@ pub(crate) fn selected_face_region(
         });
     }
 
-    let mut boundary_edges = Vec::<FaceEdgeRef>::new();
-    let mut interior_edges = Vec::<SharedRegionEdge>::new();
-    for (key, incidences) in edge_membership {
-        if incidences.len() == 1 {
-            boundary_edges.push(incidences[0]);
-        } else {
-            interior_edges.push(SharedRegionEdge { key, incidences });
-        }
-    }
-    boundary_edges.sort_by_key(|edge| (edge.face.index(), edge.edge_index));
-    interior_edges.sort_by_key(|edge| edge.key);
-
-    let boundary_lies_on_mesh_boundary = !boundary_edges.is_empty()
-        && boundary_edges.iter().all(|boundary| {
-            mesh.twin(boundary.edge)
-                .and_then(|twin| mesh.face(twin))
-                .is_some_and(|face| face == FaceId::OUTSIDE)
-        });
-
     Ok(SelectedFaceRegion {
         faces: selected_faces,
-        boundary_edges,
-        interior_edges,
-        incident_vertices: incident_vertices.into_iter().collect(),
-        boundary_lies_on_mesh_boundary,
+        boundary_edges: patch.boundary_edges,
+        interior_edges: patch.interior_edges,
+        incident_vertices: patch.incident_vertices,
+        boundary_lies_on_mesh_boundary: patch.boundary_lies_on_mesh_boundary,
     })
 }
 
-pub(crate) fn canonical_edge_key(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
-    if a <= b { (a, b) } else { (b, a) }
+fn map_selected_face_patch_error(
+    error: exedra::SelectedFacePatchError,
+    ctx: &OpContext,
+) -> OpError {
+    match error {
+        exedra::SelectedFacePatchError::OutsideFaceInSelection => op_error(
+            ctx,
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            "selection contains FaceId::OUTSIDE",
+        ),
+        exedra::SelectedFacePatchError::StaleFace { face } => op_error(
+            ctx,
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            format!("selection contains stale face id: {}", face.index()),
+        ),
+        exedra::SelectedFacePatchError::InvalidFaceLoop { .. } => op_error(
+            ctx,
+            OpErrorKind::InvalidMesh,
+            DiagCode::InternalInvariantViolation,
+            "selected patch contains invalid face loop topology",
+        ),
+    }
 }
 
 #[cfg(test)]

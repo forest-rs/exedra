@@ -57,7 +57,9 @@ pub use arena::Arena;
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
     BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceLoopErrorKind, Mesh,
-    MeshBuildResult, MeshBuilder, MeshRevision, SelectedFaceBoundaryError, ValidationError,
+    MeshBuildResult, MeshBuilder, MeshRevision, SelectedFaceBoundaryError, SelectedFacePatchEdge,
+    SelectedFacePatchError, SelectedFacePatchSharedEdge, SelectedFacePatchTopology,
+    ValidationError,
 };
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;

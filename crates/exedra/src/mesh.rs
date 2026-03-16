@@ -389,6 +389,81 @@ impl fmt::Display for SelectedFaceBoundaryError {
 
 impl core::error::Error for SelectedFaceBoundaryError {}
 
+/// Selected-face patch topology query error returned by
+/// [`Mesh::selected_face_patch_topology`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SelectedFacePatchError {
+    /// Selection contains [`FaceId::OUTSIDE`].
+    OutsideFaceInSelection,
+    /// Selection contains a stale face ID.
+    StaleFace {
+        /// Stale face ID.
+        face: FaceId,
+    },
+    /// A selected face loop could not provide stable topology.
+    InvalidFaceLoop {
+        /// Face whose loop data was invalid.
+        face: FaceId,
+    },
+}
+
+impl fmt::Display for SelectedFacePatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutsideFaceInSelection => f.write_str("selected patch contains FaceId::OUTSIDE"),
+            Self::StaleFace { face } => {
+                write!(f, "selected patch contains stale face {}", face.index())
+            }
+            Self::InvalidFaceLoop { face } => {
+                write!(
+                    f,
+                    "selected patch has invalid face loop on face {}",
+                    face.index()
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for SelectedFacePatchError {}
+
+/// One selected-face patch edge reference.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SelectedFacePatchEdge {
+    /// Face that owns the selected patch edge.
+    pub face: FaceId,
+    /// Half-edge on the selected face loop.
+    pub edge: HalfEdgeId,
+    /// Source vertex of `edge`.
+    pub from: VertexId,
+    /// Destination vertex of `edge`.
+    pub to: VertexId,
+    /// Stable edge index within the owning face loop.
+    pub edge_index: usize,
+}
+
+/// One undirected edge shared by multiple selected faces.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedFacePatchSharedEdge {
+    /// Canonical undirected edge key.
+    pub key: (VertexId, VertexId),
+    /// Selected face incidences touching `key`.
+    pub incidences: Vec<SelectedFacePatchEdge>,
+}
+
+/// Deterministic topology classification for a selected face patch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedFacePatchTopology {
+    /// Boundary edges on the selected face side.
+    pub boundary_edges: Vec<SelectedFacePatchEdge>,
+    /// Interior shared edges inside the selected patch.
+    pub interior_edges: Vec<SelectedFacePatchSharedEdge>,
+    /// Unique vertices touched by the selected patch in deterministic order.
+    pub incident_vertices: Vec<VertexId>,
+    /// True when every selected boundary edge borders [`FaceId::OUTSIDE`].
+    pub boundary_lies_on_mesh_boundary: bool,
+}
+
 /// Connected face-region query error returned by [`Mesh::connected_face_region`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ConnectedFaceRegionError {
@@ -763,6 +838,96 @@ impl Mesh {
         Ok(loops)
     }
 
+    /// Returns deterministic topology classification for a selected face patch.
+    ///
+    /// Input faces may be unsorted and may contain duplicates. Returned edge
+    /// and vertex collections are canonicalized into deterministic order.
+    pub fn selected_face_patch_topology(
+        &self,
+        faces: &[FaceId],
+    ) -> Result<SelectedFacePatchTopology, SelectedFacePatchError> {
+        let mut selected = BTreeSet::<FaceId>::new();
+        for &face in faces {
+            if face == FaceId::OUTSIDE {
+                return Err(SelectedFacePatchError::OutsideFaceInSelection);
+            }
+            if self.face_edge(face).is_none() {
+                return Err(SelectedFacePatchError::StaleFace { face });
+            }
+            let _ = selected.insert(face);
+        }
+
+        let mut incident_vertices = BTreeSet::<VertexId>::new();
+        let mut edge_membership =
+            BTreeMap::<(VertexId, VertexId), Vec<SelectedFacePatchEdge>>::new();
+
+        for &face in &selected {
+            let corners = self.face_loop(face).collect::<Vec<_>>();
+            if corners.len() < 3 {
+                return Err(SelectedFacePatchError::InvalidFaceLoop { face });
+            }
+            let mut vertices = Vec::with_capacity(corners.len());
+            for &corner in &corners {
+                let vertex = self
+                    .to_vertex(corner)
+                    .ok_or(SelectedFacePatchError::InvalidFaceLoop { face })?;
+                let _ = incident_vertices.insert(vertex);
+                vertices.push(vertex);
+            }
+
+            for edge_index in 0..vertices.len() {
+                let edge = corners[(edge_index + 1) % corners.len()];
+                let from = vertices[edge_index];
+                let to = vertices[(edge_index + 1) % vertices.len()];
+                let twin = self
+                    .twin(edge)
+                    .ok_or(SelectedFacePatchError::InvalidFaceLoop { face })?;
+                let _ = self
+                    .face(twin)
+                    .ok_or(SelectedFacePatchError::InvalidFaceLoop { face })?;
+
+                edge_membership
+                    .entry(canonical_vertex_pair(from, to))
+                    .or_default()
+                    .push(SelectedFacePatchEdge {
+                        face,
+                        edge,
+                        from,
+                        to,
+                        edge_index,
+                    });
+            }
+        }
+
+        let mut boundary_edges = Vec::new();
+        let mut interior_edges = Vec::new();
+        for (key, mut incidences) in edge_membership {
+            incidences.sort_by_key(|edge| (edge.face.index(), edge.edge_index, edge.edge.index()));
+            if incidences.len() == 1 {
+                boundary_edges.push(incidences[0]);
+            } else {
+                interior_edges.push(SelectedFacePatchSharedEdge { key, incidences });
+            }
+        }
+
+        boundary_edges.sort_by_key(|edge| (edge.face.index(), edge.edge_index, edge.edge.index()));
+        interior_edges.sort_by_key(|edge| edge.key);
+
+        let boundary_lies_on_mesh_boundary = !boundary_edges.is_empty()
+            && boundary_edges.iter().all(|boundary| {
+                self.twin(boundary.edge)
+                    .and_then(|twin| self.face(twin))
+                    .is_some_and(|face| face == FaceId::OUTSIDE)
+            });
+
+        Ok(SelectedFacePatchTopology {
+            boundary_edges,
+            interior_edges,
+            incident_vertices: incident_vertices.into_iter().collect(),
+            boundary_lies_on_mesh_boundary,
+        })
+    }
+
     /// Returns boundary loops around a selected face patch.
     ///
     /// Returned half-edges are the selected-face-side half-edges in traversal
@@ -772,59 +937,10 @@ impl Mesh {
         &self,
         faces: &[FaceId],
     ) -> Result<Vec<Vec<HalfEdgeId>>, SelectedFaceBoundaryError> {
-        #[derive(Copy, Clone)]
-        struct BoundaryEdge {
-            edge: HalfEdgeId,
-            face: FaceId,
-            edge_index: usize,
-            from: VertexId,
-            to: VertexId,
-        }
-
-        let mut selected = BTreeSet::<FaceId>::new();
-        for &face in faces {
-            if face == FaceId::OUTSIDE {
-                return Err(SelectedFaceBoundaryError::OutsideFaceInSelection);
-            }
-            if self.face_edge(face).is_none() {
-                return Err(SelectedFaceBoundaryError::StaleFace { face });
-            }
-            let _ = selected.insert(face);
-        }
-
-        let mut boundary_edges = Vec::<BoundaryEdge>::new();
-        for &face in &selected {
-            let corners = self.face_loop(face).collect::<Vec<_>>();
-            if corners.len() < 3 {
-                return Err(SelectedFaceBoundaryError::InvalidFaceLoop { face });
-            }
-            for (edge_index, &edge) in corners.iter().enumerate() {
-                let twin = self
-                    .twin(edge)
-                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
-                let adjacent = self
-                    .face(twin)
-                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
-                if selected.contains(&adjacent) {
-                    continue;
-                }
-                let from = self
-                    .from_vertex(edge)
-                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
-                let to = self
-                    .to_vertex(edge)
-                    .ok_or(SelectedFaceBoundaryError::InvalidFaceLoop { face })?;
-                boundary_edges.push(BoundaryEdge {
-                    edge,
-                    face,
-                    edge_index,
-                    from,
-                    to,
-                });
-            }
-        }
-
-        boundary_edges.sort_by_key(|edge| (edge.face.index(), edge.edge_index, edge.edge.index()));
+        let boundary_edges = self
+            .selected_face_patch_topology(faces)
+            .map_err(map_selected_face_patch_error)?
+            .boundary_edges;
 
         let mut outgoing = BTreeMap::<VertexId, Vec<usize>>::new();
         for (index, edge) in boundary_edges.iter().enumerate() {
@@ -1922,6 +2038,22 @@ fn index_to_u32(index: usize) -> u32 {
     u32::try_from(index).expect("index overflowed u32")
 }
 
+fn map_selected_face_patch_error(error: SelectedFacePatchError) -> SelectedFaceBoundaryError {
+    match error {
+        SelectedFacePatchError::OutsideFaceInSelection => {
+            SelectedFaceBoundaryError::OutsideFaceInSelection
+        }
+        SelectedFacePatchError::StaleFace { face } => SelectedFaceBoundaryError::StaleFace { face },
+        SelectedFacePatchError::InvalidFaceLoop { face } => {
+            SelectedFaceBoundaryError::InvalidFaceLoop { face }
+        }
+    }
+}
+
+fn canonical_vertex_pair(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -1930,7 +2062,7 @@ mod tests {
 
     use super::{
         BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceLoopErrorKind,
-        Mesh, MeshBuilder, SelectedFaceBoundaryError, ValidationError,
+        Mesh, MeshBuilder, SelectedFaceBoundaryError, SelectedFacePatchError, ValidationError,
     };
     use crate::attributes::{AttrKey, Domain};
     use crate::{
@@ -2833,6 +2965,96 @@ mod tests {
         assert_eq!(
             error,
             SelectedFaceBoundaryError::StaleFace { face: stale_face }
+        );
+    }
+
+    #[test]
+    fn selected_face_patch_topology_classifies_shared_edges_and_incident_vertices() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let patch = mesh
+            .selected_face_patch_topology(&faces)
+            .expect("selected face patch topology should extract");
+        assert_eq!(patch.boundary_edges.len(), 4);
+        assert_eq!(patch.interior_edges.len(), 1);
+        assert_eq!(patch.interior_edges[0].incidences.len(), 2);
+        assert_eq!(patch.incident_vertices.len(), 4);
+        assert!(patch.boundary_lies_on_mesh_boundary);
+    }
+
+    #[test]
+    fn selected_face_patch_topology_rejects_outside_face() {
+        let (mesh, _) = quad_mesh_open_boundary();
+        let error = mesh
+            .selected_face_patch_topology(&[FaceId::OUTSIDE])
+            .expect_err("outside face should be rejected");
+        assert_eq!(error, SelectedFacePatchError::OutsideFaceInSelection);
+    }
+
+    #[test]
+    fn selected_face_patch_topology_rejects_stale_face() {
+        let (mesh, _) = quad_mesh_open_boundary();
+        let stale_face = FaceId::new(0, NonZeroU32::new(99).expect("literal should be non-zero"));
+        let error = mesh
+            .selected_face_patch_topology(&[stale_face])
+            .expect_err("stale face should be rejected");
+        assert_eq!(
+            error,
+            SelectedFacePatchError::StaleFace { face: stale_face }
+        );
+    }
+
+    #[test]
+    fn selected_face_patch_topology_canonicalizes_unsorted_duplicate_input() {
+        let mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            &BuildParams::default(),
+        )
+        .expect("mesh build should succeed");
+        let faces = mesh.faces().collect::<Vec<_>>();
+
+        let patch = mesh
+            .selected_face_patch_topology(&[faces[1], faces[0], faces[1]])
+            .expect("selected face patch topology should extract");
+        assert_eq!(patch.boundary_edges.len(), 4);
+        assert!(
+            patch.boundary_edges.windows(2).all(|pair| {
+                (
+                    pair[0].face.index(),
+                    pair[0].edge_index,
+                    pair[0].edge.index(),
+                ) <= (
+                    pair[1].face.index(),
+                    pair[1].edge_index,
+                    pair[1].edge.index(),
+                )
+            }),
+            "boundary edges should be sorted deterministically"
+        );
+        assert_eq!(patch.incident_vertices.len(), 4);
+        assert!(
+            patch
+                .incident_vertices
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+            "incident vertices should be deduplicated into deterministic order"
         );
     }
 
