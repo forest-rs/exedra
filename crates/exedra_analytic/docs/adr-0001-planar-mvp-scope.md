@@ -18,12 +18,13 @@ full CAD scope.
 - planar faces only,
 - line-segment coedges only,
 - shell/loop/coedge topology,
+- explicit planar opening loops,
 - deterministic tessellation into `exedra::Mesh`.
 
 The first slice explicitly does not support:
 
 - curved edges,
-- general trims and face holes,
+- general trims beyond explicit opening loops,
 - booleans,
 - reverse conversion from polygon mesh into analytic state.
 
@@ -37,5 +38,5 @@ Positive:
 Tradeoffs:
 - the spike is intentionally narrow,
 - some useful analytic workflows remain impossible until later slices,
-- "wall with opening" style results are represented as multiple planar faces,
-  not as one face with hole loops yet.
+- opening loops tessellate to multiple mesh faces, so analytic-face provenance is
+  one-to-many rather than one-to-one.

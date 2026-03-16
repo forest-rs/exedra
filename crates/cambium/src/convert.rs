@@ -13,7 +13,7 @@
 //!
 //! ```rust
 //! use cambium::convert::{
-//!     AnalyticRegionId, RectFrameParams, analytic_shell_to_mesh, rect_frame_xy,
+//!     AnalyticFaceId, AnalyticRegionId, RectFrameParams, analytic_shell_to_mesh, rect_frame_xy,
 //! };
 //!
 //! let shell = rect_frame_xy(&RectFrameParams {
@@ -21,7 +21,7 @@
 //!     ..RectFrameParams::default()
 //! })?;
 //! let converted = analytic_shell_to_mesh(&shell)?;
-//! assert_eq!(converted.face_provenance.len(), 4);
+//! assert_eq!(converted.mesh_faces_for(AnalyticFaceId::from_index(0)).len(), 8);
 //! # Ok::<(), cambium::convert::AnalyticToMeshError>(())
 //! ```
 
@@ -70,13 +70,14 @@ pub struct AnalyticToMeshOutput {
 }
 
 impl AnalyticToMeshOutput {
-    /// Returns the mapped mesh face for `analytic_face`, when present.
+    /// Returns the mapped mesh faces for `analytic_face`, when present.
     #[must_use]
-    pub fn mesh_face_for(&self, analytic_face: AnalyticFaceId) -> Option<FaceId> {
+    pub fn mesh_faces_for(&self, analytic_face: AnalyticFaceId) -> Vec<FaceId> {
         self.face_provenance
             .iter()
-            .find(|mapping| mapping.analytic_face == analytic_face)
+            .filter(|mapping| mapping.analytic_face == analytic_face)
             .map(|mapping| mapping.mesh_face)
+            .collect()
     }
 }
 
@@ -159,8 +160,8 @@ mod tests {
     use crate::mesh_signature;
 
     use super::{
-        AnalyticRegionId, AnalyticToMeshParams, RectFrameToMeshParams, analytic_shell_to_mesh,
-        analytic_shell_to_mesh_with, rect_frame_to_mesh, rect_frame_xy,
+        AnalyticFaceId, AnalyticRegionId, AnalyticToMeshParams, RectFrameToMeshParams,
+        analytic_shell_to_mesh, analytic_shell_to_mesh_with, rect_frame_to_mesh, rect_frame_xy,
     };
 
     #[test]
@@ -172,8 +173,14 @@ mod tests {
         .expect("frame should build");
 
         let converted = analytic_shell_to_mesh(&shell).expect("conversion should succeed");
-        assert_eq!(converted.mesh.faces().count(), 4);
-        assert_eq!(converted.face_provenance.len(), 4);
+        assert_eq!(converted.mesh.faces().count(), 8);
+        assert_eq!(converted.face_provenance.len(), 8);
+        assert_eq!(
+            converted
+                .mesh_faces_for(AnalyticFaceId::from_index(0))
+                .len(),
+            8
+        );
         for mapping in &converted.face_provenance {
             let region = converted
                 .mesh

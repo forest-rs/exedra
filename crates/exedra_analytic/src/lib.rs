@@ -8,10 +8,11 @@
 //! - planar faces,
 //! - line-segment coedges,
 //! - shell/loop/coedge topology,
+//! - explicit planar opening loops,
 //! - deterministic tessellation into [`exedra::Mesh`].
 //!
-//! It is not a general CAD kernel. Hole loops, curved edges, booleans, and
-//! reverse conversion are all deferred.
+//! It is not a general CAD kernel. Curved edges, booleans, and reverse
+//! conversion are all deferred.
 
 #![no_std]
 extern crate alloc;
@@ -92,12 +93,14 @@ pub struct AnalyticLoop {
 }
 
 /// One planar analytic face.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlanarFace {
     /// Support plane for this face.
     pub plane: Plane,
     /// Outer boundary loop.
     pub outer: AnalyticLoopId,
+    /// Opening loops contained within the outer boundary.
+    pub openings: Vec<AnalyticLoopId>,
     /// Semantic region carried across tessellation.
     pub region: RegionId,
 }
@@ -136,28 +139,61 @@ impl AnalyticShell {
         self.loop_vertices(face_record.outer).ok()
     }
 
+    /// Returns the opening-loop vertex IDs for one face in deterministic order.
+    pub fn face_opening_vertices(
+        &self,
+        face: AnalyticFaceId,
+    ) -> Option<Vec<Vec<AnalyticVertexId>>> {
+        let face_record = self.faces.get(face.index() as usize)?;
+        face_record
+            .openings
+            .iter()
+            .map(|opening| self.loop_vertices(*opening).ok())
+            .collect()
+    }
+
     /// Tessellates the analytic shell into an Exedra mesh.
     pub fn to_exedra_mesh(
         &self,
         params: &TessellateParams,
     ) -> Result<TessellatedShell, TessellateError> {
         let mut builder = MeshBuilder::new();
+        let mut source_faces = Vec::new();
         for vertex in &self.vertices {
             let _ = builder.push_vertex(vertex.position);
         }
 
         for face_index in 0..self.faces.len() {
             let face_id = AnalyticFaceId::from_index(usize_to_u32(face_index));
-            let loop_vertices = self
-                .face_vertices(face_id)
+            let face_record = self
+                .faces
+                .get(face_index)
                 .ok_or(TessellateError::MissingFace { face: face_id })?;
-            let polygon = loop_vertices
-                .iter()
-                .map(|vertex| vertex.index())
-                .collect::<Vec<_>>();
-            builder
-                .add_face(&polygon)
-                .map_err(TessellateError::KernelBuild)?;
+            if face_record.openings.is_empty() {
+                let loop_vertices = self
+                    .face_vertices(face_id)
+                    .ok_or(TessellateError::MissingFace { face: face_id })?;
+                let polygon = loop_vertices
+                    .iter()
+                    .map(|vertex| vertex.index())
+                    .collect::<Vec<_>>();
+                builder
+                    .add_face(&polygon)
+                    .map_err(TessellateError::KernelBuild)?;
+                source_faces.push(face_id);
+            } else {
+                let triangles = self.triangulate_face_with_openings(face_id)?;
+                for triangle in triangles {
+                    builder
+                        .add_face(&[
+                            triangle[0].index(),
+                            triangle[1].index(),
+                            triangle[2].index(),
+                        ])
+                        .map_err(TessellateError::KernelBuild)?;
+                    source_faces.push(face_id);
+                }
+            }
         }
 
         let build = builder.build().map_err(TessellateError::KernelBuild)?;
@@ -165,7 +201,8 @@ impl AnalyticShell {
         if params.write_face_regions {
             let mut edit = mesh.edit_with(exedra::ChangeSetBuilder::new());
             for (face_index, mesh_face) in build.face_ids.iter().enumerate() {
-                let region = self.faces[face_index].region.0;
+                let analytic_face = source_faces[face_index];
+                let region = self.faces[analytic_face.index() as usize].region.0;
                 exedra::op::set_face_region(&mut edit, *mesh_face, region)
                     .map_err(TessellateError::SetFaceRegion)?;
             }
@@ -176,7 +213,7 @@ impl AnalyticShell {
             .face_ids
             .iter()
             .enumerate()
-            .map(|(face_index, face)| (AnalyticFaceId::from_index(usize_to_u32(face_index)), *face))
+            .map(|(face_index, face)| (source_faces[face_index], *face))
             .collect();
 
         Ok(TessellatedShell {
@@ -204,6 +241,23 @@ impl AnalyticShell {
             return Err(LoopError::OpenLoop(loop_id));
         }
         Ok(vertices)
+    }
+
+    fn triangulate_face_with_openings(
+        &self,
+        face: AnalyticFaceId,
+    ) -> Result<Vec<[AnalyticVertexId; 3]>, TessellateError> {
+        let face_record = self
+            .faces
+            .get(face.index() as usize)
+            .ok_or(TessellateError::MissingFace { face })?;
+        let outer = self.loop_vertices(face_record.outer)?;
+        let openings = face_record
+            .openings
+            .iter()
+            .map(|opening| self.loop_vertices(*opening))
+            .collect::<Result<Vec<_>, _>>()?;
+        triangulate_face_with_openings(self, face, face_record.plane, &outer, &openings)
     }
 }
 
@@ -234,11 +288,55 @@ impl AnalyticShellBuilder {
         loop_vertices: &[AnalyticVertexId],
         region: RegionId,
     ) -> Result<AnalyticFaceId, BuildError> {
+        self.add_planar_face_with_openings(loop_vertices, &[], region)
+    }
+
+    /// Adds one planar face with an outer loop and explicit opening loops.
+    pub fn add_planar_face_with_openings(
+        &mut self,
+        outer_vertices: &[AnalyticVertexId],
+        opening_loops: &[&[AnalyticVertexId]],
+        region: RegionId,
+    ) -> Result<AnalyticFaceId, BuildError> {
+        let outer_positions = self.validate_loop_vertices(outer_vertices)?;
+        let plane = Plane::from_points(&outer_positions).ok_or(BuildError::DegenerateLoop)?;
+        validate_planar_loop(&outer_positions, plane)?;
+
+        let outer = self.push_loop(outer_vertices);
+        let mut openings = Vec::with_capacity(opening_loops.len());
+        for opening in opening_loops {
+            let opening_positions = self.validate_loop_vertices(opening)?;
+            validate_planar_loop(&opening_positions, plane)?;
+            openings.push(self.push_loop(opening));
+        }
+
+        let face_id = AnalyticFaceId::from_index(usize_to_u32(self.shell.faces.len()));
+        self.shell.faces.push(PlanarFace {
+            plane,
+            outer,
+            openings,
+            region,
+        });
+        Ok(face_id)
+    }
+
+    /// Finalizes and returns the built shell.
+    #[must_use]
+    pub fn build(self) -> AnalyticShell {
+        self.shell
+    }
+
+    fn validate_loop_vertices(
+        &self,
+        loop_vertices: &[AnalyticVertexId],
+    ) -> Result<Vec<[f32; 3]>, BuildError> {
         if loop_vertices.len() < 3 {
             return Err(BuildError::LoopTooSmall);
         }
-
-        let positions = loop_vertices
+        if has_duplicates(loop_vertices) {
+            return Err(BuildError::RepeatedVertex);
+        }
+        loop_vertices
             .iter()
             .map(|vertex| {
                 self.shell
@@ -247,19 +345,10 @@ impl AnalyticShellBuilder {
                     .map(|record| record.position)
                     .ok_or(BuildError::MissingVertex(*vertex))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect()
+    }
 
-        if has_duplicates(loop_vertices) {
-            return Err(BuildError::RepeatedVertex);
-        }
-
-        let plane = Plane::from_points(&positions).ok_or(BuildError::DegenerateLoop)?;
-        for position in &positions {
-            if plane.distance_to(*position).abs() > PLANAR_EPSILON {
-                return Err(BuildError::NonPlanarLoop);
-            }
-        }
-
+    fn push_loop(&mut self, loop_vertices: &[AnalyticVertexId]) -> AnalyticLoopId {
         let first_coedge = AnalyticCoedgeId::from_index(usize_to_u32(self.shell.coedges.len()));
         let loop_len = usize_to_u32(loop_vertices.len());
         for index in 0..loop_vertices.len() {
@@ -278,20 +367,7 @@ impl AnalyticShellBuilder {
             first: first_coedge,
             len: loop_len,
         });
-
-        let face_id = AnalyticFaceId::from_index(usize_to_u32(self.shell.faces.len()));
-        self.shell.faces.push(PlanarFace {
-            plane,
-            outer: loop_id,
-            region,
-        });
-        Ok(face_id)
-    }
-
-    /// Finalizes and returns the built shell.
-    #[must_use]
-    pub fn build(self) -> AnalyticShell {
-        self.shell
+        loop_id
     }
 }
 
@@ -315,7 +391,10 @@ impl Default for TessellateParams {
 pub struct TessellatedShell {
     /// Tessellated Exedra mesh.
     pub mesh: Mesh,
-    /// One analytic face maps to one polygon face in this MVP.
+    /// Deterministic analytic-face to mesh-face provenance.
+    ///
+    /// Faces without openings currently map to one polygon face. Faces with
+    /// openings map to multiple tessellated mesh faces.
     pub face_provenance: Vec<(AnalyticFaceId, FaceId)>,
 }
 
@@ -349,7 +428,7 @@ impl Default for RectFrameParams {
     }
 }
 
-/// Builds a rectangular planar frame as four analytic faces around one opening.
+/// Builds a rectangular planar face with one rectangular opening.
 pub fn rect_frame_xy(params: &RectFrameParams) -> Result<AnalyticShell, BuildError> {
     if params.outer_min[0] >= params.outer_max[0] || params.outer_min[1] >= params.outer_max[1] {
         return Err(BuildError::InvalidRectFrame);
@@ -380,40 +459,19 @@ pub fn rect_frame_xy(params: &RectFrameParams) -> Result<AnalyticShell, BuildErr
     let inner_top_right = builder.push_vertex([ix1, inner_y1, z]);
     let inner_top_left = builder.push_vertex([ix0, inner_y1, z]);
 
-    builder.add_planar_face(
+    let _ = builder.add_planar_face_with_openings(
         &[
             outer_bottom_left,
-            inner_bottom_left,
-            inner_bottom_right,
             outer_bottom_right,
-        ],
-        params.region,
-    )?;
-    builder.add_planar_face(
-        &[
-            inner_bottom_right,
-            inner_top_right,
             outer_top_right,
-            outer_bottom_right,
-        ],
-        params.region,
-    )?;
-    builder.add_planar_face(
-        &[
-            inner_top_left,
             outer_top_left,
-            outer_top_right,
-            inner_top_right,
         ],
-        params.region,
-    )?;
-    builder.add_planar_face(
-        &[
-            outer_bottom_left,
-            outer_top_left,
-            inner_top_left,
+        &[&[
             inner_bottom_left,
-        ],
+            inner_top_left,
+            inner_top_right,
+            inner_bottom_right,
+        ]],
         params.region,
     )?;
 
@@ -460,6 +518,18 @@ pub enum TessellateError {
         /// Open loop ID.
         loop_id: AnalyticLoopId,
     },
+    /// An opening loop could not be bridged into a simple tessellation ring.
+    OpeningBridgeFailed {
+        /// Face being tessellated.
+        face: AnalyticFaceId,
+        /// Opening loop that could not be bridged.
+        opening: AnalyticLoopId,
+    },
+    /// Ear clipping failed to triangulate one planar face.
+    EarClipFailed {
+        /// Face being tessellated.
+        face: AnalyticFaceId,
+    },
     /// The downstream Exedra mesh builder rejected the polygon set.
     KernelBuild(exedra::BuildError),
     /// `FACE_REGION` write failed unexpectedly.
@@ -485,6 +555,12 @@ impl From<LoopError> for TessellateError {
 
 const PLANAR_EPSILON: f32 = 1.0e-5;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct ProjectedVertex {
+    id: AnalyticVertexId,
+    point: [f32; 2],
+}
+
 impl Plane {
     fn from_points(points: &[[f32; 3]]) -> Option<Self> {
         let origin = *points.first()?;
@@ -508,6 +584,354 @@ fn has_duplicates(ids: &[AnalyticVertexId]) -> bool {
     let mut sorted = ids.to_vec();
     sorted.sort_unstable();
     sorted.windows(2).any(|pair| pair[0] == pair[1])
+}
+
+fn validate_planar_loop(positions: &[[f32; 3]], plane: Plane) -> Result<(), BuildError> {
+    for position in positions {
+        if plane.distance_to(*position).abs() > PLANAR_EPSILON {
+            return Err(BuildError::NonPlanarLoop);
+        }
+    }
+    Ok(())
+}
+
+fn triangulate_face_with_openings(
+    shell: &AnalyticShell,
+    face: AnalyticFaceId,
+    plane: Plane,
+    outer: &[AnalyticVertexId],
+    openings: &[Vec<AnalyticVertexId>],
+) -> Result<Vec<[AnalyticVertexId; 3]>, TessellateError> {
+    let basis = face_basis(shell, plane, outer).ok_or(TessellateError::EarClipFailed { face })?;
+    let mut merged = project_loop(shell, outer, basis);
+    orient_ccw(&mut merged);
+
+    let projected_openings = openings
+        .iter()
+        .map(|opening| {
+            let mut projected = project_loop(shell, opening, basis);
+            orient_cw(&mut projected);
+            projected
+        })
+        .collect::<Vec<_>>();
+
+    for opening_index in 0..projected_openings.len() {
+        let opening_loop_id = shell.faces[face.index() as usize].openings[opening_index];
+        let remaining = projected_openings
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != opening_index)
+            .map(|(_, opening)| opening.as_slice())
+            .collect::<Vec<_>>();
+        merged = bridge_opening(
+            &merged,
+            &projected_openings[opening_index],
+            &remaining,
+            face,
+            opening_loop_id,
+        )?;
+        orient_ccw(&mut merged);
+    }
+
+    let ring = prune_ring(&merged);
+    ear_clip(face, &ring)
+}
+
+fn face_basis(
+    shell: &AnalyticShell,
+    plane: Plane,
+    outer: &[AnalyticVertexId],
+) -> Option<([f32; 3], [f32; 3], [f32; 3])> {
+    let origin = shell
+        .vertices
+        .get(outer.first()?.index() as usize)?
+        .position;
+    let tangent = outer.windows(2).find_map(|edge| {
+        let start = shell.vertices.get(edge[0].index() as usize)?.position;
+        let end = shell.vertices.get(edge[1].index() as usize)?.position;
+        normalize(sub(end, start))
+    })?;
+    let bitangent = cross(plane.normal, tangent);
+    Some((origin, tangent, bitangent))
+}
+
+fn project_loop(
+    shell: &AnalyticShell,
+    loop_vertices: &[AnalyticVertexId],
+    basis: ([f32; 3], [f32; 3], [f32; 3]),
+) -> Vec<ProjectedVertex> {
+    let (origin, tangent, bitangent) = basis;
+    loop_vertices
+        .iter()
+        .map(|vertex| {
+            let position = shell.vertices[vertex.index() as usize].position;
+            let delta = sub(position, origin);
+            ProjectedVertex {
+                id: *vertex,
+                point: [dot(delta, tangent), dot(delta, bitangent)],
+            }
+        })
+        .collect()
+}
+
+fn orient_ccw(loop_vertices: &mut [ProjectedVertex]) {
+    if signed_area(loop_vertices) < 0.0 {
+        loop_vertices.reverse();
+    }
+}
+
+fn orient_cw(loop_vertices: &mut [ProjectedVertex]) {
+    if signed_area(loop_vertices) > 0.0 {
+        loop_vertices.reverse();
+    }
+}
+
+fn signed_area(loop_vertices: &[ProjectedVertex]) -> f32 {
+    if loop_vertices.len() < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for index in 0..loop_vertices.len() {
+        let current = loop_vertices[index].point;
+        let next = loop_vertices[(index + 1) % loop_vertices.len()].point;
+        area += current[0] * next[1] - next[0] * current[1];
+    }
+    area * 0.5
+}
+
+fn bridge_opening(
+    outer: &[ProjectedVertex],
+    opening: &[ProjectedVertex],
+    remaining_openings: &[&[ProjectedVertex]],
+    face: AnalyticFaceId,
+    opening_loop: AnalyticLoopId,
+) -> Result<Vec<ProjectedVertex>, TessellateError> {
+    let opening_index = rightmost_vertex(opening);
+    let opening_vertex = opening[opening_index];
+    let bridge_index = (0..outer.len())
+        .find(|index| {
+            bridge_is_valid(
+                outer[*index],
+                opening_vertex,
+                outer,
+                opening,
+                remaining_openings,
+            )
+        })
+        .ok_or(TessellateError::OpeningBridgeFailed {
+            face,
+            opening: opening_loop,
+        })?;
+
+    let mut merged = Vec::with_capacity(outer.len() + opening.len() + 2);
+    merged.extend_from_slice(&outer[..=bridge_index]);
+    merged.extend_from_slice(&opening[opening_index..]);
+    merged.extend_from_slice(&opening[..=opening_index]);
+    merged.push(outer[bridge_index]);
+    merged.extend_from_slice(&outer[bridge_index + 1..]);
+    Ok(merged)
+}
+
+fn rightmost_vertex(loop_vertices: &[ProjectedVertex]) -> usize {
+    let mut best_index = 0;
+    for index in 1..loop_vertices.len() {
+        let current = loop_vertices[index];
+        let best = loop_vertices[best_index];
+        if current.point[0] > best.point[0] + PLANAR_EPSILON
+            || ((current.point[0] - best.point[0]).abs() <= PLANAR_EPSILON
+                && (current.point[1] < best.point[1] - PLANAR_EPSILON
+                    || ((current.point[1] - best.point[1]).abs() <= PLANAR_EPSILON
+                        && current.id < best.id)))
+        {
+            best_index = index;
+        }
+    }
+    best_index
+}
+
+fn bridge_is_valid(
+    outer_vertex: ProjectedVertex,
+    opening_vertex: ProjectedVertex,
+    outer: &[ProjectedVertex],
+    opening: &[ProjectedVertex],
+    remaining_openings: &[&[ProjectedVertex]],
+) -> bool {
+    let midpoint = [
+        0.5 * (outer_vertex.point[0] + opening_vertex.point[0]),
+        0.5 * (outer_vertex.point[1] + opening_vertex.point[1]),
+    ];
+    if !point_in_polygon(midpoint, outer)
+        || point_in_polygon(midpoint, opening)
+        || remaining_openings
+            .iter()
+            .any(|ring| point_in_polygon(midpoint, ring))
+    {
+        return false;
+    }
+
+    if polygon_edges(outer).iter().any(|edge| {
+        !shares_endpoint(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
+            && segments_intersect(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
+    }) {
+        return false;
+    }
+    if polygon_edges(opening).iter().any(|edge| {
+        !shares_endpoint(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
+            && segments_intersect(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
+    }) {
+        return false;
+    }
+    !remaining_openings.iter().any(|ring| {
+        polygon_edges(ring).iter().any(|edge| {
+            segments_intersect(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
+        })
+    })
+}
+
+fn polygon_edges(loop_vertices: &[ProjectedVertex]) -> Vec<([f32; 2], [f32; 2])> {
+    (0..loop_vertices.len())
+        .map(|index| {
+            (
+                loop_vertices[index].point,
+                loop_vertices[(index + 1) % loop_vertices.len()].point,
+            )
+        })
+        .collect()
+}
+
+fn shares_endpoint(a0: [f32; 2], a1: [f32; 2], b0: [f32; 2], b1: [f32; 2]) -> bool {
+    same_point(a0, b0) || same_point(a0, b1) || same_point(a1, b0) || same_point(a1, b1)
+}
+
+fn same_point(a: [f32; 2], b: [f32; 2]) -> bool {
+    (a[0] - b[0]).abs() <= PLANAR_EPSILON && (a[1] - b[1]).abs() <= PLANAR_EPSILON
+}
+
+fn segments_intersect(a0: [f32; 2], a1: [f32; 2], b0: [f32; 2], b1: [f32; 2]) -> bool {
+    let o1 = orient2d(a0, a1, b0);
+    let o2 = orient2d(a0, a1, b1);
+    let o3 = orient2d(b0, b1, a0);
+    let o4 = orient2d(b0, b1, a1);
+
+    if on_segment(a0, a1, b0)
+        || on_segment(a0, a1, b1)
+        || on_segment(b0, b1, a0)
+        || on_segment(b0, b1, a1)
+    {
+        return true;
+    }
+
+    (o1 > PLANAR_EPSILON && o2 < -PLANAR_EPSILON || o1 < -PLANAR_EPSILON && o2 > PLANAR_EPSILON)
+        && (o3 > PLANAR_EPSILON && o4 < -PLANAR_EPSILON
+            || o3 < -PLANAR_EPSILON && o4 > PLANAR_EPSILON)
+}
+
+fn on_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2]) -> bool {
+    orient2d(a, b, point).abs() <= PLANAR_EPSILON
+        && point[0] >= a[0].min(b[0]) - PLANAR_EPSILON
+        && point[0] <= a[0].max(b[0]) + PLANAR_EPSILON
+        && point[1] >= a[1].min(b[1]) - PLANAR_EPSILON
+        && point[1] <= a[1].max(b[1]) + PLANAR_EPSILON
+}
+
+fn orient2d(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn point_in_polygon(point: [f32; 2], polygon: &[ProjectedVertex]) -> bool {
+    let mut inside = false;
+    for index in 0..polygon.len() {
+        let a = polygon[index].point;
+        let b = polygon[(index + 1) % polygon.len()].point;
+        let crosses = (a[1] > point[1]) != (b[1] > point[1]);
+        if crosses {
+            let t = (point[1] - a[1]) / (b[1] - a[1]);
+            let x = a[0] + t * (b[0] - a[0]);
+            if x >= point[0] - PLANAR_EPSILON {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn prune_ring(loop_vertices: &[ProjectedVertex]) -> Vec<ProjectedVertex> {
+    let mut pruned = Vec::with_capacity(loop_vertices.len());
+    for &vertex in loop_vertices {
+        if pruned
+            .last()
+            .is_some_and(|last: &ProjectedVertex| same_point(last.point, vertex.point))
+        {
+            continue;
+        }
+        pruned.push(vertex);
+    }
+    if pruned.len() > 1 && same_point(pruned[0].point, pruned[pruned.len() - 1].point) {
+        let _ = pruned.pop();
+    }
+    pruned
+}
+
+fn ear_clip(
+    face: AnalyticFaceId,
+    ring: &[ProjectedVertex],
+) -> Result<Vec<[AnalyticVertexId; 3]>, TessellateError> {
+    if ring.len() < 3 {
+        return Err(TessellateError::EarClipFailed { face });
+    }
+    let mut remaining = (0..ring.len()).collect::<Vec<_>>();
+    let mut triangles = Vec::with_capacity(ring.len().saturating_sub(2));
+
+    while remaining.len() > 3 {
+        let mut clipped = false;
+        for index in 0..remaining.len() {
+            let prev = remaining[(index + remaining.len() - 1) % remaining.len()];
+            let curr = remaining[index];
+            let next = remaining[(index + 1) % remaining.len()];
+            let a = ring[prev].point;
+            let b = ring[curr].point;
+            let c = ring[next].point;
+
+            if orient2d(a, b, c) <= PLANAR_EPSILON {
+                continue;
+            }
+            if remaining.iter().copied().any(|candidate| {
+                let point = ring[candidate].point;
+                candidate != prev
+                    && candidate != curr
+                    && candidate != next
+                    && !same_point(point, a)
+                    && !same_point(point, b)
+                    && !same_point(point, c)
+                    && point_in_triangle(point, a, b, c)
+            }) {
+                continue;
+            }
+
+            triangles.push([ring[prev].id, ring[curr].id, ring[next].id]);
+            remaining.remove(index);
+            clipped = true;
+            break;
+        }
+
+        if !clipped {
+            return Err(TessellateError::EarClipFailed { face });
+        }
+    }
+
+    triangles.push([
+        ring[remaining[0]].id,
+        ring[remaining[1]].id,
+        ring[remaining[2]].id,
+    ]);
+    Ok(triangles)
+}
+
+fn point_in_triangle(point: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    let ab = orient2d(a, b, point);
+    let bc = orient2d(b, c, point);
+    let ca = orient2d(c, a, point);
+    ab >= -PLANAR_EPSILON && bc >= -PLANAR_EPSILON && ca >= -PLANAR_EPSILON
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -559,8 +983,8 @@ mod tests {
     use exedra::ExtractParams;
 
     use super::{
-        AnalyticShellBuilder, BuildError, RectFrameParams, RegionId, TessellateParams,
-        rect_frame_xy,
+        AnalyticFaceId, AnalyticShellBuilder, BuildError, RectFrameParams, RegionId,
+        TessellateParams, rect_frame_xy,
     };
 
     #[test]
@@ -596,9 +1020,18 @@ mod tests {
     }
 
     #[test]
-    fn rect_frame_builds_four_face_shell_and_tessellates_deterministically() {
+    fn rect_frame_builds_one_face_with_opening_and_tessellates_deterministically() {
         let shell_a = rect_frame_xy(&RectFrameParams::default()).expect("frame builds");
         let shell_b = rect_frame_xy(&RectFrameParams::default()).expect("frame builds");
+
+        assert_eq!(shell_a.faces().len(), 1);
+        assert_eq!(
+            shell_a
+                .face_opening_vertices(AnalyticFaceId::from_index(0))
+                .expect("opening loop should exist")
+                .len(),
+            1
+        );
 
         let mesh_a = shell_a
             .to_exedra_mesh(&TessellateParams::default())
@@ -607,8 +1040,16 @@ mod tests {
             .to_exedra_mesh(&TessellateParams::default())
             .expect("tessellation should succeed");
 
-        assert_eq!(mesh_a.face_provenance.len(), 4);
-        assert_eq!(mesh_b.face_provenance.len(), 4);
+        assert_eq!(mesh_a.mesh.faces().count(), 8);
+        assert_eq!(mesh_b.mesh.faces().count(), 8);
+        assert_eq!(mesh_a.face_provenance.len(), 8);
+        assert_eq!(mesh_b.face_provenance.len(), 8);
+        assert!(
+            mesh_a
+                .face_provenance
+                .iter()
+                .all(|(analytic_face, _)| *analytic_face == AnalyticFaceId::from_index(0))
+        );
         assert!(mesh_a.mesh.validate_fast().is_empty());
         assert!(mesh_a.mesh.validate_deep().is_empty());
 
@@ -641,5 +1082,64 @@ mod tests {
         })
         .expect_err("opening must stay inside outer frame");
         assert_eq!(error, BuildError::InvalidRectFrame);
+    }
+
+    #[test]
+    fn planar_face_with_explicit_opening_tessellates_and_preserves_region() {
+        let mut builder = AnalyticShellBuilder::new();
+        let outer_bottom_left = builder.push_vertex([0.0, 0.0, 0.0]);
+        let outer_bottom_right = builder.push_vertex([4.0, 0.0, 0.0]);
+        let outer_top_right = builder.push_vertex([4.0, 3.0, 0.0]);
+        let outer_top_left = builder.push_vertex([0.0, 3.0, 0.0]);
+        let inner_bottom_left = builder.push_vertex([1.0, 1.0, 0.0]);
+        let inner_bottom_right = builder.push_vertex([3.0, 1.0, 0.0]);
+        let inner_top_right = builder.push_vertex([3.0, 2.0, 0.0]);
+        let inner_top_left = builder.push_vertex([1.0, 2.0, 0.0]);
+
+        let face = builder
+            .add_planar_face_with_openings(
+                &[
+                    outer_bottom_left,
+                    outer_bottom_right,
+                    outer_top_right,
+                    outer_top_left,
+                ],
+                &[&[
+                    inner_bottom_left,
+                    inner_top_left,
+                    inner_top_right,
+                    inner_bottom_right,
+                ]],
+                RegionId(19),
+            )
+            .expect("face with opening should build");
+        let shell = builder.build();
+
+        let tessellated = shell
+            .to_exedra_mesh(&TessellateParams::default())
+            .expect("tessellation should succeed");
+        assert!(tessellated.mesh.validate_fast().is_empty());
+        assert!(tessellated.mesh.validate_deep().is_empty());
+        assert_eq!(
+            shell
+                .face_opening_vertices(face)
+                .expect("opening loop should exist")
+                .len(),
+            1
+        );
+        assert!(
+            tessellated
+                .face_provenance
+                .iter()
+                .all(|(analytic_face, _)| *analytic_face == face)
+        );
+        for (_, mesh_face) in &tessellated.face_provenance {
+            let region = tessellated
+                .mesh
+                .attrs()
+                .dense(exedra::attr::FACE_REGION)
+                .and_then(|layer| layer.get(mesh_face.as_id()).copied());
+            assert_eq!(region, Some(19));
+        }
     }
 }
