@@ -2,12 +2,14 @@
 resolver = "2"
 members = [
     "apps/cambium_web_bridge",
+    "benchmarks/exedra_qef_bench",
     "crates/cambium",
     "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_analytic",
     "crates/exedra_isosurface",
     "crates/exedra_primitives",
+    "crates/exedra_qef",
     "crates/exedra_spatial",
     "crates/exedra_testkit",
 ]
@@ -79,6 +81,7 @@ exedra = { default-features = false, path = "crates/exedra" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
+exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 libm = "0.2.15"

@@ -81,6 +81,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_qef"
+version = "0.0.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "exedra_qef_bench"
+version = "0.0.0"
+dependencies = [
+ "exedra_qef",
+]
+
+[[package]]
 name = "exedra_spatial"
 version = "0.1.0"
 

@@ -1,0 +1,17 @@
+[package]
+name = "exedra_qef_bench"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Simple executable benchmarks for exedra_qef solve sizes"
+keywords = ["benchmark", "qef", "dual-contouring"]
+categories = ["algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra_qef = { workspace = true, features = ["std"] }

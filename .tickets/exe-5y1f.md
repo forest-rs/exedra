@@ -1,7 +1,7 @@
 ---
 id: exe-5y1f
 title: QEF solver with sharpness classification (exedra_qef)
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T07:03:42Z
@@ -60,3 +60,8 @@ Reuse cases beyond DC:
 - Tests for degenerate inputs (collinear normals, single constraint)
 - Benchmarks for typical DC cell sizes (4-12 constraints)
 
+## Notes
+
+**2026-03-24T15:48:57Z**
+
+Added a new `exedra_qef` crate with a bounded 3x3 QEF solver, explicit `PlaneConstraint` and `QefBounds` types, configurable eigenvalue cutoff and Jacobi sweep count, residual reporting, and rank-derived `SharpnessClass`. The solve path uses an inline symmetric Jacobi eigensolver, anchors null-space dimensions to the solve bounds center for low-rank cases, and clamps the final point back into bounds for extraction safety. Also added a separate top-level `exedra_qef_bench` executable benchmark crate covering representative 4, 8, and 12 constraint solves so the core crate stays dependency-light. Validation: `typos crates/exedra_qef/src/lib.rs crates/exedra_qef/README.md crates/exedra_qef/docs/adr-0001-qef-solver-scope.md benchmarks/exedra_qef_bench/src/main.rs benchmarks/exedra_qef_bench/Cargo.toml`; `cargo fmt --all`; `cargo test -p exedra_qef`; `cargo check -p exedra_qef_bench`; `cargo clippy -p exedra_qef --all-targets --all-features -- -D warnings`; `cargo doc -p exedra_qef --no-deps`; `cargo run --release -p exedra_qef_bench`.

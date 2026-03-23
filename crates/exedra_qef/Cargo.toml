@@ -1,0 +1,21 @@
+[package]
+name = "exedra_qef"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Small no_std QEF solver for dual contouring and related fitting tasks"
+keywords = ["qef", "dual-contouring", "no_std", "geometry"]
+categories = ["algorithms", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+libm = ["dep:libm"]
+std = []
+
+[dependencies]
+libm = { optional = true, workspace = true }
