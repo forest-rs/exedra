@@ -9,7 +9,13 @@ Current scope:
 - analytic reference fields (`SphereField`, `BoxField`, `CylinderField`,
   `TorusField`, `HalfSpaceField`),
 - simple CSG combinators and provenance tagging wrappers for tests,
-- the stable field-evaluation boundary consumed by future extraction code.
+- a first dual-contouring extractor over a culled max-depth octree.
 
-This crate does not yet own a full mesher. The initial slice is the honest
-field boundary that later dual-contouring and marching-cubes paths will use.
+The current mesher is intentionally phase-1:
+
+- interval-driven octree culling,
+- one dual vertex per active max-depth cell,
+- QEF placement with edge-sharpness tagging,
+- optional face-region tagging from `ProvenanceField<u32>`.
+
+It does not yet attempt manifold DC, variable-depth stitching, or seam tagging.

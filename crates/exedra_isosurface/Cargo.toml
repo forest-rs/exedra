@@ -10,6 +10,8 @@ keywords = ["implicit", "isosurface", "sdf", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+exedra = { features = ["std"], workspace = true }
+exedra_qef = { features = ["std"], workspace = true }
 exedra_spatial = { default-features = false, path = "../exedra_spatial" }
 libm = { optional = true, workspace = true }
 

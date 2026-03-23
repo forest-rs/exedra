@@ -8,7 +8,8 @@
 //! - [`SpecializableField`] for region-local simplification,
 //! - [`ProvenanceField`] for extraction-time semantic tagging,
 //! - Hermite bridge types in [`hermite`],
-//! - analytic reference fields and CSG combinators in [`analytic`].
+//! - analytic reference fields and CSG combinators in [`analytic`],
+//! - a first dual-contouring extraction path in [`mod@dual_contour`].
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
 //! ship a dual-contouring mesher.
@@ -21,10 +22,15 @@ extern crate std;
 compile_error!("exedra_isosurface requires either the `std` or `libm` feature");
 
 pub mod analytic;
+pub mod dual_contour;
 pub mod hermite;
 
 use exedra_spatial::Aabb;
 
+pub use dual_contour::{
+    DualContourError, DualContourParams, DualContourResult, DualContourStats, dual_contour,
+    dual_contour_with_regions,
+};
 pub use hermite::{
     CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
     HermiteIntersection, locate_edge_intersection,

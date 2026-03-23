@@ -68,6 +68,8 @@ dependencies = [
 name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [
+ "exedra",
+ "exedra_qef",
  "exedra_spatial",
  "libm",
 ]

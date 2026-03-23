@@ -1,7 +1,7 @@
 ---
 id: exe-gosk
 title: Dual contouring mesher crate (exedra_isosurface)
-status: open
+status: closed
 deps: [exe-0r1z, exe-5y1f, exe-2r7w, exe-5rwj, exe-0gvz]
 links: [exe-a6p6]
 created: 2026-03-04T07:08:40Z
@@ -66,3 +66,8 @@ Phasing:
 - Configurable max depth, cell budget, eigenvalue cutoff
 - Integration tests with analytic ScalarField implementations
 
+## Notes
+
+**2026-03-24T17:22:31Z**
+
+Landed a phase-1 dual-contouring path in `exedra_isosurface::dual_contour`. The implementation builds an interval-culled octree through `exedra_spatial`, samples a regular max-depth lattice for corner signs, gathers Hermite intersections per active cell, solves one bounded QEF per cell, and emits quads from interior sign-changing primal edges into `exedra::Mesh`. `EDGE_SHARPNESS` is tagged from the QEF rank, `FACE_REGION` can be sourced from `ProvenanceField<Provenance = u32>`, and a deterministic `cell_budget` cap is exposed for bounded work. The current design is intentionally phase-1: no variable-depth stitching, manifold handling, or seam tagging yet. Added integration coverage for sphere, box, cylinder, tagged provenance, budget capping, and CSG union cases, all validating through `Mesh::validate_deep()`. Validation: `typos crates/exedra_isosurface/src/lib.rs crates/exedra_isosurface/src/dual_contour.rs crates/exedra_isosurface/Cargo.toml .tickets/exe-gosk.md`; `cargo fmt --all`; `cargo test -p exedra_isosurface`; `cargo clippy -p exedra_isosurface --all-targets --all-features -- -D warnings`; `cargo doc -p exedra_isosurface --no-deps`.
