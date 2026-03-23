@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{FaceId, MeshBuilder};
+use exedra::{FaceBuildAttrs, FaceId, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -103,7 +103,15 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
                 vertex(seg_x, y + 1, z + 1, &mut builder),
                 vertex(seg_x, y, z + 1, &mut builder),
             ];
-            builder.add_face(&face).expect("+X");
+            builder
+                .add_face_with_attrs(
+                    &face,
+                    &FaceBuildAttrs {
+                        region: Some(REGION_SIDE_X_POS.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .expect("+X");
         }
     }
     for y in 0..seg_y {
@@ -114,7 +122,15 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
                 vertex(0, y + 1, z, &mut builder),
                 vertex(0, y, z, &mut builder),
             ];
-            builder.add_face(&face).expect("-X");
+            builder
+                .add_face_with_attrs(
+                    &face,
+                    &FaceBuildAttrs {
+                        region: Some(REGION_SIDE_X_NEG.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .expect("-X");
         }
     }
     for x in 0..seg_x {
@@ -125,7 +141,15 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
                 vertex(x + 1, seg_y, z + 1, &mut builder),
                 vertex(x + 1, seg_y, z, &mut builder),
             ];
-            builder.add_face(&face).expect("+Y");
+            builder
+                .add_face_with_attrs(
+                    &face,
+                    &FaceBuildAttrs {
+                        region: Some(REGION_SIDE_Y_POS.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .expect("+Y");
         }
     }
     for x in 0..seg_x {
@@ -136,7 +160,15 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
                 vertex(x + 1, 0, z + 1, &mut builder),
                 vertex(x, 0, z + 1, &mut builder),
             ];
-            builder.add_face(&face).expect("-Y");
+            builder
+                .add_face_with_attrs(
+                    &face,
+                    &FaceBuildAttrs {
+                        region: Some(REGION_SIDE_Y_NEG.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .expect("-Y");
         }
     }
     for x in 0..seg_x {
@@ -147,7 +179,15 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
                 vertex(x + 1, y + 1, seg_z, &mut builder),
                 vertex(x, y + 1, seg_z, &mut builder),
             ];
-            builder.add_face(&face).expect("+Z");
+            builder
+                .add_face_with_attrs(
+                    &face,
+                    &FaceBuildAttrs {
+                        region: Some(REGION_SIDE_Z_POS.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .expect("+Z");
         }
     }
     for x in 0..seg_x {
@@ -158,7 +198,15 @@ pub fn box_primitive(params: &BoxParams) -> Primitive {
                 vertex(x + 1, y + 1, 0, &mut builder),
                 vertex(x + 1, y, 0, &mut builder),
             ];
-            builder.add_face(&face).expect("-Z");
+            builder
+                .add_face_with_attrs(
+                    &face,
+                    &FaceBuildAttrs {
+                        region: Some(REGION_SIDE_Z_NEG.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .expect("-Z");
         }
     }
 

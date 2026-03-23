@@ -1,7 +1,7 @@
 ---
 id: exe-0gvz
 title: MeshBuilder provenance generalization for procedural sources
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T07:21:34Z
@@ -38,3 +38,8 @@ This may also feed into the primitive generators — they could use the same mec
 - DC mesher uses the mechanism for attribute tagging
 - No regression in existing MeshBuilder usage
 
+## Notes
+
+**2026-03-24T16:44:52Z**
+
+Added a narrow build-time tagging surface to `MeshBuilder` via `FaceBuildAttrs` and `add_face_with_attrs(...)`. The builder now validates per-edge metadata lengths before accepting a face, stores optional `FACE_REGION`, seam, and sharpness payloads alongside the face loop, and applies those attributes directly while assembling the final mesh. This keeps procedural metadata at the construction site without introducing a callback system. Also switched representative primitives (`quad`, `grid`, and `box_primitive`) onto the new path for face-region tagging, and added regression tests covering both successful attribute application and length-mismatch rejection. Validation: `typos crates/exedra/src/lib.rs crates/exedra/src/mesh.rs crates/exedra_primitives/src/quad.rs crates/exedra_primitives/src/grid.rs crates/exedra_primitives/src/box_primitive.rs .tickets/exe-0gvz.md`; `cargo fmt --all`; `cargo test -p exedra -p exedra_primitives`; `cargo clippy -p exedra -p exedra_primitives --all-targets --all-features -- -D warnings`; `cargo doc -p exedra -p exedra_primitives --no-deps`.

@@ -5,7 +5,7 @@
 
 use alloc::vec;
 
-use exedra::MeshBuilder;
+use exedra::{FaceBuildAttrs, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -54,7 +54,13 @@ pub fn quad(params: &QuadParams) -> Primitive {
     let _ = builder.push_vertex([max_x, max_y, 0.0]);
     let _ = builder.push_vertex([min_x, max_y, 0.0]);
     builder
-        .add_face(&[0, 1, 2, 3])
+        .add_face_with_attrs(
+            &[0, 1, 2, 3],
+            &FaceBuildAttrs {
+                region: Some(REGION_FACE.0),
+                ..FaceBuildAttrs::default()
+            },
+        )
         .expect("quad loop must be valid");
     let build = builder.build().expect("quad topology must build");
     let face = build.face_ids[0];
@@ -71,7 +77,7 @@ pub fn quad(params: &QuadParams) -> Primitive {
 
 #[cfg(test)]
 mod tests {
-    use exedra::ExtractParams;
+    use exedra::{ExtractParams, attr};
 
     use super::{QuadParams, REGION_FACE, quad};
 
@@ -84,6 +90,15 @@ mod tests {
         let face = primitive.mesh.faces().next().expect("face should exist");
         assert_eq!(primitive.mesh.face_loop(face).count(), 4);
         assert_eq!(primitive.face_region.get(face), REGION_FACE);
+        assert_eq!(
+            primitive
+                .mesh
+                .attrs()
+                .dense(attr::FACE_REGION)
+                .expect("FACE_REGION should exist")
+                .get(face.as_id()),
+            Some(&REGION_FACE.0)
+        );
         let faces_all = primitive
             .selections
             .face_sets

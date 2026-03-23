@@ -61,6 +61,46 @@ impl fmt::Display for FaceLoopErrorKind {
 
 impl core::error::Error for FaceLoopErrorKind {}
 
+/// Invalid face-attribute reason reported by [`MeshBuilder::add_face_with_attrs`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FaceAttrErrorKind {
+    /// Per-edge seam data length did not match the face degree.
+    EdgeSeamLengthMismatch {
+        /// Expected number of loop edges.
+        expected: usize,
+        /// Actual seam slice length.
+        actual: usize,
+    },
+    /// Per-edge sharpness data length did not match the face degree.
+    EdgeSharpnessLengthMismatch {
+        /// Expected number of loop edges.
+        expected: usize,
+        /// Actual sharpness slice length.
+        actual: usize,
+    },
+}
+
+impl fmt::Display for FaceAttrErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EdgeSeamLengthMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "edge seam metadata length mismatch: expected {expected}, found {actual}"
+                )
+            }
+            Self::EdgeSharpnessLengthMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "edge sharpness metadata length mismatch: expected {expected}, found {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for FaceAttrErrorKind {}
+
 /// Construction error returned by [`Mesh::from_indexed_triangles`] and
 /// [`Mesh::from_polygons`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -100,6 +140,13 @@ pub enum BuildError {
         /// Validation failure reason.
         kind: FaceLoopErrorKind,
     },
+    /// Face attribute metadata failed validation during polygon/ngon construction.
+    InvalidFaceAttrs {
+        /// Face-loop index in builder input order.
+        face: usize,
+        /// Validation failure reason.
+        kind: FaceAttrErrorKind,
+    },
     /// Build parameter contained an invalid weld tolerance value.
     InvalidWeldTolerance,
 }
@@ -124,6 +171,9 @@ impl fmt::Display for BuildError {
             }
             Self::InvalidFaceLoop { face, kind } => {
                 write!(f, "invalid face loop at face {face}: {kind}")
+            }
+            Self::InvalidFaceAttrs { face, kind } => {
+                write!(f, "invalid face attributes at face {face}: {kind}")
             }
             Self::InvalidWeldTolerance => f.write_str("invalid weld tolerance"),
         }
@@ -550,6 +600,17 @@ pub struct MeshBuildResult {
     pub face_edge_ids: Vec<Vec<HalfEdgeId>>,
 }
 
+/// Optional metadata attached while inserting one face into a [`MeshBuilder`].
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct FaceBuildAttrs<'a> {
+    /// Face-region value written into [`attr::FACE_REGION`] for the built face.
+    pub region: Option<u32>,
+    /// Per-edge seam values written onto canonical undirected edges.
+    pub edge_seams: Option<&'a [bool]>,
+    /// Per-edge sharpness values written onto canonical undirected edges.
+    pub edge_sharpness: Option<&'a [f32]>,
+}
+
 /// Incremental polygon/ngon mesh builder using builder-local indices.
 ///
 /// Build flow:
@@ -560,6 +621,14 @@ pub struct MeshBuildResult {
 pub struct MeshBuilder {
     vertices: Vec<[f32; 3]>,
     faces: Vec<Vec<u32>>,
+    face_attrs: Vec<OwnedFaceBuildAttrs>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct OwnedFaceBuildAttrs {
+    region: Option<u32>,
+    edge_seams: Option<Vec<bool>>,
+    edge_sharpness: Option<Vec<f32>>,
 }
 
 /// Half-edge mesh storage with explicit OUTSIDE boundary semantics.
@@ -1703,6 +1772,7 @@ impl MeshBuilder {
         Self {
             vertices: Vec::new(),
             faces: Vec::new(),
+            face_attrs: Vec::new(),
         }
     }
 
@@ -1715,6 +1785,15 @@ impl MeshBuilder {
 
     /// Adds one polygon face loop (builder-local vertex indices).
     pub fn add_face(&mut self, loop_indices: &[u32]) -> Result<(), BuildError> {
+        self.add_face_with_attrs(loop_indices, &FaceBuildAttrs::default())
+    }
+
+    /// Adds one polygon face loop plus optional build-time attributes.
+    pub fn add_face_with_attrs(
+        &mut self,
+        loop_indices: &[u32],
+        attrs: &FaceBuildAttrs<'_>,
+    ) -> Result<(), BuildError> {
         let face = self.faces.len();
         if loop_indices.len() < 3 {
             return Err(BuildError::InvalidFaceLoop {
@@ -1759,6 +1838,11 @@ impl MeshBuilder {
         }
 
         self.faces.push(loop_indices.to_vec());
+        self.face_attrs.push(OwnedFaceBuildAttrs::from_borrowed(
+            face,
+            loop_indices.len(),
+            attrs,
+        )?);
         Ok(())
     }
 
@@ -1924,11 +2008,71 @@ impl MeshBuilder {
         }
 
         mesh.sync_attr_capacities();
+        for (face_index, attrs) in self.face_attrs.iter().enumerate() {
+            let face_id = face_ids[face_index];
+            if let Some(region) = attrs.region {
+                let layer = mesh
+                    .attrs_mut()
+                    .dense_mut(attr::FACE_REGION)
+                    .expect("FACE_REGION must be registered");
+                assert!(
+                    layer.set(face_id.as_id(), region),
+                    "face slot must exist after build"
+                );
+            }
+            if let Some(edge_seams) = &attrs.edge_seams {
+                for (half_edge, seam) in face_edge_ids[face_index].iter().zip(edge_seams) {
+                    let _ = mesh.set_edge_seam(*half_edge, *seam);
+                }
+            }
+            if let Some(edge_sharpness) = &attrs.edge_sharpness {
+                for (half_edge, sharpness) in face_edge_ids[face_index].iter().zip(edge_sharpness) {
+                    let _ = mesh.set_edge_sharpness(*half_edge, *sharpness);
+                }
+            }
+        }
         Ok(MeshBuildResult {
             mesh,
             vertex_ids,
             face_ids,
             face_edge_ids,
+        })
+    }
+}
+
+impl OwnedFaceBuildAttrs {
+    fn from_borrowed(
+        face: usize,
+        edge_count: usize,
+        attrs: &FaceBuildAttrs<'_>,
+    ) -> Result<Self, BuildError> {
+        if let Some(edge_seams) = attrs.edge_seams
+            && edge_seams.len() != edge_count
+        {
+            return Err(BuildError::InvalidFaceAttrs {
+                face,
+                kind: FaceAttrErrorKind::EdgeSeamLengthMismatch {
+                    expected: edge_count,
+                    actual: edge_seams.len(),
+                },
+            });
+        }
+        if let Some(edge_sharpness) = attrs.edge_sharpness
+            && edge_sharpness.len() != edge_count
+        {
+            return Err(BuildError::InvalidFaceAttrs {
+                face,
+                kind: FaceAttrErrorKind::EdgeSharpnessLengthMismatch {
+                    expected: edge_count,
+                    actual: edge_sharpness.len(),
+                },
+            });
+        }
+
+        Ok(Self {
+            region: attrs.region,
+            edge_seams: attrs.edge_seams.map(|values| values.to_vec()),
+            edge_sharpness: attrs.edge_sharpness.map(|values| values.to_vec()),
         })
     }
 }
@@ -2061,8 +2205,9 @@ mod tests {
     use core::num::NonZeroU32;
 
     use super::{
-        BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceLoopErrorKind,
-        Mesh, MeshBuilder, SelectedFaceBoundaryError, SelectedFacePatchError, ValidationError,
+        BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceAttrErrorKind,
+        FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, SelectedFaceBoundaryError,
+        SelectedFacePatchError, ValidationError,
     };
     use crate::attributes::{AttrKey, Domain};
     use crate::{
@@ -3556,6 +3701,78 @@ mod tests {
                 .expect("layer exists")
                 .get(v2.as_id()),
             Some(&0.0)
+        );
+    }
+
+    #[test]
+    fn add_face_with_attrs_applies_region_and_edge_metadata() {
+        let mut builder = MeshBuilder::new();
+        let _ = builder.push_vertex([0.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([1.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([1.0, 1.0, 0.0]);
+        let _ = builder.push_vertex([0.0, 1.0, 0.0]);
+        builder
+            .add_face_with_attrs(
+                &[0, 1, 2, 3],
+                &FaceBuildAttrs {
+                    region: Some(7),
+                    edge_seams: Some(&[true, false, true, false]),
+                    edge_sharpness: Some(&[1.0, 0.0, 2.5, 0.5]),
+                },
+            )
+            .expect("face attrs should be valid");
+
+        let result = builder.build().expect("mesh should build");
+        let face = result.face_ids[0];
+        let region = result
+            .mesh
+            .attrs()
+            .dense(crate::attr::FACE_REGION)
+            .expect("FACE_REGION layer must exist")
+            .get(face.as_id())
+            .copied()
+            .expect("face region must exist");
+        assert_eq!(region, 7);
+
+        for (edge_index, half_edge) in result.face_edge_ids[0].iter().enumerate() {
+            let seam = result
+                .mesh
+                .edge_seam(*half_edge)
+                .expect("edge should be live");
+            let sharpness = result
+                .mesh
+                .edge_sharpness(*half_edge)
+                .expect("edge should be live");
+            assert_eq!(seam, [true, false, true, false][edge_index]);
+            assert!((sharpness - [1.0, 0.0, 2.5, 0.5][edge_index]).abs() <= 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn add_face_with_attrs_rejects_edge_metadata_length_mismatch() {
+        let mut builder = MeshBuilder::new();
+        let _ = builder.push_vertex([0.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([1.0, 0.0, 0.0]);
+        let _ = builder.push_vertex([0.0, 1.0, 0.0]);
+
+        let error = builder
+            .add_face_with_attrs(
+                &[0, 1, 2],
+                &FaceBuildAttrs {
+                    edge_seams: Some(&[true, false]),
+                    ..FaceBuildAttrs::default()
+                },
+            )
+            .expect_err("mismatched seam length should be rejected");
+        assert_eq!(
+            error,
+            BuildError::InvalidFaceAttrs {
+                face: 0,
+                kind: FaceAttrErrorKind::EdgeSeamLengthMismatch {
+                    expected: 3,
+                    actual: 2,
+                },
+            }
         );
     }
 }

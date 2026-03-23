@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra::{FaceBuildAttrs, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common, sort_and_dedup_edges};
 
@@ -86,7 +86,13 @@ pub fn grid(params: &GridParams) -> Primitive {
             let i11 = common::usize_to_u32((y + 1) * (seg_x + 1) + x + 1);
             let i01 = common::usize_to_u32((y + 1) * (seg_x + 1) + x);
             builder
-                .add_face(&[i00, i10, i11, i01])
+                .add_face_with_attrs(
+                    &[i00, i10, i11, i01],
+                    &FaceBuildAttrs {
+                        region: Some(REGION_GRID.0),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
                 .expect("grid quad should be valid");
         }
     }
