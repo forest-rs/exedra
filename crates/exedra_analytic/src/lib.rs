@@ -1396,6 +1396,37 @@ mod tests {
     }
 
     #[test]
+    fn add_rect_opening_xy_accepts_clockwise_xy_face() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([4.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([4.0, 3.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 3.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v3, v2, v1], RegionId(6))
+            .expect("clockwise outer face should build");
+        let mut shell = builder.build();
+
+        shell
+            .add_rect_opening_xy(
+                face,
+                &RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [3.0, 2.0],
+                },
+            )
+            .expect("opening should be added to clockwise XY face");
+
+        let tessellated = shell
+            .to_exedra_mesh(&TessellateParams::default())
+            .expect("mutated shell should tessellate");
+        assert!(tessellated.mesh.validate_fast().is_empty());
+        assert!(tessellated.mesh.validate_deep().is_empty());
+        assert_eq!(shell.face_region(face), Some(RegionId(6)));
+        assert_eq!(tessellated.mesh.faces().count(), 8);
+    }
+
+    #[test]
     fn planar_face_with_explicit_opening_tessellates_and_preserves_region() {
         let mut builder = AnalyticShellBuilder::new();
         let outer_bottom_left = builder.push_vertex([0.0, 0.0, 0.0]);

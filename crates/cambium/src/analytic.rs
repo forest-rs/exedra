@@ -222,6 +222,43 @@ mod tests {
     }
 
     #[test]
+    fn analytic_add_rect_opening_accepts_clockwise_xy_face() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([4.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([4.0, 3.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 3.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v3, v2, v1], RegionId(4))
+            .expect("clockwise outer face should build");
+        let mut shell = builder.build();
+
+        let opening = add_rect_opening_xy(
+            &mut shell,
+            &AddRectOpeningParams {
+                face,
+                rect: RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [3.0, 2.0],
+                },
+            },
+        )
+        .expect("opening edit should succeed on clockwise XY face");
+        assert_eq!(opening.face, face);
+
+        let converted = analytic_shell_to_mesh(&shell).expect("conversion should succeed");
+        assert_eq!(converted.mesh_faces_for(face).len(), 8);
+        for mapping in &converted.face_provenance {
+            let region = converted
+                .mesh
+                .attrs()
+                .dense(exedra::attr::FACE_REGION)
+                .and_then(|layer| layer.get(mapping.mesh_face.as_id()).copied());
+            assert_eq!(region, Some(4));
+        }
+    }
+
+    #[test]
     fn analytic_helper_names_are_stable() {
         assert_eq!(SET_FACE_REGION_NAME, "analytic.face.set_region");
         assert_eq!(
