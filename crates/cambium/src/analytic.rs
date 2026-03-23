@@ -7,6 +7,9 @@
 //! implement the mesh-only [`crate::EditOperator`] trait or run through
 //! [`crate::OperatorRunner`]. Use them to mutate analytic state, then cross the
 //! explicit conversion seam in [`crate::convert`] when you need a mesh.
+//!
+//! Current helpers cover analytic face regions plus opening add/remove lifecycle
+//! on the planar analytic MVP.
 
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic, OpError, OpErrorKind};
 
@@ -20,6 +23,9 @@ pub const SET_FACE_REGION_NAME: &str = "analytic.face.set_region";
 
 /// Stable helper name for adding a rectangular analytic opening.
 pub const ADD_RECT_OPENING_XY_NAME: &str = "analytic.face.add_opening.rect_xy";
+
+/// Stable helper name for removing an analytic opening.
+pub const REMOVE_OPENING_NAME: &str = "analytic.face.remove_opening";
 
 /// Parameters for [`set_face_region`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -57,6 +63,24 @@ pub struct AddRectOpeningOutput {
     pub opening: AnalyticLoopId,
 }
 
+/// Parameters for [`remove_opening`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RemoveOpeningParams {
+    /// Face expected to own `opening`.
+    pub face: AnalyticFaceId,
+    /// Opening loop to remove from `face`.
+    pub opening: AnalyticLoopId,
+}
+
+/// Output of [`remove_opening`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RemoveOpeningOutput {
+    /// Face that previously owned `opening`.
+    pub face: AnalyticFaceId,
+    /// Opening loop removed from `face`.
+    pub opening: AnalyticLoopId,
+}
+
 /// Sets the semantic region carried by an analytic face.
 pub fn set_face_region(
     shell: &mut AnalyticShell,
@@ -82,6 +106,20 @@ pub fn add_rect_opening_xy(
     Ok(AddRectOpeningOutput {
         face: params.face,
         opening,
+    })
+}
+
+/// Removes one existing opening from an analytic face.
+pub fn remove_opening(
+    shell: &mut AnalyticShell,
+    params: &RemoveOpeningParams,
+) -> Result<RemoveOpeningOutput, OpError> {
+    shell
+        .remove_opening(params.face, params.opening)
+        .map_err(map_analytic_edit_error)?;
+    Ok(RemoveOpeningOutput {
+        face: params.face,
+        opening: params.opening,
     })
 }
 
@@ -120,6 +158,15 @@ fn map_analytic_edit_error(error: AnalyticEditError) -> OpError {
                 face.index()
             ),
         ),
+        AnalyticEditError::OpeningNotOnFace { face, opening } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+            alloc::format!(
+                "analytic opening {} is not owned by face {}",
+                opening.index(),
+                face.index()
+            ),
+        ),
     };
     OpError::new(
         kind,
@@ -131,11 +178,14 @@ fn map_analytic_edit_error(error: AnalyticEditError) -> OpError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ADD_RECT_OPENING_XY_NAME, AddRectOpeningParams, AnalyticRegionId, SET_FACE_REGION_NAME,
-        SetFaceRegionParams, add_rect_opening_xy, set_face_region,
+        ADD_RECT_OPENING_XY_NAME, AddRectOpeningParams, AnalyticRegionId, REMOVE_OPENING_NAME,
+        RemoveOpeningParams, SET_FACE_REGION_NAME, SetFaceRegionParams, add_rect_opening_xy,
+        remove_opening, set_face_region,
     };
     use crate::convert::analytic_shell_to_mesh;
-    use exedra_analytic::{AnalyticFaceId, AnalyticShellBuilder, RectOpeningParams, RegionId};
+    use exedra_analytic::{
+        AnalyticFaceId, AnalyticLoopId, AnalyticShellBuilder, RectOpeningParams, RegionId,
+    };
 
     #[test]
     fn analytic_edit_then_convert_workflow_preserves_region_and_opening() {
@@ -259,11 +309,87 @@ mod tests {
     }
 
     #[test]
+    fn analytic_remove_opening_updates_shell_and_conversion() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([8.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([8.0, 4.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 4.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(9))
+            .expect("outer face should build");
+        let mut shell = builder.build();
+
+        let opening = add_rect_opening_xy(
+            &mut shell,
+            &AddRectOpeningParams {
+                face,
+                rect: RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [3.0, 2.5],
+                },
+            },
+        )
+        .expect("opening edit should succeed");
+
+        let removed = remove_opening(
+            &mut shell,
+            &RemoveOpeningParams {
+                face,
+                opening: opening.opening,
+            },
+        )
+        .expect("opening removal should succeed");
+        assert_eq!(removed.face, face);
+        assert_eq!(removed.opening, opening.opening);
+        assert!(
+            shell
+                .face_opening_vertices(face)
+                .expect("face should still be readable")
+                .is_empty()
+        );
+
+        let converted = analytic_shell_to_mesh(&shell).expect("conversion should succeed");
+        let mesh_faces = converted.mesh_faces_for(face);
+        assert_eq!(mesh_faces.len(), 1);
+        let region = converted
+            .mesh
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .and_then(|layer| layer.get(mesh_faces[0].as_id()).copied());
+        assert_eq!(region, Some(9));
+    }
+
+    #[test]
+    fn analytic_remove_opening_reports_precondition_failure() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([4.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([4.0, 3.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 3.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(1))
+            .expect("outer face should build");
+        let mut shell = builder.build();
+
+        let error = remove_opening(
+            &mut shell,
+            &RemoveOpeningParams {
+                face,
+                opening: AnalyticLoopId::from_index(99),
+            },
+        )
+        .expect_err("missing opening should fail");
+        assert_eq!(error.kind, crate::OpErrorKind::PreconditionFailed);
+    }
+
+    #[test]
     fn analytic_helper_names_are_stable() {
         assert_eq!(SET_FACE_REGION_NAME, "analytic.face.set_region");
         assert_eq!(
             ADD_RECT_OPENING_XY_NAME,
             "analytic.face.add_opening.rect_xy"
         );
+        assert_eq!(REMOVE_OPENING_NAME, "analytic.face.remove_opening");
     }
 }

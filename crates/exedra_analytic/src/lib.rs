@@ -229,6 +229,25 @@ impl AnalyticShell {
         Ok(opening)
     }
 
+    /// Removes one existing opening from a planar face.
+    pub fn remove_opening(
+        &mut self,
+        face: AnalyticFaceId,
+        opening: AnalyticLoopId,
+    ) -> Result<(), EditError> {
+        let record = self
+            .faces
+            .get_mut(face.index() as usize)
+            .ok_or(EditError::MissingFace { face })?;
+        let opening_index = record
+            .openings
+            .iter()
+            .position(|loop_id| *loop_id == opening)
+            .ok_or(EditError::OpeningNotOnFace { face, opening })?;
+        record.openings.remove(opening_index);
+        Ok(())
+    }
+
     /// Tessellates the analytic shell into an Exedra mesh.
     pub fn to_exedra_mesh(
         &self,
@@ -587,6 +606,13 @@ pub enum EditError {
     OpeningOverlapsExisting {
         /// Face that rejected the opening.
         face: AnalyticFaceId,
+    },
+    /// Opening is not currently owned by the requested face.
+    OpeningNotOnFace {
+        /// Face that does not own `opening`.
+        face: AnalyticFaceId,
+        /// Opening loop requested for removal.
+        opening: AnalyticLoopId,
     },
 }
 
@@ -1204,6 +1230,8 @@ fn sqrt(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use exedra::ExtractParams;
 
     use super::{
@@ -1424,6 +1452,164 @@ mod tests {
         assert!(tessellated.mesh.validate_deep().is_empty());
         assert_eq!(shell.face_region(face), Some(RegionId(6)));
         assert_eq!(tessellated.mesh.faces().count(), 8);
+    }
+
+    #[test]
+    fn remove_opening_removes_existing_face_opening() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([4.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([4.0, 3.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 3.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(11))
+            .expect("outer face should build");
+        let mut shell = builder.build();
+
+        let opening = shell
+            .add_rect_opening_xy(
+                face,
+                &RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [3.0, 2.0],
+                },
+            )
+            .expect("opening should be added");
+        shell
+            .remove_opening(face, opening)
+            .expect("existing opening should be removed");
+
+        let openings = shell
+            .face_opening_vertices(face)
+            .expect("face topology should stay readable");
+        assert!(openings.is_empty());
+
+        let tessellated = shell
+            .to_exedra_mesh(&TessellateParams::default())
+            .expect("shell without openings should tessellate");
+        assert!(tessellated.mesh.validate_fast().is_empty());
+        assert!(tessellated.mesh.validate_deep().is_empty());
+        assert_eq!(tessellated.mesh.faces().count(), 1);
+        assert_eq!(tessellated.face_provenance.len(), 1);
+        assert_eq!(tessellated.face_provenance[0].0, face);
+    }
+
+    #[test]
+    fn remove_opening_rejects_non_member_opening() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([8.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([8.0, 4.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 4.0, 0.0]);
+        let face_a = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(13))
+            .expect("first face should build");
+        let v4 = builder.push_vertex([10.0, 0.0, 0.0]);
+        let v5 = builder.push_vertex([14.0, 0.0, 0.0]);
+        let v6 = builder.push_vertex([14.0, 3.0, 0.0]);
+        let v7 = builder.push_vertex([10.0, 3.0, 0.0]);
+        let face_b = builder
+            .add_planar_face(&[v4, v5, v6, v7], RegionId(17))
+            .expect("second face should build");
+        let mut shell = builder.build();
+
+        let opening = shell
+            .add_rect_opening_xy(
+                face_a,
+                &RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [3.0, 2.0],
+                },
+            )
+            .expect("opening should be added");
+
+        let error = shell
+            .remove_opening(face_b, opening)
+            .expect_err("opening on a different face should be rejected");
+        assert_eq!(
+            error,
+            EditError::OpeningNotOnFace {
+                face: face_b,
+                opening
+            }
+        );
+
+        shell
+            .remove_opening(face_a, opening)
+            .expect("original owner should still remove the opening");
+        let error = shell
+            .remove_opening(face_a, opening)
+            .expect_err("removing the same opening twice should fail");
+        assert_eq!(
+            error,
+            EditError::OpeningNotOnFace {
+                face: face_a,
+                opening
+            }
+        );
+    }
+
+    #[test]
+    fn remove_opening_keeps_other_openings_and_remaining_opening_tessellates() {
+        let mut builder = AnalyticShellBuilder::new();
+        let v0 = builder.push_vertex([0.0, 0.0, 0.0]);
+        let v1 = builder.push_vertex([8.0, 0.0, 0.0]);
+        let v2 = builder.push_vertex([8.0, 4.0, 0.0]);
+        let v3 = builder.push_vertex([0.0, 4.0, 0.0]);
+        let face = builder
+            .add_planar_face(&[v0, v1, v2, v3], RegionId(23))
+            .expect("outer face should build");
+        let mut shell = builder.build();
+
+        let opening_a = shell
+            .add_rect_opening_xy(
+                face,
+                &RectOpeningParams {
+                    min: [1.0, 1.0],
+                    max: [2.5, 2.5],
+                },
+            )
+            .expect("first opening should be added");
+        let opening_b = shell
+            .add_rect_opening_xy(
+                face,
+                &RectOpeningParams {
+                    min: [5.0, 1.0],
+                    max: [6.5, 2.5],
+                },
+            )
+            .expect("second opening should be added");
+
+        shell
+            .remove_opening(face, opening_a)
+            .expect("first opening should be removed");
+
+        let openings = shell
+            .face(face)
+            .expect("face should still exist")
+            .openings
+            .clone();
+        assert_eq!(openings, vec![opening_b]);
+        assert_eq!(
+            shell
+                .face_opening_vertices(face)
+                .expect("remaining opening should still be readable")
+                .len(),
+            1
+        );
+
+        let tessellated = shell
+            .to_exedra_mesh(&TessellateParams::default())
+            .expect("shell with one remaining opening should tessellate");
+        assert!(tessellated.mesh.validate_fast().is_empty());
+        assert!(tessellated.mesh.validate_deep().is_empty());
+        assert_eq!(tessellated.mesh.faces().count(), 8);
+        assert!(
+            tessellated
+                .face_provenance
+                .iter()
+                .all(|(analytic_face, _)| *analytic_face == face)
+        );
     }
 
     #[test]

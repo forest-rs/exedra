@@ -7,6 +7,8 @@ This crate is a narrow spike, not a full CAD kernel. The current scope is:
 - planar faces,
 - line-segment coedges,
 - shell/loop/coedge topology,
+- explicit planar opening loops,
+- face-level mutation for regions and opening add/remove lifecycle,
 - deterministic tessellation into `exedra::Mesh`.
 
 The goal is to prove the multi-domain architecture with one honest second
@@ -15,9 +17,9 @@ canonical domain, while keeping `exedra` as the polygon head.
 ## Current limitations
 
 - no curved edges,
-- no general trims,
+- no general trims beyond explicit opening loops,
 - no booleans,
-- no hole loops in a single face yet,
+- no arbitrary 3D opening editing outside XY-aligned planar faces,
 - no reverse conversion from mesh to analytic state.
 
 ## License
