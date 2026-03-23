@@ -65,6 +65,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_isosurface"
+version = "0.1.0"
+dependencies = [
+ "exedra_spatial",
+ "libm",
+]
+
+[[package]]
 name = "exedra_primitives"
 version = "0.1.0"
 dependencies = [

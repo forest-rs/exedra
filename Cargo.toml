@@ -6,6 +6,7 @@ members = [
     "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_analytic",
+    "crates/exedra_isosurface",
     "crates/exedra_primitives",
     "crates/exedra_spatial",
     "crates/exedra_testkit",
@@ -76,6 +77,7 @@ cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
+exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }

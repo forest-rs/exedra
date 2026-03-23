@@ -1,7 +1,7 @@
 ---
 id: exe-2r7w
 title: ScalarField trait for implicit surface evaluation
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T07:05:00Z
@@ -110,3 +110,9 @@ This trait lives in exedra_isosurface (or a small exedra_scalar_field crate if w
 - Documentation with usage examples for each method
 - Design validated against fidget's API surface to ensure the adapter is thin
 
+
+## Notes
+
+**2026-03-23T19:22:59Z**
+
+Added a new exedra_isosurface crate that owns the ScalarField seam plus SpecializableField and ProvenanceField extension traits, wired to exedra_spatial::Aabb. Landed a tiny public analytic::SphereField as the first reference implementation so the base trait is exercised as an object-safe, documented evaluation boundary from day one. Added crate docs and a crate-local ADR documenting that this crate currently owns implicit-field evaluation seams rather than a full mesher. Validation: typos crates/exedra_isosurface/src/lib.rs crates/exedra_isosurface/src/analytic.rs crates/exedra_isosurface/README.md crates/exedra_isosurface/docs/adr-0001-scalar-field-scope.md .tickets/exe-2r7w.md; cargo fmt --all; cargo test -p exedra_isosurface; cargo clippy -p exedra_isosurface --all-targets --all-features -- -D warnings; cargo doc -p exedra_isosurface --no-deps.

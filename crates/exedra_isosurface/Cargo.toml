@@ -1,0 +1,22 @@
+[package]
+name = "exedra_isosurface"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Implicit-field evaluation and surface extraction seams for exedra"
+keywords = ["implicit", "isosurface", "sdf", "no_std"]
+categories = ["data-structures", "algorithms"]
+
+[dependencies]
+exedra_spatial = { default-features = false, path = "../exedra_spatial" }
+libm = { optional = true, workspace = true }
+
+[features]
+default = ["std"]
+libm = ["dep:libm"]
+std = []
+
+[lints]
+workspace = true
