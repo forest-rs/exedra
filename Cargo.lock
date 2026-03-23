@@ -73,6 +73,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_spatial"
+version = "0.1.0"
+
+[[package]]
 name = "exedra_testkit"
 version = "0.1.0"
 dependencies = [

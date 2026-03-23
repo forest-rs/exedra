@@ -1,7 +1,7 @@
 ---
 id: exe-0r1z
 title: Adaptive octree and spatial index crate (exedra_spatial)
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-04T07:02:29Z
@@ -54,3 +54,9 @@ Reuse cases beyond DC:
 - Unit tests for subdivision, neighbor queries, traversal order determinism
 - Benchmarks for construction and traversal at various depths
 
+
+## Notes
+
+**2026-03-23T19:19:00Z**
+
+Added a new no_std exedra_spatial crate with Aabb utilities, a flat adaptive Octree, visitor-driven construction, deterministic DFS/BFS traversal, leaf-neighbor queries by adjacency, and incremental leaf refinement without full rebuild. Also added crate docs plus a crate-local ADR documenting that exedra_spatial owns spatial indexing but not scalar-field or extraction semantics. Validation: typos crates/exedra_spatial/src/lib.rs crates/exedra_spatial/README.md crates/exedra_spatial/docs/adr-0001-flat-octree-scope.md .tickets/exe-0r1z.md docs/plans/implicit-surface-branch.md; cargo fmt --all; cargo test -p exedra_spatial; cargo clippy -p exedra_spatial --all-targets -- -D warnings; cargo doc -p exedra_spatial --no-deps.

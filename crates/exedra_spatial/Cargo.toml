@@ -1,0 +1,13 @@
+[package]
+name = "exedra_spatial"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic spatial indexing primitives for exedra"
+keywords = ["spatial", "octree", "aabb", "no_std"]
+categories = ["data-structures", "algorithms"]
+
+[lints]
+workspace = true
