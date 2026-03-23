@@ -8,7 +8,7 @@
 //! - [`SpecializableField`] for region-local simplification,
 //! - [`ProvenanceField`] for extraction-time semantic tagging,
 //! - Hermite bridge types in [`hermite`],
-//! - [`analytic::SphereField`] as a tiny reference implementation.
+//! - analytic reference fields and CSG combinators in [`analytic`].
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
 //! ship a dual-contouring mesher.

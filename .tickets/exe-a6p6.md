@@ -1,7 +1,7 @@
 ---
 id: exe-a6p6
 title: Analytic ScalarField implementations for testing
-status: open
+status: closed
 deps: [exe-2r7w]
 links: [exe-gosk]
 created: 2026-03-04T07:19:34Z
@@ -53,3 +53,8 @@ These are useful beyond DC testing:
 - All provide correct gradients (verified against finite differences)
 - Unit tests for each primitive and combinator
 
+## Notes
+
+**2026-03-24T16:15:11Z**
+
+Expanded `exedra_isosurface::analytic` from a single sphere reference into a fuller analytic test-oracle layer: `SphereField`, `BoxField`, `CylinderField`, `TorusField`, and `HalfSpaceField`; `TaggedField` for constant provenance; and `Union`, `Intersection`, `Difference`, and `SmoothUnion` combinators with branch-selecting gradients and binary provenance reporting. The primitive intervals are conservative and the tests now check them against brute-force grid samples, while the gradient tests compare the reported derivatives against finite differences at differentiable sample points. Updated crate docs so the public surface reflects the larger analytic module. Validation: `typos crates/exedra_isosurface/src/lib.rs crates/exedra_isosurface/src/analytic.rs crates/exedra_isosurface/src/hermite.rs crates/exedra_isosurface/README.md .tickets/exe-a6p6.md`; `cargo fmt --all`; `cargo test -p exedra_isosurface`; `cargo clippy -p exedra_isosurface --all-targets --all-features -- -D warnings`; `cargo doc -p exedra_isosurface --no-deps`.
