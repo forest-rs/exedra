@@ -16,6 +16,7 @@ mesher or backend adapter can be built honestly.
 
 - the `ScalarField` trait,
 - extension traits for specialization and provenance,
+- Hermite bridge types between field evaluation and extraction,
 - small reference fields used to validate the trait contract.
 
 It does not yet own:

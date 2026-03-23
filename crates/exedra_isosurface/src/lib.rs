@@ -7,6 +7,7 @@
 //! - [`ScalarField`] as the base field-evaluation contract,
 //! - [`SpecializableField`] for region-local simplification,
 //! - [`ProvenanceField`] for extraction-time semantic tagging,
+//! - Hermite bridge types in [`hermite`],
 //! - [`analytic::SphereField`] as a tiny reference implementation.
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
@@ -20,8 +21,14 @@ extern crate std;
 compile_error!("exedra_isosurface requires either the `std` or `libm` feature");
 
 pub mod analytic;
+pub mod hermite;
 
 use exedra_spatial::Aabb;
+
+pub use hermite::{
+    CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
+    HermiteIntersection, locate_edge_intersection,
+};
 
 /// A scalar field that can be evaluated for isosurface extraction.
 ///

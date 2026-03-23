@@ -5,6 +5,7 @@ Implicit-field seams and extraction-facing data types for the Exedra workspace.
 Current scope:
 
 - `ScalarField` and its extension traits,
+- Hermite intersection and per-cell bridge data,
 - a tiny reference `SphereField`,
 - the stable field-evaluation boundary consumed by future extraction code.
 

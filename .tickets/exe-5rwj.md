@@ -1,7 +1,7 @@
 ---
 id: exe-5rwj
 title: Hermite data representation for isosurface extraction
-status: open
+status: closed
 deps: [exe-2r7w]
 links: []
 created: 2026-03-04T07:06:19Z
@@ -65,3 +65,9 @@ Reuse beyond DC:
 - Handles NaN gradients at non-differentiable intersections
 - Unit tests with analytic sphere (known intersection positions and normals)
 
+
+## Notes
+
+**2026-03-23T19:25:21Z**
+
+Expanded exedra_isosurface with Hermite bridge types: HermiteIntersection, CellHermiteData, deterministic per-edge tagging, and a configurable bisection-based locate_edge_intersection helper that uses ScalarField bulk evaluation and preserves NaN gradients. Updated the crate README and ADR so the crate now explicitly owns the bridge layer between field evaluation and later extraction. Validation: cargo fmt --all; cargo test -p exedra_isosurface; cargo clippy -p exedra_isosurface --all-targets --all-features -- -D warnings; cargo doc -p exedra_isosurface --no-deps.
