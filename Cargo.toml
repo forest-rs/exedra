@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "apps/cambium_web_bridge",
+    "benchmarks/exedra_fidget_bench",
     "benchmarks/exedra_qef_bench",
     "benchmarks/exedra_render_bench",
     "crates/cambium",

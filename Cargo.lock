@@ -183,6 +183,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_fidget_bench"
+version = "0.0.0"
+dependencies = [
+ "exedra_fidget",
+ "exedra_isosurface",
+ "exedra_qef",
+ "exedra_spatial",
+ "fidget",
+]
+
+[[package]]
 name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [
