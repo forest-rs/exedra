@@ -21,7 +21,7 @@ The current mesher is intentionally phase-1:
 - interval-driven octree culling,
 - one dual vertex per active max-depth cell,
 - explicit triangle emission from primal-edge patches with deterministic diagonal choice,
-- QEF placement with edge-sharpness tagging,
+- QEF placement with edge-sharpness tagging and Hermite mass-point anchoring,
 - authored corner normals from field gradients for smoother render extraction,
 - optional face-region tagging from `ProvenanceField<u32>`,
 - first-pass seam tagging on shared edges where adjacent face regions differ.

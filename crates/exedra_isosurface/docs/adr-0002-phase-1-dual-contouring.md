@@ -31,6 +31,9 @@ constraints:
 - emit explicit triangles from interior sign-changing primal-edge patches on
   that regular max-depth lattice, choosing the shorter quad diagonal
   deterministically instead of relying on later fan triangulation,
+- bias low-rank QEF solves toward the Hermite mass point for each active cell
+  instead of always anchoring null-space dimensions to the geometric cell
+  center,
 - author corner-normal overrides from field gradients using a face-local inset
   sample so render extraction can shade smooth regions more honestly,
 - tag `EDGE_SHARPNESS` from the QEF rank and optionally tag `FACE_REGION` when

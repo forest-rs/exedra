@@ -196,6 +196,20 @@ impl QefSolver {
     /// Low-rank solves pin the null-space dimensions to `bounds.center()`
     /// before the final point is clamped back into the bounds.
     pub fn solve(&self, bounds: QefBounds, params: &QefParams) -> Result<QefResult, QefSolveError> {
+        self.solve_with_anchor(bounds, bounds.center(), params)
+    }
+
+    /// Solves the accumulated QEF inside `bounds`, pinning low-rank null-space
+    /// dimensions to `anchor`.
+    ///
+    /// `anchor` is clamped into `bounds` before use so callers may pass
+    /// slightly out-of-bounds mass points without destabilizing the solve.
+    pub fn solve_with_anchor(
+        &self,
+        bounds: QefBounds,
+        anchor: [f32; 3],
+        params: &QefParams,
+    ) -> Result<QefResult, QefSolveError> {
         if self.constraint_count == 0 {
             return Err(QefSolveError::Empty);
         }
@@ -203,7 +217,7 @@ impl QefSolver {
         let (eigenvalues, eigenvectors) =
             symmetric_eigendecomposition(self.ata, params.jacobi_sweeps);
         let rank = effective_rank(eigenvalues, params.relative_eigenvalue_cutoff);
-        let anchor = bounds.center();
+        let anchor = bounds.clamp(anchor);
         let anchor_coeffs = project_columns(eigenvectors, anchor);
         let rhs_coeffs = project_columns(eigenvectors, self.atb);
 
@@ -519,6 +533,21 @@ mod tests {
         assert_eq!(result.rank, 1);
         assert!((result.position[0] - bounds().center()[0]).abs() <= 1.0e-5);
         assert!((result.position[1] - bounds().center()[1]).abs() <= 1.0e-5);
+        assert!((result.position[2] - 0.25).abs() <= 1.0e-5);
+    }
+
+    #[test]
+    fn single_constraint_respects_custom_anchor_in_null_space() {
+        let mut solver = QefSolver::new();
+        solver.add([0.0, 0.0, 0.25], [0.0, 0.0, 1.0]);
+
+        let result = solver
+            .solve_with_anchor(bounds(), [0.4, -0.3, 0.0], &QefParams::default())
+            .expect("single plane solve should succeed");
+
+        assert_eq!(result.rank, 1);
+        assert!((result.position[0] - 0.4).abs() <= 1.0e-5);
+        assert!((result.position[1] + 0.3).abs() <= 1.0e-5);
         assert!((result.position[2] - 0.25).abs() <= 1.0e-5);
     }
 

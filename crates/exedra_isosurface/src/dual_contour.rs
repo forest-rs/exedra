@@ -514,8 +514,9 @@ fn solve_active_cell<F: ScalarField>(
         }));
     }
     let result = solver
-        .solve(
+        .solve_with_anchor(
             QefBounds::new(bounds.min, bounds.max).expect("cell bounds are valid"),
+            hermite_mass_point(&hermite),
             &params.qef,
         )
         .map_err(DualContourError::Solve)?;
@@ -771,6 +772,20 @@ fn populate_region_boundary_seams(mesh: &mut Mesh) {
     let _: () = session.finish();
 }
 
+fn hermite_mass_point(hermite: &CellHermiteData) -> [f32; 3] {
+    let sum = hermite
+        .intersections
+        .iter()
+        .fold([0.0_f32; 3], |mut acc, hit| {
+            acc[0] += hit.intersection.position[0];
+            acc[1] += hit.intersection.position[1];
+            acc[2] += hit.intersection.position[2];
+            acc
+        });
+    let inv = 1.0 / hermite.intersections.len() as f32;
+    [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+}
+
 fn abs(value: f32) -> f32 {
     #[cfg(feature = "std")]
     {
@@ -842,15 +857,16 @@ fn normalize_gradient(sample: [f32; 4]) -> Option<[f32; 3]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DualContourParams, QuadDiagonal, dual_contour, dual_contour_with_regions,
-        select_quad_diagonal,
+        DualContourParams, IntervalVisitor, QuadDiagonal, cell_coord, dual_contour,
+        dual_contour_with_regions, sample_lattice, select_quad_diagonal, solve_active_cell,
+        squared_distance,
     };
     use crate::EdgeSearchParams;
     use crate::analytic::{BoxField, CylinderField, SphereField, TaggedField, Union};
     use crate::{ProvenanceField, ScalarField};
     use exedra::{ExtractParams, attr};
     use exedra_qef::QefParams;
-    use exedra_spatial::Aabb;
+    use exedra_spatial::{Aabb, Octree};
 
     fn params(bounds: Aabb, max_depth: u8) -> DualContourParams {
         DualContourParams {
@@ -1124,6 +1140,52 @@ mod tests {
                 .faces()
                 .all(|face| result.mesh.face_loop(face).count() == 3)
         );
+    }
+
+    #[test]
+    fn sphere_active_cells_do_not_all_collapse_to_cell_centers() {
+        let field = SphereField {
+            center: [0.0, 0.0, 0.0],
+            radius: 1.0,
+        };
+        let params = params(
+            Aabb::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]).expect("bounds"),
+            4,
+        );
+        let resolution = 1_u32 << params.max_depth;
+        let lattice = sample_lattice(&field, params.root_bounds, resolution);
+        let mut visitor = IntervalVisitor { field: &field };
+        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+
+        let mut found_non_center = false;
+        for leaf_id in tree.leaf_ids() {
+            let Some(cell) = tree.cell(leaf_id) else {
+                continue;
+            };
+            if cell.depth != params.max_depth {
+                continue;
+            }
+            if !cell
+                .payload()
+                .copied()
+                .is_some_and(|payload| payload.intersects_surface)
+            {
+                continue;
+            }
+
+            let coord = cell_coord(params.root_bounds, cell.bounds, resolution);
+            let Some(active) = solve_active_cell(&field, &params, &lattice, coord)
+                .expect("cell solve should work")
+            else {
+                continue;
+            };
+            if squared_distance(active.position, cell.bounds.center()) > 1.0e-8 {
+                found_non_center = true;
+                break;
+            }
+        }
+
+        assert!(found_non_center);
     }
 
     #[test]

@@ -34,7 +34,9 @@ It does not own:
 The first implementation uses an inline Jacobi eigensolver for the 3x3
 symmetric normal-equation matrix. Rank selection uses a relative eigenvalue
 cutoff, and low-rank solves pin null-space dimensions to an explicit anchor
-point so planar or edge-like neighborhoods do not drift arbitrarily.
+point so planar or edge-like neighborhoods do not drift arbitrarily. The
+default solve path uses `bounds.center()`, while callers with better local
+information may provide a custom anchor such as a Hermite mass point.
 
 ## Consequences
 
@@ -43,4 +45,3 @@ point so planar or edge-like neighborhoods do not drift arbitrarily.
 - The solver remains small and replaceable.
 - We keep the public API at the level the mesher actually needs: constraints in,
   bounded solution out.
-
