@@ -21,8 +21,8 @@ use crate::FidgetFieldError;
 pub struct FidgetField<F: Function, T = ()> {
     shape: Shape<F, T>,
     interval: Mutex<IntervalCache<F>>,
-    float: Mutex<BulkCache<F::FloatSliceEval>>,
-    grad: Mutex<BulkCache<F::GradSliceEval>>,
+    float: Mutex<FloatCache<F::FloatSliceEval>>,
+    grad: Mutex<GradCache<F::GradSliceEval>>,
 }
 
 /// Convenience alias for the VM-backed adapter.
@@ -37,9 +37,20 @@ struct IntervalCache<F: Function> {
     tape: ShapeTape<<F::IntervalEval as TracingEvaluator>::Tape>,
 }
 
-struct BulkCache<E: BulkEvaluator> {
+struct FloatCache<E: BulkEvaluator> {
     eval: ShapeBulkEval<E>,
     tape: ShapeTape<E::Tape>,
+    x: Vec<f32>,
+    y: Vec<f32>,
+    z: Vec<f32>,
+}
+
+struct GradCache<E: BulkEvaluator> {
+    eval: ShapeBulkEval<E>,
+    tape: ShapeTape<E::Tape>,
+    x: Vec<Grad>,
+    y: Vec<Grad>,
+    z: Vec<Grad>,
 }
 
 impl<F: Function + Clone, T> FidgetField<F, T> {
@@ -52,13 +63,19 @@ impl<F: Function + Clone, T> FidgetField<F, T> {
             eval: Shape::<F, T>::new_interval_eval(),
             tape: shape.ez_interval_tape(),
         };
-        let float = BulkCache {
+        let float = FloatCache {
             eval: Shape::<F, T>::new_float_slice_eval(),
             tape: shape.ez_float_slice_tape(),
+            x: Vec::new(),
+            y: Vec::new(),
+            z: Vec::new(),
         };
-        let grad = BulkCache {
+        let grad = GradCache {
             eval: Shape::<F, T>::new_grad_slice_eval(),
             tape: shape.ez_grad_slice_tape(),
+            x: Vec::new(),
+            y: Vec::new(),
+            z: Vec::new(),
         };
 
         Ok(Self {
@@ -99,8 +116,8 @@ impl<F: Function + Clone, T> ScalarField for FidgetField<F, T> {
         let x = Interval::from([bounds.min[0], bounds.max[0]]);
         let y = Interval::from([bounds.min[1], bounds.max[1]]);
         let z = Interval::from([bounds.min[2], bounds.max[2]]);
-        let tape = cache.tape.clone();
-        match cache.eval.eval(&tape, x, y, z) {
+        let IntervalCache { eval, tape } = &mut *cache;
+        match eval.eval(tape, x, y, z) {
             Ok((interval, _trace)) => Some([interval.lower(), interval.upper()]),
             Err(_error) => None,
         }
@@ -111,10 +128,19 @@ impl<F: Function + Clone, T> ScalarField for FidgetField<F, T> {
         if points.is_empty() {
             return;
         }
-        let (x, y, z) = split_points::<f32>(points);
         let mut cache = lock_unpoison(&self.float);
-        let tape = cache.tape.clone();
-        match cache.eval.eval(&tape, &x, &y, &z) {
+        {
+            let FloatCache { x, y, z, .. } = &mut *cache;
+            split_points_into(points, x, y, z);
+        }
+        let FloatCache {
+            eval,
+            tape,
+            x,
+            y,
+            z,
+        } = &mut *cache;
+        match eval.eval(tape, x, y, z) {
             Ok(values) => out.copy_from_slice(values),
             Err(_error) => out.fill(f32::NAN),
         }
@@ -125,10 +151,19 @@ impl<F: Function + Clone, T> ScalarField for FidgetField<F, T> {
         if points.is_empty() {
             return;
         }
-        let (x, y, z) = split_grad_points(points);
         let mut cache = lock_unpoison(&self.grad);
-        let tape = cache.tape.clone();
-        match cache.eval.eval(&tape, &x, &y, &z) {
+        {
+            let GradCache { x, y, z, .. } = &mut *cache;
+            split_grad_points_into(points, x, y, z);
+        }
+        let GradCache {
+            eval,
+            tape,
+            x,
+            y,
+            z,
+        } = &mut *cache;
+        match eval.eval(tape, x, y, z) {
             Ok(values) => {
                 for (slot, grad) in out.iter_mut().zip(values.iter()) {
                     *slot = grad_to_array(*grad);
@@ -182,28 +217,37 @@ fn reject_extra_vars<F: Function, T>(shape: &Shape<F, T>) -> Result<(), FidgetFi
     }
 }
 
-fn split_points<T: From<f32>>(points: &[[f32; 3]]) -> (Vec<T>, Vec<T>, Vec<T>) {
-    let mut x = Vec::with_capacity(points.len());
-    let mut y = Vec::with_capacity(points.len());
-    let mut z = Vec::with_capacity(points.len());
+fn split_points_into(points: &[[f32; 3]], x: &mut Vec<f32>, y: &mut Vec<f32>, z: &mut Vec<f32>) {
+    x.clear();
+    y.clear();
+    z.clear();
+    x.reserve(points.len());
+    y.reserve(points.len());
+    z.reserve(points.len());
     for point in points {
-        x.push(T::from(point[0]));
-        y.push(T::from(point[1]));
-        z.push(T::from(point[2]));
+        x.push(point[0]);
+        y.push(point[1]);
+        z.push(point[2]);
     }
-    (x, y, z)
 }
 
-fn split_grad_points(points: &[[f32; 3]]) -> (Vec<Grad>, Vec<Grad>, Vec<Grad>) {
-    let mut x = Vec::with_capacity(points.len());
-    let mut y = Vec::with_capacity(points.len());
-    let mut z = Vec::with_capacity(points.len());
+fn split_grad_points_into(
+    points: &[[f32; 3]],
+    x: &mut Vec<Grad>,
+    y: &mut Vec<Grad>,
+    z: &mut Vec<Grad>,
+) {
+    x.clear();
+    y.clear();
+    z.clear();
+    x.reserve(points.len());
+    y.reserve(points.len());
+    z.reserve(points.len());
     for point in points {
         x.push(Grad::new(point[0], 1.0, 0.0, 0.0));
         y.push(Grad::new(point[1], 0.0, 1.0, 0.0));
         z.push(Grad::new(point[2], 0.0, 0.0, 1.0));
     }
-    (x, y, z)
 }
 
 fn grad_to_array(grad: Grad) -> [f32; 4] {
@@ -287,6 +331,57 @@ mod tests {
         field.eval_gradients(&[[2.5, -3.0, 4.0]], &mut gradients);
 
         assert_eq!(gradients[0], [2.5, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn vm_field_reuses_scratch_across_varying_batch_sizes() {
+        let x = Tree::x();
+        let y = Tree::y();
+        let z = Tree::z();
+        let sphere = (x.square() + y.square() + z.square()).sqrt() - 1.0;
+        let field = VmField::new(VmShape::from(sphere)).expect("axis-only shape");
+
+        let small = [[0.125_f32, 0.0, 0.0], [0.5, 0.25, -0.75]];
+        let large = [
+            [-1.0_f32, 0.0, 0.0],
+            [-0.5, 0.5, 0.0],
+            [0.125, -0.25, 0.375],
+            [0.5, -0.25, 0.75],
+            [1.0, 0.0, 0.0],
+        ];
+
+        let mut point_values = [0.0_f32; 5];
+        let mut gradients = [[0.0_f32; 4]; 5];
+
+        field.eval_points(&large, &mut point_values);
+        field.eval_gradients(&large, &mut gradients);
+        assert!(point_values.iter().all(|value| value.is_finite()));
+        assert!(
+            gradients
+                .iter()
+                .all(|grad| grad.iter().all(|value| value.is_finite()))
+        );
+
+        let mut small_values = [0.0_f32; 2];
+        let mut small_gradients = [[0.0_f32; 4]; 2];
+        field.eval_points(&small, &mut small_values);
+        field.eval_gradients(&small, &mut small_gradients);
+
+        assert!(small_values.iter().all(|value| value.is_finite()));
+        assert!(
+            small_gradients
+                .iter()
+                .all(|grad| grad.iter().all(|value| value.is_finite()))
+        );
+
+        field.eval_points(&large, &mut point_values);
+        field.eval_gradients(&large, &mut gradients);
+        assert!(point_values.iter().all(|value| value.is_finite()));
+        assert!(
+            gradients
+                .iter()
+                .all(|grad| grad.iter().all(|value| value.is_finite()))
+        );
     }
 
     #[test]
