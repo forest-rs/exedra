@@ -125,7 +125,7 @@ impl<F: Function + Clone, T> ScalarField for FidgetField<F, T> {
         if points.is_empty() {
             return;
         }
-        let (x, y, z) = split_points::<Grad>(points);
+        let (x, y, z) = split_grad_points(points);
         let mut cache = lock_unpoison(&self.grad);
         let tape = cache.tape.clone();
         match cache.eval.eval(&tape, &x, &y, &z) {
@@ -194,6 +194,18 @@ fn split_points<T: From<f32>>(points: &[[f32; 3]]) -> (Vec<T>, Vec<T>, Vec<T>) {
     (x, y, z)
 }
 
+fn split_grad_points(points: &[[f32; 3]]) -> (Vec<Grad>, Vec<Grad>, Vec<Grad>) {
+    let mut x = Vec::with_capacity(points.len());
+    let mut y = Vec::with_capacity(points.len());
+    let mut z = Vec::with_capacity(points.len());
+    for point in points {
+        x.push(Grad::new(point[0], 1.0, 0.0, 0.0));
+        y.push(Grad::new(point[1], 0.0, 1.0, 0.0));
+        z.push(Grad::new(point[2], 0.0, 0.0, 1.0));
+    }
+    (x, y, z)
+}
+
 fn grad_to_array(grad: Grad) -> [f32; 4] {
     [grad.v, grad.dx, grad.dy, grad.dz]
 }
@@ -212,7 +224,7 @@ fn assert_same_len(expected: usize, found: usize, label: &str) {
 #[cfg(test)]
 mod tests {
     use exedra_isosurface::{
-        DualContourParams, EdgeSearchParams, SpecializableField, dual_contour,
+        DualContourParams, EdgeSearchParams, ScalarField, SpecializableField, dual_contour,
     };
     use exedra_qef::QefParams;
     use exedra_spatial::Aabb;
@@ -247,6 +259,11 @@ mod tests {
         outside + inside
     }
 
+    fn nearest_center(value: f32, root_min: f32, step: f32) -> f32 {
+        let center_index = ((value - root_min) / step - 0.5).round();
+        root_min + (center_index + 0.5) * step
+    }
+
     #[test]
     fn vm_field_extracts_sphere() {
         let x = Tree::x();
@@ -261,6 +278,50 @@ mod tests {
 
         assert!(result.mesh.validate_deep().is_empty());
         assert!(result.stats.faces > 0);
+    }
+
+    #[test]
+    fn vm_field_gradients_seed_basis_derivatives() {
+        let field = VmField::new(VmShape::from(Tree::x())).expect("axis-only shape");
+        let mut gradients = [[0.0_f32; 4]; 1];
+        field.eval_gradients(&[[2.5, -3.0, 4.0]], &mut gradients);
+
+        assert_eq!(gradients[0], [2.5, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn vm_field_sphere_vertices_move_off_center_lattice() {
+        let x = Tree::x();
+        let y = Tree::y();
+        let z = Tree::z();
+        let sphere = (x.square() + y.square() + z.square()).sqrt() - 1.0;
+        let field = VmField::new(VmShape::from(sphere)).expect("axis-only shape");
+        let bounds = Aabb::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]).expect("bounds");
+        let params = params(bounds, 4);
+
+        let result =
+            dual_contour(&field, &params).expect("fidget sphere extraction should succeed");
+        let resolution = 1_u32 << params.max_depth;
+        let step = [
+            (params.root_bounds.max[0] - params.root_bounds.min[0]) / resolution as f32,
+            (params.root_bounds.max[1] - params.root_bounds.min[1]) / resolution as f32,
+            (params.root_bounds.max[2] - params.root_bounds.min[2]) / resolution as f32,
+        ];
+
+        let moved = result.mesh.vertices().any(|vertex| {
+            let position = result.mesh.vertex_position(vertex).expect("live vertex");
+            let center = [
+                nearest_center(position[0], params.root_bounds.min[0], step[0]),
+                nearest_center(position[1], params.root_bounds.min[1], step[1]),
+                nearest_center(position[2], params.root_bounds.min[2], step[2]),
+            ];
+            let dx = position[0] - center[0];
+            let dy = position[1] - center[1];
+            let dz = position[2] - center[2];
+            dx * dx + dy * dy + dz * dz > 1.0e-8
+        });
+
+        assert!(moved);
     }
 
     #[test]
