@@ -11,11 +11,12 @@
 //! - Hermite bridge types in [`hermite`],
 //! - analytic reference fields and CSG combinators in [`analytic`],
 //! - analytic 2D reference profiles in [`analytic2d`],
+//! - lifting operators in [`lift`],
 //! - reusable transform wrappers in [`transform`],
 //! - a first dual-contouring extraction path in [`mod@dual_contour`].
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
-//! ship a dual-contouring mesher.
+//! define a full implicit scene/domain model.
 
 #![no_std]
 extern crate alloc;
@@ -29,6 +30,7 @@ pub mod analytic2d;
 pub mod bounds2;
 pub mod dual_contour;
 pub mod hermite;
+pub mod lift;
 pub mod transform;
 
 use exedra_spatial::Aabb;
@@ -42,6 +44,7 @@ pub use hermite::{
     CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
     HermiteIntersection, locate_edge_intersection,
 };
+pub use lift::{Extrude, Revolve};
 pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
 
 /// A scalar field that can be evaluated for isosurface extraction.

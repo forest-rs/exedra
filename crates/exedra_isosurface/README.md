@@ -11,6 +11,7 @@ Current scope:
   `TorusField`, `HalfSpaceField`),
 - analytic 2D reference profiles (`CircleField2d`, `RectField2d`,
   `HalfPlaneField2d`),
+- lifting operators (`Extrude`, `Revolve`) for profile-based 3D fields,
 - field-construction wrappers (`Translate`, `UniformScale`, `Transform3`),
 - simple CSG combinators and provenance tagging wrappers for tests,
 - a first dual-contouring extractor over a culled max-depth octree.

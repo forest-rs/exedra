@@ -18,6 +18,7 @@ mesher or backend adapter can be built honestly.
 - the `ScalarField2d` trait and minimal profile bounds for field lifting,
 - extension traits for specialization and provenance,
 - Hermite bridge types between field evaluation and extraction,
+- profile-lifting operators such as extrusion and revolution,
 - small reference fields used to validate the trait contract,
 - lightweight field-construction wrappers such as transforms that stay at the
   evaluation boundary rather than introducing a full implicit scene graph.
