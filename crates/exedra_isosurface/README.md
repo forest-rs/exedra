@@ -23,6 +23,7 @@ The current mesher is intentionally phase-1:
 - explicit triangle emission from primal-edge patches with deterministic diagonal choice,
 - QEF placement with edge-sharpness tagging,
 - authored corner normals from field gradients for smoother render extraction,
-- optional face-region tagging from `ProvenanceField<u32>`.
+- optional face-region tagging from `ProvenanceField<u32>`,
+- first-pass seam tagging on shared edges where adjacent face regions differ.
 
 It does not yet attempt manifold DC, variable-depth stitching, or seam tagging.

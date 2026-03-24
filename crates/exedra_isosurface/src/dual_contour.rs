@@ -10,7 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra::{BuildError, FaceBuildAttrs, Mesh, MeshBuilder, op};
+use exedra::{BuildError, FaceBuildAttrs, Mesh, MeshBuilder, attr, op};
 use exedra_qef::{PlaneConstraint, QefBounds, QefParams, QefSolveError, QefSolver, SharpnessClass};
 use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
 
@@ -217,6 +217,7 @@ where
     let result = builder.build().map_err(DualContourError::Build)?;
     let mut mesh = result.mesh;
     populate_corner_normals(field, &mut mesh);
+    populate_region_boundary_seams(&mut mesh);
     Ok(DualContourResult {
         stats: DualContourStats {
             octree_cells: tree.len(),
@@ -726,6 +727,50 @@ fn populate_corner_normals<F: ScalarField>(field: &F, mesh: &mut Mesh) {
     let _: () = session.finish();
 }
 
+fn populate_region_boundary_seams(mesh: &mut Mesh) {
+    let Some(region_layer) = mesh.attrs().dense(attr::FACE_REGION) else {
+        return;
+    };
+
+    let mut seam_edges = Vec::new();
+    for face in mesh.faces() {
+        let Some(face_region) = region_layer.get(face.as_id()).copied() else {
+            continue;
+        };
+        for corner in mesh.face_loop(face) {
+            let Some(twin) = mesh.twin(corner) else {
+                continue;
+            };
+            if twin < corner {
+                continue;
+            }
+            let Some(other_face) = mesh.face(twin) else {
+                continue;
+            };
+            if other_face == exedra::FaceId::OUTSIDE {
+                continue;
+            }
+            let Some(other_region) = region_layer.get(other_face.as_id()).copied() else {
+                continue;
+            };
+            if face_region != other_region {
+                seam_edges.push(corner);
+            }
+        }
+    }
+
+    if seam_edges.is_empty() {
+        return;
+    }
+
+    let mut session = mesh.edit();
+    for half_edge in seam_edges {
+        op::set_edge_seam(&mut session, half_edge, true)
+            .expect("collected seam edge must stay live during seam tagging");
+    }
+    let _: () = session.finish();
+}
+
 fn abs(value: f32) -> f32 {
     #[cfg(feature = "std")]
     {
@@ -802,6 +847,7 @@ mod tests {
     };
     use crate::EdgeSearchParams;
     use crate::analytic::{BoxField, CylinderField, SphereField, TaggedField, Union};
+    use crate::{ProvenanceField, ScalarField};
     use exedra::{ExtractParams, attr};
     use exedra_qef::QefParams;
     use exedra_spatial::Aabb;
@@ -815,6 +861,41 @@ mod tests {
                 bisection_steps: 10,
             },
             qef: QefParams::default(),
+        }
+    }
+
+    struct AxisTaggedUnion {
+        field: Union<BoxField, BoxField>,
+    }
+
+    impl ScalarField for AxisTaggedUnion {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.field.eval_interval(bounds)
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+        }
+    }
+
+    impl ProvenanceField for AxisTaggedUnion {
+        type Provenance = u32;
+
+        fn eval_interval_with_provenance(
+            &self,
+            bounds: &Aabb,
+        ) -> Option<([f32; 2], Self::Provenance)> {
+            self.field
+                .eval_interval(bounds)
+                .map(|interval| (interval, self.point_provenance(bounds.center())))
+        }
+
+        fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
+            if point[0] < 0.0 { 1 } else { 2 }
         }
     }
 
@@ -940,6 +1021,56 @@ mod tests {
                 .faces()
                 .all(|face| regions.get(face.as_id()) == Some(&3))
         );
+    }
+
+    #[test]
+    fn dual_contour_with_regions_marks_seams_between_tagged_operands() {
+        let field = AxisTaggedUnion {
+            field: Union::new(
+                BoxField {
+                    center: [-0.35, 0.0, 0.0],
+                    half_extents: [0.55, 0.55, 0.55],
+                },
+                BoxField {
+                    center: [0.35, 0.0, 0.0],
+                    half_extents: [0.55, 0.55, 0.55],
+                },
+            ),
+        };
+        let bounds = Aabb::new([-1.4, -1.1, -1.1], [1.4, 1.1, 1.1]).expect("bounds");
+        let result = dual_contour_with_regions(&field, &params(bounds, 4))
+            .expect("tagged union extraction should work");
+
+        assert!(result.mesh.validate_deep().is_empty());
+        let regions = result
+            .mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .expect("FACE_REGION layer should exist");
+        assert!(
+            result
+                .mesh
+                .faces()
+                .any(|face| regions.get(face.as_id()) == Some(&1))
+        );
+        assert!(
+            result
+                .mesh
+                .faces()
+                .any(|face| regions.get(face.as_id()) == Some(&2))
+        );
+
+        let seams = result
+            .mesh
+            .attrs()
+            .sparse(attr::EDGE_SEAM)
+            .expect("EDGE_SEAM layer should exist");
+        assert!(result.mesh.faces().any(|face| {
+            result
+                .mesh
+                .face_loop(face)
+                .any(|corner| seams.get(corner.as_id()).copied().unwrap_or(false))
+        }));
     }
 
     #[test]

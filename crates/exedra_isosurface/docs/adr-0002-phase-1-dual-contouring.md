@@ -35,6 +35,8 @@ constraints:
   sample so render extraction can shade smooth regions more honestly,
 - tag `EDGE_SHARPNESS` from the QEF rank and optionally tag `FACE_REGION` when
   the field implements `ProvenanceField<Provenance = u32>`,
+- derive a first `EDGE_SEAM` pass from post-build face-region discontinuities
+  on shared interior edges,
 - expose a deterministic `cell_budget` cap even though it may truncate the
   extracted surface.
 
@@ -45,6 +47,7 @@ constraints:
 - The implementation stays structurally honest about what is still missing:
   no manifold guarantees, no mixed-depth stitching, no seam attribution yet,
   only local diagonal cleanup for warped primal-edge patches, and only
-  face-local gradient sampling for authored shading normals.
+  face-local gradient sampling for authored shading normals. The current seam
+  pass marks region boundaries only; it is not a full branch-trace recovery.
 - Future work can refine this mesher in place rather than starting from a
   purely architectural sketch.
