@@ -5,7 +5,6 @@
 
 extern crate alloc;
 
-use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -13,6 +12,7 @@ use core::fmt;
 use exedra::{BuildError, FaceBuildAttrs, Mesh, MeshBuilder, attr, op};
 use exedra_qef::{PlaneConstraint, QefBounds, QefParams, QefSolveError, QefSolver, SharpnessClass};
 use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
+use hashbrown::{HashMap, HashSet};
 
 use crate::{
     CellHermiteData, EdgeSearchParams, ProvenanceField, ScalarField, locate_edge_intersection,
@@ -184,8 +184,8 @@ where
     }
 
     let mut face_count = 0_usize;
-    let mut emitted = BTreeSet::new();
-    let mut edge_use = BTreeMap::new();
+    let mut emitted = HashSet::new();
+    let mut edge_use = HashMap::new();
     for axis in 0..3 {
         emit_axis_faces(
             axis,
@@ -222,8 +222,8 @@ fn emit_axis_faces<R>(
     coverage: &[Option<VertexEntry>],
     builder: &mut MeshBuilder,
     region_at: &R,
-    emitted: &mut BTreeSet<[u32; 3]>,
-    edge_use: &mut BTreeMap<(u32, u32), u8>,
+    emitted: &mut HashSet<[u32; 3]>,
+    edge_use: &mut HashMap<(u32, u32), u8>,
     face_count: &mut usize,
 ) -> Result<(), DualContourError>
 where
@@ -303,8 +303,8 @@ fn emit_one_face<R>(
     coverage: &[Option<VertexEntry>],
     builder: &mut MeshBuilder,
     region_at: &R,
-    emitted: &mut BTreeSet<[u32; 3]>,
-    edge_use: &mut BTreeMap<(u32, u32), u8>,
+    emitted: &mut HashSet<[u32; 3]>,
+    edge_use: &mut HashMap<(u32, u32), u8>,
     face_count: &mut usize,
 ) -> Result<(), DualContourError>
 where
@@ -455,8 +455,8 @@ fn canonical_triangle(mut triangle: [u32; 3]) -> [u32; 3] {
 
 fn try_mark_triangle(
     triangle: [u32; 3],
-    emitted: &mut BTreeSet<[u32; 3]>,
-    edge_use: &mut BTreeMap<(u32, u32), u8>,
+    emitted: &mut HashSet<[u32; 3]>,
+    edge_use: &mut HashMap<(u32, u32), u8>,
 ) -> bool {
     let canonical = canonical_triangle(triangle);
     if !emitted.insert(canonical) {

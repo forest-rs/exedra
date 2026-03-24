@@ -158,6 +158,7 @@ name = "exedra"
 version = "0.1.0"
 dependencies = [
  "exedra_testkit",
+ "hashbrown",
  "libm",
  "understory_dirty",
 ]
@@ -188,6 +189,7 @@ dependencies = [
  "exedra",
  "exedra_qef",
  "exedra_spatial",
+ "hashbrown",
  "libm",
 ]
 

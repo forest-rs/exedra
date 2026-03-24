@@ -6,8 +6,8 @@
 //! Use [`Mesh::to_trimesh`](crate::Mesh::to_trimesh) to produce [`TriMesh`]
 //! output for downstream rendering.
 
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use hashbrown::HashMap;
 
 use crate::attributes::SparseLayer;
 use crate::{CornerId, FaceId, Mesh, NormalParams, NormalsSource, VertexId, attr};
@@ -93,7 +93,7 @@ pub struct ExtractStats {
     pub normal_split_count: u64,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct RenderVertexKey {
     vertex: VertexId,
     uv_bits: [u32; 2],
@@ -167,8 +167,8 @@ impl Mesh {
 
         let mut mesh = TriMesh::default();
         let mut stats = ExtractStats::default();
-        let mut key_to_index = BTreeMap::<RenderVertexKey, u32>::new();
-        let mut vertex_variants = BTreeMap::<VertexId, VertexVariants>::new();
+        let mut key_to_index = HashMap::<RenderVertexKey, u32>::new();
+        let mut vertex_variants = HashMap::<VertexId, VertexVariants>::new();
 
         for face in self.faces() {
             emit_face(
@@ -198,8 +198,8 @@ fn emit_face(
     derived_normals: &crate::DerivedCornerNormals,
     normals_source: NormalsSource,
     mesh: &mut TriMesh,
-    key_to_index: &mut BTreeMap<RenderVertexKey, u32>,
-    vertex_variants: &mut BTreeMap<VertexId, VertexVariants>,
+    key_to_index: &mut HashMap<RenderVertexKey, u32>,
+    vertex_variants: &mut HashMap<VertexId, VertexVariants>,
     stats: &mut ExtractStats,
 ) {
     for triangle in source.triangulate_face_fan(face) {
@@ -230,8 +230,8 @@ fn resolve_render_vertex(
     derived_normals: &crate::DerivedCornerNormals,
     normals_source: NormalsSource,
     mesh: &mut TriMesh,
-    key_to_index: &mut BTreeMap<RenderVertexKey, u32>,
-    vertex_variants: &mut BTreeMap<VertexId, VertexVariants>,
+    key_to_index: &mut HashMap<RenderVertexKey, u32>,
+    vertex_variants: &mut HashMap<VertexId, VertexVariants>,
     stats: &mut ExtractStats,
 ) -> u32 {
     let vertex = source

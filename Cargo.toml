@@ -88,6 +88,7 @@ exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 fidget = { default-features = false, version = "0.4.2" }
+hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
 serde_json = "1.0.145"

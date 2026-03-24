@@ -10,6 +10,7 @@ keywords = ["mesh", "half-edge", "topology", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+hashbrown.workspace = true
 libm = { optional = true, workspace = true }
 understory_dirty.workspace = true
 

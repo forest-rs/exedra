@@ -13,6 +13,7 @@ categories = ["data-structures", "algorithms"]
 exedra = { features = ["std"], workspace = true }
 exedra_qef = { features = ["std"], workspace = true }
 exedra_spatial = { default-features = false, path = "../exedra_spatial" }
+hashbrown.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]
