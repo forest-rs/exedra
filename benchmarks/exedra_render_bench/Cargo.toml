@@ -1,0 +1,23 @@
+[package]
+name = "exedra_render_bench"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Simple executable benchmarks for exedra render extraction"
+keywords = ["benchmark", "mesh", "render-extraction"]
+categories = ["algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra = { workspace = true, features = ["std"] }
+exedra_fidget = { workspace = true, features = ["std"] }
+exedra_isosurface = { workspace = true, features = ["std"] }
+exedra_primitives = { workspace = true, features = ["std"] }
+exedra_qef = { workspace = true, features = ["std"] }
+exedra_spatial = { workspace = true }
+fidget.workspace = true
