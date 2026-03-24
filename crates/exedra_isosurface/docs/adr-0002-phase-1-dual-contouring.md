@@ -28,8 +28,9 @@ constraints:
 - subdivide intersecting cells to a configured max depth,
 - place one vertex per active max-depth cell using Hermite samples and
   `exedra_qef`,
-- emit quads only from interior sign-changing primal edges on that regular
-  max-depth lattice,
+- emit explicit triangles from interior sign-changing primal-edge patches on
+  that regular max-depth lattice, choosing the shorter quad diagonal
+  deterministically instead of relying on later fan triangulation,
 - tag `EDGE_SHARPNESS` from the QEF rank and optionally tag `FACE_REGION` when
   the field implements `ProvenanceField<Provenance = u32>`,
 - expose a deterministic `cell_budget` cap even though it may truncate the
@@ -40,6 +41,7 @@ constraints:
 - The workspace now has a real field-to-mesh path for spheres, boxes,
   cylinders, and simple CSG references.
 - The implementation stays structurally honest about what is still missing:
-  no manifold guarantees, no mixed-depth stitching, no seam attribution yet.
+  no manifold guarantees, no mixed-depth stitching, no seam attribution yet,
+  and only local diagonal cleanup for warped primal-edge patches.
 - Future work can refine this mesher in place rather than starting from a
   purely architectural sketch.

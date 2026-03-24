@@ -344,25 +344,86 @@ where
             .sharpness
             .max(vertex_map[&face[0]].sharpness),
     ];
+    let face_center = average4(positions);
+    let region = region_at(face_center);
     let builder_loop = [
         vertex_map[&face[0]].builder_index,
         vertex_map[&face[1]].builder_index,
         vertex_map[&face[2]].builder_index,
         vertex_map[&face[3]].builder_index,
     ];
-    let face_center = average4(positions);
-    builder
-        .add_face_with_attrs(
-            &builder_loop,
-            &FaceBuildAttrs {
-                region: Some(region_at(face_center)),
-                edge_sharpness: Some(&sharpness),
-                ..FaceBuildAttrs::default()
-            },
-        )
-        .map_err(DualContourError::Build)?;
-    *face_count += 1;
+    match select_quad_diagonal(positions) {
+        QuadDiagonal::ZeroTwo => {
+            let tri0 = [builder_loop[0], builder_loop[1], builder_loop[2]];
+            let tri0_sharpness = [sharpness[0], sharpness[1], 0.0];
+            builder
+                .add_face_with_attrs(
+                    &tri0,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        edge_sharpness: Some(&tri0_sharpness),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(DualContourError::Build)?;
+
+            let tri1 = [builder_loop[0], builder_loop[2], builder_loop[3]];
+            let tri1_sharpness = [0.0, sharpness[2], sharpness[3]];
+            builder
+                .add_face_with_attrs(
+                    &tri1,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        edge_sharpness: Some(&tri1_sharpness),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(DualContourError::Build)?;
+        }
+        QuadDiagonal::OneThree => {
+            let tri0 = [builder_loop[0], builder_loop[1], builder_loop[3]];
+            let tri0_sharpness = [sharpness[0], 0.0, sharpness[3]];
+            builder
+                .add_face_with_attrs(
+                    &tri0,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        edge_sharpness: Some(&tri0_sharpness),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(DualContourError::Build)?;
+
+            let tri1 = [builder_loop[1], builder_loop[2], builder_loop[3]];
+            let tri1_sharpness = [sharpness[1], sharpness[2], 0.0];
+            builder
+                .add_face_with_attrs(
+                    &tri1,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        edge_sharpness: Some(&tri1_sharpness),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(DualContourError::Build)?;
+        }
+    }
+    *face_count += 2;
     Ok(())
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum QuadDiagonal {
+    ZeroTwo,
+    OneThree,
+}
+
+fn select_quad_diagonal(points: [[f32; 3]; 4]) -> QuadDiagonal {
+    if squared_distance(points[1], points[3]) < squared_distance(points[0], points[2]) {
+        QuadDiagonal::OneThree
+    } else {
+        QuadDiagonal::ZeroTwo
+    }
 }
 
 fn surrounding_vertices(
@@ -556,6 +617,13 @@ fn average4(points: [[f32; 3]; 4]) -> [f32; 3] {
     [sum[0] * 0.25, sum[1] * 0.25, sum[2] * 0.25]
 }
 
+fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    dx * dx + dy * dy + dz * dz
+}
+
 fn edge_has_crossing(start: f32, end: f32) -> bool {
     (start <= 0.0 && end > 0.0) || (start > 0.0 && end <= 0.0)
 }
@@ -634,7 +702,10 @@ fn abs(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DualContourParams, dual_contour, dual_contour_with_regions};
+    use super::{
+        DualContourParams, QuadDiagonal, dual_contour, dual_contour_with_regions,
+        select_quad_diagonal,
+    };
     use crate::EdgeSearchParams;
     use crate::analytic::{BoxField, CylinderField, SphereField, TaggedField, Union};
     use exedra::{ExtractParams, attr};
@@ -798,5 +869,23 @@ mod tests {
                     .is_some_and(|value| *value >= 1.0)
             })
         }));
+        assert!(
+            result
+                .mesh
+                .faces()
+                .all(|face| result.mesh.face_loop(face).count() == 3)
+        );
+    }
+
+    #[test]
+    fn select_quad_diagonal_prefers_shorter_diagonal() {
+        let skewed = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+
+        assert_eq!(select_quad_diagonal(skewed), QuadDiagonal::OneThree);
     }
 }
