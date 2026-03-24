@@ -31,6 +31,8 @@ constraints:
 - emit explicit triangles from interior sign-changing primal-edge patches on
   that regular max-depth lattice, choosing the shorter quad diagonal
   deterministically instead of relying on later fan triangulation,
+- author corner-normal overrides from field gradients using a face-local inset
+  sample so render extraction can shade smooth regions more honestly,
 - tag `EDGE_SHARPNESS` from the QEF rank and optionally tag `FACE_REGION` when
   the field implements `ProvenanceField<Provenance = u32>`,
 - expose a deterministic `cell_budget` cap even though it may truncate the
@@ -42,6 +44,7 @@ constraints:
   cylinders, and simple CSG references.
 - The implementation stays structurally honest about what is still missing:
   no manifold guarantees, no mixed-depth stitching, no seam attribution yet,
-  and only local diagonal cleanup for warped primal-edge patches.
+  only local diagonal cleanup for warped primal-edge patches, and only
+  face-local gradient sampling for authored shading normals.
 - Future work can refine this mesher in place rather than starting from a
   purely architectural sketch.

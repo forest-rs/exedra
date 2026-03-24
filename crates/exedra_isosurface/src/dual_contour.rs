@@ -10,7 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra::{BuildError, FaceBuildAttrs, Mesh, MeshBuilder};
+use exedra::{BuildError, FaceBuildAttrs, Mesh, MeshBuilder, op};
 use exedra_qef::{PlaneConstraint, QefBounds, QefParams, QefSolveError, QefSolver, SharpnessClass};
 use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
 
@@ -215,14 +215,16 @@ where
     }
 
     let result = builder.build().map_err(DualContourError::Build)?;
+    let mut mesh = result.mesh;
+    populate_corner_normals(field, &mut mesh);
     Ok(DualContourResult {
         stats: DualContourStats {
             octree_cells: tree.len(),
             active_cells: active_cells.len(),
-            vertices: result.mesh.vertices().count(),
-            faces: result.mesh.faces().count(),
+            vertices: mesh.vertices().count(),
+            faces: mesh.faces().count(),
         },
-        mesh: result.mesh,
+        mesh,
     })
 }
 
@@ -689,6 +691,41 @@ fn interval_crosses_zero(interval: [f32; 2]) -> bool {
     interval[0] <= 0.0 && interval[1] >= 0.0
 }
 
+fn populate_corner_normals<F: ScalarField>(field: &F, mesh: &mut Mesh) {
+    let mut corners = Vec::new();
+    let mut sample_points = Vec::new();
+    for face in mesh.faces() {
+        let loop_corners = mesh.face_loop(face).collect::<Vec<_>>();
+        let face_center = face_centroid(mesh, &loop_corners);
+        for corner in loop_corners {
+            let Some(vertex) = mesh.to_vertex(corner) else {
+                continue;
+            };
+            let Some(position) = mesh.vertex_position(vertex).copied() else {
+                continue;
+            };
+            corners.push(corner);
+            sample_points.push(inset_corner_sample(position, face_center));
+        }
+    }
+
+    if corners.is_empty() {
+        return;
+    }
+
+    let mut gradients = vec![[0.0_f32; 4]; sample_points.len()];
+    field.eval_gradients(&sample_points, &mut gradients);
+
+    let mut session = mesh.edit();
+    for (corner, gradient) in corners.into_iter().zip(gradients) {
+        if let Some(normal) = normalize_gradient(gradient) {
+            op::set_corner_normal_override(&mut session, corner, Some(normal))
+                .expect("collected corner must stay live during normal population");
+        }
+    }
+    let _: () = session.finish();
+}
+
 fn abs(value: f32) -> f32 {
     #[cfg(feature = "std")]
     {
@@ -698,6 +735,63 @@ fn abs(value: f32) -> f32 {
     {
         libm::fabsf(value)
     }
+}
+
+fn sqrt(value: f32) -> f32 {
+    #[cfg(feature = "std")]
+    {
+        value.sqrt()
+    }
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        libm::sqrtf(value)
+    }
+}
+
+fn face_centroid(mesh: &Mesh, corners: &[exedra::CornerId]) -> [f32; 3] {
+    let mut sum = [0.0_f32; 3];
+    let mut count = 0_u32;
+    for &corner in corners {
+        let Some(vertex) = mesh.to_vertex(corner) else {
+            continue;
+        };
+        let Some(position) = mesh.vertex_position(vertex) else {
+            continue;
+        };
+        sum[0] += position[0];
+        sum[1] += position[1];
+        sum[2] += position[2];
+        count += 1;
+    }
+    if count == 0 {
+        return [0.0; 3];
+    }
+    let inv = 1.0 / count as f32;
+    [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+}
+
+fn inset_corner_sample(position: [f32; 3], face_center: [f32; 3]) -> [f32; 3] {
+    const FACE_INSET: f32 = 0.125;
+    [
+        position[0] + (face_center[0] - position[0]) * FACE_INSET,
+        position[1] + (face_center[1] - position[1]) * FACE_INSET,
+        position[2] + (face_center[2] - position[2]) * FACE_INSET,
+    ]
+}
+
+fn normalize_gradient(sample: [f32; 4]) -> Option<[f32; 3]> {
+    let gradient = [sample[1], sample[2], sample[3]];
+    let length_squared =
+        gradient[0] * gradient[0] + gradient[1] * gradient[1] + gradient[2] * gradient[2];
+    if !length_squared.is_finite() || length_squared <= 0.0 {
+        return None;
+    }
+    let inv_length = sqrt(length_squared).recip();
+    Some([
+        gradient[0] * inv_length,
+        gradient[1] * inv_length,
+        gradient[2] * inv_length,
+    ])
 }
 
 #[cfg(test)]
@@ -744,6 +838,30 @@ mod tests {
         assert_eq!(stats_a, stats_b);
         assert_eq!(tri_a.indices, tri_b.indices);
         assert_eq!(tri_a.positions, tri_b.positions);
+
+        let normal_layer = first
+            .mesh
+            .attrs()
+            .sparse(attr::CORNER_NORMAL_OVERRIDE)
+            .expect("corner normal layer should exist");
+        assert!(
+            first
+                .mesh
+                .faces()
+                .flat_map(|face| first.mesh.face_loop(face))
+                .all(|corner| {
+                    let Some(normal) = normal_layer.get(corner.as_id()).copied() else {
+                        return false;
+                    };
+                    let Some(vertex) = first.mesh.to_vertex(corner) else {
+                        return false;
+                    };
+                    let Some(position) = first.mesh.vertex_position(vertex) else {
+                        return false;
+                    };
+                    dot3(normal, *position) > 0.5 && (length3(normal) - 1.0).abs() < 1.0e-3
+                })
+        );
     }
 
     #[test]
@@ -887,5 +1005,13 @@ mod tests {
         ];
 
         assert_eq!(select_quad_diagonal(skewed), QuadDiagonal::OneThree);
+    }
+
+    fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    fn length3(vector: [f32; 3]) -> f32 {
+        (dot3(vector, vector)).sqrt()
     }
 }
