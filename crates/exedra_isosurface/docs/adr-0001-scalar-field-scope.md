@@ -17,7 +17,9 @@ mesher or backend adapter can be built honestly.
 - the `ScalarField` trait,
 - extension traits for specialization and provenance,
 - Hermite bridge types between field evaluation and extraction,
-- small reference fields used to validate the trait contract.
+- small reference fields used to validate the trait contract,
+- lightweight field-construction wrappers such as transforms that stay at the
+  evaluation boundary rather than introducing a full implicit scene graph.
 
 It does not yet own:
 
@@ -31,7 +33,9 @@ Positive:
 
 - extraction code can depend on one stable evaluation contract,
 - backend adapters stay replaceable,
-- the implicit branch can start with a narrow, testable slice.
+- the implicit branch can start with a narrow, testable slice,
+- common field edits can compose on top of the seam without growing bespoke
+  primitive variants.
 
 Tradeoffs:
 

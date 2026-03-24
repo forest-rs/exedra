@@ -11,12 +11,15 @@ Owner: exedra workspace
   Hermite bridge, and QEF solver.
 - Reach a credible first extraction slice if the dependency roots settle
   cleanly.
+- Extend the field layer enough that later adapters such as `exedra_fidget`
+  target a composable field toolkit rather than a bare mesher seam.
 
 ## Non-goals
 
 - A full canonical `exedra_implicit` head in this pass.
 - Fidget integration before the generic field boundary is proven.
 - Aggressive adaptive/manifold dual contouring in the first commit wave.
+- A full implicit scene graph or generalized swept-surface model.
 
 ## Sequencing
 
@@ -26,6 +29,10 @@ Owner: exedra workspace
 4. `exe-5y1f` `exedra_qef`
 5. `exe-a6p6` analytic reference fields
 6. `exe-gosk` first dual-contouring path if the above slices stay calm
+7. `ei-fq6w` transform wrappers for field composition
+8. `ei-912r` `ScalarField2d` plus core profile primitives
+9. `ei-7kzh` extrude/revolve lifting operators
+10. `exe-vzlq` `exedra_fidget` once the generic field toolkit is stable
 
 ## Risks
 
@@ -34,6 +41,8 @@ Owner: exedra workspace
   is complete.
 - Full adaptive DC could expand into a larger slice than one turn reasonably
   supports.
+- 2D profile lifting may expose naming or transform assumptions that want a
+  small cleanup pass before `exedra_fidget`.
 
 ## Execution Rules
 

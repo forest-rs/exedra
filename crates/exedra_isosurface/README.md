@@ -8,6 +8,7 @@ Current scope:
 - Hermite intersection and per-cell bridge data,
 - analytic reference fields (`SphereField`, `BoxField`, `CylinderField`,
   `TorusField`, `HalfSpaceField`),
+- field-construction wrappers (`Translate`, `UniformScale`, `Transform3`),
 - simple CSG combinators and provenance tagging wrappers for tests,
 - a first dual-contouring extractor over a culled max-depth octree.
 

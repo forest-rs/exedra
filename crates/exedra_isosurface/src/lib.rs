@@ -9,6 +9,7 @@
 //! - [`ProvenanceField`] for extraction-time semantic tagging,
 //! - Hermite bridge types in [`hermite`],
 //! - analytic reference fields and CSG combinators in [`analytic`],
+//! - reusable transform wrappers in [`transform`],
 //! - a first dual-contouring extraction path in [`mod@dual_contour`].
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
@@ -24,6 +25,7 @@ compile_error!("exedra_isosurface requires either the `std` or `libm` feature");
 pub mod analytic;
 pub mod dual_contour;
 pub mod hermite;
+pub mod transform;
 
 use exedra_spatial::Aabb;
 
@@ -35,6 +37,7 @@ pub use hermite::{
     CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
     HermiteIntersection, locate_edge_intersection,
 };
+pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
 
 /// A scalar field that can be evaluated for isosurface extraction.
 ///
