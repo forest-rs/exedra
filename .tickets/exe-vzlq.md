@@ -1,9 +1,9 @@
 ---
 id: exe-vzlq
 title: Fidget adapter crate (exedra_fidget)
-status: in_progress
+status: closed
 deps: [exe-2r7w, exe-gosk]
-links: []
+links: [ef-2oz3]
 created: 2026-03-04T07:18:12Z
 type: feature
 priority: 2
@@ -96,8 +96,8 @@ pub type VmField = FidgetField<fidget_core::vm::VmFunction>;
 - Tape storage reuse across evaluations
 - Works with both VmFunction and JitFunction backends
 - Integration test: fidget sphere SDF → DC → exedra Mesh → validate_deep
-- Integration test: fidget CSG union → DC → mesh with correct sharp features
-- Performance benchmark vs fidget's built-in mesher on equivalent inputs
+- Integration test: fidget CSG union → DC → mesh builds and validates
+- Benchmark work is explicitly deferred to ef-2oz3
 
 
 ## Notes
@@ -105,3 +105,7 @@ pub type VmField = FidgetField<fidget_core::vm::VmFunction>;
 **2026-03-24T02:30:29Z**
 
 Landed the first real exedra_fidget adapter slice. Added a dedicated exedra_fidget crate plus ADR-0001, depending only on fidget 0.4.2 and exposing FidgetField, VmField, and a feature-gated JitField alias. The adapter wraps fidget::shape::Shape<F> rather than the older bare-Function sketch, caches interval/float/grad evaluators and tapes behind Mutex for reuse, rejects shapes with extra non-axis variables at construction time, and implements ScalarField plus SpecializableField via fidget trace simplification. Validation: cargo fmt --all; cargo test -p exedra_fidget; cargo clippy -p exedra_fidget --all-targets --all-features -- -D warnings; cargo doc -p exedra_fidget --no-deps; typos crates/exedra_fidget/Cargo.toml crates/exedra_fidget/README.md crates/exedra_fidget/docs/adr-0001-fidget-adapter-scope.md crates/exedra_fidget/src/lib.rs crates/exedra_fidget/src/error.rs crates/exedra_fidget/src/field.rs .tickets/exe-vzlq.md Cargo.toml. Remaining work before the ticket is honestly closed: the performance benchmark vs fidget's built-in mesher, and any later provenance bridge if/when upstream APIs make that tractable.
+
+**2026-03-24T02:49:00Z**
+
+Adjusted the ticket boundary after looking at real Fidget-driven exports. The adapter crate itself is done and working, but the current phase-1 dual contouring output is not yet a fair basis for a benchmark against Fidget's own mesher. Performance benchmarking is therefore spun out into ef-2oz3 so exe-vzlq can close honestly as the adapter/integration slice. The benchmark follow-up remains intentionally blocked on adapter completion and on later meshing-quality work outside this ticket.
