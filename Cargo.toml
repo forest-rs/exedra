@@ -7,6 +7,7 @@ members = [
     "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_analytic",
+    "crates/exedra_fidget",
     "crates/exedra_isosurface",
     "crates/exedra_primitives",
     "crates/exedra_qef",
@@ -79,11 +80,13 @@ cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
+exedra_fidget = { default-features = false, path = "crates/exedra_fidget" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
+fidget = { default-features = false, version = "0.4.2" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
 serde_json = "1.0.145"

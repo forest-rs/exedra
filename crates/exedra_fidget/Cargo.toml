@@ -1,0 +1,25 @@
+[package]
+name = "exedra_fidget"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin Fidget adapter crate for exedra_isosurface"
+keywords = ["implicit", "fidget", "isosurface", "sdf"]
+categories = ["graphics", "algorithms"]
+
+[dependencies]
+exedra = { features = ["std"], workspace = true }
+exedra_isosurface = { features = ["std"], workspace = true }
+exedra_qef.workspace = true
+exedra_spatial.workspace = true
+fidget.workspace = true
+
+[features]
+default = ["std"]
+jit = ["fidget/jit"]
+std = ["exedra_isosurface/std"]
+
+[lints]
+workspace = true

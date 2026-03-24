@@ -1,7 +1,7 @@
 ---
 id: exe-vzlq
 title: Fidget adapter crate (exedra_fidget)
-status: open
+status: in_progress
 deps: [exe-2r7w, exe-gosk]
 links: []
 created: 2026-03-04T07:18:12Z
@@ -99,3 +99,9 @@ pub type VmField = FidgetField<fidget_core::vm::VmFunction>;
 - Integration test: fidget CSG union → DC → mesh with correct sharp features
 - Performance benchmark vs fidget's built-in mesher on equivalent inputs
 
+
+## Notes
+
+**2026-03-24T02:30:29Z**
+
+Landed the first real exedra_fidget adapter slice. Added a dedicated exedra_fidget crate plus ADR-0001, depending only on fidget 0.4.2 and exposing FidgetField, VmField, and a feature-gated JitField alias. The adapter wraps fidget::shape::Shape<F> rather than the older bare-Function sketch, caches interval/float/grad evaluators and tapes behind Mutex for reuse, rejects shapes with extra non-axis variables at construction time, and implements ScalarField plus SpecializableField via fidget trace simplification. Validation: cargo fmt --all; cargo test -p exedra_fidget; cargo clippy -p exedra_fidget --all-targets --all-features -- -D warnings; cargo doc -p exedra_fidget --no-deps; typos crates/exedra_fidget/Cargo.toml crates/exedra_fidget/README.md crates/exedra_fidget/docs/adr-0001-fidget-adapter-scope.md crates/exedra_fidget/src/lib.rs crates/exedra_fidget/src/error.rs crates/exedra_fidget/src/field.rs .tickets/exe-vzlq.md Cargo.toml. Remaining work before the ticket is honestly closed: the performance benchmark vs fidget's built-in mesher, and any later provenance bridge if/when upstream APIs make that tractable.
