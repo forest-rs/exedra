@@ -6,6 +6,7 @@
 //! Use [`Mesh::to_trimesh`](crate::Mesh::to_trimesh) to produce [`TriMesh`]
 //! output for downstream rendering.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::attributes::SparseLayer;
@@ -92,11 +93,36 @@ pub struct ExtractStats {
     pub normal_split_count: u64,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct RenderVertexKey {
     vertex: VertexId,
     uv_bits: [u32; 2],
     normal_bits: [u32; 3],
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct VertexVariants {
+    uv_bits: Vec<[u32; 2]>,
+    normal_bits: Vec<[u32; 3]>,
+}
+
+impl VertexVariants {
+    fn has_other_uv(&self, uv_bits: [u32; 2]) -> bool {
+        self.uv_bits.iter().any(|seen| *seen != uv_bits)
+    }
+
+    fn has_other_normal(&self, normal_bits: [u32; 3]) -> bool {
+        self.normal_bits.iter().any(|seen| *seen != normal_bits)
+    }
+
+    fn record(&mut self, uv_bits: [u32; 2], normal_bits: [u32; 3]) {
+        if !self.uv_bits.contains(&uv_bits) {
+            self.uv_bits.push(uv_bits);
+        }
+        if !self.normal_bits.contains(&normal_bits) {
+            self.normal_bits.push(normal_bits);
+        }
+    }
 }
 
 impl Mesh {
@@ -141,8 +167,8 @@ impl Mesh {
 
         let mut mesh = TriMesh::default();
         let mut stats = ExtractStats::default();
-        let mut keys = Vec::<RenderVertexKey>::new();
-        let mut seen_variants = Vec::<(VertexId, [u32; 2], [u32; 3])>::new();
+        let mut key_to_index = BTreeMap::<RenderVertexKey, u32>::new();
+        let mut vertex_variants = BTreeMap::<VertexId, VertexVariants>::new();
 
         for face in self.faces() {
             emit_face(
@@ -153,8 +179,8 @@ impl Mesh {
                 &derived_normals,
                 params.normals,
                 &mut mesh,
-                &mut keys,
-                &mut seen_variants,
+                &mut key_to_index,
+                &mut vertex_variants,
                 &mut stats,
             );
         }
@@ -172,8 +198,8 @@ fn emit_face(
     derived_normals: &crate::DerivedCornerNormals,
     normals_source: NormalsSource,
     mesh: &mut TriMesh,
-    keys: &mut Vec<RenderVertexKey>,
-    seen_variants: &mut Vec<(VertexId, [u32; 2], [u32; 3])>,
+    key_to_index: &mut BTreeMap<RenderVertexKey, u32>,
+    vertex_variants: &mut BTreeMap<VertexId, VertexVariants>,
     stats: &mut ExtractStats,
 ) {
     for triangle in source.triangulate_face_fan(face) {
@@ -186,8 +212,8 @@ fn emit_face(
                 derived_normals,
                 normals_source,
                 mesh,
-                keys,
-                seen_variants,
+                key_to_index,
+                vertex_variants,
                 stats,
             );
             mesh.indices.push(index);
@@ -204,8 +230,8 @@ fn resolve_render_vertex(
     derived_normals: &crate::DerivedCornerNormals,
     normals_source: NormalsSource,
     mesh: &mut TriMesh,
-    keys: &mut Vec<RenderVertexKey>,
-    seen_variants: &mut Vec<(VertexId, [u32; 2], [u32; 3])>,
+    key_to_index: &mut BTreeMap<RenderVertexKey, u32>,
+    vertex_variants: &mut BTreeMap<VertexId, VertexVariants>,
     stats: &mut ExtractStats,
 ) -> u32 {
     let vertex = source
@@ -225,20 +251,13 @@ fn resolve_render_vertex(
         ],
     };
 
-    // TODO(exe-qcmn): replace linear key scan with a hash map for large meshes.
-    if let Some(index) = keys.iter().position(|existing| *existing == key) {
-        return u32::try_from(index).expect("render vertex index overflowed u32");
+    if let Some(&index) = key_to_index.get(&key) {
+        return index;
     }
 
-    // v0.1 split semantics: count every new UV variant encountered for a
-    // previously seen topology vertex.
-    // TODO(exe-qcmn): replace linear scans with per-vertex variant tracking.
-    let uv_split = seen_variants
-        .iter()
-        .any(|(seen_vertex, seen_uv, _)| *seen_vertex == vertex && *seen_uv != key.uv_bits);
-    let normal_split = seen_variants.iter().any(|(seen_vertex, _, seen_normal)| {
-        *seen_vertex == vertex && *seen_normal != key.normal_bits
-    });
+    let variants = vertex_variants.entry(vertex).or_default();
+    let uv_split = variants.has_other_uv(key.uv_bits);
+    let normal_split = variants.has_other_normal(key.normal_bits);
     if uv_split || normal_split {
         stats.split_count = stats.split_count.saturating_add(1);
         if uv_split {
@@ -248,16 +267,17 @@ fn resolve_render_vertex(
             stats.normal_split_count = stats.normal_split_count.saturating_add(1);
         }
     }
-    seen_variants.push((vertex, key.uv_bits, key.normal_bits));
+    variants.record(key.uv_bits, key.normal_bits);
 
     let position = *source
         .vertex_position(vertex)
         .expect("live vertex must have builtin position");
-    keys.push(key);
+    let index = u32::try_from(mesh.positions.len()).expect("render vertex index overflowed u32");
+    key_to_index.insert(key, index);
     mesh.positions.push(position);
     mesh.uvs.push(uv);
     mesh.normals.push(normal);
-    u32::try_from(mesh.positions.len() - 1).expect("render vertex index overflowed u32")
+    index
 }
 
 fn effective_corner_normal(
