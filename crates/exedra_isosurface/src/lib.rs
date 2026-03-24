@@ -5,10 +5,12 @@
 //!
 //! Current scope:
 //! - [`ScalarField`] as the base field-evaluation contract,
+//! - [`ScalarField2d`] for profile-space field construction,
 //! - [`SpecializableField`] for region-local simplification,
 //! - [`ProvenanceField`] for extraction-time semantic tagging,
 //! - Hermite bridge types in [`hermite`],
 //! - analytic reference fields and CSG combinators in [`analytic`],
+//! - analytic 2D reference profiles in [`analytic2d`],
 //! - reusable transform wrappers in [`transform`],
 //! - a first dual-contouring extraction path in [`mod@dual_contour`].
 //!
@@ -23,12 +25,15 @@ extern crate std;
 compile_error!("exedra_isosurface requires either the `std` or `libm` feature");
 
 pub mod analytic;
+pub mod analytic2d;
+pub mod bounds2;
 pub mod dual_contour;
 pub mod hermite;
 pub mod transform;
 
 use exedra_spatial::Aabb;
 
+pub use bounds2::Aabb2;
 pub use dual_contour::{
     DualContourError, DualContourParams, DualContourResult, DualContourStats, dual_contour,
     dual_contour_with_regions,
@@ -68,6 +73,24 @@ pub trait ScalarField {
     fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]);
 }
 
+/// A two-dimensional scalar field used for profile-based construction.
+///
+/// This mirrors [`ScalarField`] closely enough that lifting operators such as
+/// extrusion and revolution can stay generic over profile fields without
+/// introducing a distinct scene-graph layer.
+pub trait ScalarField2d {
+    /// Evaluates conservative interval bounds for one 2D region.
+    fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]>;
+
+    /// Evaluates field values at `points`, writing one output per point.
+    fn eval_points(&self, points: &[[f32; 2]], out: &mut [f32]);
+
+    /// Evaluates field values and gradients at `points`.
+    ///
+    /// Each output row is `[value, dx, dy]`.
+    fn eval_gradients(&self, points: &[[f32; 2]], out: &mut [[f32; 3]]);
+}
+
 /// Optional extension for fields that can simplify themselves for a region.
 pub trait SpecializableField: ScalarField {
     /// Specialized field type produced for one region.
@@ -91,9 +114,10 @@ pub trait ProvenanceField: ScalarField {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        Aabb2, ScalarField, ScalarField2d, analytic::SphereField, analytic2d::CircleField2d,
+    };
     use exedra_spatial::Aabb;
-
-    use super::{ScalarField, analytic::SphereField};
 
     #[test]
     fn scalar_field_is_object_safe() {
@@ -153,5 +177,17 @@ mod tests {
         assert!(out[1][1].is_nan());
         assert!(out[1][2].is_nan());
         assert!(out[1][3].is_nan());
+    }
+
+    #[test]
+    fn scalar_field_2d_is_object_safe() {
+        let circle = CircleField2d {
+            center: [0.0, 0.0],
+            radius: 1.0,
+        };
+        let field: &dyn ScalarField2d = &circle;
+        let bounds = Aabb2::new([-0.5, -0.5], [0.5, 0.5]).expect("valid bounds");
+
+        assert!(field.eval_interval(&bounds).is_some());
     }
 }

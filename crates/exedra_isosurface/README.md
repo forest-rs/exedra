@@ -5,9 +5,12 @@ Implicit-field seams and extraction-facing data types for the Exedra workspace.
 Current scope:
 
 - `ScalarField` and its extension traits,
+- `ScalarField2d` and 2D profile bounds for profile-based construction,
 - Hermite intersection and per-cell bridge data,
 - analytic reference fields (`SphereField`, `BoxField`, `CylinderField`,
   `TorusField`, `HalfSpaceField`),
+- analytic 2D reference profiles (`CircleField2d`, `RectField2d`,
+  `HalfPlaneField2d`),
 - field-construction wrappers (`Translate`, `UniformScale`, `Transform3`),
 - simple CSG combinators and provenance tagging wrappers for tests,
 - a first dual-contouring extractor over a culled max-depth octree.

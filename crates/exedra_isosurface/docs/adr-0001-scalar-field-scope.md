@@ -15,6 +15,7 @@ mesher or backend adapter can be built honestly.
 `exedra_isosurface` initially owns:
 
 - the `ScalarField` trait,
+- the `ScalarField2d` trait and minimal profile bounds for field lifting,
 - extension traits for specialization and provenance,
 - Hermite bridge types between field evaluation and extraction,
 - small reference fields used to validate the trait contract,
@@ -32,6 +33,7 @@ It does not yet own:
 Positive:
 
 - extraction code can depend on one stable evaluation contract,
+- profile-based constructors can reuse the same crate boundary as extraction,
 - backend adapters stay replaceable,
 - the implicit branch can start with a narrow, testable slice,
 - common field edits can compose on top of the seam without growing bespoke
