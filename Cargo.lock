@@ -248,6 +248,7 @@ name = "exedra_testkit"
 version = "0.1.0"
 dependencies = [
  "exedra",
+ "exedra_primitives",
 ]
 
 [[package]]

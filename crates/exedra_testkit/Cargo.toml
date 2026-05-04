@@ -12,11 +12,12 @@ readme = "README.md"
 
 [features]
 default = ["std"]
-libm = ["exedra/libm"]
-std = ["exedra/std"]
+libm = ["exedra/libm", "exedra_primitives/libm"]
+std = ["exedra/std", "exedra_primitives/std"]
 
 [dependencies]
-exedra = { features = ["std"], workspace = true }
+exedra = { workspace = true }
+exedra_primitives = { workspace = true }
 
 [lints]
 workspace = true

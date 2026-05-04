@@ -4,6 +4,10 @@
 //! Deterministic mesh fixtures for tests.
 
 use exedra::{BuildParams, Mesh, MeshBuilder};
+use exedra_primitives::{
+    BoxParams, CapFill, CylinderParams, QuadParams, UvSphereParams, box_primitive, cylinder, quad,
+    uv_sphere,
+};
 
 /// Returns one-triangle fixture mesh.
 #[must_use]
@@ -29,6 +33,46 @@ pub fn quad_mesh() -> Mesh {
         &[&[0, 1, 2, 3]],
     )
     .expect("quad fixture must be valid")
+}
+
+/// Returns the canonical unit quad fixture backed by `exedra_primitives`.
+#[must_use]
+pub fn unit_quad() -> Mesh {
+    quad(&QuadParams::default()).mesh
+}
+
+/// Returns the canonical centered unit box fixture backed by `exedra_primitives`.
+#[must_use]
+pub fn unit_box() -> Mesh {
+    box_primitive(&BoxParams::default()).mesh
+}
+
+/// Returns the canonical capped eight-segment cylinder fixture.
+#[must_use]
+pub fn capped_cylinder_8() -> Mesh {
+    cylinder(&CylinderParams {
+        segments: 8,
+        cap_fill: CapFill::Ngon,
+        ..CylinderParams::default()
+    })
+    .mesh
+}
+
+/// Returns the canonical low-resolution UV sphere fixture.
+#[must_use]
+pub fn uv_sphere_8() -> Mesh {
+    uv_sphere(&UvSphereParams {
+        lat_segments: 4,
+        lon_segments: 8,
+        ..UvSphereParams::default()
+    })
+    .mesh
+}
+
+/// Returns the canonical sphere fixture.
+#[must_use]
+pub fn sphere_mesh() -> Mesh {
+    uv_sphere_8()
 }
 
 /// Returns one-tetrahedron fixture mesh.
@@ -90,13 +134,20 @@ pub fn grid_mesh(width: u32, height: u32) -> Mesh {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{grid_mesh, quad_mesh, tetrahedron_mesh, triangle_mesh};
+    use super::{
+        capped_cylinder_8, grid_mesh, quad_mesh, sphere_mesh, tetrahedron_mesh, triangle_mesh,
+        unit_box, unit_quad,
+    };
 
     #[test]
     fn core_fixtures_validate_deep() {
         let fixtures = [
             triangle_mesh(),
             quad_mesh(),
+            unit_quad(),
+            unit_box(),
+            capped_cylinder_8(),
+            sphere_mesh(),
             tetrahedron_mesh(),
             grid_mesh(2, 3),
         ];

@@ -72,6 +72,19 @@ pub fn dump_attributes(mesh: &Mesh) -> String {
         ));
     }
 
+    out.push_str("vertex.sharpness\n");
+    if let Some(layer) = mesh.attrs().sparse(exedra::attr::VERTEX_SHARPNESS) {
+        for vertex in mesh.vertices() {
+            if let Some(sharpness) = layer.get(vertex.as_id()) {
+                out.push_str(&format!(
+                    "  v {} {:08x}\n",
+                    vertex.index(),
+                    sharpness.to_bits()
+                ));
+            }
+        }
+    }
+
     out.push_str("face.region\n");
     if let Some(layer) = mesh.attrs().dense(exedra::attr::FACE_REGION) {
         for face in mesh.faces() {
@@ -91,6 +104,23 @@ pub fn dump_attributes(mesh: &Mesh) -> String {
                         corner.index(),
                         uv[0].to_bits(),
                         uv[1].to_bits()
+                    ));
+                }
+            }
+        }
+    }
+
+    out.push_str("corner.normal_override\n");
+    if let Some(layer) = mesh.attrs().sparse(exedra::attr::CORNER_NORMAL_OVERRIDE) {
+        for face in mesh.faces() {
+            for corner in mesh.face_loop(face) {
+                if let Some(normal) = layer.get(corner.as_id()) {
+                    out.push_str(&format!(
+                        "  he {} [{:08x} {:08x} {:08x}]\n",
+                        corner.index(),
+                        normal[0].to_bits(),
+                        normal[1].to_bits(),
+                        normal[2].to_bits()
                     ));
                 }
             }
@@ -172,7 +202,9 @@ mod tests {
 
         let attrs = dump_attributes(&mesh);
         assert!(attrs.starts_with("vertex.position\n"));
+        assert!(attrs.contains("vertex.sharpness\n"));
         assert!(attrs.contains("face.region\n"));
+        assert!(attrs.contains("corner.normal_override\n"));
         assert!(attrs.contains("edge.sharpness\n"));
 
         let obj = mesh_to_obj(&mesh);
