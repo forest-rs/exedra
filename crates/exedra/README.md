@@ -32,6 +32,8 @@ tombstone-free copy and `Remap` are needed.
 - **Render extraction**: `Mesh::to_trimesh` triangulates polygonal faces with a
   stable fan and splits a shared topology vertex into multiple render vertices
   when corner UVs or corner normals differ.
+- **Boolean broad phase**: `BooleanBvh` reports deterministic AABB-overlap
+  candidate pairs over fan-triangulated mesh faces.
 - **Edit sessions**: public mutation goes through `op::*` functions applied to
   an eager `EditSession`; optional `ChangeSet`/`DirtySet` output supports
   incremental consumers.
@@ -70,6 +72,8 @@ fn main() -> Result<(), exedra::BuildError> {
 - `VertexId`, `HalfEdgeId`, `CornerId`, `FaceId`: stable handles.
 - `attr` and `attributes`: built-in and custom typed attribute layers.
 - `op`: public kernel mutation catalog.
+- `boolean`, `BooleanBvh`, `BooleanScratch`: staged boolean broad-phase
+  candidate discovery.
 - `EditSession`, `ChangeSet`, `DirtySet`, `PropagatePolicy`: edit hosting and
   change reporting.
 - `ExtractParams`, `TriMesh`, `ExtractStats`: render extraction.

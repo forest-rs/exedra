@@ -31,6 +31,7 @@
 //! - Explicit compaction: [`Mesh::compact`], [`Remap`]
 //! - Kernel operation catalog: [`op`]
 //! - Render extraction: [`ExtractParams`], [`TriMesh`]
+//! - Boolean broad phase: [`boolean`], [`BooleanBvh`]
 //!
 //! # Guarantees
 //!
@@ -61,6 +62,8 @@
 //! - **Render extraction**: [`Mesh::to_trimesh`] triangulates faces with a
 //!   stable fan and creates distinct render vertices for a shared topology
 //!   vertex when corner UVs or corner normals differ.
+//! - **Boolean broad phase**: [`BooleanBvh`] reports deterministic AABB-overlap
+//!   candidate pairs over fan-triangulated mesh faces.
 //! - **Edit sessions**: mutations are eager through [`EditSession`], with
 //!   optional [`ChangeSet`] and [`DirtySet`] output for incremental consumers.
 //! - **Numeric policy**: [`NumericPolicy`] centralizes tolerances for geometry
@@ -105,6 +108,7 @@ compile_error!("exedra requires either the `std` or `libm` feature");
 mod arena;
 pub mod attr;
 pub mod attributes;
+pub mod boolean;
 mod id;
 #[cfg(doc)]
 pub mod manual;
@@ -119,6 +123,10 @@ mod sorted_merge;
 mod topology;
 
 pub use arena::Arena;
+pub use boolean::{
+    Aabb, BooleanBroadPhaseStats, BooleanBvh, BooleanCandidatePair, BooleanScratch,
+    BooleanTriangleRef,
+};
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
     BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceAttrErrorKind,

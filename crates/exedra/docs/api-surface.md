@@ -23,6 +23,9 @@ Most callers should use the crate root re-exports:
 - `ExtractParams`, `ExtractMode`, `TriMesh`, `ExtractStats`, `NormalParams`,
   `NormalWeightMode`, `NormalsSource`, and `DerivedCornerNormals` for render
   extraction and normal behavior.
+- `boolean`, `BooleanBvh`, `BooleanScratch`, `BooleanCandidatePair`,
+  `BooleanTriangleRef`, `BooleanBroadPhaseStats`, and `Aabb` for staged boolean
+  broad-phase candidate discovery.
 - `NumericPolicy` for explicit numeric tolerances.
 - `attr` for built-in attribute keys.
 - `attributes` for typed custom attribute storage.
@@ -70,6 +73,9 @@ should not construct them directly:
   split-face code.
 - `ExtractMode::Incremental` is reserved in v0.1 and currently behaves as a full
   rebuild.
+- Boolean broad phase operates over deterministic fan triangles. It reports
+  candidate pairs only; narrow-phase intersection, classification, splitting,
+  and stitching remain separate pipeline stages.
 
 ## Audit Result
 
