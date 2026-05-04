@@ -70,7 +70,7 @@ pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
 pub use session::{
     ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,
     EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,
-    PositionPropagation, PropagatePolicy, UvPropagation,
+    PositionPropagation, PropagatePolicy, SplitFaceDiagonalEdgePropagation, UvPropagation,
 };
 pub use topology::{Face, HalfEdge, Vertex};
 

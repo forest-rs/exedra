@@ -38,6 +38,7 @@ pub struct PropagatePolicy {
     pub normal_override_split: NormalOverrideSplit,
     pub face_attr_split: FaceAttrSplit,
     pub edge_attr_split: EdgeAttrSplit,
+    pub split_face_diagonal_edge_attr: SplitFaceDiagonalEdgeSplit,
     pub missingness: MissingnessPolicy,
 }
 
@@ -46,6 +47,7 @@ pub enum UvSplit { Midpoint, CopyFromSide }
 pub enum NormalOverrideSplit { Clear, CopyFromSide, AverageRenorm }
 pub enum FaceAttrSplit { Copy }
 pub enum EdgeAttrSplit { Inherit, Clear }
+pub enum SplitFaceDiagonalEdgeSplit { FromEdgePolicy, Smooth, Inherit, DecayOnSplit }
 
 pub enum MissingnessPolicy {
     Strict,
@@ -82,7 +84,11 @@ Propagation defaults:
 - Face attrs: copied to both new faces.
 - Corner UVs: existing corners preserve; new diagonal corners copy-from-side deterministically if present, else missing.
 - Corner normal overrides: clear for newly created corners.
-- Edge attrs: new diagonal is smooth (`sharp=false`) unless policy forces inherit.
+- Edge attrs: new diagonal uses the split-face diagonal edge policy. The
+  compatibility default (`FromEdgePolicy`) preserves v0.1 behavior: `Inherit`
+  and `Clear` make a smooth diagonal, while `DecayOnSplit` derives from nearby
+  authored sharpness. Explicit split-face modes can force smooth, inherit the
+  maximum source sharpness, or apply subdivision-style decay.
 
 Dirtiness:
 - both new faces dirty

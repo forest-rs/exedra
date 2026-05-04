@@ -71,5 +71,13 @@
 //! - [`EdgeAttrPropagation::Clear`](crate::EdgeAttrPropagation::Clear) resets
 //!   sharpness to `0.0`.
 //!
-//! For `split_face`, diagonal sharpness is smooth by default (`Inherit`/`Clear`)
-//! and only derives from nearby authored sharpness under `DecayOnSplit`.
+//! For `split_face`, diagonal sharpness is controlled by
+//! [`SplitFaceDiagonalEdgePropagation`](crate::SplitFaceDiagonalEdgePropagation).
+//! The default
+//! [`FromEdgePolicy`](crate::SplitFaceDiagonalEdgePropagation::FromEdgePolicy)
+//! preserves v0.1 behavior: `Inherit`/`Clear` produce a smooth diagonal, and
+//! `DecayOnSplit` derives from nearby authored sharpness. New callers can set
+//! [`Smooth`](crate::SplitFaceDiagonalEdgePropagation::Smooth),
+//! [`Inherit`](crate::SplitFaceDiagonalEdgePropagation::Inherit), or
+//! [`DecayOnSplit`](crate::SplitFaceDiagonalEdgePropagation::DecayOnSplit)
+//! directly for split-face diagonal intent.

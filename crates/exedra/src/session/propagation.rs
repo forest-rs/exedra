@@ -218,11 +218,19 @@ pub(crate) fn propagate_split_face_diagonal_normals(
 }
 
 pub(crate) fn split_face_diagonal_sharpness(source_sharp: f32, policy: &PropagatePolicy) -> f32 {
-    match policy.edge_attr {
-        EdgeAttrPropagation::Clear => 0.0,
-        EdgeAttrPropagation::Inherit => 0.0,
-        EdgeAttrPropagation::DecayOnSplit => (source_sharp - 1.0).max(0.0),
+    match policy.split_face_diagonal_edge_attr {
+        SplitFaceDiagonalEdgePropagation::FromEdgePolicy => match policy.edge_attr {
+            EdgeAttrPropagation::Clear | EdgeAttrPropagation::Inherit => 0.0,
+            EdgeAttrPropagation::DecayOnSplit => decay_sharpness(source_sharp),
+        },
+        SplitFaceDiagonalEdgePropagation::Smooth => 0.0,
+        SplitFaceDiagonalEdgePropagation::Inherit => source_sharp,
+        SplitFaceDiagonalEdgePropagation::DecayOnSplit => decay_sharpness(source_sharp),
     }
+}
+
+fn decay_sharpness(sharpness: f32) -> f32 {
+    (sharpness - 1.0).max(0.0)
 }
 
 fn average_optional_vec3(a: Option<[f32; 3]>, b: Option<[f32; 3]>) -> Option<[f32; 3]> {

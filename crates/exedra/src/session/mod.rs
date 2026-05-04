@@ -87,6 +87,25 @@ pub enum EdgeAttrPropagation {
     DecayOnSplit,
 }
 
+/// Edge-sharpness propagation for the new diagonal inserted by `split_face`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum SplitFaceDiagonalEdgePropagation {
+    /// Preserve v0.1 behavior by deriving split-face behavior from
+    /// [`PropagatePolicy::edge_attr`].
+    ///
+    /// With this fallback, [`EdgeAttrPropagation::Inherit`] and
+    /// [`EdgeAttrPropagation::Clear`] both produce a smooth diagonal, while
+    /// [`EdgeAttrPropagation::DecayOnSplit`] decays the maximum adjacent source
+    /// sharpness by `1.0`.
+    FromEdgePolicy,
+    /// Force the inserted diagonal to be smooth (`0.0` sharpness).
+    Smooth,
+    /// Copy the maximum authored sharpness from the two split source edges.
+    Inherit,
+    /// Apply subdivision-style decay to the maximum source sharpness.
+    DecayOnSplit,
+}
+
 /// Policy controlling attribute/value propagation across topology edits.
 ///
 /// This is designed for edit primitives such as split/collapse/flip operations.
@@ -104,6 +123,8 @@ pub struct PropagatePolicy {
     pub face_attr: FaceAttrPropagation,
     /// Edge-domain propagation mode.
     pub edge_attr: EdgeAttrPropagation,
+    /// Split-face-specific edge propagation for the inserted diagonal.
+    pub split_face_diagonal_edge_attr: SplitFaceDiagonalEdgePropagation,
 }
 
 impl Default for PropagatePolicy {
@@ -114,6 +135,7 @@ impl Default for PropagatePolicy {
             normal_override: NormalOverridePropagation::Clear,
             face_attr: FaceAttrPropagation::Copy,
             edge_attr: EdgeAttrPropagation::Inherit,
+            split_face_diagonal_edge_attr: SplitFaceDiagonalEdgePropagation::FromEdgePolicy,
         }
     }
 }
@@ -1666,6 +1688,10 @@ mod tests {
         assert_eq!(policy.normal_override, NormalOverridePropagation::Clear);
         assert_eq!(policy.face_attr, FaceAttrPropagation::Copy);
         assert_eq!(policy.edge_attr, EdgeAttrPropagation::Inherit);
+        assert_eq!(
+            policy.split_face_diagonal_edge_attr,
+            SplitFaceDiagonalEdgePropagation::FromEdgePolicy
+        );
     }
 
     #[test]
@@ -2387,44 +2413,57 @@ mod tests {
 
     #[test]
     fn split_face_diagonal_sharpness_is_policy_controlled() {
-        let (mut mesh, _) = closed_box_mesh();
-        let face = mesh.faces().next().expect("face should exist");
-        let corners = mesh.face_loop(face).collect::<Vec<_>>();
-        {
+        fn split_diagonal_sharpness(policy: PropagatePolicy) -> f32 {
+            let (mut mesh, _) = closed_box_mesh();
+            let face = mesh.faces().next().expect("face should exist");
+            let corners = mesh.face_loop(face).collect::<Vec<_>>();
+            {
+                let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+                assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
+                assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
+                let _ = txn.finish();
+            }
+
             let mut txn = mesh.edit_with(ChangeSetBuilder::new());
-            assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
-            assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
-            let _ = txn.finish();
+            let _ = txn
+                .split_face(corners[0], corners[2], &policy)
+                .expect("split should succeed");
+            let changes = txn.finish();
+            let diagonal = changes.created_half_edges[0];
+            mesh.edge_sharpness(diagonal)
+                .expect("diagonal should be live")
         }
 
-        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
-        let _ = txn
-            .split_face(corners[0], corners[2], &PropagatePolicy::default())
-            .expect("split should succeed");
-        let changes = txn.finish();
-        let diagonal = changes.created_half_edges[0];
-        assert_eq!(mesh.edge_sharpness(diagonal), Some(0.0));
-
-        let (mut mesh, _) = closed_box_mesh();
-        let face = mesh.faces().next().expect("face should exist");
-        let corners = mesh.face_loop(face).collect::<Vec<_>>();
-        {
-            let mut txn = mesh.edit_with(ChangeSetBuilder::new());
-            assert!(txn.set_edge_sharpness(corners[0], 3.0).is_ok());
-            assert!(txn.set_edge_sharpness(corners[2], 2.0).is_ok());
-            let _ = txn.finish();
-        }
-        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
-        let policy = PropagatePolicy {
-            edge_attr: EdgeAttrPropagation::DecayOnSplit,
-            ..PropagatePolicy::default()
-        };
-        let _ = txn
-            .split_face(corners[0], corners[2], &policy)
-            .expect("split should succeed");
-        let changes = txn.finish();
-        let diagonal = changes.created_half_edges[0];
-        assert_eq!(mesh.edge_sharpness(diagonal), Some(2.0));
+        assert_eq!(split_diagonal_sharpness(PropagatePolicy::default()), 0.0);
+        assert_eq!(
+            split_diagonal_sharpness(PropagatePolicy {
+                edge_attr: EdgeAttrPropagation::DecayOnSplit,
+                ..PropagatePolicy::default()
+            }),
+            2.0
+        );
+        assert_eq!(
+            split_diagonal_sharpness(PropagatePolicy {
+                edge_attr: EdgeAttrPropagation::DecayOnSplit,
+                split_face_diagonal_edge_attr: SplitFaceDiagonalEdgePropagation::Smooth,
+                ..PropagatePolicy::default()
+            }),
+            0.0
+        );
+        assert_eq!(
+            split_diagonal_sharpness(PropagatePolicy {
+                split_face_diagonal_edge_attr: SplitFaceDiagonalEdgePropagation::Inherit,
+                ..PropagatePolicy::default()
+            }),
+            3.0
+        );
+        assert_eq!(
+            split_diagonal_sharpness(PropagatePolicy {
+                split_face_diagonal_edge_attr: SplitFaceDiagonalEdgePropagation::DecayOnSplit,
+                ..PropagatePolicy::default()
+            }),
+            2.0
+        );
     }
 
     #[test]

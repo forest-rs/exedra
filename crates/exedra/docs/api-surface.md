@@ -64,6 +64,10 @@ should not construct them directly:
   sharpness.
 - Mutation APIs are eager. `ChangeSink` controls whether changes are recorded,
   not whether the mesh is mutated.
+- `PropagatePolicy::split_face_diagonal_edge_attr` is the split-face-specific
+  diagonal edge-sharpness policy. Its default `FromEdgePolicy` preserves v0.1
+  behavior for existing `edge_attr`-based callers; set an explicit mode for new
+  split-face code.
 - `ExtractMode::Incremental` is reserved in v0.1 and currently behaves as a full
   rebuild.
 
