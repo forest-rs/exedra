@@ -886,6 +886,37 @@ impl Mesh {
             .is_some_and(|layer| layer.set(vertex.as_id(), position))
     }
 
+    /// Returns the explicit vertex sharpness override, when present.
+    ///
+    /// `None` means either the vertex is stale or no override is authored, so
+    /// downstream subdivision classifiers should derive the class from incident
+    /// edge sharpness.
+    #[must_use]
+    pub fn vertex_sharpness(&self, vertex: VertexId) -> Option<f32> {
+        let _ = self.vertices.get(vertex.as_id())?;
+        self.attrs
+            .sparse(attr::VERTEX_SHARPNESS)
+            .and_then(|layer| layer.get(vertex.as_id()).copied())
+    }
+
+    /// Sets the explicit vertex sharpness override.
+    ///
+    /// Returns `true` when `vertex` is live and writable.
+    pub(crate) fn set_vertex_sharpness(&mut self, vertex: VertexId, sharpness: f32) -> bool {
+        if self.vertices.get(vertex.as_id()).is_none() {
+            return false;
+        }
+        if self.attrs.sparse(attr::VERTEX_SHARPNESS).is_none() {
+            let _ = self.attrs.define_sparse(attr::VERTEX_SHARPNESS);
+        }
+        self.attrs
+            .sparse_mut(attr::VERTEX_SHARPNESS)
+            .is_some_and(|layer| {
+                layer.set(vertex.as_id(), sharpness);
+                true
+            })
+    }
+
     /// Returns one outgoing half-edge for the given vertex.
     #[must_use]
     pub fn vertex_out(&self, vertex: VertexId) -> Option<HalfEdgeId> {
@@ -2666,6 +2697,8 @@ mod tests {
         let kept_vertex = result.vertex_ids[3];
         {
             let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+            op::set_vertex_sharpness(&mut edit, kept_vertex, f32::INFINITY)
+                .expect("set kept vertex sharpness");
             set_face_region(&mut edit, kept_face, 23).expect("set kept face region");
             op::set_corner_uv(&mut edit, kept_corner, [0.25, 0.75]).expect("set kept corner uv");
             op::set_edge_seam(&mut edit, kept_corner, true).expect("set kept edge seam");
@@ -2726,6 +2759,7 @@ mod tests {
             compacted.vertex_position(new_vertex).copied(),
             Some([3.0, 0.0, 0.0])
         );
+        assert_eq!(compacted.vertex_sharpness(new_vertex), Some(f32::INFINITY));
 
         let (compacted_again, remap_again) = mesh.compact();
         assert_eq!(remap, remap_again);

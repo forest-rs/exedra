@@ -59,6 +59,9 @@ should not construct them directly:
   directed face-loop half-edges.
 - Attribute domains are `Vertex`, `Face`, and `HalfEdge`. Edge-wide built-ins
   such as seam and sharpness use the canonical half-edge representative.
+- `attr::VERTEX_SHARPNESS` is a sparse vertex-domain authored override for
+  subdivision corner classification; absence means derive from incident edge
+  sharpness.
 - Mutation APIs are eager. `ChangeSink` controls whether changes are recorded,
   not whether the mesh is mutated.
 - `ExtractMode::Incremental` is reserved in v0.1 and currently behaves as a full

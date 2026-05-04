@@ -12,6 +12,14 @@ use crate::attributes::{AttrKey, Domain};
 /// Required dense vertex positions.
 pub const VERTEX_POSITION: AttrKey<[f32; 3]> = AttrKey::new(Domain::Vertex, "vertex.position");
 
+/// Optional explicit vertex sharpness value.
+///
+/// Stored sparsely on vertex IDs. Absence means downstream subdivision
+/// classifiers should derive the vertex class from incident edge sharpness.
+/// `0.0` is an explicit smooth override; positive values mean increasingly
+/// sharp, with `f32::INFINITY` representing a pinned corner.
+pub const VERTEX_SHARPNESS: AttrKey<f32> = AttrKey::new(Domain::Vertex, "vertex.sharpness");
+
 /// Optional corner UV coordinates.
 pub const CORNER_UV: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.uv");
 

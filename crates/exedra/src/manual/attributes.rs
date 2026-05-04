@@ -21,14 +21,21 @@
 //!
 //! Exedra registers built-in keys in [`attr`](crate::attr), including:
 //! - [`VERTEX_POSITION`](crate::attr::VERTEX_POSITION),
+//! - [`VERTEX_SHARPNESS`](crate::attr::VERTEX_SHARPNESS),
 //! - [`CORNER_UV`](crate::attr::CORNER_UV),
 //! - [`FACE_REGION`](crate::attr::FACE_REGION),
 //! - [`EDGE_SEAM`](crate::attr::EDGE_SEAM),
 //! - [`EDGE_SHARPNESS`](crate::attr::EDGE_SHARPNESS).
 //!
-//! Sharpness uses sparse `f32` values on canonical undirected edges:
+//! Edge sharpness uses sparse `f32` values on canonical undirected edges:
 //! - `0.0` means smooth,
 //! - values above `0.0` mean authored sharpness.
+//!
+//! Vertex sharpness uses sparse `f32` values on vertices:
+//! - absence means downstream subdivision code derives the class from incident
+//!   edge sharpness,
+//! - `0.0` is an explicit smooth override,
+//! - `f32::INFINITY` represents an authored corner pin.
 //!
 //! # Capacity Model
 //!

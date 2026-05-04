@@ -64,6 +64,7 @@ mod set_edge_seam;
 mod set_edge_sharpness;
 mod set_face_region;
 mod set_vertex_position;
+mod set_vertex_sharpness;
 mod split_edge;
 mod split_face;
 
@@ -84,6 +85,7 @@ pub use set_edge_seam::{SetEdgeSeamError, set_edge_seam};
 pub use set_edge_sharpness::{SetEdgeSharpnessError, set_edge_sharpness};
 pub use set_face_region::{SetFaceRegionError, set_face_region};
 pub use set_vertex_position::{SetVertexPositionError, set_vertex_position};
+pub use set_vertex_sharpness::{SetVertexSharpnessError, set_vertex_sharpness};
 pub use split_edge::split_edge;
 pub use split_face::split_face;
 
@@ -290,6 +292,8 @@ mod tests {
 
         op::set_vertex_position(&mut session, vertex, [2.0, 3.0, 4.0])
             .expect("position write should succeed");
+        op::set_vertex_sharpness(&mut session, vertex, f32::INFINITY)
+            .expect("vertex sharpness write should succeed");
         op::set_face_region(&mut session, face, 7).expect("region write should succeed");
         op::set_corner_uv(&mut session, corner, [0.25, 0.75])
             .expect("corner uv write should succeed");
@@ -300,6 +304,7 @@ mod tests {
         let _ = session.finish();
 
         assert_eq!(mesh.vertex_position(vertex), Some(&[2.0, 3.0, 4.0]));
+        assert_eq!(mesh.vertex_sharpness(vertex), Some(f32::INFINITY));
         assert_eq!(
             mesh.attrs()
                 .dense(crate::attr::FACE_REGION)

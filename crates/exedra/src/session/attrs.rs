@@ -33,6 +33,20 @@ impl<S: ChangeSink> EditSession<'_, S> {
         updated
     }
 
+    /// Returns the explicit vertex sharpness override, when present.
+    #[must_use]
+    pub fn vertex_sharpness(&self, vertex: VertexId) -> Option<f32> {
+        self.mesh.vertex_sharpness(vertex)
+    }
+
+    pub(crate) fn set_vertex_sharpness_impl(&mut self, vertex: VertexId, sharpness: f32) -> bool {
+        let updated = self.mesh.set_vertex_sharpness(vertex, sharpness);
+        if updated {
+            self.sink.mark_vertex_dirty(vertex);
+        }
+        updated
+    }
+
     pub(crate) fn set_face_region_impl(&mut self, face: FaceId, region: u32) -> bool {
         let updated = self
             .mesh

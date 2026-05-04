@@ -747,6 +747,12 @@ mod tests {
     }
 
     #[test]
+    fn vertex_sharpness_builtin_key_has_expected_shape() {
+        assert_eq!(attr::VERTEX_SHARPNESS.domain(), Domain::Vertex);
+        assert_eq!(attr::VERTEX_SHARPNESS.name(), "vertex.sharpness");
+    }
+
+    #[test]
     fn corner_normal_override_builtin_key_has_expected_shape() {
         assert_eq!(attr::CORNER_NORMAL_OVERRIDE.domain(), Domain::HalfEdge);
         assert_eq!(

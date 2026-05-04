@@ -1258,6 +1258,11 @@ mod tests {
             vertex: VertexId,
             position: [f32; 3],
         ) -> Result<(), op::SetVertexPositionError>;
+        fn set_vertex_sharpness(
+            &mut self,
+            vertex: VertexId,
+            sharpness: f32,
+        ) -> Result<(), op::SetVertexSharpnessError>;
         fn set_face_region(
             &mut self,
             face: FaceId,
@@ -1345,6 +1350,14 @@ mod tests {
             position: [f32; 3],
         ) -> Result<(), op::SetVertexPositionError> {
             op::set_vertex_position(self, vertex, position)
+        }
+
+        fn set_vertex_sharpness(
+            &mut self,
+            vertex: VertexId,
+            sharpness: f32,
+        ) -> Result<(), op::SetVertexSharpnessError> {
+            op::set_vertex_sharpness(self, vertex, sharpness)
         }
 
         fn set_face_region(
@@ -1716,6 +1729,36 @@ mod tests {
 
         assert_eq!(drained_vertices(&mut changes.dirty), vec![vertex]);
         assert_eq!(mesh.vertex_position(vertex), Some(&[4.0, 5.0, 6.0]));
+    }
+
+    #[test]
+    fn txn_set_vertex_sharpness_writes_sparse_layer_and_marks_vertex_dirty() {
+        let mut mesh = Mesh::new();
+        let smooth_override = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let pinned = mesh.add_vertex([1.0, 0.0, 0.0]);
+
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        assert_eq!(txn.vertex_sharpness(smooth_override), None);
+        assert!(txn.set_vertex_sharpness(smooth_override, 0.0).is_ok());
+        assert!(txn.set_vertex_sharpness(pinned, f32::INFINITY).is_ok());
+        assert_eq!(txn.vertex_sharpness(smooth_override), Some(0.0));
+        assert_eq!(txn.vertex_sharpness(pinned), Some(f32::INFINITY));
+        let mut changes = txn.finish();
+
+        assert_eq!(
+            drained_vertices(&mut changes.dirty),
+            vec![smooth_override, pinned]
+        );
+        assert_eq!(mesh.vertex_sharpness(smooth_override), Some(0.0));
+        assert_eq!(mesh.vertex_sharpness(pinned), Some(f32::INFINITY));
+        assert_eq!(
+            mesh.attrs()
+                .sparse(attr::VERTEX_SHARPNESS)
+                .expect("vertex sharpness layer should exist")
+                .get(smooth_override.as_id())
+                .copied(),
+            Some(0.0)
+        );
     }
 
     #[test]
