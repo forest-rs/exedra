@@ -12,9 +12,9 @@
 //!
 //! # Split Semantics
 //!
-//! Render vertices are keyed by `(VertexId, corner_uv_bits)`. This means one
-//! topology vertex can map to multiple render vertices when corner UVs differ
-//! across incident faces.
+//! Render vertices are keyed by `(VertexId, corner_uv_bits, corner_normal_bits)`.
+//! This means one topology vertex can map to multiple render vertices when
+//! corner UVs or corner normals differ across incident faces.
 //!
 //! # Determinism
 //!

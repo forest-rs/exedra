@@ -31,6 +31,68 @@
 //! - Explicit compaction: [`Mesh::compact`], [`Remap`]
 //! - Kernel operation catalog: [`op`]
 //! - Render extraction: [`ExtractParams`], [`TriMesh`]
+//!
+//! # Guarantees
+//!
+//! Exedra guarantees deterministic traversal and output for fixed mesh state:
+//! live vertices/faces iterate in stable arena slot order, face fan
+//! triangulation is stable, and render extraction appends render vertices at
+//! first encounter. Stable IDs include both index and generation, so deleted
+//! topology cannot be silently reused through stale handles.
+//!
+//! # Non-goals
+//!
+//! Exedra does not own scene graphs, units, materials, UI/operator workflows,
+//! or exact analytic/CAD topology. Higher-level modeling policy belongs in
+//! Cambium or sibling domain crates. Exedra also does not compact IDs
+//! implicitly; use [`Mesh::compact`] when you want a tombstone-free copy.
+//!
+//! # Core Concepts
+//!
+//! - **Half-edge model**: every edge has two directed half-edges; boundary
+//!   twins are explicit records whose face is [`FaceId::OUTSIDE`].
+//! - **Corners**: [`CornerId`] is exactly [`HalfEdgeId`], so corner UVs and
+//!   normal overrides can differ per face without splitting topology vertices.
+//! - **Attributes**: built-ins live under [`attr`]. Required vertex positions
+//!   and face regions are dense; UVs, seams, sharpness, and normal overrides are
+//!   sparse authored layers.
+//! - **Seams and sharpness**: edge-wide tags use the canonical half-edge
+//!   representative from [`Mesh::canonical_edge`].
+//! - **Render extraction**: [`Mesh::to_trimesh`] triangulates faces with a
+//!   stable fan and creates distinct render vertices for a shared topology
+//!   vertex when corner UVs or corner normals differ.
+//! - **Edit sessions**: mutations are eager through [`EditSession`], with
+//!   optional [`ChangeSet`] and [`DirtySet`] output for incremental consumers.
+//! - **Numeric policy**: [`NumericPolicy`] centralizes tolerances for geometry
+//!   operations that need near-equality decisions.
+//!
+//! # Example
+//!
+//! ```rust
+//! use exedra::{BuildParams, ChangeSetBuilder, ExtractParams, Mesh, op};
+//!
+//! let mut mesh = Mesh::from_indexed_triangles(
+//!     &[
+//!         [0.0, 0.0, 0.0],
+//!         [1.0, 0.0, 0.0],
+//!         [0.0, 1.0, 0.0],
+//!     ],
+//!     &[[0, 1, 2]],
+//!     &BuildParams::default(),
+//! )?;
+//! let face = mesh.faces().next().expect("triangle face");
+//! let corner = mesh.face_loop(face).next().expect("triangle corner");
+//!
+//! let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+//! op::set_corner_uv(&mut edit, corner, [0.0, 0.0]).expect("corner is live");
+//! let changes = edit.finish();
+//! assert!(changes.dirty.has_dirty_corners());
+//!
+//! let (triangles, stats) = mesh.to_trimesh(&ExtractParams::default());
+//! assert_eq!(triangles.indices.len(), 3);
+//! assert_eq!(stats.triangle_count, 1);
+//! # Ok::<(), exedra::BuildError>(())
+//! ```
 
 #![no_std]
 extern crate alloc;
