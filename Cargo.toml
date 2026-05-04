@@ -5,6 +5,7 @@ members = [
     "benchmarks/exedra_fidget_bench",
     "benchmarks/exedra_qef_bench",
     "benchmarks/exedra_render_bench",
+    "benchmarks/exedra_wind_tunnel",
     "crates/cambium",
     "crates/cambium_testkit",
     "crates/exedra",

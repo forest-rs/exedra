@@ -40,8 +40,9 @@ Adapter, test, benchmark, and app crates:
 - **[exedra_testkit](crates/exedra_testkit/)** and
   **[cambium_testkit](crates/cambium_testkit/)** - Deterministic fixtures,
   golden snapshots, and debug dumps.
-- **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for QEF solves,
-  render extraction, and Fidget-backed field/extraction paths.
+- **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for Exedra
+  kernel scenarios, QEF solves, render extraction, and Fidget-backed
+  field/extraction paths.
 - **[apps/cambium_web_bridge](apps/cambium_web_bridge/)** - Wasm bridge for
   deterministic Cambium scenario execution.
 - **[apps/cambium_web_viewer](apps/cambium_web_viewer/)** - Three.js viewer for

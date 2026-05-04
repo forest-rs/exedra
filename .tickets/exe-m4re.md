@@ -1,7 +1,7 @@
 ---
 id: exe-m4re
 title: exedra_wind_tunnel crate
-status: open
+status: closed
 deps: []
 links: [cam-v9q2]
 created: 2026-03-03T05:52:56Z
@@ -35,3 +35,9 @@ Wind tunnel acts as a regression oracle (scheduled/release/perf-triage), not a m
 - Benchmark harness produces comparable results
 - Includes determinism/stability check path suitable for Exedra scenarios (stable output signature across repeated runs for identical inputs)
 - No std dependency leaks into exedra core
+
+## Notes
+
+**2026-05-04T17:03:35Z**
+
+Added benchmarks/exedra_wind_tunnel as a workspace executable wind-tunnel crate. WT-1 builds a deterministic grid stress mesh with authored UVs and edge sharpness, validates stable extraction signatures across repeated runs, and reports comparable key=value metrics including face/vertex counts, extraction split counts, timings, signature, and checksum. The quick profile is the default for local runs; --wt1-stress selects the formal 500k-face WT-1 profile. Updated the root README benchmark description. No new ADR: this is benchmark infrastructure outside core crates and follows the existing benchmarks/ executable-crate pattern. Validation: taplo fmt Cargo.toml benchmarks/exedra_wind_tunnel/Cargo.toml; cargo fmt --all; cargo test -p exedra_wind_tunnel; cargo clippy -p exedra_wind_tunnel --all-targets --all-features -- -D warnings; cargo run -p exedra_wind_tunnel; cargo doc -p exedra_wind_tunnel --no-deps; typos benchmarks/exedra_wind_tunnel README.md .tickets/exe-m4re.md; cargo fmt --all --check; git diff --check.

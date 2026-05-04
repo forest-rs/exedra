@@ -1,0 +1,19 @@
+[package]
+name = "exedra_wind_tunnel"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Executable wind-tunnel scenarios for Exedra kernel regression checks"
+keywords = ["benchmark", "mesh", "wind-tunnel"]
+categories = ["algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra = { features = ["std"], workspace = true }
+exedra_primitives = { features = ["std"], workspace = true }
+exedra_testkit = { features = ["std"], workspace = true }

@@ -252,6 +252,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_wind_tunnel"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_primitives",
+ "exedra_testkit",
+]
+
+[[package]]
 name = "facet"
 version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
