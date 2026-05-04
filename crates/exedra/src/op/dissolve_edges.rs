@@ -53,7 +53,7 @@ pub fn dissolve_edges<S: ChangeSink>(
             let _ = op::set_face_region(session, merged, region);
         }
         let new_corners = session.mesh().face_loop(merged).collect::<Vec<_>>();
-        for (corner, attrs) in new_corners.into_iter().zip(plan.corner_data.into_iter()) {
+        for (corner, attrs) in new_corners.into_iter().zip(plan.corner_data) {
             if let Some(uv) = attrs.uv {
                 let _ = op::set_corner_uv(session, corner, uv);
             }

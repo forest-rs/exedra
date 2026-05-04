@@ -1664,10 +1664,7 @@ impl Mesh {
             let face = FaceId::from(face_id);
             let mut cursor = face_record.edge;
             let mut count = 0_usize;
-            loop {
-                let Some(record) = self.half_edges.get(cursor.as_id()) else {
-                    break;
-                };
+            while let Some(record) = self.half_edges.get(cursor.as_id()) {
                 if record.face != face {
                     errors.push(ValidationError::FaceLoopForeignHalfEdge {
                         face: face.index(),

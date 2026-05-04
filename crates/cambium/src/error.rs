@@ -97,6 +97,7 @@ impl OpError {
             BuildError::NonManifoldEdge { .. } => OpErrorKind::InvalidMesh,
             BuildError::BoundaryStitchFailed { .. } => OpErrorKind::InvalidMesh,
             BuildError::InvalidFaceLoop { .. } => OpErrorKind::InvalidMesh,
+            BuildError::InvalidFaceAttrs { .. } => OpErrorKind::PreconditionFailed,
         };
         Self::new(kind, diagnostics, artifacts)
     }
@@ -141,7 +142,7 @@ impl core::error::Error for OpError {}
 mod tests {
     use alloc::string::ToString;
     use alloc::vec;
-    use exedra::{BuildError, ValidationError};
+    use exedra::{BuildError, FaceAttrErrorKind, ValidationError};
 
     use super::{OpError, OpErrorKind};
     use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
@@ -159,6 +160,23 @@ mod tests {
             Artifacts::new(2, 128),
         );
         assert_eq!(error.kind, OpErrorKind::NumericFailure);
+    }
+
+    #[test]
+    fn build_error_mapping_covers_face_attr_metadata() {
+        let error = OpError::from_build_error(
+            BuildError::InvalidFaceAttrs {
+                face: 0,
+                kind: FaceAttrErrorKind::EdgeSeamLengthMismatch {
+                    expected: 4,
+                    actual: 3,
+                },
+            },
+            vec![],
+            Artifacts::new(2, 128),
+        );
+
+        assert_eq!(error.kind, OpErrorKind::PreconditionFailed);
     }
 
     #[test]

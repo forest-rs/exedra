@@ -14,4 +14,4 @@ categories = ["algorithms"]
 workspace = true
 
 [dependencies]
-exedra_qef = { workspace = true, features = ["std"] }
+exedra_qef = { features = ["std"], workspace = true }
