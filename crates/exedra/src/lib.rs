@@ -21,6 +21,8 @@
 //! mutation functions and finish optional deterministic [`ChangeSet`] summaries.
 //!
 //! For deeper narrative docs, see [`manual`].
+//! The current public surface audit is recorded in
+//! `crates/exedra/docs/api-surface.md`.
 //!
 //! Common entry points:
 //! - Attributes and domains: [`attributes`]
