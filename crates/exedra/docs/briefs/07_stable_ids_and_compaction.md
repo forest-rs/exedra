@@ -22,5 +22,12 @@ Tombstones keep editing cheap and local; explicit compaction preserves “explic
 - Compaction returns remap and invalidates old IDs for the new mesh.
 - Generation checks become part of validation and debug tooling.
 
+## Implementation
+`Mesh::compact` copies live vertices, faces, half-edges, and attributes into a
+fresh mesh with contiguous arena slots. It returns a `Remap` with per-domain
+lookups for source IDs. Deleted or stale source IDs return `None`, and
+`FaceId::OUTSIDE` maps to itself because it is a sentinel rather than an arena
+entry.
+
 ## Non-goals / deferrals
 - Perfect minimal remap formats; start with dense per-domain maps if needed and optimize later.

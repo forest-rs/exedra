@@ -15,6 +15,7 @@ Most callers should use the crate root re-exports:
 
 - `Mesh`, `MeshBuilder`, `MeshBuildResult`, `BuildParams`, and
   `FaceBuildAttrs` for construction and mesh ownership.
+- `Remap` for translating source IDs after explicit `Mesh::compact` calls.
 - `VertexId`, `HalfEdgeId`, `CornerId`, `FaceId`, and `Id` for stable handles.
 - `EditSession`, `ChangeSet`, `ChangeSetBuilder`, `ChangeSink`,
   `DiscardChanges`, `DirtySet`, `DeletePolicy`, and `PropagatePolicy` for
@@ -49,9 +50,11 @@ should not construct them directly:
 ## Stability Notes
 
 - Stable IDs include an index and generation. Deletion creates tombstones;
-  compaction is explicit and will return a remap rather than changing IDs
-  invisibly.
+  compaction is explicit through `Mesh::compact` and returns a `Remap` rather
+  than changing IDs invisibly.
 - `FaceId::OUTSIDE` is a sentinel, not a stored face arena entry.
+- `Remap` maps only live source IDs with the matching generation. Deleted and
+  stale IDs return `None`; `FaceId::OUTSIDE` maps to itself.
 - `CornerId` is an alias for `HalfEdgeId`; corner-domain attributes are keyed by
   directed face-loop half-edges.
 - Attribute domains are `Vertex`, `Face`, and `HalfEdge`. Edge-wide built-ins

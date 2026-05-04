@@ -12,9 +12,10 @@ use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+use core::num::NonZeroU32;
 
 use crate::{
-    Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Vertex, VertexId, attr,
+    Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Id, Vertex, VertexId, attr,
     attributes::{Attributes, Domain},
 };
 
@@ -584,6 +585,57 @@ impl MeshRevision {
     }
 }
 
+/// Domain remapping produced by [`Mesh::compact`].
+///
+/// The remap translates IDs from the source mesh into IDs in the compacted
+/// mesh. Deleted/tombstoned source IDs return `None`. [`FaceId::OUTSIDE`] is a
+/// sentinel and maps to itself.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Remap {
+    vertices: Vec<Option<(NonZeroU32, VertexId)>>,
+    half_edges: Vec<Option<(NonZeroU32, HalfEdgeId)>>,
+    faces: Vec<Option<(NonZeroU32, FaceId)>>,
+}
+
+impl Remap {
+    /// Returns the compacted vertex ID for a live source vertex ID.
+    #[must_use]
+    pub fn vertex(&self, vertex: VertexId) -> Option<VertexId> {
+        lookup_remap(&self.vertices, vertex.as_id())
+    }
+
+    /// Returns the compacted half-edge ID for a live source half-edge ID.
+    #[must_use]
+    pub fn half_edge(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {
+        lookup_remap(&self.half_edges, half_edge.as_id())
+    }
+
+    /// Returns the compacted corner ID for a live source corner ID.
+    #[must_use]
+    pub fn corner(&self, corner: CornerId) -> Option<CornerId> {
+        self.half_edge(corner)
+    }
+
+    /// Returns the compacted face ID for a live source face ID.
+    ///
+    /// [`FaceId::OUTSIDE`] maps to itself because it is a stable sentinel, not
+    /// a stored face arena entry.
+    #[must_use]
+    pub fn face(&self, face: FaceId) -> Option<FaceId> {
+        if face == FaceId::OUTSIDE {
+            return Some(FaceId::OUTSIDE);
+        }
+        lookup_remap(&self.faces, face.as_id())
+    }
+}
+
+fn lookup_remap<T: Copy>(entries: &[Option<(NonZeroU32, T)>], id: Id) -> Option<T> {
+    entries
+        .get(id.index() as usize)
+        .and_then(|entry| *entry)
+        .and_then(|(generation, mapped)| (generation == id.generation()).then_some(mapped))
+}
+
 /// Result payload from [`MeshBuilder::build`].
 ///
 /// Use this when you need both the built mesh and deterministic provenance
@@ -671,6 +723,121 @@ impl Mesh {
     #[must_use]
     pub const fn revision(&self) -> MeshRevision {
         MeshRevision(self.revision)
+    }
+
+    /// Returns a tombstone-free copy of this mesh and a source-to-copy ID remap.
+    ///
+    /// Compaction is explicit: the source mesh is unchanged, and all live
+    /// topology and attributes are copied into fresh arenas with contiguous slot
+    /// indices. Deleted source IDs and stale generations are not mapped. The
+    /// [`FaceId::OUTSIDE`] sentinel maps to itself.
+    #[must_use]
+    pub fn compact(&self) -> (Self, Remap) {
+        let mut compacted = Self {
+            vertices: Arena::new(),
+            half_edges: Arena::new(),
+            faces: Arena::new(),
+            attrs: Attributes::new(),
+            revision: self.revision,
+        };
+        let mut remap = Remap {
+            vertices: vec![None; self.vertices.slot_count()],
+            half_edges: vec![None; self.half_edges.slot_count()],
+            faces: vec![None; self.faces.slot_count()],
+        };
+        let mut vertex_attr_map = vec![None; self.vertices.slot_count()];
+        let mut face_attr_map = vec![None; self.faces.slot_count()];
+        let mut half_edge_attr_map = vec![None; self.half_edges.slot_count()];
+
+        for (old_id, _) in self.vertices.iter() {
+            let new_id = VertexId::from(compacted.vertices.insert(Vertex {
+                out: HalfEdgeId::INVALID,
+            }));
+            remap.vertices[old_id.index() as usize] = Some((old_id.generation(), new_id));
+            vertex_attr_map[old_id.index() as usize] = Some(new_id.as_id());
+        }
+
+        for (old_id, face) in self.faces.iter() {
+            let new_id = FaceId::from(compacted.faces.insert(Face {
+                edge: HalfEdgeId::INVALID,
+                degree: face.degree,
+            }));
+            remap.faces[old_id.index() as usize] = Some((old_id.generation(), new_id));
+            face_attr_map[old_id.index() as usize] = Some(new_id.as_id());
+        }
+
+        for (old_id, _) in self.half_edges.iter() {
+            let new_id = HalfEdgeId::from(compacted.half_edges.insert(HalfEdge {
+                to: VertexId::INVALID,
+                face: FaceId::OUTSIDE,
+                next: HalfEdgeId::INVALID,
+                twin: HalfEdgeId::INVALID,
+            }));
+            remap.half_edges[old_id.index() as usize] = Some((old_id.generation(), new_id));
+            half_edge_attr_map[old_id.index() as usize] = Some(new_id.as_id());
+        }
+
+        for (old_id, vertex) in self.vertices.iter() {
+            let new_id = remap
+                .vertex(VertexId::from(old_id))
+                .expect("live source vertex must have a compacted ID");
+            let new_out = if vertex.out == HalfEdgeId::INVALID {
+                HalfEdgeId::INVALID
+            } else {
+                remap
+                    .half_edge(vertex.out)
+                    .expect("live source vertex must reference live outgoing edge")
+            };
+            compacted
+                .vertices
+                .get_mut(new_id.as_id())
+                .expect("compacted vertex must exist")
+                .out = new_out;
+        }
+
+        for (old_id, face) in self.faces.iter() {
+            let new_id = remap
+                .face(FaceId::from(old_id))
+                .expect("live source face must have a compacted ID");
+            let new_edge = remap
+                .half_edge(face.edge)
+                .expect("live source face must reference live loop edge");
+            compacted
+                .faces
+                .get_mut(new_id.as_id())
+                .expect("compacted face must exist")
+                .edge = new_edge;
+        }
+
+        for (old_id, half_edge) in self.half_edges.iter() {
+            let new_id = remap
+                .half_edge(HalfEdgeId::from(old_id))
+                .expect("live source half-edge must have a compacted ID");
+            let new_half_edge = HalfEdge {
+                to: remap
+                    .vertex(half_edge.to)
+                    .expect("live source half-edge must reference live destination vertex"),
+                face: remap
+                    .face(half_edge.face)
+                    .expect("live source half-edge must reference live face or OUTSIDE"),
+                next: remap
+                    .half_edge(half_edge.next)
+                    .expect("live source half-edge must reference live next edge"),
+                twin: remap
+                    .half_edge(half_edge.twin)
+                    .expect("live source half-edge must reference live twin edge"),
+            };
+            *compacted
+                .half_edges
+                .get_mut(new_id.as_id())
+                .expect("compacted half-edge must exist") = new_half_edge;
+        }
+
+        compacted.attrs =
+            self.attrs
+                .compacted(&vertex_attr_map, &face_attr_map, &half_edge_attr_map);
+
+        (compacted, remap)
     }
 
     /// Returns immutable attribute storage.
@@ -2208,7 +2375,8 @@ mod tests {
     };
     use crate::attributes::{AttrKey, Domain};
     use crate::{
-        ChangeSetBuilder, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId, op::set_face_region,
+        ChangeSetBuilder, DeletePolicy, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId, op,
+        op::set_face_region,
     };
 
     fn triangle_mesh() -> Mesh {
@@ -2469,6 +2637,118 @@ mod tests {
         mesh.vertices.get_mut(v3.as_id()).expect("v3 live").out = h3;
         mesh.vertices.get_mut(v4.as_id()).expect("v4 live").out = h4;
         (mesh, face)
+    }
+
+    #[test]
+    fn compact_remaps_live_topology_and_attributes() {
+        let mut builder = MeshBuilder::new();
+        for position in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ] {
+            let _ = builder.push_vertex(position);
+        }
+        builder.add_face(&[0, 1, 2]).expect("first face");
+        builder.add_face(&[3, 4, 5]).expect("second face");
+        let result = builder.build().expect("mesh should build");
+
+        let mut mesh = result.mesh;
+        let deleted_vertex = mesh.add_vertex([9.0, 9.0, 9.0]);
+        assert!(mesh.vertices.remove(deleted_vertex.as_id()).is_some());
+        let deleted_face = result.face_ids[0];
+        let kept_face = result.face_ids[1];
+        let deleted_corner = result.face_edge_ids[0][0];
+        let kept_corner = result.face_edge_ids[1][0];
+        let kept_vertex = result.vertex_ids[3];
+        {
+            let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+            set_face_region(&mut edit, kept_face, 23).expect("set kept face region");
+            op::set_corner_uv(&mut edit, kept_corner, [0.25, 0.75]).expect("set kept corner uv");
+            op::set_edge_seam(&mut edit, kept_corner, true).expect("set kept edge seam");
+            op::set_edge_sharpness(&mut edit, kept_corner, 2.5).expect("set kept edge sharpness");
+            op::delete_faces(&mut edit, &[deleted_face], DeletePolicy::CleanupIsolated)
+                .expect("delete first face");
+            let _ = edit.finish();
+        }
+        assert!(mesh.validate_deep().is_empty());
+        assert!(mesh.vertices.slot_count() > mesh.vertices.len());
+        assert!(mesh.half_edges.slot_count() > mesh.half_edges.len());
+        assert!(mesh.faces.slot_count() > mesh.faces.len());
+
+        let revision = mesh.revision();
+        let (compacted, remap) = mesh.compact();
+
+        assert_eq!(compacted.revision(), revision);
+        assert!(compacted.validate_deep().is_empty());
+        assert_eq!(compacted.vertices.slot_count(), compacted.vertices.len());
+        assert_eq!(
+            compacted.half_edges.slot_count(),
+            compacted.half_edges.len()
+        );
+        assert_eq!(compacted.faces.slot_count(), compacted.faces.len());
+
+        assert_eq!(remap.face(FaceId::OUTSIDE), Some(FaceId::OUTSIDE));
+        assert_eq!(remap.vertex(deleted_vertex), None);
+        assert_eq!(remap.face(deleted_face), None);
+        assert_eq!(remap.half_edge(deleted_corner), None);
+
+        let new_face = remap.face(kept_face).expect("kept face should map");
+        let new_corner = remap
+            .corner(kept_corner)
+            .expect("kept corner should map through half-edge domain");
+        let new_vertex = remap.vertex(kept_vertex).expect("kept vertex should map");
+
+        assert_eq!(
+            compacted
+                .attrs()
+                .dense(crate::attr::FACE_REGION)
+                .expect("face region layer")
+                .get(new_face.as_id())
+                .copied(),
+            Some(23)
+        );
+        assert_eq!(
+            compacted
+                .attrs()
+                .sparse(crate::attr::CORNER_UV)
+                .expect("corner uv layer")
+                .get(new_corner.as_id())
+                .copied(),
+            Some([0.25, 0.75])
+        );
+        assert_eq!(compacted.edge_seam(new_corner), Some(true));
+        assert_eq!(compacted.edge_sharpness(new_corner), Some(2.5));
+        assert_eq!(
+            compacted.vertex_position(new_vertex).copied(),
+            Some([3.0, 0.0, 0.0])
+        );
+
+        let (compacted_again, remap_again) = mesh.compact();
+        assert_eq!(remap, remap_again);
+        assert_eq!(compacted_again.vertices.len(), compacted.vertices.len());
+        assert_eq!(compacted_again.half_edges.len(), compacted.half_edges.len());
+        assert_eq!(compacted_again.faces.len(), compacted.faces.len());
+    }
+
+    #[test]
+    fn compact_remap_rejects_stale_generation_after_slot_reuse() {
+        let mut mesh = Mesh::new();
+        let stale = mesh.add_vertex([0.0, 0.0, 0.0]);
+        assert!(mesh.vertices.remove(stale.as_id()).is_some());
+        let live = mesh.add_vertex([1.0, 0.0, 0.0]);
+        assert_eq!(live.index(), stale.index());
+        assert_ne!(live.generation(), stale.generation());
+
+        let (compacted, remap) = mesh.compact();
+
+        assert!(compacted.validate_fast().is_empty());
+        assert_eq!(compacted.vertices.slot_count(), 1);
+        assert_eq!(remap.vertex(stale), None);
+        assert_eq!(remap.vertex(live), Some(VertexId::new(0, NonZeroU32::MIN)));
     }
 
     #[test]

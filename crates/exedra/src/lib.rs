@@ -15,7 +15,7 @@
 //!
 //! The intended engine surface is this crate root (`exedra::...`) via
 //! re-exported kernel types like [`Mesh`], [`EditSession`], [`MeshBuilder`],
-//! and attribute/key APIs.
+//! [`Remap`], and attribute/key APIs.
 //! Construction lives on [`MeshBuilder`] and mesh constructors. Public mutation
 //! lives in [`op`]. [`EditSession`] is the eager edit host used to apply those
 //! mutation functions and finish optional deterministic [`ChangeSet`] summaries.
@@ -28,6 +28,7 @@
 //! - Attributes and domains: [`attributes`]
 //! - Built-in attribute keys: [`attr`]
 //! - Mesh construction/traversal: [`Mesh`], [`MeshBuilder`]
+//! - Explicit compaction: [`Mesh::compact`], [`Remap`]
 //! - Kernel operation catalog: [`op`]
 //! - Render extraction: [`ExtractParams`], [`TriMesh`]
 
@@ -59,7 +60,7 @@ pub use arena::Arena;
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
     BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceAttrErrorKind,
-    FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder, MeshRevision,
+    FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder, MeshRevision, Remap,
     SelectedFaceBoundaryError, SelectedFacePatchEdge, SelectedFacePatchError,
     SelectedFacePatchSharedEdge, SelectedFacePatchTopology, ValidationError,
 };

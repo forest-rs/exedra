@@ -524,6 +524,121 @@ impl Attributes {
         }
         mismatches
     }
+
+    pub(crate) fn compacted(
+        &self,
+        vertex_map: &[Option<Id>],
+        face_map: &[Option<Id>],
+        half_edge_map: &[Option<Id>],
+    ) -> Self {
+        let mut compacted = Self {
+            vertex_capacity: count_mapped(vertex_map),
+            face_capacity: count_mapped(face_map),
+            half_edge_capacity: count_mapped(half_edge_map),
+            dense: Vec::with_capacity(self.dense.len()),
+            sparse: Vec::with_capacity(self.sparse.len()),
+        };
+
+        for entry in &self.dense {
+            let map = domain_map(entry.domain, vertex_map, face_map, half_edge_map);
+            compacted.dense.push(Entry {
+                domain: entry.domain,
+                name: entry.name,
+                layer: compact_dense_layer(
+                    &entry.layer,
+                    map,
+                    compacted.domain_capacity(entry.domain),
+                ),
+            });
+        }
+
+        for entry in &self.sparse {
+            let map = domain_map(entry.domain, vertex_map, face_map, half_edge_map);
+            compacted.sparse.push(Entry {
+                domain: entry.domain,
+                name: entry.name,
+                layer: compact_sparse_layer(&entry.layer, map),
+            });
+        }
+
+        compacted
+    }
+}
+
+fn count_mapped(map: &[Option<Id>]) -> usize {
+    map.iter().flatten().count()
+}
+
+fn domain_map<'a>(
+    domain: Domain,
+    vertex_map: &'a [Option<Id>],
+    face_map: &'a [Option<Id>],
+    half_edge_map: &'a [Option<Id>],
+) -> &'a [Option<Id>] {
+    match domain {
+        Domain::Vertex => vertex_map,
+        Domain::Face => face_map,
+        Domain::HalfEdge => half_edge_map,
+    }
+}
+
+fn compact_dense_layer(layer: &Layer, map: &[Option<Id>], len: usize) -> Layer {
+    match layer {
+        Layer::DenseVec3(layer) => Layer::DenseVec3(compact_dense_values(layer, map, len)),
+        Layer::DenseVec2(layer) => Layer::DenseVec2(compact_dense_values(layer, map, len)),
+        Layer::DenseF32(layer) => Layer::DenseF32(compact_dense_values(layer, map, len)),
+        Layer::DenseU32(layer) => Layer::DenseU32(compact_dense_values(layer, map, len)),
+        Layer::DenseBool(layer) => Layer::DenseBool(compact_dense_values(layer, map, len)),
+        Layer::SparseVec3(_)
+        | Layer::SparseVec2(_)
+        | Layer::SparseF32(_)
+        | Layer::SparseU32(_)
+        | Layer::SparseBool(_) => unreachable!("dense entries must store dense layers"),
+    }
+}
+
+fn compact_dense_values<T: Clone>(
+    layer: &DenseLayer<T>,
+    map: &[Option<Id>],
+    len: usize,
+) -> DenseLayer<T> {
+    let mut compacted = DenseLayer::with_len(len, layer.default.clone());
+    for (old_index, new_id) in map.iter().enumerate() {
+        let Some(new_id) = new_id else {
+            continue;
+        };
+        let Some(value) = layer.values.get(old_index) else {
+            continue;
+        };
+        compacted.values[new_id.index() as usize] = value.clone();
+    }
+    compacted
+}
+
+fn compact_sparse_layer(layer: &Layer, map: &[Option<Id>]) -> Layer {
+    match layer {
+        Layer::SparseVec3(layer) => Layer::SparseVec3(compact_sparse_values(layer, map)),
+        Layer::SparseVec2(layer) => Layer::SparseVec2(compact_sparse_values(layer, map)),
+        Layer::SparseF32(layer) => Layer::SparseF32(compact_sparse_values(layer, map)),
+        Layer::SparseU32(layer) => Layer::SparseU32(compact_sparse_values(layer, map)),
+        Layer::SparseBool(layer) => Layer::SparseBool(compact_sparse_values(layer, map)),
+        Layer::DenseVec3(_)
+        | Layer::DenseVec2(_)
+        | Layer::DenseF32(_)
+        | Layer::DenseU32(_)
+        | Layer::DenseBool(_) => unreachable!("sparse entries must store sparse layers"),
+    }
+}
+
+fn compact_sparse_values<T: Clone>(layer: &SparseLayer<T>, map: &[Option<Id>]) -> SparseLayer<T> {
+    let mut compacted = SparseLayer::new();
+    for (old_index, value) in &layer.values {
+        let Some(Some(new_id)) = map.get(*old_index as usize) else {
+            continue;
+        };
+        compacted.set(*new_id, value.clone());
+    }
+    compacted
 }
 
 #[cfg(test)]
