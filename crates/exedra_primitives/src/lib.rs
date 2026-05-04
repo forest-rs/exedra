@@ -16,6 +16,24 @@
 //! - face-region assignment ([`FaceRegionLayer`]),
 //! - named canonical face/edge selections ([`Selections`]).
 //!
+//! # Numeric Policy
+//!
+//! Rotational primitives sample angles as `i * TAU / segments` and use the
+//! crate-local trigonometric backend only to compute coordinates. Topology,
+//! region assignment, and selections are derived from integer segment/ring
+//! indices, never from trigonometric results.
+//!
+//! The default `std` feature uses the platform `f32` math implementation.
+//! `no_std` consumers disable default features and enable `libm`, which uses
+//! the optional `libm` backend. The crate does not maintain a custom polynomial
+//! approximation. Bit-identical coordinates across `std` and `libm` backends
+//! are not guaranteed; deterministic output is guaranteed for a fixed backend,
+//! fixed target, and fixed parameter set.
+//!
+//! Tests enforce a unit-circle sampled-angle absolute error budget of `2e-6`
+//! relative to an `f64` reference for the angles used by cylinder, cone, torus,
+//! and UV sphere generation. Coordinate error scales linearly with radius.
+//!
 //! Typical flow:
 //! 1. Build a primitive (for example [`quad()`]).
 //! 2. Read semantic metadata from [`Primitive::face_region`] and
@@ -25,6 +43,8 @@
 #![no_std]
 extern crate alloc;
 #[cfg(feature = "std")]
+extern crate std;
+#[cfg(all(test, not(feature = "std")))]
 extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_primitives requires either the `std` or `libm` feature");

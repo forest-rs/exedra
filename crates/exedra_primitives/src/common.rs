@@ -84,3 +84,57 @@ pub(crate) fn sqrt(value: f32) -> f32 {
 pub(crate) fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("index overflowed u32")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sin_cos;
+
+    const MAX_UNIT_SAMPLE_ABS_ERROR: f32 = 2.0e-6;
+    const MAX_UNIT_LENGTH_ERROR: f32 = 2.0e-6;
+    const SAMPLE_SEGMENTS: &[u32] = &[3, 4, 5, 6, 7, 8, 12, 16, 24, 32, 48, 64, 96, 127];
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test reference intentionally rounds f64 results to the f32 output contract"
+    )]
+    fn reference_sin_cos(theta: f32) -> (f32, f32) {
+        let theta = f64::from(theta);
+        (theta.sin() as f32, theta.cos() as f32)
+    }
+
+    #[test]
+    fn sin_cos_matches_sampled_angle_error_policy() {
+        for &segments in SAMPLE_SEGMENTS {
+            for index in 0..segments {
+                let theta = (index as f32) * core::f32::consts::TAU / (segments as f32);
+                let (sin_theta, cos_theta) = sin_cos(theta);
+                let (ref_sin, ref_cos) = reference_sin_cos(theta);
+
+                assert!(
+                    (sin_theta - ref_sin).abs() <= MAX_UNIT_SAMPLE_ABS_ERROR,
+                    "sin error exceeded policy for segment count {segments}, index {index}"
+                );
+                assert!(
+                    (cos_theta - ref_cos).abs() <= MAX_UNIT_SAMPLE_ABS_ERROR,
+                    "cos error exceeded policy for segment count {segments}, index {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sin_cos_samples_stay_on_unit_circle() {
+        for &segments in SAMPLE_SEGMENTS {
+            for index in 0..segments {
+                let theta = (index as f32) * core::f32::consts::TAU / (segments as f32);
+                let (sin_theta, cos_theta) = sin_cos(theta);
+                let length_squared = sin_theta.mul_add(sin_theta, cos_theta * cos_theta);
+
+                assert!(
+                    (length_squared - 1.0).abs() <= MAX_UNIT_LENGTH_ERROR,
+                    "unit-circle error exceeded policy for segment count {segments}, index {index}"
+                );
+            }
+        }
+    }
+}

@@ -14,11 +14,28 @@ angle-based fallback.
 This is `#![no_std]` (with `alloc`) — IO and debug dumping live in
 `exedra_testkit`.
 
+## Numeric Policy
+
+Rotational primitives use trig only for coordinate generation. Topology,
+regions, and canonical selections are derived from integer segment/ring indices,
+so small backend math differences cannot change mesh structure.
+
+The default `std` feature uses platform `f32` math. `no_std` callers disable
+default features and enable `libm`, which uses the optional `libm` backend. The
+crate does not maintain a custom polynomial approximation and does not promise
+bit-identical coordinates between `std` and `libm`; output is deterministic for
+a fixed backend, target, and parameter set.
+
+Tests enforce a `2e-6` unit-circle sampled-angle absolute error budget relative
+to an `f64` reference. Coordinate error scales with primitive radius.
+
 ## Design
 
 See the [handoff spec](../../docs/exedra_primitives_handoff.md) for the
 full design document. See [`docs/adr-0001-primitive-feature-edge-sharpness.md`](docs/adr-0001-primitive-feature-edge-sharpness.md)
-for the default sharp-edge contract.
+for the default sharp-edge contract and
+[`docs/adr-0002-trig-backend-policy.md`](docs/adr-0002-trig-backend-policy.md)
+for the trigonometric backend policy.
 
 ## License
 
