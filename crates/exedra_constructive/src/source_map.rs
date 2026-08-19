@@ -40,6 +40,19 @@ impl core::fmt::Display for StaleSourceMap {
 
 impl core::error::Error for StaleSourceMap {}
 
+/// Size and shape of one source map.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceMapStats {
+    /// Dense face-feature entries.
+    pub face_entries: usize,
+    /// Dense vertex-feature entries.
+    pub vertex_entries: usize,
+    /// Reverse-index entries.
+    pub reverse_entries: usize,
+    /// Approximate retained bytes across all tables.
+    pub approx_bytes: usize,
+}
+
 /// Per-element provenance for one tessellated body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceMap {
@@ -130,6 +143,21 @@ impl SourceMap {
     #[must_use]
     pub fn face_features(&self) -> &[Feature] {
         &self.face_features
+    }
+
+    /// Size and shape counters for introspection (tenet: measurable).
+    #[must_use]
+    pub fn stats(&self) -> SourceMapStats {
+        let entry = size_of::<Feature>();
+        let reverse = size_of::<(Feature, u32)>();
+        SourceMapStats {
+            face_entries: self.face_features.len(),
+            vertex_entries: self.vertex_features.len(),
+            reverse_entries: self.by_feature.len(),
+            approx_bytes: self.face_features.len() * entry
+                + self.vertex_features.len() * entry
+                + self.by_feature.len() * reverse,
+        }
     }
 
     /// The same map re-pinned to `mesh`'s current revision.

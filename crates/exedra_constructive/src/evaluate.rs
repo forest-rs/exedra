@@ -107,6 +107,8 @@ pub struct EvalCounters {
     pub envelope_only: u32,
     /// Nodes skipped as not yet implemented.
     pub unimplemented: u32,
+    /// Total source-map bytes retained across emitted bodies.
+    pub source_map_bytes: u64,
 }
 
 /// The honest ledger of one evaluation.
@@ -522,6 +524,7 @@ impl EvalCx<'_> {
         self.report.counters.tessellations += 1;
         if emit {
             self.report.counters.bodies += 1;
+            self.report.counters.source_map_bytes += body.source_map.stats().approx_bytes as u64;
             self.report.counters.faces += crate::len_u32(mesh.faces().count());
             self.report.counters.vertices += crate::len_u32(mesh.vertices().count());
             self.bodies.push(PlacedBody { node, body });

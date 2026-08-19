@@ -97,6 +97,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "constructive_wind_tunnel"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_constructive",
+ "exedra_testkit",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

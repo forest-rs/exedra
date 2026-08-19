@@ -17,13 +17,20 @@ use core::cmp::Ordering;
 use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 
 mod diag;
+mod graph;
 mod narrow;
+mod split;
 
 pub use diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
+pub use graph::{
+    GraphEdge, GraphVertex, IntersectionGraph, IntersectionGraphStats, MeshAnchor, Polyline,
+    build_intersection_graph,
+};
 pub use narrow::{
     BooleanNarrowPhaseStats, EndpointSource, IntersectionEndpoint, IntersectionSegment,
     SegmentKind, narrow_phase,
 };
+pub use split::{MeshSide, MeshSplitOutcome, SplitStats, split_mesh_along_graph};
 
 const LEAF_TRIANGLE_COUNT: usize = 4;
 
