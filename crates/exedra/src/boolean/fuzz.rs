@@ -19,8 +19,9 @@
 //! ratios), so the corpus is bit-identical across platforms.
 //!
 //! The same corpus also drives random `split_edge`/`split_face` op
-//! sequences with deep validation after every op — the topology-edit
-//! half of the fuzz ticket (collapse/flip ops don't exist yet).
+//! sequences with deep validation after every op — the split half of
+//! the topology-edit fuzz ticket. The collapse/flip half lives in
+//! `crate::op::torture` beside the ops themselves.
 
 use alloc::vec::Vec;
 

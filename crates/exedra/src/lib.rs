@@ -119,6 +119,7 @@ mod normals;
 mod numeric;
 pub mod op;
 mod render;
+pub mod round;
 mod session;
 mod sorted_merge;
 mod topology;
@@ -138,6 +139,7 @@ pub use mesh::{
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh, TrimeshCache};
+pub use round::{RoundError, RoundKind, RoundPolicy, RoundStats, round_sharp_edges};
 pub use session::{
     ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,
     EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,

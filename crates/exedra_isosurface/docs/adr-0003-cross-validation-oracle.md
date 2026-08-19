@@ -70,3 +70,42 @@ SplitMix64.
   weaken attribution to "statistical".
 - `ScalarField` gained `&F` / `Box<F>` forwarding impls (ei-8w1z) so
   runtime-shaped field trees compose through the combinators.
+
+## Amendment: scenario taxonomy (2026-08, bo-6o04)
+
+The single convex-operand family could not generate the failure class that
+produced the first real findings (cut-bound sliver cascades on collinear
+cut runs — exe-dnny) except by luck, and never exercised stitched meshes
+as *inputs*. The harness now runs seven seeded scenario classes, each with
+per-class reporting (`class.<key>.*` lines), counted typed-deferral skips,
+and a `--class` CLI filter:
+
+- **convex_mixed** — the original family: boxes and 8–24-gon prisms under
+  random rigid placements, left-fold trees.
+- **curved_wall** — cylindrical prisms up to 96 segments: collinear cut
+  runs and sliver cascades along curved walls by construction.
+- **nonconvex** — L/U-shaped prisms carried as single watertight meshes.
+  The referee generalizes to a *union of convex pieces* (`min` over pieces
+  of `max` over planes): each piece is one more min/max leaf, so the
+  value-space soundness argument is unchanged. Piece planes come from an
+  analytic box decomposition mapped through the rigid transform in f64
+  (no Newell slop); the witness mesh deviates from them by at most the f32
+  narrowing the mesh band already covers. Pieces deliberately overlap so
+  interior referee margins stay healthy at decomposition seams.
+- **chained** — balanced trees `(a op b) op (c op d)`: intermediate
+  pipeline outputs, with their stitched cut-curve vertex structure, feed
+  back in as operands.
+- **adversarial** — axis-aligned boxes on an exact 1/64 dyadic lattice
+  (f32-exact contact arithmetic) in deliberate sub-modes with per-sub-mode
+  run/skip counters: face_flush, shared_edge, shared_vertex, tiny_overlap
+  (2^-20), near_touch (2^-20), containment_near (63/64 scaled copy).
+- **scale** — the convex family at coordinate scales 1e-3 and 1e4.
+  Comparison bands and near-surface sampling offsets scale linearly; the
+  operand convexity sanity check is extent-relative.
+- **empty_total** — result-shape contract edges: disjoint difference /
+  intersection / union, contained intersection / difference (internal
+  cavity) / union, and identical-placement difference / intersection.
+  Zero-face results are counted (`empty_results`), never inferred.
+
+A class whose cases mostly typed-defer is itself a result: the skip map
+documents the pipeline's real envelope per configuration family.

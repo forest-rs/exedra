@@ -1001,6 +1001,12 @@ pub(crate) fn find_outgoing_half_edge(
     vertex: VertexId,
 ) -> Option<HalfEdgeId> {
     let range = equal_range_in_outgoing(outgoing_index, vertex);
+    if range.is_empty() {
+        // An empty range still has a valid start index pointing at the
+        // next vertex's first entry; returning it would hand this vertex
+        // a foreign outgoing half-edge.
+        return None;
+    }
     outgoing_index.get(range.start).map(|entry| entry.half_edge)
 }
 

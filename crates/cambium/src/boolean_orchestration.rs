@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 
 use exedra::boolean::{
     BooleanBvh, BooleanDiagnostics, BooleanError, BooleanOp, BooleanOutput, BooleanScratch,
-    build_intersection_graph, narrow_phase,
+    SeamCleanupPolicy, SeamCleanupStats, build_intersection_graph, cleanup_seams, narrow_phase,
 };
 use exedra::{FaceTriangulation, Mesh};
 
@@ -35,6 +35,9 @@ pub struct BooleanRunPolicy {
     /// Connected result components with fewer faces than this are removed
     /// during cleanup (0 disables cleanup). Every removal is reported.
     pub min_component_faces: u32,
+    /// Opt-in seam sliver cleanup applied after the pipeline (and after
+    /// tiny-component removal); `None` leaves the output untouched.
+    pub seam_cleanup: Option<SeamCleanupPolicy>,
 }
 
 impl Default for BooleanRunPolicy {
@@ -42,6 +45,7 @@ impl Default for BooleanRunPolicy {
         Self {
             strategy: FaceTriangulation::Fan,
             min_component_faces: 0,
+            seam_cleanup: None,
         }
     }
 }
@@ -71,6 +75,8 @@ pub struct BooleanCommit {
     pub output: BooleanOutput,
     /// Faces removed by tiny-component cleanup (empty when disabled).
     pub removed_component_faces: u32,
+    /// Seam sliver cleanup counters (`None` when disabled).
+    pub seam_cleanup: Option<SeamCleanupStats>,
     /// Mapped diagnostics.
     pub diagnostics: Vec<Diagnostic>,
     /// Lifecycle timings (`boolean.commit` / `boolean.cleanup` buckets).
@@ -235,9 +241,32 @@ pub fn commit_boolean(
         }
     }
 
+    let mut seam_stats = None;
+    if let Some(cleanup_policy) = &policy.seam_cleanup {
+        let _bucket = clock.bucket("boolean.seam_cleanup");
+        let stats = cleanup_seams(&mut output.mesh, cleanup_policy);
+        if stats.collapses + stats.flips > 0 {
+            mapped.push(Diagnostic::new(
+                DiagLevel::Note,
+                DiagCode::UnsupportedOperation,
+                alloc::format!(
+                    "seam cleanup applied {} collapses and {} flips",
+                    stats.collapses,
+                    stats.flips
+                ),
+            ));
+            // Collapses remove faces; drop provenance rows for dead ids.
+            output
+                .face_provenance
+                .retain(|(face, _, _)| output_face_alive(&output.mesh, *face));
+        }
+        seam_stats = Some(stats);
+    }
+
     Ok(BooleanCommit {
         output,
         removed_component_faces: removed,
+        seam_cleanup: seam_stats,
         diagnostics: mapped,
         timings: clock.timings(),
     })
@@ -385,5 +414,40 @@ mod tests {
         .expect("commits");
         assert_eq!(commit.removed_component_faces, 0);
         assert!(commit.output.mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn seam_cleanup_opt_in_reports_stats_and_stays_off_by_default() {
+        let a = cube_at(0.0);
+        let b = cube_at(0.5);
+        let mut scratch = BooleanScratch::default();
+        let default_commit = commit_boolean(
+            &a,
+            &b,
+            BooleanOp::Union,
+            &BooleanRunPolicy::default(),
+            &mut scratch,
+        )
+        .expect("commits");
+        assert!(default_commit.seam_cleanup.is_none(), "off by default");
+
+        let commit = commit_boolean(
+            &a,
+            &b,
+            BooleanOp::Union,
+            &BooleanRunPolicy {
+                seam_cleanup: Some(SeamCleanupPolicy::default()),
+                ..BooleanRunPolicy::default()
+            },
+            &mut scratch,
+        )
+        .expect("commits");
+        let stats = commit.seam_cleanup.expect("stats reported when enabled");
+        // The overlapping-cube union has no seam slivers to fix; the pass
+        // must run, report, and leave the healthy result alone.
+        assert_eq!(stats.collapses + stats.flips, 0, "{stats:?}");
+        assert!(commit.output.mesh.validate_deep().is_empty());
+        let bucket_names: Vec<&str> = commit.timings.iter().map(|t| t.name).collect();
+        assert!(bucket_names.contains(&"boolean.seam_cleanup"));
     }
 }

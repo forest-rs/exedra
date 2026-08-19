@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The spearhead gallery: six shapes through the public constructive
+//! The spearhead gallery: the scenario suite exercising the public constructive
 //! surface, standing in for an external spec compiler.
 
 use exedra::ExtractParams;
@@ -21,7 +21,7 @@ pub struct Scenario {
     pub recipe: Recipe,
 }
 
-/// Builds all six spearhead scenarios.
+/// Builds all spearhead scenarios.
 #[must_use]
 pub fn scenarios() -> Vec<Scenario> {
     vec![
@@ -32,7 +32,43 @@ pub fn scenarios() -> Vec<Scenario> {
         quarter_sweep(),
         csg_difference(),
         policy_curve(),
+        grid_shell(),
     ]
+}
+
+/// A doubly-curved shell: a 5 × 7 control grid with polynomial dome
+/// heights (no trig — deterministic across platforms) thickened into a
+/// watertight solid through the `GridSurface` node.
+fn grid_shell() -> Scenario {
+    let mut b = RecipeBuilder::new();
+    let (rows, cols) = (5_u32, 7_u32);
+    let points: Vec<[f64; 3]> = (0..rows)
+        .flat_map(|r| {
+            (0..cols).map(move |c| {
+                let (rf, cf) = (f64::from(r), f64::from(c));
+                // Parabolic dome: peaks mid-grid, zero at the rim.
+                let bump = rf * (4.0 - rf) * cf * (6.0 - cf);
+                [cf * 50.0, rf * 50.0, bump * 1.6]
+            })
+        })
+        .collect();
+    let src = b.source_ref("gallery:grid_shell");
+    let n = b
+        .with_source(src)
+        .add(NodeKind::GridSurface {
+            points,
+            rows,
+            cols,
+            close_u: false,
+            close_w: false,
+            thickness: Some(12.0),
+            placement: Placement3::IDENTITY,
+        })
+        .expect("valid grid");
+    Scenario {
+        name: "grid_shell",
+        recipe: b.finish(n).expect("valid recipe"),
+    }
 }
 
 fn rect_prism() -> Scenario {
@@ -168,12 +204,10 @@ fn csg_difference() -> Scenario {
             operands: vec![e1, e2],
         })
         .expect("valid");
-    // Translation-only placement: the rotated-drill configuration stitches
-    // a non-manifold edge today (tracked as exe-lz4w).
     let moved = b
         .add(NodeKind::Transform {
             child: csg,
-            xf: Placement3::translate(50.0, 0.0, 0.0),
+            xf: Placement3::rotate_z_then_translate(std::f64::consts::FRAC_PI_4, 50.0, 0.0, 0.0),
         })
         .expect("valid");
     Scenario {
@@ -252,31 +286,122 @@ fn main() {
                 evaluate(&scenario.recipe, &EvalPolicy::default()).expect("scenario evaluates");
             if let Some(placed) = result.bodies.first() {
                 std::fs::create_dir_all(dir).expect("obj dir");
-                let mesh = &placed.body.mesh;
-                std::fs::write(
-                    dir.join(format!("{}.obj", scenario.name)),
-                    exedra_testkit::dump::mesh_to_obj(mesh),
-                )
-                .expect("write obj");
-                // Sidecar: one FACE_REGION value per extracted triangle
-                // (fan order matches the OBJ), so viewers can shade by
-                // provenance.
-                let regions = mesh.attrs().dense(exedra::attr::FACE_REGION);
-                let mut lines = String::new();
-                for face in mesh.faces() {
-                    let degree = mesh.face_loop(face).count();
-                    let region = regions
-                        .and_then(|layer| layer.get(face.as_id()).copied())
-                        .unwrap_or(0);
-                    for _ in 0..degree.saturating_sub(2) {
-                        lines.push_str(&format!("{region}\n"));
-                    }
+                export_body(dir, scenario.name, &placed.body.mesh);
+                // Bonus body: the drilled block with its sharp edges
+                // filleted by the kernel rounding pass, strips in their
+                // own region.
+                if scenario.name == "csg_difference" {
+                    let (rounded, stats) = rounded_drill_mesh();
+                    assert!(stats.strip_faces > 0, "rounding produced strips");
+                    export_body(dir, "csg_rounded", &rounded);
                 }
-                std::fs::write(dir.join(format!("{}.regions", scenario.name)), lines)
-                    .expect("write regions");
             }
         }
     }
+}
+
+/// The rounded drill body: the drilled slab with both seam rims filleted
+/// by the kernel rounding pass (strips in region 9). Rounding constructive
+/// drill output is blocked on exe-8kli; this card rounds direct boolean
+/// output, which is the pass's proven envelope.
+fn rounded_drill_mesh() -> (exedra::Mesh, exedra::round::RoundStats) {
+    let mut mesh = drilled_slab_mesh();
+    let stats = exedra::round::round_sharp_edges(&mut mesh, &rounding_policy()).expect("rounds");
+    (mesh, stats)
+}
+
+/// A drilled slab built directly from meshes (the rounding pass's proven
+/// boolean fixture shape): slab minus a 16-gon prism through both caps.
+fn drilled_slab_mesh() -> exedra::Mesh {
+    use exedra::MeshBuilder;
+    let mut b = MeshBuilder::new();
+    // Slab 4 x 4 x 1.
+    let corners: [[f32; 3]; 8] = [
+        [0.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        [4.0, 4.0, 0.0],
+        [0.0, 4.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [4.0, 0.0, 1.0],
+        [4.0, 4.0, 1.0],
+        [0.0, 4.0, 1.0],
+    ];
+    for c in corners {
+        b.push_vertex(c);
+    }
+    for f in [
+        [3_u32, 2, 1, 0],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+    ] {
+        b.add_face(&f).expect("slab face");
+    }
+    let slab = b.build().expect("valid slab").mesh;
+
+    let n = 16_u32;
+    let mut b = MeshBuilder::new();
+    for z in [-1.0_f64, 2.0] {
+        for i in 0..n {
+            let angle = core::f64::consts::TAU * f64::from(i) / f64::from(n);
+            let p = [2.0 + 0.8 * angle.cos(), 2.0 + 0.8 * angle.sin(), z];
+            #[expect(clippy::cast_possible_truncation, reason = "gallery narrowing")]
+            b.push_vertex([p[0] as f32, p[1] as f32, p[2] as f32]);
+        }
+    }
+    let bottom: Vec<u32> = (0..n).rev().collect();
+    b.add_face(&bottom).expect("bottom cap");
+    let top: Vec<u32> = (n..2 * n).collect();
+    b.add_face(&top).expect("top cap");
+    for i in 0..n {
+        let j = (i + 1) % n;
+        b.add_face(&[i, j, n + j, n + i]).expect("side wall");
+    }
+    let prism = b.build().expect("valid prism").mesh;
+
+    let mut scratch = exedra::boolean::BooleanScratch::new();
+    let mut diagnostics = exedra::boolean::BooleanDiagnostics::default();
+    exedra::boolean::boolean_mesh(
+        &slab,
+        &prism,
+        exedra::boolean::BooleanOp::Difference,
+        exedra::FaceTriangulation::Fan,
+        &mut scratch,
+        &mut diagnostics,
+    )
+    .expect("drill boolean succeeds")
+    .mesh
+}
+
+/// The rounding policy for the gallery's filleted drill card.
+fn rounding_policy() -> exedra::round::RoundPolicy {
+    let mut policy = exedra::round::RoundPolicy::fillet(0.3);
+    policy.region = Some(9);
+    policy
+}
+
+/// Writes one OBJ plus its per-triangle `FACE_REGION` sidecar (fan order
+/// matches the OBJ), so viewers can shade by provenance.
+fn export_body(dir: &std::path::Path, name: &str, mesh: &exedra::Mesh) {
+    std::fs::write(
+        dir.join(format!("{name}.obj")),
+        exedra_testkit::dump::mesh_to_obj(mesh),
+    )
+    .expect("write obj");
+    let regions = mesh.attrs().dense(exedra::attr::FACE_REGION);
+    let mut lines = String::new();
+    for face in mesh.faces() {
+        let degree = mesh.face_loop(face).count();
+        let region = regions
+            .and_then(|layer| layer.get(face.as_id()).copied())
+            .unwrap_or(0);
+        for _ in 0..degree.saturating_sub(2) {
+            lines.push_str(&format!("{region}\n"));
+        }
+    }
+    std::fs::write(dir.join(format!("{name}.regions")), lines).expect("write regions");
 }
 
 #[cfg(test)]
@@ -287,6 +412,21 @@ mod tests {
 
     fn run(scenario: &Scenario) -> Evaluation {
         evaluate(&scenario.recipe, &EvalPolicy::default()).expect("scenario evaluates")
+    }
+
+    /// The rounded drill card: the boolean output filleted by the kernel
+    /// rounding pass stays watertight and deterministic.
+    #[test]
+    fn rounded_drill_is_clean_and_deterministic() {
+        let (a, stats_a) = rounded_drill_mesh();
+        let (b, stats_b) = rounded_drill_mesh();
+        assert_eq!(stats_a, stats_b, "rounding determinism");
+        assert!(stats_a.strip_faces > 0);
+        let errors = a.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        let (tri_a, _) = a.to_trimesh(&ExtractParams::default());
+        let (tri_b, _) = b.to_trimesh(&ExtractParams::default());
+        assert_eq!(trimesh_signature(&tri_a), trimesh_signature(&tri_b));
     }
 
     #[test]

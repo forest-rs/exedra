@@ -53,11 +53,13 @@
 
 mod add_face;
 mod add_vertex;
+mod collapse_edge;
 mod delete_edges;
 mod delete_faces;
 mod delete_vertices;
 mod dissolve_edges;
 mod dissolve_vertices;
+mod flip_edge;
 mod set_corner_normal_override;
 mod set_corner_uv;
 mod set_edge_seam;
@@ -74,11 +76,13 @@ pub use crate::session::{
 };
 pub use add_face::add_face;
 pub use add_vertex::add_vertex;
+pub use collapse_edge::{CollapseEdgeError, collapse_edge};
 pub use delete_edges::delete_edges;
 pub use delete_faces::delete_faces;
 pub use delete_vertices::delete_vertices;
 pub use dissolve_edges::dissolve_edges;
 pub use dissolve_vertices::dissolve_vertices;
+pub use flip_edge::{FlipEdgeError, flip_edge};
 pub use set_corner_normal_override::{SetCornerNormalOverrideError, set_corner_normal_override};
 pub use set_corner_uv::{SetCornerUvError, set_corner_uv};
 pub use set_edge_seam::{SetEdgeSeamError, set_edge_seam};
@@ -88,6 +92,9 @@ pub use set_vertex_position::{SetVertexPositionError, set_vertex_position};
 pub use set_vertex_sharpness::{SetVertexSharpnessError, set_vertex_sharpness};
 pub use split_edge::split_edge;
 pub use split_face::split_face;
+
+#[cfg(test)]
+mod torture;
 
 #[cfg(test)]
 mod tests {

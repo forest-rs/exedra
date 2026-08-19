@@ -17,6 +17,7 @@ use core::cmp::Ordering;
 use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 
 mod classify;
+mod cleanup;
 mod coplanar;
 mod diag;
 #[cfg(test)]
@@ -27,6 +28,7 @@ mod split;
 mod stitch;
 
 pub use classify::{ClassifyStats, Patch, PatchClassification, PatchSide, classify_patches};
+pub use cleanup::{SeamCleanupPolicy, SeamCleanupStats, cleanup_seams};
 pub use coplanar::{CoplanarContact, CoplanarStats, collect_coplanar_contacts};
 pub use diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 pub use graph::{

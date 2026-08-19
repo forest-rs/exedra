@@ -3,6 +3,34 @@
 Wasm bridge crate that executes deterministic, named Cambium scenarios and
 returns step snapshots as JSON for browser demos.
 
+## Inspection payloads (`cambium-inspect-v1`)
+
+`run_inspection_scenario_json(name)` evaluates a constructive scenario and
+returns a versioned provenance payload that lets a viewer resolve any
+picked triangle to its full construction chain without linking Rust:
+
+```
+triangle t -> bodies[b].tri_face[t] -> bodies[b].faces[f]
+           -> node (bodies[b].node, scoped by bodies[b].part)
+           -> nodes table entry (kind, fingerprint, source, material, issue)
+```
+
+The payload also carries the full diagnostics ledger, per-node fidelity
+verdicts (`exact` / `policy_defined` / `conflicted` / `envelope_only`),
+policy-curve usage, instance placements (16-value column-major matrices),
+and aggregated evaluation counters. All lists are emitted in
+deterministic order; reruns serialize byte-identically. Evolution within
+`cambium-inspect-v1` is additive-only.
+
+Inspection scenarios (`list_inspection_scenarios_json()`):
+
+- `drilled_block`: a cylinder drilled through a slab — the through-hole
+  boolean with per-operand provenance on every face.
+- `policy_curve`: an underspecified edge realized under a named curve
+  policy with a cited spec issue — exercises `conflicted` fidelity.
+- `panel_trio`: the multi-instance assembly scene; three placements share
+  one provenance-attributed body.
+
 Current scenarios:
 - `boxy_hat`
 - `wall_openings`

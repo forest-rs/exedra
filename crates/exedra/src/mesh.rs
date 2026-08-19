@@ -2058,6 +2058,18 @@ impl Mesh {
             if vertex_record.out == HalfEdgeId::INVALID {
                 continue;
             }
+            // The stored outgoing half-edge must actually originate here;
+            // a foreign reference silently corrupts star traversal.
+            let vertex = VertexId::from(vertex_id);
+            if self.from_vertex(vertex_record.out) != Some(vertex) {
+                errors.push(ValidationError::InvalidReference {
+                    owner: "vertex",
+                    owner_index: vertex_id.index(),
+                    field: "out",
+                    target_index: vertex_record.out.index(),
+                });
+                continue;
+            }
             let mut cursor = vertex_record.out;
             let start = cursor;
             let mut closed = false;
