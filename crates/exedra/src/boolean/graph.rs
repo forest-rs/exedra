@@ -14,9 +14,10 @@
 //!
 //! Touch contacts ([`SegmentKind::Touch`]) are recorded as isolated touch
 //! points: they carry classification hints for later stages but never join
-//! cut polylines. Coplanar deferrals never reach this stage as segments —
-//! they arrive as diagnostics and must be handled or propagated by the
-//! caller (this stage neither consumes nor hides them).
+//! cut polylines. A touch is one geometric point, so its two reported
+//! endpoints weld into a single graph vertex with the sharper anchor per
+//! mesh. Coplanar pairs never reach this stage as segments — the coplanar
+//! contact stage ([`super::collect_coplanar_contacts`]) owns them.
 //!
 //! All output ordering is deterministic: graph vertices in first-contact
 //! order over the (already deterministic) segment stream, edges sorted by
@@ -166,12 +167,12 @@ pub fn build_intersection_graph(
     let mut buffer = core::mem::take(&mut scratch.narrow_face_a);
 
     for segment in segments {
-        let mut endpoint_indices = [0_u32; 2];
+        let mut anchors = [(
+            MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+            MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+        ); 2];
         let mut resolved = true;
-        for (slot, endpoint) in endpoint_indices
-            .iter_mut()
-            .zip([&segment.start, &segment.end])
-        {
+        for (slot, endpoint) in anchors.iter_mut().zip([&segment.start, &segment.end]) {
             graph.stats.endpoints += 1;
             let anchor_a = resolve_anchor(
                 mesh_a,
@@ -197,6 +198,52 @@ pub fn build_intersection_graph(
                 resolved = false;
                 break;
             };
+            *slot = (anchor_a, anchor_b);
+        }
+        if !resolved {
+            continue;
+        }
+
+        if segment.kind == SegmentKind::Touch {
+            // A touch is one geometric point that the interval overlap may
+            // report with different provenance per endpoint (each bound
+            // comes from a different triangle's cut). Weld it exactly once
+            // with the sharper anchor per mesh — welding both endpoints
+            // separately would create an orphan duplicate vertex that the
+            // split stage then materializes as a duplicate mesh vertex.
+            let [(start_a, start_b), (end_a, end_b)] = anchors;
+            let anchor_a = sharper(start_a, end_a);
+            let anchor_b = sharper(start_b, end_b);
+            // The sharper endpoint's position wins (vertex-anchored
+            // positions are exact); ties keep the start deterministically.
+            let position = if anchor_rank(&end_a) + anchor_rank(&end_b)
+                > anchor_rank(&start_a) + anchor_rank(&start_b)
+            {
+                segment.end.position
+            } else {
+                segment.start.position
+            };
+            let vertex = weld_endpoint(
+                &mut graph,
+                &mut keys,
+                &mut exact_positions,
+                position,
+                anchor_a,
+                anchor_b,
+                segment.pair.a.face,
+                segment.pair.b.face,
+            );
+            if !graph.touch_points.contains(&vertex) {
+                graph.touch_points.push(vertex);
+            }
+            continue;
+        }
+
+        let mut endpoint_indices = [0_u32; 2];
+        for (slot, ((anchor_a, anchor_b), endpoint)) in endpoint_indices
+            .iter_mut()
+            .zip(anchors.into_iter().zip([&segment.start, &segment.end]))
+        {
             *slot = weld_endpoint(
                 &mut graph,
                 &mut keys,
@@ -208,23 +255,17 @@ pub fn build_intersection_graph(
                 segment.pair.b.face,
             );
         }
-        if !resolved {
-            continue;
-        }
 
         let [start, end] = endpoint_indices;
-        if segment.kind == SegmentKind::Touch || start == end {
-            if segment.kind == SegmentKind::Transversal {
-                diagnostics.push(BooleanDiagnostic {
-                    kind: BooleanFailureKind::NumericalInstability,
-                    a: Some(segment.pair.a),
-                    b: Some(segment.pair.b),
-                    detail: "transversal segment welded to a single point",
-                });
-            }
-            let vertex = start;
-            if !graph.touch_points.contains(&vertex) {
-                graph.touch_points.push(vertex);
+        if start == end {
+            diagnostics.push(BooleanDiagnostic {
+                kind: BooleanFailureKind::NumericalInstability,
+                a: Some(segment.pair.a),
+                b: Some(segment.pair.b),
+                detail: "transversal segment welded to a single point",
+            });
+            if !graph.touch_points.contains(&start) {
+                graph.touch_points.push(start);
             }
             continue;
         }
@@ -387,13 +428,16 @@ fn anchor_key(anchor: MeshAnchor) -> AnchorKey {
     }
 }
 
-fn sharper(current: MeshAnchor, candidate: MeshAnchor) -> MeshAnchor {
-    let rank = |anchor: &MeshAnchor| match anchor {
+fn anchor_rank(anchor: &MeshAnchor) -> u8 {
+    match anchor {
         MeshAnchor::Vertex(_) => 2,
         MeshAnchor::EdgeSpan(..) => 1,
         MeshAnchor::FaceInterior(_) => 0,
-    };
-    if rank(&candidate) > rank(&current) {
+    }
+}
+
+fn sharper(current: MeshAnchor, candidate: MeshAnchor) -> MeshAnchor {
+    if anchor_rank(&candidate) > anchor_rank(&current) {
         candidate
     } else {
         current

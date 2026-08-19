@@ -4,15 +4,34 @@
 //! Boolean stitch: assembling the result mesh from classified patches.
 //!
 //! [`boolean_mesh`] runs the whole pipeline — broad phase, narrow phase,
-//! intersection graph, splitting, classification, stitching — and returns
-//! one watertight result mesh with full provenance. Patch selection per
-//! operation:
+//! coplanar contact detection, intersection graph, splitting,
+//! classification, stitching — and returns one watertight result mesh
+//! with full provenance. Patch selection per operation:
 //!
 //! - **Union**: outside patches of both meshes.
 //! - **Intersection**: inside patches of both meshes.
 //! - **Difference (A − B)**: A's outside patches plus B's inside patches
 //!   with their face loops reversed (their outward normals point out of B,
 //!   which is *into* the difference solid).
+//!
+//! Coplanar face-on-face contact regions ([`PatchSide::Boundary`]) follow
+//! solid-boundary semantics. With **opposed** outward normals the
+//! operands' interiors lie on opposite sides of the contact plane; with
+//! **same** normals both interiors lie on the same side. Testing which
+//! sides of the region belong to the result gives the selection table
+//! (derivation in the ticket notes for `exe-45bt`):
+//!
+//! | op               | opposed normals | same normals |
+//! |------------------|-----------------|--------------|
+//! | Union            | drop both       | keep A copy  |
+//! | Intersection     | drop both       | keep A copy  |
+//! | Difference (A−B) | keep A copy     | drop both    |
+//!
+//! B's copy is never kept: whenever the region bounds the result, its
+//! orientation matches A's copy (Difference would flip B's copy onto A's
+//! anyway), so keeping the A copy is the deterministic choice. Union of
+//! two solids touching along a shared wall therefore removes the wall
+//! entirely; a flush-face difference opens the shared wall into the cut.
 //!
 //! Welding along the cut curves is identity-based, never positional: a
 //! graph vertex materialized on both meshes becomes exactly one output
@@ -30,6 +49,7 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 
 use super::classify::{PatchClassification, PatchSide, classify_patches};
+use super::coplanar::collect_coplanar_contacts;
 use super::diag::BooleanDiagnostics;
 use super::graph::{IntersectionGraph, build_intersection_graph};
 use super::narrow::narrow_phase;
@@ -150,6 +170,18 @@ pub fn boolean_mesh(
         &mut segments,
         diagnostics,
     );
+    // Coplanar contacts capture pre-split face polygons; this must run
+    // before splitting mutates the meshes.
+    let mut contacts = Vec::new();
+    collect_coplanar_contacts(
+        &split_a,
+        &split_b,
+        &pairs,
+        strategy,
+        scratch,
+        &mut contacts,
+        diagnostics,
+    );
     let graph = build_intersection_graph(
         &split_a,
         &split_b,
@@ -166,6 +198,7 @@ pub fn boolean_mesh(
         &graph,
         &outcome_a,
         &outcome_b,
+        &contacts,
         strategy,
         scratch,
         diagnostics,
@@ -201,13 +234,25 @@ pub fn boolean_mesh(
     .map_err(BooleanError::Build)
 }
 
-/// Which side a patch must be on to be kept, and whether its faces flip.
-fn selection(op: BooleanOp, mesh: MeshSide) -> (PatchSide, bool) {
-    match (op, mesh) {
-        (BooleanOp::Union, _) => (PatchSide::Outside, false),
-        (BooleanOp::Intersection, _) => (PatchSide::Inside, false),
-        (BooleanOp::Difference, MeshSide::A) => (PatchSide::Outside, false),
-        (BooleanOp::Difference, MeshSide::B) => (PatchSide::Inside, true),
+/// Whether a classified patch is kept, and whether its faces flip.
+///
+/// `None` drops the patch. Boundary (coplanar contact) patches follow the
+/// module-level selection table: only the A copy is ever kept, and never
+/// flipped (its outward normal already matches the result).
+fn selection(op: BooleanOp, mesh: MeshSide, side: PatchSide) -> Option<bool> {
+    match (side, op, mesh) {
+        (PatchSide::Outside, BooleanOp::Union, _)
+        | (PatchSide::Outside, BooleanOp::Difference, MeshSide::A)
+        | (PatchSide::Inside, BooleanOp::Intersection, _) => Some(false),
+        (PatchSide::Inside, BooleanOp::Difference, MeshSide::B) => Some(true),
+        (PatchSide::Boundary { opposed }, op, MeshSide::A) => {
+            let keep = match op {
+                BooleanOp::Union | BooleanOp::Intersection => !opposed,
+                BooleanOp::Difference => opposed,
+            };
+            keep.then_some(false)
+        }
+        _ => None,
     }
 }
 
@@ -261,10 +306,9 @@ fn stitch(
     let mut sources: Vec<(MeshSide, FaceId)> = Vec::new();
     let mut captured_attrs: Vec<(u32, u32, Option<f32>, Option<bool>)> = Vec::new();
     for patch in &classification.patches {
-        let (keep_side, flip) = selection(op, patch.mesh);
-        if patch.side != keep_side {
+        let Some(flip) = selection(op, patch.mesh, patch.side) else {
             continue;
-        }
+        };
         let (mesh, map) = match patch.mesh {
             MeshSide::A => (mesh_a, &mut map_a),
             MeshSide::B => (mesh_b, &mut map_b),
@@ -592,6 +636,218 @@ mod tests {
             (faces, positions)
         };
         assert_eq!(snapshot(&first.mesh), snapshot(&second.mesh));
+    }
+
+    /// Builds an axis-aligned box mesh spanning `min..max` (same face
+    /// order as `cube`: -z, +z, -y, +x, +y, -x).
+    fn box_mesh(min: [f32; 3], max: [f32; 3]) -> Mesh {
+        let positions = [
+            [min[0], min[1], min[2]],
+            [max[0], min[1], min[2]],
+            [max[0], max[1], min[2]],
+            [min[0], max[1], min[2]],
+            [min[0], min[1], max[2]],
+            [max[0], min[1], max[2]],
+            [max[0], max[1], max[2]],
+            [min[0], max[1], max[2]],
+        ];
+        let faces: [[u32; 4]; 6] = [
+            [3, 2, 1, 0],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(&face).expect("valid box face");
+        }
+        builder.build().expect("valid box").mesh
+    }
+
+    fn run_boolean(
+        mesh_a: &Mesh,
+        mesh_b: &Mesh,
+        op: BooleanOp,
+    ) -> Result<(BooleanOutput, BooleanDiagnostics), (BooleanError, BooleanDiagnostics)> {
+        let mut scratch = BooleanScratch::new();
+        let mut diagnostics = BooleanDiagnostics::default();
+        match boolean_mesh(
+            mesh_a,
+            mesh_b,
+            op,
+            FaceTriangulation::Fan,
+            &mut scratch,
+            &mut diagnostics,
+        ) {
+            Ok(output) => Ok((output, diagnostics)),
+            Err(error) => Err((error, diagnostics)),
+        }
+    }
+
+    #[test]
+    fn union_of_touching_boxes_removes_the_shared_wall() {
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        let (output, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Union).expect("touching union succeeds");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 2.0).abs() < 1e-6, "union volume {volume}");
+        assert_eq!(
+            output.mesh.faces().count(),
+            10,
+            "five faces per box; both wall copies annihilate"
+        );
+        // The shared wall (A face 3 = +x, B face 5 = -x) is gone.
+        assert!(!output.face_provenance.iter().any(|&(_, side, original)| {
+            (side == MeshSide::A && original.index() == 3)
+                || (side == MeshSide::B && original.index() == 5)
+        }));
+        // Both contact patches classified as opposed boundary regions.
+        for side in [MeshSide::A, MeshSide::B] {
+            assert!(
+                output
+                    .classification
+                    .of(side)
+                    .any(|p| p.side == PatchSide::Boundary { opposed: true }),
+                "{side:?} carries an opposed contact patch"
+            );
+        }
+        // The contact outline is a tagged seam of the merged solid.
+        assert!(output.stats.seam_edges >= 4, "{:?}", output.stats);
+    }
+
+    #[test]
+    fn union_with_partial_face_overlap_is_watertight() {
+        // B's smaller wall sits flush on a quadrant of A's wall, sharing
+        // part of the wall's boundary (within the v1 splitting envelope).
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 0.0, 0.0], [2.0, 0.5, 0.5]);
+        let (output, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Union).expect("partial-overlap union");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 1.25).abs() < 1e-6, "union volume {volume}");
+    }
+
+    #[test]
+    fn difference_carves_a_face_flush_notch() {
+        // The cutter shares three wall planes with the host: a corner
+        // notch whose walls open exactly where the flush contact was.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([0.5, 0.0, 0.0], [1.0, 0.5, 0.5]);
+        let (output, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Difference).expect("flush notch difference");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 0.875).abs() < 1e-6, "difference volume {volume}");
+        // Same-normal contacts drop for Difference: all three flush wall
+        // regions open into the notch.
+        assert!(
+            output
+                .classification
+                .of(MeshSide::A)
+                .filter(|p| p.side == PatchSide::Boundary { opposed: false })
+                .count()
+                >= 3
+        );
+    }
+
+    #[test]
+    fn difference_of_externally_touching_boxes_keeps_the_wall() {
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        let (output, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Difference).expect("touching difference");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        // A is untouched: the opposed contact region stays A's boundary.
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 1.0).abs() < 1e-6, "difference volume {volume}");
+        assert_eq!(output.mesh.faces().count(), 6);
+    }
+
+    #[test]
+    fn intersection_of_touching_boxes_is_empty() {
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        let (output, _) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Intersection).expect("touching intersection");
+        assert_eq!(
+            output.mesh.faces().count(),
+            0,
+            "a shared wall bounds no common volume"
+        );
+    }
+
+    #[test]
+    fn touching_booleans_are_deterministic() {
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        for other in [
+            box_mesh([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]),
+            box_mesh([1.0, 0.0, 0.0], [2.0, 0.5, 0.5]),
+        ] {
+            let (first, _) = run_boolean(&mesh_a, &other, BooleanOp::Union).expect("union");
+            let (second, _) = run_boolean(&mesh_a, &other, BooleanOp::Union).expect("union");
+            assert_eq!(first.face_provenance, second.face_provenance);
+            assert_eq!(first.stats, second.stats);
+            let snapshot = |mesh: &Mesh| {
+                let faces: Vec<Vec<u32>> = mesh
+                    .faces()
+                    .map(|face| {
+                        mesh.face_loop(face)
+                            .filter_map(|he| mesh.to_vertex(he))
+                            .map(|v| v.index())
+                            .collect()
+                    })
+                    .collect();
+                let positions: Vec<[u32; 3]> = mesh
+                    .vertices()
+                    .filter_map(|v| mesh.vertex_position(v))
+                    .map(|p| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()])
+                    .collect();
+                (faces, positions)
+            };
+            assert_eq!(snapshot(&first.mesh), snapshot(&second.mesh));
+        }
+    }
+
+    #[test]
+    fn interior_flush_contact_is_typed_or_correct_never_silent() {
+        // The contact region lies strictly inside A's wall, so carving it
+        // needs interior-loop splitting. Until that lands the pipeline
+        // must refuse typed (suspect patches); once it lands the result
+        // must be the correct watertight union. Silent wrong geometry is
+        // the only unacceptable outcome.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 0.25, 0.25], [2.0, 0.75, 0.75]);
+        match run_boolean(&mesh_a, &mesh_b, BooleanOp::Union) {
+            Ok((output, _)) => {
+                let errors = output.mesh.validate_deep();
+                assert!(errors.is_empty(), "{errors:?}");
+                let volume = signed_volume(&output.mesh);
+                assert!((volume - 1.25).abs() < 1e-6, "union volume {volume}");
+            }
+            Err((error, diagnostics)) => {
+                assert!(
+                    matches!(error, BooleanError::SuspectPatches { .. }),
+                    "typed refusal expected, got {error:?}"
+                );
+                assert!(!diagnostics.is_clean(), "refusal carries diagnostics");
+            }
+        }
     }
 
     #[test]

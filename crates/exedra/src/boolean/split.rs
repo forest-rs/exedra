@@ -185,6 +185,17 @@ pub fn split_mesh_along_graph(
     // --- Stage 2: group graph edges by the face they cross on this side.
     let mut per_face: HashMap<FaceId, Vec<u32>> = HashMap::new();
     for (edge_index, edge) in graph.edges.iter().enumerate() {
+        // A subsegment whose endpoints already form a mesh edge (existing
+        // edges, or edges produced by stage 1's splits) needs no face
+        // re-partitioning: the cut already lies on the mesh.
+        let [p, q] = edge.vertices;
+        let on_mesh_edge = outcome.graph_vertices[p as usize]
+            .zip(outcome.graph_vertices[q as usize])
+            .is_some_and(|(u, v)| find_half_edge(mesh, u, v).is_some());
+        if on_mesh_edge {
+            outcome.stats.on_edge_edges += 1;
+            continue;
+        }
         let mut faces: Vec<FaceId> = edge
             .crossings
             .iter()

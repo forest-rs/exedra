@@ -15,12 +15,20 @@
 //! set; only if every direction degenerates does the patch classify as
 //! [`PatchSide::Suspect`].
 //!
+//! Coplanar face-on-face contact regions (recorded before splitting by
+//! [`super::collect_coplanar_contacts`]) cannot be ray-classified — their
+//! sample points lie exactly on the other mesh — so they classify first,
+//! by exact 2D containment of the patch faces in the counterpart face
+//! polygons: such patches become [`PatchSide::Boundary`] carrying the
+//! outward-normal agreement the stitch selection table consumes.
+//!
 //! Suspicion is typed, never guessed: a patch is suspect when its cut
 //! network is provably incomplete (a graph edge attributed to one of its
 //! faces neither materialized as a mesh edge nor split the face — the
-//! splitting stage deferred it) or when ray classification exhausts its
-//! direction set. Suspect patches poison the boolean op downstream rather
-//! than silently producing wrong geometry.
+//! splitting stage deferred it), when a coplanar contact region is not
+//! cleanly separated from its surroundings, or when ray classification
+//! exhausts its direction set. Suspect patches poison the boolean op
+//! downstream rather than silently producing wrong geometry.
 //!
 //! Determinism: faces flood in ascending index order, patches emerge in
 //! ascending lowest-face order (mesh A before mesh B), sample points and
@@ -29,9 +37,12 @@
 
 use alloc::vec::Vec;
 
-use exedra_triangulate::predicates::{Orientation3d, orient3d};
+use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, orient3d};
 use hashbrown::{HashMap, HashSet};
 
+use super::coplanar::{
+    CoplanarContact, Placement, dominant_axis, place_point_in_polygon, project_point,
+};
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::graph::IntersectionGraph;
 use super::split::{MeshSide, MeshSplitOutcome};
@@ -44,8 +55,17 @@ pub enum PatchSide {
     Inside,
     /// The patch lies outside the other mesh's volume.
     Outside,
-    /// The patch could not be classified soundly (incomplete cut network
-    /// or exhausted ray directions); typed poison for downstream stages.
+    /// The patch lies exactly on the other mesh's boundary: a coplanar
+    /// face-on-face contact region.
+    Boundary {
+        /// True when the operands' outward normals oppose across the
+        /// contact (typical touching solids); false when they agree
+        /// (flush overlapping boundaries).
+        opposed: bool,
+    },
+    /// The patch could not be classified soundly (incomplete cut network,
+    /// an uncarved coplanar contact, or exhausted ray directions); typed
+    /// poison for downstream stages.
     Suspect,
 }
 
@@ -101,15 +121,23 @@ impl PatchClassification {
 /// Classifies the split meshes' patches against each other.
 ///
 /// Both meshes must already be split along `graph` (the outcomes carry the
-/// materialized cut vertices). `strategy` is the triangulation strategy the
-/// pipeline runs under (used to enumerate the other mesh's triangles for
-/// ray parity).
+/// materialized cut vertices). `contacts` are the coplanar face-on-face
+/// contacts recorded on the pre-split meshes by
+/// [`super::collect_coplanar_contacts`] (pass an empty slice when no
+/// coplanar handling is wanted). `strategy` is the triangulation strategy
+/// the pipeline runs under (used to enumerate the other mesh's triangles
+/// for ray parity and to sample face interiors).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pipeline stage threading fixed pipeline context"
+)]
 pub fn classify_patches(
     mesh_a: &Mesh,
     mesh_b: &Mesh,
     graph: &IntersectionGraph,
     outcome_a: &MeshSplitOutcome,
     outcome_b: &MeshSplitOutcome,
+    contacts: &[CoplanarContact],
     strategy: FaceTriangulation,
     scratch: &mut super::BooleanScratch,
     diagnostics: &mut BooleanDiagnostics,
@@ -127,6 +155,7 @@ pub fn classify_patches(
             other,
             graph,
             outcome,
+            contacts,
             strategy,
             &mut buffer,
             &mut classification.stats,
@@ -158,11 +187,26 @@ fn classify_one_side(
     other: &Mesh,
     graph: &IntersectionGraph,
     outcome: &MeshSplitOutcome,
+    contacts: &[CoplanarContact],
     strategy: FaceTriangulation,
     buffer: &mut Vec<[crate::CornerId; 3]>,
     stats: &mut ClassifyStats,
     diagnostics: &mut BooleanDiagnostics,
 ) -> Vec<Patch> {
+    // --- Coplanar contacts keyed by this side's pre-split face, with the
+    // split stage's origin mapping to reach post-split faces.
+    let mut contacts_by_face: HashMap<FaceId, Vec<u32>> = HashMap::new();
+    for (index, contact) in contacts.iter().enumerate() {
+        let key = match side {
+            MeshSide::A => contact.face_a,
+            MeshSide::B => contact.face_b,
+        };
+        contacts_by_face
+            .entry(key)
+            .or_default()
+            .push(u32::try_from(index).unwrap_or(u32::MAX));
+    }
+    let origins: HashMap<FaceId, FaceId> = outcome.face_origins.iter().copied().collect();
     // --- Cut edges as sorted mesh-vertex pairs.
     let mut cut_edges: HashSet<(VertexId, VertexId)> = HashSet::new();
     let mut cut_vertices: HashSet<VertexId> = HashSet::new();
@@ -278,6 +322,37 @@ fn classify_one_side(
             });
             continue;
         }
+        // --- Coplanar contact regions classify by exact 2D containment;
+        // their sample points lie on the other mesh, so rays cannot see
+        // them. A patch must be entirely contact (consistent normal
+        // agreement) or entirely clear — a mix means the contact region
+        // was not carved out cleanly, which is typed, not guessed.
+        match patch_contact(
+            mesh,
+            patch,
+            contacts,
+            &contacts_by_face,
+            &origins,
+            side,
+            strategy,
+            buffer,
+        ) {
+            PatchContact::Clear => {}
+            PatchContact::Contact { opposed } => {
+                patch.side = PatchSide::Boundary { opposed };
+                continue;
+            }
+            PatchContact::Ambiguous => {
+                patch.side = PatchSide::Suspect;
+                diagnostics.push(BooleanDiagnostic {
+                    kind: BooleanFailureKind::CoplanarAmbiguity,
+                    a: None,
+                    b: None,
+                    detail: "coplanar contact region is not cleanly separated in this patch",
+                });
+                continue;
+            }
+        }
         let sample = sample_point(mesh, patch, &cut_vertices);
         stats.ray_tests += 1;
         match ray_parity(sample, other, strategy, buffer, &mut stats.ray_retries) {
@@ -304,6 +379,191 @@ fn sorted_pair(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
     } else {
         (b, a)
     }
+}
+
+/// Whether a patch is a coplanar contact region.
+enum PatchContact {
+    /// No face of the patch lies in a contact region.
+    Clear,
+    /// Every face lies in a contact region with consistent normal
+    /// agreement.
+    Contact {
+        /// Outward-normal agreement across the contact.
+        opposed: bool,
+    },
+    /// Mixed or undecidable membership; typed suspicion.
+    Ambiguous,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading fixed classification context"
+)]
+fn patch_contact(
+    mesh: &Mesh,
+    patch: &Patch,
+    contacts: &[CoplanarContact],
+    contacts_by_face: &HashMap<FaceId, Vec<u32>>,
+    origins: &HashMap<FaceId, FaceId>,
+    side: MeshSide,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+) -> PatchContact {
+    let mut contact: Option<bool> = None;
+    let mut clear = false;
+    for &face in &patch.faces {
+        let origin = origins.get(&face).copied().unwrap_or(face);
+        let Some(indices) = contacts_by_face.get(&origin) else {
+            clear = true;
+            continue;
+        };
+        match face_contact(mesh, face, contacts, indices, side, strategy, buffer) {
+            PatchContact::Clear => clear = true,
+            PatchContact::Contact { opposed } => match contact {
+                None => contact = Some(opposed),
+                Some(seen) if seen == opposed => {}
+                Some(_) => return PatchContact::Ambiguous,
+            },
+            PatchContact::Ambiguous => return PatchContact::Ambiguous,
+        }
+    }
+    match contact {
+        Some(_) if clear => PatchContact::Ambiguous,
+        Some(opposed) => PatchContact::Contact { opposed },
+        None => PatchContact::Clear,
+    }
+}
+
+/// Decides whether one post-split face lies inside a counterpart contact
+/// polygon.
+///
+/// Splitting carves contact regions along their boundary curves, so a
+/// face is expected to be entirely inside or entirely outside each
+/// contact: a strictly-inside vertex with no strictly-outside vertex is
+/// containment, the reverse is clearance, a mix is typed ambiguity. When
+/// every vertex sits exactly on the counterpart boundary (a face that
+/// coincides with the whole contact region), an interior sample from the
+/// face's own triangulation decides — after an exact check that the
+/// sample really is interior to the face.
+fn face_contact(
+    mesh: &Mesh,
+    face: FaceId,
+    contacts: &[CoplanarContact],
+    indices: &[u32],
+    side: MeshSide,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+) -> PatchContact {
+    let mut contact: Option<bool> = None;
+    for &index in indices {
+        let entry = &contacts[index as usize];
+        let counterpart = match side {
+            MeshSide::A => &entry.polygon_b,
+            MeshSide::B => &entry.polygon_a,
+        };
+        let mut strictly_inside = 0_u32;
+        let mut strictly_outside = 0_u32;
+        let mut own_polygon: Vec<[f64; 2]> = Vec::new();
+        for half_edge in mesh.face_loop(face) {
+            let Some(p) = mesh
+                .to_vertex(half_edge)
+                .and_then(|v| mesh.vertex_position(v))
+            else {
+                continue;
+            };
+            let projected = project_point(promote(p), entry.axis);
+            own_polygon.push(projected);
+            match place_point_in_polygon(projected, counterpart) {
+                Placement::Inside => strictly_inside += 1,
+                Placement::Outside => strictly_outside += 1,
+                Placement::OnBoundary => {}
+            }
+        }
+        if strictly_inside > 0 && strictly_outside > 0 {
+            return PatchContact::Ambiguous;
+        }
+        let inside = if strictly_inside > 0 {
+            true
+        } else if strictly_outside > 0 {
+            false
+        } else {
+            // Every vertex on the counterpart boundary: decide by an
+            // interior sample of this face.
+            match interior_sample_placement(
+                mesh,
+                face,
+                entry.axis,
+                &own_polygon,
+                counterpart,
+                strategy,
+                buffer,
+            ) {
+                Some(Placement::Inside) => true,
+                Some(Placement::Outside) => false,
+                _ => return PatchContact::Ambiguous,
+            }
+        };
+        if inside {
+            match contact {
+                None => contact = Some(entry.opposed),
+                Some(seen) if seen == entry.opposed => {}
+                Some(_) => return PatchContact::Ambiguous,
+            }
+        }
+    }
+    match contact {
+        Some(opposed) => PatchContact::Contact { opposed },
+        None => PatchContact::Clear,
+    }
+}
+
+/// Places a face-interior sample against the counterpart polygon.
+///
+/// The sample is the centroid of the face's first non-flat triangle under
+/// the pipeline's strategy — the same triangles every other stage treats
+/// as the face's authoritative geometry. The centroid is an f64
+/// construction, so before trusting it the sample must place strictly
+/// inside the face's own projected polygon (exact test); otherwise the
+/// configuration is reported as undecidable rather than guessed.
+fn interior_sample_placement(
+    mesh: &Mesh,
+    face: FaceId,
+    axis: usize,
+    own_polygon: &[[f64; 2]],
+    counterpart: &[[f64; 2]],
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+) -> Option<Placement> {
+    let _ = mesh.face_triangles_into(face, strategy, buffer);
+    for triangle in buffer.iter() {
+        let mut corners = [[0.0_f64; 3]; 3];
+        let mut live = true;
+        for (slot, corner) in corners.iter_mut().zip(triangle) {
+            match mesh
+                .to_vertex(*corner)
+                .and_then(|v| mesh.vertex_position(v))
+            {
+                Some(p) => *slot = promote(p),
+                None => live = false,
+            }
+        }
+        if !live || triangle_is_flat(corners) {
+            continue;
+        }
+        let centroid = project_point(
+            [
+                (corners[0][0] + corners[1][0] + corners[2][0]) / 3.0,
+                (corners[0][1] + corners[1][1] + corners[2][1]) / 3.0,
+                (corners[0][2] + corners[1][2] + corners[2][2]) / 3.0,
+            ],
+            axis,
+        );
+        if place_point_in_polygon(centroid, own_polygon) != Placement::Inside {
+            return None; // Not a trustworthy interior sample.
+        }
+        return Some(place_point_in_polygon(centroid, counterpart));
+    }
+    None
 }
 
 /// A deterministic sample point for the patch: the lowest-index patch
@@ -460,12 +720,24 @@ enum Crossing {
     Degenerate,
 }
 
-/// Exact segment-triangle crossing: strict crossings only; any coplanar
-/// sign is a degeneracy (the caller retries a different ray).
+/// Exact segment-triangle crossing: strict crossings only.
+///
+/// A start point in the triangle's plane is common for touching solids
+/// (patch samples lie in a contact plane shared with the other mesh): the
+/// segment then meets the plane at the start point alone, so a start
+/// strictly outside the triangle is an exact miss for every direction.
+/// Any other coplanar sign is a degeneracy (the caller retries a
+/// different ray).
 fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Crossing {
     let sp = orient3d(t[0], t[1], t[2], p);
     let sq = orient3d(t[0], t[1], t[2], q);
-    if sp == Orientation3d::Coplanar || sq == Orientation3d::Coplanar {
+    if sp == Orientation3d::Coplanar {
+        if sq != Orientation3d::Coplanar && point_strictly_outside_triangle(p, t) {
+            return Crossing::Misses;
+        }
+        return Crossing::Degenerate;
+    }
+    if sq == Orientation3d::Coplanar {
         return Crossing::Degenerate;
     }
     if sp == sq {
@@ -485,6 +757,34 @@ fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Cross
     } else {
         Crossing::Misses
     }
+}
+
+/// Exact test that a point in a (non-flat) triangle's plane lies strictly
+/// outside the triangle, via [`orient2d`] signs in the dominant-axis
+/// projection: strictly outside means on the opposite side of some edge
+/// from the triangle's interior.
+fn point_strictly_outside_triangle(p: [f64; 3], t: [[f64; 3]; 3]) -> bool {
+    let u = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+    let v = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+    let normal = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let axis = dominant_axis(normal);
+    let corners = [
+        project_point(t[0], axis),
+        project_point(t[1], axis),
+        project_point(t[2], axis),
+    ];
+    let interior = orient2d(corners[0], corners[1], corners[2]);
+    if interior == Orientation::Collinear {
+        return false; // Flat in projection; the caller filtered flats.
+    }
+    (0..3).any(|i| {
+        let side = orient2d(corners[i], corners[(i + 1) % 3], project_point(p, axis));
+        side != Orientation::Collinear && side != interior
+    })
 }
 
 #[cfg(test)]
@@ -561,6 +861,7 @@ mod tests {
             &graph,
             &outcome_a,
             &outcome_b,
+            &[],
             strategy,
             &mut scratch,
             &mut diagnostics,
@@ -617,6 +918,7 @@ mod tests {
             &graph,
             &outcome_a,
             &outcome_b,
+            &[],
             strategy,
             &mut scratch,
             &mut diagnostics,

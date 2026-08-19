@@ -24,8 +24,10 @@ pub enum BooleanFailureKind {
     NonManifoldInput,
     /// A single input mesh intersects itself.
     SelfIntersectionDetected,
-    /// A candidate triangle pair is exactly coplanar; coplanar overlap
-    /// handling is deferred, and the pair is reported instead of guessed.
+    /// An exactly coplanar configuration outside the handled face-on-face
+    /// contact envelope (non-planar faces hiding coplanar triangles,
+    /// degenerate orientation probes, contact regions not cleanly carved);
+    /// reported instead of guessed.
     CoplanarAmbiguity,
     /// A quantity fell inside the tolerance band where classification is
     /// unreliable.

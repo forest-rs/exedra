@@ -17,9 +17,12 @@
 //! constructive source maps compose with later.
 //!
 //! Never panics: degenerate and ambiguous inputs are classified into the
-//! caller's [`BooleanDiagnostics`] and skipped. Coplanar overlapping pairs
-//! are a typed deferral ([`BooleanFailureKind::CoplanarAmbiguity`]) — see
-//! the ticket notes; they are reported, never silently dropped.
+//! caller's [`BooleanDiagnostics`] and skipped. Exactly coplanar pairs
+//! produce no segments here: they are counted in
+//! [`BooleanNarrowPhaseStats::coplanar_pairs`] and owned by the coplanar
+//! contact stage ([`super::collect_coplanar_contacts`]), which handles
+//! face-on-face overlap regions and reports what it cannot handle as
+//! typed [`super::BooleanFailureKind::CoplanarAmbiguity`] deferrals.
 
 use alloc::vec::Vec;
 
@@ -86,7 +89,8 @@ pub struct BooleanNarrowPhaseStats {
     pub segments: u64,
     /// Touch contacts emitted.
     pub touches: u64,
-    /// Pairs skipped as exactly coplanar (typed deferral).
+    /// Pairs skipped as exactly coplanar (owned by the coplanar contact
+    /// stage, [`super::collect_coplanar_contacts`]).
     pub coplanar_pairs: u64,
     /// Pairs skipped for degenerate input triangles.
     pub degenerate_pairs: u64,
@@ -154,15 +158,9 @@ pub fn narrow_phase(
                 out.push(segment);
             }
             PairOutcome::Disjoint => stats.disjoint_pairs += 1,
-            PairOutcome::Coplanar => {
-                stats.coplanar_pairs += 1;
-                diagnostics.push(BooleanDiagnostic {
-                    kind: BooleanFailureKind::CoplanarAmbiguity,
-                    a: Some(pair.a),
-                    b: Some(pair.b),
-                    detail: "exactly coplanar candidate pair; coplanar overlap is deferred",
-                });
-            }
+            // Coplanar pairs are the coplanar contact stage's input; they
+            // are counted here, not diagnosed.
+            PairOutcome::Coplanar => stats.coplanar_pairs += 1,
             PairOutcome::Degenerate => {
                 stats.degenerate_pairs += 1;
                 diagnostics.push(BooleanDiagnostic {
