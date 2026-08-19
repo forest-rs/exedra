@@ -19,6 +19,8 @@ use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 mod classify;
 mod coplanar;
 mod diag;
+#[cfg(test)]
+mod fuzz;
 mod graph;
 mod narrow;
 mod split;

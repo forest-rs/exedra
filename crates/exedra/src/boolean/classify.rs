@@ -10,10 +10,13 @@
 //! (never crossing a cut edge), then decides Inside/Outside per patch by
 //! exact ray parity against the other mesh — a segment-triangle test built
 //! entirely from [`exedra_triangulate::predicates::orient3d`] signs over
-//! exactly promoted coordinates. Rays that graze anything (any coplanar
-//! sign anywhere) retry with the next direction from a fixed, documented
-//! set; only if every direction degenerates does the patch classify as
-//! [`PatchSide::Suspect`].
+//! exactly promoted coordinates. Rays that graze anything retry with the
+//! next direction from a fixed, documented set; only if every direction
+//! degenerates does the patch classify as [`PatchSide::Suspect`]. A ray
+//! endpoint lying on a triangle's supporting plane but exactly outside
+//! the triangle is a miss, not a graze — split meshes carry whole fans of
+//! triangles exactly in the cut planes, and sample points on those planes
+//! would otherwise never classify.
 //!
 //! Coplanar face-on-face contact regions (recorded before splitting by
 //! [`super::collect_coplanar_contacts`]) cannot be ray-classified — their
@@ -353,7 +356,7 @@ fn classify_one_side(
                 continue;
             }
         }
-        let sample = sample_point(mesh, patch, &cut_vertices);
+        let sample = sample_point(mesh, patch, &cut_vertices, strategy, buffer);
         stats.ray_tests += 1;
         match ray_parity(sample, other, strategy, buffer, &mut stats.ray_retries) {
             Some(true) => patch.side = PatchSide::Inside,
@@ -568,8 +571,24 @@ fn interior_sample_placement(
 
 /// A deterministic sample point for the patch: the lowest-index patch
 /// vertex not on the cut curve (exact original geometry), else the
-/// vertex-average centroid of the lowest-index face.
-fn sample_point(mesh: &Mesh, patch: &Patch, cut_vertices: &HashSet<VertexId>) -> [f64; 3] {
+/// centroid of the largest-area triangle across the patch's faces.
+///
+/// The fallback must stand as far from the cut curve as the patch allows:
+/// cut vertices are f32-narrowed constructions, so sliver faces hugging
+/// the curve genuinely poke a hair past the other solid's surface, and a
+/// sample taken on such a sliver classifies the whole patch by narrowing
+/// noise (a through-hole disk patch — every vertex on the cut — once
+/// classified Outside this way, leaving the result an open tube). The
+/// largest triangle's centroid maximizes clearance deterministically:
+/// areas compare in f64 over exactly promoted coordinates, ties keep the
+/// first (lowest face, earliest triangle).
+fn sample_point(
+    mesh: &Mesh,
+    patch: &Patch,
+    cut_vertices: &HashSet<VertexId>,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+) -> [f64; 3] {
     let mut best: Option<VertexId> = None;
     for &face in &patch.faces {
         for half_edge in mesh.face_loop(face) {
@@ -589,22 +608,54 @@ fn sample_point(mesh: &Mesh, patch: &Patch, cut_vertices: &HashSet<VertexId>) ->
     {
         return promote(p);
     }
-    // All patch vertices lie on the cut: fall back to the centroid of the
-    // lowest face (patch faces are sorted).
-    let face = patch.faces[0];
-    let mut sum = [0.0_f64; 3];
-    let mut count = 0.0_f64;
-    for half_edge in mesh.face_loop(face) {
-        if let Some(p) = mesh
-            .to_vertex(half_edge)
-            .and_then(|v| mesh.vertex_position(v))
-        {
-            let p = promote(p);
-            sum = [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]];
-            count += 1.0;
+    // All patch vertices lie on the cut: sample the centroid of the
+    // largest triangle in the patch (patch faces are sorted ascending).
+    let mut best_area = -1.0_f64;
+    let mut best_centroid = [0.0_f64; 3];
+    for &face in &patch.faces {
+        let _ = mesh.face_triangles_into(face, strategy, buffer);
+        for triangle in buffer.iter() {
+            let mut corners = [[0.0_f64; 3]; 3];
+            let mut live = true;
+            for (slot, corner) in corners.iter_mut().zip(triangle) {
+                match mesh
+                    .to_vertex(*corner)
+                    .and_then(|v| mesh.vertex_position(v))
+                {
+                    Some(p) => *slot = promote(p),
+                    None => live = false,
+                }
+            }
+            if !live {
+                continue;
+            }
+            let u = [
+                corners[1][0] - corners[0][0],
+                corners[1][1] - corners[0][1],
+                corners[1][2] - corners[0][2],
+            ];
+            let v = [
+                corners[2][0] - corners[0][0],
+                corners[2][1] - corners[0][1],
+                corners[2][2] - corners[0][2],
+            ];
+            let cross = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let area = cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2];
+            if area > best_area {
+                best_area = area;
+                best_centroid = [
+                    (corners[0][0] + corners[1][0] + corners[2][0]) / 3.0,
+                    (corners[0][1] + corners[1][1] + corners[2][1]) / 3.0,
+                    (corners[0][2] + corners[1][2] + corners[2][2]) / 3.0,
+                ];
+            }
         }
     }
-    [sum[0] / count, sum[1] / count, sum[2] / count]
+    best_centroid
 }
 
 fn promote(p: &[f32; 3]) -> [f64; 3] {
@@ -722,23 +773,35 @@ enum Crossing {
 
 /// Exact segment-triangle crossing: strict crossings only.
 ///
-/// A start point in the triangle's plane is common for touching solids
-/// (patch samples lie in a contact plane shared with the other mesh): the
-/// segment then meets the plane at the start point alone, so a start
-/// strictly outside the triangle is an exact miss for every direction.
-/// Any other coplanar sign is a degeneracy (the caller retries a
-/// different ray).
+/// An endpoint on the triangle's supporting plane is not automatically a
+/// degeneracy: split meshes carry many triangles exactly in the cut
+/// planes, and patch samples of touching solids lie in contact planes
+/// shared with the other mesh — such points would otherwise degenerate
+/// every ray direction. When exactly one endpoint is coplanar and lies
+/// strictly outside the triangle (exact in-plane test), the segment only
+/// touches the plane where the triangle is not — a miss. An endpoint
+/// inside or on the triangle, or a segment lying in the plane, is a
+/// genuine degeneracy (the caller retries a different ray).
 fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Crossing {
     let sp = orient3d(t[0], t[1], t[2], p);
     let sq = orient3d(t[0], t[1], t[2], q);
-    if sp == Orientation3d::Coplanar {
-        if sq != Orientation3d::Coplanar && point_strictly_outside_triangle(p, t) {
-            return Crossing::Misses;
+    match (sp == Orientation3d::Coplanar, sq == Orientation3d::Coplanar) {
+        (true, true) => return Crossing::Degenerate,
+        (true, false) => {
+            return if point_strictly_outside_triangle(p, t) {
+                Crossing::Misses
+            } else {
+                Crossing::Degenerate
+            };
         }
-        return Crossing::Degenerate;
-    }
-    if sq == Orientation3d::Coplanar {
-        return Crossing::Degenerate;
+        (false, true) => {
+            return if point_strictly_outside_triangle(q, t) {
+                Crossing::Misses
+            } else {
+                Crossing::Degenerate
+            };
+        }
+        (false, false) => {}
     }
     if sp == sq {
         return Crossing::Misses;

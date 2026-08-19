@@ -56,3 +56,24 @@ contract is now strategy-explicit:
 Broad-phase output under `Fan` is unchanged. The `BooleanScratch` face-corner
 buffer is currently unused by collection (the enumeration allocates per
 face); reclaiming that allocation belongs to `exe-fui5`.
+
+## Amendment (2026-08-19, tickets `exe-dnny`, `exe-04ex`)
+
+Two classification/contract rules changed after the boolean_oracle
+cross-validation harness (ei-c48a) found silently wrong outputs:
+
+- **Patch sampling.** A patch whose every vertex lies on the cut curve (a
+  through-hole disk, for example) can no longer be sampled from an
+  arbitrary face: cut vertices are f32-narrowed constructions, so sliver
+  faces hugging the curve genuinely poke a hair past the other solid's
+  surface, and a sample taken on such a sliver classified the whole patch
+  by narrowing noise (the misclassified disk left the result an open tube
+  — watertightness is not implied by `validate_deep`, which permits
+  boundaries). The fallback sample is now the centroid of the
+  largest-area triangle across the patch, maximizing clearance from the
+  cut deterministically. Regression fixtures with independently computed
+  exact volumes live in the stitch tests (`oracle_regression_*`).
+- **Invariant-violation contract.** `BooleanFailureKind::
+  InternalInvariantViolation` diagnostics recorded during a run now fail
+  `boolean_mesh` with the typed `BooleanError::InvariantViolation` instead
+  of returning geometry the pipeline no longer vouches for.

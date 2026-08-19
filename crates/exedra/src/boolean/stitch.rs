@@ -116,6 +116,13 @@ pub enum BooleanError {
     /// The output mesh could not be rebuilt (an internal invariant
     /// violation, not an input problem).
     Build(BuildError),
+    /// A pipeline stage diagnosed an internal invariant violation
+    /// ([`super::BooleanFailureKind::InternalInvariantViolation`]); the
+    /// assembled result would be unreliable, so no geometry is returned.
+    InvariantViolation {
+        /// Invariant-violation diagnostics recorded during this run.
+        count: u64,
+    },
 }
 
 impl core::fmt::Display for BooleanError {
@@ -125,6 +132,12 @@ impl core::fmt::Display for BooleanError {
                 write!(f, "{count} suspect patches; boolean result withheld")
             }
             Self::Build(e) => write!(f, "stitch rebuild failed: {e:?}"),
+            Self::InvariantViolation { count } => {
+                write!(
+                    f,
+                    "{count} internal invariant violations; boolean result withheld"
+                )
+            }
         }
     }
 }
@@ -142,6 +155,9 @@ impl core::error::Error for BooleanError {}
 ///
 /// [`BooleanError::SuspectPatches`] when classification could not soundly
 /// decide every patch (deferred splits, exhausted rays, coplanar overlap);
+/// [`BooleanError::InvariantViolation`] when any stage diagnosed an
+/// internal invariant violation (always a pipeline bug, never an input
+/// problem — the result is withheld rather than returned wrong);
 /// [`BooleanError::Build`] when output assembly violates an invariant.
 pub fn boolean_mesh(
     mesh_a: &Mesh,
@@ -152,6 +168,8 @@ pub fn boolean_mesh(
     diagnostics: &mut BooleanDiagnostics,
 ) -> Result<BooleanOutput, BooleanError> {
     // Splitting mutates: the pipeline works on private clones.
+    let invariant_baseline =
+        diagnostics.count_of(super::BooleanFailureKind::InternalInvariantViolation);
     let mut split_a = mesh_a.clone();
     let mut split_b = mesh_b.clone();
 
@@ -203,6 +221,16 @@ pub fn boolean_mesh(
         scratch,
         diagnostics,
     );
+    // Invariant-violation diagnostics are always bugs, never input
+    // problems: a stage that recorded one has left its mesh in a state the
+    // pipeline no longer vouches for, so the result is withheld even when
+    // classification looks clean.
+    let invariant_now = diagnostics.count_of(super::BooleanFailureKind::InternalInvariantViolation);
+    if invariant_now > invariant_baseline {
+        return Err(BooleanError::InvariantViolation {
+            count: (invariant_now - invariant_baseline) as u64,
+        });
+    }
     if classification.any_suspect() {
         return Err(BooleanError::SuspectPatches {
             count: classification.stats.suspect_patches,
@@ -880,5 +908,588 @@ mod tests {
         assert!(union.mesh.validate_deep().is_empty());
         let volume = signed_volume(&union.mesh);
         assert!((volume - 2.0).abs() < 1e-6);
+    }
+
+    /// A 4 x 4 x 1 box centered at the origin: the drill-through target.
+    fn slab() -> Mesh {
+        let positions = [
+            [-2.0, -2.0, -0.5],
+            [2.0, -2.0, -0.5],
+            [2.0, 2.0, -0.5],
+            [-2.0, 2.0, -0.5],
+            [-2.0, -2.0, 0.5],
+            [2.0, -2.0, 0.5],
+            [2.0, 2.0, 0.5],
+            [-2.0, 2.0, 0.5],
+        ];
+        let faces: [[u32; 4]; 6] = [
+            [3, 2, 1, 0],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(&face).expect("valid slab face");
+        }
+        builder.build().expect("valid slab").mesh
+    }
+
+    /// A regular 16-gon prism, radius 0.8, z in [-1.5, 1.5]: pierces the
+    /// slab completely so each slab cap sees a closed interior loop.
+    fn drill_prism() -> Mesh {
+        let n = 16_u32;
+        let mut builder = MeshBuilder::new();
+        for z in [-1.5_f64, 1.5] {
+            for i in 0..n {
+                let angle = core::f64::consts::TAU * f64::from(i) / f64::from(n);
+                let position = [0.8 * angle.cos(), 0.8 * angle.sin(), z];
+                #[expect(clippy::cast_possible_truncation, reason = "test geometry narrowing")]
+                builder.push_vertex([position[0] as f32, position[1] as f32, position[2] as f32]);
+            }
+        }
+        let bottom: Vec<u32> = (0..n).rev().collect();
+        builder.add_face(&bottom).expect("bottom cap");
+        let top: Vec<u32> = (n..2 * n).collect();
+        builder.add_face(&top).expect("top cap");
+        for i in 0..n {
+            let j = (i + 1) % n;
+            builder.add_face(&[i, j, n + j, n + i]).expect("side wall");
+        }
+        builder.build().expect("valid prism").mesh
+    }
+
+    /// Exact cross-section area of the drill prism (regular n-gon).
+    fn drill_area() -> f64 {
+        0.5 * 16.0 * 0.8 * 0.8 * (core::f64::consts::TAU / 16.0).sin()
+    }
+
+    fn run_drill(op: BooleanOp) -> (BooleanOutput, BooleanDiagnostics) {
+        let mut scratch = BooleanScratch::new();
+        let mut diagnostics = BooleanDiagnostics::default();
+        let output = boolean_mesh(
+            &slab(),
+            &drill_prism(),
+            op,
+            FaceTriangulation::Fan,
+            &mut scratch,
+            &mut diagnostics,
+        )
+        .expect("drill boolean succeeds");
+        (output, diagnostics)
+    }
+
+    /// Euler characteristic over the closed surface (V - E + F): 2 for a
+    /// sphere-like shell, 0 for a single through-hole shell.
+    fn euler_characteristic(mesh: &Mesh) -> i64 {
+        let vertices = i64::try_from(mesh.vertices().count()).expect("small");
+        let faces = i64::try_from(mesh.faces().count()).expect("small");
+        let half_edges: usize = mesh.faces().map(|face| mesh.face_loop(face).count()).sum();
+        let edges = i64::try_from(half_edges).expect("small") / 2;
+        vertices - edges + faces
+    }
+
+    #[test]
+    fn drill_difference_is_a_holed_watertight_solid() {
+        let (output, diagnostics) = run_drill(BooleanOp::Difference);
+        // The former interior-loop deferral is gone for this shape.
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        // V = slab - hole cross-section * thickness.
+        let volume = signed_volume(&output.mesh);
+        let expected = 16.0 - drill_area();
+        assert!(
+            (volume - expected).abs() < 1e-3,
+            "difference volume {volume}, expected {expected}"
+        );
+        // Genus 1: a genuine hole through the shell, not a dent.
+        assert_eq!(euler_characteristic(&output.mesh), 0, "through-hole shell");
+        assert!(output.stats.seam_edges > 0, "hole rims tagged as seams");
+    }
+
+    #[test]
+    fn drill_union_and_intersection_volumes_match_closed_form() {
+        let (union, diagnostics) = run_drill(BooleanOp::Union);
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = union.mesh.validate_deep();
+        assert!(errors.is_empty(), "union: {errors:?}");
+        let volume = signed_volume(&union.mesh);
+        let expected = 16.0 + 2.0 * drill_area();
+        assert!(
+            (volume - expected).abs() < 1e-3,
+            "union volume {volume}, expected {expected}"
+        );
+
+        let (intersection, diagnostics) = run_drill(BooleanOp::Intersection);
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = intersection.mesh.validate_deep();
+        assert!(errors.is_empty(), "intersection: {errors:?}");
+        let volume = signed_volume(&intersection.mesh);
+        let expected = drill_area();
+        assert!(
+            (volume - expected).abs() < 1e-3,
+            "intersection volume {volume}, expected {expected}"
+        );
+        // The intersection is the prism segment inside the slab: a plain
+        // sphere-like shell.
+        assert_eq!(euler_characteristic(&intersection.mesh), 2);
+    }
+
+    #[test]
+    fn drill_provenance_covers_every_output_face() {
+        let (output, _) = run_drill(BooleanOp::Difference);
+        assert_eq!(
+            output.face_provenance.len(),
+            output.mesh.faces().count(),
+            "every output face is attributed"
+        );
+        // Originals are pre-split faces of the operands: slab has 6,
+        // prism has 18.
+        for &(_, side, original) in &output.face_provenance {
+            let limit = match side {
+                MeshSide::A => 6,
+                MeshSide::B => 18,
+            };
+            assert!(
+                original.index() < limit,
+                "original {original:?} is pre-split"
+            );
+        }
+    }
+
+    #[test]
+    fn drill_boolean_is_deterministic() {
+        let (first, _) = run_drill(BooleanOp::Difference);
+        let (second, _) = run_drill(BooleanOp::Difference);
+        assert_eq!(first.face_provenance, second.face_provenance);
+        assert_eq!(first.stats, second.stats);
+        let snapshot = |mesh: &Mesh| {
+            let faces: Vec<Vec<u32>> = mesh
+                .faces()
+                .map(|face| {
+                    mesh.face_loop(face)
+                        .filter_map(|he| mesh.to_vertex(he))
+                        .map(|v| v.index())
+                        .collect()
+                })
+                .collect();
+            let positions: Vec<[u32; 3]> = mesh
+                .vertices()
+                .filter_map(|v| mesh.vertex_position(v))
+                .map(|p| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()])
+                .collect();
+            (faces, positions)
+        };
+        assert_eq!(snapshot(&first.mesh), snapshot(&second.mesh));
+    }
+
+    // --- Oracle regression fixtures (exe-dnny): rotated convex operands
+    // whose intersection once misclassified a through-hole disk patch.
+    // Every disk vertex lies on the cut curve, so the patch sample falls
+    // back to face geometry; before the largest-triangle rule it sampled a
+    // sliver hugging the cut whose f32-narrowed centroid landed a hair
+    // outside the other solid, dropping the whole disk and leaving the
+    // result an open tube (validate_deep-clean, since boundaries are
+    // legal). Expected volumes are exact convex half-space clipping
+    // results computed independently of the pipeline.
+
+    fn oracle_5613_prism() -> Mesh {
+        let positions: [[f32; 3]; 48] = [
+            [-0.14699002, -0.05251341, 1.0170524],
+            [-0.23497675, -0.06370783, 1.0291966],
+            [-0.32293925, -0.076021835, 1.0179973],
+            [-0.40488303, -0.088616244, 0.9842177],
+            [-0.47522378, -0.10063277, 0.9301599],
+            [-0.52916783, -0.1112525, 0.8595078],
+            [-0.56303906, -0.11975173, 0.7770762],
+            [-0.5745292, -0.12555124, 0.6884827],
+            [-0.56285506, -0.1282558, 0.5997648],
+            [-0.5288124, -0.12768112, 0.51696855],
+            [-0.47472104, -0.123866335, 0.44573623],
+            [-0.40426737, -0.117071435, 0.3909223],
+            [-0.32225257, -0.107759476, 0.35626224],
+            [-0.23426585, -0.09656506, 0.34411806],
+            [-0.14630328, -0.084251046, 0.35531738],
+            [-0.0643596, -0.07165665, 0.3890969],
+            [0.005981167, -0.05964012, 0.44315472],
+            [0.059925232, -0.049020387, 0.5138068],
+            [0.09379644, -0.040521163, 0.5962384],
+            [0.105286516, -0.034721654, 0.68483186],
+            [0.09361242, -0.032017082, 0.7735499],
+            [0.05956972, -0.03259178, 0.8563462],
+            [0.005478426, -0.036406558, 0.92757845],
+            [-0.06497515, -0.043201447, 0.98239225],
+            [-0.2667236, 0.8419054, 0.9740307],
+            [-0.3547103, 0.830711, 0.9861749],
+            [-0.44267285, 0.818397, 0.9749756],
+            [-0.5246166, 0.8058026, 0.941196],
+            [-0.59495735, 0.79378605, 0.8871382],
+            [-0.6489014, 0.78316635, 0.81648606],
+            [-0.68277264, 0.7746671, 0.7340545],
+            [-0.69426274, 0.7688676, 0.645461],
+            [-0.68258864, 0.76616305, 0.55674314],
+            [-0.648546, 0.7667377, 0.47394687],
+            [-0.59445465, 0.7705525, 0.40271452],
+            [-0.52400094, 0.7773474, 0.34790063],
+            [-0.44198614, 0.78665936, 0.31324056],
+            [-0.35399944, 0.79785377, 0.30109635],
+            [-0.26603687, 0.8101678, 0.31229568],
+            [-0.18409318, 0.8227622, 0.34607518],
+            [-0.11375241, 0.8347787, 0.40013304],
+            [-0.059808344, 0.8453984, 0.47078514],
+            [-0.02593714, 0.8538977, 0.5532167],
+            [-0.0144470595, 0.85969716, 0.6418102],
+            [-0.026121158, 0.8624018, 0.7305282],
+            [-0.060163856, 0.8618271, 0.81332445],
+            [-0.11425515, 0.85801226, 0.8845567],
+            [-0.18470873, 0.8512174, 0.9393705],
+        ];
+        let faces: &[&[u32]] = &[
+            &[0, 24, 25, 1],
+            &[1, 25, 26, 2],
+            &[2, 26, 27, 3],
+            &[3, 27, 28, 4],
+            &[4, 28, 29, 5],
+            &[5, 29, 30, 6],
+            &[6, 30, 31, 7],
+            &[7, 31, 32, 8],
+            &[8, 32, 33, 9],
+            &[9, 33, 34, 10],
+            &[10, 34, 35, 11],
+            &[11, 35, 36, 12],
+            &[12, 36, 37, 13],
+            &[13, 37, 38, 14],
+            &[14, 38, 39, 15],
+            &[15, 39, 40, 16],
+            &[16, 40, 41, 17],
+            &[17, 41, 42, 18],
+            &[18, 42, 43, 19],
+            &[19, 43, 44, 20],
+            &[20, 44, 45, 21],
+            &[21, 45, 46, 22],
+            &[22, 46, 47, 23],
+            &[23, 47, 24, 0],
+            &[
+                47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27,
+                26, 25, 24,
+            ],
+            &[
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23,
+            ],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(face).expect("valid fixture face");
+        }
+        builder.build().expect("valid fixture").mesh
+    }
+
+    fn oracle_5613_box() -> Mesh {
+        let positions: [[f32; 3]; 8] = [
+            [0.37568805, -0.12331576, 0.08715004],
+            [-0.1828028, 1.547334, 0.42592442],
+            [-0.48202243, 1.2288326, 1.5033162],
+            [0.07646841, -0.44181708, 1.1645417],
+            [-0.9381503, -0.7079079, 0.80409336],
+            [-1.496641, 0.9627418, 1.1428677],
+            [-1.1974214, 1.2812431, 0.06547603],
+            [-0.6389306, -0.3894066, -0.27329835],
+        ];
+        let faces: &[&[u32]] = &[
+            &[0, 1, 2, 3],
+            &[4, 5, 6, 7],
+            &[6, 5, 2, 1],
+            &[7, 0, 3, 4],
+            &[4, 3, 2, 5],
+            &[7, 6, 1, 0],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(face).expect("valid fixture face");
+        }
+        builder.build().expect("valid fixture").mesh
+    }
+
+    fn oracle_8653_prism() -> Mesh {
+        let positions: [[f32; 3]; 48] = [
+            [0.4037345, 0.17647406, -1.463111],
+            [0.5850749, 0.09759264, -1.5151093],
+            [0.7627896, -0.003476948, -1.5186942],
+            [0.9247677, -0.11984698, -1.4736214],
+            [1.0599706, -0.24358705, -1.3829626],
+            [1.1591845, -0.36626446, -1.252896],
+            [1.2156479, -0.4795189, -1.0922855],
+            [1.2255133, -0.57563233, -0.9120764],
+            [1.1881082, -0.6480547, -0.72454965],
+            [1.1059816, -0.69185066, -0.54248494],
+            [0.9847303, -0.7040355, -0.3782895],
+            [0.83261764, -0.68377894, -0.2431532],
+            [0.6600096, -0.6324613, -0.1462853],
+            [0.47866926, -0.55357987, -0.0942871],
+            [0.30095443, -0.45251018, -0.09070227],
+            [0.13897654, -0.33614028, -0.13577501],
+            [0.003773608, -0.21240018, -0.22643384],
+            [-0.09544028, -0.0897228, -0.35650036],
+            [-0.15190376, 0.02353162, -0.5171108],
+            [-0.16176912, 0.11964503, -0.69731987],
+            [-0.12436386, 0.19206755, -0.8848469],
+            [-0.042237256, 0.23586345, -1.0669117],
+            [0.079013884, 0.24804829, -1.231107],
+            [0.23112631, 0.22779171, -1.366243],
+            [0.66723746, 0.6317019, -1.2347432],
+            [0.8485779, 0.5528205, -1.2867415],
+            [1.0262926, 0.45175087, -1.2903264],
+            [1.1882707, 0.33538085, -1.2452536],
+            [1.3234736, 0.21164079, -1.1545948],
+            [1.4226874, 0.088963374, -1.0245281],
+            [1.4791509, -0.024291044, -0.8639177],
+            [1.4890163, -0.1204045, -0.68370855],
+            [1.4516112, -0.19282691, -0.49618185],
+            [1.3694847, -0.23662284, -0.31411713],
+            [1.2482333, -0.24880768, -0.14992167],
+            [1.0961206, -0.2285511, -0.014785381],
+            [0.92351264, -0.17723346, 0.082082525],
+            [0.74217224, -0.098352045, 0.13408072],
+            [0.5644574, 0.0027176458, 0.13766554],
+            [0.40247953, 0.11908755, 0.092592806],
+            [0.26727661, 0.24282764, 0.0019339791],
+            [0.16806272, 0.36550504, -0.12813254],
+            [0.11159923, 0.47875947, -0.28874302],
+            [0.10173388, 0.57487285, -0.46895206],
+            [0.13913913, 0.64729536, -0.6564791],
+            [0.22126575, 0.6910913, -0.83854383],
+            [0.34251687, 0.70327616, -1.0027391],
+            [0.49462932, 0.6830195, -1.1378752],
+        ];
+        let faces: &[&[u32]] = &[
+            &[0, 24, 25, 1],
+            &[1, 25, 26, 2],
+            &[2, 26, 27, 3],
+            &[3, 27, 28, 4],
+            &[4, 28, 29, 5],
+            &[5, 29, 30, 6],
+            &[6, 30, 31, 7],
+            &[7, 31, 32, 8],
+            &[8, 32, 33, 9],
+            &[9, 33, 34, 10],
+            &[10, 34, 35, 11],
+            &[11, 35, 36, 12],
+            &[12, 36, 37, 13],
+            &[13, 37, 38, 14],
+            &[14, 38, 39, 15],
+            &[15, 39, 40, 16],
+            &[16, 40, 41, 17],
+            &[17, 41, 42, 18],
+            &[18, 42, 43, 19],
+            &[19, 43, 44, 20],
+            &[20, 44, 45, 21],
+            &[21, 45, 46, 22],
+            &[22, 46, 47, 23],
+            &[23, 47, 24, 0],
+            &[
+                47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27,
+                26, 25, 24,
+            ],
+            &[
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23,
+            ],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(face).expect("valid fixture face");
+        }
+        builder.build().expect("valid fixture").mesh
+    }
+
+    fn oracle_8653_box() -> Mesh {
+        let positions: [[f32; 3]; 8] = [
+            [1.0313563, 0.53808326, -1.2482872],
+            [0.56720525, 0.18406793, -1.6002858],
+            [-0.55818754, 0.8418953, -0.7779206],
+            [-0.09403643, 1.1959106, -0.42592204],
+            [-0.04156279, 0.510798, 0.19392337],
+            [-0.50571394, 0.15678261, -0.1580752],
+            [0.61967885, -0.5010447, -0.9804404],
+            [1.08383, -0.14702936, -0.6284418],
+        ];
+        let faces: &[&[u32]] = &[
+            &[0, 1, 2, 3],
+            &[4, 5, 6, 7],
+            &[6, 5, 2, 1],
+            &[7, 0, 3, 4],
+            &[4, 3, 2, 5],
+            &[7, 6, 1, 0],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(face).expect("valid fixture face");
+        }
+        builder.build().expect("valid fixture").mesh
+    }
+
+    fn assert_closed(mesh: &Mesh) {
+        for face in mesh.faces() {
+            for half_edge in mesh.face_loop(face) {
+                let neighbor = mesh.twin(half_edge).and_then(|twin| mesh.face(twin));
+                assert!(
+                    neighbor.is_some_and(|f| f != FaceId::OUTSIDE),
+                    "boundary half-edge in a result that must be closed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oracle_regression_5613_prism_box_intersection_is_closed_and_exact() {
+        let a = oracle_5613_prism();
+        let b = oracle_5613_box();
+        let mut scratch = BooleanScratch::default();
+        let mut diagnostics = BooleanDiagnostics::new(16);
+        let output = boolean_mesh(
+            &a,
+            &b,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            &mut scratch,
+            &mut diagnostics,
+        )
+        .expect("intersection succeeds");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(output.mesh.validate_deep().is_empty());
+        assert_closed(&output.mesh);
+        let volume = signed_volume(&output.mesh);
+        assert!(
+            (volume - 0.322_870_600).abs() < 1.0e-4,
+            "intersection volume {volume} vs exact 0.3228706"
+        );
+    }
+
+    #[test]
+    fn oracle_regression_8653_prism_box_intersection_is_closed_and_exact() {
+        let a = oracle_8653_prism();
+        let b = oracle_8653_box();
+        let mut scratch = BooleanScratch::default();
+        let mut diagnostics = BooleanDiagnostics::new(16);
+        let output = boolean_mesh(
+            &a,
+            &b,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            &mut scratch,
+            &mut diagnostics,
+        )
+        .expect("intersection succeeds");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(output.mesh.validate_deep().is_empty());
+        assert_closed(&output.mesh);
+        let volume = signed_volume(&output.mesh);
+        assert!(
+            (volume - 0.495_480_360).abs() < 1.0e-4,
+            "intersection volume {volume} vs exact 0.4954804"
+        );
+    }
+
+    /// A high-resolution drill through a block, rotated 45 degrees off the
+    /// axes (exe-lz4w): the rotated f32 lattice makes the cut loop a chain
+    /// of near-collinear sliver constructions. Before the largest-triangle
+    /// patch sample this misclassified a sliver patch, whose wrongly kept
+    /// copy stitched a third face onto existing edges
+    /// (`BuildError::NonManifoldEdge`).
+    #[test]
+    fn rotated_drill_difference_is_a_holed_watertight_solid() {
+        let angle = core::f64::consts::FRAC_PI_4;
+        let (sin, cos) = (angle.sin(), angle.cos());
+        let rotate = |p: [f64; 3]| [p[0] * cos - p[1] * sin, p[0] * sin + p[1] * cos, p[2]];
+        #[expect(clippy::cast_possible_truncation, reason = "test geometry narrowing")]
+        let narrow = |p: [f64; 3]| [p[0] as f32, p[1] as f32, p[2] as f32];
+
+        // Block: 200 x 100 x 80, corner at the origin.
+        let mut builder = MeshBuilder::new();
+        for p in [
+            [0.0, 0.0, 0.0],
+            [200.0, 0.0, 0.0],
+            [200.0, 100.0, 0.0],
+            [0.0, 100.0, 0.0],
+            [0.0, 0.0, 80.0],
+            [200.0, 0.0, 80.0],
+            [200.0, 100.0, 80.0],
+            [0.0, 100.0, 80.0],
+        ] {
+            builder.push_vertex(narrow(rotate(p)));
+        }
+        for face in [
+            [3_u32, 2, 1, 0],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ] {
+            builder.add_face(&face).expect("block face");
+        }
+        let block = builder.build().expect("valid block").mesh;
+
+        // Drill: 96-gon prism r=30 at (130, 50), through both caps.
+        let n = 96_u32;
+        let mut builder = MeshBuilder::new();
+        for z in [-20.0_f64, 100.0] {
+            for i in 0..n {
+                let theta = core::f64::consts::TAU * f64::from(i) / f64::from(n);
+                let p = [130.0 + 30.0 * theta.cos(), 50.0 + 30.0 * theta.sin(), z];
+                builder.push_vertex(narrow(rotate(p)));
+            }
+        }
+        let bottom: Vec<u32> = (0..n).rev().collect();
+        builder.add_face(&bottom).expect("bottom cap");
+        let top: Vec<u32> = (n..2 * n).collect();
+        builder.add_face(&top).expect("top cap");
+        for i in 0..n {
+            let j = (i + 1) % n;
+            builder.add_face(&[i, j, n + j, n + i]).expect("side wall");
+        }
+        let drill = builder.build().expect("valid drill").mesh;
+
+        let mut scratch = BooleanScratch::new();
+        let mut diagnostics = BooleanDiagnostics::default();
+        let output = boolean_mesh(
+            &block,
+            &drill,
+            BooleanOp::Difference,
+            FaceTriangulation::Robust,
+            &mut scratch,
+            &mut diagnostics,
+        )
+        .expect("rotated drill difference succeeds");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(output.mesh.validate_deep().is_empty());
+        assert_closed(&output.mesh);
+        assert_eq!(euler_characteristic(&output.mesh), 0, "through-hole shell");
+        let volume = signed_volume(&output.mesh);
+        let hole = 0.5 * f64::from(n) * 30.0 * 30.0 * (core::f64::consts::TAU / f64::from(n)).sin();
+        let expected = 200.0 * 100.0 * 80.0 - hole * 80.0;
+        assert!(
+            (volume - expected).abs() < 40.0,
+            "difference volume {volume}, expected {expected}"
+        );
     }
 }

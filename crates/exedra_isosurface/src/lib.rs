@@ -94,6 +94,34 @@ pub trait ScalarField2d {
     fn eval_gradients(&self, points: &[[f32; 2]], out: &mut [[f32; 3]]);
 }
 
+impl<F: ScalarField + ?Sized> ScalarField for &F {
+    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+        (**self).eval_interval(bounds)
+    }
+
+    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+        (**self).eval_points(points, out);
+    }
+
+    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+        (**self).eval_gradients(points, out);
+    }
+}
+
+impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
+    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+        (**self).eval_interval(bounds)
+    }
+
+    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+        (**self).eval_points(points, out);
+    }
+
+    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+        (**self).eval_gradients(points, out);
+    }
+}
+
 /// Optional extension for fields that can simplify themselves for a region.
 pub trait SpecializableField: ScalarField {
     /// Specialized field type produced for one region.
@@ -121,6 +149,37 @@ mod tests {
         Aabb2, ScalarField, ScalarField2d, analytic::SphereField, analytic2d::CircleField2d,
     };
     use exedra_spatial::Aabb;
+
+    #[test]
+    fn boxed_dyn_fields_compose_through_combinators() {
+        use crate::analytic::Union;
+        use alloc::boxed::Box;
+
+        let left = SphereField {
+            center: [-0.4, 0.0, 0.0],
+            radius: 0.75,
+        };
+        let right = SphereField {
+            center: [0.4, 0.0, 0.0],
+            radius: 0.75,
+        };
+        let boxed: Union<Box<dyn ScalarField>, Box<dyn ScalarField>> =
+            Union::new(Box::new(left), Box::new(right));
+        let concrete = Union::new(left, right);
+
+        let points = [[-0.8, 0.1, 0.0], [0.0, 0.0, 0.0], [1.5, 0.2, -0.3]];
+        let mut boxed_values = [0.0_f32; 3];
+        let mut concrete_values = [0.0_f32; 3];
+        boxed.eval_points(&points, &mut boxed_values);
+        concrete.eval_points(&points, &mut concrete_values);
+        assert_eq!(boxed_values, concrete_values);
+
+        let bounds = Aabb::new([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]).expect("valid bounds");
+        assert_eq!(
+            boxed.eval_interval(&bounds),
+            concrete.eval_interval(&bounds)
+        );
+    }
 
     #[test]
     fn scalar_field_is_object_safe() {

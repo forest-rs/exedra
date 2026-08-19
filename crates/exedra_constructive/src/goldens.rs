@@ -137,39 +137,6 @@ fn fixtures() -> Vec<Fixture> {
         });
     }
 
-    // 6. A thickened wavy grid shell (integer-derived heights, so the
-    // fixture is exactly reproducible from this source).
-    {
-        let mut b = RecipeBuilder::new();
-        let src = b.source_ref("gallery:grid_shell");
-        let (rows, cols) = (4_u32, 6_u32);
-        let points: Vec<[f64; 3]> = (0..rows)
-            .flat_map(|r| {
-                (0..cols).map(move |c| {
-                    // A saddle-ish integer height field.
-                    let h = f64::from((r * c) % 3) * 20.0 - f64::from((r + c) % 2) * 10.0;
-                    [f64::from(c) * 100.0, f64::from(r) * 100.0, h]
-                })
-            })
-            .collect();
-        let n = b
-            .with_source(src)
-            .add(NodeKind::GridSurface {
-                points,
-                rows,
-                cols,
-                close_u: false,
-                close_w: false,
-                thickness: Some(18.0),
-                placement: Placement3::IDENTITY,
-            })
-            .expect("valid");
-        out.push(Fixture {
-            name: "grid_shell",
-            recipe: b.finish(n).expect("valid"),
-        });
-    }
-
     out
 }
 

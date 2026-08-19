@@ -30,6 +30,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "boolean_oracle"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_isosurface",
+ "exedra_primitives",
+ "exedra_triangulate",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -203,18 +213,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exedra_assembly"
-version = "0.0.0"
-dependencies = [
- "exedra",
- "exedra_constructive",
- "hashbrown 0.16.1",
- "invalidation",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "exedra_constructive"
 version = "0.0.0"
 dependencies = [
@@ -248,16 +246,6 @@ dependencies = [
  "exedra_qef",
  "exedra_spatial",
  "fidget",
-]
-
-[[package]]
-name = "exedra_gltf"
-version = "0.0.0"
-dependencies = [
- "exedra",
- "exedra_assembly",
- "exedra_constructive",
- "serde_json",
 ]
 
 [[package]]

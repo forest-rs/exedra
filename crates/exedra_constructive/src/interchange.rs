@@ -294,24 +294,6 @@ pub enum NodeKindDto {
         /// Signed stretch length.
         length: f64,
     },
-    /// Point-grid surface body (bilinear quad patches).
-    GridSurface {
-        /// Row-major grid points; `rows * cols` entries.
-        points: Vec<[f64; 3]>,
-        /// Row count.
-        rows: u32,
-        /// Column count.
-        cols: u32,
-        /// Wrap rows.
-        close_u: bool,
-        /// Wrap columns.
-        close_w: bool,
-        /// Solid thickness; absent for an open sheet.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        thickness: Option<f64>,
-        /// Placement.
-        placement: PlacementDto,
-    },
 }
 
 /// Typed interchange failure.
@@ -621,23 +603,6 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             plane: plane_dto(plane),
             length: *length,
         },
-        NodeKind::GridSurface {
-            points,
-            rows,
-            cols,
-            close_u,
-            close_w,
-            thickness,
-            placement,
-        } => NodeKindDto::GridSurface {
-            points: points.clone(),
-            rows: *rows,
-            cols: *cols,
-            close_u: *close_u,
-            close_w: *close_w,
-            thickness: *thickness,
-            placement: placement_dto(placement),
-        },
     }
 }
 
@@ -807,23 +772,6 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             child: NodeId(*child),
             plane: plane_value(*plane),
             length: *length,
-        },
-        NodeKindDto::GridSurface {
-            points,
-            rows,
-            cols,
-            close_u,
-            close_w,
-            thickness,
-            placement,
-        } => NodeKind::GridSurface {
-            points: points.clone(),
-            rows: *rows,
-            cols: *cols,
-            close_u: *close_u,
-            close_w: *close_w,
-            thickness: *thickness,
-            placement: placement_value(*placement),
         },
     })
 }
