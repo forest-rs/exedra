@@ -158,7 +158,7 @@ fn annulus_square(r0: f64, a: f64) -> crate::profile::Profile2 {
 fn csg_fixture() -> Recipe {
     let mut b = RecipeBuilder::new();
     let block = b.add_profile(builders::rect(200.0, 100.0).expect("rect"));
-    let cut = b.add_profile(builders::circle(30.0).expect("circle"));
+    let cut = b.add_profile(builders::rect(80.0, 80.0).expect("rect"));
     let e1 = b
         .add(NodeKind::Extrude {
             profile: block,
@@ -167,10 +167,12 @@ fn csg_fixture() -> Recipe {
             caps: CapMode::Both,
         })
         .expect("valid");
+    // A corner notch: transversal crossings only (interior cut loops are
+    // the pipeline's remaining typed deferral, tracked separately).
     let e2 = b
         .add(NodeKind::Extrude {
             profile: cut,
-            placement: Placement3::translate(100.0, 50.0, -10.0),
+            placement: Placement3::translate(160.0, 60.0, -10.0),
             height: 100.0,
             caps: CapMode::Both,
         })
@@ -270,6 +272,31 @@ fn golden_csg_report() {
         render_report(&result),
         golden,
         "report golden must match; re-bless deliberately"
+    );
+    // The corner-notch difference is a real boolean now: one exact body
+    // whose volume matches the closed form (rigid transforms preserve it).
+    assert_eq!(result.bodies.len(), 1);
+    let mesh = &result.bodies[0].body.mesh;
+    assert!(mesh.validate_deep().is_empty());
+    let mut volume = 0.0_f64;
+    for face in mesh.faces() {
+        let verts: Vec<[f64; 3]> = mesh
+            .face_loop(face)
+            .filter_map(|he| mesh.to_vertex(he))
+            .filter_map(|v| mesh.vertex_position(v))
+            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            .collect();
+        for i in 1..verts.len().saturating_sub(1) {
+            let (a, b, c) = (verts[0], verts[i], verts[i + 1]);
+            volume += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        }
+    }
+    volume /= 6.0;
+    let expected = 200.0 * 100.0 * 80.0 - 40.0 * 40.0 * 80.0;
+    assert!(
+        (volume - expected).abs() / expected < 1e-6,
+        "notched volume {volume} vs {expected}"
     );
 }
 

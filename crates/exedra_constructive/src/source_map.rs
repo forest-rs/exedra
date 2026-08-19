@@ -202,6 +202,7 @@ impl core::fmt::Display for FeatureLabel {
                 seg,
             } => write!(f, "loft_wall {band} {loop_index} {seg}"),
             Feature::Imported => write!(f, "imported"),
+            Feature::BooleanFace { operand } => write!(f, "boolean_face {operand}"),
             Feature::SweepWall {
                 band,
                 loop_index,

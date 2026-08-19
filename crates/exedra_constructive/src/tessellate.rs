@@ -69,6 +69,13 @@ pub enum Feature {
     },
     /// A face of an opaque imported mesh.
     Imported,
+    /// A face of a boolean result, attributed to the operand that
+    /// produced it. Finer attribution rides `FACE_REGION`, which the
+    /// pipeline carries through from the operand faces.
+    BooleanFace {
+        /// Operand index within the CSG node.
+        operand: u16,
+    },
     /// A sweep wall face between path points `band` and `band + 1`.
     SweepWall {
         /// Index of the path segment.

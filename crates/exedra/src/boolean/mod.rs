@@ -16,11 +16,14 @@ use core::cmp::Ordering;
 
 use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 
+mod classify;
 mod diag;
 mod graph;
 mod narrow;
 mod split;
+mod stitch;
 
+pub use classify::{ClassifyStats, Patch, PatchClassification, PatchSide, classify_patches};
 pub use diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 pub use graph::{
     GraphEdge, GraphVertex, IntersectionGraph, IntersectionGraphStats, MeshAnchor, Polyline,
@@ -31,6 +34,7 @@ pub use narrow::{
     SegmentKind, narrow_phase,
 };
 pub use split::{MeshSide, MeshSplitOutcome, SplitStats, split_mesh_along_graph};
+pub use stitch::{BooleanError, BooleanOp, BooleanOutput, BooleanStats, boolean_mesh};
 
 const LEAF_TRIANGLE_COUNT: usize = 4;
 

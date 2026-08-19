@@ -343,31 +343,10 @@ impl EvalCx<'_> {
                 let child = *child;
                 self.walk(child, &combined, emit)
             }
-            NodeKind::Csg { op: _, operands } => {
-                // Operands are evaluated for their envelopes only; no
-                // operand geometry escapes an unevaluable CSG node, and no
-                // fake combined geometry is emitted.
+            NodeKind::Csg { op, operands } => {
+                let op = *op;
                 let operands = operands.clone();
-                let mut bounds = Aabb3::EMPTY;
-                for operand in operands {
-                    let b = self.walk(operand, world, false)?;
-                    bounds.union(&b);
-                }
-                self.report.counters.envelope_only += 1;
-                self.report.fidelity.push((node_id, Fidelity::EnvelopeOnly));
-                if !bounds.is_empty() {
-                    self.report.envelopes.push((node_id, bounds));
-                }
-                self.report.diagnostics.push(Diagnostic {
-                    severity: Severity::Error,
-                    code: "eval.csg.unsupported",
-                    message: String::from(
-                        "CSG evaluation requires the mesh boolean pipeline; \
-                         only the operand envelope is reported",
-                    ),
-                    node: Some(node_id),
-                });
-                Ok(bounds)
+                self.evaluate_csg(node_id, op, &operands, world, emit)
             }
             NodeKind::MeshImport { import, placement } => {
                 let placement = compose(world, placement);
@@ -461,6 +440,179 @@ impl EvalCx<'_> {
                     node: Some(node_id),
                 });
                 Ok(Aabb3::EMPTY)
+            }
+        }
+    }
+
+    /// Evaluates one operand subtree into its bodies (world-placed),
+    /// folding multi-body operands into one mesh by union.
+    fn collect_operand_mesh(
+        &mut self,
+        operand: NodeId,
+        world: &Placement3,
+        scratch: &mut exedra::boolean::BooleanScratch,
+        diagnostics: &mut exedra::boolean::BooleanDiagnostics,
+    ) -> Result<Option<exedra::Mesh>, EvalError> {
+        let taken = core::mem::take(&mut self.bodies);
+        let emitted_before = self.report.counters.bodies;
+        self.walk(operand, world, true)?;
+        let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
+        // Consumed operand bodies are not part of the evaluation output.
+        self.report.counters.bodies = emitted_before;
+        let mut meshes = collected.into_iter().map(|placed| placed.body.mesh);
+        let Some(mut folded) = meshes.next() else {
+            return Ok(None);
+        };
+        for next in meshes {
+            match exedra::boolean::boolean_mesh(
+                &folded,
+                &next,
+                exedra::boolean::BooleanOp::Union,
+                exedra::FaceTriangulation::Fan,
+                scratch,
+                diagnostics,
+            ) {
+                Ok(output) => folded = output.mesh,
+                Err(_) => return Ok(None),
+            }
+        }
+        Ok(Some(folded))
+    }
+
+    /// Evaluates a CSG node through the mesh boolean pipeline.
+    ///
+    /// Success reports `Exact` fidelity; any pipeline refusal (suspect
+    /// patches, empty operands) falls back to the envelope-only report —
+    /// typed and visible, never silently wrong geometry.
+    fn evaluate_csg(
+        &mut self,
+        node_id: NodeId,
+        op: crate::ir::CsgOp,
+        operands: &[NodeId],
+        world: &Placement3,
+        emit: bool,
+    ) -> Result<Aabb3, EvalError> {
+        use exedra::boolean::{BooleanOp, BooleanScratch};
+
+        let mut scratch = BooleanScratch::default();
+        let mut diagnostics = exedra::boolean::BooleanDiagnostics::default();
+
+        // The catalog-free difference convention: A op (union of the rest).
+        let mut meshes: Vec<exedra::Mesh> = Vec::with_capacity(operands.len());
+        let mut all_present = true;
+        for operand in operands {
+            match self.collect_operand_mesh(*operand, world, &mut scratch, &mut diagnostics)? {
+                Some(mesh) => meshes.push(mesh),
+                None => {
+                    all_present = false;
+                    break;
+                }
+            }
+        }
+
+        let combined = if all_present {
+            let boolean_op = match op {
+                crate::ir::CsgOp::Union => BooleanOp::Union,
+                crate::ir::CsgOp::Intersection => BooleanOp::Intersection,
+                crate::ir::CsgOp::Difference => BooleanOp::Difference,
+            };
+            let mut iter = meshes.into_iter();
+            let first = iter.next().expect("IR validation requires >= 2 operands");
+            // Fold the tail together with Union first (the documented
+            // n-ary Difference rule folds 2..n before subtracting), then
+            // apply the operation once. Union/Intersection fold pairwise
+            // identically under associativity.
+            let mut tail = iter.next().expect("IR validation requires >= 2 operands");
+            let mut tail_ok = true;
+            for next in iter {
+                match exedra::boolean::boolean_mesh(
+                    &tail,
+                    &next,
+                    BooleanOp::Union,
+                    exedra::FaceTriangulation::Fan,
+                    &mut scratch,
+                    &mut diagnostics,
+                ) {
+                    Ok(output) => tail = output.mesh,
+                    Err(_) => {
+                        tail_ok = false;
+                        break;
+                    }
+                }
+            }
+            if tail_ok {
+                exedra::boolean::boolean_mesh(
+                    &first,
+                    &tail,
+                    boolean_op,
+                    exedra::FaceTriangulation::Fan,
+                    &mut scratch,
+                    &mut diagnostics,
+                )
+                .ok()
+                .map(|output| (first, output))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        match combined {
+            Some((_, output)) => {
+                let mesh = output.mesh;
+                // Coarse per-operand attribution; fine detail rides the
+                // FACE_REGION values the pipeline carried through.
+                let face_features: Vec<crate::tessellate::Feature> = output
+                    .face_provenance
+                    .iter()
+                    .map(|(_, side, _)| crate::tessellate::Feature::BooleanFace {
+                        operand: match side {
+                            exedra::boolean::MeshSide::A => 0,
+                            exedra::boolean::MeshSide::B => 1,
+                        },
+                    })
+                    .collect();
+                let vertex_features = alloc::vec![
+                    crate::tessellate::Feature::BooleanFace { operand: 0 };
+                    mesh.vertices().count()
+                ];
+                let source_map =
+                    crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
+                let body = TessellatedBody { mesh, source_map };
+                Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
+            }
+            None => {
+                // Typed fallback: envelope-only, with the pipeline's
+                // diagnostics surfaced.
+                let mut bounds = Aabb3::EMPTY;
+                for operand in operands {
+                    let b = self.walk(*operand, world, false)?;
+                    bounds.union(&b);
+                }
+                self.report.counters.envelope_only += 1;
+                self.report.fidelity.push((node_id, Fidelity::EnvelopeOnly));
+                if !bounds.is_empty() {
+                    self.report.envelopes.push((node_id, bounds));
+                }
+                for entry in diagnostics.entries() {
+                    self.report.diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        code: "eval.csg.pipeline",
+                        message: alloc::format!("{entry}"),
+                        node: Some(node_id),
+                    });
+                }
+                self.report.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    code: "eval.csg.unsupported",
+                    message: String::from(
+                        "CSG evaluation fell back to the operand envelope; \
+                         see the pipeline diagnostics",
+                    ),
+                    node: Some(node_id),
+                });
+                Ok(bounds)
             }
         }
     }

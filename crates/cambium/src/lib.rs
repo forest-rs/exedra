@@ -108,8 +108,10 @@ compile_error!("cambium requires either the `std` or `libm` feature");
 
 pub mod analytic;
 mod artifact;
+pub mod boolean_orchestration;
 mod bounds;
 mod bridge;
+pub mod constructive;
 mod context;
 pub mod convert;
 mod delete;

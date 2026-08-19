@@ -29,6 +29,40 @@
 //! never depends on hash order. [`EVAL_SCHEMA_VERSION`] stamps every content
 //! hash so an upgrade to kurbo or to any discretization rule invalidates
 //! caches and goldens explicitly.
+//!
+//! ## Integrating an external compiler
+//!
+//! The full walkthrough lives in `docs/integration-guide.md`. The core
+//! loop is: intern your opaque identities, build validated profiles and
+//! nodes, freeze, evaluate:
+//!
+//! ```
+//! use exedra_constructive::builders;
+//! use exedra_constructive::evaluate::{Fidelity, evaluate};
+//! use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+//! use exedra_constructive::tessellate::EvalPolicy;
+//!
+//! let mut b = RecipeBuilder::new();
+//! let source = b.source_ref("yourspec:part/7#body");
+//! let front = b.material_slot("front");
+//! let profile = b.add_profile(builders::rounded_rect(600.0, 400.0, 40.0).unwrap());
+//! let node = b
+//!     .with_source(source)
+//!     .with_material(front)
+//!     .add(NodeKind::Extrude {
+//!         profile,
+//!         placement: Placement3::IDENTITY,
+//!         height: 720.0,
+//!         caps: CapMode::Both,
+//!     })
+//!     .unwrap();
+//! let recipe = b.finish(node).unwrap();
+//!
+//! let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
+//! assert_eq!(result.bodies.len(), 1);
+//! assert_eq!(result.report.fidelity_of(node), Some(Fidelity::Exact));
+//! assert!(result.bodies[0].body.mesh.validate_deep().is_empty());
+//! ```
 
 #![no_std]
 extern crate alloc;

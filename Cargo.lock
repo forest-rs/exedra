@@ -55,6 +55,7 @@ dependencies = [
  "exedra",
  "exedra_analytic",
  "exedra_constructive",
+ "exedra_testkit",
  "invalidation",
  "libm",
  "web-time",

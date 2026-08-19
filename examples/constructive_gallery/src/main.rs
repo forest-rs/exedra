@@ -143,7 +143,7 @@ fn quarter_sweep() -> Scenario {
 fn csg_difference() -> Scenario {
     let mut b = RecipeBuilder::new();
     let block = b.add_profile(builders::rect(200.0, 100.0).expect("rect"));
-    let cut = b.add_profile(builders::circle(30.0).expect("circle"));
+    let cut = b.add_profile(builders::rect(80.0, 80.0).expect("rect"));
     let e1 = b
         .add(NodeKind::Extrude {
             profile: block,
@@ -152,10 +152,12 @@ fn csg_difference() -> Scenario {
             caps: CapMode::Both,
         })
         .expect("valid");
+    // A corner notch: transversal crossings only (interior cut loops are
+    // the pipeline's remaining typed deferral, tracked separately).
     let e2 = b
         .add(NodeKind::Extrude {
             profile: cut,
-            placement: Placement3::translate(100.0, 50.0, -10.0),
+            placement: Placement3::translate(160.0, 60.0, -10.0),
             height: 100.0,
             caps: CapMode::Both,
         })
@@ -321,19 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn csg_scenario_reports_unsupported_with_envelope() {
+    fn csg_scenario_produces_a_real_boolean() {
         let scenario = csg_difference();
         let result = run(&scenario);
-        assert!(result.bodies.is_empty(), "no fake geometry");
+        assert_eq!(result.bodies.len(), 1, "the difference is a real mesh now");
+        let mesh = &result.bodies[0].body.mesh;
+        assert!(mesh.validate_deep().is_empty());
         assert!(
-            result
-                .report
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "eval.csg.unsupported")
+            result.report.diagnostics.is_empty(),
+            "no fallback diagnostics"
         );
-        assert_eq!(result.report.envelopes.len(), 1);
-        assert_eq!(result.report.counters.envelope_only, 1);
+        // Coarse operand attribution is present on every face.
+        assert!(
+            result.bodies[0]
+                .body
+                .source_map
+                .face_features()
+                .iter()
+                .all(|f| matches!(f, Feature::BooleanFace { .. }))
+        );
     }
 
     #[test]

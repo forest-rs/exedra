@@ -1,0 +1,632 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Patch classification: which side of the other mesh each face patch
+//! lies on.
+//!
+//! After splitting, the intersection curves are real edge chains on both
+//! meshes, so patches are purely topological: connected face regions
+//! bounded by cut edges. Classification floods faces across shared edges
+//! (never crossing a cut edge), then decides Inside/Outside per patch by
+//! exact ray parity against the other mesh — a segment-triangle test built
+//! entirely from [`exedra_triangulate::predicates::orient3d`] signs over
+//! exactly promoted coordinates. Rays that graze anything (any coplanar
+//! sign anywhere) retry with the next direction from a fixed, documented
+//! set; only if every direction degenerates does the patch classify as
+//! [`PatchSide::Suspect`].
+//!
+//! Suspicion is typed, never guessed: a patch is suspect when its cut
+//! network is provably incomplete (a graph edge attributed to one of its
+//! faces neither materialized as a mesh edge nor split the face — the
+//! splitting stage deferred it) or when ray classification exhausts its
+//! direction set. Suspect patches poison the boolean op downstream rather
+//! than silently producing wrong geometry.
+//!
+//! Determinism: faces flood in ascending index order, patches emerge in
+//! ascending lowest-face order (mesh A before mesh B), sample points and
+//! ray directions derive from fixed rules, and every geometric sign is
+//! exact.
+
+use alloc::vec::Vec;
+
+use exedra_triangulate::predicates::{Orientation3d, orient3d};
+use hashbrown::{HashMap, HashSet};
+
+use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
+use super::graph::IntersectionGraph;
+use super::split::{MeshSide, MeshSplitOutcome};
+use crate::{FaceId, FaceTriangulation, Mesh, VertexId};
+
+/// Which side of the other mesh a patch lies on.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PatchSide {
+    /// The patch lies inside the other mesh's volume.
+    Inside,
+    /// The patch lies outside the other mesh's volume.
+    Outside,
+    /// The patch could not be classified soundly (incomplete cut network
+    /// or exhausted ray directions); typed poison for downstream stages.
+    Suspect,
+}
+
+/// One connected face patch of one mesh, bounded by cut edges.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Patch {
+    /// Which operand mesh the patch belongs to.
+    pub mesh: MeshSide,
+    /// Patch faces, ascending by index.
+    pub faces: Vec<FaceId>,
+    /// Classified side relative to the other mesh.
+    pub side: PatchSide,
+}
+
+/// Deterministic classification counters.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClassifyStats {
+    /// Patches found on mesh A.
+    pub patches_a: u64,
+    /// Patches found on mesh B.
+    pub patches_b: u64,
+    /// Ray-parity tests performed.
+    pub ray_tests: u64,
+    /// Ray directions retried due to degeneracy.
+    pub ray_retries: u64,
+    /// Patches classified suspect.
+    pub suspect_patches: u64,
+}
+
+/// The classification of both meshes' patches.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PatchClassification {
+    /// All patches: mesh A's first, then mesh B's, each in ascending
+    /// lowest-face order.
+    pub patches: Vec<Patch>,
+    /// Classification counters.
+    pub stats: ClassifyStats,
+}
+
+impl PatchClassification {
+    /// Iterates the patches of one mesh side.
+    pub fn of(&self, side: MeshSide) -> impl Iterator<Item = &Patch> {
+        self.patches.iter().filter(move |p| p.mesh == side)
+    }
+
+    /// True when any patch is suspect.
+    #[must_use]
+    pub fn any_suspect(&self) -> bool {
+        self.patches.iter().any(|p| p.side == PatchSide::Suspect)
+    }
+}
+
+/// Classifies the split meshes' patches against each other.
+///
+/// Both meshes must already be split along `graph` (the outcomes carry the
+/// materialized cut vertices). `strategy` is the triangulation strategy the
+/// pipeline runs under (used to enumerate the other mesh's triangles for
+/// ray parity).
+pub fn classify_patches(
+    mesh_a: &Mesh,
+    mesh_b: &Mesh,
+    graph: &IntersectionGraph,
+    outcome_a: &MeshSplitOutcome,
+    outcome_b: &MeshSplitOutcome,
+    strategy: FaceTriangulation,
+    scratch: &mut super::BooleanScratch,
+    diagnostics: &mut BooleanDiagnostics,
+) -> PatchClassification {
+    let mut classification = PatchClassification::default();
+    let mut buffer = core::mem::take(&mut scratch.narrow_face_a);
+
+    for (side, mesh, other, outcome) in [
+        (MeshSide::A, mesh_a, mesh_b, outcome_a),
+        (MeshSide::B, mesh_b, mesh_a, outcome_b),
+    ] {
+        let patches = classify_one_side(
+            side,
+            mesh,
+            other,
+            graph,
+            outcome,
+            strategy,
+            &mut buffer,
+            &mut classification.stats,
+            diagnostics,
+        );
+        match side {
+            MeshSide::A => classification.stats.patches_a = patches.len() as u64,
+            MeshSide::B => classification.stats.patches_b = patches.len() as u64,
+        }
+        classification.patches.extend(patches);
+    }
+
+    scratch.narrow_face_a = buffer;
+    classification.stats.suspect_patches = classification
+        .patches
+        .iter()
+        .filter(|p| p.side == PatchSide::Suspect)
+        .count() as u64;
+    classification
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal stage threading fixed pipeline context"
+)]
+fn classify_one_side(
+    side: MeshSide,
+    mesh: &Mesh,
+    other: &Mesh,
+    graph: &IntersectionGraph,
+    outcome: &MeshSplitOutcome,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+    stats: &mut ClassifyStats,
+    diagnostics: &mut BooleanDiagnostics,
+) -> Vec<Patch> {
+    // --- Cut edges as sorted mesh-vertex pairs.
+    let mut cut_edges: HashSet<(VertexId, VertexId)> = HashSet::new();
+    let mut cut_vertices: HashSet<VertexId> = HashSet::new();
+    let mut incomplete_cut = false;
+    for polyline in &graph.polylines {
+        let count = polyline.vertices.len();
+        let edges = if polyline.closed {
+            count
+        } else {
+            count.saturating_sub(1)
+        };
+        for i in 0..edges {
+            let p = polyline.vertices[i] as usize;
+            let q = polyline.vertices[(i + 1) % count] as usize;
+            let (Some(u), Some(v)) = (outcome.graph_vertices[p], outcome.graph_vertices[q]) else {
+                // The cut edge never materialized on this side: splitting
+                // deferred it, so the cut network is incomplete.
+                incomplete_cut = true;
+                continue;
+            };
+            cut_vertices.insert(u);
+            cut_vertices.insert(v);
+            cut_edges.insert(sorted_pair(u, v));
+        }
+    }
+
+    // --- Suspect faces: a graph edge attributed solely to a live face on
+    // this side whose endpoints do not form a mesh edge means the split
+    // stage deferred that face.
+    let mut suspect_faces: HashSet<FaceId> = HashSet::new();
+    if incomplete_cut {
+        for edge in &graph.edges {
+            let mut faces: Vec<FaceId> = edge
+                .crossings
+                .iter()
+                .map(|&(a, b)| match side {
+                    MeshSide::A => a,
+                    MeshSide::B => b,
+                })
+                .collect();
+            faces.sort_unstable_by_key(|f| f.index());
+            faces.dedup();
+            if faces.len() != 1 {
+                continue;
+            }
+            let face = faces[0];
+            // Still live means never re-partitioned.
+            let live = mesh.face_edge(face).is_some();
+            let [p, q] = edge.vertices;
+            let materialized = outcome.graph_vertices[p as usize]
+                .zip(outcome.graph_vertices[q as usize])
+                .is_some_and(|(u, v)| cut_edges.contains(&sorted_pair(u, v)));
+            if live && !materialized {
+                suspect_faces.insert(face);
+            }
+        }
+    }
+
+    // --- Flood fill across shared edges, stopping at cut edges.
+    let faces: Vec<FaceId> = mesh.faces().collect();
+    let mut assigned: HashMap<FaceId, usize> = HashMap::new();
+    let mut patches: Vec<Patch> = Vec::new();
+
+    for &seed in &faces {
+        if assigned.contains_key(&seed) {
+            continue;
+        }
+        let patch_index = patches.len();
+        let mut patch_faces = Vec::new();
+        let mut stack = alloc::vec![seed];
+        assigned.insert(seed, patch_index);
+        while let Some(face) = stack.pop() {
+            patch_faces.push(face);
+            for half_edge in mesh.face_loop(face) {
+                let (Some(from), Some(to)) =
+                    (mesh.from_vertex(half_edge), mesh.to_vertex(half_edge))
+                else {
+                    continue;
+                };
+                if cut_edges.contains(&sorted_pair(from, to)) {
+                    continue;
+                }
+                let Some(twin) = mesh.twin(half_edge) else {
+                    continue;
+                };
+                let Some(neighbor) = mesh.face(twin) else {
+                    continue;
+                };
+                if neighbor == FaceId::OUTSIDE || assigned.contains_key(&neighbor) {
+                    continue;
+                }
+                assigned.insert(neighbor, patch_index);
+                stack.push(neighbor);
+            }
+        }
+        patch_faces.sort_unstable_by_key(|f| f.index());
+        patches.push(Patch {
+            mesh: side,
+            faces: patch_faces,
+            side: PatchSide::Suspect, // classified below
+        });
+    }
+
+    // --- Classify each patch.
+    for patch in &mut patches {
+        if patch.faces.iter().any(|f| suspect_faces.contains(f)) {
+            patch.side = PatchSide::Suspect;
+            diagnostics.push(BooleanDiagnostic {
+                kind: BooleanFailureKind::SplitDeferred,
+                a: None,
+                b: None,
+                detail: "patch borders a face whose split was deferred",
+            });
+            continue;
+        }
+        let sample = sample_point(mesh, patch, &cut_vertices);
+        stats.ray_tests += 1;
+        match ray_parity(sample, other, strategy, buffer, &mut stats.ray_retries) {
+            Some(true) => patch.side = PatchSide::Inside,
+            Some(false) => patch.side = PatchSide::Outside,
+            None => {
+                patch.side = PatchSide::Suspect;
+                diagnostics.push(BooleanDiagnostic {
+                    kind: BooleanFailureKind::NumericalInstability,
+                    a: None,
+                    b: None,
+                    detail: "ray parity exhausted its direction set",
+                });
+            }
+        }
+    }
+
+    patches
+}
+
+fn sorted_pair(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
+    if a.index() <= b.index() {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// A deterministic sample point for the patch: the lowest-index patch
+/// vertex not on the cut curve (exact original geometry), else the
+/// vertex-average centroid of the lowest-index face.
+fn sample_point(mesh: &Mesh, patch: &Patch, cut_vertices: &HashSet<VertexId>) -> [f64; 3] {
+    let mut best: Option<VertexId> = None;
+    for &face in &patch.faces {
+        for half_edge in mesh.face_loop(face) {
+            let Some(vertex) = mesh.to_vertex(half_edge) else {
+                continue;
+            };
+            if cut_vertices.contains(&vertex) {
+                continue;
+            }
+            if best.is_none_or(|b| vertex.index() < b.index()) {
+                best = Some(vertex);
+            }
+        }
+    }
+    if let Some(vertex) = best
+        && let Some(p) = mesh.vertex_position(vertex)
+    {
+        return promote(p);
+    }
+    // All patch vertices lie on the cut: fall back to the centroid of the
+    // lowest face (patch faces are sorted).
+    let face = patch.faces[0];
+    let mut sum = [0.0_f64; 3];
+    let mut count = 0.0_f64;
+    for half_edge in mesh.face_loop(face) {
+        if let Some(p) = mesh
+            .to_vertex(half_edge)
+            .and_then(|v| mesh.vertex_position(v))
+        {
+            let p = promote(p);
+            sum = [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]];
+            count += 1.0;
+        }
+    }
+    [sum[0] / count, sum[1] / count, sum[2] / count]
+}
+
+fn promote(p: &[f32; 3]) -> [f64; 3] {
+    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
+}
+
+/// The fixed ray-direction set: mixed-component directions first (least
+/// likely to graze axis-aligned geometry), axis-aligned last. Documented
+/// order; first non-degenerate ray wins.
+const RAY_DIRECTIONS: [[f64; 3]; 8] = [
+    [1.0, 0.372, 0.618],
+    [0.372, 1.0, 0.618],
+    [0.618, 0.372, 1.0],
+    [-1.0, 0.531, 0.274],
+    [0.274, -1.0, 0.531],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+];
+
+/// Exact ray parity of `point` against `mesh`: `Some(true)` when inside.
+///
+/// Casts a segment from `point` to a far point beyond the mesh bounds and
+/// counts strict triangle crossings with exact [`orient3d`] signs. Any
+/// coplanar sign anywhere retries with the next direction; `None` when
+/// every direction degenerates.
+fn ray_parity(
+    point: [f64; 3],
+    mesh: &Mesh,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+    retries: &mut u64,
+) -> Option<bool> {
+    // Far-point scale from the mesh bounds plus the sample point.
+    let mut min = point;
+    let mut max = point;
+    for vertex in mesh.vertices() {
+        if let Some(p) = mesh.vertex_position(vertex) {
+            let p = promote(p);
+            for axis in 0..3 {
+                min[axis] = min[axis].min(p[axis]);
+                max[axis] = max[axis].max(p[axis]);
+            }
+        }
+    }
+    let diameter = (max[0] - min[0]) + (max[1] - min[1]) + (max[2] - min[2]);
+    let scale = 4.0 * diameter.max(1.0);
+
+    'directions: for direction in RAY_DIRECTIONS {
+        let far = [
+            point[0] + direction[0] * scale,
+            point[1] + direction[1] * scale,
+            point[2] + direction[2] * scale,
+        ];
+        let mut crossings = 0_u64;
+        for face in mesh.faces() {
+            let _ = mesh.face_triangles_into(face, strategy, buffer);
+            for triangle in buffer.iter() {
+                let mut corners = [[0.0_f64; 3]; 3];
+                let mut live = true;
+                for (slot, corner) in corners.iter_mut().zip(triangle) {
+                    match mesh
+                        .to_vertex(*corner)
+                        .and_then(|v| mesh.vertex_position(v))
+                    {
+                        Some(p) => *slot = promote(p),
+                        None => live = false,
+                    }
+                }
+                if !live {
+                    continue;
+                }
+                // Zero-area triangles (fan output over loops with repeated
+                // positions or collinear runs after splitting) contribute
+                // nothing to parity; the cross product of f32-promoted
+                // coordinates is exact enough for an exact-zero test.
+                if triangle_is_flat(corners) {
+                    continue;
+                }
+                match segment_crosses_triangle(point, far, corners) {
+                    Crossing::Crosses => crossings += 1,
+                    Crossing::Misses => {}
+                    Crossing::Degenerate => {
+                        *retries += 1;
+                        continue 'directions;
+                    }
+                }
+            }
+        }
+        return Some(crossings % 2 == 1);
+    }
+    None
+}
+
+/// True when the triangle has exactly zero area.
+///
+/// Corners come from promoted f32 positions, so differences and products
+/// are exact in f64 and a true zero cross product compares exactly.
+fn triangle_is_flat(t: [[f64; 3]; 3]) -> bool {
+    let u = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+    let v = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+    let cross = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    cross == [0.0, 0.0, 0.0]
+}
+
+enum Crossing {
+    Crosses,
+    Misses,
+    Degenerate,
+}
+
+/// Exact segment-triangle crossing: strict crossings only; any coplanar
+/// sign is a degeneracy (the caller retries a different ray).
+fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Crossing {
+    let sp = orient3d(t[0], t[1], t[2], p);
+    let sq = orient3d(t[0], t[1], t[2], q);
+    if sp == Orientation3d::Coplanar || sq == Orientation3d::Coplanar {
+        return Crossing::Degenerate;
+    }
+    if sp == sq {
+        return Crossing::Misses;
+    }
+    let s1 = orient3d(p, q, t[0], t[1]);
+    let s2 = orient3d(p, q, t[1], t[2]);
+    let s3 = orient3d(p, q, t[2], t[0]);
+    if s1 == Orientation3d::Coplanar
+        || s2 == Orientation3d::Coplanar
+        || s3 == Orientation3d::Coplanar
+    {
+        return Crossing::Degenerate;
+    }
+    if s1 == s2 && s2 == s3 {
+        Crossing::Crosses
+    } else {
+        Crossing::Misses
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MeshBuilder;
+    use crate::boolean::{
+        BooleanBvh, BooleanScratch, build_intersection_graph, narrow_phase, split_mesh_along_graph,
+    };
+
+    fn cube(origin: [f32; 3]) -> Mesh {
+        let o = origin;
+        let positions = [
+            [o[0], o[1], o[2]],
+            [o[0] + 1.0, o[1], o[2]],
+            [o[0] + 1.0, o[1] + 1.0, o[2]],
+            [o[0], o[1] + 1.0, o[2]],
+            [o[0], o[1], o[2] + 1.0],
+            [o[0] + 1.0, o[1], o[2] + 1.0],
+            [o[0] + 1.0, o[1] + 1.0, o[2] + 1.0],
+            [o[0], o[1] + 1.0, o[2] + 1.0],
+        ];
+        let faces: [[u32; 4]; 6] = [
+            [3, 2, 1, 0],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ];
+        let mut builder = MeshBuilder::new();
+        for p in positions {
+            builder.push_vertex(p);
+        }
+        for face in faces {
+            builder.add_face(&face).expect("valid cube face");
+        }
+        builder.build().expect("valid cube").mesh
+    }
+
+    fn classify_two_cubes() -> (PatchClassification, BooleanDiagnostics) {
+        let mut mesh_a = cube([0.0, 0.0, 0.0]);
+        let mut mesh_b = cube([0.5, 0.5, 0.5]);
+        let mut scratch = BooleanScratch::new();
+        let strategy = FaceTriangulation::Fan;
+        let bvh_a = BooleanBvh::build(&mesh_a, strategy, &mut scratch);
+        let bvh_b = BooleanBvh::build(&mesh_b, strategy, &mut scratch);
+        let mut pairs = Vec::new();
+        bvh_a.query_overlaps(&bvh_b, &mut scratch, &mut pairs);
+        let mut segments = Vec::new();
+        let mut diagnostics = BooleanDiagnostics::default();
+        narrow_phase(
+            &mesh_a,
+            &mesh_b,
+            &pairs,
+            strategy,
+            &mut scratch,
+            &mut segments,
+            &mut diagnostics,
+        );
+        let graph = build_intersection_graph(
+            &mesh_a,
+            &mesh_b,
+            &segments,
+            strategy,
+            &mut scratch,
+            &mut diagnostics,
+        );
+        let outcome_a = split_mesh_along_graph(&mut mesh_a, &graph, MeshSide::A, &mut diagnostics);
+        let outcome_b = split_mesh_along_graph(&mut mesh_b, &graph, MeshSide::B, &mut diagnostics);
+        let classification = classify_patches(
+            &mesh_a,
+            &mesh_b,
+            &graph,
+            &outcome_a,
+            &outcome_b,
+            strategy,
+            &mut scratch,
+            &mut diagnostics,
+        );
+        (classification, diagnostics)
+    }
+
+    #[test]
+    fn two_cube_overlap_classifies_inside_and_outside() {
+        let (classification, diagnostics) = classify_two_cubes();
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(!classification.any_suspect());
+
+        for side in [MeshSide::A, MeshSide::B] {
+            let patches: Vec<&Patch> = classification.of(side).collect();
+            assert_eq!(patches.len(), 2, "{side:?}: one inside, one outside");
+            let inside: Vec<&&Patch> = patches
+                .iter()
+                .filter(|p| p.side == PatchSide::Inside)
+                .collect();
+            let outside: Vec<&&Patch> = patches
+                .iter()
+                .filter(|p| p.side == PatchSide::Outside)
+                .collect();
+            assert_eq!(inside.len(), 1, "{side:?}");
+            assert_eq!(outside.len(), 1, "{side:?}");
+            // The corner-overlap cut: 3 small corner faces inside, the
+            // other 6 (3 split remainders + 3 untouched) outside.
+            assert_eq!(inside[0].faces.len(), 3, "{side:?}");
+            assert_eq!(outside[0].faces.len(), 6, "{side:?}");
+        }
+    }
+
+    #[test]
+    fn classification_is_deterministic() {
+        let (first, _) = classify_two_cubes();
+        let (second, _) = classify_two_cubes();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn disjoint_meshes_classify_all_outside() {
+        let mesh_a = cube([0.0, 0.0, 0.0]);
+        let mesh_b = cube([5.0, 5.0, 5.0]);
+        let mut scratch = BooleanScratch::new();
+        let strategy = FaceTriangulation::Fan;
+        let graph = IntersectionGraph::default();
+        let outcome_a = MeshSplitOutcome::default();
+        let outcome_b = MeshSplitOutcome::default();
+        let mut diagnostics = BooleanDiagnostics::default();
+        let classification = classify_patches(
+            &mesh_a,
+            &mesh_b,
+            &graph,
+            &outcome_a,
+            &outcome_b,
+            strategy,
+            &mut scratch,
+            &mut diagnostics,
+        );
+        assert_eq!(classification.patches.len(), 2, "one patch per mesh");
+        assert!(
+            classification
+                .patches
+                .iter()
+                .all(|p| p.side == PatchSide::Outside)
+        );
+    }
+}
