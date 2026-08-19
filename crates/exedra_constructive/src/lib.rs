@@ -72,6 +72,7 @@ extern crate std;
 pub use kurbo;
 
 pub mod builders;
+pub mod cache;
 pub mod discretize;
 pub mod evaluate;
 #[cfg(test)]

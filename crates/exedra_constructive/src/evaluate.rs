@@ -9,9 +9,11 @@
 //! including what could *not* be evaluated — lands in the report as typed
 //! fidelity and diagnostics rather than silent approximation.
 
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
 use crate::ir::{NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
 use crate::tessellate::{
     EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
@@ -109,6 +111,11 @@ pub struct EvalCounters {
     pub unimplemented: u32,
     /// Total source-map bytes retained across emitted bodies.
     pub source_map_bytes: u64,
+    /// Bodies reused from the evaluation cache (always zero for the pure
+    /// [`evaluate`]).
+    pub cache_hits: u32,
+    /// Cache lookups that missed (always zero for the pure [`evaluate`]).
+    pub cache_misses: u32,
 }
 
 /// The honest ledger of one evaluation.
@@ -149,12 +156,17 @@ impl GeometryReport {
 }
 
 /// One evaluated body with the node that produced it.
+///
+/// The body is reference-counted so cache hits and repeated instances
+/// share one tessellation; consumers read through it transparently.
+/// (Single-threaded sharing by design — see cam-ezlm for the threadability
+/// model.)
 #[derive(Debug)]
 pub struct PlacedBody {
     /// The producing node.
     pub node: NodeId,
     /// The tessellated body (already placed in world space).
-    pub body: TessellatedBody,
+    pub body: Rc<TessellatedBody>,
 }
 
 /// The result of evaluating a recipe.
@@ -196,9 +208,42 @@ impl core::error::Error for EvalError {}
 /// Fails only when a supported body fails to tessellate; everything
 /// unsupported is a report entry, not an error.
 pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, EvalError> {
+    evaluate_inner(recipe, policy, None)
+}
+
+/// Evaluates `recipe` under `policy`, reusing bodies from `cache`.
+///
+/// Bit-identical to [`evaluate`] by contract: bodies, source maps, and the
+/// report agree exactly, except the work counters
+/// ([`EvalCounters::tessellations`], [`EvalCounters::cache_hits`],
+/// [`EvalCounters::cache_misses`]), which honestly describe how much work
+/// each run actually did. The cache is caller-owned and survives across
+/// evaluations; entries key on content fingerprints, so edited recipes
+/// re-tessellate exactly their changed nodes. See [`crate::cache`] for the
+/// key design.
+///
+/// # Errors
+///
+/// Same contract as [`evaluate`].
+pub fn evaluate_with_cache(
+    recipe: &Recipe,
+    policy: &EvalPolicy,
+    cache: &mut EvalCache,
+) -> Result<Evaluation, EvalError> {
+    cache.begin_generation();
+    evaluate_inner(recipe, policy, Some(cache))
+}
+
+fn evaluate_inner(
+    recipe: &Recipe,
+    policy: &EvalPolicy,
+    cache: Option<&mut EvalCache>,
+) -> Result<Evaluation, EvalError> {
     let mut cx = EvalCx {
         recipe,
         policy,
+        policy_fp: policy_fingerprint(policy),
+        cache,
         instance_cache: hashbrown::HashMap::new(),
         bodies: Vec::new(),
         report: GeometryReport {
@@ -221,10 +266,14 @@ pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, Eval
 struct EvalCx<'a> {
     recipe: &'a Recipe,
     policy: &'a EvalPolicy,
+    /// Fingerprint of `policy` (cache key component), computed once.
+    policy_fp: u64,
+    /// Cross-evaluation body cache, when the caller provided one.
+    cache: Option<&'a mut EvalCache>,
     bodies: Vec<PlacedBody>,
     report: GeometryReport,
     /// Local-space evaluations of instanced definitions, keyed by node.
-    instance_cache: hashbrown::HashMap<NodeId, alloc::rc::Rc<Vec<PlacedBody>>>,
+    instance_cache: hashbrown::HashMap<NodeId, Rc<Vec<PlacedBody>>>,
 }
 
 impl EvalCx<'_> {
@@ -246,18 +295,21 @@ impl EvalCx<'_> {
                 caps,
             } => {
                 let combined = compose(world, placement);
-                let body = tessellate_extrude(
-                    self.recipe.profile(*profile).expect("validated profile id"),
-                    &combined,
-                    *height,
-                    *caps,
-                    self.policy,
-                )
-                .map_err(|error| EvalError {
-                    node: node_id,
-                    error,
+                let (profile, height, caps) = (*profile, *height, *caps);
+                let body = self.body_cached(node_id, world, |cx| {
+                    tessellate_extrude(
+                        cx.recipe.profile(profile).expect("validated profile id"),
+                        &combined,
+                        height,
+                        caps,
+                        cx.policy,
+                    )
+                    .map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
                 })?;
-                let fidelity = self.body_fidelity(node_id, &[*profile]);
+                let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Revolve {
@@ -267,18 +319,21 @@ impl EvalCx<'_> {
                 caps,
             } => {
                 let combined = compose(world, placement);
-                let body = tessellate_revolve(
-                    self.recipe.profile(*profile).expect("validated profile id"),
-                    &combined,
-                    *sweep,
-                    *caps,
-                    self.policy,
-                )
-                .map_err(|error| EvalError {
-                    node: node_id,
-                    error,
+                let (profile, sweep, caps) = (*profile, *sweep, *caps);
+                let body = self.body_cached(node_id, world, |cx| {
+                    tessellate_revolve(
+                        cx.recipe.profile(profile).expect("validated profile id"),
+                        &combined,
+                        sweep,
+                        caps,
+                        cx.policy,
+                    )
+                    .map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
                 })?;
-                let fidelity = self.body_fidelity(node_id, &[*profile]);
+                let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Loft {
@@ -298,11 +353,12 @@ impl EvalCx<'_> {
                 let caps = *caps;
                 let profile_ids: Vec<ProfileId> =
                     sections.iter().map(|(_, profile)| *profile).collect();
-                let body =
-                    tessellate_loft(&placed, caps, self.policy).map_err(|error| EvalError {
+                let body = self.body_cached(node_id, world, |cx| {
+                    tessellate_loft(&placed, caps, cx.policy).map_err(|error| EvalError {
                         node: node_id,
                         error,
-                    })?;
+                    })
+                })?;
                 let fidelity = self.body_fidelity(node_id, &profile_ids);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
             }
@@ -315,16 +371,18 @@ impl EvalCx<'_> {
                 let points = points.clone();
                 let caps = *caps;
                 let profile = *profile;
-                let body = tessellate_sweep(
-                    self.recipe.profile(profile).expect("validated profile id"),
-                    world,
-                    &points,
-                    caps,
-                    self.policy,
-                )
-                .map_err(|error| EvalError {
-                    node: node_id,
-                    error,
+                let body = self.body_cached(node_id, world, |cx| {
+                    tessellate_sweep(
+                        cx.recipe.profile(profile).expect("validated profile id"),
+                        world,
+                        &points,
+                        caps,
+                        cx.policy,
+                    )
+                    .map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
@@ -358,12 +416,17 @@ impl EvalCx<'_> {
                 placement,
             } => {
                 let combined = compose(world, placement);
-                let body = crate::tessellate::tessellate_grid(
-                    points, *rows, *cols, *close_u, *close_w, *thickness, &combined,
-                )
-                .map_err(|error| EvalError {
-                    node: node_id,
-                    error,
+                let points = points.clone();
+                let (rows, cols) = (*rows, *cols);
+                let (close_u, close_w, thickness) = (*close_u, *close_w, *thickness);
+                let body = self.body_cached(node_id, world, |_| {
+                    crate::tessellate::tessellate_grid(
+                        &points, rows, cols, close_u, close_w, thickness, &combined,
+                    )
+                    .map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
@@ -383,15 +446,18 @@ impl EvalCx<'_> {
                     });
                     return Ok(Aabb3::EMPTY);
                 }
-                let source = self.recipe.import(*import).expect("validated import id");
-                let mesh = transform_mesh(source, &placement);
-                let face_features =
-                    alloc::vec![crate::tessellate::Feature::Imported; mesh.faces().count()];
-                let vertex_features =
-                    alloc::vec![crate::tessellate::Feature::Imported; mesh.vertices().count()];
-                let source_map =
-                    crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
-                let body = TessellatedBody { mesh, source_map };
+                let import = *import;
+                let body = self.body_cached(node_id, world, |cx| {
+                    let source = cx.recipe.import(import).expect("validated import id");
+                    let mesh = transform_mesh(source, &placement);
+                    let face_features =
+                        alloc::vec![crate::tessellate::Feature::Imported; mesh.faces().count()];
+                    let vertex_features =
+                        alloc::vec![crate::tessellate::Feature::Imported; mesh.vertices().count()];
+                    let source_map =
+                        crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
+                    Ok(TessellatedBody { mesh, source_map })
+                })?;
                 Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
             }
             NodeKind::Mirror { child, plane } => {
@@ -423,19 +489,19 @@ impl EvalCx<'_> {
                     return Ok(Aabb3::EMPTY);
                 }
                 let local = if let Some(cached) = self.instance_cache.get(&of) {
-                    alloc::rc::Rc::clone(cached)
+                    Rc::clone(cached)
                 } else {
                     // Evaluate the definition once in local space.
                     let taken = core::mem::take(&mut self.bodies);
                     self.walk(of, &Placement3::IDENTITY, true)?;
                     let local: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
-                    let rc = alloc::rc::Rc::new(local);
-                    self.instance_cache.insert(of, alloc::rc::Rc::clone(&rc));
+                    let rc = Rc::new(local);
+                    self.instance_cache.insert(of, Rc::clone(&rc));
                     rc
                 };
                 let mut bounds = Aabb3::EMPTY;
                 for source in local.iter() {
-                    let body = instantiate(&source.body, &placement);
+                    let body = Rc::new(instantiate(&source.body, &placement));
                     bounds.union(&mesh_bounds(&body.mesh));
                     self.report.fidelity.push((node_id, Fidelity::Exact));
                     if emit {
@@ -479,7 +545,14 @@ impl EvalCx<'_> {
         let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
         // Consumed operand bodies are not part of the evaluation output.
         self.report.counters.bodies = emitted_before;
-        let mut meshes = collected.into_iter().map(|placed| placed.body.mesh);
+        // Shared (cached) bodies clone their mesh for consumption; unshared
+        // ones move it out without copying.
+        let mut meshes = collected
+            .into_iter()
+            .map(|placed| match Rc::try_unwrap(placed.body) {
+                Ok(body) => body.mesh,
+                Err(shared) => shared.mesh.clone(),
+            });
         let Some(mut folded) = meshes.next() else {
             return Ok(None);
         };
@@ -530,7 +603,25 @@ impl EvalCx<'_> {
             }
         }
 
-        let combined = if all_present {
+        // Cache lookup happens after the operand walks so the report is
+        // identical either way; the key is content-addressed, so a hit is
+        // exactly what the pipeline below would deterministically produce.
+        let key = self.cache_key(node_id, world);
+        let cached = if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
+            let hit = cache.get(key);
+            if hit.is_some() {
+                self.report.counters.cache_hits += 1;
+            } else {
+                self.report.counters.cache_misses += 1;
+            }
+            hit
+        } else {
+            None
+        };
+
+        let combined: Option<Rc<TessellatedBody>> = if let Some(body) = cached {
+            Some(body)
+        } else if all_present {
             let boolean_op = match op {
                 crate::ir::CsgOp::Union => BooleanOp::Union,
                 crate::ir::CsgOp::Intersection => BooleanOp::Intersection,
@@ -560,7 +651,7 @@ impl EvalCx<'_> {
                     }
                 }
             }
-            if tail_ok {
+            let output = if tail_ok {
                 exedra::boolean::boolean_mesh(
                     &first,
                     &tail,
@@ -570,16 +661,10 @@ impl EvalCx<'_> {
                     &mut diagnostics,
                 )
                 .ok()
-                .map(|output| (first, output))
             } else {
                 None
-            }
-        } else {
-            None
-        };
-
-        match combined {
-            Some((_, output)) => {
+            };
+            output.map(|output| {
                 let mesh = output.mesh;
                 // Coarse per-operand attribution; fine detail rides the
                 // FACE_REGION values the pipeline carried through.
@@ -599,9 +684,19 @@ impl EvalCx<'_> {
                 ];
                 let source_map =
                     crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
-                let body = TessellatedBody { mesh, source_map };
-                Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
-            }
+                let body = Rc::new(TessellatedBody { mesh, source_map });
+                self.report.counters.tessellations += 1;
+                if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key) {
+                    cache.insert(key, Rc::clone(&body));
+                }
+                body
+            })
+        } else {
+            None
+        };
+
+        match combined {
+            Some(body) => Ok(self.finish_body(node_id, body, emit, Fidelity::Exact)),
             None => {
                 // Typed fallback: envelope-only, with the pipeline's
                 // diagnostics surfaced.
@@ -675,11 +770,53 @@ impl EvalCx<'_> {
         }
     }
 
+    /// Cache key for `node` under `world`, when a cache is attached.
+    fn cache_key(&self, node: NodeId, world: &Placement3) -> Option<CacheKey> {
+        self.cache.as_ref()?;
+        let fingerprint = self.recipe.fingerprint(node)?;
+        let mut bits = [0_u64; 12];
+        for (i, row) in world.rows.iter().enumerate() {
+            for (j, value) in row.iter().enumerate() {
+                bits[i * 4 + j] = value.to_bits();
+            }
+        }
+        Some(CacheKey {
+            node: fingerprint.0,
+            world: bits,
+            policy: self.policy_fp,
+        })
+    }
+
+    /// Runs `build` through the cache: a hit returns the shared body; a
+    /// miss builds, counts one tessellation, and (with a cache attached)
+    /// stores the result for later evaluations.
+    fn body_cached(
+        &mut self,
+        node_id: NodeId,
+        world: &Placement3,
+        build: impl FnOnce(&mut Self) -> Result<TessellatedBody, EvalError>,
+    ) -> Result<Rc<TessellatedBody>, EvalError> {
+        let key = self.cache_key(node_id, world);
+        if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
+            if let Some(body) = cache.get(key) {
+                self.report.counters.cache_hits += 1;
+                return Ok(body);
+            }
+            self.report.counters.cache_misses += 1;
+        }
+        let body = Rc::new(build(self)?);
+        self.report.counters.tessellations += 1;
+        if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key) {
+            cache.insert(key, Rc::clone(&body));
+        }
+        Ok(body)
+    }
+
     /// Records a successfully tessellated body and returns its bounds.
     fn finish_body(
         &mut self,
         node: NodeId,
-        body: TessellatedBody,
+        body: Rc<TessellatedBody>,
         emit: bool,
         fidelity: Fidelity,
     ) -> Aabb3 {
@@ -693,7 +830,6 @@ impl EvalCx<'_> {
             }
         }
         self.report.fidelity.push((node, fidelity));
-        self.report.counters.tessellations += 1;
         if emit {
             self.report.counters.bodies += 1;
             self.report.counters.source_map_bytes += body.source_map.stats().approx_bytes as u64;
@@ -1408,5 +1544,265 @@ mod drill_regression {
             let errors = result.bodies[0].body.mesh.validate_deep();
             assert!(errors.is_empty(), "angle={angle}: {errors:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_regression {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::builders;
+    use crate::cache::EvalCache;
+    use crate::discretize::DiscretizePolicy;
+    use crate::ir::{CapMode, CsgOp, NodeKind, RecipeBuilder};
+    use crate::tessellate::EvalPolicy;
+
+    /// A mixed fixture: extrude, holed extrude, an instanced pair, and a
+    /// drilled CSG difference under a transform.
+    fn mixed_recipe(drill_radius: f64) -> Recipe {
+        let mut b = RecipeBuilder::new();
+        let rect = b.add_profile(builders::rect(200.0, 100.0).unwrap());
+        let ring = b.add_profile(builders::ring(60.0, 30.0).unwrap());
+        let drill = b.add_profile(builders::circle(drill_radius).unwrap());
+        let slab = b
+            .add(NodeKind::Extrude {
+                profile: rect,
+                placement: Placement3::IDENTITY,
+                height: 80.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let tube = b
+            .add(NodeKind::Extrude {
+                profile: ring,
+                placement: Placement3::translate(400.0, 0.0, 0.0),
+                height: 40.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let bit = b
+            .add(NodeKind::Extrude {
+                profile: drill,
+                placement: Placement3::translate(130.0, 50.0, -20.0),
+                height: 120.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let holed = b
+            .add(NodeKind::Csg {
+                op: CsgOp::Difference,
+                operands: vec![slab, bit],
+            })
+            .unwrap();
+        let moved = b
+            .add(NodeKind::Transform {
+                child: holed,
+                xf: Placement3::translate(0.0, 300.0, 0.0),
+            })
+            .unwrap();
+        let near = b
+            .add(NodeKind::Instance {
+                of: tube,
+                placement: Placement3::translate(0.0, -300.0, 0.0),
+            })
+            .unwrap();
+        let far = b
+            .add(NodeKind::Instance {
+                of: tube,
+                placement: Placement3::translate(0.0, -600.0, 0.0),
+            })
+            .unwrap();
+        let root = b
+            .add(NodeKind::Group {
+                children: vec![slab, tube, moved, near, far],
+            })
+            .unwrap();
+        b.finish(root).unwrap()
+    }
+
+    fn body_signatures(evaluation: &Evaluation) -> Vec<(NodeId, u64, usize)> {
+        evaluation
+            .bodies
+            .iter()
+            .map(|placed| {
+                let (tri, _) = placed
+                    .body
+                    .mesh
+                    .to_trimesh(&exedra::ExtractParams::default());
+                (
+                    placed.node,
+                    exedra_testkit::golden::trimesh_signature(&tri),
+                    placed.body.source_map.face_count(),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_reports_match_modulo_counters(a: &GeometryReport, b: &GeometryReport) {
+        assert_eq!(a.fidelity, b.fidelity, "fidelity entries");
+        assert_eq!(a.diagnostics, b.diagnostics, "diagnostics");
+        assert_eq!(a.envelopes, b.envelopes, "envelopes");
+        assert_eq!(a.policy_curves, b.policy_curves, "policy curves");
+        assert_eq!(a.policy, b.policy, "policy");
+        assert_eq!(a.schema_version, b.schema_version, "schema version");
+        assert_eq!(a.counters.bodies, b.counters.bodies, "bodies counter");
+        assert_eq!(a.counters.faces, b.counters.faces, "faces counter");
+        assert_eq!(a.counters.vertices, b.counters.vertices, "vertices");
+    }
+
+    #[test]
+    fn warm_and_cold_evaluations_are_bit_identical() {
+        let recipe = mixed_recipe(30.0);
+        let policy = EvalPolicy::default();
+        let pure = evaluate(&recipe, &policy).unwrap();
+        assert_eq!(pure.report.counters.cache_hits, 0);
+        assert_eq!(pure.report.counters.cache_misses, 0);
+
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+        let warm = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+
+        assert_eq!(body_signatures(&pure), body_signatures(&cold), "pure/cold");
+        assert_eq!(body_signatures(&cold), body_signatures(&warm), "cold/warm");
+        for (a, b) in cold.bodies.iter().zip(&warm.bodies) {
+            assert_eq!(a.body.source_map, b.body.source_map, "source maps");
+        }
+        assert_reports_match_modulo_counters(&pure.report, &cold.report);
+        assert_reports_match_modulo_counters(&cold.report, &warm.report);
+        // A cold cached run may do LESS work than the pure run: nodes the
+        // recipe references twice (the tube is both a group child and an
+        // instanced definition) hit their own same-run entry. Every pure
+        // tessellation is accounted for as either work or a hit.
+        assert_eq!(
+            cold.report.counters.tessellations + cold.report.counters.cache_hits,
+            pure.report.counters.tessellations,
+            "cold work plus same-run reuse covers the pure run's work"
+        );
+        assert_eq!(
+            warm.report.counters.tessellations, 0,
+            "unchanged recipe re-tessellates nothing"
+        );
+        assert_eq!(warm.report.counters.cache_misses, 0);
+        assert!(warm.report.counters.cache_hits > 0);
+    }
+
+    #[test]
+    fn single_node_edit_misses_exactly_that_node() {
+        fn many(heights: &[f64]) -> Recipe {
+            let mut b = RecipeBuilder::new();
+            let mut children = Vec::new();
+            for (i, height) in heights.iter().enumerate() {
+                let p = b.add_profile(builders::rect(100.0, 50.0).unwrap());
+                let n = b
+                    .add(NodeKind::Extrude {
+                        profile: p,
+                        placement: Placement3::translate(
+                            f64::from(u32::try_from(i).unwrap()) * 200.0,
+                            0.0,
+                            0.0,
+                        ),
+                        height: *height,
+                        caps: CapMode::Both,
+                    })
+                    .unwrap();
+                children.push(n);
+            }
+            let root = b.add(NodeKind::Group { children }).unwrap();
+            b.finish(root).unwrap()
+        }
+
+        let policy = EvalPolicy::default();
+        let mut heights = vec![80.0_f64; 12];
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&many(&heights), &policy, &mut cache).unwrap();
+        assert_eq!(cold.report.counters.tessellations, 12);
+
+        heights[7] = 95.0;
+        let edited = many(&heights);
+        let warm = evaluate_with_cache(&edited, &policy, &mut cache).unwrap();
+        assert_eq!(warm.report.counters.cache_misses, 1, "one edited node");
+        assert_eq!(warm.report.counters.cache_hits, 11, "the rest reuse");
+        assert_eq!(warm.report.counters.tessellations, 1);
+
+        // The warm result is bit-identical to a fresh evaluation.
+        let fresh = evaluate(&edited, &policy).unwrap();
+        assert_eq!(body_signatures(&fresh), body_signatures(&warm));
+        assert_reports_match_modulo_counters(&fresh.report, &warm.report);
+    }
+
+    #[test]
+    fn drilled_csg_reuses_the_boolean_result() {
+        let recipe = mixed_recipe(30.0);
+        let policy = EvalPolicy::default();
+        let mut cache = EvalCache::new();
+        let _ = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+        let warm = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+        assert_eq!(
+            warm.report.counters.tessellations, 0,
+            "the boolean pipeline must not re-run on an unchanged recipe"
+        );
+        // Editing only the drill radius invalidates the drill body and the
+        // CSG node that contains it, nothing else.
+        let edited = mixed_recipe(25.0);
+        let warm = evaluate_with_cache(&edited, &policy, &mut cache).unwrap();
+        assert_eq!(warm.report.counters.cache_misses, 2, "drill bit + csg");
+        assert_eq!(warm.report.counters.tessellations, 2);
+        let fresh = evaluate(&edited, &policy).unwrap();
+        assert_eq!(body_signatures(&fresh), body_signatures(&warm));
+    }
+
+    #[test]
+    fn policy_changes_reuse_nothing_across_policies() {
+        let recipe = mixed_recipe(30.0);
+        let coarse = EvalPolicy {
+            discretize: DiscretizePolicy {
+                chord_tolerance: 1.0,
+                ..DiscretizePolicy::default()
+            },
+            ..EvalPolicy::default()
+        };
+        // Warm the cache under the default policy, then evaluate coarse:
+        // the coarse run must do exactly as much tessellation work as a
+        // coarse run on a fresh cache — zero cross-policy reuse (same-run
+        // sharing, like the twice-referenced tube, is still allowed).
+        let mut shared = EvalCache::new();
+        let _ = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut shared).unwrap();
+        let crossed = evaluate_with_cache(&recipe, &coarse, &mut shared).unwrap();
+        let mut fresh = EvalCache::new();
+        let baseline = evaluate_with_cache(&recipe, &coarse, &mut fresh).unwrap();
+        assert_eq!(
+            crossed.report.counters.tessellations, baseline.report.counters.tessellations,
+            "policy is in the key: nothing from the default run is reusable"
+        );
+    }
+
+    #[test]
+    fn eviction_is_deterministic_and_correct() {
+        let policy = EvalPolicy::default();
+        let mut cache = EvalCache::with_capacity(2);
+        let a = mixed_recipe(30.0);
+        let b = mixed_recipe(25.0);
+        for _ in 0..3 {
+            let ra = evaluate_with_cache(&a, &policy, &mut cache).unwrap();
+            let rb = evaluate_with_cache(&b, &policy, &mut cache).unwrap();
+            // Outputs stay correct under heavy eviction.
+            let fa = evaluate(&a, &policy).unwrap();
+            let fb = evaluate(&b, &policy).unwrap();
+            assert_eq!(body_signatures(&ra), body_signatures(&fa));
+            assert_eq!(body_signatures(&rb), body_signatures(&fb));
+        }
+        assert!(cache.counters().evictions > 0, "capacity 2 must evict");
+        assert!(cache.len() <= 2);
+        // Determinism: replaying the same sequence on a fresh cache yields
+        // identical counters.
+        let mut replay = EvalCache::with_capacity(2);
+        for _ in 0..3 {
+            let _ = evaluate_with_cache(&a, &policy, &mut replay).unwrap();
+            let _ = evaluate_with_cache(&b, &policy, &mut replay).unwrap();
+        }
+        assert_eq!(cache.counters(), replay.counters());
+        assert_eq!(cache.bytes_retained(), replay.bytes_retained());
     }
 }

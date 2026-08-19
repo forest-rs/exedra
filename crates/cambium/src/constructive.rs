@@ -14,8 +14,9 @@
 
 use crate::context::Clock;
 use crate::convert::{
-    ConstructiveEvalError, ConstructiveEvalPolicy, ConstructiveToMeshOutput,
+    ConstructiveEvalCache, ConstructiveEvalError, ConstructiveEvalPolicy, ConstructiveToMeshOutput,
     ConstructiveToMeshParams, Recipe, RecipeFingerprint, constructive_recipe_to_mesh,
+    constructive_recipe_to_mesh_cached,
 };
 use crate::report::Timings;
 
@@ -123,6 +124,71 @@ pub fn preview_recipe(recipe: &Recipe, plan: &RecipePlan) -> Result<RecipeRun, R
     apply_recipe(recipe, plan)
 }
 
+/// Applies a compiled plan through a caller-owned evaluation cache.
+///
+/// Output is bit-identical to [`apply_recipe`] (the cached evaluation is
+/// bit-identical to the pure one); an edited-and-recompiled recipe
+/// re-tessellates exactly its changed nodes, visible in the run report's
+/// `cache_hits` / `cache_misses` / `tessellations` counters. Timings gain
+/// a `recipe.apply.eval` bucket isolating evaluation time inside
+/// `recipe.apply`.
+///
+/// No stale-cache failure mode exists to diagnose: entries key on content
+/// fingerprints (plus policy and schema version), so a stale entry is
+/// simply never hit — staleness detection stays where it belongs, on the
+/// plan ([`RecipePlanError::StaleRecipe`]).
+///
+/// # Errors
+///
+/// Same contract as [`apply_recipe`].
+pub fn apply_recipe_cached(
+    recipe: &Recipe,
+    plan: &RecipePlan,
+    cache: &mut ConstructiveEvalCache,
+) -> Result<RecipeRun, RecipePlanError> {
+    let clock = Clock::new(Timings::DEFAULT_MAX_BUCKETS);
+    {
+        let _bucket = clock.bucket("recipe.compile");
+        let current = recipe.recipe_fingerprint();
+        if current != plan.fingerprint {
+            return Err(RecipePlanError::StaleRecipe {
+                planned: plan.fingerprint,
+                current,
+            });
+        }
+    }
+    let output = {
+        let _apply = clock.bucket("recipe.apply");
+        let _eval = clock.bucket("recipe.apply.eval");
+        constructive_recipe_to_mesh_cached(
+            recipe,
+            &ConstructiveToMeshParams {
+                policy: plan.policy,
+            },
+            cache,
+        )
+        .map_err(RecipePlanError::Eval)?
+    };
+    Ok(RecipeRun {
+        output,
+        timings: clock.timings(),
+    })
+}
+
+/// Previews a plan through a cache: identical to [`apply_recipe_cached`]
+/// by construction (evaluation purity, cache bit-identity).
+///
+/// # Errors
+///
+/// Same contract as [`apply_recipe_cached`].
+pub fn preview_recipe_cached(
+    recipe: &Recipe,
+    plan: &RecipePlan,
+    cache: &mut ConstructiveEvalCache,
+) -> Result<RecipeRun, RecipePlanError> {
+    apply_recipe_cached(recipe, plan, cache)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +241,83 @@ mod tests {
         // Recompiling against the edited recipe applies cleanly.
         let replanned = compile_recipe(&edited, ConstructiveEvalPolicy::default());
         assert!(apply_recipe(&edited, &replanned).is_ok());
+    }
+
+    fn pair_recipe(heights: [f64; 2]) -> Recipe {
+        let mut b = RecipeBuilder::new();
+        let mut children = alloc::vec::Vec::new();
+        for (i, height) in heights.iter().enumerate() {
+            let p = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+            let n = b
+                .add(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::translate(
+                        f64::from(u32::try_from(i).expect("tiny index")) * 5.0,
+                        0.0,
+                        0.0,
+                    ),
+                    height: *height,
+                    caps: CapMode::Both,
+                })
+                .expect("valid");
+            children.push(n);
+        }
+        let root = b.add(NodeKind::Group { children }).expect("valid group");
+        b.finish(root).expect("valid recipe")
+    }
+
+    #[test]
+    fn cached_apply_matches_uncached_and_reuses_across_edits() {
+        let signatures = |run: &RecipeRun| -> alloc::vec::Vec<u64> {
+            run.output
+                .bodies
+                .iter()
+                .map(|placed| {
+                    let (tri, _) = placed
+                        .body
+                        .mesh
+                        .to_trimesh(&exedra::ExtractParams::default());
+                    trimesh_signature(&tri)
+                })
+                .collect()
+        };
+
+        let mut cache = ConstructiveEvalCache::new();
+        let r = pair_recipe([3.0, 4.0]);
+        let plan = compile_recipe(&r, ConstructiveEvalPolicy::default());
+        let plain = apply_recipe(&r, &plan).expect("applies");
+        let cold = apply_recipe_cached(&r, &plan, &mut cache).expect("applies");
+        assert_eq!(signatures(&plain), signatures(&cold), "cold == plain");
+
+        // Warm, unchanged: everything reuses.
+        let warm = apply_recipe_cached(&r, &plan, &mut cache).expect("applies");
+        assert_eq!(signatures(&plain), signatures(&warm), "warm == plain");
+        assert_eq!(warm.output.report.counters.tessellations, 0);
+
+        // Edit one node, recompile (the stale plan is still rejected),
+        // re-apply: exactly the edited node re-tessellates.
+        let edited = pair_recipe([3.0, 6.0]);
+        assert!(matches!(
+            apply_recipe_cached(&edited, &plan, &mut cache),
+            Err(RecipePlanError::StaleRecipe { .. })
+        ));
+        let replanned = compile_recipe(&edited, ConstructiveEvalPolicy::default());
+        let warm = apply_recipe_cached(&edited, &replanned, &mut cache).expect("applies");
+        assert_eq!(warm.output.report.counters.cache_misses, 1);
+        assert_eq!(warm.output.report.counters.cache_hits, 1);
+        assert_eq!(warm.output.report.counters.tessellations, 1);
+        let fresh = apply_recipe(&edited, &replanned).expect("applies");
+        assert_eq!(signatures(&fresh), signatures(&warm), "warm == fresh");
+
+        // Preview parity on the cached path.
+        let preview = preview_recipe_cached(&edited, &replanned, &mut cache).expect("previews");
+        assert_eq!(signatures(&preview), signatures(&fresh));
+
+        // The eval bucket is present.
+        let names: alloc::vec::Vec<&str> = warm.timings.iter().map(|b| b.name).collect();
+        assert!(names.contains(&"recipe.compile"));
+        assert!(names.contains(&"recipe.apply"));
+        assert!(names.contains(&"recipe.apply.eval"));
     }
 
     #[test]

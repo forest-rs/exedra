@@ -1,12 +1,15 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Executable wind-tunnel scenarios for constructive recipe evaluation.
+//! Executable wind-tunnel scenarios for constructive recipe evaluation:
+//! CT-1 (evaluation + source-map lookups at scale) and CT-2 (incremental
+//! regeneration: a one-parameter edit re-tessellates exactly one body,
+//! bit-identical to a full rebuild, with the speedup reported).
 //!
 //! Run the quick profile (the default):
 //! `cargo run --release -p constructive_wind_tunnel -- --quick`
 //!
-//! Run the formal CT-1 stress profile:
+//! Run the formal stress profile:
 //! `cargo run --release -p constructive_wind_tunnel -- --ct1-stress`
 
 use std::hint::black_box;
@@ -14,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use exedra::ExtractParams;
 use exedra_constructive::builders;
-use exedra_constructive::evaluate::{Evaluation, evaluate};
+use exedra_constructive::cache::EvalCache;
+use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
 use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_testkit::trimesh_signature;
@@ -22,6 +26,7 @@ use exedra_testkit::trimesh_signature;
 fn main() {
     let profile = Profile::from_args(std::env::args().skip(1));
     run_ct1(profile);
+    run_ct2(profile);
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -70,6 +75,14 @@ impl Profile {
         match self {
             Self::Quick => 4,
             Self::Stress => 3,
+        }
+    }
+
+    /// Body-node count for the CT-2 incremental scenario.
+    const fn ct2_nodes(self) -> u32 {
+        match self {
+            Self::Quick => 100,
+            Self::Stress => 400,
         }
     }
 }
@@ -187,9 +200,164 @@ fn run_ct1(profile: Profile) {
     );
 }
 
+/// Builds one recipe with `nodes` extrude bodies under a single group;
+/// `edited` overrides the height of node `edit_index` when set.
+fn build_ct2_recipe(nodes: u32, edit_index: u32, edited: Option<f64>) -> Recipe {
+    let mut b = RecipeBuilder::new();
+    let mut children = Vec::new();
+    for i in 0..nodes {
+        let width = 200.0 + f64::from(i % 17) * 10.0;
+        let height = 120.0 + f64::from(i % 11) * 8.0;
+        let radius = 8.0 + f64::from(i % 5) * 3.0;
+        let mut depth = 400.0 + f64::from(i % 7) * 25.0;
+        if i == edit_index
+            && let Some(d) = edited
+        {
+            depth = d;
+        }
+        let profile = b.add_profile(
+            builders::rounded_rect(width, height, radius)
+                .expect("wind-tunnel dimensions are valid"),
+        );
+        let node = b
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::translate(f64::from(i) * 300.0, 0.0, 0.0),
+                height: depth,
+                caps: CapMode::Both,
+            })
+            .expect("wind-tunnel extrude is valid");
+        children.push(node);
+    }
+    let root = b
+        .add(NodeKind::Group { children })
+        .expect("wind-tunnel group is valid");
+    b.finish(root).expect("wind-tunnel recipe is valid")
+}
+
+/// Folds every body's trimesh signature (extraction outside any timing).
+fn fold_signature(evaluation: &Evaluation) -> u64 {
+    let mut signature = 0_u64;
+    for (index, placed) in evaluation.bodies.iter().enumerate() {
+        let (tri, _) = placed.body.mesh.to_trimesh(&ExtractParams::default());
+        let rotation = u32::try_from(index % 63).expect("modulo 63 fits");
+        signature ^= trimesh_signature(&tri).rotate_left(rotation);
+    }
+    signature
+}
+
+/// CT-2: one-parameter edit on an N-body recipe re-tessellates exactly the
+/// edited body, bit-identical to a full rebuild, and reports the speedup.
+fn run_ct2(profile: Profile) {
+    let policy = EvalPolicy::default();
+    let nodes = profile.ct2_nodes();
+    let edit_index = nodes / 2;
+    let base = build_ct2_recipe(nodes, edit_index, None);
+    let edited = build_ct2_recipe(nodes, edit_index, Some(555.0));
+
+    // Determinism oracle before any timing: the warm (cached) evaluation
+    // of the edited recipe must equal a cold full rebuild bit for bit,
+    // twice over.
+    let full = evaluate(&edited, &policy).expect("wind-tunnel recipes evaluate");
+    let full_signature = fold_signature(&full);
+    for round in 0..2 {
+        let mut cache = EvalCache::with_capacity(4096);
+        let cold =
+            evaluate_with_cache(&base, &policy, &mut cache).expect("wind-tunnel recipes evaluate");
+        assert_eq!(
+            u64::from(cold.report.counters.tessellations),
+            u64::from(nodes),
+            "cold pass tessellates every body"
+        );
+        let warm = evaluate_with_cache(&edited, &policy, &mut cache)
+            .expect("wind-tunnel recipes evaluate");
+        assert_eq!(
+            warm.report.counters.cache_misses, 1,
+            "round {round}: exactly the edited node misses"
+        );
+        assert_eq!(
+            warm.report.counters.tessellations, 1,
+            "round {round}: exactly the edited node re-tessellates"
+        );
+        assert_eq!(
+            u64::from(warm.report.counters.cache_hits),
+            u64::from(nodes - 1),
+            "round {round}: every other body reuses"
+        );
+        assert_eq!(
+            fold_signature(&warm),
+            full_signature,
+            "round {round}: incremental output equals the full rebuild"
+        );
+    }
+
+    // Timing: full rebuild of the edited recipe vs cached re-evaluation
+    // with the pre-edit cache (re-primed untimed each iteration, since the
+    // warm pass itself inserts the edited body).
+    let mut cold_best = Duration::MAX;
+    let mut warm_best = Duration::MAX;
+    for _ in 0..profile.iterations() {
+        let start = Instant::now();
+        black_box(evaluate(&edited, &policy).expect("wind-tunnel recipes evaluate"));
+        cold_best = cold_best.min(start.elapsed());
+
+        let mut cache = EvalCache::with_capacity(4096);
+        black_box(
+            evaluate_with_cache(&base, &policy, &mut cache).expect("wind-tunnel recipes evaluate"),
+        );
+        let start = Instant::now();
+        black_box(
+            evaluate_with_cache(&edited, &policy, &mut cache)
+                .expect("wind-tunnel recipes evaluate"),
+        );
+        warm_best = warm_best.min(start.elapsed());
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "nanosecond ratios for reporting only"
+    )]
+    let speedup = cold_best.as_nanos() as f64 / warm_best.as_nanos().max(1) as f64;
+
+    println!(
+        "scenario=CT-2 profile={} nodes={} edit_index={} cold_ns={} warm_ns={} \
+         speedup={speedup:.1} warm_misses=1 signature={full_signature:016x}",
+        profile.label(),
+        nodes,
+        edit_index,
+        cold_best.as_nanos(),
+        warm_best.as_nanos(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ct2_incremental_contract() {
+        // CI-sized CT-2: the assertions, not the timing.
+        assert_eq!(Profile::Quick.ct2_nodes(), 100);
+        assert_eq!(Profile::Stress.ct2_nodes(), 400);
+        let policy = EvalPolicy::default();
+        let nodes = 12_u32;
+        let base = build_ct2_recipe(nodes, 6, None);
+        let edited = build_ct2_recipe(nodes, 6, Some(555.0));
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&base, &policy, &mut cache).expect("evaluates");
+        assert_eq!(
+            u64::from(cold.report.counters.tessellations),
+            u64::from(nodes)
+        );
+        let warm = evaluate_with_cache(&edited, &policy, &mut cache).expect("evaluates");
+        assert_eq!(warm.report.counters.cache_misses, 1);
+        assert_eq!(warm.report.counters.tessellations, 1);
+        let full = evaluate(&edited, &policy).expect("evaluates");
+        assert_eq!(
+            fold_signature(&warm),
+            fold_signature(&full),
+            "incremental equals full rebuild"
+        );
+    }
 
     #[test]
     fn quick_profile_contract() {

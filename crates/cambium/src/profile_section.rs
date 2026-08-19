@@ -299,7 +299,7 @@ mod tests {
             .expect("valid");
         let recipe = b.finish(n).expect("valid recipe");
         let mut result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
-        result.bodies.remove(0).body.mesh
+        result.bodies.remove(0).body.mesh.clone()
     }
 
     #[test]

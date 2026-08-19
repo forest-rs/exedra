@@ -635,7 +635,14 @@ mod tests {
     fn baked_parts_fingerprint_and_compile() {
         let recipe = prism_recipe(40.0);
         let evaluation = evaluate(&recipe, &EvalPolicy::default()).unwrap();
-        let mesh = evaluation.bodies.into_iter().next().unwrap().body.mesh;
+        let mesh = evaluation
+            .bodies
+            .into_iter()
+            .next()
+            .unwrap()
+            .body
+            .mesh
+            .clone();
         let mut asm = Assembly::new();
         let part = asm.add_baked_part("baked", mesh, &["shell"]).unwrap();
         asm.add_instance(None, "i", part, Placement3::IDENTITY)

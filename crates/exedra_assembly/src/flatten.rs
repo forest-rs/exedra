@@ -284,7 +284,14 @@ mod tests {
         let recipe = slotted_recipe();
         let evaluation =
             exedra_constructive::evaluate::evaluate(&recipe, &EvalPolicy::default()).unwrap();
-        let mesh = evaluation.bodies.into_iter().next().unwrap().body.mesh;
+        let mesh = evaluation
+            .bodies
+            .into_iter()
+            .next()
+            .unwrap()
+            .body
+            .mesh
+            .clone();
         let mut asm = Assembly::new();
         let part = asm.add_baked_part("baked", mesh, &["shell"]).unwrap();
         asm.set_default_slot(part, "shell").unwrap();

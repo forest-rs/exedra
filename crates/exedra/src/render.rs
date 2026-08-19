@@ -38,13 +38,21 @@ pub enum ExtractMode {
     /// Rebuilds output from full mesh state.
     #[default]
     FullRebuild,
-    /// v0.1 placeholder: currently behaves as full rebuild.
+    /// Requests reuse of prior extraction output.
+    ///
+    /// A bare [`Mesh::to_trimesh`] call has no prior state to reuse, so it
+    /// performs a full rebuild and reports it in
+    /// [`ExtractStats::incremental_fallbacks`] — visible, never silent.
+    /// Actual reuse routes through [`Mesh::to_trimesh_cached`] with a
+    /// caller-owned [`TrimeshCache`].
     Incremental,
 }
 
 /// Render extraction parameters for [`Mesh::to_trimesh`](crate::Mesh::to_trimesh).
 ///
-/// In v0.1, [`ExtractMode::Incremental`] behaves as full rebuild.
+/// [`ExtractMode::Incremental`] reuses prior output only through
+/// [`Mesh::to_trimesh_cached`]; without a cache it is a counted full
+/// rebuild.
 ///
 /// `normals` selects whether extraction uses derived geometry normals,
 /// authored corner overrides, or a hybrid of both.
@@ -105,6 +113,57 @@ pub struct ExtractStats {
     /// fan because the projected polygon was not simple. Always zero under
     /// [`FaceTriangulation::Fan`].
     pub robust_fallback_count: u64,
+    /// Number of full rebuilds performed where reuse was requested but no
+    /// usable prior output existed ([`ExtractMode::Incremental`] without a
+    /// cache, an empty [`TrimeshCache`], or a stale one).
+    pub incremental_fallbacks: u64,
+    /// Number of times [`Mesh::to_trimesh_cached`] returned the cached
+    /// output wholesale (unchanged revision and parameters).
+    pub full_reuses: u64,
+}
+
+/// Caller-owned reuse state for [`Mesh::to_trimesh_cached`].
+///
+/// Pinned to [`Mesh::revision`] exactly like
+/// `exedra_constructive`'s source maps: extraction is a pure function of
+/// mesh state, so an unchanged revision under unchanged parameters means
+/// the cached output *is* the full rebuild's output, bit for bit. Any
+/// revision or parameter change falls back to a counted full rebuild that
+/// refreshes the cache.
+///
+/// Like a source map, a cache is bound to one logical mesh: reusing it
+/// across unrelated meshes whose revisions happen to coincide is a caller
+/// contract violation the pin cannot detect.
+#[derive(Clone, Debug, Default)]
+pub struct TrimeshCache {
+    entry: Option<CacheEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct CacheEntry {
+    revision: crate::MeshRevision,
+    params: ExtractParams,
+    mesh: TriMesh,
+    stats: ExtractStats,
+}
+
+impl TrimeshCache {
+    /// Creates an empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True when the cache holds a prior extraction.
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.entry.is_some()
+    }
+
+    /// Drops any cached extraction.
+    pub fn clear(&mut self) {
+        self.entry = None;
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -170,12 +229,57 @@ impl Mesh {
     /// # Ok::<(), exedra::BuildError>(())
     /// ```
     pub fn to_trimesh(&self, params: &ExtractParams) -> (TriMesh, ExtractStats) {
+        let (mesh, mut stats) = self.extract_full(params);
         if params.mode == ExtractMode::Incremental {
-            debug_assert!(
-                false,
-                "ExtractMode::Incremental currently falls back to full rebuild in v0.1"
-            );
+            // No prior state to reuse here — a full rebuild, counted so
+            // callers see the fallback instead of assuming reuse happened.
+            stats.incremental_fallbacks = 1;
         }
+        (mesh, stats)
+    }
+
+    /// Extracts through a caller-owned reuse cache.
+    ///
+    /// When `cache` holds output for this mesh's current
+    /// [`revision`](Mesh::revision) under equal `params`, that output is
+    /// returned wholesale (counted in [`ExtractStats::full_reuses`]) —
+    /// bit-identical to a fresh [`Mesh::to_trimesh`] because extraction is
+    /// a pure function of mesh state. Otherwise a full rebuild runs, the
+    /// cache is refreshed, and the fallback is counted in
+    /// [`ExtractStats::incremental_fallbacks`] (except on the very first,
+    /// unprimed use, which is an ordinary rebuild).
+    ///
+    /// See [`TrimeshCache`] for the single-mesh binding contract.
+    pub fn to_trimesh_cached(
+        &self,
+        params: &ExtractParams,
+        cache: &mut TrimeshCache,
+    ) -> (TriMesh, ExtractStats) {
+        let revision = self.revision();
+        if let Some(entry) = &cache.entry
+            && entry.revision == revision
+            && entry.params == *params
+        {
+            let mut stats = entry.stats;
+            stats.full_reuses = 1;
+            return (entry.mesh.clone(), stats);
+        }
+        let was_primed = cache.entry.is_some();
+        let (mesh, mut stats) = self.extract_full(params);
+        if was_primed {
+            stats.incremental_fallbacks = 1;
+        }
+        cache.entry = Some(CacheEntry {
+            revision,
+            params: *params,
+            mesh: mesh.clone(),
+            stats,
+        });
+        (mesh, stats)
+    }
+
+    /// Unconditional full extraction (shared by both entry points).
+    fn extract_full(&self, params: &ExtractParams) -> (TriMesh, ExtractStats) {
         let corner_uvs = self.attrs().sparse(attr::CORNER_UV);
         let derived_normals = self.derive_corner_normals(&params.normal_params);
         let normal_overrides = self.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
@@ -575,6 +679,139 @@ mod tests {
             ..ExtractParams::default()
         });
         assert_eq!(mesh.normals[0], [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn incremental_mode_no_longer_panics_and_counts_its_fallback() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder
+            .add_face(&[0, 1, 2])
+            .expect("triangle should be valid");
+        let built = builder.build().expect("build should succeed");
+
+        let incremental = ExtractParams {
+            mode: crate::ExtractMode::Incremental,
+            ..ExtractParams::default()
+        };
+        let (tri, stats) = built.mesh.to_trimesh(&incremental);
+        assert_eq!(stats.incremental_fallbacks, 1, "fallback is visible");
+        let (full, full_stats) = built.mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(full_stats.incremental_fallbacks, 0);
+        assert_eq!(tri, full, "the fallback is an ordinary full rebuild");
+    }
+
+    #[test]
+    fn cached_extraction_reuses_on_unchanged_revision_and_matches_rebuilds() {
+        use crate::TrimeshCache;
+
+        // Deterministic SplitMix64 for seeded edit sequences.
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+            fn unit(&mut self) -> f32 {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "20 bits of test jitter into f32 is deliberate"
+                )]
+                {
+                    (self.next() >> 44) as f32 / (1_u64 << 20) as f32
+                }
+            }
+        }
+
+        // A quad grid with enough structure for splits to matter.
+        let mut builder = MeshBuilder::new();
+        for y in 0..4_u32 {
+            for x in 0..4_u32 {
+                #[expect(clippy::cast_precision_loss, reason = "small grid coordinates")]
+                builder.push_vertex([x as f32, y as f32, 0.0]);
+            }
+        }
+        for y in 0..3_u32 {
+            for x in 0..3_u32 {
+                let i = y * 4 + x;
+                builder
+                    .add_face(&[i, i + 1, i + 5, i + 4])
+                    .expect("grid quad should be valid");
+            }
+        }
+        let mut built = builder.build().expect("build should succeed");
+        let params = ExtractParams::default();
+        let mut cache = TrimeshCache::new();
+        let mut rng = Rng(0x00E1_D8A5_0000_0001);
+
+        // First use: an ordinary rebuild primes the cache.
+        let (first, first_stats) = built.mesh.to_trimesh_cached(&params, &mut cache);
+        assert_eq!(first_stats.incremental_fallbacks, 0, "unprimed first use");
+        assert_eq!(first, built.mesh.to_trimesh(&params).0);
+        assert!(cache.is_primed());
+
+        for round in 0..8 {
+            // Unchanged revision: wholesale reuse, bit-identical.
+            let (reused, reused_stats) = built.mesh.to_trimesh_cached(&params, &mut cache);
+            assert_eq!(reused_stats.full_reuses, 1, "round {round}: reuse");
+            assert_eq!(
+                reused,
+                built.mesh.to_trimesh(&params).0,
+                "round {round}: reused output equals a fresh full rebuild"
+            );
+
+            // Edit: move a random vertex; the revision bumps and the next
+            // cached extraction must fall back and match a fresh rebuild.
+            let vertices: Vec<_> = built.mesh.vertices().collect();
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "test index selection over a tiny vertex set"
+            )]
+            let pick = vertices[(rng.next() % vertices.len() as u64) as usize];
+            let jitter = [rng.unit(), rng.unit(), rng.unit()];
+            let mut edit = built.mesh.edit();
+            let base = edit
+                .mesh()
+                .vertex_position(pick)
+                .copied()
+                .expect("picked vertex is live");
+            op::set_vertex_position(
+                &mut edit,
+                pick,
+                [
+                    base[0] + jitter[0],
+                    base[1] + jitter[1],
+                    base[2] + jitter[2],
+                ],
+            )
+            .expect("vertex move should succeed");
+            let _: () = edit.finish();
+
+            let (rebuilt, rebuilt_stats) = built.mesh.to_trimesh_cached(&params, &mut cache);
+            assert_eq!(
+                rebuilt_stats.incremental_fallbacks, 1,
+                "round {round}: revision change falls back, counted"
+            );
+            assert_eq!(
+                rebuilt,
+                built.mesh.to_trimesh(&params).0,
+                "round {round}: fallback equals a fresh full rebuild"
+            );
+        }
+
+        // A parameter change also refuses reuse.
+        let robust = ExtractParams {
+            face_triangulation: FaceTriangulation::Robust,
+            ..ExtractParams::default()
+        };
+        let (tri, stats) = built.mesh.to_trimesh_cached(&robust, &mut cache);
+        assert_eq!(stats.incremental_fallbacks, 1, "params are pinned");
+        assert_eq!(tri, built.mesh.to_trimesh(&robust).0);
     }
 
     #[test]

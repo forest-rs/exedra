@@ -159,6 +159,7 @@ pub fn rect_frame_to_mesh(
 
 // --- Constructive recipe -> mesh --------------------------------------------
 
+pub use exedra_constructive::cache::EvalCache as ConstructiveEvalCache;
 pub use exedra_constructive::evaluate::{
     EvalError as ConstructiveEvalError, GeometryReport, PlacedBody,
     Severity as ConstructiveSeverity,
@@ -209,6 +210,36 @@ pub fn constructive_recipe_to_mesh(
     params: &ConstructiveToMeshParams,
 ) -> Result<ConstructiveToMeshOutput, ConstructiveEvalError> {
     let evaluation = exedra_constructive::evaluate::evaluate(recipe, &params.policy)?;
+    Ok(constructive_output(recipe, evaluation))
+}
+
+/// [`constructive_recipe_to_mesh`] through a caller-owned evaluation cache.
+///
+/// Identical output by contract (the cached evaluation is bit-identical to
+/// the pure one, modulo work counters); an edited recipe re-tessellates
+/// exactly its changed nodes. The cache is keyed on content fingerprints,
+/// so no staleness can be observed — see
+/// `exedra_constructive::cache` for the key design.
+///
+/// # Errors
+///
+/// Same contract as [`constructive_recipe_to_mesh`].
+pub fn constructive_recipe_to_mesh_cached(
+    recipe: &Recipe,
+    params: &ConstructiveToMeshParams,
+    cache: &mut ConstructiveEvalCache,
+) -> Result<ConstructiveToMeshOutput, ConstructiveEvalError> {
+    let evaluation =
+        exedra_constructive::evaluate::evaluate_with_cache(recipe, &params.policy, cache)?;
+    Ok(constructive_output(recipe, evaluation))
+}
+
+/// Maps one evaluation into the conversion output (shared by the pure and
+/// cached seams).
+fn constructive_output(
+    recipe: &Recipe,
+    evaluation: exedra_constructive::evaluate::Evaluation,
+) -> ConstructiveToMeshOutput {
     let diagnostics = evaluation
         .report
         .diagnostics
@@ -229,12 +260,12 @@ pub fn constructive_recipe_to_mesh(
             Diagnostic::new(level, code, message)
         })
         .collect();
-    Ok(ConstructiveToMeshOutput {
+    ConstructiveToMeshOutput {
         fingerprint: recipe.recipe_fingerprint(),
         bodies: evaluation.bodies,
         report: evaluation.report,
         diagnostics,
-    })
+    }
 }
 
 #[cfg(test)]

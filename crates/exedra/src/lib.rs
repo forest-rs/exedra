@@ -137,7 +137,7 @@ pub use mesh::{
 };
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
-pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh};
+pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh, TrimeshCache};
 pub use session::{
     ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,
     EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,

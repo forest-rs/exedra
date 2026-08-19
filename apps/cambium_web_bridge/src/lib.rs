@@ -31,9 +31,6 @@ use exedra_primitives::{
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-mod inspect;
-pub use inspect::*;
-
 /// Optional scenario execution settings.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub struct ScenarioOptions {
@@ -208,14 +205,14 @@ pub fn run_assembly_scenario_json() -> Result<String, JsValue> {
         .map_err(|err| JsValue::from_str(&format!("failed to serialize assembly response: {err}")))
 }
 
-/// Builds the shared `panel_trio` assembly: one rounded panel part, three
-/// placements, two materials — the smallest scene that exercises sharing
-/// plus per-instance overrides.
-pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String> {
-    use exedra_assembly::Assembly;
+fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
+    use exedra_assembly::{Assembly, PartCompiler, flatten};
     use exedra_constructive::builders;
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+    use exedra_constructive::tessellate::EvalPolicy;
 
+    // One rounded panel part, three placements, two materials: the
+    // smallest scene that exercises sharing plus per-instance overrides.
     let mut b = RecipeBuilder::new();
     let front = b.material_slot("front");
     let profile =
@@ -256,26 +253,6 @@ pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String>
                 .map_err(|e| format!("{e}"))?;
         }
     }
-    Ok(asm)
-}
-
-/// Renders a placement as 16 column-major values (glTF/Three.js layout).
-pub(crate) fn matrix16(placement: &exedra_constructive::ir::Placement3) -> Vec<f64> {
-    let mut matrix = Vec::with_capacity(16);
-    for col in 0..4 {
-        for row in &placement.rows {
-            matrix.push(row[col]);
-        }
-        matrix.push(if col == 3 { 1.0 } else { 0.0 });
-    }
-    matrix
-}
-
-fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
-    use exedra_assembly::{PartCompiler, flatten};
-    use exedra_constructive::tessellate::EvalPolicy;
-
-    let asm = panel_trio_assembly()?;
 
     let mut compiler = PartCompiler::new();
     let compiled = compiler
@@ -303,6 +280,13 @@ fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
             });
             u32::try_from(bodies.len() - 1).expect("body count fits u32")
         });
+        let mut matrix = Vec::with_capacity(16);
+        for col in 0..4 {
+            for row in &item.world.rows {
+                matrix.push(row[col]);
+            }
+            matrix.push(if col == 3 { 1.0 } else { 0.0 });
+        }
         items.push(AssemblyItem {
             instance_path: item.path.to_string(),
             part_key: asm
@@ -310,7 +294,7 @@ fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
                 .map(|def| def.key().to_string())
                 .unwrap_or_default(),
             body: body_index,
-            matrix: matrix16(&item.world),
+            matrix,
             ranges: item
                 .regions
                 .iter()
@@ -1870,11 +1854,14 @@ fn snapshot_from_report(
     )
 }
 
-/// Extracts flattened render buffers plus the triangle-to-face mapping:
-/// `tri_face[t]` is the ordinal of the owning face in `mesh.faces()`
-/// order, parallel to the triangle triples of `indices` (and to
-/// `region_ids`).
-pub(crate) fn extract_mesh_buffers(mesh: &Mesh) -> (MeshBuffers, Vec<u32>) {
+fn snapshot_from_mesh(
+    mesh: &Mesh,
+    label: &str,
+    operator: Option<&str>,
+    plan_fingerprint: Option<u64>,
+    stats: StepStats,
+    diagnostics: &[StepDiagnostic],
+) -> StepSnapshot {
     let (tri, _) = mesh.to_trimesh(&ExtractParams {
         normals: NormalsSource::CustomOrDerived,
         ..ExtractParams::default()
@@ -1894,20 +1881,16 @@ pub(crate) fn extract_mesh_buffers(mesh: &Mesh) -> (MeshBuffers, Vec<u32>) {
         .into_iter()
         .flat_map(|n| n.into_iter())
         .collect::<Vec<_>>();
-    // Build per-triangle region IDs and face ordinals in the same face
-    // order as to_trimesh.
+    // Build per-triangle region IDs in the same face order as to_trimesh.
     let region_layer = mesh.attrs().dense(attr::FACE_REGION);
     let mut region_ids = Vec::new();
-    let mut tri_face = Vec::new();
-    for (ordinal, face) in mesh.faces().enumerate() {
+    for face in mesh.faces() {
         let region = region_layer
             .and_then(|layer| layer.get(face.as_id()).copied())
             .unwrap_or(0);
         let tri_count = mesh.triangulate_face_fan(face).len();
-        let ordinal = u32::try_from(ordinal).unwrap_or(u32::MAX);
         for _ in 0..tri_count {
             region_ids.push(region);
-            tri_face.push(ordinal);
         }
     }
     let mut topo_edges = mesh
@@ -1934,8 +1917,12 @@ pub(crate) fn extract_mesh_buffers(mesh: &Mesh) -> (MeshBuffers, Vec<u32>) {
         topology_lines.extend_from_slice(from_pos);
         topology_lines.extend_from_slice(to_pos);
     }
-    (
-        MeshBuffers {
+    StepSnapshot {
+        label: label.to_string(),
+        operator: operator.map(ToString::to_string),
+        plan_fingerprint,
+        mesh_signature: mesh_signature(mesh),
+        mesh: MeshBuffers {
             indices: tri.indices,
             positions,
             uvs,
@@ -1943,25 +1930,6 @@ pub(crate) fn extract_mesh_buffers(mesh: &Mesh) -> (MeshBuffers, Vec<u32>) {
             topology_lines,
             region_ids,
         },
-        tri_face,
-    )
-}
-
-fn snapshot_from_mesh(
-    mesh: &Mesh,
-    label: &str,
-    operator: Option<&str>,
-    plan_fingerprint: Option<u64>,
-    stats: StepStats,
-    diagnostics: &[StepDiagnostic],
-) -> StepSnapshot {
-    let (buffers, _tri_face) = extract_mesh_buffers(mesh);
-    StepSnapshot {
-        label: label.to_string(),
-        operator: operator.map(ToString::to_string),
-        plan_fingerprint,
-        mesh_signature: mesh_signature(mesh),
-        mesh: buffers,
         stats,
         diagnostics: diagnostics.to_vec(),
     }

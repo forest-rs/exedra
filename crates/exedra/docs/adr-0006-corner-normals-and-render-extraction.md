@@ -70,3 +70,31 @@ Exedra adopts the following normal model:
 - This ADR covers normals only. Tangents remain future work.
 - Derived normals stay derived: Exedra does not persist them as authored mesh
   state.
+
+## Amendment (M5, exe-e4df): incremental extraction boundary
+
+`ExtractMode::Incremental` originally hid a `debug_assert!(false)`
+(panic in debug, silent full rebuild in release). It is now defused:
+a bare `to_trimesh` call under `Incremental` performs a full rebuild
+counted in `ExtractStats::incremental_fallbacks`, and actual reuse
+routes through `Mesh::to_trimesh_cached` with a caller-owned
+`TrimeshCache` pinned to `Mesh::revision()` (the source-map pinning
+precedent).
+
+**Why reuse is whole-output, not spliced.** Extraction output ordering
+is global: render vertices are appended on first encounter during the
+face traversal, and the dedup key map spans faces. Patching changed
+faces into a prior buffer would reuse the old encounter order, which a
+fresh full rebuild of the edited mesh would not reproduce — so any
+sub-linear splice is structurally incompatible with the bit-identity
+contract (`incremental == full rebuild`, signature-for-signature) that
+the whole determinism architecture rests on. The profitable reuse
+boundaries are therefore:
+
+1. **Whole-output reuse** when the revision and parameters are
+   unchanged (this amendment): extraction is a pure function of mesh
+   state, so the cached output *is* the rebuild's output.
+2. **Derived-normal patching** (exe-phy0, follow-up): re-derive only
+   the corners affected by moved vertices and re-run the (cheaper)
+   emission loop — bit-identical because emission order never depends
+   on how normals were computed.
