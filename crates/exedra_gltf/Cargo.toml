@@ -1,0 +1,20 @@
+[package]
+name = "exedra_gltf"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "glTF 2.0 export for Exedra assembly render lists"
+readme = "README.md"
+keywords = ["geometry", "gltf", "export"]
+categories = ["graphics"]
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra = { features = ["libm", "std"], workspace = true }
+exedra_assembly = { features = ["std"], workspace = true }
+exedra_constructive = { features = ["std"], workspace = true }
+serde_json.workspace = true

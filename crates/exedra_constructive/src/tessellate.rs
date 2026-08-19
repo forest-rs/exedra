@@ -85,6 +85,14 @@ pub enum Feature {
         /// Source segment index within the loop.
         seg: u32,
     },
+    /// A face of a grid-surface body, attributed to its bilinear patch
+    /// (side-wall faces attribute to the boundary patch they extend).
+    GridPatch {
+        /// Patch row index.
+        row: u16,
+        /// Patch column index.
+        col: u16,
+    },
 }
 
 /// A tessellated body: the mesh plus its element provenance.
@@ -106,6 +114,15 @@ pub const REGION_CAP_START: u32 = 0;
 pub const REGION_CAP_END: u32 = 1;
 /// First side-wall region value; segment `k` maps to `REGION_WALL_BASE + k`.
 pub const REGION_WALL_BASE: u32 = 2;
+
+/// Region values for grid-surface bodies (their own documented namespace,
+/// like caps/walls for extrusions): the front surface (the given points).
+pub const REGION_GRID_FRONT: u32 = 0;
+/// The offset back surface of a thickened grid.
+pub const REGION_GRID_BACK: u32 = 1;
+/// First grid side-wall region; sides number `base + k` with `k` = 0 (row
+/// 0 edge), 1 (last-row edge), 2 (column 0 edge), 3 (last-column edge).
+pub const REGION_GRID_SIDE_BASE: u32 = 2;
 
 /// Typed tessellation failure.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +158,14 @@ pub enum TessellateError {
     /// Extreme parameters overflowed the f32 narrowing at mesh emission;
     /// geometry would be infinite.
     NonFiniteGeometry,
+    /// A grid vertex has no usable normal (all adjacent patches are
+    /// degenerate), so a thickness offset is undefined.
+    DegenerateGrid {
+        /// Grid row of the offending vertex.
+        row: u32,
+        /// Grid column of the offending vertex.
+        col: u32,
+    },
 }
 
 impl core::fmt::Display for TessellateError {
@@ -161,6 +186,9 @@ impl core::fmt::Display for TessellateError {
             }
             Self::NonFiniteGeometry => {
                 write!(f, "parameters overflow the f32 mesh boundary")
+            }
+            Self::DegenerateGrid { row, col } => {
+                write!(f, "grid vertex ({row}, {col}) has no usable normal")
             }
         }
     }
@@ -1326,6 +1354,258 @@ pub fn tessellate_sweep(
     })
 }
 
+/// Tessellates a grid-surface body: a row-major `rows x cols` point grid
+/// emitted as bilinear quad patches, placed by `placement`.
+///
+/// With `thickness` the given points form the front surface, a copy
+/// offset by `thickness` along averaged *inward* vertex normals (the
+/// negative of the front winding's normal direction) forms the back, and
+/// every open boundary grows a sharp-edged side wall — a closed solid.
+/// Without it the sheet is emitted open. `close_u` wraps rows, `close_w`
+/// wraps columns; a closed direction has no boundary there.
+///
+/// `FACE_REGION` mapping: [`REGION_GRID_FRONT`], [`REGION_GRID_BACK`],
+/// then [`REGION_GRID_SIDE_BASE`]` + k` per side. Provenance is
+/// [`Feature::GridPatch`] per patch (sides attribute to the boundary
+/// patch they extend).
+///
+/// # Errors
+///
+/// Returns a typed [`TessellateError`]; never panics. Thickened grids
+/// whose vertices have no usable averaged normal fail with
+/// [`TessellateError::DegenerateGrid`].
+pub fn tessellate_grid(
+    points: &[[f64; 3]],
+    rows: u32,
+    cols: u32,
+    close_u: bool,
+    close_w: bool,
+    thickness: Option<f64>,
+    placement: &Placement3,
+) -> Result<TessellatedBody, TessellateError> {
+    let rows = rows as usize;
+    let cols = cols as usize;
+    debug_assert_eq!(points.len(), rows * cols, "validated at node insertion");
+    let flip = det3(placement) < 0.0;
+    let placed: Vec<[f64; 3]> = points
+        .iter()
+        .map(|p| apply_placement(placement, *p))
+        .collect();
+
+    // Patch counts: wrapping directions close the last band back to 0.
+    let patch_rows = if close_u { rows } else { rows - 1 };
+    let patch_cols = if close_w { cols } else { cols - 1 };
+    let vertex_index = |r: usize, c: usize| (r % rows) * cols + (c % cols);
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+
+    // Area-weighted patch normals (diagonal cross), oriented with the
+    // front winding.
+    let patch_normal = |r: usize, c: usize| {
+        let a = placed[vertex_index(r, c)];
+        let b = placed[vertex_index(r, c + 1)];
+        let d = placed[vertex_index(r + 1, c + 1)];
+        let e = placed[vertex_index(r + 1, c)];
+        cross(sub(d, a), sub(e, b))
+    };
+
+    let mut builder = OrientedBuilder::new(flip);
+    let patch_of = |r: usize, c: usize| Feature::GridPatch {
+        row: u16::try_from(r.min(patch_rows - 1)).unwrap_or(u16::MAX),
+        col: u16::try_from(c.min(patch_cols - 1)).unwrap_or(u16::MAX),
+    };
+
+    // Front vertices.
+    for p in &placed {
+        builder.push_vertex(narrow(*p));
+    }
+    let mut vertex_features: Vec<Feature> = Vec::with_capacity(placed.len() * 2);
+    for r in 0..rows {
+        for c in 0..cols {
+            vertex_features.push(patch_of(r, c));
+        }
+    }
+
+    // Back vertices: offset along averaged inward normals.
+    let back_offset = len_u32(placed.len());
+    if let Some(t) = thickness {
+        for r in 0..rows {
+            for c in 0..cols {
+                // Adjacent patches: rows {r-1, r} x cols {c-1, c}, wrapping
+                // when the direction closes, absent at open boundaries.
+                let prev_row = if r > 0 {
+                    Some(r - 1)
+                } else if close_u {
+                    Some(patch_rows - 1)
+                } else {
+                    None
+                };
+                let cur_row = (r < patch_rows).then_some(r);
+                let prev_col = if c > 0 {
+                    Some(c - 1)
+                } else if close_w {
+                    Some(patch_cols - 1)
+                } else {
+                    None
+                };
+                let cur_col = (c < patch_cols).then_some(c);
+                let mut normal = [0.0_f64; 3];
+                for pr in [prev_row, cur_row].into_iter().flatten() {
+                    for pc in [prev_col, cur_col].into_iter().flatten() {
+                        let n = patch_normal(pr, pc);
+                        normal = [normal[0] + n[0], normal[1] + n[1], normal[2] + n[2]];
+                    }
+                }
+                let len = libm::sqrt(
+                    normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2],
+                );
+                if !(len.is_finite() && len > 0.0) {
+                    return Err(TessellateError::DegenerateGrid {
+                        row: len_u32(r),
+                        col: len_u32(c),
+                    });
+                }
+                let p = placed[vertex_index(r, c)];
+                let scale = t / len;
+                builder.push_vertex(narrow([
+                    p[0] - normal[0] * scale,
+                    p[1] - normal[1] * scale,
+                    p[2] - normal[2] * scale,
+                ]));
+            }
+        }
+        for r in 0..rows {
+            for c in 0..cols {
+                vertex_features.push(patch_of(r, c));
+            }
+        }
+    }
+
+    let mut face_origins: Vec<Feature> = Vec::new();
+    let front = |r: usize, c: usize| len_u32(vertex_index(r, c));
+    let back = |r: usize, c: usize| back_offset + len_u32(vertex_index(r, c));
+
+    // Front patches.
+    for r in 0..patch_rows {
+        for c in 0..patch_cols {
+            builder.add_face_with_attrs(
+                &[
+                    front(r, c),
+                    front(r, c + 1),
+                    front(r + 1, c + 1),
+                    front(r + 1, c),
+                ],
+                &FaceBuildAttrs {
+                    region: Some(REGION_GRID_FRONT),
+                    ..FaceBuildAttrs::default()
+                },
+            )?;
+            face_origins.push(patch_of(r, c));
+        }
+    }
+
+    if thickness.is_some() {
+        // Back patches: reversed winding, outward on the offset side.
+        for r in 0..patch_rows {
+            for c in 0..patch_cols {
+                builder.add_face_with_attrs(
+                    &[
+                        back(r, c),
+                        back(r + 1, c),
+                        back(r + 1, c + 1),
+                        back(r, c + 1),
+                    ],
+                    &FaceBuildAttrs {
+                        region: Some(REGION_GRID_BACK),
+                        ..FaceBuildAttrs::default()
+                    },
+                )?;
+                face_origins.push(patch_of(r, c));
+            }
+        }
+        // Side walls on open boundaries, sharp-creased.
+        let sharp = [1.0_f32; 4];
+        let side = |builder: &mut OrientedBuilder,
+                    face_origins: &mut Vec<Feature>,
+                    corners: [u32; 4],
+                    side_index: u32,
+                    feature: Feature|
+         -> Result<(), exedra::BuildError> {
+            builder.add_face_with_attrs(
+                &corners,
+                &FaceBuildAttrs {
+                    region: Some(REGION_GRID_SIDE_BASE + side_index),
+                    edge_sharpness: Some(&sharp),
+                    ..FaceBuildAttrs::default()
+                },
+            )?;
+            face_origins.push(feature);
+            Ok(())
+        };
+        if !close_u {
+            let last = rows - 1;
+            for c in 0..patch_cols {
+                side(
+                    &mut builder,
+                    &mut face_origins,
+                    [front(0, c + 1), front(0, c), back(0, c), back(0, c + 1)],
+                    0,
+                    patch_of(0, c),
+                )?;
+                side(
+                    &mut builder,
+                    &mut face_origins,
+                    [
+                        front(last, c),
+                        front(last, c + 1),
+                        back(last, c + 1),
+                        back(last, c),
+                    ],
+                    1,
+                    patch_of(patch_rows - 1, c),
+                )?;
+            }
+        }
+        if !close_w {
+            let last = cols - 1;
+            for r in 0..patch_rows {
+                side(
+                    &mut builder,
+                    &mut face_origins,
+                    [front(r, 0), front(r + 1, 0), back(r + 1, 0), back(r, 0)],
+                    2,
+                    patch_of(r, 0),
+                )?;
+                side(
+                    &mut builder,
+                    &mut face_origins,
+                    [
+                        front(r + 1, last),
+                        front(r, last),
+                        back(r, last),
+                        back(r + 1, last),
+                    ],
+                    3,
+                    patch_of(r, patch_cols - 1),
+                )?;
+            }
+        }
+    }
+
+    let result = builder.build()?;
+    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    Ok(TessellatedBody {
+        mesh: result.mesh,
+        source_map,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1933,5 +2213,184 @@ mod tests {
         .expect("b");
         assert_eq!(sig(&a), sig(&b));
         assert_clean(&a);
+    }
+
+    fn flat_grid(rows: usize, cols: usize) -> Vec<[f64; 3]> {
+        let mut points = Vec::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                points.push([c as f64, r as f64, 0.0]);
+            }
+        }
+        points
+    }
+
+    #[test]
+    fn grid_solid_volume_and_regions() {
+        let body = tessellate_grid(
+            &flat_grid(4, 5),
+            4,
+            5,
+            false,
+            false,
+            Some(0.5),
+            &Placement3::IDENTITY,
+        )
+        .expect("grid tessellates");
+        let mesh = &body.mesh;
+        let errors = mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        // Flat 4x3 patch sheet thickened by 0.5: volume 4 * 3 * 0.5.
+        let vol = mesh_volume(mesh);
+        assert!((vol - 6.0).abs() < 1e-6, "volume {vol}");
+        // Faces: 12 front + 12 back + 2*4 row-side + 2*3 col-side.
+        assert_eq!(mesh.faces().count(), 38);
+        // Regions: front, back, and all four sides present.
+        let regions = mesh
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .expect("region layer");
+        let mut seen = alloc::collections::BTreeSet::new();
+        for face in mesh.faces() {
+            seen.insert(regions.get(face.as_id()).copied().unwrap_or(u32::MAX));
+        }
+        let expected: alloc::collections::BTreeSet<u32> = [
+            REGION_GRID_FRONT,
+            REGION_GRID_BACK,
+            REGION_GRID_SIDE_BASE,
+            REGION_GRID_SIDE_BASE + 1,
+            REGION_GRID_SIDE_BASE + 2,
+            REGION_GRID_SIDE_BASE + 3,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(seen, expected);
+        // Provenance: every face attributes to a patch inside the grid.
+        for face in mesh.faces() {
+            match body.source_map.face_feature(face) {
+                Some(Feature::GridPatch { row, col }) => {
+                    assert!(row < 3 && col < 4, "patch ({row}, {col}) out of range");
+                }
+                other => panic!("expected GridPatch, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn grid_open_sheet_area() {
+        let body = tessellate_grid(
+            &flat_grid(4, 5),
+            4,
+            5,
+            false,
+            false,
+            None,
+            &Placement3::IDENTITY,
+        )
+        .expect("sheet tessellates");
+        let mesh = &body.mesh;
+        assert_eq!(mesh.faces().count(), 12);
+        // Total area of the flat sheet is 4 * 3.
+        let mut area = 0.0_f64;
+        for face in mesh.faces() {
+            let verts: Vec<[f64; 3]> = mesh
+                .face_loop(face)
+                .filter_map(|he| mesh.to_vertex(he))
+                .filter_map(|v| mesh.vertex_position(v))
+                .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+                .collect();
+            for i in 1..verts.len() - 1 {
+                let u = [
+                    verts[i][0] - verts[0][0],
+                    verts[i][1] - verts[0][1],
+                    verts[i][2] - verts[0][2],
+                ];
+                let w = [
+                    verts[i + 1][0] - verts[0][0],
+                    verts[i + 1][1] - verts[0][1],
+                    verts[i + 1][2] - verts[0][2],
+                ];
+                let cx = u[1] * w[2] - u[2] * w[1];
+                let cy = u[2] * w[0] - u[0] * w[2];
+                let cz = u[0] * w[1] - u[1] * w[0];
+                area += 0.5 * libm::sqrt(cx * cx + cy * cy + cz * cz);
+            }
+        }
+        assert!((area - 12.0).abs() < 1e-6, "area {area}");
+        // Open sheet: boundary edges exist (twin-less half-edges).
+        let boundary = mesh.boundary_loops().expect("boundary enumerates");
+        assert_eq!(boundary.len(), 1, "one rectangular rim");
+    }
+
+    #[test]
+    fn grid_closed_w_tube_is_watertight() {
+        // A square tube: 4 perimeter columns wrapped, 2 rows along +Z.
+        let square = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let mut points = Vec::new();
+        for z in [0.0, 1.0] {
+            for p in square {
+                points.push([p[0], p[1], z]);
+            }
+        }
+        let t = 0.1;
+        let body = tessellate_grid(&points, 2, 4, false, true, Some(t), &Placement3::IDENTITY)
+            .expect("tube tessellates");
+        let mesh = &body.mesh;
+        let errors = mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        // Corner offsets run along averaged (diagonal) normals, so the
+        // inner square side shrinks by sqrt(2) * t.
+        let inner = 1.0 - core::f64::consts::SQRT_2 * t;
+        let expected = 1.0 - inner * inner;
+        let vol = mesh_volume(mesh);
+        assert!((vol - expected).abs() < 1e-6, "volume {vol} vs {expected}");
+    }
+
+    #[test]
+    fn grid_degenerate_normal_fails_typed() {
+        // All points collinear: adjacent points distinct, but every patch
+        // is degenerate, so a thickness offset has no normal.
+        let mut points = Vec::new();
+        for r in 0..2 {
+            for c in 0..3 {
+                points.push([f64::from(c + r), 0.0, 0.0]);
+            }
+        }
+        let result = tessellate_grid(
+            &points,
+            2,
+            3,
+            false,
+            false,
+            Some(0.5),
+            &Placement3::IDENTITY,
+        );
+        assert!(
+            matches!(result, Err(TessellateError::DegenerateGrid { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn grid_double_run_is_bit_identical() {
+        let run = || {
+            tessellate_grid(
+                &flat_grid(3, 3),
+                3,
+                3,
+                false,
+                false,
+                Some(0.25),
+                &Placement3::rotate_z_then_translate(0.4, 1.0, 2.0, 3.0),
+            )
+            .expect("grid tessellates")
+        };
+        let sig = |body: &TessellatedBody| {
+            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            exedra_testkit::golden::trimesh_signature(&tri)
+        };
+        let (a, b) = (run(), run());
+        assert_eq!(sig(&a), sig(&b));
+        assert_eq!(a.source_map.dump(), b.source_map.dump());
     }
 }

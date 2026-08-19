@@ -251,6 +251,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_gltf"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_assembly",
+ "exedra_constructive",
+ "serde_json",
+]
+
+[[package]]
 name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [

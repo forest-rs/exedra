@@ -339,6 +339,31 @@ pub enum NodeKind {
         /// Signed stretch distance along the plane normal.
         length: f64,
     },
+    /// A point-grid surface body: a row-major grid of 3D points
+    /// tessellated as bilinear quad patches.
+    ///
+    /// With `thickness` the sheet becomes a closed solid: the given points
+    /// form the front surface, a copy offset by `thickness` along averaged
+    /// inward vertex normals forms the back, and open boundaries grow side
+    /// walls. Without it the sheet is emitted open (boundary edges are
+    /// mesh boundary).
+    GridSurface {
+        /// Row-major grid points; `rows * cols` entries.
+        points: Vec<[f64; 3]>,
+        /// Number of rows; at least 2 (3 when `close_u`).
+        rows: u32,
+        /// Number of columns; at least 2 (3 when `close_w`).
+        cols: u32,
+        /// Wrap rows: the last row of patches connects back to row 0.
+        close_u: bool,
+        /// Wrap columns: the last column of patches connects back to
+        /// column 0.
+        close_w: bool,
+        /// Solid thickness (positive, finite), or `None` for an open sheet.
+        thickness: Option<f64>,
+        /// Placement of the grid's local frame in 3D.
+        placement: Placement3,
+    },
 }
 
 /// One node: kind plus optional source reference and material slot.
@@ -906,6 +931,64 @@ impl RecipeBuilder {
                     })
                 }
             }
+            NodeKind::GridSurface {
+                points,
+                rows,
+                cols,
+                close_u,
+                close_w,
+                thickness,
+                placement,
+            } => {
+                self.check_placement(placement)?;
+                let min_rows = if *close_u { 3 } else { 2 };
+                let min_cols = if *close_w { 3 } else { 2 };
+                if *rows < min_rows || *cols < min_cols {
+                    return Err(RecipeError::InvalidParameter { what: "grid size" });
+                }
+                let expected = (*rows as usize)
+                    .checked_mul(*cols as usize)
+                    .filter(|n| *n == points.len());
+                if expected.is_none() {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "grid point count",
+                    });
+                }
+                if points.iter().any(|p| p.iter().any(|v| !v.is_finite())) {
+                    return Err(RecipeError::InvalidParameter { what: "grid point" });
+                }
+                if let Some(t) = thickness
+                    && !(t.is_finite() && *t > 0.0)
+                {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "grid thickness",
+                    });
+                }
+                // Adjacent points must be distinct (including wraparound
+                // pairs when a direction closes).
+                let at = |r: u32, c: u32| points[(r * *cols + c) as usize];
+                let row_pairs = if *close_u { *rows } else { *rows - 1 };
+                let col_pairs = if *close_w { *cols } else { *cols - 1 };
+                for r in 0..*rows {
+                    for c in 0..col_pairs {
+                        if at(r, c) == at(r, (c + 1) % *cols) {
+                            return Err(RecipeError::InvalidParameter {
+                                what: "grid duplicate adjacent point",
+                            });
+                        }
+                    }
+                }
+                for c in 0..*cols {
+                    for r in 0..row_pairs {
+                        if at(r, c) == at((r + 1) % *rows, c) {
+                            return Err(RecipeError::InvalidParameter {
+                                what: "grid duplicate adjacent point",
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1213,6 +1296,34 @@ fn node_canon_bytes(
             put_plane(out, plane);
             put_f64(out, *length);
         }
+        NodeKind::GridSurface {
+            points,
+            rows,
+            cols,
+            close_u,
+            close_w,
+            thickness,
+            placement,
+        } => {
+            out.push(13);
+            put_u32(out, *rows);
+            put_u32(out, *cols);
+            out.push(u8::from(*close_u));
+            out.push(u8::from(*close_w));
+            match thickness {
+                Some(t) => {
+                    out.push(1);
+                    put_f64(out, *t);
+                }
+                None => out.push(0),
+            }
+            for p in points {
+                for &v in p {
+                    put_f64(out, v);
+                }
+            }
+            put_placement(out, placement);
+        }
     }
     // Source references participate in identity: two structurally equal
     // nodes with different source labels are different provenance-wise but
@@ -1454,5 +1565,100 @@ mod tests {
             0xE2D8_73AD_69D1_87E0_4BAF_27BC_8E97_EAA1,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
+    }
+
+    #[test]
+    fn grid_surface_validation() {
+        let grid = |points: Vec<[f64; 3]>, rows, cols, close_u, close_w, thickness| {
+            let mut b = RecipeBuilder::new();
+            b.add(NodeKind::GridSurface {
+                points,
+                rows,
+                cols,
+                close_u,
+                close_w,
+                thickness,
+                placement: Placement3::IDENTITY,
+            })
+            .map(|_| ())
+        };
+        let flat = |rows: u32, cols: u32| -> Vec<[f64; 3]> {
+            (0..rows)
+                .flat_map(|r| (0..cols).map(move |c| [f64::from(c), f64::from(r), 0.0]))
+                .collect()
+        };
+        assert!(grid(flat(2, 2), 2, 2, false, false, None).is_ok());
+        assert!(grid(flat(2, 2), 2, 2, false, false, Some(0.5)).is_ok());
+        // Too small.
+        assert!(matches!(
+            grid(flat(1, 2), 1, 2, false, false, None),
+            Err(RecipeError::InvalidParameter { what: "grid size" })
+        ));
+        // Closed directions need at least 3 samples.
+        assert!(matches!(
+            grid(flat(2, 2), 2, 2, true, false, None),
+            Err(RecipeError::InvalidParameter { what: "grid size" })
+        ));
+        assert!(grid(flat(3, 2), 3, 2, true, false, None).is_ok());
+        // Point count must match rows * cols.
+        assert!(matches!(
+            grid(flat(2, 2), 2, 3, false, false, None),
+            Err(RecipeError::InvalidParameter {
+                what: "grid point count"
+            })
+        ));
+        // Non-finite points.
+        let mut bad = flat(2, 2);
+        bad[3] = [f64::NAN, 0.0, 0.0];
+        assert!(matches!(
+            grid(bad, 2, 2, false, false, None),
+            Err(RecipeError::InvalidParameter { what: "grid point" })
+        ));
+        // Duplicate adjacent points.
+        let mut dup = flat(2, 2);
+        dup[1] = dup[0];
+        assert!(matches!(
+            grid(dup, 2, 2, false, false, None),
+            Err(RecipeError::InvalidParameter {
+                what: "grid duplicate adjacent point"
+            })
+        ));
+        // Thickness must be positive and finite.
+        assert!(matches!(
+            grid(flat(2, 2), 2, 2, false, false, Some(0.0)),
+            Err(RecipeError::InvalidParameter {
+                what: "grid thickness"
+            })
+        ));
+    }
+
+    #[test]
+    fn grid_surface_fingerprint_separates_flags() {
+        let build = |close_u: bool, thickness: Option<f64>| {
+            let mut b = RecipeBuilder::new();
+            let points: Vec<[f64; 3]> = (0..3)
+                .flat_map(|r| (0..3).map(move |c| [f64::from(c), f64::from(r), 0.0]))
+                .collect();
+            let n = b
+                .add(NodeKind::GridSurface {
+                    points,
+                    rows: 3,
+                    cols: 3,
+                    close_u,
+                    close_w: false,
+                    thickness,
+                    placement: Placement3::IDENTITY,
+                })
+                .expect("valid");
+            b.finish(n).expect("valid").recipe_fingerprint()
+        };
+        let base = build(false, None);
+        assert_ne!(base, build(true, None), "close_u must change identity");
+        assert_ne!(
+            base,
+            build(false, Some(0.5)),
+            "thickness must change identity"
+        );
+        assert_eq!(base, build(false, None), "identity is deterministic");
     }
 }
