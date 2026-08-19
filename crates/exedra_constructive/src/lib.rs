@@ -39,7 +39,13 @@ pub use kurbo;
 
 pub mod builders;
 pub mod discretize;
+pub mod evaluate;
+#[cfg(test)]
+mod goldens;
+pub mod ir;
 pub mod profile;
+pub mod source_map;
+pub mod tessellate;
 
 /// Narrows a validated count to `u32`.
 ///

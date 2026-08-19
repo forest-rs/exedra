@@ -1,0 +1,8 @@
+schema 1
+bodies 0
+envelope_only 1
+fidelity 0 Exact
+fidelity 1 Exact
+fidelity 2 EnvelopeOnly
+envelope 2 min C034B5EF00000000 0000000000000000 C024000000000000 max 4067ED7BC0000000 406A8439A0000000 4056800000000000
+diag Error eval.csg.unsupported node Some(2)

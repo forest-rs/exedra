@@ -25,3 +25,6 @@ kurbo.workspace = true
 # Non-optional by design: evaluation trig always routes through libm, even in
 # std builds, so results are bit-identical across platforms and backends.
 libm.workspace = true
+
+[dev-dependencies]
+exedra_testkit = { features = ["std"], workspace = true }
