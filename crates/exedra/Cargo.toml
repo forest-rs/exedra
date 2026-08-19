@@ -10,6 +10,7 @@ keywords = ["mesh", "half-edge", "topology", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+exedra_triangulate.workspace = true
 hashbrown.workspace = true
 invalidation.workspace = true
 libm = { optional = true, workspace = true }

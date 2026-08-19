@@ -10,7 +10,9 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 
 use crate::attributes::SparseLayer;
-use crate::{CornerId, FaceId, Mesh, NormalParams, NormalsSource, VertexId, attr};
+use crate::{
+    CornerId, FaceId, FaceTriangulation, Mesh, NormalParams, NormalsSource, VertexId, attr,
+};
 
 /// Triangle mesh suitable for GPU upload.
 ///
@@ -54,9 +56,10 @@ pub enum ExtractMode {
 /// let params = ExtractParams {
 ///     mode: ExtractMode::FullRebuild,
 ///     normals: NormalsSource::Derived,
-///     normal_params: Default::default(),
+///     ..ExtractParams::default()
 /// };
 /// assert_eq!(params.mode, ExtractMode::FullRebuild);
+/// assert_eq!(params.face_triangulation, exedra::FaceTriangulation::Fan);
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ExtractParams {
@@ -66,6 +69,12 @@ pub struct ExtractParams {
     pub normals: NormalsSource,
     /// Parameters used when deriving geometry normals.
     pub normal_params: NormalParams,
+    /// Per-face triangle enumeration strategy.
+    ///
+    /// [`FaceTriangulation::Fan`] preserves the historical byte-identical
+    /// output; [`FaceTriangulation::Robust`] handles concave ngon faces via
+    /// the shared deterministic triangulator.
+    pub face_triangulation: FaceTriangulation,
 }
 
 impl Default for ExtractParams {
@@ -74,6 +83,7 @@ impl Default for ExtractParams {
             mode: ExtractMode::FullRebuild,
             normals: NormalsSource::Derived,
             normal_params: NormalParams::default(),
+            face_triangulation: FaceTriangulation::Fan,
         }
     }
 }
@@ -91,6 +101,10 @@ pub struct ExtractStats {
     pub uv_split_count: u64,
     /// Number of normal-driven render-vertex splits.
     pub normal_split_count: u64,
+    /// Number of faces where [`FaceTriangulation::Robust`] fell back to the
+    /// fan because the projected polygon was not simple. Always zero under
+    /// [`FaceTriangulation::Fan`].
+    pub robust_fallback_count: u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -130,7 +144,8 @@ impl Mesh {
     ///
     /// Deterministic ordering:
     /// - faces in arena slot order
-    /// - per-face fan triangulation from [`Mesh::triangulate_face_fan`]
+    /// - per-face triangles from [`Mesh::face_triangles`] under
+    ///   [`ExtractParams::face_triangulation`] (fan by default)
     /// - render vertices appended on first encounter during traversal
     ///
     /// Render vertex splitting:
@@ -174,6 +189,7 @@ impl Mesh {
             emit_face(
                 self,
                 face,
+                params.face_triangulation,
                 corner_uvs,
                 normal_overrides,
                 &derived_normals,
@@ -190,9 +206,14 @@ impl Mesh {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading fixed extraction context"
+)]
 fn emit_face(
     source: &Mesh,
     face: FaceId,
+    strategy: FaceTriangulation,
     corner_uvs: Option<&SparseLayer<[f32; 2]>>,
     normal_overrides: Option<&SparseLayer<[f32; 3]>>,
     derived_normals: &crate::DerivedCornerNormals,
@@ -202,7 +223,11 @@ fn emit_face(
     vertex_variants: &mut HashMap<VertexId, VertexVariants>,
     stats: &mut ExtractStats,
 ) {
-    for triangle in source.triangulate_face_fan(face) {
+    let (triangles, fell_back) = source.face_triangles_counted(face, strategy);
+    if fell_back {
+        stats.robust_fallback_count = stats.robust_fallback_count.saturating_add(1);
+    }
+    for triangle in triangles {
         for corner in triangle {
             let index = resolve_render_vertex(
                 source,
@@ -301,7 +326,69 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{ExtractParams, MeshBuilder, NormalsSource, attr, op};
+    use crate::{ExtractParams, FaceTriangulation, MeshBuilder, NormalsSource, TriMesh, attr, op};
+
+    /// Twice the signed XY area of trimesh triangle `t`.
+    fn trimesh_tri_area2(tri: &TriMesh, t: usize) -> f32 {
+        let i = |k: usize| tri.indices[t * 3 + k] as usize;
+        let (a, b, c) = (
+            tri.positions[i(0)],
+            tri.positions[i(1)],
+            tri.positions[i(2)],
+        );
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    }
+
+    #[test]
+    fn robust_extraction_handles_concave_ngon_faces() {
+        // An L-shaped single-face ngon in the XY plane.
+        let mut builder = MeshBuilder::new();
+        for p in [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [0.0, 2.0],
+        ] {
+            builder.push_vertex([p[0], p[1], 0.0]);
+        }
+        builder
+            .add_face(&[0, 1, 2, 3, 4, 5])
+            .expect("L ngon should be valid");
+        let built = builder.build().expect("build should succeed");
+
+        let robust_params = ExtractParams {
+            face_triangulation: FaceTriangulation::Robust,
+            ..ExtractParams::default()
+        };
+        let (tri, stats) = built.mesh.to_trimesh(&robust_params);
+        assert_eq!(stats.triangle_count, 4);
+        assert_eq!(stats.robust_fallback_count, 0);
+        let mut area2 = 0.0;
+        for t in 0..tri.indices.len() / 3 {
+            let a2 = trimesh_tri_area2(&tri, t);
+            assert!(a2 > 0.0, "robust extraction must not invert triangles");
+            area2 += a2;
+        }
+        assert!(
+            (area2 - 6.0).abs() < 1e-5,
+            "area sum {area2} must cover the L"
+        );
+
+        // The fan strategy inverts at least one triangle on this face —
+        // the documented limitation robust extraction exists to fix.
+        let (fan_tri, fan_stats) = built.mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(fan_stats.robust_fallback_count, 0);
+        assert!(
+            (0..fan_tri.indices.len() / 3).any(|t| trimesh_tri_area2(&fan_tri, t) < 0.0),
+            "fixture must demonstrate the fan limitation"
+        );
+
+        // Determinism double-run.
+        let (again, _) = built.mesh.to_trimesh(&robust_params);
+        assert_eq!(tri, again);
+    }
 
     #[test]
     fn to_trimesh_triangle_without_uvs_uses_zero_uvs() {

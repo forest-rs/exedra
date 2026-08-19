@@ -570,6 +570,27 @@ impl fmt::Display for ConnectedFaceRegionError {
 
 impl core::error::Error for ConnectedFaceRegionError {}
 
+/// Strategy for enumerating one face's triangles.
+///
+/// A triangle index is meaningful only together with the strategy that
+/// produced it; APIs that store triangle indices (for example the boolean
+/// broad phase) record the strategy alongside them. See ADR-0008.
+#[derive(Copy, Clone, Debug, Default, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum FaceTriangulation {
+    /// Deterministic fan from the loop's first corner.
+    ///
+    /// Fast and allocation-light, but can produce overlapping or inverted
+    /// triangles for non-convex faces.
+    #[default]
+    Fan,
+    /// Plane-projected robust triangulation via `exedra_triangulate`.
+    ///
+    /// Handles concave faces; falls back to the fan deterministically when
+    /// the projected polygon is not simple (enumeration never fails).
+    Robust,
+}
+
 /// Monotonic mesh revision counter.
 ///
 /// Revision increments exactly once per finished edit scope
@@ -1469,6 +1490,114 @@ impl Mesh {
             triangles.push([c0, corners[i], corners[i + 1]]);
         }
         triangles
+    }
+
+    /// Enumerates one face's triangles under an explicit strategy.
+    ///
+    /// This is the single kernel-owned triangle enumeration: render
+    /// extraction and the boolean broad phase both consume it, so a
+    /// triangle index is meaningful only together with the strategy it was
+    /// produced under (see ADR-0008).
+    ///
+    /// [`FaceTriangulation::Fan`] output is byte-identical to
+    /// [`Mesh::triangulate_face_fan`]. [`FaceTriangulation::Robust`]
+    /// projects the face loop onto its Newell best-fit plane and runs the
+    /// shared deterministic triangulator; when the projected polygon is not
+    /// simple it falls back to the fan deterministically (enumeration never
+    /// fails — see [`Mesh::face_triangles_counted`] to observe fallbacks).
+    #[must_use]
+    pub fn face_triangles(&self, face: FaceId, strategy: FaceTriangulation) -> Vec<[CornerId; 3]> {
+        self.face_triangles_counted(face, strategy).0
+    }
+
+    /// Like [`Mesh::face_triangles`], additionally reporting whether the
+    /// robust strategy fell back to the fan for this face.
+    #[must_use]
+    pub fn face_triangles_counted(
+        &self,
+        face: FaceId,
+        strategy: FaceTriangulation,
+    ) -> (Vec<[CornerId; 3]>, bool) {
+        match strategy {
+            FaceTriangulation::Fan => (self.triangulate_face_fan(face), false),
+            FaceTriangulation::Robust => {
+                if let Some(triangles) = self.triangulate_face_robust(face) {
+                    (triangles, false)
+                } else {
+                    (self.triangulate_face_fan(face), true)
+                }
+            }
+        }
+    }
+
+    /// Robust triangulation of one face via plane projection; `None` when
+    /// the face is degenerate or its projection is not a simple polygon.
+    fn triangulate_face_robust(&self, face: FaceId) -> Option<Vec<[CornerId; 3]>> {
+        let corners = self.face_loop(face).collect::<Vec<_>>();
+        if corners.len() < 3 {
+            return Some(Vec::new());
+        }
+        let mut points = Vec::with_capacity(corners.len());
+        for &corner in &corners {
+            let vertex = self.to_vertex(corner)?;
+            let p = self.vertex_position(vertex)?;
+            // f32 -> f64 promotion is exact; robustness downstream comes
+            // from the triangulator's exact-sign predicates.
+            points.push([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+        }
+
+        // Newell normal: component k is twice the signed area of the
+        // polygon projected along axis k.
+        let mut normal = [0.0_f64; 3];
+        for i in 0..points.len() {
+            let a = points[i];
+            let b = points[(i + 1) % points.len()];
+            normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        // Dominant axis: largest |component|, ties resolved by the lowest
+        // axis index (deterministic, trig-free).
+        let mut axis = 0;
+        for k in 1..3 {
+            if normal[k].abs() > normal[axis].abs() {
+                axis = k;
+            }
+        }
+        if normal[axis] == 0.0 || !normal[axis].is_finite() {
+            return None;
+        }
+        // Project onto the plane axes in cyclic order; a negative dominant
+        // component means the cyclic projection winds clockwise, so swap
+        // the axes to hand the triangulator a counter-clockwise polygon.
+        // The mirrored output triangles then wind consistently with the
+        // face loop either way.
+        let (u, v) = if normal[axis] > 0.0 {
+            ((axis + 1) % 3, (axis + 2) % 3)
+        } else {
+            ((axis + 2) % 3, (axis + 1) % 3)
+        };
+        let projected: Vec<[f64; 2]> = points.iter().map(|p| [p[u], p[v]]).collect();
+        let input = exedra_triangulate::PolygonInput {
+            outer: &projected,
+            holes: &[],
+        };
+        let result =
+            exedra_triangulate::triangulate(&input, &exedra_triangulate::TriParams::default())
+                .ok()?;
+        Some(
+            result
+                .triangles
+                .iter()
+                .map(|t| {
+                    [
+                        corners[t[0] as usize],
+                        corners[t[1] as usize],
+                        corners[t[2] as usize],
+                    ]
+                })
+                .collect(),
+        )
     }
 
     fn normalize_boundary_seed(
@@ -2398,6 +2527,9 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
+
+    use super::FaceTriangulation;
+    use crate::CornerId;
 
     use super::{
         BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceAttrErrorKind,
@@ -3686,6 +3818,104 @@ mod tests {
             triangles[0],
             [loop_corners[0], loop_corners[1], loop_corners[2]]
         );
+    }
+
+    /// Builds a single-face mesh from an XY polygon.
+    fn single_ngon(points: &[[f32; 2]]) -> (Mesh, FaceId) {
+        let mut builder = MeshBuilder::new();
+        for p in points {
+            builder.push_vertex([p[0], p[1], 0.0]);
+        }
+        let indices: Vec<u32> = (0..).take(points.len()).collect();
+        builder.add_face(&indices).expect("ngon face is valid");
+        let built = builder.build().expect("build should succeed");
+        (built.mesh, built.face_ids[0])
+    }
+
+    /// Twice the signed area of a triangle of corners, in the XY plane.
+    fn corner_tri_area2(mesh: &Mesh, tri: [CornerId; 3]) -> f32 {
+        let p = |c: CornerId| {
+            let v = mesh.to_vertex(c).expect("corner has vertex");
+            *mesh.vertex_position(v).expect("vertex is live")
+        };
+        let (a, b, c) = (p(tri[0]), p(tri[1]), p(tri[2]));
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    }
+
+    const L_POINTS: [[f32; 2]; 6] = [
+        [0.0, 0.0],
+        [2.0, 0.0],
+        [2.0, 1.0],
+        [1.0, 1.0],
+        [1.0, 2.0],
+        [0.0, 2.0],
+    ];
+
+    #[test]
+    fn face_triangles_fan_matches_triangulate_face_fan() {
+        let (mesh, face) = single_ngon(&L_POINTS);
+        assert_eq!(
+            mesh.face_triangles(face, FaceTriangulation::Fan),
+            mesh.triangulate_face_fan(face),
+            "Fan strategy must stay byte-identical to the historical fan"
+        );
+    }
+
+    #[test]
+    fn face_triangles_robust_handles_concave_ngon() {
+        let (mesh, face) = single_ngon(&L_POINTS);
+
+        // The fan produces at least one inverted triangle on this L.
+        let fan = mesh.face_triangles(face, FaceTriangulation::Fan);
+        assert!(
+            fan.iter().any(|&t| corner_tri_area2(&mesh, t) < 0.0),
+            "fixture must actually defeat the fan"
+        );
+
+        // Robust: all triangles positive and the areas sum to the polygon.
+        let (robust, fell_back) = mesh.face_triangles_counted(face, FaceTriangulation::Robust);
+        assert!(!fell_back, "simple polygon must not fall back");
+        assert_eq!(robust.len(), L_POINTS.len() - 2);
+        let mut area2 = 0.0;
+        for &t in &robust {
+            let a2 = corner_tri_area2(&mesh, t);
+            assert!(a2 > 0.0, "robust triangle {t:?} must not invert");
+            area2 += a2;
+        }
+        assert!((area2 - 6.0).abs() < 1e-5, "area sum {area2} must be 6");
+    }
+
+    #[test]
+    fn face_triangles_robust_is_deterministic_and_orientation_stable() {
+        let (mesh, face) = single_ngon(&L_POINTS);
+        let a = mesh.face_triangles(face, FaceTriangulation::Robust);
+        let b = mesh.face_triangles(face, FaceTriangulation::Robust);
+        assert_eq!(a, b);
+
+        // A face whose Newell normal points -Z (clockwise in XY) must keep
+        // its own winding: build the mirrored L and check triangle
+        // orientation matches the (negative) face orientation.
+        let reversed: Vec<[f32; 2]> = L_POINTS.iter().rev().copied().collect();
+        let (mesh_cw, face_cw) = single_ngon(&reversed);
+        let (robust, fell_back) =
+            mesh_cw.face_triangles_counted(face_cw, FaceTriangulation::Robust);
+        assert!(!fell_back);
+        for &t in &robust {
+            assert!(
+                corner_tri_area2(&mesh_cw, t) < 0.0,
+                "triangles must wind with the face loop, not against it"
+            );
+        }
+    }
+
+    #[test]
+    fn face_triangles_robust_falls_back_on_nonsimple_faces() {
+        // A bowtie ngon: topologically a valid loop, geometrically
+        // self-intersecting, so the projected polygon is not simple.
+        let (mesh, face) = single_ngon(&[[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]);
+        let (robust, fell_back) = mesh.face_triangles_counted(face, FaceTriangulation::Robust);
+        assert!(fell_back, "non-simple projection must fall back to fan");
+        assert_eq!(robust, mesh.triangulate_face_fan(face));
     }
 
     #[test]

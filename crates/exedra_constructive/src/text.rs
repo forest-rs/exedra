@@ -754,13 +754,15 @@ fn parse_opt_index(token: &str, line: usize) -> Result<Option<u32>, TextError> {
     }
 }
 
+/// Test-only fixture shared with the interchange tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
     use crate::builders;
     use alloc::vec;
 
-    fn full_coverage_recipe() -> Recipe {
+    /// A recipe exercising every node kind and segment kind.
+    pub(crate) fn full_coverage_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
         let rect = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
         let rounded = b.add_profile(builders::rounded_rect(3.0, 2.0, 0.25).expect("rounded"));
@@ -866,6 +868,13 @@ mod tests {
             .expect("valid");
         b.finish(group).expect("valid recipe")
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builders;
+    use tests_support::full_coverage_recipe;
 
     #[test]
     fn round_trip_preserves_fingerprints() {

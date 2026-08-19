@@ -4,15 +4,17 @@
 //! Boolean broad-phase candidate discovery.
 //!
 //! This module owns the deterministic broad phase for staged boolean
-//! operations. It builds a bounding-volume hierarchy over the mesh's stable
-//! fan-triangulated faces and reports potentially overlapping triangle pairs.
-//! Narrow-phase intersection, classification, splitting, and stitching are
-//! intentionally out of scope for this module.
+//! operations. It builds a bounding-volume hierarchy over the triangles
+//! enumerated by [`Mesh::face_triangles`] under an explicit
+//! [`FaceTriangulation`] strategy (recorded on the hierarchy and in its
+//! stats) and reports potentially overlapping triangle pairs. Narrow-phase
+//! intersection, classification, splitting, and stitching are intentionally
+//! out of scope for this module.
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::{CornerId, FaceId, Mesh};
+use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 
 const LEAF_TRIANGLE_COUNT: usize = 4;
 
@@ -93,16 +95,20 @@ impl Aabb {
     }
 }
 
-/// Stable reference to one fan triangle emitted from a mesh face.
+/// Stable reference to one triangle enumerated from a mesh face.
 ///
-/// `fan_index` is the zero-based triangle index within
-/// [`Mesh::triangulate_face_fan`] for `face`.
+/// `triangle_index` is the zero-based index into
+/// [`Mesh::face_triangles`] for `face` under the [`FaceTriangulation`]
+/// strategy the hierarchy was built with (recorded on [`BooleanBvh`] and in
+/// [`BooleanBroadPhaseStats`]). A triangle index is meaningless without
+/// that strategy; downstream narrow-phase stages must enumerate with the
+/// same one.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BooleanTriangleRef {
     /// Source mesh face.
     pub face: FaceId,
-    /// Zero-based fan-triangle index within the source face.
-    pub fan_index: u32,
+    /// Zero-based triangle index within the source face's enumeration.
+    pub triangle_index: u32,
 }
 
 /// Potentially overlapping triangle pair returned by the broad phase.
@@ -121,6 +127,10 @@ pub struct BooleanBroadPhaseStats {
     pub total_pairs: u64,
     /// Number of pairs reported after AABB culling.
     pub candidate_pairs: u64,
+    /// Triangle enumeration strategy the queried hierarchies were built
+    /// with; triangle indices in the candidate pairs are only meaningful
+    /// under this strategy.
+    pub strategy: FaceTriangulation,
 }
 
 impl BooleanBroadPhaseStats {
@@ -171,6 +181,7 @@ impl BooleanScratch {
 pub struct BooleanBvh {
     nodes: Vec<BvhNode>,
     triangles: Vec<TriangleEntry>,
+    strategy: FaceTriangulation,
 }
 
 impl BooleanBvh {
@@ -178,26 +189,34 @@ impl BooleanBvh {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            strategy: FaceTriangulation::Fan,
             nodes: Vec::new(),
             triangles: Vec::new(),
         }
     }
 
-    /// Builds a hierarchy for `mesh`.
+    /// Builds a hierarchy for `mesh` under an explicit triangle
+    /// enumeration strategy.
     #[must_use]
-    pub fn build(mesh: &Mesh, scratch: &mut BooleanScratch) -> Self {
+    pub fn build(mesh: &Mesh, strategy: FaceTriangulation, scratch: &mut BooleanScratch) -> Self {
         let mut bvh = Self::new();
-        bvh.rebuild(mesh, scratch);
+        bvh.rebuild(mesh, strategy, scratch);
         bvh
     }
 
     /// Rebuilds this hierarchy for `mesh`, retaining existing capacity.
-    pub fn rebuild(&mut self, mesh: &Mesh, scratch: &mut BooleanScratch) {
+    pub fn rebuild(
+        &mut self,
+        mesh: &Mesh,
+        strategy: FaceTriangulation,
+        scratch: &mut BooleanScratch,
+    ) {
         self.nodes.clear();
         self.triangles.clear();
+        self.strategy = strategy;
         scratch.clear();
 
-        collect_mesh_triangles(mesh, scratch, &mut self.triangles);
+        collect_mesh_triangles(mesh, strategy, &mut self.triangles);
         if !self.triangles.is_empty() {
             let len = self.triangles.len();
             let _root = build_node(&mut self.triangles, &mut self.nodes, 0, len);
@@ -205,7 +224,13 @@ impl BooleanBvh {
         }
     }
 
-    /// Number of fan triangles in this hierarchy.
+    /// The triangle enumeration strategy this hierarchy was built with.
+    #[must_use]
+    pub fn strategy(&self) -> FaceTriangulation {
+        self.strategy
+    }
+
+    /// Number of triangles in this hierarchy.
     #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.triangles.len()
@@ -225,15 +250,21 @@ impl BooleanBvh {
 
     /// Appends no data from previous calls, then writes overlapping candidate pairs.
     ///
-    /// The output list is sorted by `(a.face, a.fan_index, b.face, b.fan_index)`
-    /// for deterministic downstream processing. `scratch` is cleared at entry
-    /// and used as traversal stack storage.
+    /// The output list is sorted by
+    /// `(a.face, a.triangle_index, b.face, b.triangle_index)` for
+    /// deterministic downstream processing. `scratch` is cleared at entry
+    /// and used as traversal stack storage. Both hierarchies must have been
+    /// built with the same [`FaceTriangulation`] strategy.
     pub fn query_overlaps(
         &self,
         other: &Self,
         scratch: &mut BooleanScratch,
         out: &mut Vec<BooleanCandidatePair>,
     ) -> BooleanBroadPhaseStats {
+        debug_assert_eq!(
+            self.strategy, other.strategy,
+            "both hierarchies must use the same triangle enumeration strategy"
+        );
         out.clear();
         scratch.node_pair_stack.clear();
 
@@ -243,6 +274,7 @@ impl BooleanBvh {
             return BooleanBroadPhaseStats {
                 total_pairs,
                 candidate_pairs: 0,
+                strategy: self.strategy,
             };
         }
 
@@ -279,6 +311,7 @@ impl BooleanBvh {
         BooleanBroadPhaseStats {
             total_pairs,
             candidate_pairs: usize_to_u64(out.len()),
+            strategy: self.strategy,
         }
     }
 
@@ -358,28 +391,20 @@ impl BvhNode {
 
 fn collect_mesh_triangles(
     mesh: &Mesh,
-    scratch: &mut BooleanScratch,
+    strategy: FaceTriangulation,
     triangles: &mut Vec<TriangleEntry>,
 ) {
     for face in mesh.faces() {
-        scratch.face_corners.clear();
-        scratch.face_corners.extend(mesh.face_loop(face));
-        if scratch.face_corners.len() < 3 {
-            continue;
-        }
-
-        let c0 = scratch.face_corners[0];
-        for fan_index in 0..scratch.face_corners.len() - 2 {
-            let corners = [
-                c0,
-                scratch.face_corners[fan_index + 1],
-                scratch.face_corners[fan_index + 2],
-            ];
+        // The kernel-owned enumeration is the single source of truth for
+        // triangle indices (ADR-0008); re-deriving fans inline here would
+        // silently couple stored references to one strategy.
+        for (triangle_index, corners) in mesh.face_triangles(face, strategy).into_iter().enumerate()
+        {
             let bounds = triangle_bounds(mesh, corners);
             triangles.push(TriangleEntry {
                 reference: BooleanTriangleRef {
                     face,
-                    fan_index: usize_to_u32(fan_index),
+                    triangle_index: usize_to_u32(triangle_index),
                 },
                 bounds,
                 centroid: bounds.centroid(),
@@ -465,7 +490,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{Aabb, BooleanBvh, BooleanCandidatePair, BooleanScratch, BooleanTriangleRef};
-    use crate::{BuildParams, FaceId, Mesh};
+    use crate::{BuildParams, FaceId, FaceTriangulation, Mesh};
 
     fn triangle_mesh(offset_x: f32) -> Mesh {
         Mesh::from_indexed_triangles(
@@ -507,10 +532,34 @@ mod tests {
         )
         .expect("quad should build");
         let mut scratch = BooleanScratch::new();
-        let bvh = BooleanBvh::build(&mesh, &mut scratch);
+        let bvh = BooleanBvh::build(&mesh, FaceTriangulation::Fan, &mut scratch);
 
         assert_eq!(bvh.triangle_count(), 2);
         assert!(bvh.node_count() > 0);
+    }
+
+    #[test]
+    fn broad_phase_records_its_enumeration_strategy() {
+        let a = triangle_mesh(0.0);
+        let b = triangle_mesh(0.25);
+        let mut scratch = BooleanScratch::new();
+        let a_bvh = BooleanBvh::build(&a, FaceTriangulation::Robust, &mut scratch);
+        let b_bvh = BooleanBvh::build(&b, FaceTriangulation::Robust, &mut scratch);
+        assert_eq!(a_bvh.strategy(), FaceTriangulation::Robust);
+
+        let mut out = Vec::new();
+        let stats = a_bvh.query_overlaps(&b_bvh, &mut scratch, &mut out);
+        assert_eq!(stats.strategy, FaceTriangulation::Robust);
+        assert!(stats.candidate_pairs > 0);
+
+        // Triangle-per-triangle meshes enumerate identically under both
+        // strategies, so candidates match the fan build exactly.
+        let a_fan = BooleanBvh::build(&a, FaceTriangulation::Fan, &mut scratch);
+        let b_fan = BooleanBvh::build(&b, FaceTriangulation::Fan, &mut scratch);
+        let mut fan_out = Vec::new();
+        let fan_stats = a_fan.query_overlaps(&b_fan, &mut scratch, &mut fan_out);
+        assert_eq!(out, fan_out);
+        assert_eq!(fan_stats.strategy, FaceTriangulation::Fan);
     }
 
     #[test]
@@ -518,8 +567,8 @@ mod tests {
         let a = triangle_mesh(0.0);
         let b = triangle_mesh(10.0);
         let mut scratch = BooleanScratch::new();
-        let a_bvh = BooleanBvh::build(&a, &mut scratch);
-        let b_bvh = BooleanBvh::build(&b, &mut scratch);
+        let a_bvh = BooleanBvh::build(&a, FaceTriangulation::Fan, &mut scratch);
+        let b_bvh = BooleanBvh::build(&b, FaceTriangulation::Fan, &mut scratch);
         let mut candidates = Vec::new();
 
         let stats = a_bvh.query_overlaps(&b_bvh, &mut scratch, &mut candidates);
@@ -537,8 +586,8 @@ mod tests {
         let a_face = first_face(&a);
         let b_face = first_face(&b);
         let mut scratch = BooleanScratch::new();
-        let a_bvh = BooleanBvh::build(&a, &mut scratch);
-        let b_bvh = BooleanBvh::build(&b, &mut scratch);
+        let a_bvh = BooleanBvh::build(&a, FaceTriangulation::Fan, &mut scratch);
+        let b_bvh = BooleanBvh::build(&b, FaceTriangulation::Fan, &mut scratch);
         let mut candidates = Vec::new();
 
         let stats = a_bvh.query_overlaps(&b_bvh, &mut scratch, &mut candidates);
@@ -551,11 +600,11 @@ mod tests {
             vec![BooleanCandidatePair {
                 a: BooleanTriangleRef {
                     face: a_face,
-                    fan_index: 0,
+                    triangle_index: 0,
                 },
                 b: BooleanTriangleRef {
                     face: b_face,
-                    fan_index: 0,
+                    triangle_index: 0,
                 },
             }]
         );
@@ -578,8 +627,8 @@ mod tests {
         let a_faces = a.faces().collect::<Vec<_>>();
         let b_face = first_face(&b);
         let mut scratch = BooleanScratch::new();
-        let a_bvh = BooleanBvh::build(&a, &mut scratch);
-        let b_bvh = BooleanBvh::build(&b, &mut scratch);
+        let a_bvh = BooleanBvh::build(&a, FaceTriangulation::Fan, &mut scratch);
+        let b_bvh = BooleanBvh::build(&b, FaceTriangulation::Fan, &mut scratch);
         let mut candidates = Vec::new();
 
         let stats = a_bvh.query_overlaps(&b_bvh, &mut scratch, &mut candidates);
@@ -592,21 +641,21 @@ mod tests {
                 BooleanCandidatePair {
                     a: BooleanTriangleRef {
                         face: a_faces[0],
-                        fan_index: 0,
+                        triangle_index: 0,
                     },
                     b: BooleanTriangleRef {
                         face: b_face,
-                        fan_index: 0,
+                        triangle_index: 0,
                     },
                 },
                 BooleanCandidatePair {
                     a: BooleanTriangleRef {
                         face: a_faces[1],
-                        fan_index: 0,
+                        triangle_index: 0,
                     },
                     b: BooleanTriangleRef {
                         face: b_face,
-                        fan_index: 0,
+                        triangle_index: 0,
                     },
                 },
             ]
@@ -618,17 +667,17 @@ mod tests {
         let a = triangle_mesh(0.0);
         let b = triangle_mesh(0.25);
         let mut scratch = BooleanScratch::new();
-        let a_bvh = BooleanBvh::build(&a, &mut scratch);
-        let b_bvh = BooleanBvh::build(&b, &mut scratch);
+        let a_bvh = BooleanBvh::build(&a, FaceTriangulation::Fan, &mut scratch);
+        let b_bvh = BooleanBvh::build(&b, FaceTriangulation::Fan, &mut scratch);
         let mut candidates = Vec::with_capacity(4);
         candidates.push(BooleanCandidatePair {
             a: BooleanTriangleRef {
                 face: FaceId::OUTSIDE,
-                fan_index: 999,
+                triangle_index: 999,
             },
             b: BooleanTriangleRef {
                 face: FaceId::OUTSIDE,
-                fan_index: 999,
+                triangle_index: 999,
             },
         });
         let old_capacity = candidates.capacity();

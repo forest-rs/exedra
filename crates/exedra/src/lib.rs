@@ -63,7 +63,8 @@
 //!   stable fan and creates distinct render vertices for a shared topology
 //!   vertex when corner UVs or corner normals differ.
 //! - **Boolean broad phase**: [`BooleanBvh`] reports deterministic AABB-overlap
-//!   candidate pairs over fan-triangulated mesh faces.
+//!   candidate pairs over face triangles enumerated under an explicit
+//!   [`FaceTriangulation`] strategy.
 //! - **Edit sessions**: mutations are eager through [`EditSession`], with
 //!   optional [`ChangeSet`] and [`DirtySet`] output for incremental consumers.
 //! - **Numeric policy**: [`NumericPolicy`] centralizes tolerances for geometry
@@ -130,8 +131,8 @@ pub use boolean::{
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
     BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceAttrErrorKind,
-    FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuildResult, MeshBuilder, MeshRevision, Remap,
-    SelectedFaceBoundaryError, SelectedFacePatchEdge, SelectedFacePatchError,
+    FaceBuildAttrs, FaceLoopErrorKind, FaceTriangulation, Mesh, MeshBuildResult, MeshBuilder,
+    MeshRevision, Remap, SelectedFaceBoundaryError, SelectedFacePatchEdge, SelectedFacePatchError,
     SelectedFacePatchSharedEdge, SelectedFacePatchTopology, ValidationError,
 };
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};

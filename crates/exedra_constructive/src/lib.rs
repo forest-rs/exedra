@@ -42,6 +42,7 @@ pub mod discretize;
 pub mod evaluate;
 #[cfg(test)]
 mod goldens;
+pub mod interchange;
 pub mod ir;
 pub mod profile;
 pub mod source_map;
