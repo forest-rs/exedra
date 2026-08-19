@@ -11,8 +11,8 @@ categories = ["data-structures", "algorithms"]
 
 [dependencies]
 hashbrown.workspace = true
+invalidation.workspace = true
 libm = { optional = true, workspace = true }
-understory_dirty.workspace = true
 
 [features]
 default = ["std"]

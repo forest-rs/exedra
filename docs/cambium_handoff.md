@@ -747,9 +747,9 @@ Rules:
 
 Cambium relies on Exedra’s `ChangeSet`/`DirtySet` rather than inferring dirtiness. Cambium may additionally maintain its own fine-grained dirty tracking for derived operator-local caches.
 
-#### `understory_dirty` integration
+#### `invalidation` (formerly `understory_dirty`) integration
 
-Cambium uses `understory_dirty` as the primary mechanism for **fine-grained, multi-channel** dirtiness tracking.
+Cambium uses `invalidation` as the primary mechanism for **fine-grained, multi-channel** dirtiness tracking.
 
 * Multiple dirty channels are supported efficiently (bitset-like behavior), which makes it practical to track:
 
@@ -764,7 +764,7 @@ Memory guidance:
 * Prefer channel reuse (shared semantics) over creating bespoke channels per operator.
 * For very large meshes, prefer marking at face granularity (or region granularity) rather than per-corner unless the operator truly needs corner granularity.
 
-Exedra remains the source of truth for topology/attribute dirtiness (triangulation, derived normals, extraction). Cambium’s `understory_dirty` use is for **operator-runtime caches** and UI/workflow state.
+Exedra remains the source of truth for topology/attribute dirtiness (triangulation, derived normals, extraction). Cambium’s `invalidation` use is for **operator-runtime caches** and UI/workflow state.
 
 ### Preview contract
 
@@ -794,7 +794,7 @@ Cambium may maintain:
 Caching must be explicit and invalidated via:
 
 * Exedra `ChangeSet` (for topology/attribute-related caches)
-* `understory_dirty` channels (for Cambium runtime caches)
+* `invalidation` channels (for Cambium runtime caches)
 
 ---
 
@@ -1099,7 +1099,7 @@ Ship a minimal Cambium runtime that can:
 * run the same operator in **preview** mode by cloning the mesh and returning `(preview_mesh, OpReport)`
 * record **Stats** (deterministic) and **Timings** (best-effort)
 * emit **Diagnostics** and bounded **Artifacts**
-* track Cambium-local cache dirtiness with **`understory_dirty` channels**
+* track Cambium-local cache dirtiness with **`invalidation` channels**
 
 And one canonical operator: `uv_planar`.
 
@@ -1114,7 +1114,7 @@ Create these modules first:
 * `artifact.rs` — `Artifacts`, `Artifact`, bounding rules
 * `error.rs` — `OpError`, `OpErrorKind`, wrap/map helpers
 * `policy.rs` — `PolicySet` and sub-policies
-* `dirty.rs` — `understory_dirty` integration and channel definitions
+* `dirty.rs` — `invalidation` integration and channel definitions
 * `runner.rs` — `OperatorRunner`, `run_preview`, `run_commit`
 * `ops/mod.rs` — operator module
 * `ops/uv_planar.rs` — v0.1 operator
@@ -1124,7 +1124,7 @@ Recommended `std`-only crates:
 * `crates/cambium_testkit/` — fixtures, golden snapshot formats, debug dumps
 * `crates/cambium_wind_tunnel/` — perf scenarios
 
-### `understory_dirty` channels (v0.1)
+### `invalidation` channels (v0.1)
 
 Define a small fixed channel enum in `dirty.rs`. Start minimal; expand only with justification.
 
@@ -1299,7 +1299,7 @@ Rules:
 
 ## Mapping Exedra ChangeSets into Cambium dirtiness
 
-Cambium uses `understory_dirty` for operator-runtime caches and UI/workflow state. Exedra remains the source of truth for mesh-derived invalidation.
+Cambium uses `invalidation` for operator-runtime caches and UI/workflow state. Exedra remains the source of truth for mesh-derived invalidation.
 
 Rules (v0.1):
 

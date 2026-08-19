@@ -10,7 +10,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
+use invalidation::{Channel, InvalidationSet};
 
 use crate::sorted_merge::for_each_count_join;
 use crate::{CornerId, FaceId, HalfEdgeId, Id, Mesh, VertexId, attr};
@@ -142,14 +142,14 @@ impl Default for PropagatePolicy {
 
 /// Conservative dirty summary for incremental systems.
 ///
-/// This wraps [`understory_dirty`] primitives while exposing typed Exedra
+/// This wraps [`invalidation`] primitives while exposing typed Exedra
 /// domains. The primary consumption path is deterministic drain operations.
 ///
 /// Most callers consume this via [`ChangeSet::dirty`] after
 /// [`EditSession::finish`](crate::EditSession::finish).
 #[derive(Clone, Debug, Default)]
 pub struct DirtySet {
-    inner: UnderstoryDirtySet<Id>,
+    inner: InvalidationSet<Id>,
 }
 
 impl DirtySet {
@@ -174,19 +174,19 @@ impl DirtySet {
     /// Returns `true` when the face channel has dirty IDs.
     #[must_use]
     pub fn has_dirty_faces(&self) -> bool {
-        self.inner.has_dirty(DIRTY_FACES_CHANNEL)
+        self.inner.has_invalidated(DIRTY_FACES_CHANNEL)
     }
 
     /// Returns `true` when the vertex channel has dirty IDs.
     #[must_use]
     pub fn has_dirty_vertices(&self) -> bool {
-        self.inner.has_dirty(DIRTY_VERTICES_CHANNEL)
+        self.inner.has_invalidated(DIRTY_VERTICES_CHANNEL)
     }
 
     /// Returns `true` when the corner channel has dirty IDs.
     #[must_use]
     pub fn has_dirty_corners(&self) -> bool {
-        self.inner.has_dirty(DIRTY_CORNERS_CHANNEL)
+        self.inner.has_invalidated(DIRTY_CORNERS_CHANNEL)
     }
 
     /// Marks a face as dirty.
@@ -894,7 +894,7 @@ pub(crate) fn sort_dedup<T: Ord>(values: &mut Vec<T>) {
     values.dedup();
 }
 
-fn drain_sorted_into<T>(dirty: &mut UnderstoryDirtySet<Id>, channel: Channel, out: &mut Vec<T>)
+fn drain_sorted_into<T>(dirty: &mut InvalidationSet<Id>, channel: Channel, out: &mut Vec<T>)
 where
     T: From<Id> + Ord,
 {

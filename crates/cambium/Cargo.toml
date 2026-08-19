@@ -12,8 +12,8 @@ categories = ["data-structures", "algorithms"]
 [dependencies]
 exedra = { features = ["std"], workspace = true }
 exedra_analytic = { features = ["std"], workspace = true }
+invalidation.workspace = true
 libm = { optional = true, workspace = true }
-understory_dirty.workspace = true
 
 [features]
 default = ["std"]

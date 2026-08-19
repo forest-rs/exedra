@@ -54,8 +54,8 @@ dependencies = [
  "cambium_testkit",
  "exedra",
  "exedra_analytic",
+ "invalidation",
  "libm",
- "understory_dirty",
  "web-time",
 ]
 
@@ -158,9 +158,9 @@ name = "exedra"
 version = "0.1.0"
 dependencies = [
  "exedra_testkit",
- "hashbrown",
+ "hashbrown 0.16.1",
+ "invalidation",
  "libm",
- "understory_dirty",
 ]
 
 [[package]]
@@ -200,7 +200,7 @@ dependencies = [
  "exedra",
  "exedra_qef",
  "exedra_spatial",
- "hashbrown",
+ "hashbrown 0.16.1",
  "libm",
 ]
 
@@ -524,6 +524,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -534,6 +543,15 @@ name = "impls"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a46645bbd70538861a90d0f26c31537cdf1e44aae99a794fb75a664b70951bc"
+
+[[package]]
+name = "invalidation"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2217040acf2f123ec9ed6c37c368ba66d1e5a9f2048478c1fdd861bb5cfdecd"
+dependencies = [
+ "hashbrown 0.17.1",
+]
 
 [[package]]
 name = "itoa"
@@ -976,14 +994,6 @@ name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
-
-[[package]]
-name = "understory_dirty"
-version = "0.1.0"
-source = "git+https://github.com/endoli/understory.git?rev=83ccf57799fe9aef99b78bfd5d541b9fad45200a#83ccf57799fe9aef99b78bfd5d541b9fad45200a"
-dependencies = [
- "hashbrown",
-]
 
 [[package]]
 name = "unicode-ident"

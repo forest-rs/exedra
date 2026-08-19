@@ -44,7 +44,7 @@ A crisp contract preserves modularity and replaceability.
 - Compose Exedra edits inside eager edit scopes; supply propagation policies intentionally.
 - Orchestrate preview/commit (clone/COW/undo later) without mutating the committed base mesh in preview.
 - Maintain operator-local caches keyed by (mesh version/change set, params hash).
-- Use `understory_dirty` for Cambium-runtime cache invalidation (not for kernel dirtiness).
+- Use `invalidation` (formerly `understory_dirty`) for Cambium-runtime cache invalidation (not for kernel dirtiness).
 - Own UV generation utilities and seam tooling.
 
 ## What Cambium must NOT do (boundary violations)

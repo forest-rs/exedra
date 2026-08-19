@@ -8,7 +8,7 @@ This document is a **worked example** that makes Exedra and Cambium concrete. It
 * what each operator reads/writes
 * what artifacts are emitted
 * how `Txn → ChangeSet → DirtySet` drives incremental extraction
-* where `understory_dirty` channels apply (Cambium caches)
+* where `invalidation` (formerly `understory_dirty`) channels apply (Cambium caches)
 * how an LLM can generate or vary the program safely
 
 This is not a spec for every operator listed here; it is an **example pipeline** that we can use as a guiding demo and a future wind tunnel scenario.
@@ -448,9 +448,9 @@ Preview-mode steps run against a cloned mesh; the same ChangeSet/DirtySet logic 
 
 ---
 
-## `understory_dirty`: where it applies
+## `invalidation`: where it applies
 
-Cambium uses `understory_dirty` for **operator-runtime caches** and workflow state.
+Cambium uses `invalidation` for **operator-runtime caches** and workflow state.
 
 For this demo, typical mappings:
 

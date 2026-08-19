@@ -16,7 +16,7 @@
 use alloc::vec::Vec;
 
 use exedra::{ChangeSet, CornerId, FaceId, VertexId};
-use understory_dirty::{Channel, DirtySet as UnderstoryDirtySet};
+use invalidation::{Channel, InvalidationSet};
 
 /// Fixed runtime cache channels for Cambium.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -61,7 +61,7 @@ pub enum DirtyKey {
 /// updated by [`OperatorRunner`](crate::OperatorRunner) after commit.
 #[derive(Clone, Debug, Default)]
 pub struct CacheDirtySet {
-    inner: UnderstoryDirtySet<DirtyKey>,
+    inner: InvalidationSet<DirtyKey>,
 }
 
 impl CacheDirtySet {
@@ -86,7 +86,7 @@ impl CacheDirtySet {
     /// Returns `true` when a channel has any dirty keys.
     #[must_use]
     pub fn has_any(&self, channel: DirtyChannel) -> bool {
-        self.inner.has_dirty(channel.raw())
+        self.inner.has_invalidated(channel.raw())
     }
 
     /// Marks a channel as globally dirty.

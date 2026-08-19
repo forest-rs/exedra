@@ -1,7 +1,8 @@
-# ADR-0002: Dirty Tracking via understory_dirty
+# ADR-0002: Dirty Tracking via invalidation
 
 **Status:** Accepted
 **Date:** 2026-03-03
+**Amended:** 2026-08-19 (understory_dirty replaced by its published successor, `invalidation`)
 
 ## Context
 
@@ -15,20 +16,38 @@ mesh topology.
 
 ## Decision
 
-Both Exedra and Cambium use **`understory_dirty`** from the understory
-workspace for dirty tracking primitives.
+Both Exedra and Cambium use **`invalidation`** (crates.io, the published
+evolution of the earlier `understory_dirty` git crate) for invalidation
+primitives.
 
 This is added as a workspace dependency:
 
 ```toml
-understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "83ccf57799fe9aef99b78bfd5d541b9fad45200a" }
+invalidation = "0.2.0"
 ```
 
-Exedra's `DirtySet` and `ChangeSet` types will be built on top of
-`understory_dirty` rather than rolling custom tracking.
+Exedra's `DirtySet` and `ChangeSet` types are built on top of
+`invalidation::InvalidationSet` rather than rolling custom tracking. Cambium's
+`CacheDirtySet` wraps the same primitive with its own channel vocabulary.
+
+Beyond the channelized set used today, `invalidation` also provides
+dependency-graph propagation, channel cascades, and topological drains —
+the substrate intended for future dependency-aware regeneration work
+(constructive recipe caches, incremental extraction).
 
 ## Consequences
 
-- Shared dirty-tracking semantics across the forest-rs ecosystem.
+- Shared invalidation semantics across the forest-rs ecosystem.
 - Exedra avoids reinventing set-tracking primitives.
-- Pinned to a specific git rev for reproducibility; update deliberately.
+- Published crates.io dependency with semver; no git pin remains in the
+  workspace. Upgrade deliberately.
+
+## History
+
+- 2026-03-03: Accepted against `understory_dirty` (git-pinned to
+  endoli/understory).
+- 2026-08-19: `understory_dirty` evolved into the published `invalidation`
+  crate (github.com/forest-rs/invalidation); workspace migrated (ticket
+  exe-q2m6). API mapping was mechanical: `DirtySet` → `InvalidationSet`,
+  `has_dirty` → `has_invalidated`; `Channel`, `mark`, `drain`, `clear`,
+  `generation`, `is_empty` unchanged.

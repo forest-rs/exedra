@@ -1,7 +1,7 @@
-# Brief: `understory_dirty` multi-channel dirtiness for Cambium runtime caches
+# Brief: `invalidation` (formerly `understory_dirty`) multi-channel dirtiness for Cambium runtime caches
 
 ## Decision
-Cambium uses `understory_dirty` to track **Cambium-runtime** cache invalidation with multiple channels (selection, adjacency, UV-derived, operator cache). Exedra remains the source of truth for mesh-derived invalidation.
+Cambium uses `invalidation` to track **Cambium-runtime** cache invalidation with multiple channels (selection, adjacency, UV-derived, operator cache). Exedra remains the source of truth for mesh-derived invalidation.
 
 ## Why
 Cambium holds many “derived but not authored” caches (adjacency helpers, selection acceleration, operator-local fields). Multi-channel dirty tracking:
