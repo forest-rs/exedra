@@ -95,8 +95,10 @@ impl Aabb3 {
 /// cannot improve it).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct EvalCounters {
-    /// Bodies tessellated.
+    /// Bodies emitted into the evaluation output.
     pub bodies: u32,
+    /// Distinct tessellations performed (instances reuse tessellations).
+    pub tessellations: u32,
     /// Total faces emitted.
     pub faces: u32,
     /// Total vertices emitted.
@@ -193,6 +195,7 @@ pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, Eval
     let mut cx = EvalCx {
         recipe,
         policy,
+        instance_cache: hashbrown::HashMap::new(),
         bodies: Vec::new(),
         report: GeometryReport {
             fidelity: Vec::new(),
@@ -215,6 +218,8 @@ struct EvalCx<'a> {
     policy: &'a EvalPolicy,
     bodies: Vec<PlacedBody>,
     report: GeometryReport,
+    /// Local-space evaluations of instanced definitions, keyed by node.
+    instance_cache: hashbrown::HashMap<NodeId, alloc::rc::Rc<Vec<PlacedBody>>>,
 }
 
 impl EvalCx<'_> {
@@ -350,6 +355,63 @@ impl EvalCx<'_> {
                 });
                 Ok(bounds)
             }
+            NodeKind::Mirror { child, plane } => {
+                let reflection = reflection_placement(plane);
+                let combined = compose(world, &reflection);
+                let child = *child;
+                // The reflecting placement composes downward; body
+                // tessellation detects the negative determinant and
+                // reverses face loops to keep outward orientation.
+                self.walk(child, &combined, emit)
+            }
+            NodeKind::Instance { of, placement } => {
+                let of = *of;
+                let placement = compose(world, placement);
+                if crate::tessellate::det3(&placement) < 0.0 {
+                    // Reflecting instances would need winding repair on the
+                    // cloned mesh; route reflections through Mirror inside
+                    // the definition instead.
+                    self.report.counters.unimplemented += 1;
+                    self.report.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        code: "eval.instance.reflecting",
+                        message: String::from(
+                            "instance placements must not reflect; put a Mirror \
+                             node inside the instanced definition",
+                        ),
+                        node: Some(node_id),
+                    });
+                    return Ok(Aabb3::EMPTY);
+                }
+                let local = if let Some(cached) = self.instance_cache.get(&of) {
+                    alloc::rc::Rc::clone(cached)
+                } else {
+                    // Evaluate the definition once in local space.
+                    let taken = core::mem::take(&mut self.bodies);
+                    self.walk(of, &Placement3::IDENTITY, true)?;
+                    let local: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
+                    let rc = alloc::rc::Rc::new(local);
+                    self.instance_cache.insert(of, alloc::rc::Rc::clone(&rc));
+                    rc
+                };
+                let mut bounds = Aabb3::EMPTY;
+                for source in local.iter() {
+                    let body = instantiate(&source.body, &placement);
+                    bounds.union(&mesh_bounds(&body.mesh));
+                    self.report.fidelity.push((node_id, Fidelity::Exact));
+                    if emit {
+                        self.report.counters.bodies += 1;
+                        self.report.counters.faces += crate::len_u32(body.mesh.faces().count());
+                        self.report.counters.vertices +=
+                            crate::len_u32(body.mesh.vertices().count());
+                        self.bodies.push(PlacedBody {
+                            node: node_id,
+                            body,
+                        });
+                    }
+                }
+                Ok(bounds)
+            }
             _ => {
                 self.report.counters.unimplemented += 1;
                 self.report.diagnostics.push(Diagnostic {
@@ -375,6 +437,7 @@ impl EvalCx<'_> {
             }
         }
         self.report.fidelity.push((node, Fidelity::Exact));
+        self.report.counters.tessellations += 1;
         if emit {
             self.report.counters.bodies += 1;
             self.report.counters.faces += crate::len_u32(mesh.faces().count());
@@ -383,6 +446,72 @@ impl EvalCx<'_> {
         }
         bounds
     }
+}
+
+/// Reflection across a plane `dot(n, p) = d` as a placement.
+fn reflection_placement(plane: &crate::ir::Plane3) -> Placement3 {
+    let n = plane.normal;
+    let len = libm::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    let u = [n[0] / len, n[1] / len, n[2] / len];
+    let d = plane.distance / len;
+    let mut rows = [[0.0; 4]; 3];
+    for (i, row) in rows.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().take(3).enumerate() {
+            let identity = if i == j { 1.0 } else { 0.0 };
+            *cell = identity - 2.0 * u[i] * u[j];
+        }
+        row[3] = 2.0 * d * u[i];
+    }
+    Placement3 { rows }
+}
+
+/// World-space bounds of a mesh (f32 positions promoted).
+fn mesh_bounds(mesh: &exedra::Mesh) -> Aabb3 {
+    let mut bounds = Aabb3::EMPTY;
+    for vertex in mesh.vertices() {
+        if let Some(p) = mesh.vertex_position(vertex) {
+            bounds.include([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+        }
+    }
+    bounds
+}
+
+/// Clones a local-space body under a rigid placement: vertex positions
+/// transform (f64 math, one narrowing), topology and attributes are
+/// untouched, and the source map re-pins to the edited revision.
+fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedBody {
+    let mut mesh = source.mesh.clone();
+    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
+    {
+        let mut session = mesh.edit();
+        for vertex in vertices {
+            if let Some(p) = session.mesh().vertex_position(vertex) {
+                let local = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
+                let world = apply_placement_pub(placement, local);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "instance placement narrowing mirrors the tessellation boundary"
+                )]
+                let narrowed = [world[0] as f32, world[1] as f32, world[2] as f32];
+                let _ = exedra::op::set_vertex_position(&mut session, vertex, narrowed);
+            }
+        }
+        #[expect(unused_must_use, reason = "discard sink output")]
+        {
+            session.finish();
+        }
+    }
+    let source_map = source.source_map.repinned(&mesh);
+    TessellatedBody { mesh, source_map }
+}
+
+fn apply_placement_pub(p: &Placement3, v: [f64; 3]) -> [f64; 3] {
+    let r = &p.rows;
+    [
+        r[0][0] * v[0] + r[0][1] * v[1] + r[0][2] * v[2] + r[0][3],
+        r[1][0] * v[0] + r[1][1] * v[1] + r[1][2] * v[2] + r[1][3],
+        r[2][0] * v[0] + r[2][1] * v[1] + r[2][2] * v[2] + r[2][3],
+    ]
 }
 
 /// Composes two placements: `outer * inner` (inner applies first).
@@ -403,7 +532,7 @@ fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
 mod tests {
     use super::*;
     use crate::builders;
-    use crate::ir::{CapMode, CsgOp, RecipeBuilder};
+    use crate::ir::{CapMode, CsgOp, Plane3, RecipeBuilder};
     use alloc::vec;
 
     fn extrude_recipe() -> Recipe {
@@ -591,5 +720,163 @@ mod tests {
         let result = evaluate(&recipe, &policy).expect("evaluates");
         assert_eq!(result.report.policy, policy);
         assert_eq!(result.report.schema_version, crate::EVAL_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn mirror_preserves_outward_orientation() {
+        // Mirror an L-prism across the yz plane: still a valid solid with
+        // positive volume and reflected coordinates.
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::l_profile(1.0, 1.0, 0.5, 0.5).expect("L"));
+        let body = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 2.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let mirrored = b
+            .add(NodeKind::Mirror {
+                child: body,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.0,
+                },
+            })
+            .expect("valid");
+        let recipe = b.finish(mirrored).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        let mesh = &result.bodies[0].body.mesh;
+        let errors = mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        // Volume positive (outward orientation kept under reflection).
+        let mut vol = 0.0;
+        for face in mesh.faces() {
+            let verts: Vec<[f64; 3]> = mesh
+                .face_loop(face)
+                .filter_map(|he| mesh.to_vertex(he))
+                .filter_map(|v| mesh.vertex_position(v))
+                .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+                .collect();
+            for i in 1..verts.len().saturating_sub(1) {
+                let (a, b, c) = (verts[0], verts[i], verts[i + 1]);
+                vol += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            }
+        }
+        vol /= 6.0;
+        assert!((vol - 1.5).abs() < 1e-4, "mirrored volume {vol}");
+        // All x coordinates are now non-positive.
+        let max_x = mesh
+            .vertices()
+            .filter_map(|v| mesh.vertex_position(v))
+            .map(|p| p[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max_x <= 1e-6,
+            "mirror reflected across x = 0, max_x {max_x}"
+        );
+    }
+
+    #[test]
+    fn instances_reuse_tessellation() {
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let def = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let i1 = b
+            .add(NodeKind::Instance {
+                of: def,
+                placement: Placement3::translate(3.0, 0.0, 0.0),
+            })
+            .expect("valid");
+        let i2 = b
+            .add(NodeKind::Instance {
+                of: def,
+                placement: Placement3::translate(6.0, 0.0, 0.0),
+            })
+            .expect("valid");
+        let i3 = b
+            .add(NodeKind::Instance {
+                of: def,
+                placement: Placement3::rotate_z_then_translate(0.5, 9.0, 0.0, 0.0),
+            })
+            .expect("valid");
+        let g = b
+            .add(NodeKind::Group {
+                children: vec![i1, i2, i3],
+            })
+            .expect("valid");
+        let recipe = b.finish(g).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.bodies.len(), 3);
+        assert_eq!(
+            result.report.counters.tessellations, 1,
+            "definition tessellates once; instances clone and transform"
+        );
+        // Each instance is valid, with an intact (re-pinned) source map.
+        for placed in &result.bodies {
+            assert!(placed.body.mesh.validate_deep().is_empty());
+            placed
+                .body
+                .source_map
+                .check(&placed.body.mesh)
+                .expect("re-pinned map is fresh");
+        }
+        // Instances landed at distinct positions.
+        let min_x = |i: usize| {
+            let mesh = &result.bodies[i].body.mesh;
+            mesh.vertices()
+                .filter_map(|v| mesh.vertex_position(v))
+                .map(|p| p[0])
+                .fold(f32::INFINITY, f32::min)
+        };
+        assert!((min_x(0) - 3.0).abs() < 1e-5);
+        assert!((min_x(1) - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn reflecting_instances_are_rejected() {
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let def = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let mirror_placement = Placement3 {
+            rows: [
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+        };
+        let inst = b
+            .add(NodeKind::Instance {
+                of: def,
+                placement: mirror_placement,
+            })
+            .expect("valid");
+        let recipe = b.finish(inst).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert!(result.bodies.is_empty());
+        assert!(
+            result
+                .report
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "eval.instance.reflecting")
+        );
     }
 }

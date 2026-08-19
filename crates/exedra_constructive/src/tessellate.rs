@@ -191,6 +191,78 @@ fn narrow(v: [f64; 3]) -> [f32; 3] {
     }
 }
 
+/// Determinant of the placement's linear part. Negative means the
+/// placement reflects, and emitted face loops must reverse to keep
+/// outward orientation.
+pub(crate) fn det3(p: &Placement3) -> f64 {
+    let r = &p.rows;
+    r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+}
+
+/// Reorders per-edge attributes for a reversed face loop: reversed edge
+/// `i` covers original edge `n-2-i` (and the last reversed edge covers the
+/// original closing edge).
+fn reversed_edge_attrs<T: Copy>(values: &[T]) -> Vec<T> {
+    let n = values.len();
+    (0..n)
+        .map(|i| {
+            if i + 1 < n {
+                values[n - 2 - i]
+            } else {
+                values[n - 1]
+            }
+        })
+        .collect()
+}
+
+/// A [`MeshBuilder`] that reverses face loops (and their per-edge
+/// attributes) when the body's placement reflects, preserving outward
+/// orientation under mirrors.
+struct OrientedBuilder {
+    inner: MeshBuilder,
+    flip: bool,
+}
+
+impl OrientedBuilder {
+    fn new(flip: bool) -> Self {
+        Self {
+            inner: MeshBuilder::new(),
+            flip,
+        }
+    }
+
+    fn push_vertex(&mut self, position: [f32; 3]) -> u32 {
+        self.inner.push_vertex(position)
+    }
+
+    fn add_face_with_attrs(
+        &mut self,
+        corners: &[u32],
+        attrs: &FaceBuildAttrs<'_>,
+    ) -> Result<(), exedra::BuildError> {
+        if !self.flip {
+            return self.inner.add_face_with_attrs(corners, attrs);
+        }
+        let reversed: Vec<u32> = corners.iter().rev().copied().collect();
+        let seams = attrs.edge_seams.map(reversed_edge_attrs);
+        let sharpness = attrs.edge_sharpness.map(reversed_edge_attrs);
+        self.inner.add_face_with_attrs(
+            &reversed,
+            &FaceBuildAttrs {
+                region: attrs.region,
+                edge_seams: seams.as_deref(),
+                edge_sharpness: sharpness.as_deref(),
+            },
+        )
+    }
+
+    fn build(&self) -> Result<exedra::MeshBuildResult, exedra::BuildError> {
+        self.inner.build()
+    }
+}
+
 /// Tessellates an extrusion: the profile's local XY plane extruded along
 /// local +Z by `height`, placed by `placement`.
 ///
@@ -211,12 +283,13 @@ pub fn tessellate_extrude(
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
     let d = discretize_profile(profile, &policy.discretize)?;
+    let flip = det3(placement) < 0.0;
 
     // Ring layout: outer points first, then each hole's points, matching
     // the triangulator's index convention.
     let ring_starts = ring_starts(&d);
     let total: usize = d.points_len();
-    let mut builder = MeshBuilder::new();
+    let mut builder = OrientedBuilder::new(flip);
 
     // Bottom ring vertices (z = 0), then top ring vertices (z = height).
     for ring in d.rings() {
@@ -513,6 +586,7 @@ pub fn tessellate_revolve(
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
     let d = discretize_profile(profile, &policy.discretize)?;
+    let flip = det3(placement) < 0.0;
     let full = sweep == core::f64::consts::TAU;
 
     // Strictly positive radius: no axis contact (documented v1 scope).
@@ -560,7 +634,7 @@ pub fn tessellate_revolve(
 
     let ring_starts = ring_starts(&d);
     let total = len_u32(d.points_len());
-    let mut builder = MeshBuilder::new();
+    let mut builder = OrientedBuilder::new(flip);
 
     // Vertices: angular-step major, profile point minor. Angles evaluated
     // independently per step (no accumulation drift), libm trig only.
@@ -737,6 +811,7 @@ pub fn tessellate_loft(
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(sections.len() >= 2, "IR validation requires >= 2 sections");
+    let flip = det3(&sections[0].0) < 0.0;
     let discretized: Vec<DiscretizedProfile> = sections
         .iter()
         .map(|(_, profile)| discretize_profile(profile, &policy.discretize))
@@ -758,7 +833,7 @@ pub fn tessellate_loft(
 
     let ring_starts = ring_starts(reference);
     let total = len_u32(reference.points_len());
-    let mut builder = MeshBuilder::new();
+    let mut builder = OrientedBuilder::new(flip);
     for ((placement, _), d) in sections.iter().zip(&discretized) {
         for ring in d.rings() {
             for p in &ring.points {
@@ -1041,6 +1116,7 @@ pub fn tessellate_sweep(
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
+    let flip = det3(placement) < 0.0;
     let d = discretize_profile(profile, &policy.discretize)?;
     let frames = sweep_frames(path, policy)?;
 
@@ -1058,7 +1134,7 @@ pub fn tessellate_sweep(
 
     let ring_starts = ring_starts(&d);
     let total = len_u32(d.points_len());
-    let mut builder = MeshBuilder::new();
+    let mut builder = OrientedBuilder::new(flip);
     for (origin, u, v, _) in &frames {
         for ring in d.rings() {
             for p in &ring.points {
@@ -1135,7 +1211,7 @@ pub fn tessellate_sweep(
 
     if start_cap || end_cap {
         let convex_simple = d.holes.is_empty() && is_convex_ring(&d.outer);
-        let emit = |builder: &mut MeshBuilder,
+        let emit = |builder: &mut OrientedBuilder,
                     face_origins: &mut Vec<Feature>,
                     offset: u32,
                     reverse: bool,

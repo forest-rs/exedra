@@ -132,6 +132,21 @@ impl SourceMap {
         &self.face_features
     }
 
+    /// The same map re-pinned to `mesh`'s current revision.
+    ///
+    /// Only valid when the mesh's topology is unchanged since the map was
+    /// built (for example after pure vertex-position edits, as instancing
+    /// performs); the caller asserts that by calling this.
+    #[must_use]
+    pub fn repinned(&self, mesh: &Mesh) -> Self {
+        Self {
+            face_features: self.face_features.clone(),
+            vertex_features: self.vertex_features.clone(),
+            by_feature: self.by_feature.clone(),
+            revision: mesh.revision(),
+        }
+    }
+
     /// Renders the map as deterministic text lines for goldens: one
     /// `face <index> <feature>` line per face in index order.
     #[must_use]

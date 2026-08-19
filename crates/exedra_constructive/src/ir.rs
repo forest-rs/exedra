@@ -382,6 +382,18 @@ impl Recipe {
         &self.sources[id.0 as usize]
     }
 
+    /// All interned source strings, in intern order.
+    #[must_use]
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    /// All interned slot names, in intern order.
+    #[must_use]
+    pub fn slots(&self) -> &[String] {
+        &self.slots
+    }
+
     /// The interned slot name behind a [`SlotId`].
     #[must_use]
     pub fn slot(&self, id: SlotId) -> &str {

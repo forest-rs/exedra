@@ -46,6 +46,7 @@ pub mod ir;
 pub mod profile;
 pub mod source_map;
 pub mod tessellate;
+pub mod text;
 
 /// Narrows a validated count to `u32`.
 ///
