@@ -86,6 +86,8 @@ version = "0.1.0"
 dependencies = [
  "cambium",
  "exedra",
+ "exedra_assembly",
+ "exedra_constructive",
  "exedra_primitives",
  "serde",
  "serde_json",
@@ -213,6 +215,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_assembly"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_constructive",
+ "hashbrown 0.16.1",
+ "invalidation",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "exedra_constructive"
 version = "0.0.0"
 dependencies = [
@@ -246,6 +260,16 @@ dependencies = [
  "exedra_qef",
  "exedra_spatial",
  "fidget",
+]
+
+[[package]]
+name = "exedra_gltf"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_assembly",
+ "exedra_constructive",
+ "serde_json",
 ]
 
 [[package]]

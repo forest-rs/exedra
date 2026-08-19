@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Provenance Inspector</title>
+  </head>
+  <body class="inspector">
+    <div id="app">
+      <main id="viewport" title="Click a face to inspect its provenance"></main>
+      <aside class="panel">
+        <header>
+          <h1>Provenance Inspector</h1>
+          <div class="format" id="format">&mdash;</div>
+        </header>
+
+        <section class="controls">
+          <label>
+            scenario
+            <select id="scenario"></select>
+          </label>
+          <button id="reload">reload</button>
+          <label class="toggle">
+            <input id="wireframe" type="checkbox" />
+            wireframe
+          </label>
+          <label class="toggle">
+            <input id="edges" type="checkbox" checked />
+            edges
+          </label>
+        </section>
+
+        <section>
+          <h2>summary</h2>
+          <table class="readout" id="summary"></table>
+        </section>
+
+        <section>
+          <h2>selection</h2>
+          <div id="selection" class="selection">
+            <div class="hint">click a face in the viewport</div>
+          </div>
+        </section>
+
+        <section>
+          <h2>fidelity</h2>
+          <div id="fidelity" class="ledger">&mdash;</div>
+        </section>
+
+        <section>
+          <h2>diagnostics</h2>
+          <div id="diagnostics" class="ledger">&mdash;</div>
+        </section>
+      </aside>
+    </div>
+    <script type="module" src="/src/inspector.ts"></script>
+  </body>
+</html>

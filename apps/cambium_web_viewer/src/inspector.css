@@ -1,0 +1,185 @@
+/* Provenance Inspector: dark instrument styling. Monospace readouts,
+   no marketing polish — an oscilloscope for geometry provenance. */
+
+:root {
+  color-scheme: dark;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  --bg: #0b0e13;
+  --panel: #10151d;
+  --line: #1f2a38;
+  --text: #c6d4e2;
+  --dim: #66788c;
+  --accent: #4fd1c5;
+  --warn: #e0b45c;
+  --err: #e06c60;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body.inspector {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  min-height: 100vh;
+}
+
+#viewport {
+  min-height: 100vh;
+  cursor: crosshair;
+}
+
+.panel {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.panel header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.format {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+h2 {
+  margin: 14px 0 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+}
+
+.controls select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  font: inherit;
+  padding: 2px 4px;
+}
+
+.controls button {
+  background: var(--bg);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  font: inherit;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.controls button:hover {
+  border-color: var(--accent);
+}
+
+.toggle input {
+  accent-color: var(--accent);
+}
+
+table.readout {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.readout td {
+  padding: 1px 0;
+  vertical-align: top;
+}
+
+table.readout td:first-child {
+  color: var(--dim);
+  padding-right: 10px;
+  white-space: nowrap;
+}
+
+table.readout td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.selection .hint {
+  color: var(--dim);
+}
+
+.selection .chain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.selection .chain .row {
+  display: flex;
+  gap: 10px;
+}
+
+.selection .chain .row .key {
+  color: var(--dim);
+  width: 84px;
+  flex: none;
+}
+
+.selection .chain .row .value {
+  word-break: break-all;
+}
+
+.selection .chain .row .value.accent {
+  color: var(--accent);
+}
+
+.ledger {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.ledger .warning {
+  color: var(--warn);
+}
+
+.ledger .error {
+  color: var(--err);
+}
+
+.ledger .empty {
+  color: var(--dim);
+}

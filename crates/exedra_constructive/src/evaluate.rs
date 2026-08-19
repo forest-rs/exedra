@@ -348,6 +348,26 @@ impl EvalCx<'_> {
                 let operands = operands.clone();
                 self.evaluate_csg(node_id, op, &operands, world, emit)
             }
+            NodeKind::GridSurface {
+                points,
+                rows,
+                cols,
+                close_u,
+                close_w,
+                thickness,
+                placement,
+            } => {
+                let combined = compose(world, placement);
+                let body = crate::tessellate::tessellate_grid(
+                    points, *rows, *cols, *close_u, *close_w, *thickness, &combined,
+                )
+                .map_err(|error| EvalError {
+                    node: node_id,
+                    error,
+                })?;
+                let fidelity = self.body_fidelity(node_id, &[]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
+            }
             NodeKind::MeshImport { import, placement } => {
                 let placement = compose(world, placement);
                 if crate::tessellate::det3(&placement) < 0.0 {
@@ -1212,6 +1232,55 @@ mod tests {
             Err(crate::ir::RecipeError::UnknownPolicy { policy: 7 })
         ));
     }
+
+    #[test]
+    fn grid_surface_evaluates_exact_under_transform() {
+        let mut b = RecipeBuilder::new();
+        let points: Vec<[f64; 3]> = (0..3)
+            .flat_map(|r| (0..4).map(move |c| [f64::from(c), f64::from(r), 0.0]))
+            .collect();
+        let grid = b
+            .add(NodeKind::GridSurface {
+                points,
+                rows: 3,
+                cols: 4,
+                close_u: false,
+                close_w: false,
+                thickness: Some(0.5),
+                placement: Placement3::translate(0.0, 0.0, 1.0),
+            })
+            .expect("valid");
+        let moved = b
+            .add(NodeKind::Transform {
+                child: grid,
+                xf: Placement3::rotate_z_then_translate(0.7, 10.0, -2.0, 3.0),
+            })
+            .expect("valid");
+        let recipe = b.finish(moved).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(grid), Some(Fidelity::Exact));
+        let mesh = &result.bodies[0].body.mesh;
+        let errors = mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        // Rigid motion preserves the slab volume: 3 * 2 * 0.5.
+        let mut vol = 0.0;
+        for face in mesh.faces() {
+            let verts: Vec<[f64; 3]> = mesh
+                .face_loop(face)
+                .filter_map(|he| mesh.to_vertex(he))
+                .filter_map(|v| mesh.vertex_position(v))
+                .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+                .collect();
+            for i in 1..verts.len().saturating_sub(1) {
+                let (a, b, c) = (verts[0], verts[i], verts[i + 1]);
+                vol += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            }
+        }
+        vol /= 6.0;
+        assert!((vol - 3.0).abs() < 1e-4, "grid volume {vol}");
+    }
 }
 
 #[cfg(test)]
@@ -1278,6 +1347,66 @@ mod drill_regression {
             );
             let errors = result.bodies[0].body.mesh.validate_deep();
             assert!(errors.is_empty(), "tol={tol}: {errors:?}");
+        }
+    }
+
+    /// The drill under rotated placements (exe-lz4w): f32-narrowed rotated
+    /// coordinates once drove the stitcher into a non-manifold edge via a
+    /// dropped cut-bound patch; the classifier's largest-triangle sampling
+    /// fixed it. Guard several non-axis-aligned angles.
+    #[test]
+    fn rotated_drill_succeeds() {
+        for angle in [
+            core::f64::consts::FRAC_PI_4,
+            core::f64::consts::FRAC_PI_6,
+            1.1,
+        ] {
+            let mut b = RecipeBuilder::new();
+            let block = b.add_profile(builders::rect(200.0, 100.0).unwrap());
+            let drill = b.add_profile(builders::circle(30.0).unwrap());
+            let e1 = b
+                .add(NodeKind::Extrude {
+                    profile: block,
+                    placement: Placement3::IDENTITY,
+                    height: 80.0,
+                    caps: CapMode::Both,
+                })
+                .unwrap();
+            let e2 = b
+                .add(NodeKind::Extrude {
+                    profile: drill,
+                    placement: Placement3::translate(130.0, 50.0, -20.0),
+                    height: 120.0,
+                    caps: CapMode::Both,
+                })
+                .unwrap();
+            let csg = b
+                .add(NodeKind::Csg {
+                    op: CsgOp::Difference,
+                    operands: vec![e1, e2],
+                })
+                .unwrap();
+            let moved = b
+                .add(NodeKind::Transform {
+                    child: csg,
+                    xf: Placement3::rotate_z_then_translate(angle, 50.0, 0.0, 0.0),
+                })
+                .unwrap();
+            let recipe = b.finish(moved).unwrap();
+            let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
+            assert_eq!(
+                result.bodies.len(),
+                1,
+                "angle={angle}: {:?}",
+                result.report.diagnostics
+            );
+            assert!(
+                result.report.diagnostics.is_empty(),
+                "angle={angle}: {:?}",
+                result.report.diagnostics
+            );
+            let errors = result.bodies[0].body.mesh.validate_deep();
+            assert!(errors.is_empty(), "angle={angle}: {errors:?}");
         }
     }
 }

@@ -334,6 +334,34 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 hex(*length)
             );
         }
+        NodeKind::GridSurface {
+            points,
+            rows,
+            cols,
+            close_u,
+            close_w,
+            thickness,
+            placement,
+        } => {
+            let _ = write!(
+                line,
+                "grid_surface rows {} cols {} close_u {} close_w {} thickness {}",
+                rows,
+                cols,
+                u8::from(*close_u),
+                u8::from(*close_w),
+                match thickness {
+                    Some(t) => hex(*t),
+                    None => String::from("-"),
+                }
+            );
+            let _ = write!(line, " points {}", points.len());
+            for p in points {
+                let _ = write!(line, " {} {} {}", hex(p[0]), hex(p[1]), hex(p[2]));
+            }
+            let _ = write!(line, " placement");
+            put_placement(line, placement);
+        }
     }
 }
 
@@ -870,6 +898,45 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 length,
             }
         }
+        "grid_surface" => {
+            expect(&mut tokens, "rows", line)?;
+            let rows = next_u32(&mut tokens, line)?;
+            expect(&mut tokens, "cols", line)?;
+            let cols = next_u32(&mut tokens, line)?;
+            expect(&mut tokens, "close_u", line)?;
+            let close_u = next_u32(&mut tokens, line)? != 0;
+            expect(&mut tokens, "close_w", line)?;
+            let close_w = next_u32(&mut tokens, line)? != 0;
+            expect(&mut tokens, "thickness", line)?;
+            let thickness_token = tokens.next().ok_or(TextError::Malformed { line })?;
+            let thickness = if thickness_token == "-" {
+                None
+            } else {
+                Some(parse_f64(thickness_token, line)?)
+            };
+            expect(&mut tokens, "points", line)?;
+            let count = next_u32(&mut tokens, line)? as usize;
+            let points = (0..count)
+                .map(|_| {
+                    Ok([
+                        next_f64(&mut tokens, line)?,
+                        next_f64(&mut tokens, line)?,
+                        next_f64(&mut tokens, line)?,
+                    ])
+                })
+                .collect::<Result<Vec<_>, TextError>>()?;
+            expect(&mut tokens, "placement", line)?;
+            let placement = parse_placement(&mut tokens, line)?;
+            NodeKind::GridSurface {
+                points,
+                rows,
+                cols,
+                close_u,
+                close_w,
+                thickness,
+                placement,
+            }
+        }
         _ => return Err(TextError::Malformed { line }),
     };
     builder.add(kind).map_err(TextError::Recipe)?;
@@ -1022,9 +1089,27 @@ pub(crate) mod tests_support {
                 placement: Placement3::translate(20.0, 0.0, 0.0),
             })
             .expect("valid");
+        let grid = b
+            .add(NodeKind::GridSurface {
+                points: vec![
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.1],
+                    [2.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.2],
+                    [1.0, 1.0, 0.4],
+                    [2.0, 1.0, 0.2],
+                ],
+                rows: 2,
+                cols: 3,
+                close_u: false,
+                close_w: false,
+                thickness: Some(0.125),
+                placement: Placement3::translate(30.0, 0.0, 0.0),
+            })
+            .expect("valid");
         let group = b
             .add(NodeKind::Group {
-                children: vec![transform, mirror, instance, stretch, face, imported],
+                children: vec![transform, mirror, instance, stretch, face, imported, grid],
             })
             .expect("valid");
         b.finish(group).expect("valid recipe")

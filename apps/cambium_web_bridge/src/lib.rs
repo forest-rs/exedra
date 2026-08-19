@@ -31,6 +31,9 @@ use exedra_primitives::{
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
+mod inspect;
+pub use inspect::*;
+
 /// Optional scenario execution settings.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub struct ScenarioOptions {
@@ -119,6 +122,218 @@ pub struct StepDiagnostic {
     pub code: String,
     /// Human-readable message.
     pub message: String,
+}
+
+/// Flattened render buffers for one compiled assembly body.
+///
+/// Geometry is deduplicated: instances reference bodies by index, so N
+/// placements of one part ship its buffers once.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AssemblyBodyBuffers {
+    /// Triangle indices, region-grouped (each region is one contiguous
+    /// range).
+    pub indices: Vec<u32>,
+    /// Flattened xyz positions.
+    pub positions: Vec<f32>,
+    /// Flattened uv coordinates.
+    pub uvs: Vec<f32>,
+    /// Flattened xyz normals.
+    pub normals: Vec<f32>,
+}
+
+/// One contiguous index range of a body with its resolved material key.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AssemblyDrawRange {
+    /// The `FACE_REGION` value this range covers.
+    pub region: u32,
+    /// First index in the body's index buffer.
+    pub start: u32,
+    /// Number of indices.
+    pub count: u32,
+    /// Resolved material key, if any binding applies.
+    pub material: Option<String>,
+}
+
+/// One placed drawable: a body under a world matrix with per-region
+/// materials.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AssemblyItem {
+    /// Stable instance path (`root/child/leaf`).
+    pub instance_path: String,
+    /// Part registration key.
+    pub part_key: String,
+    /// Index into the response's `bodies`.
+    pub body: u32,
+    /// World matrix as 16 column-major values (glTF/Three.js layout).
+    pub matrix: Vec<f64>,
+    /// Draw ranges covering the body's whole index buffer.
+    pub ranges: Vec<AssemblyDrawRange>,
+}
+
+/// Deterministic assembly-scenario counters.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+pub struct AssemblyStats {
+    /// Parts tessellated (cache misses).
+    pub parts_compiled: u64,
+    /// Compiled-part cache hits.
+    pub cache_hits: u64,
+    /// Triangles emitted by compilations.
+    pub triangles_emitted: u64,
+}
+
+/// Payload of the assembly scenario: deduplicated bodies plus placed
+/// items, mirroring the `exedra_assembly` render list.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AssemblyResponse {
+    /// Stable scenario name.
+    pub scenario: String,
+    /// Deduplicated body buffers.
+    pub bodies: Vec<AssemblyBodyBuffers>,
+    /// Placed items in deterministic flatten order.
+    pub items: Vec<AssemblyItem>,
+    /// Compilation counters.
+    pub stats: AssemblyStats,
+}
+
+/// Runs the multi-material assembly scenario and returns its JSON payload.
+///
+/// # Errors
+///
+/// Returns a `JsValue` error string when the scenario fails to compile or
+/// serialize.
+#[wasm_bindgen]
+pub fn run_assembly_scenario_json() -> Result<String, JsValue> {
+    let response = run_assembly_scenario_impl().map_err(|err| JsValue::from_str(&err))?;
+    serde_json::to_string(&response)
+        .map_err(|err| JsValue::from_str(&format!("failed to serialize assembly response: {err}")))
+}
+
+/// Builds the shared `panel_trio` assembly: one rounded panel part, three
+/// placements, two materials — the smallest scene that exercises sharing
+/// plus per-instance overrides.
+pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String> {
+    use exedra_assembly::Assembly;
+    use exedra_constructive::builders;
+    use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+
+    let mut b = RecipeBuilder::new();
+    let front = b.material_slot("front");
+    let profile =
+        b.add_profile(builders::rounded_rect(600.0, 400.0, 40.0).map_err(|e| format!("{e}"))?);
+    let node = b
+        .with_material(front)
+        .add(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height: 18.0,
+            caps: CapMode::Both,
+        })
+        .map_err(|e| format!("{e}"))?;
+    let recipe = b.finish(node).map_err(|e| format!("{e}"))?;
+
+    let mut asm = Assembly::new();
+    let part = asm
+        .add_recipe_part("panel", recipe)
+        .map_err(|e| format!("{e}"))?;
+    asm.set_default_slot(part, "front")
+        .map_err(|e| format!("{e}"))?;
+    asm.set_part_material(part, "front", "oak")
+        .map_err(|e| format!("{e}"))?;
+    let unit = asm
+        .add_instance(None, "unit", part, Placement3::IDENTITY)
+        .map_err(|e| format!("{e}"))?;
+    for (index, key) in ["lower", "upper"].iter().enumerate() {
+        let shelf = asm
+            .add_instance(
+                Some(unit),
+                key,
+                part,
+                Placement3::translate(0.0, 0.0, 250.0 * (index as f64 + 1.0)),
+            )
+            .map_err(|e| format!("{e}"))?;
+        if index == 1 {
+            asm.bind_material(shelf, "front", "walnut")
+                .map_err(|e| format!("{e}"))?;
+        }
+    }
+    Ok(asm)
+}
+
+/// Renders a placement as 16 column-major values (glTF/Three.js layout).
+pub(crate) fn matrix16(placement: &exedra_constructive::ir::Placement3) -> Vec<f64> {
+    let mut matrix = Vec::with_capacity(16);
+    for col in 0..4 {
+        for row in &placement.rows {
+            matrix.push(row[col]);
+        }
+        matrix.push(if col == 3 { 1.0 } else { 0.0 });
+    }
+    matrix
+}
+
+fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
+    use exedra_assembly::{PartCompiler, flatten};
+    use exedra_constructive::tessellate::EvalPolicy;
+
+    let asm = panel_trio_assembly()?;
+
+    let mut compiler = PartCompiler::new();
+    let compiled = compiler
+        .compile_parts(&asm, &EvalPolicy::default())
+        .map_err(|e| format!("{e}"))?;
+    let list = flatten(&asm, &compiled);
+
+    // Dedupe bodies by (part, body index); items reference them.
+    let mut body_lookup: alloc::collections::BTreeMap<(u32, u32), u32> =
+        alloc::collections::BTreeMap::new();
+    let mut bodies: Vec<AssemblyBodyBuffers> = Vec::new();
+    let mut items: Vec<AssemblyItem> = Vec::new();
+    for item in &list.items {
+        let key = (item.part.0, item.body);
+        let body_index = *body_lookup.entry(key).or_insert_with(|| {
+            let source = compiled
+                .part(item.part)
+                .expect("flatten only references compiled parts");
+            let tri = &source.bodies[item.body as usize].tri;
+            bodies.push(AssemblyBodyBuffers {
+                indices: tri.indices.clone(),
+                positions: tri.positions.iter().flatten().copied().collect(),
+                uvs: tri.uvs.iter().flatten().copied().collect(),
+                normals: tri.normals.iter().flatten().copied().collect(),
+            });
+            u32::try_from(bodies.len() - 1).expect("body count fits u32")
+        });
+        items.push(AssemblyItem {
+            instance_path: item.path.to_string(),
+            part_key: asm
+                .part(item.part)
+                .map(|def| def.key().to_string())
+                .unwrap_or_default(),
+            body: body_index,
+            matrix: matrix16(&item.world),
+            ranges: item
+                .regions
+                .iter()
+                .map(|r| AssemblyDrawRange {
+                    region: r.region,
+                    start: r.start,
+                    count: r.count,
+                    material: r.material.clone(),
+                })
+                .collect(),
+        });
+    }
+    let counters = compiler.counters();
+    Ok(AssemblyResponse {
+        scenario: "panel_trio".to_string(),
+        bodies,
+        items,
+        stats: AssemblyStats {
+            parts_compiled: counters.parts_compiled,
+            cache_hits: counters.cache_hits,
+            triangles_emitted: counters.triangles_emitted,
+        },
+    })
 }
 
 /// Returns the current named scenarios as JSON array.
@@ -1655,14 +1870,11 @@ fn snapshot_from_report(
     )
 }
 
-fn snapshot_from_mesh(
-    mesh: &Mesh,
-    label: &str,
-    operator: Option<&str>,
-    plan_fingerprint: Option<u64>,
-    stats: StepStats,
-    diagnostics: &[StepDiagnostic],
-) -> StepSnapshot {
+/// Extracts flattened render buffers plus the triangle-to-face mapping:
+/// `tri_face[t]` is the ordinal of the owning face in `mesh.faces()`
+/// order, parallel to the triangle triples of `indices` (and to
+/// `region_ids`).
+pub(crate) fn extract_mesh_buffers(mesh: &Mesh) -> (MeshBuffers, Vec<u32>) {
     let (tri, _) = mesh.to_trimesh(&ExtractParams {
         normals: NormalsSource::CustomOrDerived,
         ..ExtractParams::default()
@@ -1682,16 +1894,20 @@ fn snapshot_from_mesh(
         .into_iter()
         .flat_map(|n| n.into_iter())
         .collect::<Vec<_>>();
-    // Build per-triangle region IDs in the same face order as to_trimesh.
+    // Build per-triangle region IDs and face ordinals in the same face
+    // order as to_trimesh.
     let region_layer = mesh.attrs().dense(attr::FACE_REGION);
     let mut region_ids = Vec::new();
-    for face in mesh.faces() {
+    let mut tri_face = Vec::new();
+    for (ordinal, face) in mesh.faces().enumerate() {
         let region = region_layer
             .and_then(|layer| layer.get(face.as_id()).copied())
             .unwrap_or(0);
         let tri_count = mesh.triangulate_face_fan(face).len();
+        let ordinal = u32::try_from(ordinal).unwrap_or(u32::MAX);
         for _ in 0..tri_count {
             region_ids.push(region);
+            tri_face.push(ordinal);
         }
     }
     let mut topo_edges = mesh
@@ -1718,12 +1934,8 @@ fn snapshot_from_mesh(
         topology_lines.extend_from_slice(from_pos);
         topology_lines.extend_from_slice(to_pos);
     }
-    StepSnapshot {
-        label: label.to_string(),
-        operator: operator.map(ToString::to_string),
-        plan_fingerprint,
-        mesh_signature: mesh_signature(mesh),
-        mesh: MeshBuffers {
+    (
+        MeshBuffers {
             indices: tri.indices,
             positions,
             uvs,
@@ -1731,6 +1943,25 @@ fn snapshot_from_mesh(
             topology_lines,
             region_ids,
         },
+        tri_face,
+    )
+}
+
+fn snapshot_from_mesh(
+    mesh: &Mesh,
+    label: &str,
+    operator: Option<&str>,
+    plan_fingerprint: Option<u64>,
+    stats: StepStats,
+    diagnostics: &[StepDiagnostic],
+) -> StepSnapshot {
+    let (buffers, _tri_face) = extract_mesh_buffers(mesh);
+    StepSnapshot {
+        label: label.to_string(),
+        operator: operator.map(ToString::to_string),
+        plan_fingerprint,
+        mesh_signature: mesh_signature(mesh),
+        mesh: buffers,
         stats,
         diagnostics: diagnostics.to_vec(),
     }
@@ -2029,5 +2260,54 @@ mod tests {
             response.steps[3].operator.as_deref(),
             Some("tag.face.region")
         );
+    }
+
+    #[test]
+    fn assembly_scenario_dedupes_bodies_and_resolves_materials() {
+        let response = super::run_assembly_scenario_impl().expect("scenario runs");
+        assert_eq!(response.scenario, "panel_trio");
+        // Three placements of one part share one body and one compilation.
+        assert_eq!(response.items.len(), 3);
+        assert_eq!(response.bodies.len(), 1);
+        assert_eq!(response.stats.parts_compiled, 1);
+        // Paths are stable identity, matrices are 16-value column-major.
+        assert_eq!(response.items[0].instance_path, "unit");
+        assert_eq!(response.items[1].instance_path, "unit/lower");
+        assert_eq!(response.items[2].instance_path, "unit/upper");
+        for item in &response.items {
+            assert_eq!(item.part_key, "panel");
+            assert_eq!(item.matrix.len(), 16);
+            let body = &response.bodies[item.body as usize];
+            let total: u32 = item.ranges.iter().map(|r| r.count).sum();
+            assert_eq!(
+                total as usize,
+                body.indices.len(),
+                "ranges must cover the whole index buffer"
+            );
+            let mut cursor = 0;
+            for range in &item.ranges {
+                assert_eq!(range.start, cursor, "ranges must be contiguous");
+                cursor += range.count;
+            }
+        }
+        // The upper shelf overrides the part-default material.
+        let material_of = |index: usize| {
+            response.items[index]
+                .ranges
+                .first()
+                .and_then(|r| r.material.clone())
+        };
+        assert_eq!(material_of(0).as_deref(), Some("oak"));
+        assert_eq!(material_of(1).as_deref(), Some("oak"));
+        assert_eq!(material_of(2).as_deref(), Some("walnut"));
+    }
+
+    #[test]
+    fn assembly_scenario_is_deterministic() {
+        let first = super::run_assembly_scenario_impl().expect("first run");
+        let second = super::run_assembly_scenario_impl().expect("second run");
+        let a = serde_json::to_string(&first).expect("serializes");
+        let b = serde_json::to_string(&second).expect("serializes");
+        assert_eq!(a, b, "assembly payload must be byte-deterministic");
     }
 }

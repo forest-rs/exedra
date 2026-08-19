@@ -37,6 +37,19 @@ The scenario picker currently includes:
 - `topology_dissolve_repair`: planar grid-strip topology story showing split-edge, dissolve-vertex, then dissolve-edge simplification.
 - `primitive_gallery`: quad, box, cylinder, grid, cone, torus, uv-sphere, and icosphere constructor outputs.
 
+## Provenance Inspector
+
+`inspector.html` (linked from the main page) is a separate inspection
+instrument over the bridge's `cambium-inspect-v1` payloads: it renders
+inspection scenarios (`drilled_block`, `policy_curve`, `panel_trio`) with
+region coloring and topology edges on a dark instrument layout, and
+clicking any face surfaces its full provenance chain — instance path,
+part, node (kind + fingerprint), feature attribution, region, source
+reference, material slot, issue citation, and fidelity verdict — beside
+a summary readout and the exact diagnostics ledger. The selected face
+highlights in the accent color. Reloading a scenario re-renders the
+byte-identical payload.
+
 ## Viewer Controls
 
 - Scenario picker: choose and rerun a named flow.
