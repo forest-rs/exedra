@@ -90,15 +90,26 @@ pub fn locate_edge_intersection<F: ScalarField>(
     end: [f32; 3],
     params: &EdgeSearchParams,
 ) -> Result<HermiteIntersection, EdgeIntersectionError> {
+    let (point, t) = locate_edge_zero(field, start, end, params)?;
+    sample_gradient(field, point, t)
+}
+
+/// Locates a zero-crossing without sampling its gradient.
+pub(crate) fn locate_edge_zero<F: ScalarField>(
+    field: &F,
+    start: [f32; 3],
+    end: [f32; 3],
+    params: &EdgeSearchParams,
+) -> Result<([f32; 3], f32), EdgeIntersectionError> {
     let mut values = [0.0; 2];
     field.eval_points(&[start, end], &mut values);
     let [mut a_value, b_value] = values;
 
     if a_value == 0.0 {
-        return sample_gradient(field, start, 0.0);
+        return Ok((start, 0.0));
     }
     if b_value == 0.0 {
-        return sample_gradient(field, end, 1.0);
+        return Ok((end, 1.0));
     }
     if same_sign(a_value, b_value) {
         return Err(EdgeIntersectionError::NoSignChange);
@@ -126,7 +137,7 @@ pub fn locate_edge_intersection<F: ScalarField>(
         }
     }
 
-    sample_gradient(field, point, point_t)
+    Ok((point, point_t))
 }
 
 fn sample_gradient<F: ScalarField>(
@@ -159,6 +170,7 @@ fn lerp(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 mod tests {
     use super::{
         CellHermiteData, EdgeIntersectionError, EdgeSearchParams, locate_edge_intersection,
+        locate_edge_zero,
     };
     use crate::ScalarField;
     use crate::analytic::SphereField;
@@ -166,6 +178,9 @@ mod tests {
 
     #[derive(Copy, Clone, Debug)]
     struct NanGradientField;
+
+    #[derive(Copy, Clone, Debug)]
+    struct ScalarOnlyPlane;
 
     impl ScalarField for NanGradientField {
         fn eval_interval(&self, _bounds: &Aabb) -> Option<[f32; 2]> {
@@ -183,6 +198,36 @@ mod tests {
                 out[index] = [point[0], f32::NAN, f32::NAN, f32::NAN];
             }
         }
+    }
+
+    impl ScalarField for ScalarOnlyPlane {
+        fn eval_interval(&self, _bounds: &Aabb) -> Option<[f32; 2]> {
+            Some([-1.0, 1.0])
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            for (index, point) in points.iter().enumerate() {
+                out[index] = point[0];
+            }
+        }
+
+        fn eval_gradients(&self, _points: &[[f32; 3]], _out: &mut [[f32; 4]]) {
+            panic!("scalar-only zero search must not request gradients");
+        }
+    }
+
+    #[test]
+    fn locate_edge_zero_does_not_sample_gradients() {
+        let (point, t) = locate_edge_zero(
+            &ScalarOnlyPlane,
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            &EdgeSearchParams::default(),
+        )
+        .expect("plane edge should cross");
+
+        assert_eq!(point, [0.0, 0.0, 0.0]);
+        assert_eq!(t, 0.5);
     }
 
     #[test]

@@ -14,6 +14,7 @@ Current scope:
 - lifting operators (`Extrude`, `Revolve`) for profile-based 3D fields,
 - field-construction wrappers (`Translate`, `UniformScale`, `Transform3`),
 - simple CSG combinators and provenance tagging wrappers for tests,
+- opt-in semi-analytic projection for tagged box/cylinder CSG fields,
 - a first dual-contouring extractor over an interval-culled adaptive octree.
 
 The current mesher is intentionally phase-1:
@@ -27,4 +28,12 @@ The current mesher is intentionally phase-1:
 - first-pass seam tagging on shared edges where adjacent face regions differ,
 - conservative triangle deduplication and edge-incidence limiting across coarse/fine transitions.
 
-It does not yet attempt full manifold DC, topology-optimal variable-depth stitching, or richer seam recovery beyond region boundaries.
+`dual_contour_semi_analytic` additionally projects eligible cell vertices onto
+the dominating tagged primitive and snaps transverse feature cells for
+identity-frame box / coordinate-axis cylinder pairs. Unsupported rotations,
+tangencies, coincident patches, ambiguous cells, and out-of-cell projections
+retain the bounded QEF result and increment typed counters.
+
+It does not yet attempt full manifold DC, topology-optimal variable-depth
+stitching, general clipped-conic feature solving, or richer seam recovery
+beyond region boundaries.

@@ -14,8 +14,10 @@ use exedra_qef::{PlaneConstraint, QefBounds, QefParams, QefSolveError, QefSolver
 use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
 use hashbrown::{HashMap, HashSet};
 
+use crate::hermite::locate_edge_zero;
 use crate::{
-    CellHermiteData, EdgeSearchParams, ProvenanceField, ScalarField, locate_edge_intersection,
+    CellHermiteData, EdgeSearchParams, ProvenanceField, ScalarField, SemiAnalyticFeature,
+    SemiAnalyticField, SemiAnalyticProjectionOutcome, locate_edge_intersection,
 };
 
 const CUBE_EDGES: [(usize, usize); 12] = [
@@ -73,6 +75,39 @@ pub struct DualContourResult {
     pub stats: DualContourStats,
 }
 
+/// Semi-analytic projection and fallback counts for one extraction.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemiAnalyticContourStats {
+    /// Cells projected onto one dominant primitive surface.
+    pub surface_projections: usize,
+    /// Cells snapped onto a supported transverse primitive intersection.
+    pub feature_snaps: usize,
+    /// Cells whose primitive combination has no exact feature solver.
+    pub unsupported_fallbacks: usize,
+    /// Cells containing more than one candidate feature component.
+    pub ambiguous_fallbacks: usize,
+    /// Cells containing a tangent primitive contact.
+    pub tangent_fallbacks: usize,
+    /// Cells containing coincident primitive surface patches.
+    pub coincident_fallbacks: usize,
+    /// Projections rejected for leaving the cell or exceeding its displacement
+    /// budget.
+    pub over_budget_fallbacks: usize,
+    /// Projections rejected for invalid parameters or non-finite output.
+    pub invalid_fallbacks: usize,
+}
+
+/// Successful semi-analytic dual-contouring result.
+#[derive(Clone, Debug)]
+pub struct SemiAnalyticContourResult {
+    /// Output mesh.
+    pub mesh: Mesh,
+    /// Ordinary dual-contouring statistics.
+    pub stats: DualContourStats,
+    /// Semi-analytic projection and fallback statistics.
+    pub semi_analytic: SemiAnalyticContourStats,
+}
+
 /// Dual-contouring extraction failure.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DualContourError {
@@ -98,10 +133,11 @@ pub fn dual_contour<F: ScalarField>(
     field: &F,
     params: &DualContourParams,
 ) -> Result<DualContourResult, DualContourError> {
-    dual_contour_impl(field, params, |_| 0)
+    dual_contour_impl(field, params, |_, _, _| 0)
 }
 
-/// Extracts a mesh from `field`, sampling `FACE_REGION` from field provenance.
+/// Extracts a mesh from `field`, sampling `FACE_REGION` from field provenance
+/// at each emitted patch's generating zero crossing.
 pub fn dual_contour_with_regions<F>(
     field: &F,
     params: &DualContourParams,
@@ -109,7 +145,42 @@ pub fn dual_contour_with_regions<F>(
 where
     F: ProvenanceField<Provenance = u32>,
 {
-    dual_contour_impl(field, params, |point| field.point_provenance(point))
+    dual_contour_impl(field, params, |start, end, fallback| {
+        let point = locate_edge_zero(field, start, end, &params.edge_search)
+            .map_or(fallback, |(point, _)| point);
+        field.point_provenance(point)
+    })
+}
+
+/// Extracts a mesh while projecting supported cells onto analytic primitive
+/// surfaces and feature curves.
+///
+/// This path is opt-in. Unsupported, ambiguous, tangent, coincident,
+/// out-of-cell, and invalid projections retain their bounded QEF position and
+/// are counted in [`SemiAnalyticContourResult::semi_analytic`]. Faces receive
+/// the dominating primitive identity in `FACE_REGION`.
+pub fn dual_contour_semi_analytic<F>(
+    field: &F,
+    params: &DualContourParams,
+) -> Result<SemiAnalyticContourResult, DualContourError>
+where
+    F: SemiAnalyticField,
+{
+    let (result, semi_analytic) = dual_contour_projected_impl(
+        field,
+        params,
+        |start, end, fallback| {
+            let point = locate_edge_zero(field, start, end, &params.edge_search)
+                .map_or(fallback, |(point, _)| point);
+            field.primitive_at(point)
+        },
+        |point, cell| Some(field.project_cell_vertex_detailed(point, cell)),
+    )?;
+    Ok(SemiAnalyticContourResult {
+        mesh: result.mesh,
+        stats: result.stats,
+        semi_analytic,
+    })
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -122,6 +193,7 @@ struct ActiveCell {
     coord: (u32, u32, u32),
     depth: u8,
     span: u32,
+    bounds: Aabb,
     position: [f32; 3],
     sharpness: SharpnessClass,
 }
@@ -140,7 +212,21 @@ fn dual_contour_impl<F, R>(
 ) -> Result<DualContourResult, DualContourError>
 where
     F: ScalarField,
-    R: Fn([f32; 3]) -> u32,
+    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
+{
+    dual_contour_projected_impl(field, params, region_at, |_, _| None).map(|(result, _)| result)
+}
+
+fn dual_contour_projected_impl<F, R, P>(
+    field: &F,
+    params: &DualContourParams,
+    region_at: R,
+    project: P,
+) -> Result<(DualContourResult, SemiAnalyticContourStats), DualContourError>
+where
+    F: ScalarField,
+    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
+    P: Fn([f32; 3], &Aabb) -> Option<SemiAnalyticProjectionOutcome>,
 {
     let resolution = 1_u32 << params.max_depth;
     let lattice = sample_lattice(field, params.root_bounds, resolution);
@@ -155,21 +241,30 @@ where
     let mut active_cells = collect_active_cells(field, params, &tree, &lattice)?;
 
     if active_cells.is_empty() {
-        return Ok(DualContourResult {
-            mesh: MeshBuilder::new()
-                .build()
-                .expect("empty mesh build should succeed")
-                .mesh,
-            stats: DualContourStats {
-                octree_cells: tree.len(),
-                active_cells: 0,
-                vertices: 0,
-                faces: 0,
+        return Ok((
+            DualContourResult {
+                mesh: MeshBuilder::new()
+                    .build()
+                    .expect("empty mesh build should succeed")
+                    .mesh,
+                stats: DualContourStats {
+                    octree_cells: tree.len(),
+                    active_cells: 0,
+                    vertices: 0,
+                    faces: 0,
+                },
             },
-        });
+            SemiAnalyticContourStats::default(),
+        ));
     }
 
     active_cells.sort_by_key(|cell| (cell.coord, cell.depth));
+    let mut semi_analytic = SemiAnalyticContourStats::default();
+    for cell in &mut active_cells {
+        if let Some(outcome) = project(cell.position, &cell.bounds) {
+            apply_projection(cell, outcome, &mut semi_analytic);
+        }
+    }
 
     let mut builder = MeshBuilder::new();
     let mut coverage = vec![None; finest_cell_count(resolution)];
@@ -189,6 +284,7 @@ where
     for axis in 0..3 {
         emit_axis_faces(
             axis,
+            params.root_bounds,
             resolution,
             &lattice,
             &coverage,
@@ -204,19 +300,23 @@ where
     let mut mesh = result.mesh;
     populate_corner_normals(field, &mut mesh);
     populate_region_boundary_seams(&mut mesh);
-    Ok(DualContourResult {
-        stats: DualContourStats {
-            octree_cells: tree.len(),
-            active_cells: active_cells.len(),
-            vertices: mesh.vertices().count(),
-            faces: mesh.faces().count(),
+    Ok((
+        DualContourResult {
+            stats: DualContourStats {
+                octree_cells: tree.len(),
+                active_cells: active_cells.len(),
+                vertices: mesh.vertices().count(),
+                faces: mesh.faces().count(),
+            },
+            mesh,
         },
-        mesh,
-    })
+        semi_analytic,
+    ))
 }
 
 fn emit_axis_faces<R>(
     axis: usize,
+    root_bounds: Aabb,
     resolution: u32,
     lattice: &[f32],
     coverage: &[Option<VertexEntry>],
@@ -227,7 +327,7 @@ fn emit_axis_faces<R>(
     face_count: &mut usize,
 ) -> Result<(), DualContourError>
 where
-    R: Fn([f32; 3]) -> u32,
+    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
 {
     match axis {
         0 => {
@@ -235,6 +335,7 @@ where
                 for j in 1..resolution {
                     for i in 0..resolution {
                         emit_one_face(
+                            root_bounds,
                             lattice,
                             resolution,
                             ((i, j, k), (i + 1, j, k)),
@@ -255,6 +356,7 @@ where
                 for j in 0..resolution {
                     for i in 1..resolution {
                         emit_one_face(
+                            root_bounds,
                             lattice,
                             resolution,
                             ((i, j, k), (i, j + 1, k)),
@@ -275,6 +377,7 @@ where
                 for j in 1..resolution {
                     for i in 1..resolution {
                         emit_one_face(
+                            root_bounds,
                             lattice,
                             resolution,
                             ((i, j, k), (i, j, k + 1)),
@@ -296,6 +399,7 @@ where
 }
 
 fn emit_one_face<R>(
+    root_bounds: Aabb,
     lattice: &[f32],
     resolution: u32,
     edge: ((u32, u32, u32), (u32, u32, u32)),
@@ -308,7 +412,7 @@ fn emit_one_face<R>(
     face_count: &mut usize,
 ) -> Result<(), DualContourError>
 where
-    R: Fn([f32; 3]) -> u32,
+    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
 {
     let start_value = lattice_value(lattice, resolution, edge.0);
     let end_value = lattice_value(lattice, resolution, edge.1);
@@ -323,7 +427,12 @@ where
         face.reverse();
     }
 
-    let region = region_at(average_points(&face));
+    let step = step_size(root_bounds, resolution);
+    let region = region_at(
+        grid_point(root_bounds, step, edge.0),
+        grid_point(root_bounds, step, edge.1),
+        average_points(&face),
+    );
     match face.len() {
         3 => {
             let builder_loop = [
@@ -566,6 +675,7 @@ fn solve_active_cell<F: ScalarField>(
             coord,
             depth,
             span,
+            bounds,
             position: bounds.center(),
             sharpness: SharpnessClass::Smooth,
         }));
@@ -582,6 +692,7 @@ fn solve_active_cell<F: ScalarField>(
         coord,
         depth,
         span,
+        bounds,
         position: result.position,
         sharpness: result.sharpness_class,
     }))
@@ -734,6 +845,68 @@ fn sharpness_value(sharpness: SharpnessClass) -> f32 {
         SharpnessClass::Edge => 1.0,
         SharpnessClass::Corner => 2.0,
     }
+}
+
+fn apply_projection(
+    cell: &mut ActiveCell,
+    outcome: SemiAnalyticProjectionOutcome,
+    stats: &mut SemiAnalyticContourStats,
+) {
+    match outcome {
+        SemiAnalyticProjectionOutcome::Projected(projection) => {
+            if !projection
+                .position
+                .iter()
+                .all(|component| component.is_finite())
+            {
+                stats.invalid_fallbacks += 1;
+                return;
+            }
+            if !point_within_bounds(projection.position, cell.bounds) {
+                stats.over_budget_fallbacks += 1;
+                return;
+            }
+            let cell_diagonal_squared = squared_distance(cell.bounds.min, cell.bounds.max);
+            if squared_distance(cell.position, projection.position) > cell_diagonal_squared {
+                stats.over_budget_fallbacks += 1;
+                return;
+            }
+            cell.position = projection.position;
+            match projection.feature {
+                SemiAnalyticFeature::Surface => stats.surface_projections += 1,
+                SemiAnalyticFeature::Edge => {
+                    stats.surface_projections += 1;
+                    cell.sharpness = SharpnessClass::Edge;
+                }
+                SemiAnalyticFeature::Corner => {
+                    stats.surface_projections += 1;
+                    cell.sharpness = SharpnessClass::Corner;
+                }
+                SemiAnalyticFeature::IntersectionCurve => {
+                    stats.feature_snaps += 1;
+                    cell.sharpness = SharpnessClass::Edge;
+                }
+            }
+        }
+        SemiAnalyticProjectionOutcome::Unsupported => stats.unsupported_fallbacks += 1,
+        SemiAnalyticProjectionOutcome::Ambiguous => stats.ambiguous_fallbacks += 1,
+        SemiAnalyticProjectionOutcome::Tangent => stats.tangent_fallbacks += 1,
+        SemiAnalyticProjectionOutcome::Coincident => stats.coincident_fallbacks += 1,
+        SemiAnalyticProjectionOutcome::OverBudget => stats.over_budget_fallbacks += 1,
+        SemiAnalyticProjectionOutcome::Invalid => stats.invalid_fallbacks += 1,
+    }
+}
+
+fn point_within_bounds(point: [f32; 3], bounds: Aabb) -> bool {
+    let scale = bounds
+        .min
+        .into_iter()
+        .chain(bounds.max)
+        .fold(1.0_f32, |scale, value| scale.max(abs(value)));
+    let tolerance = 64.0 * f32::EPSILON * scale;
+    (0..3).all(|axis| {
+        point[axis] >= bounds.min[axis] - tolerance && point[axis] <= bounds.max[axis] + tolerance
+    })
 }
 
 fn average_points(points: &[VertexEntry]) -> [f32; 3] {
@@ -1059,14 +1232,20 @@ fn normalize_gradient(sample: [f32; 4]) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::{
-        DualContourParams, IntervalVisitor, QuadDiagonal, collect_active_cells, dual_contour,
+        ActiveCell, DualContourParams, IntervalVisitor, QuadDiagonal, SemiAnalyticContourStats,
+        apply_projection, collect_active_cells, dual_contour, dual_contour_semi_analytic,
         dual_contour_with_regions, sample_lattice, select_quad_diagonal, solve_active_cell,
         squared_distance,
     };
     use crate::EdgeSearchParams;
-    use crate::analytic::{BoxField, CylinderField, SphereField, TaggedField, Union};
-    use crate::{ProvenanceField, ScalarField};
+    use crate::analytic::{BoxField, CylinderField, Difference, SphereField, TaggedField, Union};
+    use crate::{
+        AnalyticCylinder, AnalyticPrimitive, ProvenanceField, ScalarField, SemiAnalyticField,
+        SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
+    };
     use exedra::{ExtractParams, attr};
     use exedra_qef::QefParams;
     use exedra_spatial::{Aabb, Octree};
@@ -1085,6 +1264,54 @@ mod tests {
 
     struct AxisTaggedUnion {
         field: Union<BoxField, BoxField>,
+    }
+
+    struct SurfaceTaggedSphere {
+        field: SphereField,
+        tolerance: f32,
+    }
+
+    #[derive(Copy, Clone)]
+    struct MalformedCylinderLeaf {
+        field: TaggedField<CylinderField, u32>,
+    }
+
+    impl ScalarField for MalformedCylinderLeaf {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.field.eval_interval(bounds)
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+        }
+    }
+
+    impl SemiAnalyticField for MalformedCylinderLeaf {
+        fn project_cell_vertex(
+            &self,
+            point: [f32; 3],
+            cell: &Aabb,
+        ) -> Option<SemiAnalyticProjection> {
+            self.field.project_cell_vertex(point, cell)
+        }
+
+        fn primitive_at(&self, point: [f32; 3]) -> u32 {
+            self.field.primitive_at(point)
+        }
+
+        fn leaf_primitive(&self) -> Option<AnalyticPrimitive> {
+            Some(AnalyticPrimitive::Cylinder(AnalyticCylinder {
+                radius: -self.field.field.radius,
+                primitive: self.field.provenance,
+                center: self.field.field.center,
+                axis: self.field.field.axis,
+                half_height: self.field.field.half_height,
+            }))
+        }
     }
 
     impl ScalarField for AxisTaggedUnion {
@@ -1115,6 +1342,42 @@ mod tests {
 
         fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
             if point[0] < 0.0 { 1 } else { 2 }
+        }
+    }
+
+    impl ScalarField for SurfaceTaggedSphere {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.field.eval_interval(bounds)
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+        }
+    }
+
+    impl ProvenanceField for SurfaceTaggedSphere {
+        type Provenance = u32;
+
+        fn eval_interval_with_provenance(
+            &self,
+            bounds: &Aabb,
+        ) -> Option<([f32; 2], Self::Provenance)> {
+            self.eval_interval(bounds)
+                .map(|interval| (interval, self.point_provenance(bounds.center())))
+        }
+
+        fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
+            let mut value = [0.0_f32; 1];
+            self.eval_points(&[point], &mut value);
+            if value[0].abs() <= self.tolerance {
+                7
+            } else {
+                99
+            }
         }
     }
 
@@ -1243,6 +1506,62 @@ mod tests {
     }
 
     #[test]
+    fn dual_contour_attributes_faces_at_primal_zero_crossings() {
+        let field = SurfaceTaggedSphere {
+            field: SphereField {
+                center: [0.0, 0.0, 0.0],
+                radius: 1.0,
+            },
+            tolerance: 1.0e-3,
+        };
+        let bounds = Aabb::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]).expect("bounds");
+
+        let first = dual_contour_with_regions(&field, &params(bounds, 4))
+            .expect("surface-attributed sphere should extract");
+        let second = dual_contour_with_regions(&field, &params(bounds, 4))
+            .expect("surface attribution should be deterministic");
+
+        let first_regions = first
+            .mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .expect("FACE_REGION layer should exist");
+        let second_regions = second
+            .mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .expect("FACE_REGION layer should exist");
+        let first_values = first
+            .mesh
+            .faces()
+            .map(|face| {
+                first_regions
+                    .get(face.as_id())
+                    .copied()
+                    .expect("every face should be attributed")
+            })
+            .collect::<Vec<_>>();
+        let second_values = second
+            .mesh
+            .faces()
+            .map(|face| {
+                second_regions
+                    .get(face.as_id())
+                    .copied()
+                    .expect("every face should be attributed")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!first_values.is_empty());
+        assert!(first_values.iter().all(|region| *region == 7));
+        assert_eq!(first_values, second_values);
+        assert!(first.mesh.faces().any(|face| {
+            let corners = first.mesh.face_loop(face).collect::<Vec<_>>();
+            field.point_provenance(super::face_centroid(&first.mesh, &corners)) == 99
+        }));
+    }
+
+    #[test]
     fn dual_contour_with_regions_marks_seams_between_tagged_operands() {
         let field = AxisTaggedUnion {
             field: Union::new(
@@ -1346,6 +1665,208 @@ mod tests {
     }
 
     #[test]
+    fn semi_analytic_box_minus_cylinder_snaps_features_and_attributes_primitives() {
+        let bounds = Aabb::new([-1.4; 3], [1.4; 3]).expect("bounds");
+        for depth in [4, 5, 6] {
+            let field = tagged_box_minus_cylinder([0.0, 0.0, 1.0]);
+            let result = dual_contour_semi_analytic(&field, &params(bounds, depth))
+                .expect("semi-analytic through-cut should extract");
+
+            assert!(result.mesh.validate_deep().is_empty());
+            assert!(result.semi_analytic.feature_snaps > 0);
+            assert!(result.semi_analytic.surface_projections > 0);
+            let rim_vertices = result
+                .mesh
+                .vertices()
+                .filter(|&vertex| {
+                    let Some(position) = result.mesh.vertex_position(vertex) else {
+                        return false;
+                    };
+                    let radius = (position[0] * position[0] + position[1] * position[1]).sqrt();
+                    (position[2].abs() - 1.0).abs() <= 2.0e-5 && (radius - 0.6).abs() <= 2.0e-5
+                })
+                .count();
+            assert!(rim_vertices >= result.semi_analytic.feature_snaps);
+            let regions = result
+                .mesh
+                .attrs()
+                .dense(attr::FACE_REGION)
+                .expect("primitive regions should exist");
+            assert!(
+                result
+                    .mesh
+                    .faces()
+                    .any(|face| regions.get(face.as_id()) == Some(&10))
+            );
+            assert!(
+                result
+                    .mesh
+                    .faces()
+                    .any(|face| regions.get(face.as_id()) == Some(&20))
+            );
+            let sharpness = result
+                .mesh
+                .attrs()
+                .sparse(attr::EDGE_SHARPNESS)
+                .expect("feature sharpness should exist");
+            assert!(result.mesh.faces().any(|face| {
+                result.mesh.face_loop(face).any(|edge| {
+                    sharpness
+                        .get(edge.as_id())
+                        .is_some_and(|value| *value >= 1.0)
+                })
+            }));
+
+            let repeated = dual_contour_semi_analytic(&field, &params(bounds, depth))
+                .expect("semi-analytic extraction should repeat");
+            let (first_tri, first_stats) = result.mesh.to_trimesh(&ExtractParams::default());
+            let (second_tri, second_stats) = repeated.mesh.to_trimesh(&ExtractParams::default());
+            assert_eq!(result.stats, repeated.stats);
+            assert_eq!(result.semi_analytic, repeated.semi_analytic);
+            assert_eq!(first_stats, second_stats);
+            assert_eq!(first_tri.positions, second_tri.positions);
+            assert_eq!(first_tri.indices, second_tri.indices);
+        }
+    }
+
+    #[test]
+    fn semi_analytic_rotated_box_cylinder_pair_counts_unsupported_fallbacks() {
+        let field = tagged_box_minus_cylinder([1.0, 1.0, 0.0]);
+        let bounds = Aabb::new([-1.4; 3], [1.4; 3]).expect("bounds");
+
+        let result = dual_contour_semi_analytic(&field, &params(bounds, 5))
+            .expect("unsupported pair should retain QEF output");
+
+        assert!(result.mesh.validate_deep().is_empty());
+        assert!(result.semi_analytic.unsupported_fallbacks > 0);
+        assert_eq!(result.semi_analytic.feature_snaps, 0);
+    }
+
+    #[test]
+    fn malformed_pair_counts_invalid_and_retains_qef_output() {
+        let box_field = TaggedField {
+            field: BoxField {
+                center: [0.0; 3],
+                half_extents: [1.0; 3],
+            },
+            provenance: 10,
+        };
+        let cylinder = MalformedCylinderLeaf {
+            field: TaggedField {
+                field: CylinderField {
+                    center: [0.0; 3],
+                    axis: [0.0, 0.0, 1.0],
+                    radius: 0.6,
+                    half_height: 2.0,
+                },
+                provenance: 20,
+            },
+        };
+        let field = Difference::new(box_field, cylinder);
+        let extraction_params = params(Aabb::new([-1.4; 3], [1.4; 3]).expect("bounds"), 4);
+
+        let ordinary = dual_contour(&field, &extraction_params).expect("ordinary QEF extraction");
+        let semi = dual_contour_semi_analytic(&field, &extraction_params)
+            .expect("malformed analytic metadata must retain QEF output");
+        let (ordinary_tri, _) = ordinary.mesh.to_trimesh(&ExtractParams::default());
+        let (semi_tri, _) = semi.mesh.to_trimesh(&ExtractParams::default());
+
+        assert!(semi.mesh.validate_deep().is_empty());
+        assert!(
+            semi.semi_analytic.invalid_fallbacks > 0,
+            "malformed primitive metadata must count Invalid"
+        );
+        assert_eq!(
+            semi.semi_analytic.unsupported_fallbacks, 0,
+            "malformed metadata must not be classified as unsupported orientation"
+        );
+        assert_eq!(
+            ordinary_tri.positions, semi_tri.positions,
+            "Invalid fallback must retain QEF positions"
+        );
+        assert_eq!(
+            ordinary_tri.indices, semi_tri.indices,
+            "Invalid fallback must retain QEF topology"
+        );
+    }
+
+    #[test]
+    fn typed_pair_fallbacks_do_not_move_the_active_cell() {
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("cell bounds");
+        let box_field = TaggedField {
+            field: BoxField {
+                center: [0.0; 3],
+                half_extents: [1.0; 3],
+            },
+            provenance: 10,
+        };
+        let cylinder = TaggedField {
+            field: CylinderField {
+                center: [0.0; 3],
+                axis: [0.0, 0.0, 1.0],
+                radius: 0.6,
+                half_height: 2.0,
+            },
+            provenance: 20,
+        };
+        let thin_strip = Aabb::new([-0.1, -0.7, 0.9], [0.1, 0.7, 1.1]).expect("thin strip");
+        let disconnected_arcs = Difference::new(box_field, cylinder)
+            .project_cell_vertex_detailed([0.0, 0.58, 0.98], &thin_strip);
+        assert_eq!(
+            disconnected_arcs,
+            SemiAnalyticProjectionOutcome::Ambiguous,
+            "two clipped circle arcs must classify as one ambiguous cell"
+        );
+
+        for (outcome, expected) in [
+            (
+                disconnected_arcs,
+                SemiAnalyticContourStats {
+                    ambiguous_fallbacks: 1,
+                    ..SemiAnalyticContourStats::default()
+                },
+            ),
+            (
+                SemiAnalyticProjectionOutcome::Tangent,
+                SemiAnalyticContourStats {
+                    tangent_fallbacks: 1,
+                    ..SemiAnalyticContourStats::default()
+                },
+            ),
+            (
+                SemiAnalyticProjectionOutcome::Coincident,
+                SemiAnalyticContourStats {
+                    coincident_fallbacks: 1,
+                    ..SemiAnalyticContourStats::default()
+                },
+            ),
+            (
+                SemiAnalyticProjectionOutcome::OverBudget,
+                SemiAnalyticContourStats {
+                    over_budget_fallbacks: 1,
+                    ..SemiAnalyticContourStats::default()
+                },
+            ),
+        ] {
+            let mut cell = ActiveCell {
+                coord: (0, 0, 0),
+                depth: 1,
+                span: 1,
+                bounds,
+                position: [0.25, 0.5, 0.75],
+                sharpness: exedra_qef::SharpnessClass::Smooth,
+            };
+            let original = cell.position;
+            let mut stats = SemiAnalyticContourStats::default();
+
+            apply_projection(&mut cell, outcome, &mut stats);
+
+            assert_eq!(cell.position, original, "typed fallback moved QEF point");
+            assert_eq!(stats, expected, "typed fallback incremented wrong counter");
+        }
+    }
+
+    #[test]
     fn sphere_active_cells_do_not_all_collapse_to_cell_centers() {
         let field = SphereField {
             center: [0.0, 0.0, 0.0],
@@ -1441,6 +1962,29 @@ mod tests {
         ];
 
         assert_eq!(select_quad_diagonal(skewed), QuadDiagonal::OneThree);
+    }
+
+    fn tagged_box_minus_cylinder(
+        axis: [f32; 3],
+    ) -> Difference<TaggedField<BoxField, u32>, TaggedField<CylinderField, u32>> {
+        Difference::new(
+            TaggedField {
+                field: BoxField {
+                    center: [0.0; 3],
+                    half_extents: [1.0; 3],
+                },
+                provenance: 10,
+            },
+            TaggedField {
+                field: CylinderField {
+                    center: [0.0; 3],
+                    axis,
+                    radius: 0.6,
+                    half_height: 2.0,
+                },
+                provenance: 20,
+            },
+        )
     }
 
     fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {

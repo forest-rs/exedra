@@ -13,6 +13,7 @@
 //! - analytic 2D reference profiles in [`analytic2d`],
 //! - lifting operators in [`lift`],
 //! - reusable transform wrappers in [`transform`],
+//! - opt-in semi-analytic primitive projection in [`semi_analytic`],
 //! - a first dual-contouring extraction path in [`mod@dual_contour`].
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
@@ -31,13 +32,15 @@ pub mod bounds2;
 pub mod dual_contour;
 pub mod hermite;
 pub mod lift;
+pub mod semi_analytic;
 pub mod transform;
 
 use exedra_spatial::Aabb;
 
 pub use bounds2::Aabb2;
 pub use dual_contour::{
-    DualContourError, DualContourParams, DualContourResult, DualContourStats, dual_contour,
+    DualContourError, DualContourParams, DualContourResult, DualContourStats,
+    SemiAnalyticContourResult, SemiAnalyticContourStats, dual_contour, dual_contour_semi_analytic,
     dual_contour_with_regions,
 };
 pub use hermite::{
@@ -45,6 +48,10 @@ pub use hermite::{
     HermiteIntersection, locate_edge_intersection,
 };
 pub use lift::{Extrude, Revolve};
+pub use semi_analytic::{
+    AnalyticBox, AnalyticCylinder, AnalyticPrimitive, SemiAnalyticFeature, SemiAnalyticField,
+    SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
+};
 pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
 
 /// A scalar field that can be evaluated for isosurface extraction.

@@ -22,6 +22,7 @@ members = [
     "crates/exedra_spatial",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
+    "examples/basilica_ruin",
     "examples/constructive_gallery",
 ]
 

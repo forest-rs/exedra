@@ -41,7 +41,9 @@ constraints:
 - author corner-normal overrides from field gradients using a face-local inset
   sample so render extraction can shade smooth regions more honestly,
 - tag `EDGE_SHARPNESS` from the QEF rank and optionally tag `FACE_REGION` when
-  the field implements `ProvenanceField<Provenance = u32>`,
+  the field implements `ProvenanceField<Provenance = u32>`; face provenance is
+  sampled at the refined zero crossing of the generating primal edge rather
+  than at the generally off-surface centroid of its dual vertices,
 - derive a first `EDGE_SEAM` pass from post-build face-region discontinuities
   on shared interior edges,
 - expose a deterministic `cell_budget` cap even though it may truncate the
@@ -58,3 +60,6 @@ constraints:
   only; it is not a full branch-trace recovery.
 - Future work can refine this mesher in place rather than starting from a
   purely architectural sketch.
+- Surface-local provenance makes CSG operand attribution less sensitive to
+  dual-vertex placement. It remains sampled provenance, not exact analytic
+  feature-curve recovery or exact primitive projection.

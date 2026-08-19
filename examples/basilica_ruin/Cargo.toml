@@ -1,0 +1,21 @@
+[package]
+name = "basilica_ruin"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Executable Byzantine basilica ruin integration scenario"
+readme = "README.md"
+keywords = ["geometry", "example"]
+categories = ["graphics"]
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra_assembly = { features = ["std"], workspace = true }
+exedra_constructive = { features = ["std"], workspace = true }
+exedra_gltf = { workspace = true }
+libm.workspace = true
