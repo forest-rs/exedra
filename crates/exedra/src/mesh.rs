@@ -1518,15 +1518,50 @@ impl Mesh {
         face: FaceId,
         strategy: FaceTriangulation,
     ) -> (Vec<[CornerId; 3]>, bool) {
+        let mut out = Vec::new();
+        let fallback = self.face_triangles_into(face, strategy, &mut out);
+        (out, fallback)
+    }
+
+    /// Like [`Mesh::face_triangles_counted`], writing into a caller-owned
+    /// buffer so hot loops (broad/narrow boolean phases, extraction) can
+    /// reuse capacity across faces. `out` is cleared first; the return
+    /// value reports whether the robust strategy fell back to the fan.
+    pub fn face_triangles_into(
+        &self,
+        face: FaceId,
+        strategy: FaceTriangulation,
+        out: &mut Vec<[CornerId; 3]>,
+    ) -> bool {
+        out.clear();
         match strategy {
-            FaceTriangulation::Fan => (self.triangulate_face_fan(face), false),
+            FaceTriangulation::Fan => {
+                self.fan_into(face, out);
+                false
+            }
             FaceTriangulation::Robust => {
                 if let Some(triangles) = self.triangulate_face_robust(face) {
-                    (triangles, false)
+                    out.extend_from_slice(&triangles);
+                    false
                 } else {
-                    (self.triangulate_face_fan(face), true)
+                    self.fan_into(face, out);
+                    true
                 }
             }
+        }
+    }
+
+    /// Fan triangulation written into a caller buffer (no allocation on
+    /// this path beyond buffer growth).
+    fn fan_into(&self, face: FaceId, out: &mut Vec<[CornerId; 3]>) {
+        let mut walk = self.face_loop(face);
+        let Some(c0) = walk.next() else { return };
+        let Some(mut previous) = walk.next() else {
+            return;
+        };
+        for corner in walk {
+            out.push([c0, previous, corner]);
+            previous = corner;
         }
     }
 

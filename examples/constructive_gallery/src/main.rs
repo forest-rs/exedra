@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The spearhead gallery: six shapes through the public constructive
-//! surface, standing in for an external geometry frontend.
+//! surface, standing in for an external spec compiler.
 
 use exedra::ExtractParams;
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::evaluate;
 use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
-use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
+use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegKind, SegTag};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_testkit::golden::trimesh_signature;
 
@@ -31,6 +31,7 @@ pub fn scenarios() -> Vec<Scenario> {
         ring_prism(),
         quarter_sweep(),
         csg_difference(),
+        policy_curve(),
     ]
 }
 
@@ -174,6 +175,40 @@ fn csg_difference() -> Scenario {
     Scenario {
         name: "csg_difference",
         recipe: b.finish(moved).expect("valid recipe"),
+    }
+}
+
+/// An underspecified front edge: the spec does not close the curve, so the
+/// compiler realizes it as a shallow arc under a named policy and cites the
+/// spec issue — exercising the `PolicyDefined` and `Conflicted` fidelity
+/// channels end to end.
+fn policy_curve() -> Scenario {
+    let mut b = RecipeBuilder::new();
+    let policy = b.curve_policy("gallery.front-transition@1");
+    let issue = b.source_ref("gallery.issue.front-profile-nonclosing");
+    let src = b.source_ref("gallery:policy_curve");
+    let outer = Loop2::new(vec![
+        Seg2::line((500.0, 0.0)).tagged(SegTag(0)),
+        Seg2::line((500.0, 280.0)).tagged(SegTag(1)),
+        Seg2::policy((0.0, 300.0), policy, SegKind::Arc { bulge: -0.15 }).tagged(SegTag(2)),
+        Seg2::line((0.0, 0.0)).tagged(SegTag(3)),
+    ])
+    .expect("valid loop");
+    let profile = Profile2::simple(outer).expect("valid profile");
+    let p = b.add_profile(profile);
+    let n = b
+        .with_source(src)
+        .with_issue(issue)
+        .add(NodeKind::Extrude {
+            profile: p,
+            placement: Placement3::IDENTITY,
+            height: 18.0,
+            caps: CapMode::Both,
+        })
+        .expect("valid extrude");
+    Scenario {
+        name: "policy_curve",
+        recipe: b.finish(n).expect("valid recipe"),
     }
 }
 
@@ -324,6 +359,27 @@ mod tests {
                     .any(|&(_, i)| i == face.index())
             );
         }
+    }
+
+    #[test]
+    fn policy_scenario_reports_policy_and_conflict() {
+        let scenario = policy_curve();
+        let result = run(&scenario);
+        assert_eq!(result.bodies.len(), 1);
+        assert!(result.bodies[0].body.mesh.validate_deep().is_empty());
+        // The declared spec issue wins the fidelity classification…
+        let node = result.bodies[0].node;
+        assert!(matches!(
+            result.report.fidelity_of(node),
+            Some(Fidelity::Conflicted(_))
+        ));
+        // …while the policy usage is still fully attributed.
+        assert_eq!(result.report.policy_curves.len(), 1);
+        let (_, policy) = result.report.policy_curves[0];
+        assert_eq!(
+            scenario.recipe.policy(policy),
+            Some("gallery.front-transition@1")
+        );
     }
 
     #[test]

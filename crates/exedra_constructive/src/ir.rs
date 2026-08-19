@@ -44,6 +44,16 @@ pub struct SourceId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SlotId(pub u32);
 
+/// Interned opaque curve-policy reference (for example
+/// `"spec.front-transition@1"`). The policy's meaning lives in the
+/// frontend; this workspace records and reports it without interpreting it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyId(pub u32);
+
+/// Index of an imported mesh in its recipe.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ImportId(pub u32);
+
 /// A 128-bit content fingerprint.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Fingerprint(pub u128);
@@ -88,7 +98,7 @@ impl Placement3 {
         }
     }
 
-    /// Euler rotation applied in x, then y', then z'' order (the catalog
+    /// Euler rotation applied in x, then y', then z'' order (the spec-database
     /// convention), followed by translation.
     #[must_use]
     pub fn euler_xyz_then_translate(rx: f64, ry: f64, rz: f64, t: [f64; 3]) -> Self {
@@ -201,7 +211,7 @@ pub enum PrimitiveSpec {
 pub enum CsgOp {
     /// Union of all operands.
     Union,
-    /// First operand minus the union of the rest (the catalog difference
+    /// First operand minus the union of the rest (the spec-database difference
     /// convention).
     Difference,
     /// Intersection of all operands.
@@ -306,6 +316,17 @@ pub enum NodeKind {
         /// The grouped children.
         children: Vec<NodeId>,
     },
+    /// An opaque imported mesh leaf under a placement.
+    ///
+    /// Imports participate in transforms, instancing, and (once the
+    /// boolean pipeline lands) CSG and stretch; their internal provenance
+    /// is a single imported feature.
+    MeshImport {
+        /// The imported mesh.
+        import: ImportId,
+        /// Placement of the mesh's local frame.
+        placement: Placement3,
+    },
     /// Reserved: plane-split stretch (cut by plane, translate one half,
     /// stitch). Present in the schema from day one so frontends can encode
     /// intent; evaluation reports it unimplemented until the boolean
@@ -329,19 +350,25 @@ pub struct Node {
     pub source: Option<SourceId>,
     /// Material slot binding, inherited by descendants that lack one.
     pub material: Option<SlotId>,
+    /// Opaque spec-issue citation: the node's specification is
+    /// contradictory and the frontend chose a resolution. Evaluation
+    /// reports the node as conflicted.
+    pub issue: Option<SourceId>,
 }
 
 /// A frozen constructive recipe.
 ///
 /// Immutable after [`RecipeBuilder::finish`]; all lookups are index-based
 /// and deterministic.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Recipe {
     profiles: Vec<Profile2>,
     nodes: Vec<Node>,
     root: NodeId,
     sources: Vec<String>,
     slots: Vec<String>,
+    policies: Vec<String>,
+    imports: Vec<exedra::Mesh>,
     fingerprints: Vec<Fingerprint>,
 }
 
@@ -358,16 +385,17 @@ impl Recipe {
         &self.nodes
     }
 
-    /// Looks up a node.
+    /// Looks up a node; `None` for out-of-range ids (hostile input never
+    /// panics).
     #[must_use]
-    pub fn node(&self, id: NodeId) -> &Node {
-        &self.nodes[id.0 as usize]
+    pub fn node(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.get(id.0 as usize)
     }
 
-    /// Looks up a profile.
+    /// Looks up a profile; `None` for out-of-range ids.
     #[must_use]
-    pub fn profile(&self, id: ProfileId) -> &Profile2 {
-        &self.profiles[id.0 as usize]
+    pub fn profile(&self, id: ProfileId) -> Option<&Profile2> {
+        self.profiles.get(id.0 as usize)
     }
 
     /// All profiles.
@@ -376,10 +404,11 @@ impl Recipe {
         &self.profiles
     }
 
-    /// The interned source string behind a [`SourceId`].
+    /// The interned source string behind a [`SourceId`]; `None` for
+    /// out-of-range ids.
     #[must_use]
-    pub fn source(&self, id: SourceId) -> &str {
-        &self.sources[id.0 as usize]
+    pub fn source(&self, id: SourceId) -> Option<&str> {
+        self.sources.get(id.0 as usize).map(String::as_str)
     }
 
     /// All interned source strings, in intern order.
@@ -394,22 +423,50 @@ impl Recipe {
         &self.slots
     }
 
-    /// The interned slot name behind a [`SlotId`].
+    /// The interned policy string behind a [`PolicyId`]; `None` for
+    /// out-of-range ids.
     #[must_use]
-    pub fn slot(&self, id: SlotId) -> &str {
-        &self.slots[id.0 as usize]
+    pub fn policy(&self, id: PolicyId) -> Option<&str> {
+        self.policies.get(id.0 as usize).map(String::as_str)
     }
 
-    /// A node's content fingerprint (children and schema version included).
+    /// All interned curve-policy strings, in intern order.
     #[must_use]
-    pub fn fingerprint(&self, id: NodeId) -> Fingerprint {
-        self.fingerprints[id.0 as usize]
+    pub fn policies(&self) -> &[String] {
+        &self.policies
+    }
+
+    /// Looks up an imported mesh; `None` for out-of-range ids.
+    #[must_use]
+    pub fn import(&self, id: ImportId) -> Option<&exedra::Mesh> {
+        self.imports.get(id.0 as usize)
+    }
+
+    /// All imported meshes, in id order.
+    #[must_use]
+    pub fn imports(&self) -> &[exedra::Mesh] {
+        &self.imports
+    }
+
+    /// The interned slot name behind a [`SlotId`]; `None` for out-of-range
+    /// ids.
+    #[must_use]
+    pub fn slot(&self, id: SlotId) -> Option<&str> {
+        self.slots.get(id.0 as usize).map(String::as_str)
+    }
+
+    /// A node's content fingerprint (children and schema version
+    /// included); `None` for out-of-range ids.
+    #[must_use]
+    pub fn fingerprint(&self, id: NodeId) -> Option<Fingerprint> {
+        self.fingerprints.get(id.0 as usize).copied()
     }
 
     /// The whole recipe's fingerprint: the root's.
     #[must_use]
     pub fn recipe_fingerprint(&self) -> Fingerprint {
         self.fingerprint(self.root)
+            .expect("the root id is validated at finish")
     }
 }
 
@@ -442,6 +499,31 @@ pub enum RecipeError {
     },
     /// The recipe has no nodes.
     Empty,
+    /// A profile references a curve policy that was never registered.
+    UnknownPolicy {
+        /// The offending reference.
+        policy: u32,
+    },
+    /// A source or issue binding references an uninterned string.
+    UnknownSource {
+        /// The offending reference.
+        source: u32,
+    },
+    /// A material binding references an uninterned slot.
+    UnknownSlot {
+        /// The offending reference.
+        slot: u32,
+    },
+    /// A referenced imported mesh does not exist.
+    UnknownImport {
+        /// The offending reference.
+        import: u32,
+    },
+    /// An imported mesh is empty or fails validation.
+    InvalidImport {
+        /// Index the import would have received.
+        import: u32,
+    },
 }
 
 impl core::fmt::Display for RecipeError {
@@ -454,6 +536,13 @@ impl core::fmt::Display for RecipeError {
                 write!(f, "{what} needs more operands, got {count}")
             }
             Self::Empty => write!(f, "recipe has no nodes"),
+            Self::UnknownPolicy { policy } => write!(f, "unknown curve policy id {policy}"),
+            Self::UnknownSource { source } => write!(f, "unknown source id {source}"),
+            Self::UnknownSlot { slot } => write!(f, "unknown slot id {slot}"),
+            Self::UnknownImport { import } => write!(f, "unknown import id {import}"),
+            Self::InvalidImport { import } => {
+                write!(f, "import {import} is empty or fails validation")
+            }
         }
     }
 }
@@ -467,8 +556,11 @@ pub struct RecipeBuilder {
     nodes: Vec<Node>,
     sources: Vec<String>,
     slots: Vec<String>,
+    policies: Vec<String>,
+    imports: Vec<exedra::Mesh>,
     pending_source: Option<SourceId>,
     pending_material: Option<SlotId>,
+    pending_issue: Option<SourceId>,
 }
 
 impl RecipeBuilder {
@@ -479,7 +571,17 @@ impl RecipeBuilder {
     }
 
     /// Adds a validated profile.
+    ///
+    /// Any [`crate::profile::SegKind::PolicyTo`] segments must reference
+    /// policies already registered through
+    /// [`RecipeBuilder::curve_policy`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when a segment references an unregistered policy.
     pub fn add_profile(&mut self, profile: Profile2) -> ProfileId {
+        // Unregistered policies are caught at finish(); adding stays
+        // infallible for builder ergonomics.
         self.profiles.push(profile);
         ProfileId(len_u32(self.profiles.len()) - 1)
     }
@@ -492,6 +594,39 @@ impl RecipeBuilder {
     /// Interns a material-slot name.
     pub fn material_slot(&mut self, name: &str) -> SlotId {
         intern(&mut self.slots, name, SlotId)
+    }
+
+    /// Registers (interns) a curve-policy reference for use in
+    /// [`crate::profile::SegKind::PolicyTo`] segments. Register policies
+    /// before adding profiles that reference them.
+    pub fn curve_policy(&mut self, name: &str) -> PolicyId {
+        intern(&mut self.policies, name, PolicyId)
+    }
+
+    /// Adds an externally produced mesh as an opaque import leaf.
+    ///
+    /// The frontend owns parsing (OFF/3DS/glTF live in its repository);
+    /// this workspace accepts finished, valid meshes only.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the mesh is empty or fails deep validation.
+    pub fn add_import(&mut self, mesh: exedra::Mesh) -> Result<ImportId, RecipeError> {
+        if mesh.faces().next().is_none() || !mesh.validate_deep().is_empty() {
+            return Err(RecipeError::InvalidImport {
+                import: len_u32(self.imports.len()),
+            });
+        }
+        self.imports.push(mesh);
+        Ok(ImportId(len_u32(self.imports.len()) - 1))
+    }
+
+    /// Declares that the next node's specification is contradictory, citing
+    /// an opaque issue reference (interned in the source table). Evaluation
+    /// reports the node as conflicted instead of exact.
+    pub fn with_issue(&mut self, issue: SourceId) -> &mut Self {
+        self.pending_issue = Some(issue);
+        self
     }
 
     /// Attaches a source reference to the next node added.
@@ -513,10 +648,27 @@ impl RecipeBuilder {
     /// Returns a typed [`RecipeError`]; the builder is unchanged on error.
     pub fn add(&mut self, kind: NodeKind) -> Result<NodeId, RecipeError> {
         self.validate_kind(&kind)?;
+        // Pending bindings must reference interned entries: hostile ids are
+        // typed errors here, never a downstream index panic. Taken even on
+        // error so a rejected binding does not leak onto the next node.
+        let source = self.pending_source.take();
+        let material = self.pending_material.take();
+        let issue = self.pending_issue.take();
+        for id in [source, issue].into_iter().flatten() {
+            if id.0 as usize >= self.sources.len() {
+                return Err(RecipeError::UnknownSource { source: id.0 });
+            }
+        }
+        if let Some(slot) = material
+            && slot.0 as usize >= self.slots.len()
+        {
+            return Err(RecipeError::UnknownSlot { slot: slot.0 });
+        }
         let node = Node {
             kind,
-            source: self.pending_source.take(),
-            material: self.pending_material.take(),
+            source,
+            material,
+            issue,
         };
         self.nodes.push(node);
         Ok(NodeId(len_u32(self.nodes.len()) - 1))
@@ -534,13 +686,27 @@ impl RecipeBuilder {
         if root.0 as usize >= self.nodes.len() {
             return Err(RecipeError::UnknownNode { node: root.0 });
         }
-        let fingerprints = compute_fingerprints(&self.profiles, &self.nodes, &self.sources);
+        for profile in &self.profiles {
+            for loop_ in core::iter::once(profile.outer()).chain(profile.holes().iter()) {
+                for seg in loop_.segs() {
+                    if let crate::profile::SegKind::PolicyTo { policy, .. } = &seg.kind
+                        && policy.0 as usize >= self.policies.len()
+                    {
+                        return Err(RecipeError::UnknownPolicy { policy: policy.0 });
+                    }
+                }
+            }
+        }
+        let fingerprints =
+            compute_fingerprints(&self.profiles, &self.nodes, &self.sources, &self.imports);
         Ok(Recipe {
             profiles: self.profiles,
             nodes: self.nodes,
             root,
             sources: self.sources,
             slots: self.slots,
+            policies: self.policies,
+            imports: self.imports,
             fingerprints,
         })
     }
@@ -707,6 +873,12 @@ impl RecipeBuilder {
                 self.check_node(*of)?;
                 self.check_placement(placement)
             }
+            NodeKind::MeshImport { import, placement } => {
+                if (import.0 as usize) >= self.imports.len() {
+                    return Err(RecipeError::UnknownImport { import: import.0 });
+                }
+                self.check_placement(placement)
+            }
             NodeKind::Group { children } => {
                 if children.is_empty() {
                     return Err(RecipeError::TooFewOperands {
@@ -761,10 +933,58 @@ fn fnv128(bytes: &[u8], seed: u128) -> u128 {
     hash
 }
 
+/// A face loop's vertex indices rotated to start at the smallest index —
+/// canonical under the arbitrary loop phase a rebuild introduces.
+fn canonical_face_loop(mesh: &exedra::Mesh, face: exedra::FaceId) -> Vec<u32> {
+    let mut loop_vertices: Vec<u32> = mesh
+        .face_loop(face)
+        .filter_map(|he| mesh.to_vertex(he))
+        .map(|v| v.index())
+        .collect();
+    if let Some(min_position) = loop_vertices
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &v)| v)
+        .map(|(i, _)| i)
+    {
+        loop_vertices.rotate_left(min_position);
+    }
+    loop_vertices
+}
+
+/// Crate-visible canonical loop helper for the serialization formats.
+pub(crate) fn canonical_face_loop_pub(mesh: &exedra::Mesh, face: exedra::FaceId) -> Vec<u32> {
+    canonical_face_loop(mesh, face)
+}
+
+/// Canonical bytes of a mesh: vertex positions (f32 bit patterns) plus face
+/// loops, in deterministic iteration order.
+fn mesh_canon_bytes(mesh: &exedra::Mesh, out: &mut Vec<u8>) {
+    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
+    put_u32(out, len_u32(vertices.len()));
+    for vertex in &vertices {
+        if let Some(p) = mesh.vertex_position(*vertex) {
+            for &c in p {
+                out.extend_from_slice(&c.to_bits().to_le_bytes());
+            }
+        }
+    }
+    let faces: Vec<exedra::FaceId> = mesh.faces().collect();
+    put_u32(out, len_u32(faces.len()));
+    for face in &faces {
+        let loop_vertices = canonical_face_loop(mesh, *face);
+        put_u32(out, len_u32(loop_vertices.len()));
+        for index in loop_vertices {
+            put_u32(out, index);
+        }
+    }
+}
+
 fn compute_fingerprints(
     profiles: &[Profile2],
     nodes: &[Node],
     sources: &[String],
+    imports: &[exedra::Mesh],
 ) -> Vec<Fingerprint> {
     // Profile hashes first (content-addressed, schema-stamped).
     let profile_hashes: Vec<u128> = profiles
@@ -777,11 +997,28 @@ fn compute_fingerprints(
         })
         .collect();
 
+    let import_hashes: Vec<u128> = imports
+        .iter()
+        .map(|mesh| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&crate::EVAL_SCHEMA_VERSION.to_le_bytes());
+            mesh_canon_bytes(mesh, &mut bytes);
+            fnv128(&bytes, FNV128_OFFSET)
+        })
+        .collect();
+
     let mut out: Vec<Fingerprint> = Vec::with_capacity(nodes.len());
     for node in nodes {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&crate::EVAL_SCHEMA_VERSION.to_le_bytes());
-        node_canon_bytes(node, &profile_hashes, &out, sources, &mut bytes);
+        node_canon_bytes(
+            node,
+            &profile_hashes,
+            &import_hashes,
+            &out,
+            sources,
+            &mut bytes,
+        );
         out.push(Fingerprint(fnv128(&bytes, FNV128_OFFSET)));
     }
     out
@@ -828,6 +1065,7 @@ fn put_caps(out: &mut Vec<u8>, caps: CapMode) {
 fn node_canon_bytes(
     node: &Node,
     profile_hashes: &[u128],
+    import_hashes: &[u128],
     node_fingerprints: &[Fingerprint],
     sources: &[String],
     out: &mut Vec<u8>,
@@ -960,6 +1198,11 @@ fn node_canon_bytes(
                 child(out, *c);
             }
         }
+        NodeKind::MeshImport { import, placement } => {
+            out.push(12);
+            put_u128(out, import_hashes[import.0 as usize]);
+            put_placement(out, placement);
+        }
         NodeKind::Stretch {
             child: c,
             plane,
@@ -991,6 +1234,15 @@ fn node_canon_bytes(
         Some(SlotId(slot)) => {
             out.push(1);
             put_u32(out, slot);
+        }
+    }
+    match node.issue {
+        None => out.push(0),
+        Some(id) => {
+            out.push(1);
+            let s = sources[id.0 as usize].as_bytes();
+            put_u32(out, len_u32(s.len()));
+            out.extend_from_slice(s);
         }
     }
 }
@@ -1199,7 +1451,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x6A9F_0848_3026_C621_47C5_0EC0_D654_7A3B,
+            0xE2D8_73AD_69D1_87E0_4BAF_27BC_8E97_EAA1,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

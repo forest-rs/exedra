@@ -52,6 +52,12 @@ pub struct RecipeDto {
     pub sources: Vec<String>,
     /// Interned material-slot names, in id order.
     pub slots: Vec<String>,
+    /// Interned curve-policy references, in id order.
+    #[serde(default)]
+    pub policies: Vec<String>,
+    /// Imported meshes, in id order.
+    #[serde(default)]
+    pub imports: Vec<MeshDto>,
     /// Profiles, in id order.
     pub profiles: Vec<ProfileDto>,
     /// Nodes, children before parents.
@@ -104,6 +110,48 @@ pub enum SegDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tag: Option<u32>,
     },
+    /// Policy-defined segment: an opaque policy reference plus its
+    /// concrete realization.
+    Policy {
+        /// Endpoint.
+        to: [f64; 2],
+        /// Index into `policies`.
+        policy: u32,
+        /// The realization.
+        realized: RealizedDto,
+        /// Optional provenance tag.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<u32>,
+    },
+}
+
+/// Concrete realization of a policy segment (endpoint lives on the parent).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RealizedDto {
+    /// Straight chord.
+    Line,
+    /// Circular arc by bulge.
+    Arc {
+        /// Bulge value.
+        bulge: f64,
+    },
+    /// Cubic Bézier.
+    Cubic {
+        /// First control point.
+        c1: [f64; 2],
+        /// Second control point.
+        c2: [f64; 2],
+    },
+}
+
+/// An imported mesh: f32 vertex positions plus polygon face loops.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MeshDto {
+    /// Vertex positions.
+    pub positions: Vec<[f32; 3]>,
+    /// Face loops as vertex indices.
+    pub faces: Vec<Vec<u32>>,
 }
 
 /// One node record: kind payload plus optional source/material bindings.
@@ -118,6 +166,10 @@ pub struct NodeDto {
     /// Optional index into `slots`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<u32>,
+    /// Optional index into `sources`: a spec-issue citation marking the
+    /// node's specification as contradictory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<u32>,
 }
 
 /// 3x4 row-major placement.
@@ -226,6 +278,13 @@ pub enum NodeKindDto {
         /// Child node indices.
         children: Vec<u32>,
     },
+    /// Opaque imported mesh leaf.
+    MeshImport {
+        /// Index into `imports`.
+        import: u32,
+        /// Placement.
+        placement: PlacementDto,
+    },
     /// Reserved plane-split stretch.
     Stretch {
         /// Child node index.
@@ -252,6 +311,8 @@ pub enum InterchangeError {
     Profile(ProfileError),
     /// Recipe validation failed on rebuild.
     Recipe(RecipeError),
+    /// An imported mesh failed to rebuild.
+    InvalidImport,
 }
 
 impl core::fmt::Display for InterchangeError {
@@ -261,6 +322,7 @@ impl core::fmt::Display for InterchangeError {
             Self::UnknownValue { field } => write!(f, "unknown value in field {field}"),
             Self::Profile(e) => write!(f, "profile validation failed: {e}"),
             Self::Recipe(e) => write!(f, "recipe validation failed: {e}"),
+            Self::InvalidImport => write!(f, "imported mesh failed to rebuild"),
         }
     }
 }
@@ -312,13 +374,33 @@ fn loop_dto(source: &Loop2) -> Vec<SegDto> {
         .map(|seg| {
             let to = [seg.to.x, seg.to.y];
             let tag = seg.tag.map(|SegTag(t)| t);
-            match seg.kind {
+            match &seg.kind {
                 SegKind::Line => SegDto::Line { to, tag },
-                SegKind::Arc { bulge } => SegDto::Arc { to, bulge, tag },
+                SegKind::Arc { bulge } => SegDto::Arc {
+                    to,
+                    bulge: *bulge,
+                    tag,
+                },
                 SegKind::Cubic { c1, c2 } => SegDto::Cubic {
                     to,
                     c1: [c1.x, c1.y],
                     c2: [c2.x, c2.y],
+                    tag,
+                },
+                SegKind::PolicyTo { policy, realized } => SegDto::Policy {
+                    to,
+                    policy: policy.0,
+                    realized: match realized.as_ref() {
+                        SegKind::Line => RealizedDto::Line,
+                        SegKind::Arc { bulge } => RealizedDto::Arc { bulge: *bulge },
+                        SegKind::Cubic { c1, c2 } => RealizedDto::Cubic {
+                            c1: [c1.x, c1.y],
+                            c2: [c2.x, c2.y],
+                        },
+                        SegKind::PolicyTo { .. } => {
+                            unreachable!("nested policies are rejected at validation")
+                        }
+                    },
                     tag,
                 },
             }
@@ -337,6 +419,25 @@ fn loop_value(segs: &[SegDto]) -> Result<Loop2, InterchangeError> {
                     Seg2::cubic((to[0], to[1]), (c1[0], c1[1]), (c2[0], c2[1])),
                     tag,
                 ),
+                SegDto::Policy {
+                    to,
+                    policy,
+                    realized,
+                    tag,
+                } => {
+                    let inner = match realized {
+                        RealizedDto::Line => SegKind::Line,
+                        RealizedDto::Arc { bulge } => SegKind::Arc { bulge: *bulge },
+                        RealizedDto::Cubic { c1, c2 } => SegKind::Cubic {
+                            c1: kurbo::Point::new(c1[0], c1[1]),
+                            c2: kurbo::Point::new(c2[0], c2[1]),
+                        },
+                    };
+                    (
+                        Seg2::policy((to[0], to[1]), crate::ir::PolicyId(*policy), inner),
+                        tag,
+                    )
+                }
             };
             match tag {
                 Some(t) => seg.tagged(SegTag(*t)),
@@ -365,6 +466,7 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
             kind: kind_dto(&node.kind),
             source: node.source.map(|SourceId(s)| s),
             material: node.material.map(|SlotId(m)| m),
+            issue: node.issue.map(|SourceId(s)| s),
         })
         .collect();
     RecipeDto {
@@ -372,6 +474,22 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
         version: VERSION,
         sources: recipe.sources().to_vec(),
         slots: recipe.slots().to_vec(),
+        policies: recipe.policies().to_vec(),
+        imports: recipe
+            .imports()
+            .iter()
+            .map(|mesh| MeshDto {
+                positions: mesh
+                    .vertices()
+                    .filter_map(|v| mesh.vertex_position(v))
+                    .copied()
+                    .collect(),
+                faces: mesh
+                    .faces()
+                    .map(|face| crate::ir::canonical_face_loop_pub(mesh, face))
+                    .collect(),
+            })
+            .collect(),
         profiles,
         nodes,
         root: recipe.root().0,
@@ -472,6 +590,10 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
         NodeKind::Group { children } => NodeKindDto::Group {
             children: children.iter().map(|n| n.0).collect(),
         },
+        NodeKind::MeshImport { import, placement } => NodeKindDto::MeshImport {
+            import: import.0,
+            placement: placement_dto(placement),
+        },
         NodeKind::Stretch {
             child,
             plane,
@@ -502,6 +624,26 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
     for slot in &dto.slots {
         builder.material_slot(slot);
     }
+    for policy in &dto.policies {
+        builder.curve_policy(policy);
+    }
+    for import in &dto.imports {
+        let mut mesh_builder = exedra::MeshBuilder::new();
+        for position in &import.positions {
+            mesh_builder.push_vertex(*position);
+        }
+        for face in &import.faces {
+            mesh_builder
+                .add_face(face)
+                .map_err(|_| InterchangeError::InvalidImport)?;
+        }
+        let built = mesh_builder
+            .build()
+            .map_err(|_| InterchangeError::InvalidImport)?;
+        builder
+            .add_import(built.mesh)
+            .map_err(InterchangeError::Recipe)?;
+    }
     for profile in &dto.profiles {
         let outer = loop_value(&profile.outer)?;
         let holes = profile
@@ -517,6 +659,9 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
         }
         if let Some(material) = node.material {
             builder.with_material(SlotId(material));
+        }
+        if let Some(issue) = node.issue {
+            builder.with_issue(SourceId(issue));
         }
         let kind = kind_value(&node.kind)?;
         builder.add(kind).map_err(InterchangeError::Recipe)?;
@@ -614,6 +759,10 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
         },
         NodeKindDto::Group { children } => NodeKind::Group {
             children: children.iter().map(|n| NodeId(*n)).collect(),
+        },
+        NodeKindDto::MeshImport { import, placement } => NodeKind::MeshImport {
+            import: crate::ir::ImportId(*import),
+            placement: placement_value(*placement),
         },
         NodeKindDto::Stretch {
             child,

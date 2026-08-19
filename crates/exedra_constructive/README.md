@@ -5,7 +5,7 @@ deterministic tessellation into Exedra meshes.
 
 This crate is the fourth geometry head under Cambium's multi-domain
 architecture (cambium ADR-0002): a *compiler target* for pre-mesh
-construction. External spec frontends (geometry frontends, parametric
+construction. External spec frontends (spec compilers, parametric
 evaluators — living in their own repositories) build recipes out of kurbo-backed
 2D profiles and constructive bodies (extrude, revolve, loft, sweep, CSG,
 transforms, instances); evaluation tessellates them into `exedra::Mesh`

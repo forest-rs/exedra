@@ -2,7 +2,7 @@
 
 The spearhead gallery: six anonymous, spec-agnostic shapes built through
 `exedra_constructive`'s *public surface only*, exactly the way an external
-geometry frontend would. It stands in for those (out-of-tree) frontends: if a
+spec compiler would. It stands in for those (out-of-tree) frontends: if a
 scenario here needs a private API or a workaround, the integration surface is
 wrong and must be fixed in the library, never here.
 

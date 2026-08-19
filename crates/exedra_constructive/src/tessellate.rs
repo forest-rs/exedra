@@ -67,6 +67,8 @@ pub enum Feature {
         /// Source segment index within the loop (of the first section).
         seg: u32,
     },
+    /// A face of an opaque imported mesh.
+    Imported,
     /// A sweep wall face between path points `band` and `band + 1`.
     SweepWall {
         /// Index of the path segment.
@@ -129,6 +131,9 @@ pub enum TessellateError {
         /// Index of the offending path point.
         point: usize,
     },
+    /// Extreme parameters overflowed the f32 narrowing at mesh emission;
+    /// geometry would be infinite.
+    NonFiniteGeometry,
 }
 
 impl core::fmt::Display for TessellateError {
@@ -146,6 +151,9 @@ impl core::fmt::Display for TessellateError {
             }
             Self::PathCusp { point } => {
                 write!(f, "sweep path reverses onto itself at point {point}")
+            }
+            Self::NonFiniteGeometry => {
+                write!(f, "parameters overflow the f32 mesh boundary")
             }
         }
     }
@@ -223,6 +231,7 @@ fn reversed_edge_attrs<T: Copy>(values: &[T]) -> Vec<T> {
 struct OrientedBuilder {
     inner: MeshBuilder,
     flip: bool,
+    non_finite: bool,
 }
 
 impl OrientedBuilder {
@@ -230,10 +239,15 @@ impl OrientedBuilder {
         Self {
             inner: MeshBuilder::new(),
             flip,
+            non_finite: false,
         }
     }
 
     fn push_vertex(&mut self, position: [f32; 3]) -> u32 {
+        // Extreme-but-finite f64 parameters can overflow the f32 narrowing;
+        // track it so tessellation fails typed instead of emitting infinite
+        // geometry.
+        self.non_finite |= position.iter().any(|c| !c.is_finite());
         self.inner.push_vertex(position)
     }
 
@@ -258,8 +272,11 @@ impl OrientedBuilder {
         )
     }
 
-    fn build(&self) -> Result<exedra::MeshBuildResult, exedra::BuildError> {
-        self.inner.build()
+    fn build(&self) -> Result<exedra::MeshBuildResult, TessellateError> {
+        if self.non_finite {
+            return Err(TessellateError::NonFiniteGeometry);
+        }
+        self.inner.build().map_err(TessellateError::from)
     }
 }
 
@@ -503,11 +520,20 @@ fn seg_offsets(profile: &Profile2) -> Vec<u32> {
 /// derive from the bulge by half-angle identities — pure arithmetic, no
 /// trig, bit-deterministic.
 fn seg_tangents(start: kurbo::Point, seg: &crate::profile::Seg2) -> ([f64; 2], [f64; 2]) {
+    kind_tangents(start, seg.to, &seg.kind)
+}
+
+fn kind_tangents(
+    start: kurbo::Point,
+    to: kurbo::Point,
+    kind: &crate::profile::SegKind,
+) -> ([f64; 2], [f64; 2]) {
     use crate::profile::SegKind;
-    let chord = [seg.to.x - start.x, seg.to.y - start.y];
-    match seg.kind {
+    let chord = [to.x - start.x, to.y - start.y];
+    match kind {
         SegKind::Line => (chord, chord),
         SegKind::Arc { bulge } => {
+            let bulge = *bulge;
             // cos(sweep/2) = (1 - b^2) / (1 + b^2); sin = 2b / (1 + b^2).
             let denom = 1.0 + bulge * bulge;
             let c = (1.0 - bulge * bulge) / denom;
@@ -519,11 +545,15 @@ fn seg_tangents(start: kurbo::Point, seg: &crate::profile::Seg2) -> ([f64; 2], [
         }
         SegKind::Cubic { c1, c2 } => {
             let s = [c1.x - start.x, c1.y - start.y];
-            let e = [seg.to.x - c2.x, seg.to.y - c2.y];
+            let e = [to.x - c2.x, to.y - c2.y];
             let s = if s == [0.0, 0.0] { chord } else { s };
             let e = if e == [0.0, 0.0] { chord } else { e };
             (s, e)
         }
+        SegKind::PolicyTo {
+            policy: _,
+            realized,
+        } => kind_tangents(start, to, realized),
     }
 }
 

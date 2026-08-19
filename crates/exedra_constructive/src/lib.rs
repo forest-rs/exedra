@@ -4,7 +4,7 @@
 //! Constructive geometry head: an immutable recipe IR with deterministic
 //! tessellation into Exedra meshes.
 //!
-//! This crate is a *compiler target*: external frontends (geometry frontends,
+//! This crate is a *compiler target*: external frontends (spec compilers,
 //! parametric evaluators) build 2D profiles and constructive bodies into
 //! recipes, and evaluation tessellates them into [`exedra::Mesh`] values
 //! with full provenance, semantic regions, and fidelity reporting.
@@ -42,6 +42,8 @@ pub mod discretize;
 pub mod evaluate;
 #[cfg(test)]
 mod goldens;
+#[cfg(test)]
+mod hostile;
 pub mod interchange;
 pub mod ir;
 pub mod profile;
@@ -69,4 +71,4 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// recipe: a kurbo upgrade, a discretization-rule change, a canonical
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
-pub const EVAL_SCHEMA_VERSION: u32 = 1;
+pub const EVAL_SCHEMA_VERSION: u32 = 3;

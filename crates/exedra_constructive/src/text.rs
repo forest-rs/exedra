@@ -71,6 +71,14 @@ pub fn dump_recipe(recipe: &Recipe) -> String {
     for (index, slot) in recipe.slots().iter().enumerate() {
         let _ = writeln!(out, "  slot {index} {slot:?}");
     }
+    let _ = writeln!(out, "policies {}", recipe.policies().len());
+    for (index, policy) in recipe.policies().iter().enumerate() {
+        let _ = writeln!(out, "  policy {index} {policy:?}");
+    }
+    let _ = writeln!(out, "imports {}", recipe.imports().len());
+    for (index, mesh) in recipe.imports().iter().enumerate() {
+        dump_import(&mut out, index, mesh);
+    }
 
     let _ = writeln!(out, "profiles {}", recipe.profiles().len());
     for (index, profile) in recipe.profiles().iter().enumerate() {
@@ -97,6 +105,12 @@ pub fn dump_recipe(recipe: &Recipe) -> String {
                 let _ = write!(line, " material {}", id.0);
             }
         }
+        match node.issue {
+            None => line.push_str(" issue -"),
+            Some(id) => {
+                let _ = write!(line, " issue {}", id.0);
+            }
+        }
         let _ = writeln!(out, "{line}");
     }
     let _ = writeln!(out, "root {}", recipe.root().0);
@@ -107,19 +121,7 @@ fn dump_loop(out: &mut String, source: &Loop2) {
     let _ = writeln!(out, "    loop {}", source.segs().len());
     for seg in source.segs() {
         let mut line = String::from("      ");
-        match seg.kind {
-            SegKind::Line => line.push_str("line to "),
-            SegKind::Arc { bulge } => {
-                let _ = write!(line, "arc {} to ", hex(bulge));
-            }
-            SegKind::Cubic { c1, c2 } => {
-                line.push_str("cubic ");
-                put_point(&mut line, c1);
-                line.push(' ');
-                put_point(&mut line, c2);
-                line.push_str(" to ");
-            }
-        }
+        dump_seg_kind(&mut line, &seg.kind);
         put_point(&mut line, seg.to);
         match seg.tag {
             None => line.push_str(" tag -"),
@@ -128,6 +130,55 @@ fn dump_loop(out: &mut String, source: &Loop2) {
             }
         }
         let _ = writeln!(out, "{line}");
+    }
+}
+
+fn dump_import(out: &mut String, index: usize, mesh: &exedra::Mesh) {
+    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
+    let faces: Vec<exedra::FaceId> = mesh.faces().collect();
+    let _ = writeln!(
+        out,
+        "  import {index} vertices {} faces {}",
+        vertices.len(),
+        faces.len()
+    );
+    for vertex in &vertices {
+        if let Some(p) = mesh.vertex_position(*vertex) {
+            let _ = writeln!(
+                out,
+                "    v {:08X} {:08X} {:08X}",
+                p[0].to_bits(),
+                p[1].to_bits(),
+                p[2].to_bits()
+            );
+        }
+    }
+    for face in &faces {
+        let mut line = String::from("    f");
+        for index in crate::ir::canonical_face_loop_pub(mesh, *face) {
+            let _ = write!(line, " {index}");
+        }
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+fn dump_seg_kind(line: &mut String, kind: &SegKind) {
+    match kind {
+        SegKind::Line => line.push_str("line to "),
+        SegKind::Arc { bulge } => {
+            let _ = write!(line, "arc {} to ", hex(*bulge));
+        }
+        SegKind::Cubic { c1, c2 } => {
+            line.push_str("cubic ");
+            put_point(line, *c1);
+            line.push(' ');
+            put_point(line, *c2);
+            line.push_str(" to ");
+        }
+        SegKind::PolicyTo { policy, realized } => {
+            let _ = write!(line, "policy {} ", policy.0);
+            dump_seg_kind(line, realized);
+        }
     }
 }
 
@@ -262,6 +313,10 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             for child in children {
                 let _ = write!(line, " {}", child.0);
             }
+        }
+        NodeKind::MeshImport { import, placement } => {
+            let _ = write!(line, "mesh_import {} placement", import.0);
+            put_placement(line, placement);
         }
         NodeKind::Stretch {
             child,
@@ -413,6 +468,66 @@ pub fn parse_recipe(text: &str) -> Result<Recipe, TextError> {
     }
 
     let (line, header) = lines.next()?;
+    let count = section_count(header, "policies", line)?;
+    for _ in 0..count {
+        let (line, entry) = lines.next()?;
+        let rest = entry
+            .strip_prefix("policy ")
+            .ok_or(TextError::Malformed { line })?;
+        let (_, quoted) = rest.split_once(' ').ok_or(TextError::Malformed { line })?;
+        let value = unquote(quoted).ok_or(TextError::Malformed { line })?;
+        builder.curve_policy(&value);
+    }
+
+    let (line, header) = lines.next()?;
+    let count = section_count(header, "imports", line)?;
+    for _ in 0..count {
+        let (line, entry) = lines.next()?;
+        let rest = entry
+            .strip_prefix("import ")
+            .ok_or(TextError::Malformed { line })?;
+        let mut tokens = rest.split_whitespace();
+        let _index = tokens.next().ok_or(TextError::Malformed { line })?;
+        expect(&mut tokens, "vertices", line)?;
+        let vertex_count = next_u32(&mut tokens, line)? as usize;
+        expect(&mut tokens, "faces", line)?;
+        let face_count = next_u32(&mut tokens, line)? as usize;
+        let mut mesh_builder = exedra::MeshBuilder::new();
+        for _ in 0..vertex_count {
+            let (line, entry) = lines.next()?;
+            let rest = entry
+                .strip_prefix("v ")
+                .ok_or(TextError::Malformed { line })?;
+            let mut tokens = rest.split_whitespace();
+            let mut position = [0.0_f32; 3];
+            for c in &mut position {
+                let token = tokens.next().ok_or(TextError::Malformed { line })?;
+                *c = f32::from_bits(
+                    u32::from_str_radix(token, 16).map_err(|_| TextError::Malformed { line })?,
+                );
+            }
+            mesh_builder.push_vertex(position);
+        }
+        for _ in 0..face_count {
+            let (line, entry) = lines.next()?;
+            let rest = entry
+                .strip_prefix("f ")
+                .ok_or(TextError::Malformed { line })?;
+            let indices = rest
+                .split_whitespace()
+                .map(|token| parse_u32(token, line))
+                .collect::<Result<Vec<_>, _>>()?;
+            mesh_builder
+                .add_face(&indices)
+                .map_err(|_| TextError::Malformed { line })?;
+        }
+        let built = mesh_builder
+            .build()
+            .map_err(|_| TextError::Malformed { line })?;
+        builder.add_import(built.mesh).map_err(TextError::Recipe)?;
+    }
+
+    let (line, header) = lines.next()?;
     let count = section_count(header, "profiles", line)?;
     for _ in 0..count {
         let (line, entry) = lines.next()?;
@@ -479,27 +594,7 @@ fn parse_loop(lines: &mut Lines<'_>) -> Result<Loop2, TextError> {
         let (line, entry) = lines.next()?;
         let mut tokens = entry.split_whitespace();
         let kind = tokens.next().ok_or(TextError::Malformed { line })?;
-        let seg = match kind {
-            "line" => {
-                expect(&mut tokens, "to", line)?;
-                let to = parse_point(&mut tokens, line)?;
-                Seg2::line(to)
-            }
-            "arc" => {
-                let bulge = next_f64(&mut tokens, line)?;
-                expect(&mut tokens, "to", line)?;
-                let to = parse_point(&mut tokens, line)?;
-                Seg2::arc(to, bulge)
-            }
-            "cubic" => {
-                let c1 = parse_point(&mut tokens, line)?;
-                let c2 = parse_point(&mut tokens, line)?;
-                expect(&mut tokens, "to", line)?;
-                let to = parse_point(&mut tokens, line)?;
-                Seg2::cubic(to, c1, c2)
-            }
-            _ => return Err(TextError::Malformed { line }),
-        };
+        let seg = parse_seg(kind, &mut tokens, line)?;
         expect(&mut tokens, "tag", line)?;
         let tag = tokens.next().ok_or(TextError::Malformed { line })?;
         let seg = if tag == "-" {
@@ -510,6 +605,40 @@ fn parse_loop(lines: &mut Lines<'_>) -> Result<Loop2, TextError> {
         segs.push(seg);
     }
     Loop2::new(segs).map_err(TextError::Profile)
+}
+
+fn parse_seg(
+    kind: &str,
+    tokens: &mut core::str::SplitWhitespace<'_>,
+    line: usize,
+) -> Result<Seg2, TextError> {
+    Ok(match kind {
+        "line" => {
+            expect(tokens, "to", line)?;
+            let to = parse_point(tokens, line)?;
+            Seg2::line(to)
+        }
+        "arc" => {
+            let bulge = next_f64(tokens, line)?;
+            expect(tokens, "to", line)?;
+            let to = parse_point(tokens, line)?;
+            Seg2::arc(to, bulge)
+        }
+        "cubic" => {
+            let c1 = parse_point(tokens, line)?;
+            let c2 = parse_point(tokens, line)?;
+            expect(tokens, "to", line)?;
+            let to = parse_point(tokens, line)?;
+            Seg2::cubic(to, c1, c2)
+        }
+        "policy" => {
+            let policy = crate::ir::PolicyId(next_u32(tokens, line)?);
+            let inner_kind = tokens.next().ok_or(TextError::Malformed { line })?;
+            let inner = parse_seg(inner_kind, tokens, line)?;
+            Seg2::policy(inner.to, policy, inner.kind)
+        }
+        _ => return Err(TextError::Malformed { line }),
+    })
 }
 
 fn expect(
@@ -556,14 +685,18 @@ fn parse_plane(
 }
 
 fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<(), TextError> {
-    // Split off the trailing `source X material Y` suffix.
-    let (body, material) = split_suffix(body, "material", line)?;
+    // Split off the trailing `source X material Y issue Z` suffix.
+    let (body, issue) = split_suffix(body, "issue", line)?;
+    let (body, material) = split_suffix(&body, "material", line)?;
     let (body, source) = split_suffix(&body, "source", line)?;
     if let Some(source) = parse_opt_index(&source, line)? {
         builder.with_source(crate::ir::SourceId(source));
     }
     if let Some(material) = parse_opt_index(&material, line)? {
         builder.with_material(crate::ir::SlotId(material));
+    }
+    if let Some(issue) = parse_opt_index(&issue, line)? {
+        builder.with_issue(crate::ir::SourceId(issue));
     }
 
     let mut tokens = body.split_whitespace();
@@ -718,6 +851,12 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 .collect::<Result<Vec<_>, TextError>>()?;
             NodeKind::Group { children }
         }
+        "mesh_import" => {
+            let import = crate::ir::ImportId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "placement", line)?;
+            let placement = parse_placement(&mut tokens, line)?;
+            NodeKind::MeshImport { import, placement }
+        }
         "stretch" => {
             expect(&mut tokens, "child", line)?;
             let child = NodeId(next_u32(&mut tokens, line)?);
@@ -760,6 +899,21 @@ pub(crate) mod tests_support {
     use super::*;
     use crate::builders;
     use alloc::vec;
+
+    /// A tiny valid mesh for import fixtures: one triangle... actually a
+    /// closed tetrahedron so deep validation passes.
+    pub(crate) fn tetrahedron() -> exedra::Mesh {
+        let mut mb = exedra::MeshBuilder::new();
+        mb.push_vertex([0.0, 0.0, 0.0]);
+        mb.push_vertex([1.0, 0.0, 0.0]);
+        mb.push_vertex([0.0, 1.0, 0.0]);
+        mb.push_vertex([0.0, 0.0, 1.0]);
+        mb.add_face(&[0, 2, 1]).expect("base");
+        mb.add_face(&[0, 1, 3]).expect("side");
+        mb.add_face(&[1, 2, 3]).expect("side");
+        mb.add_face(&[2, 0, 3]).expect("side");
+        mb.build().expect("valid tetrahedron").mesh
+    }
 
     /// A recipe exercising every node kind and segment kind.
     pub(crate) fn full_coverage_recipe() -> Recipe {
@@ -861,9 +1015,16 @@ pub(crate) mod tests_support {
                 length: 0.5,
             })
             .expect("valid");
+        let import = b.add_import(tetrahedron()).expect("valid import");
+        let imported = b
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::translate(20.0, 0.0, 0.0),
+            })
+            .expect("valid");
         let group = b
             .add(NodeKind::Group {
-                children: vec![transform, mirror, instance, stretch, face],
+                children: vec![transform, mirror, instance, stretch, face, imported],
             })
             .expect("valid");
         b.finish(group).expect("valid recipe")
@@ -896,13 +1057,15 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 1\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 3\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
-        assert_eq!(parse_recipe("nope"), Err(TextError::BadHeader));
-        let mut text = String::from("constructive-ir-v1\nschema 1\nsources 0\nslots 0\n");
+        assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
+        let mut text = String::from(
+            "constructive-ir-v1\nschema 3\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+        );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(
             parse_recipe(&text),

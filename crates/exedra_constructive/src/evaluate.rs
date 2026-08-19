@@ -12,7 +12,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::ir::{NodeId, NodeKind, Placement3, Recipe, SourceId};
+use crate::ir::{NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
 use crate::tessellate::{
     EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
     tessellate_revolve, tessellate_sweep,
@@ -26,7 +26,7 @@ pub enum Fidelity {
     Exact,
     /// The output approximates the intent under a named policy; the payload
     /// is an opaque frontend-supplied policy reference.
-    PolicyDefined(SourceId),
+    PolicyDefined(PolicyId),
     /// The node's specification is contradictory; the payload cites the
     /// opaque issue reference chosen by the frontend.
     Conflicted(SourceId),
@@ -119,6 +119,8 @@ pub struct GeometryReport {
     pub diagnostics: Vec<Diagnostic>,
     /// Envelope bounds recorded for envelope-only nodes.
     pub envelopes: Vec<(NodeId, Aabb3)>,
+    /// Policy-defined curve usage: which nodes used which curve policies.
+    pub policy_curves: Vec<(NodeId, PolicyId)>,
     /// Work counters.
     pub counters: EvalCounters,
     /// The policy evaluation ran under.
@@ -201,6 +203,7 @@ pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, Eval
             fidelity: Vec::new(),
             diagnostics: Vec::new(),
             envelopes: Vec::new(),
+            policy_curves: Vec::new(),
             counters: EvalCounters::default(),
             policy: *policy,
             schema_version: crate::EVAL_SCHEMA_VERSION,
@@ -232,7 +235,7 @@ impl EvalCx<'_> {
         world: &Placement3,
         emit: bool,
     ) -> Result<Aabb3, EvalError> {
-        let node = self.recipe.node(node_id);
+        let node = self.recipe.node(node_id).expect("walked ids are validated");
         match &node.kind {
             NodeKind::Extrude {
                 profile,
@@ -242,7 +245,7 @@ impl EvalCx<'_> {
             } => {
                 let combined = compose(world, placement);
                 let body = tessellate_extrude(
-                    self.recipe.profile(*profile),
+                    self.recipe.profile(*profile).expect("validated profile id"),
                     &combined,
                     *height,
                     *caps,
@@ -252,7 +255,8 @@ impl EvalCx<'_> {
                     node: node_id,
                     error,
                 })?;
-                Ok(self.finish_body(node_id, body, emit))
+                let fidelity = self.body_fidelity(node_id, &[*profile]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Revolve {
                 profile,
@@ -262,7 +266,7 @@ impl EvalCx<'_> {
             } => {
                 let combined = compose(world, placement);
                 let body = tessellate_revolve(
-                    self.recipe.profile(*profile),
+                    self.recipe.profile(*profile).expect("validated profile id"),
                     &combined,
                     *sweep,
                     *caps,
@@ -272,7 +276,8 @@ impl EvalCx<'_> {
                     node: node_id,
                     error,
                 })?;
-                Ok(self.finish_body(node_id, body, emit))
+                let fidelity = self.body_fidelity(node_id, &[*profile]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Loft {
                 sections,
@@ -282,16 +287,22 @@ impl EvalCx<'_> {
                 let placed: Vec<(Placement3, &crate::profile::Profile2)> = sections
                     .iter()
                     .map(|(placement, profile)| {
-                        (compose(world, placement), self.recipe.profile(*profile))
+                        (
+                            compose(world, placement),
+                            self.recipe.profile(*profile).expect("validated profile id"),
+                        )
                     })
                     .collect();
                 let caps = *caps;
+                let profile_ids: Vec<ProfileId> =
+                    sections.iter().map(|(_, profile)| *profile).collect();
                 let body =
                     tessellate_loft(&placed, caps, self.policy).map_err(|error| EvalError {
                         node: node_id,
                         error,
                     })?;
-                Ok(self.finish_body(node_id, body, emit))
+                let fidelity = self.body_fidelity(node_id, &profile_ids);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Sweep {
                 profile,
@@ -303,7 +314,7 @@ impl EvalCx<'_> {
                 let caps = *caps;
                 let profile = *profile;
                 let body = tessellate_sweep(
-                    self.recipe.profile(profile),
+                    self.recipe.profile(profile).expect("validated profile id"),
                     world,
                     &points,
                     caps,
@@ -313,7 +324,8 @@ impl EvalCx<'_> {
                     node: node_id,
                     error,
                 })?;
-                Ok(self.finish_body(node_id, body, emit))
+                let fidelity = self.body_fidelity(node_id, &[profile]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Group { children } => {
                 let children = children.clone();
@@ -354,6 +366,32 @@ impl EvalCx<'_> {
                     node: Some(node_id),
                 });
                 Ok(bounds)
+            }
+            NodeKind::MeshImport { import, placement } => {
+                let placement = compose(world, placement);
+                if crate::tessellate::det3(&placement) < 0.0 {
+                    self.report.counters.unimplemented += 1;
+                    self.report.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        code: "eval.import.reflecting",
+                        message: String::from(
+                            "imported-mesh placements must not reflect; \
+                             mirror the source mesh in the frontend instead",
+                        ),
+                        node: Some(node_id),
+                    });
+                    return Ok(Aabb3::EMPTY);
+                }
+                let source = self.recipe.import(*import).expect("validated import id");
+                let mesh = transform_mesh(source, &placement);
+                let face_features =
+                    alloc::vec![crate::tessellate::Feature::Imported; mesh.faces().count()];
+                let vertex_features =
+                    alloc::vec![crate::tessellate::Feature::Imported; mesh.vertices().count()];
+                let source_map =
+                    crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
+                let body = TessellatedBody { mesh, source_map };
+                Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
             }
             NodeKind::Mirror { child, plane } => {
                 let reflection = reflection_placement(plane);
@@ -425,8 +463,52 @@ impl EvalCx<'_> {
         }
     }
 
+    /// Fidelity of a body node: frontend-declared conflicts win, then
+    /// policy-defined curves, then exact. Policy usage lands in the report.
+    fn body_fidelity(&mut self, node_id: NodeId, profiles: &[ProfileId]) -> Fidelity {
+        let mut first_policy = None;
+        for profile in profiles {
+            let profile = self.recipe.profile(*profile).expect("validated profile id");
+            for loop_ in core::iter::once(profile.outer()).chain(profile.holes().iter()) {
+                for seg in loop_.segs() {
+                    if let crate::profile::SegKind::PolicyTo { policy, .. } = &seg.kind {
+                        if !self
+                            .report
+                            .policy_curves
+                            .iter()
+                            .any(|(n, p)| *n == node_id && p == policy)
+                        {
+                            self.report.policy_curves.push((node_id, *policy));
+                        }
+                        first_policy.get_or_insert(*policy);
+                    }
+                }
+            }
+        }
+        // Declared spec conflicts win the classification, but policy usage
+        // above is still fully attributed in the report.
+        if let Some(issue) = self
+            .recipe
+            .node(node_id)
+            .expect("walked ids are validated")
+            .issue
+        {
+            return Fidelity::Conflicted(issue);
+        }
+        match first_policy {
+            Some(policy) => Fidelity::PolicyDefined(policy),
+            None => Fidelity::Exact,
+        }
+    }
+
     /// Records a successfully tessellated body and returns its bounds.
-    fn finish_body(&mut self, node: NodeId, body: TessellatedBody, emit: bool) -> Aabb3 {
+    fn finish_body(
+        &mut self,
+        node: NodeId,
+        body: TessellatedBody,
+        emit: bool,
+        fidelity: Fidelity,
+    ) -> Aabb3 {
         let mut bounds = Aabb3::EMPTY;
         let mesh = &body.mesh;
         for face in mesh.faces() {
@@ -436,7 +518,7 @@ impl EvalCx<'_> {
                 }
             }
         }
-        self.report.fidelity.push((node, Fidelity::Exact));
+        self.report.fidelity.push((node, fidelity));
         self.report.counters.tessellations += 1;
         if emit {
             self.report.counters.bodies += 1;
@@ -480,7 +562,14 @@ fn mesh_bounds(mesh: &exedra::Mesh) -> Aabb3 {
 /// transform (f64 math, one narrowing), topology and attributes are
 /// untouched, and the source map re-pins to the edited revision.
 fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedBody {
-    let mut mesh = source.mesh.clone();
+    let mesh = transform_mesh(&source.mesh, placement);
+    let source_map = source.source_map.repinned(&mesh);
+    TessellatedBody { mesh, source_map }
+}
+
+/// Clones a mesh with vertices rigid-transformed (f64 math, one narrowing).
+fn transform_mesh(source: &exedra::Mesh, placement: &Placement3) -> exedra::Mesh {
+    let mut mesh = source.clone();
     let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
     {
         let mut session = mesh.edit();
@@ -501,8 +590,7 @@ fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedB
             session.finish();
         }
     }
-    let source_map = source.source_map.repinned(&mesh);
-    TessellatedBody { mesh, source_map }
+    mesh
 }
 
 fn apply_placement_pub(p: &Placement3, v: [f64; 3]) -> [f64; 3] {
@@ -878,5 +966,95 @@ mod tests {
                 .iter()
                 .any(|d| d.code == "eval.instance.reflecting")
         );
+    }
+
+    #[test]
+    fn policy_curves_downgrade_fidelity_and_land_in_the_report() {
+        use crate::profile::{Loop2, Profile2, Seg2, SegKind};
+        let mut b = RecipeBuilder::new();
+        let policy = b.curve_policy("spec.transition@1");
+        // A rect whose top edge is policy-defined, realized as a shallow arc.
+        let outer = Loop2::new(vec![
+            Seg2::line((2.0, 0.0)),
+            Seg2::line((2.0, 1.0)),
+            Seg2::policy((0.0, 1.0), policy, SegKind::Arc { bulge: -0.1 }),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid loop");
+        let p = b.add_profile(Profile2::simple(outer).expect("valid profile"));
+        let n = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let recipe = b.finish(n).expect("valid recipe");
+        assert_eq!(recipe.policy(PolicyId(0)), Some("spec.transition@1"));
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert!(result.bodies[0].body.mesh.validate_deep().is_empty());
+        assert_eq!(
+            result.report.fidelity_of(n),
+            Some(Fidelity::PolicyDefined(policy)),
+            "policy curves must downgrade fidelity from Exact"
+        );
+        assert_eq!(result.report.policy_curves, vec![(n, policy)]);
+    }
+
+    #[test]
+    fn declared_issues_report_conflicted() {
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let issue = b.source_ref("spec.issue.nonclosing-profile");
+        let n = b
+            .with_issue(issue)
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let recipe = b.finish(n).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(
+            result.report.fidelity_of(n),
+            Some(Fidelity::Conflicted(issue)),
+            "declared spec issues must report Conflicted, and still build"
+        );
+        assert_eq!(
+            result.bodies.len(),
+            1,
+            "conflicted nodes still emit geometry"
+        );
+    }
+
+    #[test]
+    fn unregistered_policies_are_rejected_at_finish() {
+        use crate::profile::{Loop2, Profile2, Seg2, SegKind};
+        let mut b = RecipeBuilder::new();
+        let outer = Loop2::new(vec![
+            Seg2::line((1.0, 0.0)),
+            Seg2::policy((1.0, 1.0), PolicyId(7), SegKind::Line),
+            Seg2::line((0.0, 1.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid loop");
+        let p = b.add_profile(Profile2::simple(outer).expect("valid profile"));
+        let n = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        assert!(matches!(
+            b.finish(n),
+            Err(crate::ir::RecipeError::UnknownPolicy { policy: 7 })
+        ));
     }
 }

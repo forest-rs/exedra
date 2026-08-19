@@ -39,7 +39,7 @@ pub struct SegTag(pub u32);
 
 /// Geometry of one segment; the start point is the previous segment's
 /// endpoint, the end point lives in [`Seg2::to`].
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SegKind {
     /// Straight chord to the endpoint.
@@ -62,10 +62,24 @@ pub enum SegKind {
         /// Second control point.
         c2: Point,
     },
+    /// A policy-defined segment: the specification underdetermines this
+    /// curve, so the frontend chose a realization under a named policy.
+    ///
+    /// `policy` is an opaque recipe-interned policy reference (for example
+    /// `"spec.front-transition@1"`); `realized` is the concrete
+    /// geometry chosen under it (never itself policy-defined). Evaluation
+    /// discretizes the realization and reports the node as
+    /// policy-defined rather than exact — the spec-ambiguity mechanism.
+    PolicyTo {
+        /// Recipe-interned policy reference.
+        policy: crate::ir::PolicyId,
+        /// The concrete realization (line, arc, or cubic).
+        realized: alloc::boxed::Box<Self>,
+    },
 }
 
 /// One segment of a loop: geometry, endpoint, and optional provenance tag.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Seg2 {
     /// Endpoint of this segment (start of the next).
     pub to: Point,
@@ -104,6 +118,19 @@ impl Seg2 {
             kind: SegKind::Cubic {
                 c1: c1.into(),
                 c2: c2.into(),
+            },
+            tag: None,
+        }
+    }
+
+    /// A policy-defined segment to `to`, realized as `realized`.
+    #[must_use]
+    pub fn policy(to: impl Into<Point>, policy: crate::ir::PolicyId, realized: SegKind) -> Self {
+        Self {
+            to: to.into(),
+            kind: SegKind::PolicyTo {
+                policy,
+                realized: alloc::boxed::Box::new(realized),
             },
             tag: None,
         }
@@ -163,6 +190,27 @@ impl Loop2 {
                         return Err(ProfileError::NonFinite { seg: index });
                     }
                 }
+                SegKind::PolicyTo {
+                    policy: _,
+                    realized,
+                } => match realized.as_mut() {
+                    SegKind::Line => {}
+                    SegKind::Arc { bulge } => {
+                        if !bulge.is_finite() || *bulge == 0.0 {
+                            return Err(ProfileError::InvalidBulge { seg: index });
+                        }
+                    }
+                    SegKind::Cubic { c1, c2 } => {
+                        normalize_point(c1);
+                        normalize_point(c2);
+                        if !c1.is_finite() || !c2.is_finite() {
+                            return Err(ProfileError::NonFinite { seg: index });
+                        }
+                    }
+                    SegKind::PolicyTo { .. } => {
+                        return Err(ProfileError::NestedPolicy { seg: index });
+                    }
+                },
             }
         }
         for index in 0..segs.len() {
@@ -203,11 +251,7 @@ impl Loop2 {
                 // segment's start point.
                 let src = &self.segs[n - 1 - i];
                 let to = self.segs[(n - i + n - 2) % n].to;
-                let kind = match src.kind {
-                    SegKind::Line => SegKind::Line,
-                    SegKind::Arc { bulge } => SegKind::Arc { bulge: -bulge },
-                    SegKind::Cubic { c1, c2 } => SegKind::Cubic { c1: c2, c2: c1 },
-                };
+                let kind = reverse_kind(&src.kind);
                 Seg2 {
                     to,
                     kind,
@@ -230,13 +274,7 @@ impl Loop2 {
         let mut path = BezPath::new();
         path.move_to(start);
         for (from, seg) in self.iter_with_starts() {
-            match seg.kind {
-                SegKind::Line => path.line_to(seg.to),
-                SegKind::Cubic { c1, c2 } => path.curve_to(c1, c2, seg.to),
-                SegKind::Arc { bulge } => {
-                    append_bulge_arc(&mut path, from, seg.to, bulge);
-                }
-            }
+            append_kind(&mut path, from, seg.to, &seg.kind);
         }
         path.close_path();
         path
@@ -310,6 +348,30 @@ impl Loop2 {
     }
 }
 
+fn append_kind(path: &mut BezPath, from: Point, to: Point, kind: &SegKind) {
+    match kind {
+        SegKind::Line => path.line_to(to),
+        SegKind::Cubic { c1, c2 } => path.curve_to(*c1, *c2, to),
+        SegKind::Arc { bulge } => append_bulge_arc(path, from, to, *bulge),
+        SegKind::PolicyTo {
+            policy: _,
+            realized,
+        } => append_kind(path, from, to, realized),
+    }
+}
+
+fn reverse_kind(kind: &SegKind) -> SegKind {
+    match kind {
+        SegKind::Line => SegKind::Line,
+        SegKind::Arc { bulge } => SegKind::Arc { bulge: -bulge },
+        SegKind::Cubic { c1, c2 } => SegKind::Cubic { c1: *c2, c2: *c1 },
+        SegKind::PolicyTo { policy, realized } => SegKind::PolicyTo {
+            policy: *policy,
+            realized: alloc::boxed::Box::new(reverse_kind(realized)),
+        },
+    }
+}
+
 /// Appends the bulge arc `from -> to` to `path` as kurbo cubics.
 ///
 /// The center and radius derive from the chord and bulge with only
@@ -325,8 +387,12 @@ fn append_bulge_arc(path: &mut BezPath, from: Point, to: Point, bulge: f64) {
         sweep_angle: sweep,
         x_rotation: 0.0,
     };
-    // Tight tolerance: this rendering only feeds areas/bounds/interop.
-    arc.to_cubic_beziers(1e-9, |c1, c2, p| {
+    // Radius-relative tolerance: this rendering only feeds areas, bounds,
+    // and interop, and a relative bound keeps the subdivision count small
+    // and scale-independent — a hostile 1e300-radius arc must not explode
+    // validation into astronomically many cubics.
+    let tolerance = (radius * 1e-9).max(1e-12);
+    arc.to_cubic_beziers(tolerance, |c1, c2, p| {
         path.curve_to(c1, c2, p);
     });
 }
@@ -476,6 +542,11 @@ pub enum ProfileError {
     /// A builder dimension is zero, negative, non-finite, or inconsistent
     /// (for example a corner radius that does not fit).
     InvalidDimension,
+    /// A policy-defined segment's realization is itself policy-defined.
+    NestedPolicy {
+        /// Index of the offending segment.
+        seg: usize,
+    },
 }
 
 impl core::fmt::Display for ProfileError {
@@ -508,6 +579,9 @@ impl core::fmt::Display for ProfileError {
                     f,
                     "builder dimension is non-positive, non-finite, or inconsistent"
                 )
+            }
+            Self::NestedPolicy { seg } => {
+                write!(f, "segment {seg}: policy realizations must be concrete")
             }
         }
     }
@@ -543,16 +617,26 @@ impl CanonBytes for Point {
 
 impl CanonBytes for Seg2 {
     fn canon_bytes(&self, out: &mut Vec<u8>) {
-        match self.kind {
+        match &self.kind {
             SegKind::Line => out.push(0),
             SegKind::Arc { bulge } => {
                 out.push(1);
-                put_f64(out, bulge);
+                put_f64(out, *bulge);
             }
             SegKind::Cubic { c1, c2 } => {
                 out.push(2);
                 c1.canon_bytes(out);
                 c2.canon_bytes(out);
+            }
+            SegKind::PolicyTo { policy, realized } => {
+                out.push(3);
+                put_u32(out, policy.0);
+                let inner = Self {
+                    to: self.to,
+                    kind: (**realized).clone(),
+                    tag: None,
+                };
+                inner.canon_bytes(out);
             }
         }
         self.to.canon_bytes(out);

@@ -5,7 +5,7 @@
 //!
 //! Deliberately spec-agnostic conveniences: rectangles, rounded rectangles,
 //! L-shaped corner profiles, circles, and rings. External frontends compose
-//! catalog shapes from these (and from raw segments) without any catalog
+//! spec-driven shapes from these (and from raw segments) without any spec
 //! vocabulary living here.
 //!
 //! All builders produce validated counter-clockwise [`Profile2`] values in

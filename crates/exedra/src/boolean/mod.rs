@@ -16,6 +16,15 @@ use core::cmp::Ordering;
 
 use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 
+mod diag;
+mod narrow;
+
+pub use diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
+pub use narrow::{
+    BooleanNarrowPhaseStats, EndpointSource, IntersectionEndpoint, IntersectionSegment,
+    SegmentKind, narrow_phase,
+};
+
 const LEAF_TRIANGLE_COUNT: usize = 4;
 
 /// Axis-aligned bounding box used by the boolean broad phase.
@@ -146,30 +155,74 @@ impl BooleanBroadPhaseStats {
     }
 }
 
-/// Reusable temporary storage for boolean broad-phase construction and queries.
+/// Cumulative scratch-reuse counters (introspection; tenet 4).
 ///
-/// `clear` retains capacity so callers can keep one scratch value per session
-/// and avoid repeated temporary allocation.
+/// Counters accumulate across calls and survive [`BooleanScratch::clear`]
+/// (which resets buffers, not the ledger); read with
+/// [`BooleanScratch::counters`], reset with
+/// [`BooleanScratch::reset_counters`].
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct BooleanScratchCounters {
+    /// Face-triangle enumerations performed into reused buffers.
+    pub face_enumerations: u64,
+    /// Narrow-phase triangle fetches served from the per-mesh memo
+    /// without re-enumerating.
+    pub enumeration_cache_hits: u64,
+}
+
+/// Reusable temporary storage for the boolean pipeline (broad-phase
+/// construction and queries, narrow-phase triangle staging).
+///
+/// `clear` retains capacity so callers can keep one scratch value per
+/// session and avoid repeated temporary allocation across stages and
+/// across boolean calls.
 #[derive(Clone, Debug, Default)]
 pub struct BooleanScratch {
     face_corners: Vec<CornerId>,
     node_pair_stack: Vec<(usize, usize)>,
+    pub(super) face_triangles: Vec<[CornerId; 3]>,
+    pub(super) narrow_face_a: Vec<[CornerId; 3]>,
+    pub(super) narrow_face_b: Vec<[CornerId; 3]>,
+    pub(super) counters: BooleanScratchCounters,
 }
 
 impl BooleanScratch {
-    /// Creates empty broad-phase scratch storage.
+    /// Creates empty boolean scratch storage.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             face_corners: Vec::new(),
             node_pair_stack: Vec::new(),
+            face_triangles: Vec::new(),
+            narrow_face_a: Vec::new(),
+            narrow_face_b: Vec::new(),
+            counters: BooleanScratchCounters {
+                face_enumerations: 0,
+                enumeration_cache_hits: 0,
+            },
         }
     }
 
     /// Clears temporary buffers while retaining allocated capacity.
+    /// Counters are cumulative and survive; see
+    /// [`BooleanScratch::reset_counters`].
     pub fn clear(&mut self) {
         self.face_corners.clear();
         self.node_pair_stack.clear();
+        self.face_triangles.clear();
+        self.narrow_face_a.clear();
+        self.narrow_face_b.clear();
+    }
+
+    /// Cumulative reuse counters.
+    #[must_use]
+    pub fn counters(&self) -> BooleanScratchCounters {
+        self.counters
+    }
+
+    /// Resets the cumulative counters to zero.
+    pub fn reset_counters(&mut self) {
+        self.counters = BooleanScratchCounters::default();
     }
 }
 
@@ -216,7 +269,13 @@ impl BooleanBvh {
         self.strategy = strategy;
         scratch.clear();
 
-        collect_mesh_triangles(mesh, strategy, &mut self.triangles);
+        collect_mesh_triangles(
+            mesh,
+            strategy,
+            &mut self.triangles,
+            &mut scratch.face_triangles,
+            &mut scratch.counters,
+        );
         if !self.triangles.is_empty() {
             let len = self.triangles.len();
             let _root = build_node(&mut self.triangles, &mut self.nodes, 0, len);
@@ -393,13 +452,17 @@ fn collect_mesh_triangles(
     mesh: &Mesh,
     strategy: FaceTriangulation,
     triangles: &mut Vec<TriangleEntry>,
+    scratch_faces: &mut Vec<[CornerId; 3]>,
+    counters: &mut BooleanScratchCounters,
 ) {
     for face in mesh.faces() {
         // The kernel-owned enumeration is the single source of truth for
         // triangle indices (ADR-0008); re-deriving fans inline here would
-        // silently couple stored references to one strategy.
-        for (triangle_index, corners) in mesh.face_triangles(face, strategy).into_iter().enumerate()
-        {
+        // silently couple stored references to one strategy. The buffer
+        // variant reuses one allocation across every face.
+        let _ = mesh.face_triangles_into(face, strategy, scratch_faces);
+        counters.face_enumerations += 1;
+        for (triangle_index, corners) in scratch_faces.iter().copied().enumerate() {
             let bounds = triangle_bounds(mesh, corners);
             triangles.push(TriangleEntry {
                 reference: BooleanTriangleRef {

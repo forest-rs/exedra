@@ -13,23 +13,24 @@
 //! - Arc interior points are computed with [`libm`] trig only (never `std`,
 //!   never kurbo's feature-dependent dispatch), from subdivision counts
 //!   derived once per arc.
-//! - Cubic segments flatten through [`kurbo::flatten`], which is
-//!   sqrt/arithmetic only (audited: deterministic under the pinned kurbo
-//!   version; [`crate::EVAL_SCHEMA_VERSION`] guards upgrades).
+//! - Cubic interior points are sampled at uniform parameters with a count
+//!   from the second-difference flatness bound — arithmetic plus square
+//!   roots, owned here (kurbo does not sit on the deterministic path at
+//!   all; [`crate::EVAL_SCHEMA_VERSION`] guards rule changes).
 
 use alloc::vec::Vec;
 
-use kurbo::{PathEl, Point};
+use kurbo::Point;
 
 use crate::len_u32;
-use crate::profile::{Loop2, Profile2, Seg2, SegKind};
+use crate::profile::{Loop2, Profile2, SegKind};
 
 /// Controls how finely curves are discretized.
 ///
 /// The chord tolerance is an absolute sagitta bound in model units: no
 /// discretized edge deviates from its source curve by more than this.
 /// Callers (evaluation policies) choose it deliberately; the default is
-/// suitable for millimeter-unit catalog geometry.
+/// suitable for millimeter-unit parametric spec geometry.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct DiscretizePolicy {
     /// Maximum chord-to-curve deviation (sagitta), in model units.
@@ -125,15 +126,7 @@ pub fn discretize_loop(
         // Each segment contributes its start point plus interior points;
         // its exact endpoint is contributed as the next segment's start.
         push_point(&mut out, [start.x, start.y], seg_index);
-        match seg.kind {
-            SegKind::Line => {}
-            SegKind::Arc { bulge } => {
-                emit_arc_interior(&mut out, start, seg, bulge, policy, seg_index);
-            }
-            SegKind::Cubic { c1, c2 } => {
-                emit_cubic_interior(&mut out, start, c1, c2, seg.to, policy, seg_index);
-            }
-        }
+        emit_kind_interior(&mut out, start, seg.to, &seg.kind, policy, seg_index);
     }
     Ok(out)
 }
@@ -156,6 +149,31 @@ pub fn discretize_profile(
     Ok(DiscretizedProfile { outer, holes })
 }
 
+/// Emits a segment kind's interior points; policy segments discretize
+/// their realization (one level — nesting is rejected at validation).
+fn emit_kind_interior(
+    out: &mut DiscretizedLoop,
+    start: Point,
+    to: Point,
+    kind: &SegKind,
+    policy: &DiscretizePolicy,
+    seg_index: u32,
+) {
+    match kind {
+        SegKind::Line => {}
+        SegKind::Arc { bulge } => {
+            emit_arc_interior(out, start, to, *bulge, policy, seg_index);
+        }
+        SegKind::Cubic { c1, c2 } => {
+            emit_cubic_interior(out, start, *c1, *c2, to, policy, seg_index);
+        }
+        SegKind::PolicyTo {
+            policy: _,
+            realized,
+        } => emit_kind_interior(out, start, to, realized, policy, seg_index),
+    }
+}
+
 fn push_point(out: &mut DiscretizedLoop, p: [f64; 2], seg: u32) {
     // Skip exact duplicates (an interior point can coincide with an
     // endpoint at coarse subdivisions); the ring stays clean.
@@ -174,12 +192,11 @@ fn push_point(out: &mut DiscretizedLoop, p: [f64; 2], seg: u32) {
 fn emit_arc_interior(
     out: &mut DiscretizedLoop,
     from: Point,
-    seg: &Seg2,
+    to: Point,
     bulge: f64,
     policy: &DiscretizePolicy,
     seg_index: u32,
 ) {
-    let to = seg.to;
     let dx = to.x - from.x;
     let dy = to.y - from.y;
     let half_chord = 0.5 * libm::sqrt(dx * dx + dy * dy);
@@ -232,7 +249,14 @@ fn emit_arc_interior(
     }
 }
 
-/// Emits a cubic's interior points via kurbo's flattener (sqrt-only math).
+/// Emits a cubic's interior points by uniform-parameter sampling.
+///
+/// The subdivision count derives once from the classic second-difference
+/// flatness bound (`n >= sqrt(3 d / (4 tol))`, `d` the largest control
+/// second difference), clamped by the policy cap — so the work is bounded
+/// up front even for hostile control points, and the math is arithmetic
+/// plus one square root: bit-deterministic everywhere and independent of
+/// kurbo's flattener.
 fn emit_cubic_interior(
     out: &mut DiscretizedLoop,
     from: Point,
@@ -242,25 +266,39 @@ fn emit_cubic_interior(
     policy: &DiscretizePolicy,
     seg_index: u32,
 ) {
-    let elements = [PathEl::MoveTo(from), PathEl::CurveTo(c1, c2, to)];
-    let mut interior: Vec<[f64; 2]> = Vec::new();
-    kurbo::flatten(elements, policy.chord_tolerance, |el| {
-        if let PathEl::LineTo(p) = el {
-            interior.push([p.x, p.y]);
+    let d1 = [from.x - 2.0 * c1.x + c2.x, from.y - 2.0 * c1.y + c2.y];
+    let d2 = [c1.x - 2.0 * c2.x + to.x, c1.y - 2.0 * c2.y + to.y];
+    let d =
+        libm::sqrt(d1[0] * d1[0] + d1[1] * d1[1]).max(libm::sqrt(d2[0] * d2[0] + d2[1] * d2[1]));
+    let needed = libm::ceil(libm::sqrt(3.0 * d / (4.0 * policy.chord_tolerance)));
+    let edges = if needed.is_finite() && needed >= 1.0 {
+        if needed >= f64::from(policy.max_segment_edges) {
+            policy.max_segment_edges
+        } else {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "needed is a finite positive ceil below the u32 cap"
+            )]
+            {
+                needed as u32
+            }
         }
-    });
-    // The flattener's last point is the exact endpoint, which the next
-    // segment contributes as its start; drop it here.
-    if let Some(last) = interior.pop()
-        && last != [to.x, to.y]
-    {
-        // Defensive: kurbo always ends at the exact endpoint; if that ever
-        // changes, keep the point rather than distort the curve.
-        interior.push(last);
-    }
-    let cap = policy.max_segment_edges as usize;
-    interior.truncate(cap.saturating_sub(1));
-    for p in interior {
+    } else {
+        policy.max_segment_edges
+    };
+    for k in 1..edges {
+        let t = f64::from(k) / f64::from(edges);
+        // Horner-form cubic Bézier evaluation: pure arithmetic.
+        let mt = 1.0 - t;
+        let a = mt * mt * mt;
+        let b = 3.0 * mt * mt * t;
+        let c = 3.0 * mt * t * t;
+        let e = t * t * t;
+        let p = [
+            a * from.x + b * c1.x + c * c2.x + e * to.x,
+            a * from.y + b * c1.y + c * c2.y + e * to.y,
+        ];
         push_point(out, p, seg_index);
     }
 }

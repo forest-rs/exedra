@@ -10,8 +10,7 @@
 Exedra's downstream machinery — the half-edge kernel, edit sessions,
 Cambium's operator lifecycle, primitives with semantic regions — is solid,
 but nothing upstream of the mesh exists: no curves, no pre-mesh profiles, no
-constructive operations, no recipe model. External geometry frontends (domain-specific formats
-and authored parametric models — living in
+constructive operations, no recipe model. External spec compilers (parametric product specifications, living in
 separate repositories by decision) need a spec-agnostic construction
 representation they can target, with the mesh as its *output*, not its
 source model.
@@ -49,7 +48,7 @@ together would break both.
   mesh leaves, n-ary CSG, transform/mirror/instance/group, and a reserved
   stretch node. All public enums are `#[non_exhaustive]`. There is **no 3D
   curve type**: planar profiles plus placements plus polyline paths cover
-  the catalog domain; a spatial path variant can arrive additively if ever
+  the parametric-spec domain; a spatial path variant can arrive additively if ever
   earned.
 - **Two-layer identity.** A content-addressed node hash (Merkle over the
   canonical byte encoding, stamped with [`EVAL_SCHEMA_VERSION`]) keys caches
@@ -68,7 +67,7 @@ together would break both.
 ### Scalar policy
 
 Construction and evaluation are f64 end to end (kurbo-native). Exact-decimal
-catalog arithmetic is the frontends' job; i64 thousandths-of-millimeter
+spec arithmetic is the frontends' job; i64 thousandths-of-millimeter
 values convert exactly into f64. The narrowing to `[f32; 3]` happens exactly
 once, at mesh emission, with round-to-nearest-even, and is recorded in the
 report. Exedra's ADR-0001 (`[f32; N]` public math) and `NumericPolicy` are
