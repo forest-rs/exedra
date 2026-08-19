@@ -11,6 +11,7 @@ categories = ["data-structures", "algorithms"]
 
 [dependencies]
 exedra = { default-features = false, path = "../exedra" }
+exedra_triangulate.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]

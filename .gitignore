@@ -4,3 +4,4 @@ dist/
 .vite/
 AGENTS.md
 CLAUDE.md
+/.claude/worktrees/

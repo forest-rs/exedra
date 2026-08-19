@@ -153,6 +153,16 @@ impl core::fmt::Display for FeatureLabel {
             Feature::CapStart => write!(f, "cap_start"),
             Feature::CapEnd => write!(f, "cap_end"),
             Feature::Wall { loop_index, seg } => write!(f, "wall {loop_index} {seg}"),
+            Feature::LoftWall {
+                band,
+                loop_index,
+                seg,
+            } => write!(f, "loft_wall {band} {loop_index} {seg}"),
+            Feature::SweepWall {
+                band,
+                loop_index,
+                seg,
+            } => write!(f, "sweep_wall {band} {loop_index} {seg}"),
         }
     }
 }

@@ -18,6 +18,7 @@ members = [
     "crates/exedra_spatial",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
+    "examples/constructive_gallery",
 ]
 
 [workspace.package]

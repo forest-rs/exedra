@@ -54,6 +54,7 @@ dependencies = [
  "cambium_testkit",
  "exedra",
  "exedra_analytic",
+ "exedra_constructive",
  "invalidation",
  "libm",
  "web-time",
@@ -85,6 +86,15 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "constructive_gallery"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_constructive",
+ "exedra_testkit",
+]
 
 [[package]]
 name = "crossbeam-deque"
@@ -177,6 +187,7 @@ name = "exedra_analytic"
 version = "0.1.0"
 dependencies = [
  "exedra",
+ "exedra_triangulate",
  "libm",
 ]
 

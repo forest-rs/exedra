@@ -58,6 +58,24 @@ pub enum Feature {
         /// Source segment index within the loop.
         seg: u32,
     },
+    /// A loft wall face between sections `band` and `band + 1`.
+    LoftWall {
+        /// Index of the band (the gap after section `band`).
+        band: u16,
+        /// Which profile loop: 0 = outer, `1 + i` = hole `i`.
+        loop_index: u16,
+        /// Source segment index within the loop (of the first section).
+        seg: u32,
+    },
+    /// A sweep wall face between path points `band` and `band + 1`.
+    SweepWall {
+        /// Index of the path segment.
+        band: u16,
+        /// Which profile loop: 0 = outer, `1 + i` is hole `i`.
+        loop_index: u16,
+        /// Source segment index within the loop.
+        seg: u32,
+    },
 }
 
 /// A tessellated body: the mesh plus its element provenance.
@@ -98,6 +116,19 @@ pub enum TessellateError {
         /// The smallest radius found in the discretized profile.
         min_radius: f64,
     },
+    /// Loft sections are incompatible: correspondence requires the same
+    /// hole count and identical per-loop point counts after
+    /// discretization.
+    SectionMismatch {
+        /// Index of the offending section.
+        section: usize,
+    },
+    /// A sweep path reverses onto itself at this point (anti-parallel
+    /// adjacent segments give no miter tangent).
+    PathCusp {
+        /// Index of the offending path point.
+        point: usize,
+    },
 }
 
 impl core::fmt::Display for TessellateError {
@@ -110,6 +141,12 @@ impl core::fmt::Display for TessellateError {
                 f,
                 "revolved profile touches the axis (min radius {min_radius})"
             ),
+            Self::SectionMismatch { section } => {
+                write!(f, "loft section {section} does not correspond to section 0")
+            }
+            Self::PathCusp { point } => {
+                write!(f, "sweep path reverses onto itself at point {point}")
+            }
         }
     }
 }
@@ -676,6 +713,506 @@ pub fn tessellate_revolve(
     })
 }
 
+/// Tessellates a ruled loft between placed sections.
+///
+/// Each section is a profile with its own placement; corresponding
+/// discretized ring points connect with quads band by band. Sections must
+/// correspond: the same hole count and identical per-loop point counts
+/// after discretization (a typed [`TessellateError::SectionMismatch`]
+/// otherwise — frontends control correspondence through segment structure).
+/// The start cap closes section 0 (reversed), the end cap the last section;
+/// sections must be ordered so counter-clockwise outer loops yield
+/// outward-facing walls (the extrude convention generalized).
+///
+/// Intermediate section rings crease (a ruled loft is only C0 across
+/// sections); lateral edges crease at sharp corners of section 0's source
+/// tangents, and cap rims crease when capped.
+///
+/// # Errors
+///
+/// Returns a typed [`TessellateError`]; never panics.
+pub fn tessellate_loft(
+    sections: &[(Placement3, &Profile2)],
+    caps: CapMode,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    debug_assert!(sections.len() >= 2, "IR validation requires >= 2 sections");
+    let discretized: Vec<DiscretizedProfile> = sections
+        .iter()
+        .map(|(_, profile)| discretize_profile(profile, &policy.discretize))
+        .collect::<Result<_, _>>()?;
+
+    // Correspondence: identical loop structure across sections.
+    let reference = &discretized[0];
+    for (index, d) in discretized.iter().enumerate().skip(1) {
+        let matches = d.holes.len() == reference.holes.len()
+            && d.outer.points.len() == reference.outer.points.len()
+            && d.holes
+                .iter()
+                .zip(&reference.holes)
+                .all(|(a, b)| a.points.len() == b.points.len());
+        if !matches {
+            return Err(TessellateError::SectionMismatch { section: index });
+        }
+    }
+
+    let ring_starts = ring_starts(reference);
+    let total = len_u32(reference.points_len());
+    let mut builder = MeshBuilder::new();
+    for ((placement, _), d) in sections.iter().zip(&discretized) {
+        for ring in d.rings() {
+            for p in &ring.points {
+                builder.push_vertex(narrow(apply_placement(placement, [p[0], p[1], 0.0])));
+            }
+        }
+    }
+    let section_offset = |k: usize| len_u32(k) * total;
+
+    let mut face_origins: Vec<Feature> = Vec::new();
+    let seg_offsets = seg_offsets(sections[0].1);
+    let corner_sharp: Vec<Vec<bool>> = core::iter::once(sections[0].1.outer())
+        .chain(sections[0].1.holes().iter())
+        .map(|source| loop_corner_sharpness(source, policy))
+        .collect();
+
+    let start_cap = matches!(caps, CapMode::Both | CapMode::Start);
+    let end_cap = matches!(caps, CapMode::Both | CapMode::End);
+    let bands = sections.len() - 1;
+
+    for band in 0..bands {
+        let below = section_offset(band);
+        let above = section_offset(band + 1);
+        let band_u16 = u16::try_from(band).unwrap_or(u16::MAX);
+        for (ring_index, ring) in reference.rings().enumerate() {
+            let base = ring_starts[ring_index];
+            let n = len_u32(ring.points.len());
+            let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let seg = ring.edge_seg[i as usize];
+                let sharp_at = |point: u32| {
+                    ring.is_endpoint(point)
+                        && corner_sharp[ring_index][ring.edge_seg[point as usize] as usize]
+                };
+                // Ring creases: caps at the outer boundaries, and always at
+                // intermediate sections (ruled bands are only C0 there).
+                let bottom_crease = if band == 0 { start_cap } else { true };
+                let top_crease = if band + 1 == bands { end_cap } else { true };
+                let sharp = [
+                    if bottom_crease { 1.0 } else { 0.0 },
+                    if sharp_at(j) { 1.0 } else { 0.0 },
+                    if top_crease { 1.0 } else { 0.0 },
+                    if sharp_at(i) { 1.0 } else { 0.0 },
+                ];
+                builder.add_face_with_attrs(
+                    &[
+                        below + base + i,
+                        below + base + j,
+                        above + base + j,
+                        above + base + i,
+                    ],
+                    &FaceBuildAttrs {
+                        region: Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg),
+                        edge_seams: None,
+                        edge_sharpness: Some(&sharp),
+                    },
+                )?;
+                face_origins.push(Feature::LoftWall {
+                    band: band_u16,
+                    loop_index,
+                    seg,
+                });
+            }
+        }
+    }
+
+    // Caps: each boundary section triangulated from its own discretization.
+    if start_cap || end_cap {
+        let mut emit_cap = |d: &DiscretizedProfile,
+                            offset: u32,
+                            reverse: bool,
+                            feature: Feature,
+                            region: u32|
+         -> Result<(), TessellateError> {
+            let convex_simple = d.holes.is_empty() && is_convex_ring(&d.outer);
+            if convex_simple {
+                let n = len_u32(d.outer.points.len());
+                let ring: Vec<u32> = if reverse {
+                    (0..n).rev().map(|i| offset + i).collect()
+                } else {
+                    (0..n).map(|i| offset + i).collect()
+                };
+                builder.add_face_with_attrs(
+                    &ring,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        ..FaceBuildAttrs::default()
+                    },
+                )?;
+                face_origins.push(feature);
+            } else {
+                let holes: Vec<&[[f64; 2]]> = d.holes.iter().map(|h| h.points.as_slice()).collect();
+                let input = PolygonInput {
+                    outer: &d.outer.points,
+                    holes: &holes,
+                };
+                let tri = triangulate(&input, &TriParams::default())?;
+                for t in &tri.triangles {
+                    let corners = if reverse {
+                        [offset + t[2], offset + t[1], offset + t[0]]
+                    } else {
+                        [offset + t[0], offset + t[1], offset + t[2]]
+                    };
+                    builder.add_face_with_attrs(
+                        &corners,
+                        &FaceBuildAttrs {
+                            region: Some(region),
+                            ..FaceBuildAttrs::default()
+                        },
+                    )?;
+                    face_origins.push(feature);
+                }
+            }
+            Ok(())
+        };
+        if start_cap {
+            emit_cap(
+                &discretized[0],
+                section_offset(0),
+                true,
+                Feature::CapStart,
+                REGION_CAP_START,
+            )?;
+        }
+        if end_cap {
+            let last = sections.len() - 1;
+            emit_cap(
+                &discretized[last],
+                section_offset(last),
+                false,
+                Feature::CapEnd,
+                REGION_CAP_END,
+            )?;
+        }
+    }
+
+    let result = builder.build()?;
+    let mut vertex_features = Vec::with_capacity(reference.points_len() * sections.len());
+    for d in &discretized {
+        let mut per_ring: Vec<Feature> = Vec::with_capacity(d.points_len());
+        for (ring_index, ring) in d.rings().enumerate() {
+            let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
+            for &seg in &ring.edge_seg {
+                per_ring.push(Feature::Wall { loop_index, seg });
+            }
+        }
+        vertex_features.extend_from_slice(&per_ring);
+    }
+    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    Ok(TessellatedBody {
+        mesh: result.mesh,
+        source_map,
+    })
+}
+
+// --- Sweep -------------------------------------------------------------------
+
+fn norm3(v: [f64; 3]) -> f64 {
+    libm::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+}
+
+fn scale3(v: [f64; 3], k: f64) -> [f64; 3] {
+    [v[0] * k, v[1] * k, v[2] * k]
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// One sweep frame: `(origin, u, v, t)` with `u x v = t` (right-handed).
+type SweepFrame = ([f64; 3], [f64; 3], [f64; 3], [f64; 3]);
+
+/// Per-ring frames along a polyline: miter tangents plus a
+/// rotation-minimizing normal transported by the double-reflection method
+/// (pure arithmetic and square roots — deterministic).
+///
+/// Right-handedness means a straight +Z path reproduces the extrude
+/// orientation exactly.
+fn sweep_frames(
+    points: &[[f64; 3]],
+    policy: &EvalPolicy,
+) -> Result<Vec<SweepFrame>, TessellateError> {
+    let n = points.len();
+    let mut dirs: Vec<[f64; 3]> = Vec::with_capacity(n - 1);
+    for w in points.windows(2) {
+        let d = sub3(w[1], w[0]);
+        dirs.push(scale3(d, 1.0 / norm3(d)));
+    }
+    // Miter tangents: endpoints use their segment, interior points the
+    // bisector; anti-parallel segments have no bisector (typed cusp).
+    let mut tangents: Vec<[f64; 3]> = Vec::with_capacity(n);
+    tangents.push(dirs[0]);
+    for i in 1..n - 1 {
+        let sum = add3(dirs[i - 1], dirs[i]);
+        let len = norm3(sum);
+        if len <= 1e-12 {
+            return Err(TessellateError::PathCusp { point: i });
+        }
+        tangents.push(scale3(sum, 1.0 / len));
+    }
+    tangents.push(dirs[n - 2]);
+
+    // Seed normal: Gram-Schmidt the world axis least aligned with t0
+    // (ties resolve x before y before z) — deterministic, trig-free.
+    let t0 = tangents[0];
+    let abs = [libm::fabs(t0[0]), libm::fabs(t0[1]), libm::fabs(t0[2])];
+    let axis_index = if abs[0] <= abs[1] && abs[0] <= abs[2] {
+        0
+    } else if abs[1] <= abs[2] {
+        1
+    } else {
+        2
+    };
+    let mut axis = [0.0; 3];
+    axis[axis_index] = 1.0;
+    let mut u = sub3(axis, scale3(t0, dot3(axis, t0)));
+    u = scale3(u, 1.0 / norm3(u));
+
+    let mut frames = Vec::with_capacity(n);
+    let v0 = cross3(tangents[0], u);
+    frames.push((points[0], u, v0, tangents[0]));
+    for i in 1..n {
+        // Double reflection (Wang et al.): transport (u, t) from point
+        // i-1 to point i without spin.
+        let (p_prev, u_prev, _, t_prev) = frames[i - 1];
+        let v1 = sub3(points[i], p_prev);
+        let c1 = dot3(v1, v1);
+        let u_l = sub3(u_prev, scale3(v1, 2.0 / c1 * dot3(v1, u_prev)));
+        let t_l = sub3(t_prev, scale3(v1, 2.0 / c1 * dot3(v1, t_prev)));
+        let v2 = sub3(tangents[i], t_l);
+        let c2 = dot3(v2, v2);
+        let u_i = if c2 <= 1e-24 {
+            u_l
+        } else {
+            sub3(u_l, scale3(v2, 2.0 / c2 * dot3(v2, u_l)))
+        };
+        let v_i = cross3(tangents[i], u_i);
+        frames.push((points[i], u_i, v_i, tangents[i]));
+    }
+    let _ = policy;
+    Ok(frames)
+}
+
+/// Tessellates a sweep: the profile carried along a polyline path under a
+/// rotation-minimizing frame, placed by `placement`.
+///
+/// Rings sit at every path point (miter joints); consecutive rings connect
+/// with quads attributed as [`Feature::SweepWall`] per path segment. The
+/// start cap closes the first ring (reversed), the end cap the last. Ring
+/// edges at path corners sharper than the policy threshold crease, as do
+/// profile-corner laterals (section-0 tangent rule) and cap rims. Tight
+/// joints can self-intersect the miter ring — the sweep does not detect
+/// that (v1 scope; keep joint angles moderate relative to profile size).
+///
+/// # Errors
+///
+/// Returns a typed [`TessellateError`]; never panics.
+pub fn tessellate_sweep(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &[[f64; 3]],
+    caps: CapMode,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
+    let d = discretize_profile(profile, &policy.discretize)?;
+    let frames = sweep_frames(path, policy)?;
+
+    // Ring creases at path corners: turn angle between adjacent segments.
+    let corner_ring_sharp: Vec<bool> = {
+        let mut flags = alloc::vec![false; frames.len()];
+        for i in 1..path.len() - 1 {
+            let a = sub3(path[i], path[i - 1]);
+            let b = sub3(path[i + 1], path[i]);
+            let cross = norm3(cross3(a, b));
+            flags[i] = cross > policy.sharp_sin_threshold * norm3(a) * norm3(b);
+        }
+        flags
+    };
+
+    let ring_starts = ring_starts(&d);
+    let total = len_u32(d.points_len());
+    let mut builder = MeshBuilder::new();
+    for (origin, u, v, _) in &frames {
+        for ring in d.rings() {
+            for p in &ring.points {
+                let local = add3(add3(*origin, scale3(*u, p[0])), scale3(*v, p[1]));
+                builder.push_vertex(narrow(apply_placement(placement, local)));
+            }
+        }
+    }
+    let ring_offset = |k: usize| len_u32(k) * total;
+
+    let mut face_origins: Vec<Feature> = Vec::new();
+    let seg_offsets = seg_offsets(profile);
+    let corner_sharp: Vec<Vec<bool>> = core::iter::once(profile.outer())
+        .chain(profile.holes().iter())
+        .map(|source| loop_corner_sharpness(source, policy))
+        .collect();
+
+    let start_cap = matches!(caps, CapMode::Both | CapMode::Start);
+    let end_cap = matches!(caps, CapMode::Both | CapMode::End);
+    let bands = frames.len() - 1;
+
+    for band in 0..bands {
+        let below = ring_offset(band);
+        let above = ring_offset(band + 1);
+        let band_u16 = u16::try_from(band).unwrap_or(u16::MAX);
+        for (ring_index, ring) in d.rings().enumerate() {
+            let base = ring_starts[ring_index];
+            let n = len_u32(ring.points.len());
+            let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let seg = ring.edge_seg[i as usize];
+                let sharp_at = |point: u32| {
+                    ring.is_endpoint(point)
+                        && corner_sharp[ring_index][ring.edge_seg[point as usize] as usize]
+                };
+                let bottom_crease = if band == 0 {
+                    start_cap
+                } else {
+                    corner_ring_sharp[band]
+                };
+                let top_crease = if band + 1 == bands {
+                    end_cap
+                } else {
+                    corner_ring_sharp[band + 1]
+                };
+                let sharp = [
+                    if bottom_crease { 1.0 } else { 0.0 },
+                    if sharp_at(j) { 1.0 } else { 0.0 },
+                    if top_crease { 1.0 } else { 0.0 },
+                    if sharp_at(i) { 1.0 } else { 0.0 },
+                ];
+                builder.add_face_with_attrs(
+                    &[
+                        below + base + i,
+                        below + base + j,
+                        above + base + j,
+                        above + base + i,
+                    ],
+                    &FaceBuildAttrs {
+                        region: Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg),
+                        edge_seams: None,
+                        edge_sharpness: Some(&sharp),
+                    },
+                )?;
+                face_origins.push(Feature::SweepWall {
+                    band: band_u16,
+                    loop_index,
+                    seg,
+                });
+            }
+        }
+    }
+
+    if start_cap || end_cap {
+        let convex_simple = d.holes.is_empty() && is_convex_ring(&d.outer);
+        let emit = |builder: &mut MeshBuilder,
+                    face_origins: &mut Vec<Feature>,
+                    offset: u32,
+                    reverse: bool,
+                    feature: Feature,
+                    region: u32|
+         -> Result<(), TessellateError> {
+            if convex_simple {
+                let n = len_u32(d.outer.points.len());
+                let ring: Vec<u32> = if reverse {
+                    (0..n).rev().map(|i| offset + i).collect()
+                } else {
+                    (0..n).map(|i| offset + i).collect()
+                };
+                builder.add_face_with_attrs(
+                    &ring,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        ..FaceBuildAttrs::default()
+                    },
+                )?;
+                face_origins.push(feature);
+            } else {
+                let holes: Vec<&[[f64; 2]]> = d.holes.iter().map(|h| h.points.as_slice()).collect();
+                let input = PolygonInput {
+                    outer: &d.outer.points,
+                    holes: &holes,
+                };
+                let tri = triangulate(&input, &TriParams::default())?;
+                for t in &tri.triangles {
+                    let corners = if reverse {
+                        [offset + t[2], offset + t[1], offset + t[0]]
+                    } else {
+                        [offset + t[0], offset + t[1], offset + t[2]]
+                    };
+                    builder.add_face_with_attrs(
+                        &corners,
+                        &FaceBuildAttrs {
+                            region: Some(region),
+                            ..FaceBuildAttrs::default()
+                        },
+                    )?;
+                    face_origins.push(feature);
+                }
+            }
+            Ok(())
+        };
+        if start_cap {
+            emit(
+                &mut builder,
+                &mut face_origins,
+                ring_offset(0),
+                true,
+                Feature::CapStart,
+                REGION_CAP_START,
+            )?;
+        }
+        if end_cap {
+            emit(
+                &mut builder,
+                &mut face_origins,
+                ring_offset(frames.len() - 1),
+                false,
+                Feature::CapEnd,
+                REGION_CAP_END,
+            )?;
+        }
+    }
+
+    let result = builder.build()?;
+    let vertex_features = profile_vertex_features(&d, len_u32(frames.len()));
+    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    Ok(TessellatedBody {
+        mesh: result.mesh,
+        source_map,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1065,5 +1602,223 @@ mod tests {
         )
         .expect("second");
         assert_eq!(sig(&a), sig(&b), "double-run signature equality");
+    }
+
+    #[test]
+    fn two_section_rect_loft_matches_extrude() {
+        // A loft between two identical rects offset along z is a prism.
+        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let sections = [
+            (Placement3::IDENTITY, &profile),
+            (Placement3::translate(0.0, 0.0, 3.0), &profile),
+        ];
+        let body =
+            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
+        assert_clean(&body);
+        assert!((mesh_volume(&body.mesh) - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn tapered_loft_volume_matches_frustum() {
+        // Similar rectangles: 4x2 at z=0 to 2x1 at z=3, centered. Frustum
+        // volume: h/3 (A1 + A2 + sqrt(A1 A2)) = 1 * (8 + 2 + 4) = 14.
+        let big = builders::rect(4.0, 2.0).expect("rect");
+        let small = builders::rect(2.0, 1.0).expect("rect");
+        let sections = [
+            (Placement3::IDENTITY, &big),
+            (Placement3::translate(1.0, 0.5, 3.0), &small),
+        ];
+        let body =
+            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
+        assert_clean(&body);
+        assert!(
+            (mesh_volume(&body.mesh) - 14.0).abs() < 1e-3,
+            "frustum volume {}",
+            mesh_volume(&body.mesh)
+        );
+    }
+
+    #[test]
+    fn three_section_loft_creases_intermediate_ring() {
+        let profile = builders::rect(1.0, 1.0).expect("rect");
+        let wide = builders::rect(1.0, 1.0).expect("rect");
+        let sections = [
+            (Placement3::IDENTITY, &profile),
+            (Placement3::translate(0.4, 0.0, 1.0), &wide),
+            (Placement3::translate(0.0, 0.0, 2.0), &profile),
+        ];
+        let body =
+            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
+        assert_clean(&body);
+        // Intermediate ring edges (z == 1) crease.
+        let mesh = &body.mesh;
+        let mut mid_creases = 0;
+        for face in mesh.faces() {
+            for he in mesh.face_loop(face) {
+                if let Some(edge) = mesh.canonical_edge(he)
+                    && mesh.edge_sharpness(edge).unwrap_or(0.0) > 0.5
+                {
+                    let a = mesh.to_vertex(he).and_then(|v| mesh.vertex_position(v));
+                    let b = mesh
+                        .to_vertex(mesh.twin(he).expect("twin"))
+                        .and_then(|v| mesh.vertex_position(v));
+                    if let (Some(a), Some(b)) = (a, b)
+                        && (a[2] - 1.0).abs() < 1e-6
+                        && (b[2] - 1.0).abs() < 1e-6
+                    {
+                        mid_creases += 1;
+                    }
+                }
+            }
+        }
+        assert!(mid_creases > 0, "intermediate section ring must crease");
+        // Bands are attributed.
+        assert!(
+            body.source_map
+                .face_features()
+                .iter()
+                .any(|f| matches!(f, Feature::LoftWall { band: 1, .. }))
+        );
+    }
+
+    #[test]
+    fn mismatched_sections_are_rejected() {
+        let rect = builders::rect(1.0, 1.0).expect("rect");
+        let ring = builders::ring(1.0, 0.5).expect("ring");
+        let sections = [
+            (Placement3::IDENTITY, &rect),
+            (Placement3::translate(0.0, 0.0, 1.0), &ring),
+        ];
+        let result = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default());
+        assert_eq!(
+            result
+                .err()
+                .map(|e| matches!(e, TessellateError::SectionMismatch { section: 1 })),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn loft_is_deterministic() {
+        let big = builders::rect(4.0, 2.0).expect("rect");
+        let small = builders::rect(2.0, 1.0).expect("rect");
+        let sections = [
+            (Placement3::IDENTITY, &big),
+            (Placement3::translate(1.0, 0.5, 3.0), &small),
+        ];
+        let sig = |body: &TessellatedBody| {
+            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            exedra_testkit::golden::trimesh_signature(&tri)
+        };
+        let a = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("a");
+        let b = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("b");
+        assert_eq!(sig(&a), sig(&b));
+    }
+
+    #[test]
+    fn straight_sweep_matches_extrude_volume() {
+        // A straight +Z path reproduces the extrusion exactly (the frame
+        // seed keeps u x v = t right-handed).
+        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let path = [[0.0, 0.0, 0.0], [0.0, 0.0, 3.0]];
+        let body = tessellate_sweep(
+            &profile,
+            &Placement3::IDENTITY,
+            &path,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("tessellates");
+        assert_clean(&body);
+        assert!((mesh_volume(&body.mesh) - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn l_path_sweep_is_clean_and_creases_the_corner() {
+        let profile = builders::rect(0.4, 0.4).expect("rect");
+        let path = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [2.0, 0.0, 2.0]];
+        let body = tessellate_sweep(
+            &profile,
+            &Placement3::IDENTITY,
+            &path,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("tessellates");
+        assert_clean(&body);
+        // Both bands attributed; corner ring creased.
+        assert!(
+            body.source_map
+                .face_features()
+                .iter()
+                .any(|f| matches!(f, Feature::SweepWall { band: 0, .. }))
+        );
+        assert!(
+            body.source_map
+                .face_features()
+                .iter()
+                .any(|f| matches!(f, Feature::SweepWall { band: 1, .. }))
+        );
+        let mesh = &body.mesh;
+        let creased = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .filter(|&he| {
+                mesh.canonical_edge(he)
+                    .map(|e| mesh.edge_sharpness(e).unwrap_or(0.0) > 0.5)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert!(creased > 0, "corner ring and rims crease");
+    }
+
+    #[test]
+    fn cusp_paths_are_rejected() {
+        let profile = builders::rect(0.4, 0.4).expect("rect");
+        let path = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [0.0, 0.0, 0.0]];
+        let result = tessellate_sweep(
+            &profile,
+            &Placement3::IDENTITY,
+            &path,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(TessellateError::PathCusp { point: 1 })
+        ));
+    }
+
+    #[test]
+    fn sweep_is_deterministic() {
+        let profile = builders::rounded_rect(0.6, 0.4, 0.1).expect("rounded");
+        let path = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 2.0],
+            [1.5, 0.0, 3.5],
+            [3.0, 1.0, 3.5],
+        ];
+        let sig = |body: &TessellatedBody| {
+            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            exedra_testkit::golden::trimesh_signature(&tri)
+        };
+        let a = tessellate_sweep(
+            &profile,
+            &Placement3::IDENTITY,
+            &path,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("a");
+        let b = tessellate_sweep(
+            &profile,
+            &Placement3::IDENTITY,
+            &path,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("b");
+        assert_eq!(sig(&a), sig(&b));
+        assert_clean(&a);
     }
 }

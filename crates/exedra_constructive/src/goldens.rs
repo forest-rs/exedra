@@ -241,13 +241,11 @@ macro_rules! golden_test {
             let errors = body.mesh.validate_deep();
             assert!(errors.is_empty(), "validate_deep: {errors:?}");
 
-            let mesh_golden =
-                include_str!(concat!("../goldens/", $fixture_name, ".mesh.golden"));
+            let mesh_golden = include_str!(concat!("../goldens/", $fixture_name, ".mesh.golden"));
             exedra_testkit::golden::assert_mesh_golden(&body.mesh, mesh_golden)
                 .expect("mesh golden must match; re-bless deliberately");
 
-            let map_golden =
-                include_str!(concat!("../goldens/", $fixture_name, ".map.golden"));
+            let map_golden = include_str!(concat!("../goldens/", $fixture_name, ".map.golden"));
             assert_eq!(
                 body.source_map.dump(),
                 map_golden,
@@ -293,7 +291,12 @@ fn goldens_are_signature_stable() {
                 .to_trimesh(&exedra::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
-        assert_eq!(sig(&a), sig(&b), "{}: signature must be stable", fixture.name);
+        assert_eq!(
+            sig(&a),
+            sig(&b),
+            "{}: signature must be stable",
+            fixture.name
+        );
     }
 }
 

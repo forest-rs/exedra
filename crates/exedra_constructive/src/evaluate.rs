@@ -14,7 +14,8 @@ use alloc::vec::Vec;
 
 use crate::ir::{NodeId, NodeKind, Placement3, Recipe, SourceId};
 use crate::tessellate::{
-    EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_revolve,
+    EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
+    tessellate_revolve, tessellate_sweep,
 };
 
 /// How faithfully a node's output represents its constructive intent.
@@ -260,6 +261,47 @@ impl EvalCx<'_> {
                     &combined,
                     *sweep,
                     *caps,
+                    self.policy,
+                )
+                .map_err(|error| EvalError {
+                    node: node_id,
+                    error,
+                })?;
+                Ok(self.finish_body(node_id, body, emit))
+            }
+            NodeKind::Loft {
+                sections,
+                policy: _,
+                caps,
+            } => {
+                let placed: Vec<(Placement3, &crate::profile::Profile2)> = sections
+                    .iter()
+                    .map(|(placement, profile)| {
+                        (compose(world, placement), self.recipe.profile(*profile))
+                    })
+                    .collect();
+                let caps = *caps;
+                let body =
+                    tessellate_loft(&placed, caps, self.policy).map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })?;
+                Ok(self.finish_body(node_id, body, emit))
+            }
+            NodeKind::Sweep {
+                profile,
+                path,
+                caps,
+            } => {
+                let crate::ir::Path3::Polyline { points, frame: _ } = path;
+                let points = points.clone();
+                let caps = *caps;
+                let profile = *profile;
+                let body = tessellate_sweep(
+                    self.recipe.profile(profile),
+                    world,
+                    &points,
+                    caps,
                     self.policy,
                 )
                 .map_err(|error| EvalError {

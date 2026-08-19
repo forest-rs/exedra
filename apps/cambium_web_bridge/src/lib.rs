@@ -1813,6 +1813,7 @@ fn code_name(code: DiagCode) -> &'static str {
         DiagCode::InternalInvariantViolation => "internal_invariant_violation",
         DiagCode::Cancelled => "cancelled",
         DiagCode::BudgetExceeded => "budget_exceeded",
+        DiagCode::UnsupportedOperation => "unsupported_operation",
     }
 }
 

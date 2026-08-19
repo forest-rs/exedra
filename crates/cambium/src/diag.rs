@@ -46,6 +46,9 @@ pub enum DiagCode {
     Cancelled,
     /// Resource/time budget was exceeded.
     BudgetExceeded,
+    /// The requested operation is not supported in this version (for
+    /// example constructive CSG before the boolean pipeline lands).
+    UnsupportedOperation,
 }
 
 /// Topology span associated with a diagnostic.

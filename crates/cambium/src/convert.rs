@@ -7,9 +7,11 @@
 //! exposes explicit, typed conversion seams rather than forcing analytic state
 //! through the mesh-only [`crate::EditOperator`] trait.
 //!
-//! Current v0.1 surface:
+//! Current surface:
 //! - planar analytic shell -> [`exedra::Mesh`]
 //! - rectangular frame spike helper -> [`exedra::Mesh`]
+//! - constructive recipe -> tessellated [`exedra::Mesh`] bodies with source
+//!   maps and an honest report ([`constructive_recipe_to_mesh`])
 //!
 //! ```rust
 //! use cambium::convert::{
@@ -155,6 +157,86 @@ pub fn rect_frame_to_mesh(
     )
 }
 
+// --- Constructive recipe -> mesh --------------------------------------------
+
+pub use exedra_constructive::evaluate::{
+    EvalError as ConstructiveEvalError, GeometryReport, PlacedBody,
+    Severity as ConstructiveSeverity,
+};
+pub use exedra_constructive::ir::{Fingerprint as RecipeFingerprint, Recipe};
+pub use exedra_constructive::tessellate::EvalPolicy as ConstructiveEvalPolicy;
+
+use crate::diag::{DiagCode, DiagLevel, Diagnostic};
+
+/// Parameters for explicit constructive-recipe to mesh conversion.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct ConstructiveToMeshParams {
+    /// Evaluation policy used by `exedra_constructive`.
+    pub policy: ConstructiveEvalPolicy,
+}
+
+/// Output of a constructive-recipe conversion.
+///
+/// The conversion is fingerprint-bound: `fingerprint` is the recipe's
+/// content fingerprint under the evaluation schema version, so downstream
+/// caches and plans can detect stale results exactly.
+#[derive(Debug)]
+pub struct ConstructiveToMeshOutput {
+    /// Tessellated bodies in deterministic node order.
+    pub bodies: Vec<PlacedBody>,
+    /// The recipe's content fingerprint at conversion time.
+    pub fingerprint: RecipeFingerprint,
+    /// The full constructive evaluation report (fidelity, envelopes,
+    /// counters, recorded policy).
+    pub report: GeometryReport,
+    /// The report's diagnostics, mapped into Cambium diagnostics.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Converts a constructive recipe into tessellated Exedra meshes.
+///
+/// This is the explicit conversion seam for the constructive head (the
+/// analogue of [`analytic_shell_to_mesh`]): deterministic for fixed
+/// `(recipe, params)`, provenance-carrying via each body's source map, and
+/// honest about anything not evaluable — those outcomes arrive as mapped
+/// diagnostics and report fidelity, never as silently approximate geometry.
+///
+/// # Errors
+///
+/// Fails only when a supported body fails to tessellate.
+pub fn constructive_recipe_to_mesh(
+    recipe: &Recipe,
+    params: &ConstructiveToMeshParams,
+) -> Result<ConstructiveToMeshOutput, ConstructiveEvalError> {
+    let evaluation = exedra_constructive::evaluate::evaluate(recipe, &params.policy)?;
+    let diagnostics = evaluation
+        .report
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let level = match d.severity {
+                ConstructiveSeverity::Note => DiagLevel::Note,
+                ConstructiveSeverity::Warning => DiagLevel::Warn,
+                ConstructiveSeverity::Error => DiagLevel::Error,
+            };
+            let code = match d.code {
+                "eval.csg.unsupported" | "eval.unimplemented" => DiagCode::UnsupportedOperation,
+                _ => DiagCode::InternalInvariantViolation,
+            };
+            let mut message = alloc::string::String::from(d.code);
+            message.push_str(": ");
+            message.push_str(&d.message);
+            Diagnostic::new(level, code, message)
+        })
+        .collect();
+    Ok(ConstructiveToMeshOutput {
+        fingerprint: recipe.recipe_fingerprint(),
+        bodies: evaluation.bodies,
+        report: evaluation.report,
+        diagnostics,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::mesh_signature;
@@ -223,5 +305,89 @@ mod tests {
 
         assert_eq!(mesh_signature(&direct.mesh), mesh_signature(&manual.mesh));
         assert_eq!(direct.face_provenance, manual.face_provenance);
+    }
+
+    #[test]
+    fn constructive_recipe_conversion_is_fingerprint_bound() {
+        use super::{ConstructiveToMeshParams, RecipeFingerprint, constructive_recipe_to_mesh};
+        use exedra_constructive::builders;
+        use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+
+        let build = |height: f64| {
+            let mut b = RecipeBuilder::new();
+            let p = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+            let n = b
+                .add(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height,
+                    caps: CapMode::Both,
+                })
+                .expect("valid");
+            b.finish(n).expect("valid recipe")
+        };
+        let recipe = build(3.0);
+        let out = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
+            .expect("converts");
+        assert_eq!(out.bodies.len(), 1);
+        assert!(out.diagnostics.is_empty());
+        let fp: RecipeFingerprint = out.fingerprint;
+        assert_eq!(fp, recipe.recipe_fingerprint());
+        assert_ne!(fp, build(4.0).recipe_fingerprint());
+
+        // Determinism across conversions.
+        let again = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
+            .expect("converts");
+        assert_eq!(
+            mesh_signature(&out.bodies[0].body.mesh),
+            mesh_signature(&again.bodies[0].body.mesh)
+        );
+    }
+
+    #[test]
+    fn constructive_csg_maps_to_unsupported_diagnostic() {
+        use super::{ConstructiveToMeshParams, constructive_recipe_to_mesh};
+        use crate::diag::{DiagCode, DiagLevel};
+        use exedra_constructive::builders;
+        use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, RecipeBuilder};
+
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let e1 = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let e2 = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::translate(0.5, 0.0, 0.0),
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let csg = b
+            .add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands: alloc::vec![e1, e2],
+            })
+            .expect("valid");
+        let recipe = b.finish(csg).expect("valid recipe");
+
+        let out = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
+            .expect("converts");
+        assert!(out.bodies.is_empty());
+        assert_eq!(out.diagnostics.len(), 1);
+        assert_eq!(out.diagnostics[0].level, DiagLevel::Error);
+        assert_eq!(out.diagnostics[0].code, DiagCode::UnsupportedOperation);
+        assert!(
+            out.diagnostics[0]
+                .message
+                .starts_with("eval.csg.unsupported")
+        );
+        assert_eq!(out.report.counters.envelope_only, 1);
     }
 }

@@ -674,7 +674,9 @@ impl From<LoopError> for TessellateError {
     }
 }
 
-const PLANAR_EPSILON: f32 = 1.0e-5;
+/// Planarity/coincidence tolerance, sourced from the shared kernel policy
+/// rather than a module-local constant (exedra `NumericPolicy`).
+const PLANAR_EPSILON: f32 = exedra::NumericPolicy::DEFAULT_COPLANAR_TOLERANCE;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct ProjectedVertex {
@@ -859,26 +861,63 @@ fn triangulate_face_with_openings(
         })
         .collect::<Vec<_>>();
 
-    for opening_index in 0..projected_openings.len() {
-        let opening_loop_id = shell.faces[face.index() as usize].openings[opening_index];
-        let remaining = projected_openings
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != opening_index)
-            .map(|(_, opening)| opening.as_slice())
-            .collect::<Vec<_>>();
-        merged = bridge_opening(
-            &merged,
-            &projected_openings[opening_index],
-            &remaining,
-            face,
-            opening_loop_id,
-        )?;
-        orient_ccw(&mut merged);
-    }
+    // Delegate bridging and ear clipping to the shared deterministic
+    // facility (exedra_triangulate): exact-sign predicates, the brief-11
+    // lowest-stable-index tie-break, and typed failures. f32 coordinates
+    // promote to f64 exactly, so determinism carries through.
+    let outer_points: Vec<[f64; 2]> = merged
+        .iter()
+        .map(|v| [f64::from(v.point[0]), f64::from(v.point[1])])
+        .collect();
+    let opening_points: Vec<Vec<[f64; 2]>> = projected_openings
+        .iter()
+        .map(|opening| {
+            opening
+                .iter()
+                .map(|v| [f64::from(v.point[0]), f64::from(v.point[1])])
+                .collect()
+        })
+        .collect();
+    let holes: Vec<&[[f64; 2]]> = opening_points.iter().map(Vec::as_slice).collect();
+    let input = exedra_triangulate::PolygonInput {
+        outer: &outer_points,
+        holes: &holes,
+    };
+    let triangulation =
+        exedra_triangulate::triangulate(&input, &exedra_triangulate::TriParams::default())
+            .map_err(|error| map_triangulate_error(shell, face, error))?;
 
-    let ring = prune_ring(&merged);
-    ear_clip(face, &ring)
+    // Triangle indices address `outer ++ openings...` in order; map back to
+    // analytic vertex ids through the same concatenation.
+    let ids: Vec<AnalyticVertexId> = merged
+        .iter()
+        .chain(projected_openings.iter().flatten())
+        .map(|v| v.id)
+        .collect();
+    Ok(triangulation
+        .triangles
+        .iter()
+        .map(|t| [ids[t[0] as usize], ids[t[1] as usize], ids[t[2] as usize]])
+        .collect())
+}
+
+/// Maps shared-triangulator failures onto the analytic error surface.
+fn map_triangulate_error(
+    shell: &AnalyticShell,
+    face: AnalyticFaceId,
+    error: exedra_triangulate::TriError,
+) -> TessellateError {
+    use exedra_triangulate::TriError;
+    match error {
+        TriError::HoleOutsideOuter { hole } | TriError::UnbridgeableHole { hole } => {
+            let openings = &shell.faces[face.index() as usize].openings;
+            match openings.get(hole) {
+                Some(&opening) => TessellateError::OpeningBridgeFailed { face, opening },
+                None => TessellateError::EarClipFailed { face },
+            }
+        }
+        _ => TessellateError::EarClipFailed { face },
+    }
 }
 
 fn face_basis(
@@ -941,95 +980,6 @@ fn signed_area(loop_vertices: &[ProjectedVertex]) -> f32 {
         area += current[0] * next[1] - next[0] * current[1];
     }
     area * 0.5
-}
-
-fn bridge_opening(
-    outer: &[ProjectedVertex],
-    opening: &[ProjectedVertex],
-    remaining_openings: &[&[ProjectedVertex]],
-    face: AnalyticFaceId,
-    opening_loop: AnalyticLoopId,
-) -> Result<Vec<ProjectedVertex>, TessellateError> {
-    let opening_index = rightmost_vertex(opening);
-    let opening_vertex = opening[opening_index];
-    let bridge_index = (0..outer.len())
-        .find(|index| {
-            bridge_is_valid(
-                outer[*index],
-                opening_vertex,
-                outer,
-                opening,
-                remaining_openings,
-            )
-        })
-        .ok_or(TessellateError::OpeningBridgeFailed {
-            face,
-            opening: opening_loop,
-        })?;
-
-    let mut merged = Vec::with_capacity(outer.len() + opening.len() + 2);
-    merged.extend_from_slice(&outer[..=bridge_index]);
-    merged.extend_from_slice(&opening[opening_index..]);
-    merged.extend_from_slice(&opening[..=opening_index]);
-    merged.push(outer[bridge_index]);
-    merged.extend_from_slice(&outer[bridge_index + 1..]);
-    Ok(merged)
-}
-
-fn rightmost_vertex(loop_vertices: &[ProjectedVertex]) -> usize {
-    let mut best_index = 0;
-    for index in 1..loop_vertices.len() {
-        let current = loop_vertices[index];
-        let best = loop_vertices[best_index];
-        if current.point[0] > best.point[0] + PLANAR_EPSILON
-            || ((current.point[0] - best.point[0]).abs() <= PLANAR_EPSILON
-                && (current.point[1] < best.point[1] - PLANAR_EPSILON
-                    || ((current.point[1] - best.point[1]).abs() <= PLANAR_EPSILON
-                        && current.id < best.id)))
-        {
-            best_index = index;
-        }
-    }
-    best_index
-}
-
-fn bridge_is_valid(
-    outer_vertex: ProjectedVertex,
-    opening_vertex: ProjectedVertex,
-    outer: &[ProjectedVertex],
-    opening: &[ProjectedVertex],
-    remaining_openings: &[&[ProjectedVertex]],
-) -> bool {
-    let midpoint = [
-        0.5 * (outer_vertex.point[0] + opening_vertex.point[0]),
-        0.5 * (outer_vertex.point[1] + opening_vertex.point[1]),
-    ];
-    if !point_in_polygon(midpoint, outer)
-        || point_in_polygon(midpoint, opening)
-        || remaining_openings
-            .iter()
-            .any(|ring| point_in_polygon(midpoint, ring))
-    {
-        return false;
-    }
-
-    if polygon_edges(outer).iter().any(|edge| {
-        !shares_endpoint(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
-            && segments_intersect(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
-    }) {
-        return false;
-    }
-    if polygon_edges(opening).iter().any(|edge| {
-        !shares_endpoint(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
-            && segments_intersect(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
-    }) {
-        return false;
-    }
-    !remaining_openings.iter().any(|ring| {
-        polygon_edges(ring).iter().any(|edge| {
-            segments_intersect(edge.0, edge.1, outer_vertex.point, opening_vertex.point)
-        })
-    })
 }
 
 fn polygon_edges(loop_vertices: &[ProjectedVertex]) -> Vec<([f32; 2], [f32; 2])> {
@@ -1103,85 +1053,6 @@ fn point_on_polygon_edge(point: [f32; 2], polygon: &[ProjectedVertex]) -> bool {
     polygon_edges(polygon)
         .iter()
         .any(|edge| on_segment(edge.0, edge.1, point))
-}
-
-fn prune_ring(loop_vertices: &[ProjectedVertex]) -> Vec<ProjectedVertex> {
-    let mut pruned = Vec::with_capacity(loop_vertices.len());
-    for &vertex in loop_vertices {
-        if pruned
-            .last()
-            .is_some_and(|last: &ProjectedVertex| same_point(last.point, vertex.point))
-        {
-            continue;
-        }
-        pruned.push(vertex);
-    }
-    if pruned.len() > 1 && same_point(pruned[0].point, pruned[pruned.len() - 1].point) {
-        let _ = pruned.pop();
-    }
-    pruned
-}
-
-fn ear_clip(
-    face: AnalyticFaceId,
-    ring: &[ProjectedVertex],
-) -> Result<Vec<[AnalyticVertexId; 3]>, TessellateError> {
-    if ring.len() < 3 {
-        return Err(TessellateError::EarClipFailed { face });
-    }
-    let mut remaining = (0..ring.len()).collect::<Vec<_>>();
-    let mut triangles = Vec::with_capacity(ring.len().saturating_sub(2));
-
-    while remaining.len() > 3 {
-        let mut clipped = false;
-        for index in 0..remaining.len() {
-            let prev = remaining[(index + remaining.len() - 1) % remaining.len()];
-            let curr = remaining[index];
-            let next = remaining[(index + 1) % remaining.len()];
-            let a = ring[prev].point;
-            let b = ring[curr].point;
-            let c = ring[next].point;
-
-            if orient2d(a, b, c) <= PLANAR_EPSILON {
-                continue;
-            }
-            if remaining.iter().copied().any(|candidate| {
-                let point = ring[candidate].point;
-                candidate != prev
-                    && candidate != curr
-                    && candidate != next
-                    && !same_point(point, a)
-                    && !same_point(point, b)
-                    && !same_point(point, c)
-                    && point_in_triangle(point, a, b, c)
-            }) {
-                continue;
-            }
-
-            triangles.push([ring[prev].id, ring[curr].id, ring[next].id]);
-            remaining.remove(index);
-            clipped = true;
-            break;
-        }
-
-        if !clipped {
-            return Err(TessellateError::EarClipFailed { face });
-        }
-    }
-
-    triangles.push([
-        ring[remaining[0]].id,
-        ring[remaining[1]].id,
-        ring[remaining[2]].id,
-    ]);
-    Ok(triangles)
-}
-
-fn point_in_triangle(point: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
-    let ab = orient2d(a, b, point);
-    let bc = orient2d(b, c, point);
-    let ca = orient2d(c, a, point);
-    ab >= -PLANAR_EPSILON && bc >= -PLANAR_EPSILON && ca >= -PLANAR_EPSILON
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
