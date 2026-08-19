@@ -1,0 +1,27 @@
+[package]
+name = "exedra_constructive"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Constructive geometry head: immutable recipe IR with deterministic tessellation into Exedra meshes"
+readme = "README.md"
+keywords = ["geometry", "cad", "recipe", "no_std"]
+categories = ["graphics", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["exedra/std"]
+
+[dependencies]
+exedra = { features = ["libm"], workspace = true }
+exedra_triangulate.workspace = true
+hashbrown.workspace = true
+kurbo.workspace = true
+# Non-optional by design: evaluation trig always routes through libm, even in
+# std builds, so results are bit-identical across platforms and backends.
+libm.workspace = true

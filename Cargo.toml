@@ -10,6 +10,7 @@ members = [
     "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_analytic",
+    "crates/exedra_constructive",
     "crates/exedra_fidget",
     "crates/exedra_isosurface",
     "crates/exedra_primitives",
@@ -84,6 +85,7 @@ cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
+exedra_constructive = { default-features = false, path = "crates/exedra_constructive" }
 exedra_fidget = { default-features = false, path = "crates/exedra_fidget" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
@@ -94,6 +96,9 @@ exedra_triangulate = { default-features = false, path = "crates/exedra_triangula
 fidget = { default-features = false, version = "0.4.2" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
 invalidation = "0.2.0"
+# Pinned exactly: kurbo flattening output feeds content hashes and goldens in
+# the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
+kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
 serde_json = "1.0.145"
