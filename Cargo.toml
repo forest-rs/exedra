@@ -11,6 +11,7 @@ members = [
     "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_analytic",
+    "crates/exedra_assembly",
     "crates/exedra_constructive",
     "crates/exedra_fidget",
     "crates/exedra_isosurface",
@@ -87,6 +88,7 @@ cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
+exedra_assembly = { default-features = false, path = "crates/exedra_assembly" }
 exedra_constructive = { default-features = false, path = "crates/exedra_constructive" }
 exedra_fidget = { default-features = false, path = "crates/exedra_fidget" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
@@ -103,6 +105,9 @@ invalidation = "0.2.0"
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
-serde_json = "1.0.145"
+# float_roundtrip is required for correctness, not comfort: interchange
+# formats promise that serialized f64 values re-parse to identical bits, and
+# serde_json's default parser is shortest-print but lossy-parse.
+serde_json = { features = ["float_roundtrip"], version = "1.0.145" }
 wasm-bindgen = "0.2.104"
 web-time = "1.1.0"

@@ -1,0 +1,31 @@
+[package]
+name = "exedra_assembly"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Structure head: part definitions, instance trees, and material binding over Exedra geometry"
+readme = "README.md"
+keywords = ["geometry", "assembly", "instancing", "no_std"]
+categories = ["graphics", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+# The JSON interchange surface for external frontends. Implies std, matching
+# the exedra-recipe-v1 policy: interchange is a host-side format.
+serde = ["dep:serde", "exedra_constructive/serde", "std"]
+std = ["exedra/std", "exedra_constructive/std"]
+
+[dependencies]
+exedra = { features = ["libm"], workspace = true }
+exedra_constructive.workspace = true
+hashbrown.workspace = true
+invalidation.workspace = true
+serde = { optional = true, workspace = true }
+
+[dev-dependencies]
+serde_json.workspace = true

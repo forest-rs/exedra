@@ -49,3 +49,44 @@ impl FloatExt for f32 {
         libm::sqrtf(self)
     }
 }
+
+#[cfg(feature = "std")]
+impl FloatExt for f64 {
+    #[inline]
+    fn atan2_ext(self, x: Self) -> Self {
+        self.atan2(x)
+    }
+
+    #[inline]
+    fn rem_euclid_ext(self, rhs: Self) -> Self {
+        self.rem_euclid(rhs)
+    }
+
+    #[inline]
+    fn sqrt_ext(self) -> Self {
+        self.sqrt()
+    }
+}
+
+#[cfg(all(not(feature = "std"), feature = "libm"))]
+impl FloatExt for f64 {
+    #[inline]
+    fn atan2_ext(self, x: Self) -> Self {
+        libm::atan2(self, x)
+    }
+
+    #[inline]
+    fn rem_euclid_ext(self, rhs: Self) -> Self {
+        let rhs_abs = if rhs < 0.0 { -rhs } else { rhs };
+        let mut remainder = self % rhs;
+        if remainder < 0.0 {
+            remainder += rhs_abs;
+        }
+        remainder
+    }
+
+    #[inline]
+    fn sqrt_ext(self) -> Self {
+        libm::sqrt(self)
+    }
+}

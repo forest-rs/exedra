@@ -379,15 +379,13 @@ mod tests {
 
         let out = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
             .expect("converts");
+        // This fixture's operands share coplanar faces, which the pipeline
+        // still typed-defers (exe-45bt): the CSG falls back honestly, with
+        // the pipeline's own diagnostics surfaced alongside the fallback.
         assert!(out.bodies.is_empty());
-        assert_eq!(out.diagnostics.len(), 1);
-        assert_eq!(out.diagnostics[0].level, DiagLevel::Error);
-        assert_eq!(out.diagnostics[0].code, DiagCode::UnsupportedOperation);
-        assert!(
-            out.diagnostics[0]
-                .message
-                .starts_with("eval.csg.unsupported")
-        );
+        assert!(out.diagnostics.iter().any(|d| d.level == DiagLevel::Error
+            && d.code == DiagCode::UnsupportedOperation
+            && d.message.starts_with("eval.csg.unsupported")));
         assert_eq!(out.report.counters.envelope_only, 1);
     }
 }

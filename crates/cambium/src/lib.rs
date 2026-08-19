@@ -126,6 +126,7 @@ mod operator;
 mod patch;
 mod plan;
 mod policy;
+pub mod profile_section;
 mod region;
 mod report;
 mod runner;

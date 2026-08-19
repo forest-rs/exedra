@@ -203,6 +203,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_assembly"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_constructive",
+ "hashbrown 0.16.1",
+ "invalidation",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "exedra_constructive"
 version = "0.0.0"
 dependencies = [
