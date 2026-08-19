@@ -14,6 +14,9 @@ extend-ignore-re = ["\\b[a-z]{3}-[0-9a-z]{4}\\b"]
 # Match Identifier - Case Sensitive
 [default.extend-identifiers]
 LOD = "LOD"
+# Dekker two-product low halves (a-low / b-low) in exact float arithmetic.
+alo = "alo"
+blo = "blo"
 
 # Match Inside a Word - Case Insensitive
 [default.extend-words]

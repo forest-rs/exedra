@@ -16,6 +16,7 @@ members = [
     "crates/exedra_qef",
     "crates/exedra_spatial",
     "crates/exedra_testkit",
+    "crates/exedra_triangulate",
 ]
 
 [workspace.package]
@@ -89,6 +90,7 @@ exedra_primitives = { default-features = false, path = "crates/exedra_primitives
 exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
+exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate" }
 fidget = { default-features = false, version = "0.4.2" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
 invalidation = "0.2.0"

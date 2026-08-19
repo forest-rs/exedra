@@ -1,0 +1,16 @@
+[package]
+name = "exedra_triangulate"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic 2D polygon triangulation for concave loops with holes"
+readme = "README.md"
+keywords = ["triangulation", "polygon", "no_std", "geometry"]
+categories = ["algorithms", "graphics"]
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,5 +1,10 @@
 # Brief: Deterministic triangulation strategy (and what we defer)
 
+> **Implemented by:** `exedra_triangulate`
+> (`crates/exedra_triangulate/docs/adr-0001-deterministic-triangulation-scope.md`),
+> including the lowest-stable-index ear tie-break prescribed below. This brief
+> remains as design rationale.
+
 ## Decision
 Triangulation in Exedra must be **deterministic** and stable with respect to face-loop ordering. Early versions may use a simple, documented strategy with known limitations, with an explicit path to improved robustness later.
 
