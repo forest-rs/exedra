@@ -65,7 +65,7 @@ There is one normal path through the example:
 BasilicaParams
     -> build_basilica_assembly
         -> architecture::{nave, aisles, interior_arcades, east_end, crossing,
-                         crossing_transition, buttresses}
+                         crossing_transition, buttresses, nave_trusses}
             -> geometry recipes and profiles
                 -> editable Assembly
                     -> optional name/role-based edits
@@ -79,6 +79,11 @@ context. `geometry` owns only low-level constructive recipes, profiles, and
 placement frames. `output` compiles the finished assembly and owns CLI/OBJ
 plumbing. This keeps future details as focused architectural modules rather
 than new capabilities on a general-purpose building DSL.
+
+The buttress elevations and nave-truss stations use
+`cambium::assembly` named linear patterns. Their authored ordinals remain the
+exported identities: the missing west truss at ordinal `02` stays a named gap,
+while later stations keep their existing paths and insertion order.
 
 ## Name-addressable assembly API
 

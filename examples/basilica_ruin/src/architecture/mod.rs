@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use cambium::assembly::{LinearOccurrence, NamedAssemblyPattern, instantiate_named};
 use exedra_assembly::{Assembly, PartId};
 use exedra_constructive::ir::{Placement3, Recipe};
 
@@ -109,6 +110,15 @@ impl BuildContext {
         self.assembly
             .set_metadata(instance, names::ARCHITECTURAL_ROLE, role)
             .expect("fresh instance exists");
+    }
+
+    fn instantiate_pattern(
+        &mut self,
+        pattern: &NamedAssemblyPattern<'_>,
+        occurrences: &[LinearOccurrence],
+    ) {
+        instantiate_named(&mut self.assembly, pattern, occurrences)
+            .expect("scenario pattern must satisfy the accepted assembly contract");
     }
 
     fn finish(self) -> Assembly {

@@ -12,6 +12,7 @@ categories = ["data-structures", "algorithms"]
 [dependencies]
 exedra = { features = ["std"], workspace = true }
 exedra_analytic = { features = ["std"], workspace = true }
+exedra_assembly.workspace = true
 exedra_constructive.workspace = true
 invalidation.workspace = true
 libm = { optional = true, workspace = true }
@@ -26,6 +27,7 @@ web-time.workspace = true
 
 [dev-dependencies]
 cambium_testkit.workspace = true
+exedra_assembly = { features = ["serde"], workspace = true }
 exedra_testkit = { features = ["std"], workspace = true }
 
 [lints]

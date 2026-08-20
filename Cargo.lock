@@ -27,6 +27,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 name = "basilica_ruin"
 version = "0.0.0"
 dependencies = [
+ "cambium",
  "exedra_assembly",
  "exedra_constructive",
  "exedra_gltf",
@@ -74,6 +75,7 @@ dependencies = [
  "cambium_testkit",
  "exedra",
  "exedra_analytic",
+ "exedra_assembly",
  "exedra_constructive",
  "exedra_testkit",
  "invalidation",

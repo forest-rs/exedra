@@ -1,6 +1,9 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use cambium::assembly::{
+    InstanceTemplate, LinearRepeat, MetadataEntry, NamedAssemblyPattern, repeat_linear,
+};
 use exedra_assembly::PartId;
 use exedra_constructive::ir::Placement3;
 
@@ -55,17 +58,45 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
     let geometry = TrussGeometry::from_params(p, layout);
     let parts = add_member_parts(context, p, &geometry);
     let west_pitch = (layout.crossing_west - 4.0) / f64::from(WEST_BAYS);
-
-    for slot in 0..=WEST_BAYS {
-        if slot == OMITTED_WEST_SLOT {
-            continue;
-        }
-        let x = 2.0 + f64::from(slot) * west_pitch;
-        add_frame(context, &parts, &geometry, "west", slot, x, layout);
-    }
+    let role = [MetadataEntry {
+        key: names::ARCHITECTURAL_ROLE,
+        value: names::roles::NAVE_TRUSS_MEMBER,
+    }];
+    let members = member_templates(&parts, &geometry, layout, &role);
+    let west_occurrences = repeat_linear(&LinearRepeat {
+        count: WEST_BAYS + 1,
+        start: [2.0, 0.0, 0.0],
+        step: [west_pitch, 0.0, 0.0],
+        omitted: &[OMITTED_WEST_SLOT],
+    })
+    .expect("accepted west truss repeat must be finite");
+    context.instantiate_pattern(
+        &NamedAssemblyPattern {
+            parent: None,
+            key_prefix: "nave-truss-west",
+            ordinal_width: 2,
+            members: &members,
+        },
+        &west_occurrences,
+    );
 
     let east_x = (layout.crossing_east + p.length) * 0.5;
-    add_frame(context, &parts, &geometry, "east", 0, east_x, layout);
+    let east_occurrences = repeat_linear(&LinearRepeat {
+        count: 1,
+        start: [east_x, 0.0, 0.0],
+        step: [0.0, 0.0, 0.0],
+        omitted: &[],
+    })
+    .expect("accepted east truss occurrence must be finite");
+    context.instantiate_pattern(
+        &NamedAssemblyPattern {
+            parent: None,
+            key_prefix: "nave-truss-east",
+            ordinal_width: 2,
+            members: &members,
+        },
+        &east_occurrences,
+    );
 }
 
 impl TrussGeometry {
@@ -139,73 +170,78 @@ fn add_member_parts(
     }
 }
 
-fn add_frame(
-    context: &mut BuildContext,
+fn member_templates<'metadata>(
     parts: &MemberParts,
     geometry: &TrussGeometry,
-    segment: &str,
-    slot: u32,
-    x: f64,
     layout: Layout,
-) {
-    let prefix = format!("nave-truss-{segment}-{slot:02}");
-    for (suffix, part, placement) in [
-        ("tie-beam", parts.tie, tie_frame(x, layout.half_nave)),
-        (
-            "principal-rafter-north",
-            parts.rafter,
-            rafter_frame(x, geometry, true),
-        ),
-        (
-            "principal-rafter-south",
-            parts.rafter,
-            rafter_frame(x, geometry, false),
-        ),
-        (
-            "king-post",
-            parts.king_post,
-            Placement3::translate(
-                x - KING_POST_WIDTH * 0.5,
+    metadata: &'metadata [MetadataEntry<'metadata>],
+) -> [InstanceTemplate<'metadata>; 6] {
+    [
+        InstanceTemplate {
+            key_suffix: "tie-beam",
+            part: parts.tie,
+            placement: tie_frame(layout.half_nave),
+            bindings: &[],
+            metadata,
+        },
+        InstanceTemplate {
+            key_suffix: "principal-rafter-north",
+            part: parts.rafter,
+            placement: rafter_frame(geometry, true),
+            bindings: &[],
+            metadata,
+        },
+        InstanceTemplate {
+            key_suffix: "principal-rafter-south",
+            part: parts.rafter,
+            placement: rafter_frame(geometry, false),
+            bindings: &[],
+            metadata,
+        },
+        InstanceTemplate {
+            key_suffix: "king-post",
+            part: parts.king_post,
+            placement: Placement3::translate(
+                -KING_POST_WIDTH * 0.5,
                 -KING_POST_WIDTH * 0.5,
                 KING_POST_BASE,
             ),
-        ),
-        (
-            "diagonal-brace-north",
-            parts.brace,
-            brace_frame(x, geometry, true),
-        ),
-        (
-            "diagonal-brace-south",
-            parts.brace,
-            brace_frame(x, geometry, false),
-        ),
-    ] {
-        context.add_instance(
-            &format!("{prefix}-{suffix}"),
-            part,
-            placement,
-            names::roles::NAVE_TRUSS_MEMBER,
-        );
-    }
+            bindings: &[],
+            metadata,
+        },
+        InstanceTemplate {
+            key_suffix: "diagonal-brace-north",
+            part: parts.brace,
+            placement: brace_frame(geometry, true),
+            bindings: &[],
+            metadata,
+        },
+        InstanceTemplate {
+            key_suffix: "diagonal-brace-south",
+            part: parts.brace,
+            placement: brace_frame(geometry, false),
+            bindings: &[],
+            metadata,
+        },
+    ]
 }
 
-fn tie_frame(x: f64, half_nave: f64) -> Placement3 {
+fn tie_frame(half_nave: f64) -> Placement3 {
     Placement3 {
         rows: [
-            [0.0, -1.0, 0.0, x + TIE_WIDTH * 0.5],
+            [0.0, -1.0, 0.0, TIE_WIDTH * 0.5],
             [1.0, 0.0, 0.0, -half_nave],
             [0.0, 0.0, 1.0, TIE_BASE],
         ],
     }
 }
 
-fn rafter_frame(x: f64, geometry: &TrussGeometry, north: bool) -> Placement3 {
+fn rafter_frame(geometry: &TrussGeometry, north: bool) -> Placement3 {
     let offset = RAFTER_DEPTH + ROOF_CLEARANCE;
     if north {
         Placement3 {
             rows: [
-                [0.0, -1.0, 0.0, x + RAFTER_WIDTH * 0.5],
+                [0.0, -1.0, 0.0, RAFTER_WIDTH * 0.5],
                 [
                     geometry.roof_cos,
                     0.0,
@@ -223,7 +259,7 @@ fn rafter_frame(x: f64, geometry: &TrussGeometry, north: bool) -> Placement3 {
     } else {
         Placement3 {
             rows: [
-                [0.0, 1.0, 0.0, x - RAFTER_WIDTH * 0.5],
+                [0.0, 1.0, 0.0, -RAFTER_WIDTH * 0.5],
                 [
                     -geometry.roof_cos,
                     0.0,
@@ -241,11 +277,11 @@ fn rafter_frame(x: f64, geometry: &TrussGeometry, north: bool) -> Placement3 {
     }
 }
 
-fn brace_frame(x: f64, geometry: &TrussGeometry, north: bool) -> Placement3 {
+fn brace_frame(geometry: &TrussGeometry, north: bool) -> Placement3 {
     if north {
         Placement3 {
             rows: [
-                [0.0, -1.0, 0.0, x + BRACE_WIDTH * 0.5],
+                [0.0, -1.0, 0.0, BRACE_WIDTH * 0.5],
                 [geometry.brace_cos, 0.0, -geometry.brace_sin, 0.0],
                 [geometry.brace_sin, 0.0, geometry.brace_cos, BRACE_BASE],
             ],
@@ -253,7 +289,7 @@ fn brace_frame(x: f64, geometry: &TrussGeometry, north: bool) -> Placement3 {
     } else {
         Placement3 {
             rows: [
-                [0.0, 1.0, 0.0, x - BRACE_WIDTH * 0.5],
+                [0.0, 1.0, 0.0, -BRACE_WIDTH * 0.5],
                 [-geometry.brace_cos, 0.0, geometry.brace_sin, 0.0],
                 [geometry.brace_sin, 0.0, geometry.brace_cos, BRACE_BASE],
             ],
@@ -263,7 +299,7 @@ fn brace_frame(x: f64, geometry: &TrussGeometry, north: bool) -> Placement3 {
 
 #[cfg(test)]
 mod tests {
-    use exedra_assembly::PartSource;
+    use exedra_assembly::{PartSource, assembly_fingerprint};
     use exedra_constructive::evaluate::evaluate;
     use exedra_constructive::tessellate::EvalPolicy;
 
@@ -279,6 +315,110 @@ mod tests {
         "nave-truss-west-05",
         "nave-truss-east-00",
     ];
+
+    #[test]
+    fn named_patterns_match_the_accepted_station_loops() {
+        let p = BasilicaParams::default();
+        let layout = Layout::from_params(&p);
+        let geometry = TrussGeometry::from_params(&p, layout);
+
+        let mut patterned = BuildContext::new();
+        build(&mut patterned, &p, layout);
+
+        let mut legacy = BuildContext::new();
+        let parts = add_member_parts(&mut legacy, &p, &geometry);
+        let west_pitch = (layout.crossing_west - 4.0) / f64::from(WEST_BAYS);
+        for slot in 0..=WEST_BAYS {
+            if slot != OMITTED_WEST_SLOT {
+                add_legacy_frame(
+                    &mut legacy,
+                    &parts,
+                    &geometry,
+                    layout,
+                    "west",
+                    slot,
+                    2.0 + f64::from(slot) * west_pitch,
+                );
+            }
+        }
+        add_legacy_frame(
+            &mut legacy,
+            &parts,
+            &geometry,
+            layout,
+            "east",
+            0,
+            (layout.crossing_east + p.length) * 0.5,
+        );
+
+        let patterned = patterned.finish();
+        let legacy = legacy.finish();
+        assert_eq!(patterned.instances().len(), 36);
+        assert_eq!(
+            assembly_fingerprint(&patterned),
+            assembly_fingerprint(&legacy)
+        );
+    }
+
+    fn add_legacy_frame(
+        context: &mut BuildContext,
+        parts: &MemberParts,
+        geometry: &TrussGeometry,
+        layout: Layout,
+        segment: &str,
+        slot: u32,
+        x: f64,
+    ) {
+        let prefix = format!("nave-truss-{segment}-{slot:02}");
+        for (suffix, part, placement) in [
+            (
+                "tie-beam",
+                parts.tie,
+                legacy_station_placement(x, tie_frame(layout.half_nave)),
+            ),
+            (
+                "principal-rafter-north",
+                parts.rafter,
+                legacy_station_placement(x, rafter_frame(geometry, true)),
+            ),
+            (
+                "principal-rafter-south",
+                parts.rafter,
+                legacy_station_placement(x, rafter_frame(geometry, false)),
+            ),
+            (
+                "king-post",
+                parts.king_post,
+                Placement3::translate(
+                    x - KING_POST_WIDTH * 0.5,
+                    -KING_POST_WIDTH * 0.5,
+                    KING_POST_BASE,
+                ),
+            ),
+            (
+                "diagonal-brace-north",
+                parts.brace,
+                legacy_station_placement(x, brace_frame(geometry, true)),
+            ),
+            (
+                "diagonal-brace-south",
+                parts.brace,
+                legacy_station_placement(x, brace_frame(geometry, false)),
+            ),
+        ] {
+            context.add_instance(
+                &format!("{prefix}-{suffix}"),
+                part,
+                placement,
+                names::roles::NAVE_TRUSS_MEMBER,
+            );
+        }
+    }
+
+    fn legacy_station_placement(x: f64, mut placement: Placement3) -> Placement3 {
+        placement.rows[0][3] += x;
+        placement
+    }
 
     #[test]
     fn named_members_share_four_parts_and_one_role() {

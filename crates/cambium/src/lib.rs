@@ -39,6 +39,8 @@
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
 //! - Operator domains: [`OperatorDomain`]
 //! - Analytic edits: [`analytic::set_face_region`], [`analytic::add_rect_opening_xy`]
+//! - Assembly patterns: [`assembly::repeat_linear`],
+//!   [`assembly::distribute_linear`], [`assembly::instantiate_named`]
 //! - Explicit conversions: [`convert::analytic_shell_to_mesh`], [`convert::rect_frame_to_mesh`]
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
@@ -98,6 +100,11 @@
 //! Analytic mutation currently lives in [`analytic`] helper APIs and
 //! conversion stays explicit in [`convert`] rather than being forced through
 //! the mesh-only operator runtime.
+//!
+//! `assembly` is an additive workflow module over the concrete
+//! `exedra_assembly` structure head. Existing callers need no migration;
+//! procedural pattern definitions are expanded before storage and do not
+//! change `exedra-assembly-v1`.
 
 #![no_std]
 extern crate alloc;
@@ -108,6 +115,7 @@ compile_error!("cambium requires either the `std` or `libm` feature");
 
 pub mod analytic;
 mod artifact;
+pub mod assembly;
 pub mod boolean_orchestration;
 mod bounds;
 mod bridge;
