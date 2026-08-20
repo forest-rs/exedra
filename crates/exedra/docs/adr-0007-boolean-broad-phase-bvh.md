@@ -35,7 +35,7 @@ the total pair count, post-cull candidate count, and reduction ratio. Future
 boolean stages can consume triangle references directly while preserving access
 to source face IDs for diagnostics.
 
-## Amendment (2026-08-19, ticket `exe-o1su`)
+## Amendment (2026-08-19)
 
 The original design coupled triangle references to fan triangulation by
 construction: `fan_index` was defined against an inline re-derivation of the
@@ -57,7 +57,7 @@ Broad-phase output under `Fan` is unchanged. The `BooleanScratch` face-corner
 buffer is currently unused by collection (the enumeration allocates per
 face); reclaiming that allocation belongs to `exe-fui5`.
 
-## Amendment (2026-08-19, tickets `exe-dnny`, `exe-04ex`)
+## Amendment (2026-08-19)
 
 Two classification/contract rules changed after the boolean_oracle
 cross-validation harness (ei-c48a) found silently wrong outputs:

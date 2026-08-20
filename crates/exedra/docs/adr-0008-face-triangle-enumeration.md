@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-08-19
 - Owners: Exedra maintainers
-- Ticket: `exe-hi4e`
 
 ## Context
 

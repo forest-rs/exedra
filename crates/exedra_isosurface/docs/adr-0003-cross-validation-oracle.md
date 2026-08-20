@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-08). Implemented by the `boolean_oracle` harness crate
-(`benchmarks/boolean_oracle`), ticket ei-c48a.
+(`benchmarks/boolean_oracle`).
 
 ## Context
 

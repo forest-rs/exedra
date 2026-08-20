@@ -30,7 +30,7 @@ target/basilica_ruin/basilica_ruin.gltf
 The grouped OBJ is the accepted Z-up visual artifact. The current glTF export
 is retained as an integration diagnostic: `exedra_gltf` does not yet convert
 Exedra's Z-up basis to glTF's Y-up basis, so standards-compliant importers show
-it on its side. That exporter fix is tracked by ticket `eg-uioq`.
+it on its side. Coordinate conversion remains deferred exporter work.
 
 Choose a different OBJ path with `--obj`; the glTF file is written beside it:
 

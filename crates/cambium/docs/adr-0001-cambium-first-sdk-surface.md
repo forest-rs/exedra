@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-03-05
 - Owners: Cambium maintainers
-- Ticket: `cam-inf3`
 
 ## Context
 
@@ -55,4 +54,3 @@ Positive:
 Tradeoffs:
 - Some convenience APIs that are easy to add in Exedra are intentionally
   routed through Cambium, adding minor coordination overhead.
-

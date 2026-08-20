@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-03-16
 - Owners: Exedra analytic spike maintainers
-- Ticket: `cam-6z7d`
 
 ## Context
 

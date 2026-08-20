@@ -32,6 +32,8 @@ Inspection scenarios (`list_inspection_scenarios_json()`):
   one provenance-attributed body.
 
 Current scenarios:
+- `stepped_tower`
+- `pedestal`
 - `boxy_hat`
 - `wall_openings`
 - `poked_grid`

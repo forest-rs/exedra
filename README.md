@@ -1,6 +1,7 @@
 # Exedra
 
-A production-capable geometry kernel and operator stack.
+An actively validated geometry kernel and operator stack for building
+inspectable virtual-world assets.
 
 Exedra is the calm geometry foundation. Cambium is the workflow-facing operator
 SDK on top of it. The rest of the workspace holds focused construction,
@@ -20,6 +21,14 @@ Core crates:
 
 Construction and extraction crates:
 
+- **[exedra_constructive](crates/exedra_constructive/)** - Immutable,
+  fingerprinted constructive recipes with deterministic tessellation,
+  provenance, fidelity reporting, interchange, and evaluation caching.
+- **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
+  stable paths, material-slot binding, cached compilation, and deterministic
+  flattening.
+- **[exedra_triangulate](crates/exedra_triangulate/)** - Deterministic,
+  dependency-free planar polygon triangulation and exact predicate seams.
 - **[exedra_primitives](crates/exedra_primitives/)** - Deterministic mesh
   primitive generators such as quads, boxes, grids, cylinders, cones, torus,
   UV spheres, and icospheres.
@@ -32,6 +41,8 @@ Construction and extraction crates:
 - **[exedra_isosurface](crates/exedra_isosurface/)** - Scalar-field seams,
   reference analytic fields, transforms, profile lifts, Hermite intersection
   data, and dual-contouring extraction.
+- **[exedra_gltf](crates/exedra_gltf/)** - Deterministic glTF export for named
+  render items, materials, instance metadata, and face-region provenance.
 
 Adapter, test, benchmark, and app crates:
 
@@ -47,6 +58,8 @@ Adapter, test, benchmark, and app crates:
   deterministic Cambium scenario execution.
 - **[apps/cambium_web_viewer](apps/cambium_web_viewer/)** - Three.js viewer for
   the wasm scenario snapshots.
+- **[examples/](examples/)** - Standalone constructive, basilica, and structural
+  integration scenarios kept outside the core crates.
 
 ## Architecture
 
@@ -107,12 +120,10 @@ fn main() -> Result<(), cambium::OpError> {
 
 ## Design
 
-See [`docs/exedra_handoff.md`](docs/exedra_handoff.md) and
-[`docs/cambium_handoff.md`](docs/cambium_handoff.md) for comprehensive
-design specifications.
-
-Design briefs covering specific architectural decisions live in each
-crate's `docs/briefs/` directory.
+The current direction and capability boundaries live in
+[`ROADMAP.md`](ROADMAP.md). Durable architectural decisions live in each
+owning crate's `docs/adr-*.md` files; implementation-specific design briefs
+remain beside their owning crates.
 
 A worked example demonstrating the full pipeline is in
 [`docs/worked_example_basilica.md`](docs/worked_example_basilica.md).
@@ -132,10 +143,20 @@ cargo doc --no-deps
 
 ## Status
 
-Early development. Working toward v0.1 across the Exedra kernel, Cambium
-operator SDK, deterministic primitive generation, implicit-surface extraction,
-and local web demo surfaces. Boolean, subdivision, compaction, fuzzing, and
-semver-stability work remain tracked as tickets.
+Exedra is early and evolving, but the workspace already contains a usable
+deterministic mesh kernel and focused constructive, field-extraction, assembly,
+inspection, and export layers.
+
+The project does not claim universal Boolean coverage, general manifold dual
+contouring, subdivision, CAD-grade exact arithmetic, structural analysis, or
+semver stability. Unsupported and ambiguous cases are expected to return typed
+diagnostics where the current contract permits them.
+
+The deliberately small forward plan lives in [`ROADMAP.md`](ROADMAP.md). It
+prioritizes kernel correctness, a complete constructive-to-assembly asset path,
+inspectable interchange, field-extraction stabilization, measured incremental
+workflows, and scenario-driven geometry-quality extensions. Structural and
+historical showcase experiments remain separate from the core roadmap.
 
 ## License
 

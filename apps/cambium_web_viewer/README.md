@@ -2,8 +2,8 @@
 
 Local-first Three.js viewer for deterministic Cambium scenario snapshots.
 
-This viewer is the interactive web demo surface for the `cam-leng` vertical
-slice epic. It runs named scenarios in wasm, then visualizes ordered step
+This viewer is the interactive web demo surface for Cambium scenarios. It runs
+named scenarios in wasm, then visualizes ordered step
 snapshots with deterministic metadata (plan fingerprints, mesh signatures,
 stats, diagnostics).
 

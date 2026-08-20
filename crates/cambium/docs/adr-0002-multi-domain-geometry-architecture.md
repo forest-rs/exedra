@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-03-15
 - Owners: Cambium maintainers
-- Ticket: `cam-m068`
 
 ## Context
 

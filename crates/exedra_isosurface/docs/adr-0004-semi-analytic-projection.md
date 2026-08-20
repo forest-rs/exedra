@@ -2,7 +2,6 @@
 
 - Status: Accepted
 - Date: 2026-08-19
-- Ticket: `ei-3zks` (parent `ei-35r6`)
 
 ## Context
 

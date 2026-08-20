@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-03-24
 - Owners: Exedra implicit-surface maintainers
-- Ticket: `exe-0r1z`
 
 ## Context
 

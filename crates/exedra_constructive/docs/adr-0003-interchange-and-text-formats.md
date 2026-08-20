@@ -3,7 +3,6 @@
 - Status: Accepted
 - Date: 2026-08-19
 - Owners: Exedra maintainers
-- Tickets: `ec-yzc4`, `ec-71sj`
 
 ## Context
 
