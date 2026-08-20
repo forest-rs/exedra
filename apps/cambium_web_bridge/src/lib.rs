@@ -243,7 +243,7 @@ pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String>
         .add_instance(None, "unit", part, Placement3::IDENTITY)
         .map_err(|e| format!("{e}"))?;
     for (index, key) in ["lower", "upper"].iter().enumerate() {
-        let shelf = asm
+        let instance = asm
             .add_instance(
                 Some(unit),
                 key,
@@ -252,7 +252,7 @@ pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String>
             )
             .map_err(|e| format!("{e}"))?;
         if index == 1 {
-            asm.bind_material(shelf, "front", "walnut")
+            asm.bind_material(instance, "front", "walnut")
                 .map_err(|e| format!("{e}"))?;
         }
     }
@@ -2290,7 +2290,7 @@ mod tests {
                 cursor += range.count;
             }
         }
-        // The upper shelf overrides the part-default material.
+        // The upper instance overrides the part-default material.
         let material_of = |index: usize| {
             response.items[index]
                 .ranges

@@ -721,22 +721,22 @@ mod tests {
         let mut asm = Assembly::new();
         let part = asm.add_recipe_part("panel", test_recipe()).unwrap();
         let root = asm
-            .add_instance(None, "cabinet", part, Placement3::IDENTITY)
+            .add_instance(None, "frame", part, Placement3::IDENTITY)
             .unwrap();
-        let shelf = asm
+        let crossbar = asm
             .add_instance(
                 Some(root),
-                "shelf-1",
+                "crossbar-1",
                 part,
                 Placement3::translate(0.0, 0.0, 5.0),
             )
             .unwrap();
-        let path = asm.path_of(shelf).unwrap();
-        assert_eq!(path, InstancePath::from_segments(&["cabinet", "shelf-1"]));
-        assert_eq!(alloc::format!("{path}"), "cabinet/shelf-1");
-        assert_eq!(asm.resolve_path(&path), Some(shelf));
+        let path = asm.path_of(crossbar).unwrap();
+        assert_eq!(path, InstancePath::from_segments(&["frame", "crossbar-1"]));
+        assert_eq!(alloc::format!("{path}"), "frame/crossbar-1");
+        assert_eq!(asm.resolve_path(&path), Some(crossbar));
         assert_eq!(
-            asm.resolve_path(&InstancePath::from_segments(&["cabinet", "missing"])),
+            asm.resolve_path(&InstancePath::from_segments(&["frame", "missing"])),
             None
         );
     }
@@ -746,15 +746,15 @@ mod tests {
         let mut asm = Assembly::new();
         let part = asm.add_recipe_part("panel", test_recipe()).unwrap();
         let root = asm
-            .add_instance(None, "cabinet", part, Placement3::IDENTITY)
+            .add_instance(None, "frame", part, Placement3::IDENTITY)
             .unwrap();
-        asm.add_instance(Some(root), "shelf", part, Placement3::IDENTITY)
+        asm.add_instance(Some(root), "panel", part, Placement3::IDENTITY)
             .unwrap();
         assert_eq!(
-            asm.add_instance(Some(root), "shelf", part, Placement3::IDENTITY),
+            asm.add_instance(Some(root), "panel", part, Placement3::IDENTITY),
             Err(AssemblyError::DuplicateChildKey {
                 parent: Some(root),
-                key: "shelf".into()
+                key: "panel".into()
             })
         );
         // Same key under a different parent is fine.
@@ -762,7 +762,7 @@ mod tests {
             .add_instance(None, "island", part, Placement3::IDENTITY)
             .unwrap();
         assert!(
-            asm.add_instance(Some(other), "shelf", part, Placement3::IDENTITY)
+            asm.add_instance(Some(other), "panel", part, Placement3::IDENTITY)
                 .is_ok()
         );
         // Separator and empty keys rejected.
@@ -842,7 +842,7 @@ mod tests {
             .unwrap();
         let generation = asm.content_generation();
         asm.bind_material(a, "front", "oak").unwrap();
-        asm.set_metadata(a, "sku", "P-1").unwrap();
+        asm.set_metadata(a, "variant", "A-1").unwrap();
         assert_eq!(asm.content_generation(), generation);
         asm.replace_part_source(part, PartSource::Recipe(test_recipe()))
             .unwrap();
@@ -856,12 +856,15 @@ mod tests {
         let a = asm
             .add_instance(None, "a", part, Placement3::IDENTITY)
             .unwrap();
-        asm.set_metadata(a, "sku", "P-1").unwrap();
+        asm.set_metadata(a, "variant", "A-1").unwrap();
         asm.set_metadata(a, "note", "demo").unwrap();
-        asm.set_metadata(a, "sku", "P-2").unwrap();
+        asm.set_metadata(a, "variant", "A-2").unwrap();
         assert_eq!(
             asm.instance(a).unwrap().metadata(),
-            &[("sku".into(), "P-2".into()), ("note".into(), "demo".into())]
+            &[
+                ("variant".into(), "A-2".into()),
+                ("note".into(), "demo".into())
+            ]
         );
     }
 }

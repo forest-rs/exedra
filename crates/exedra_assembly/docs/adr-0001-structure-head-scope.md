@@ -11,8 +11,8 @@ geometry domain a dedicated head with a narrow responsibility and explicit,
 lossy conversions between heads. `exedra_constructive` compiles a single
 part's recipe into one or more meshes; nothing in the workspace owned the
 level above it: many parts, arranged and repeated, with materials bound per
-use. External runtimes (spec compilers, parametric evaluators, configurators)
-need that level to be spec-agnostic, deterministic, and cache-friendly.
+use. External runtimes need that level to remain representation-neutral,
+deterministic, and cache-friendly.
 
 ## Decision
 

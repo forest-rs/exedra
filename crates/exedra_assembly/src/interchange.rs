@@ -423,16 +423,16 @@ mod tests {
                 Placement3::rotate_z_then_translate(0.25, 10.0, 0.0, 0.0),
             )
             .unwrap();
-        let shelf = asm
+        let upper_panel = asm
             .add_instance(
                 Some(root),
-                "shelf",
+                "upper-panel",
                 panel,
                 Placement3::translate(0.0, 0.0, 20.0),
             )
             .unwrap();
-        asm.bind_material(shelf, "front", "walnut").unwrap();
-        asm.set_metadata(shelf, "position", "upper").unwrap();
+        asm.bind_material(upper_panel, "front", "walnut").unwrap();
+        asm.set_metadata(upper_panel, "position", "upper").unwrap();
         asm.add_instance(
             Some(root),
             "edge",
