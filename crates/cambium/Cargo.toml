@@ -10,8 +10,8 @@ keywords = ["mesh", "modeling", "operators", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
-exedra = { features = ["std"], workspace = true }
-exedra_analytic = { features = ["std"], workspace = true }
+exedra.workspace = true
+exedra_analytic.workspace = true
 exedra_assembly.workspace = true
 exedra_constructive.workspace = true
 invalidation.workspace = true

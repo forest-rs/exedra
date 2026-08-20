@@ -5,7 +5,7 @@ use core::fmt;
 
 use crate::{ChangeSink, EditSession, FaceId, HalfEdgeId, attr};
 
-/// Structured edge-flip error from [`crate::op::flip_edge`].
+/// Structured edge-flip error from [`crate::op::flip_edge()`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FlipEdgeError {
     /// Half-edge must be live and have a live twin.

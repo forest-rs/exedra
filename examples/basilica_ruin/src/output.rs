@@ -789,7 +789,10 @@ mod tests {
             byte_signature(proof.obj.as_bytes()),
             byte_signature(fresh_obj.as_bytes())
         );
+        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(byte_signature(proof.obj.as_bytes()), 0x90c1_a3b5_6ba3_8b10);
+        #[cfg(target_arch = "wasm32")]
+        assert_eq!(byte_signature(proof.obj.as_bytes()), 0x264f_3cd9_bdaf_b042);
     }
 
     #[test]

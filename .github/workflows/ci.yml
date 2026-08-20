@@ -15,10 +15,34 @@ env:
     -p cambium
     -p cambium_testkit
     -p exedra
+    -p exedra_analytic
+    -p exedra_assembly
+    -p exedra_constructive
+    -p exedra_fidget
+    -p exedra_gltf
+    -p exedra_isosurface
     -p exedra_primitives
+    -p exedra_qef
+    -p exedra_spatial
     -p exedra_testkit
-  # List of packages that don't support `no_std`.
-  RUST_STD_ONLY_PKGS:
+    -p exedra_triangulate
+  # Foundational packages whose `no_std` contract is checked directly. Keep
+  # this positive list in sync with crate-level `#![no_std]` declarations.
+  RUST_NO_STD_PKGS:
+    -p cambium
+    -p cambium_testkit
+    -p exedra
+    -p exedra_analytic
+    -p exedra_assembly
+    -p exedra_constructive
+    -p exedra_isosurface
+    -p exedra_primitives
+    -p exedra_qef
+    -p exedra_spatial
+    -p exedra_testkit
+    -p exedra_triangulate
+  # Host auxiliary targets exclude the Wasm-only bridge.
+  RUST_AUX_EXCLUDES:
     --exclude cambium_web_bridge
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS:
@@ -26,7 +50,7 @@ env:
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.
-  FEATURES_DEPENDING_ON_STD: "std,default"
+  FEATURES_DEPENDING_ON_STD: "std,default,serde"
 
 
 # Rationale
@@ -133,13 +157,13 @@ jobs:
           save-if: ${{ github.event_name != 'merge_group' }}
 
       - name: cargo clippy (no_std)
-        run: cargo hack clippy ${{ env.RUST_STD_ONLY_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features libm --exclude-features ${{ env.FEATURES_DEPENDING_ON_STD }} --target x86_64-unknown-none -- -D warnings
+        run: cargo hack clippy ${{ env.RUST_NO_STD_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features libm --exclude-features ${{ env.FEATURES_DEPENDING_ON_STD }} --target x86_64-unknown-none -- -D warnings
 
       - name: cargo clippy
         run: cargo hack clippy --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std -- -D warnings
 
       - name: cargo clippy (auxiliary)
-        run: cargo hack clippy ${{ env.RUST_STD_ONLY_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std --tests --benches --examples -- -D warnings
+        run: cargo hack clippy ${{ env.RUST_AUX_EXCLUDES }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std --tests --benches --examples -- -D warnings
 
   clippy-stable-wasm:
     name: cargo clippy (wasm32)
@@ -254,7 +278,7 @@ jobs:
           save-if: ${{ github.event_name != 'merge_group' }}
 
       - name: cargo check (no_std)
-        run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} ${{ env.RUST_STD_ONLY_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features libm --exclude-features ${{ env.FEATURES_DEPENDING_ON_STD }} --target x86_64-unknown-none
+        run: cargo hack check ${{ env.RUST_NO_STD_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features libm --exclude-features ${{ env.FEATURES_DEPENDING_ON_STD }} --target x86_64-unknown-none
 
       - name: cargo check
         run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features std

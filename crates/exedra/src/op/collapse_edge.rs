@@ -9,7 +9,7 @@ use crate::session::find_outgoing_half_edge_linear_scan;
 use crate::session::propagation::capture_edge_tags;
 use crate::{ChangeSink, EditSession, FaceId, HalfEdgeId, Mesh, VertexId, attr};
 
-/// Structured edge-collapse error from [`crate::op::collapse_edge`].
+/// Structured edge-collapse error from [`crate::op::collapse_edge()`].
 ///
 /// Every variant is a precondition detected before any mutation: a failed
 /// collapse leaves the mesh byte-identical.

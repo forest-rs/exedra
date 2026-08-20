@@ -388,6 +388,7 @@ fn push_comma(first: &mut bool, out: &mut String) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "std", not(target_os = "wasi")))]
     use alloc::format;
     use alloc::string::ToString;
     use alloc::vec::Vec;
@@ -438,7 +439,7 @@ mod tests {
         assert!(mismatch.actual.contains("face_loops [\n"));
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "wasi")))]
     #[test]
     fn file_backed_mesh_golden_assertion_reads_expected_file() {
         let mesh = unit_quad();

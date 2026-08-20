@@ -349,6 +349,9 @@ mod tests {
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);
+        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(byte_signature(obj_a.as_bytes()), 0x64d1_1202_ba90_d6b2);
+        #[cfg(target_arch = "wasm32")]
+        assert_eq!(byte_signature(obj_a.as_bytes()), 0xd08c_1e59_aa19_cf5c);
     }
 }

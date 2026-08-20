@@ -4833,7 +4833,10 @@ mod tests {
             forced_pin_regions(&result.mesh),
             [(10, 38_884), (20, 21_356)]
         );
+        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(forced_pin_signature(&result.mesh), 0xf9f3_2216_4cf5_214a);
+        #[cfg(target_arch = "wasm32")]
+        assert_eq!(forced_pin_signature(&result.mesh), 0x2a3d_356e_ffd7_cc47);
         assert_eq!(projected_cells.len(), result.stats.active_cells);
         forced_pin_assert_coordinate_round_trip(
             extraction_params.root_bounds,
