@@ -264,6 +264,13 @@ fn evaluate_single(recipe: &Recipe) -> Evaluation {
     evaluate(recipe, &EvalPolicy::default()).expect("fixture evaluates")
 }
 
+fn assert_lf_golden(name: &str, golden: &str) {
+    assert!(
+        !golden.as_bytes().contains(&b'\r'),
+        "{name} must use LF line endings; check .gitattributes"
+    );
+}
+
 macro_rules! golden_test {
     ($test_name:ident, $fixture_name:literal, $index:expr) => {
         #[test]
@@ -277,10 +284,12 @@ macro_rules! golden_test {
             assert!(errors.is_empty(), "validate_deep: {errors:?}");
 
             let mesh_golden = include_str!(concat!("../goldens/", $fixture_name, ".mesh.golden"));
+            assert_lf_golden(concat!($fixture_name, ".mesh.golden"), mesh_golden);
             exedra_testkit::golden::assert_mesh_golden(&body.mesh, mesh_golden)
                 .expect("mesh golden must match; re-bless deliberately");
 
             let map_golden = include_str!(concat!("../goldens/", $fixture_name, ".map.golden"));
+            assert_lf_golden(concat!($fixture_name, ".map.golden"), map_golden);
             assert_eq!(
                 body.source_map.dump(),
                 map_golden,
@@ -301,6 +310,7 @@ fn golden_csg_report() {
     let recipe = csg_fixture();
     let result = evaluate_single_csg(&recipe);
     let golden = include_str!("../goldens/csg_prism.report.golden");
+    assert_lf_golden("csg_prism.report.golden", golden);
     assert_eq!(
         render_report(&result),
         golden,
