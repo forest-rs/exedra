@@ -7,8 +7,10 @@ both directions of a finite sampled surface deviation against exact visible
 axis-aligned box-union patches.
 
 The reported deviations are deterministic finite sampling oracles, not a
-formal Hausdorff proof. Extraction signatures and correctness gates run before
-timing. Timing is never included in artifact reports.
+formal Hausdorff proof. Exact extraction signatures prove repeatability on the
+current target; cross-platform gates use semantic counters, topology, and
+sampled geometric quality. Correctness gates run before timing, and timing is
+never included in artifact reports.
 
 ```sh
 cargo test -p isosurface_wind_tunnel
@@ -21,12 +23,14 @@ Artifacts are written below
 
 `--quick` checks deterministic extraction and topology at depth 5, but does
 not report a reduction ratio because the authoritative private comparator pin
-is depth 7. `--gate` first requires exact ordered signature, statistics,
-regions, counters, and leaf-histogram parity with that private pin. Only then
-does it run the bidirectional finite sampled-deviation oracle and report the
-current reduction result. The gate exits unsuccessfully unless both vertices
-and triangles are reduced by at least 10x. It does not tune thresholds or
-change production retention behavior to reach that requirement.
+is depth 7. `--gate` first requires statistics, regions, counters, topology,
+and leaf-histogram parity with that private pin. Independent uniform and
+adaptive extractions must also reproduce their exact ordered signatures on the
+current target. Only then does the gate run the bidirectional finite
+sampled-deviation oracle and report the current reduction result. It exits
+unsuccessfully unless both vertices and triangles are reduced by at least 10x.
+It does not tune thresholds or change production retention behavior to reach
+that requirement.
 
 `uniform.work.lattice_bytes` is the logical byte size of the independent
 comparator's dense `(2^depth + 1)^3` `f32` scalar lattice. It excludes `Vec`

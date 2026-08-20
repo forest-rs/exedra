@@ -2352,7 +2352,6 @@ mod tests {
                 faces: 636,
             }
         );
-        assert_eq!(forced_pin_signature(&first.mesh), 0xcc70_3eb1_39f6_df9f);
         assert_eq!(first.stats, second.stats);
         let (tri_a, stats_a) = first.mesh.to_trimesh(&ExtractParams::default());
         let (tri_b, stats_b) = second.mesh.to_trimesh(&ExtractParams::default());
@@ -4704,80 +4703,6 @@ mod tests {
         }
     }
 
-    fn forced_pin_signature(mesh: &exedra::Mesh) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        for vertex in mesh.vertices() {
-            hash = forced_pin_fnv(hash, &vertex.index().to_le_bytes());
-            for component in mesh.vertex_position(vertex).expect("vertex position") {
-                hash = forced_pin_fnv(hash, &component.to_bits().to_le_bytes());
-            }
-        }
-        let regions = mesh.attrs().dense(attr::FACE_REGION);
-        let sharpness = mesh.attrs().sparse(attr::EDGE_SHARPNESS);
-        let seams = mesh.attrs().sparse(attr::EDGE_SEAM);
-        let normals = mesh.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
-        for face in mesh.faces() {
-            hash = forced_pin_fnv(hash, &face.index().to_le_bytes());
-            hash = forced_pin_fnv(
-                hash,
-                &regions
-                    .and_then(|layer| layer.get(face.as_id()))
-                    .copied()
-                    .unwrap_or(u32::MAX)
-                    .to_le_bytes(),
-            );
-            for corner in mesh.face_loop(face) {
-                let vertex = mesh.to_vertex(corner).expect("face-loop vertex");
-                hash = forced_pin_fnv(hash, &vertex.index().to_le_bytes());
-                hash = match sharpness
-                    .and_then(|layer| layer.get(corner.as_id()))
-                    .copied()
-                {
-                    Some(value) => {
-                        forced_pin_fnv(forced_pin_fnv(hash, &[1]), &value.to_bits().to_le_bytes())
-                    }
-                    None => forced_pin_fnv(hash, &[0]),
-                };
-                hash = forced_pin_fnv(
-                    hash,
-                    &[u8::from(
-                        seams
-                            .and_then(|layer| layer.get(corner.as_id()))
-                            .copied()
-                            .unwrap_or(false),
-                    )],
-                );
-                if let Some(normal) = normals.and_then(|layer| layer.get(corner.as_id())).copied() {
-                    hash = forced_pin_fnv(hash, &[1]);
-                    for component in normal {
-                        hash = forced_pin_fnv(hash, &component.to_bits().to_le_bytes());
-                    }
-                } else {
-                    hash = forced_pin_fnv(hash, &[0]);
-                }
-            }
-            hash = forced_pin_fnv(hash, &[0xff]);
-        }
-        let (triangles, _) = mesh.to_trimesh(&ExtractParams::default());
-        for position in triangles.positions {
-            for component in position {
-                hash = forced_pin_fnv(hash, &component.to_bits().to_le_bytes());
-            }
-        }
-        for index in triangles.indices {
-            hash = forced_pin_fnv(hash, &index.to_le_bytes());
-        }
-        hash
-    }
-
-    fn forced_pin_fnv(mut hash: u64, bytes: &[u8]) -> u64 {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        hash
-    }
-
     fn forced_pin_regions(mesh: &exedra::Mesh) -> Vec<(u32, usize)> {
         use alloc::collections::BTreeMap as ForcedPinBTreeMap;
 
@@ -4797,7 +4722,7 @@ mod tests {
     }
 
     #[test]
-    fn forced_uniform_h1_authoritative_witness_is_fully_pinned() {
+    fn forced_uniform_h1_semantic_contract_is_fully_pinned() {
         let (field, extraction_params) = forced_pin_h1_fixture();
         let measured = ForcedPinMeasured::new(field);
         let (result, semi_analytic) = forced_pin_extract(&measured, &extraction_params);
@@ -4833,10 +4758,6 @@ mod tests {
             forced_pin_regions(&result.mesh),
             [(10, 38_884), (20, 21_356)]
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(forced_pin_signature(&result.mesh), 0xf9f3_2216_4cf5_214a);
-        #[cfg(target_arch = "wasm32")]
-        assert_eq!(forced_pin_signature(&result.mesh), 0x2a3d_356e_ffd7_cc47);
         assert_eq!(projected_cells.len(), result.stats.active_cells);
         forced_pin_assert_coordinate_round_trip(
             extraction_params.root_bounds,

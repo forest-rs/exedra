@@ -31,7 +31,6 @@ use crate::measure::{DyadicMeasurements, Measured, WorkMeasurements, reconstruct
 use crate::quality::QualityReport;
 use crate::report::TopologyReport;
 
-const H1_PRIVATE_SIGNATURE: u64 = 0xf9f3_2216_4cf5_214a;
 const H1_PRIVATE_STATS: DualContourStats = DualContourStats {
     octree_cells: 100_937,
     active_cells: 30_122,
@@ -41,7 +40,6 @@ const H1_PRIVATE_STATS: DualContourStats = DualContourStats {
 const H1_PRIVATE_FINAL_DEPTHS: [usize; 8] = [0, 0, 0, 199, 1_388, 5_277, 21_744, 59_712];
 const H1_PRIVATE_CONTRIBUTING_DEPTHS: [usize; 8] = [0, 0, 0, 0, 0, 0, 0, 30_122];
 const H1_PRIVATE_REGIONS: [(u32, usize); 2] = [(BOX_A_REGION, 38_884), (BOX_B_REGION, 21_356)];
-const H1_ADAPTIVE_SIGNATURE: u64 = 0x8528_ca68_8b8f_b2c2;
 const H1_ADAPTIVE_STATS: DualContourStats = DualContourStats {
     octree_cells: 4_089,
     active_cells: 939,
@@ -88,6 +86,22 @@ fn main() {
 
     let uniform = uniform::extract(&fixture);
     let uniform_signature = report::extraction_signature(&uniform.mesh);
+    let repeated_uniform = uniform::extract(&fixture);
+    assert_eq!(
+        uniform_signature,
+        report::extraction_signature(&repeated_uniform.mesh)
+    );
+    assert_eq!(uniform.stats, repeated_uniform.stats);
+    assert_eq!(uniform.semi_analytic, repeated_uniform.semi_analytic);
+    assert_eq!(
+        uniform.final_leaf_depths,
+        repeated_uniform.final_leaf_depths
+    );
+    assert_eq!(
+        uniform.contributing_depths,
+        repeated_uniform.contributing_depths
+    );
+    assert_eq!(uniform.work, repeated_uniform.work);
     let uniform_regions = report::region_histogram(&uniform.mesh);
     let uniform_topology = report::topology(&uniform.mesh);
     assert!(
@@ -122,13 +136,8 @@ fn main() {
     );
 
     let private_pin_matched = if profile == Profile::Gate {
-        assert_uniform_private_pin(
-            &uniform,
-            uniform_signature,
-            &uniform_regions,
-            &uniform_topology,
-        );
-        assert_adaptive_pin(&adaptive, adaptive_signature);
+        assert_uniform_private_pin(&uniform, &uniform_regions, &uniform_topology);
+        assert_adaptive_pin(&adaptive);
         true
     } else {
         false
@@ -413,7 +422,6 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 fn assert_uniform_private_pin(
     uniform: &uniform::UniformResult,
-    signature: u64,
     regions: &[(u32, usize)],
     topology: &TopologyReport,
 ) {
@@ -429,12 +437,10 @@ fn assert_uniform_private_pin(
     assert_eq!(uniform.contributing_depths, H1_PRIVATE_CONTRIBUTING_DEPTHS);
     assert_eq!(regions, H1_PRIVATE_REGIONS);
     assert!(topology.is_closed_clean());
-    assert_eq!(signature, H1_PRIVATE_SIGNATURE);
 }
 
-fn assert_adaptive_pin(adaptive: &AdaptiveRun, signature: u64) {
+fn assert_adaptive_pin(adaptive: &AdaptiveRun) {
     assert_eq!(adaptive.result.stats, H1_ADAPTIVE_STATS);
-    assert_eq!(signature, H1_ADAPTIVE_SIGNATURE);
     assert_eq!(adaptive.dyadic.final_leaf_depths, H1_ADAPTIVE_FINAL_DEPTHS);
     assert_eq!(
         adaptive.dyadic.contributing_depths,
