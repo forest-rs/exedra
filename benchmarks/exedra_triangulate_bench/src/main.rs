@@ -9,6 +9,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use exedra_triangulate::predicates::{Orient2dPath, Orientation, orient2d_evaluated};
 use exedra_triangulate::{PolygonInput, TriParams, TriStrategy, Triangulation, triangulate};
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -37,6 +38,16 @@ fn main() {
     );
     for fixture in &fixtures {
         time_fixture(fixture, profile).print();
+    }
+
+    let predicate_scenarios = predicate_scenarios();
+    println!(
+        "phase=predicate_timing profile={} scenarios={}",
+        profile.label(),
+        predicate_scenarios.len()
+    );
+    for scenario in predicate_scenarios {
+        time_predicate_path(scenario, profile).print();
     }
 }
 
@@ -78,6 +89,20 @@ impl Profile {
         match self {
             Self::Quick => 12_000,
             Self::Stress => 240_000,
+        }
+    }
+
+    const fn predicate_samples(self) -> usize {
+        match self {
+            Self::Quick => 9,
+            Self::Stress => 21,
+        }
+    }
+
+    const fn predicates_per_sample(self) -> usize {
+        match self {
+            Self::Quick => 10_000,
+            Self::Stress => 100_000,
         }
     }
 }
@@ -298,6 +323,37 @@ fn power_of_two(exponent: i32) -> f64 {
     );
     let biased = u64::try_from(exponent + 1023).expect("biased exponent is nonnegative");
     f64::from_bits(biased << 52)
+}
+
+#[derive(Copy, Clone, Debug)]
+struct PredicateScenario {
+    name: &'static str,
+    points: [[f64; 2]; 3],
+    orientation: Orientation,
+    path: Orient2dPath,
+}
+
+fn predicate_scenarios() -> [PredicateScenario; 3] {
+    [
+        PredicateScenario {
+            name: "orient2d_filter",
+            points: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            orientation: Orientation::Ccw,
+            path: Orient2dPath::Filter,
+        },
+        PredicateScenario {
+            name: "orient2d_normalized_expansion",
+            points: [[0.0, 0.0], [1e-300, 0.0], [0.0, 1e-300]],
+            orientation: Orientation::Ccw,
+            path: Orient2dPath::NormalizedExpansion,
+        },
+        PredicateScenario {
+            name: "orient2d_dyadic",
+            points: [[f64::from_bits(1), 0.0], [0.5, 0.5], [1.0, 1.0]],
+            orientation: Orientation::Cw,
+            path: Orient2dPath::Dyadic,
+        },
+    ]
 }
 
 #[derive(Clone, Debug)]
@@ -591,6 +647,66 @@ fn triangle_checksum(result: &Triangulation) -> u64 {
     hash
 }
 
+#[derive(Copy, Clone, Debug)]
+struct PredicateTimingReport {
+    name: &'static str,
+    path: Orient2dPath,
+    samples: usize,
+    predicates_per_sample: usize,
+    best_ns: u128,
+    average_ns: u128,
+}
+
+impl PredicateTimingReport {
+    fn print(self) {
+        println!(
+            "scenario={} path={:?} samples={} predicates_per_sample={} best_ns={} avg_ns={}",
+            self.name,
+            self.path,
+            self.samples,
+            self.predicates_per_sample,
+            self.best_ns,
+            self.average_ns,
+        );
+    }
+}
+
+fn time_predicate_path(scenario: PredicateScenario, profile: Profile) -> PredicateTimingReport {
+    let [a, b, c] = scenario.points;
+    let evaluated = orient2d_evaluated(a, b, c);
+    assert_eq!(
+        evaluated.orientation, scenario.orientation,
+        "{}",
+        scenario.name
+    );
+    assert_eq!(evaluated.path, scenario.path, "{}", scenario.name);
+
+    let samples = profile.predicate_samples();
+    let predicates_per_sample = profile.predicates_per_sample();
+    let mut best = Duration::MAX;
+    let mut total = Duration::ZERO;
+    for _ in 0..samples {
+        let started = Instant::now();
+        for _ in 0..predicates_per_sample {
+            black_box(orient2d_evaluated(black_box(a), black_box(b), black_box(c)));
+        }
+        let elapsed = started.elapsed();
+        best = best.min(elapsed);
+        total += elapsed;
+    }
+    PredicateTimingReport {
+        name: scenario.name,
+        path: scenario.path,
+        samples,
+        predicates_per_sample,
+        best_ns: best.as_nanos() / predicates_per_sample as u128,
+        average_ns: total.as_nanos()
+            / samples
+                .checked_mul(predicates_per_sample)
+                .expect("fixed predicate sample count must fit usize") as u128,
+    }
+}
+
 fn ear_clip_params() -> TriParams {
     let mut params = TriParams::default();
     params.strategy = TriStrategy::EarClip;
@@ -668,6 +784,22 @@ mod tests {
             0x9bf9_dca4_e4b6_8d74,
         ),
     ];
+
+    #[test]
+    fn predicate_scenarios_reach_each_typed_path() {
+        let scenarios = predicate_scenarios();
+        assert_eq!(scenarios.len(), 3);
+        for scenario in scenarios {
+            let [a, b, c] = scenario.points;
+            let evaluated = orient2d_evaluated(a, b, c);
+            assert_eq!(
+                evaluated.orientation, scenario.orientation,
+                "{}",
+                scenario.name
+            );
+            assert_eq!(evaluated.path, scenario.path, "{}", scenario.name);
+        }
+    }
 
     #[test]
     fn fixed_corpus_triangulates_and_reports_finite_quality() {

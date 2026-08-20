@@ -19,6 +19,26 @@ geometry head).
 See `docs/adr-0001-deterministic-triangulation-scope.md` for scope and
 contract details.
 
+## Exact predicate exponent domain
+
+`predicates::orient2d` keeps the ordinary floating-point filter for clear
+turns. Borderline narrow-span inputs are scaled by one lossless common power
+of two before exact expansion arithmetic; wider exponent spans use a
+fixed-size exact dyadic accumulator. This preserves the exact-sign contract
+for every finite coordinate accepted by `MAX_COORDINATE`, including uniformly
+tiny and subnormal geometry.
+
+`predicates::orient2d_evaluated` returns the same sign plus a typed
+`Orient2dPath` diagnostic (`Filter`, `NormalizedExpansion`, or `Dyadic`). A
+non-finite query instead reports `NonFiniteInput` alongside `orient2d`'s
+deterministic `Collinear` sentinel; that sentinel is not an exact geometric
+classification. The diagnostic is per-call and has no global counters. The
+existing `orient2d` function keeps its source-compatible signature and all
+finite inputs in the documented domain retain their contract. Out-of-domain
+NaN and infinity behavior is now standardized and may differ from prior
+incidental results. Inputs whose nonzero determinant previously underflowed to
+zero now receive the mathematically correct orientation.
+
 ## Quality wind tunnel
 
 The top-level `exedra_triangulate_bench` executable records a deterministic
@@ -32,8 +52,8 @@ cargo run --release -p exedra_triangulate_bench -- --quick
 ```
 
 The benchmark is measurement, not a hidden quality policy. Follow-up work is
-tracked as a dependency ladder: exact predicate exponent-domain repair, exact
-incircle, opt-in input-index constrained Delaunay legalization, and only then
+tracked as a dependency ladder: exact incircle, opt-in input-index constrained
+Delaunay legalization, and only then
 generated-vertex cap resampling after kernel face-replacement/edit-lineage
 support exists. Ear clipping remains the default while those slices are
 measured and reviewed.

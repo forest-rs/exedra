@@ -57,6 +57,39 @@ Contract points:
   Ear clipping is O(n²), which is acceptable at profile-cap sizes; a quality
   pass is deferred until a consumer demonstrably needs it.
 
+### Exact `orient2d` exponent domain
+
+The original `orient2d` fallback accumulated exact products in binary64
+expansions over the unscaled coordinates. Bounding magnitudes by
+`MAX_COORDINATE = 1e100` prevented overflow, but did not prevent underflow:
+the determinant of `[0, 0]`, `[1e-300, 0]`, `[0, 1e-300]` is positive even
+though both the filter and original fallback rounded its `1e-600` value to
+zero. The magnitude bound alone therefore did not prove the documented exact
+sign contract.
+
+`orient2d` now has three deterministic paths:
+
+1. the ordinary Shewchuk error-bound filter remains the hot path;
+2. after an inconclusive filter, a common power-of-two normalization is used
+   only when every nonzero coordinate remains normal and every possible
+   error-free-transform product bit remains above the subnormal boundary;
+3. wider exponent spans are decoded as signed binary64 significands and
+   exponents, then the six determinant products are accumulated into fixed
+   positive and negative limb arrays before an exact magnitude comparison.
+
+The dyadic arrays are statically sized for the complete finite binary64
+product exponent span plus carry, although triangulation continues to validate
+the smaller `MAX_COORDINATE` envelope. This keeps the core zero-dependency,
+`no_std`, allocation-free per query, and free of `unsafe`. A local
+`orient2d_evaluated` diagnostic returns `Orient2dPath` with the exact sign;
+`orient2d` remains its source-compatible sign-only wrapper. No global path
+counters are introduced. Non-finite direct predicate queries explicitly
+report `Orient2dPath::NonFiniteInput` with a deterministic `Collinear` sentinel
+rather than falsely attributing that sentinel to an exact arithmetic path.
+This standardizes previously unspecified out-of-domain NaN and infinity
+behavior, which could return a different orientation; finite-domain semantics
+and the existing function signature remain compatible.
+
 The crate intentionally does not own: 3D triangulation, plane projection
 (callers project), polygon repair (self-intersecting input is rejected with a
 typed error, never auto-fixed), or mesh integration (adapters live with their
@@ -72,3 +105,6 @@ consumers).
   rationale and is annotated to point here.
 - One more workspace crate — accepted because it has three consumers and zero
   dependencies, matching the `exedra_qef`/`exedra_spatial` leaf pattern.
+- Uniformly tiny or wide-exponent noncollinear inputs may now change from the
+  incorrect `Collinear` result to their mathematical orientation. Existing
+  callers require no source migration.
