@@ -89,12 +89,22 @@ pub mod names {
         pub const INTERIOR_ARCADE_EAST: &str = "interior-arcade-east";
         /// The constructive part carrying the crossing dome.
         pub const CROSSING_DOME: &str = "crossing-dome";
+        /// The faceted ruled-loft web reused at all four crossing corners.
+        pub const PENDENTIVE_WEB: &str = "crossing-pendentive-web";
         /// The pierced panel reused around alternating drum faces.
         pub const DRUM_WINDOW_PANEL: &str = "crossing-drum-window-panel";
         /// The exterior aisle buttress reused on both elevations.
         pub const AISLE_BUTTRESS: &str = "aisle-buttress";
         /// The east chancel gable containing the apse opening.
         pub const EAST_CHANCEL_GABLE: &str = "east-chancel-gable";
+        /// The transverse timber tying the nave walls in each roof truss.
+        pub const NAVE_TRUSS_TIE_BEAM: &str = "nave-truss-tie-beam";
+        /// The sloping timber reused on both sides of every nave roof truss.
+        pub const NAVE_TRUSS_PRINCIPAL_RAFTER: &str = "nave-truss-principal-rafter";
+        /// The vertical timber joining each tie beam to the roof apex.
+        pub const NAVE_TRUSS_KING_POST: &str = "nave-truss-king-post";
+        /// The diagonal timber reused on both sides of every nave roof truss.
+        pub const NAVE_TRUSS_DIAGONAL_BRACE: &str = "nave-truss-diagonal-brace";
     }
 
     /// Stable root-instance paths for major architectural elements.
@@ -115,8 +125,16 @@ pub mod names {
         pub const INTERIOR_ARCADE_SOUTH_EAST: &str = "interior-arcade-south-east";
         /// Path of the crossing dome instance.
         pub const CROSSING_DOME: &str = "crossing-dome";
-        /// Path of the square stage that supports the drum.
+        /// Path of the open square bearing ring that supports the drum.
         pub const CROSSING_PLATFORM: &str = "crossing-platform";
+        /// Path of the north-east crossing pendentive.
+        pub const PENDENTIVE_NORTH_EAST: &str = "crossing-pendentive-north-east";
+        /// Path of the north-west crossing pendentive.
+        pub const PENDENTIVE_NORTH_WEST: &str = "crossing-pendentive-north-west";
+        /// Path of the south-west crossing pendentive.
+        pub const PENDENTIVE_SOUTH_WEST: &str = "crossing-pendentive-south-west";
+        /// Path of the south-east crossing pendentive.
+        pub const PENDENTIVE_SOUTH_EAST: &str = "crossing-pendentive-south-east";
         /// Path of the east chancel gable instance.
         pub const EAST_CHANCEL_GABLE: &str = "east-chancel-gable";
         /// Path of the eastern apse instance.
@@ -137,6 +155,10 @@ pub mod names {
         pub const DRUM_WINDOW: &str = "drum_window";
         /// Ground-bearing piers supporting the crossing stage.
         pub const CROSSING_PIER: &str = "crossing_pier";
+        /// Faceted webs mediating between the square crossing and drum.
+        pub const PENDENTIVE: &str = "pendentive";
+        /// Independently addressable structural members of the nave roof trusses.
+        pub const NAVE_TRUSS_MEMBER: &str = "nave_truss_member";
     }
 }
 
@@ -210,14 +232,29 @@ mod tests {
             names::instances::CROSSING_DOME
         );
 
+        let pendentive_part = assembly
+            .part_by_key(names::parts::PENDENTIVE_WEB)
+            .expect("stable pendentive part key resolves");
+        let pendentive_instance =
+            resolve_instance_path(&assembly, names::instances::PENDENTIVE_NORTH_EAST)
+                .expect("stable pendentive instance path resolves");
+        assert_eq!(
+            assembly.instance(pendentive_instance).unwrap().part(),
+            pendentive_part
+        );
+
         let buttresses = instances_with_role(&assembly, names::roles::AISLE_BUTTRESS);
         let windows = instances_with_role(&assembly, names::roles::DRUM_WINDOW);
         let intact_nave_walls = instances_with_role(&assembly, names::roles::NAVE_CLERESTORY);
         let ruined_nave_walls = instances_with_role(&assembly, names::roles::NAVE_CLERESTORY_RUIN);
+        let pendentives = instances_with_role(&assembly, names::roles::PENDENTIVE);
+        let truss_members = instances_with_role(&assembly, names::roles::NAVE_TRUSS_MEMBER);
         assert_eq!(buttresses.len(), 16);
         assert_eq!(windows.len(), 6);
         assert_eq!(intact_nave_walls.len(), 3);
         assert_eq!(ruined_nave_walls.len(), 1);
+        assert_eq!(pendentives.len(), 4);
+        assert_eq!(truss_members.len(), 36);
         assert!(buttresses.iter().all(|&id| {
             assembly.instance(id).unwrap().part()
                 == assembly.part_by_key(names::parts::AISLE_BUTTRESS).unwrap()
@@ -234,10 +271,21 @@ mod tests {
     fn public_name_vocabulary_is_stable() {
         assert_eq!(names::ARCHITECTURAL_ROLE, "architectural_role");
         assert_eq!(names::parts::CROSSING_DOME, "crossing-dome");
+        assert_eq!(names::parts::PENDENTIVE_WEB, "crossing-pendentive-web");
         assert_eq!(names::parts::NAVE_CLERESTORY_WEST, "nave-clerestory-west");
         assert_eq!(names::parts::NAVE_CLERESTORY_EAST, "nave-clerestory-east");
         assert_eq!(names::parts::INTERIOR_ARCADE_WEST, "interior-arcade-west");
         assert_eq!(names::parts::INTERIOR_ARCADE_EAST, "interior-arcade-east");
+        assert_eq!(names::parts::NAVE_TRUSS_TIE_BEAM, "nave-truss-tie-beam");
+        assert_eq!(
+            names::parts::NAVE_TRUSS_PRINCIPAL_RAFTER,
+            "nave-truss-principal-rafter"
+        );
+        assert_eq!(names::parts::NAVE_TRUSS_KING_POST, "nave-truss-king-post");
+        assert_eq!(
+            names::parts::NAVE_TRUSS_DIAGONAL_BRACE,
+            "nave-truss-diagonal-brace"
+        );
         assert_eq!(names::instances::CROSSING_DOME, "crossing-dome");
         assert_eq!(
             names::instances::NAVE_WALL_NORTH_WEST,
@@ -248,11 +296,17 @@ mod tests {
             "nave-wall-south-west-broken"
         );
         assert_eq!(names::instances::CROSSING_PLATFORM, "crossing-platform");
+        assert_eq!(
+            names::instances::PENDENTIVE_NORTH_EAST,
+            "crossing-pendentive-north-east"
+        );
         assert_eq!(names::instances::EAST_CHANCEL_GABLE, "east-chancel-gable");
         assert_eq!(names::instances::EAST_APSE, "east-apse");
         assert_eq!(names::roles::AISLE_BUTTRESS, "aisle_buttress");
         assert_eq!(names::roles::INTERIOR_ARCADE, "interior_arcade");
         assert_eq!(names::roles::DRUM_WINDOW, "drum_window");
+        assert_eq!(names::roles::PENDENTIVE, "pendentive");
+        assert_eq!(names::roles::NAVE_TRUSS_MEMBER, "nave_truss_member");
         assert!(resolve_instance_path(&Assembly::new(), "").is_none());
         assert!(resolve_instance_path(&Assembly::new(), "root//child").is_none());
     }
@@ -291,10 +345,10 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0x48b6_595b_edd9_2a7b_58a2_5c19_51c2_ebd1
+            0xcb8f_38b3_2198_594d_b662_d171_ec8d_2f18
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);
-        assert_eq!(byte_signature(obj_a.as_bytes()), 0xe5aa_9ea3_76bd_37df);
+        assert_eq!(byte_signature(obj_a.as_bytes()), 0x64d1_1202_ba90_d6b2);
     }
 }

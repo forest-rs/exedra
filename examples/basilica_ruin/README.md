@@ -7,11 +7,12 @@ assembly, extraction, and glTF seams.
 
 The default model has a tall central nave, two attached lower aisles, genuine
 interior nave-to-aisle arcades beneath a continuous clerestory, an eastern
-apse, and a shallow dome carried by an articulated twelve-sided drum and
-pierced square crossing stage. One restrained broken clerestory and roof bay
-supplies the ruin cue. Its architecture is deliberately clearer than its
-ornament: the scenario is a workflow proof and visual regression fixture, not
-an archaeological reconstruction.
+apse, and a shallow dome carried by an articulated twelve-sided drum, four
+named faceted pendentive webs, and a pierced square crossing stage. One
+restrained broken clerestory and roof bay supplies the ruin cue. Its
+architecture is deliberately clearer than its ornament: the scenario is a
+workflow proof and visual regression fixture, not an archaeological
+reconstruction.
 
 Run it from the workspace root:
 
@@ -40,6 +41,22 @@ cargo run -p basilica_ruin -- --obj target/my-basilica.obj
 The summary printed to stdout includes assembly, triangle, diagnostic, and
 content-signature counters.
 
+To exercise incremental part compilation, rebuild the concrete assembly after
+changing only `BasilicaParams::dome_height`:
+
+```sh
+cargo run -p basilica_ruin -- --warm-reconfigure
+```
+
+This compiles the accepted default once, rebuilds the edited assembly through
+the same `PartCompiler`, and verifies it against a fresh edited compile. The
+summary reports cache hits per miss, the single changed named part, ordered OBJ
+group count, and the byte-identical warm/fresh signature. It is a cache-work
+proof rather than a wall-clock claim because the example separately evaluates
+every recipe to retain its diagnostics until `ea-8tpb` lands. The edited
+artifacts are written as `target/basilica_ruin/basilica_ruin_warm.obj` and
+`target/basilica_ruin/basilica_ruin_warm.gltf`.
+
 ## Code map
 
 There is one normal path through the example:
@@ -47,7 +64,8 @@ There is one normal path through the example:
 ```text
 BasilicaParams
     -> build_basilica_assembly
-        -> architecture::{nave, aisles, interior_arcades, east_end, crossing, buttresses}
+        -> architecture::{nave, aisles, interior_arcades, east_end, crossing,
+                         crossing_transition, buttresses}
             -> geometry recipes and profiles
                 -> editable Assembly
                     -> optional name/role-based edits
@@ -114,6 +132,7 @@ meaning local while exercising the mechanisms now available:
 | `detail.openings.arcade` | clockwise round-headed profile holes; true openings |
 | nave/aisle spatial hierarchy | four named lower interior arcade segments carrying the raised clerestory |
 | `shape.add.drum` | twelve tangent wall panels, six genuine window openings, and two cornice rings |
+| square-to-drum transition | four named faceted ruled-loft pendentive webs beneath an open twelve-sided bearing throat |
 | `shape.add.dome` | fixed-correspondence 24-sided ruled loft with capped crown |
 | region/provenance | source references, profile segment regions, assembly paths |
 | ruin damage | one authored notch in the south clerestory wall |
@@ -138,13 +157,18 @@ meaning local while exercising the mechanisms now available:
   voids with a minimal two-centimetre profile boundary at floor level. This
   keeps tessellation watertight while reading as spatial passage, not a window
   or decorative column row in front of a solid wall.
-- The crossing uses four ground-bearing piers, pierced upper stage faces, a
-  square platform, and a windowed polygonal drum. These overlapping named
-  masses suggest a credible load path without pretending to solve masonry
-  statics.
+- The crossing uses four ground-bearing piers, pierced upper stage faces, four
+  named pendentive webs, a thin open square-to-dodecagonal bearing ring, and a
+  windowed polygonal drum. Exedra does not yet provide trimmed spherical
+  triangular surfaces, so the pendentives are explicitly faceted three-section
+  ruled-loft solids rather than claimed spherical masonry. Their lower sections
+  stay over the pier and arch shoulders while their upper chords overlap the
+  drum footprint. These overlapping named masses make the load path visible
+  without pretending to solve masonry statics.
 - The chancel gable closes the nave roof end around one large round-headed
-  opening into the apse. The apse is a faceted half-cylinder with a matching
-  half-dome roof; the main crossing dome carries the larger curved silhouette.
+  opening into the apse. C-shaped faceted wall and roof-shell profiles leave
+  the sanctuary and its conch hollow, while the main crossing dome carries the
+  larger curved silhouette.
 - Assembly compilation currently discards constructive evaluation reports.
   This executable audits each recipe directly before compilation so its
   diagnostic counter remains honest; the assembly fix is tracked by

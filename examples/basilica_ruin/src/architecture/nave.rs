@@ -245,6 +245,8 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
 
 #[cfg(test)]
 mod tests {
+    use exedra_constructive::ir::Placement3;
+
     use crate::output::{bounds_for_path, build_scenario};
     use crate::{BasilicaParams, names, resolve_instance_path};
 
@@ -287,5 +289,84 @@ mod tests {
                 .unwrap()
         );
         assert!(crossing_east - crossing_west > p.nave_width);
+    }
+
+    #[test]
+    fn placed_nave_roof_slabs_are_mirrored_outward_from_the_same_baseline() {
+        const ROOF_THICKNESS: f64 = 0.28;
+
+        let p = BasilicaParams::default();
+        let scenario = build_scenario();
+        let run = p.nave_width * 0.5 + 0.35;
+        let slope = libm::sqrt(run * run + p.roof_rise * p.roof_rise);
+        let roof_sin = p.roof_rise / slope;
+        let roof_cos = run / slope;
+        let peak = p.nave_wall_height + p.roof_rise;
+        let mut placed_bounds = Vec::new();
+
+        for (path, normal_y) in [
+            ("nave-roof-north-east", roof_sin),
+            ("nave-roof-south-east", -roof_sin),
+        ] {
+            let item = scenario
+                .render_list
+                .items
+                .iter()
+                .find(|item| item.path.to_string() == path)
+                .unwrap_or_else(|| panic!("missing placed roof {path}"));
+            assert_close(rotation_determinant(&item.world), 1.0);
+            let body = &scenario.compiled.part(item.part).unwrap().bodies[item.body as usize];
+            let (min_distance, max_distance) = body
+                .tri
+                .positions
+                .iter()
+                .map(|&position| transform_point(&item.world, position))
+                .map(|position| normal_y * position[1] + roof_cos * position[2] - roof_cos * peak)
+                .fold(
+                    (f64::INFINITY, f64::NEG_INFINITY),
+                    |(min_distance, max_distance), distance| {
+                        (min_distance.min(distance), max_distance.max(distance))
+                    },
+                );
+            assert_close(min_distance, 0.0);
+            assert_close(max_distance, ROOF_THICKNESS);
+            placed_bounds.push(bounds_for_path(
+                &scenario.compiled,
+                &scenario.render_list,
+                path,
+            ));
+        }
+
+        let (north_min, north_max) = placed_bounds[0];
+        let (south_min, south_max) = placed_bounds[1];
+        assert_close(north_min[0], south_min[0]);
+        assert_close(north_max[0], south_max[0]);
+        assert_close(north_min[1], -south_max[1]);
+        assert_close(north_max[1], -south_min[1]);
+        assert_close(north_min[2], south_min[2]);
+        assert_close(north_max[2], south_max[2]);
+        assert!(north_min[2] <= p.nave_wall_height + 1.0e-5);
+        assert!(south_min[2] <= p.nave_wall_height + 1.0e-5);
+    }
+
+    fn transform_point(placement: &Placement3, point: [f32; 3]) -> [f64; 3] {
+        let point = point.map(f64::from);
+        let rows = &placement.rows;
+        [
+            rows[0][0] * point[0] + rows[0][1] * point[1] + rows[0][2] * point[2] + rows[0][3],
+            rows[1][0] * point[0] + rows[1][1] * point[1] + rows[1][2] * point[2] + rows[1][3],
+            rows[2][0] * point[0] + rows[2][1] * point[1] + rows[2][2] * point[2] + rows[2][3],
+        ]
+    }
+
+    fn rotation_determinant(placement: &Placement3) -> f64 {
+        let r = &placement.rows;
+        r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
     }
 }

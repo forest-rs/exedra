@@ -9,11 +9,22 @@ use crate::{BasilicaParams, names};
 mod aisles;
 mod buttresses;
 mod crossing;
+mod crossing_transition;
 mod east_end;
 mod interior_arcades;
 mod nave;
+mod nave_trusses;
 
 const CLERESTORY_BASE: f64 = 5.75;
+const CROSSING_PLATFORM_HEIGHT: f64 = 0.22;
+
+fn crossing_drum_base(p: &BasilicaParams) -> f64 {
+    p.nave_wall_height + p.roof_rise + 0.55
+}
+
+fn crossing_platform_base(p: &BasilicaParams) -> f64 {
+    crossing_drum_base(p) - CROSSING_PLATFORM_HEIGHT
+}
 
 #[derive(Copy, Clone)]
 struct Layout {
@@ -47,6 +58,7 @@ pub(crate) struct Inventory {
     pub(crate) buttresses: u32,
     pub(crate) crossing_piers: u32,
     pub(crate) crossing_stages: u32,
+    pub(crate) pendentives: u32,
     pub(crate) drum_windows: u32,
     pub(crate) cornice_bands: u32,
     pub(crate) chancel_openings: u32,
@@ -54,6 +66,9 @@ pub(crate) struct Inventory {
     pub(crate) drums: u32,
     pub(crate) domes: u32,
     pub(crate) ruined_bays: u32,
+    pub(crate) nave_trusses: u32,
+    pub(crate) nave_truss_members: u32,
+    pub(crate) omitted_nave_trusses: u32,
 }
 
 /// Example-local assembly wiring shared by the architectural systems.
@@ -113,7 +128,11 @@ pub(crate) fn build_assembly(p: &BasilicaParams) -> (Assembly, Inventory) {
     interior_arcades::build(&mut context, p, layout);
     east_end::build(&mut context, p, layout);
     crossing::build(&mut context, p, layout);
+    crossing_transition::build(&mut context, p);
     buttresses::build(&mut context, p, layout);
+    // Append interior timber detail after the accepted primary fabric so its
+    // 71 instance paths remain an exact stable prefix of every export.
+    nave_trusses::build(&mut context, p, layout);
 
     let inventory = Inventory {
         nave_walls: 4,
@@ -125,6 +144,7 @@ pub(crate) fn build_assembly(p: &BasilicaParams) -> (Assembly, Inventory) {
         buttresses: (p.arcade_bays + 1) * 2,
         crossing_piers: 4,
         crossing_stages: 1,
+        pendentives: 4,
         drum_windows: 6,
         cornice_bands: 2,
         chancel_openings: 1,
@@ -132,6 +152,9 @@ pub(crate) fn build_assembly(p: &BasilicaParams) -> (Assembly, Inventory) {
         drums: 1,
         domes: 1,
         ruined_bays: 1,
+        nave_trusses: 6,
+        nave_truss_members: 36,
+        omitted_nave_trusses: 1,
     };
     (context.finish(), inventory)
 }
@@ -157,6 +180,7 @@ mod tests {
                 buttresses: 16,
                 crossing_piers: 4,
                 crossing_stages: 1,
+                pendentives: 4,
                 drum_windows: 6,
                 cornice_bands: 2,
                 chancel_openings: 1,
@@ -164,6 +188,9 @@ mod tests {
                 drums: 1,
                 domes: 1,
                 ruined_bays: 1,
+                nave_trusses: 6,
+                nave_truss_members: 36,
+                omitted_nave_trusses: 1,
             }
         );
         let paths: Vec<String> = scenario
@@ -189,10 +216,14 @@ mod tests {
             "east-chancel-gable",
             "east-apse",
             "crossing-platform",
+            "crossing-pendentive-north-east",
             "crossing-pier-south-west",
             "crossing-drum-panel-00",
             "crossing-drum-cornice-base",
             "crossing-dome",
+            "nave-truss-west-00-tie-beam",
+            "nave-truss-west-05-king-post",
+            "nave-truss-east-00-diagonal-brace-south",
         ] {
             assert!(
                 paths.iter().any(|path| path == required),

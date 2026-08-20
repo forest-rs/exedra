@@ -3,11 +3,14 @@
 
 use exedra_constructive::ir::Placement3;
 
-use super::{BuildContext, Layout};
+use super::{
+    BuildContext, CROSSING_PLATFORM_HEIGHT, Layout, crossing_drum_base, crossing_platform_base,
+};
 use crate::BasilicaParams;
 use crate::geometry::{
     arcaded_wall_profile, box_recipe, centered_vertical_wall_frame, cylinder_recipe, dome_recipe,
-    drum_panel_profile, extruded_profile_recipe, transverse_wall_frame, vertical_wall_frame,
+    drum_panel_profile, extruded_profile_recipe, square_polygon_ring_profile,
+    transverse_wall_frame, vertical_wall_frame,
 };
 use crate::names;
 
@@ -19,13 +22,13 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
     } = layout;
 
     // The crossing stage is a visible load path: four ground-bearing piers
-    // carry upper spandrel beams and a square platform, which in turn bears
-    // the polygonal drum above the nave roof ridge.
+    // carry upper spandrel beams and an open square bearing ring, which in
+    // turn bears the polygonal drum above the nave roof ridge. The separate
+    // crossing-transition system fills the four corners below that ring.
     let crossing_span = crossing_east - crossing_west;
     let half_crossing = crossing_span * 0.5;
-    let drum_base = p.nave_wall_height + p.roof_rise + 0.55;
-    let platform_height = 0.45;
-    let platform_base = drum_base - platform_height;
+    let drum_base = crossing_drum_base(p);
+    let platform_base = crossing_platform_base(p);
     let pier_size = 1.15;
     let crossing_pier = context.add_part(
         "crossing-pier",
@@ -116,8 +119,10 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
     );
     let crossing_platform = context.add_part(
         "crossing-platform",
-        box_recipe(
-            [crossing_span, crossing_span, platform_height],
+        extruded_profile_recipe(
+            square_polygon_ring_profile(half_crossing, p.drum_radius - 0.48, 12),
+            CROSSING_PLATFORM_HEIGHT,
+            Placement3::IDENTITY,
             "basilica:crossing-platform",
         ),
         "warm-stone",
@@ -125,7 +130,7 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
     context.add_instance(
         names::instances::CROSSING_PLATFORM,
         crossing_platform,
-        Placement3::translate(crossing_west, -half_crossing, platform_base),
+        Placement3::translate(p.crossing_x, 0.0, platform_base),
         "crossing_platform",
     );
 
