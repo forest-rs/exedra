@@ -1,0 +1,17 @@
+[package]
+name = "exedra_triangulate_bench"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Deterministic quality wind tunnel for exedra_triangulate"
+keywords = ["benchmark", "triangulation", "geometry"]
+categories = ["algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra_triangulate.workspace = true

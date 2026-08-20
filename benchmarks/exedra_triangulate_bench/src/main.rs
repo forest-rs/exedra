@@ -1,0 +1,770 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Deterministic quality and timing wind tunnel for `exedra_triangulate`.
+//!
+//! Quality/signature reporting is completed before the timed phase so angle
+//! calculation and formatting cannot contaminate the wall-clock baseline.
+
+use std::hint::black_box;
+use std::time::{Duration, Instant};
+
+use exedra_triangulate::{PolygonInput, TriParams, TriStrategy, Triangulation, triangulate};
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+const MIN_BATCH_VERTICES: usize = 256;
+const MAX_BATCH_SIZE: usize = 64;
+
+fn main() {
+    let profile = Profile::from_args(std::env::args().skip(1));
+    let fixtures = fixtures();
+    let reports: Vec<QualityReport> = fixtures.iter().map(analyze).collect();
+
+    println!(
+        "phase=quality profile={} strategy=EarClip fixtures={}",
+        profile.label(),
+        fixtures.len()
+    );
+    for report in &reports {
+        report.print();
+    }
+
+    println!(
+        "phase=timing profile={} strategy=EarClip fixtures={}",
+        profile.label(),
+        fixtures.len()
+    );
+    for fixture in &fixtures {
+        time_fixture(fixture, profile).print();
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum Profile {
+    Quick,
+    Stress,
+}
+
+impl Profile {
+    fn from_args(args: impl Iterator<Item = String>) -> Self {
+        let mut profile = Self::Quick;
+        for arg in args {
+            match arg.as_str() {
+                "--quick" => profile = Self::Quick,
+                "--stress" => profile = Self::Stress,
+                "--help" | "-h" => {
+                    print_help();
+                    std::process::exit(0);
+                }
+                _ => {
+                    eprintln!("unknown argument: {arg}");
+                    print_help();
+                    std::process::exit(2);
+                }
+            }
+        }
+        profile
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Stress => "stress",
+        }
+    }
+
+    const fn target_vertices(self) -> usize {
+        match self {
+            Self::Quick => 12_000,
+            Self::Stress => 240_000,
+        }
+    }
+}
+
+fn print_help() {
+    println!(
+        "exedra_triangulate_bench\n\n  --quick   run the short fixed-corpus profile (default)\n  --stress  run longer timing samples over the same corpus\n"
+    );
+}
+
+#[derive(Clone, Debug)]
+struct Fixture {
+    name: &'static str,
+    role: FixtureRole,
+    outer: Vec<[f64; 2]>,
+    holes: Vec<Vec<[f64; 2]>>,
+}
+
+impl Fixture {
+    fn vertex_count(&self) -> usize {
+        self.outer.len() + self.holes.iter().map(Vec::len).sum::<usize>()
+    }
+
+    fn prepare(&self) -> PreparedFixture<'_> {
+        PreparedFixture {
+            fixture: self,
+            hole_refs: self.holes.iter().map(Vec::as_slice).collect(),
+        }
+    }
+
+    fn points(&self) -> Vec<[f64; 2]> {
+        self.outer
+            .iter()
+            .chain(self.holes.iter().flatten())
+            .copied()
+            .collect()
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum FixtureRole {
+    ChoiceQuality,
+    TieControl,
+    InputConstraint,
+}
+
+impl FixtureRole {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ChoiceQuality => "choice_quality",
+            Self::TieControl => "tie_control",
+            Self::InputConstraint => "input_constraint",
+        }
+    }
+}
+
+struct PreparedFixture<'fixture> {
+    fixture: &'fixture Fixture,
+    hole_refs: Vec<&'fixture [[f64; 2]]>,
+}
+
+impl PreparedFixture<'_> {
+    fn input(&self) -> PolygonInput<'_> {
+        PolygonInput {
+            outer: &self.fixture.outer,
+            holes: &self.hole_refs,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct CircleStep {
+    cos: f64,
+    sin: f64,
+}
+
+impl CircleStep {
+    const N16: Self = Self {
+        cos: 0.923_879_532_511_286_7,
+        sin: 0.382_683_432_365_089_8,
+    };
+    const N64: Self = Self {
+        cos: 0.995_184_726_672_196_9,
+        sin: 0.098_017_140_329_560_6,
+    };
+    const N120: Self = Self {
+        cos: 0.998_629_534_754_573_8,
+        sin: 0.052_335_956_242_943_835,
+    };
+}
+
+fn fixtures() -> Vec<Fixture> {
+    let choice = vec![[4.9, 4.9], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+    vec![
+        Fixture {
+            name: "choice_driven_quad",
+            role: FixtureRole::ChoiceQuality,
+            outer: choice.clone(),
+            holes: Vec::new(),
+        },
+        Fixture {
+            name: "exact_cocircular_quad",
+            role: FixtureRole::TieControl,
+            outer: vec![[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]],
+            holes: Vec::new(),
+        },
+        near_circle_fixture("near_circle_16", 16, CircleStep::N16),
+        near_circle_fixture("near_circle_64", 64, CircleStep::N64),
+        near_circle_fixture("near_circle_120", 120, CircleStep::N120),
+        sparse_hole_fixture("sparse_rect_dense_hole_16", 16, CircleStep::N16),
+        sparse_hole_fixture("sparse_rect_dense_hole_64", 64, CircleStep::N64),
+        sparse_hole_fixture("sparse_rect_dense_hole_120", 120, CircleStep::N120),
+        drill_collinear_fixture(),
+        bridge_stress_fixture(),
+        Fixture {
+            name: "small_angle_wedge",
+            role: FixtureRole::InputConstraint,
+            outer: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.001, 0.01]],
+            holes: Vec::new(),
+        },
+        Fixture {
+            name: "choice_scale_down_2p-200",
+            role: FixtureRole::ChoiceQuality,
+            outer: scale_points(&choice, power_of_two(-200)),
+            holes: Vec::new(),
+        },
+        Fixture {
+            name: "choice_scale_up_2p200",
+            role: FixtureRole::ChoiceQuality,
+            outer: scale_points(&choice, power_of_two(200)),
+            holes: Vec::new(),
+        },
+    ]
+}
+
+fn near_circle_fixture(name: &'static str, count: usize, step: CircleStep) -> Fixture {
+    Fixture {
+        name,
+        role: FixtureRole::TieControl,
+        outer: near_circle(count, 10.0, [0.0, 0.0], step),
+        holes: Vec::new(),
+    }
+}
+
+fn sparse_hole_fixture(name: &'static str, count: usize, step: CircleStep) -> Fixture {
+    let mut hole = near_circle(count, 4.0, [0.0, 0.0], step);
+    hole.reverse();
+    Fixture {
+        name,
+        role: FixtureRole::InputConstraint,
+        outer: vec![[-10.0, -6.0], [10.0, -6.0], [10.0, 6.0], [-10.0, 6.0]],
+        holes: vec![hole],
+    }
+}
+
+fn near_circle(count: usize, radius: f64, center: [f64; 2], step: CircleStep) -> Vec<[f64; 2]> {
+    let mut points = Vec::with_capacity(count);
+    let (mut x, mut y) = (radius, 0.0);
+    for _ in 0..count {
+        points.push([center[0] + x, center[1] + y]);
+        (x, y) = (x * step.cos - y * step.sin, x * step.sin + y * step.cos);
+    }
+    points
+}
+
+fn drill_collinear_fixture() -> Fixture {
+    let ring = [
+        [13.0, 6.0],
+        [12.0, 8.0],
+        [10.0, 9.0],
+        [8.0, 8.0],
+        [7.0, 6.0],
+        [8.0, 4.0],
+        [10.0, 3.0],
+        [12.0, 4.0],
+    ];
+    let mut hole = Vec::with_capacity(ring.len() * 2);
+    for (index, &point) in ring.iter().enumerate() {
+        let next = ring[(index + 1) % ring.len()];
+        hole.push(point);
+        hole.push([(point[0] + next[0]) / 2.0, (point[1] + next[1]) / 2.0]);
+    }
+    hole.reverse();
+    Fixture {
+        name: "drill_like_collinear_midpoints",
+        role: FixtureRole::InputConstraint,
+        outer: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 12.0], [0.0, 12.0]],
+        holes: vec![hole],
+    }
+}
+
+fn bridge_stress_fixture() -> Fixture {
+    let mut circle = near_circle(16, 1.5, [15.0, 7.5], CircleStep::N16);
+    circle.reverse();
+    Fixture {
+        name: "three_hole_bridge_stress",
+        role: FixtureRole::TieControl,
+        outer: vec![[0.0, 0.0], [30.0, 0.0], [30.0, 15.0], [0.0, 15.0]],
+        holes: vec![
+            vec![[5.0, 5.0], [5.0, 8.0], [8.0, 8.0], [8.0, 5.0]],
+            circle,
+            vec![[22.0, 5.0], [24.0, 9.0], [26.0, 5.0]],
+        ],
+    }
+}
+
+fn scale_points(points: &[[f64; 2]], scale: f64) -> Vec<[f64; 2]> {
+    points
+        .iter()
+        .map(|point| [point[0] * scale, point[1] * scale])
+        .collect()
+}
+
+fn power_of_two(exponent: i32) -> f64 {
+    assert!(
+        (-1022..=1023).contains(&exponent),
+        "benchmark power must be a normal finite f64"
+    );
+    let biased = u64::try_from(exponent + 1023).expect("biased exponent is nonnegative");
+    f64::from_bits(biased << 52)
+}
+
+#[derive(Clone, Debug)]
+struct QualityReport {
+    name: &'static str,
+    role: FixtureRole,
+    vertices: usize,
+    holes: usize,
+    triangles: usize,
+    signature: u64,
+    min_angle_deg: f64,
+    p01_angle_deg: f64,
+    worst_quality: f64,
+    below_1deg: usize,
+    below_5deg: usize,
+    below_10deg: usize,
+}
+
+impl QualityReport {
+    fn print(&self) {
+        println!(
+            "scenario={} role={} vertices={} holes={} triangles={} signature={:016x} min_angle_deg={:.9} p01_angle_deg={:.9} worst_quality={:.9e} below_1deg={} below_5deg={} below_10deg={}",
+            self.name,
+            self.role.label(),
+            self.vertices,
+            self.holes,
+            self.triangles,
+            self.signature,
+            self.min_angle_deg,
+            self.p01_angle_deg,
+            self.worst_quality,
+            self.below_1deg,
+            self.below_5deg,
+            self.below_10deg,
+        );
+    }
+}
+
+fn analyze(fixture: &Fixture) -> QualityReport {
+    let params = ear_clip_params();
+    let prepared = fixture.prepare();
+    let input = prepared.input();
+    let first = triangulate(&input, &params).expect("fixed fixture must triangulate");
+    let second = triangulate(&input, &params).expect("fixed fixture repeat must triangulate");
+    assert_eq!(
+        first, second,
+        "{} must produce byte-identical triangles",
+        fixture.name
+    );
+
+    let points = fixture.points();
+    validate_cover(fixture, &points, &first);
+    let mut minimum_angles = Vec::with_capacity(first.triangles.len());
+    let mut worst_quality = f64::INFINITY;
+    for &triangle in &first.triangles {
+        let [a, b, c] = triangle_points(&points, triangle);
+        minimum_angles.push(triangle_min_angle(a, b, c));
+        worst_quality = worst_quality.min(normalized_quality(a, b, c));
+    }
+    minimum_angles.sort_by(f64::total_cmp);
+    let min_angle = minimum_angles.first().copied().unwrap_or(0.0);
+    let p01_angle = first_percentile(&minimum_angles);
+    let degrees = 180.0 / std::f64::consts::PI;
+
+    QualityReport {
+        name: fixture.name,
+        role: fixture.role,
+        vertices: fixture.vertex_count(),
+        holes: fixture.holes.len(),
+        triangles: first.triangles.len(),
+        signature: signature(fixture, &first),
+        min_angle_deg: min_angle * degrees,
+        p01_angle_deg: p01_angle * degrees,
+        worst_quality,
+        below_1deg: count_below(&minimum_angles, 1.0 / degrees),
+        below_5deg: count_below(&minimum_angles, 5.0 / degrees),
+        below_10deg: count_below(&minimum_angles, 10.0 / degrees),
+    }
+}
+
+fn validate_cover(fixture: &Fixture, points: &[[f64; 2]], result: &Triangulation) {
+    let mut triangle_area2 = 0.0;
+    for &triangle in &result.triangles {
+        for index in triangle {
+            assert!(
+                (index as usize) < points.len(),
+                "{} emitted out-of-range input index {index}",
+                fixture.name
+            );
+        }
+        let [a, b, c] = triangle_points(points, triangle);
+        let area2 = cross(a, b, c);
+        assert!(
+            area2 > 0.0,
+            "{} emitted non-CCW triangle {triangle:?}",
+            fixture.name
+        );
+        triangle_area2 += area2;
+    }
+
+    let expected_area2 = signed_area2(&fixture.outer)
+        + fixture
+            .holes
+            .iter()
+            .map(|hole| signed_area2(hole))
+            .sum::<f64>();
+    let scale = expected_area2.abs().max(f64::MIN_POSITIVE);
+    assert!(
+        (triangle_area2 - expected_area2).abs() <= scale * 1e-10,
+        "{} area mismatch: triangles={triangle_area2:e} polygon={expected_area2:e}",
+        fixture.name
+    );
+}
+
+fn triangle_points(points: &[[f64; 2]], triangle: [u32; 3]) -> [[f64; 2]; 3] {
+    [
+        points[triangle[0] as usize],
+        points[triangle[1] as usize],
+        points[triangle[2] as usize],
+    ]
+}
+
+fn signed_area2(loop_points: &[[f64; 2]]) -> f64 {
+    let mut area2 = 0.0;
+    for (index, &a) in loop_points.iter().enumerate() {
+        let b = loop_points[(index + 1) % loop_points.len()];
+        area2 += a[0] * b[1] - a[1] * b[0];
+    }
+    area2
+}
+
+fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn edge_sq(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let x = b[0] - a[0];
+    let y = b[1] - a[1];
+    x * x + y * y
+}
+
+fn normalized_quality(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    let longest = edge_sq(a, b).max(edge_sq(b, c)).max(edge_sq(c, a));
+    cross(a, b, c).abs() / longest
+}
+
+fn triangle_min_angle(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    angle(b, a, c).min(angle(a, b, c)).min(angle(a, c, b))
+}
+
+fn angle(a: [f64; 2], vertex: [f64; 2], b: [f64; 2]) -> f64 {
+    let u = [a[0] - vertex[0], a[1] - vertex[1]];
+    let v = [b[0] - vertex[0], b[1] - vertex[1]];
+    let cross = (u[0] * v[1] - u[1] * v[0]).abs();
+    let dot = u[0] * v[0] + u[1] * v[1];
+    cross.atan2(dot)
+}
+
+fn count_below(values: &[f64], threshold: f64) -> usize {
+    values.partition_point(|&value| value < threshold)
+}
+
+fn first_percentile(sorted_values: &[f64]) -> f64 {
+    let index = sorted_values.len().div_ceil(100).saturating_sub(1);
+    sorted_values.get(index).copied().unwrap_or(0.0)
+}
+
+fn signature(fixture: &Fixture, result: &Triangulation) -> u64 {
+    let mut hash = FNV_OFFSET;
+    hash_bytes(&mut hash, fixture.name.as_bytes());
+    hash_u64(&mut hash, fixture.outer.len() as u64);
+    for point in &fixture.outer {
+        hash_point(&mut hash, *point);
+    }
+    hash_u64(&mut hash, fixture.holes.len() as u64);
+    for hole in &fixture.holes {
+        hash_u64(&mut hash, hole.len() as u64);
+        for point in hole {
+            hash_point(&mut hash, *point);
+        }
+    }
+    for triangle in &result.triangles {
+        for &index in triangle {
+            hash_u64(&mut hash, u64::from(index));
+        }
+    }
+    hash
+}
+
+fn hash_point(hash: &mut u64, point: [f64; 2]) {
+    hash_u64(hash, point[0].to_bits());
+    hash_u64(hash, point[1].to_bits());
+}
+
+fn hash_u64(hash: &mut u64, value: u64) {
+    hash_bytes(hash, &value.to_le_bytes());
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for &byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct TimingReport {
+    name: &'static str,
+    vertices: usize,
+    samples: usize,
+    batch_size: usize,
+    triangulations: usize,
+    best_ns: u128,
+    average_ns: u128,
+    checksum: u64,
+}
+
+impl TimingReport {
+    fn print(self) {
+        println!(
+            "scenario={} vertices={} samples={} batch_size={} triangulations={} best_ns={} avg_ns={} best_ns_per_vertex={:.3} avg_ns_per_vertex={:.3} checksum={:016x}",
+            self.name,
+            self.vertices,
+            self.samples,
+            self.batch_size,
+            self.triangulations,
+            self.best_ns,
+            self.average_ns,
+            self.best_ns as f64 / self.vertices as f64,
+            self.average_ns as f64 / self.vertices as f64,
+            self.checksum,
+        );
+    }
+}
+
+fn time_fixture(fixture: &Fixture, profile: Profile) -> TimingReport {
+    let vertices = fixture.vertex_count();
+    let batch_size = timing_batch_size(vertices);
+    let vertices_per_batch = vertices
+        .checked_mul(batch_size)
+        .expect("fixed timing batch size must fit usize");
+    let samples = (profile.target_vertices() / vertices_per_batch).max(8);
+    let triangulations = samples
+        .checked_mul(batch_size)
+        .expect("fixed timing sample count must fit usize");
+    let params = ear_clip_params();
+    let prepared = fixture.prepare();
+    let input = prepared.input();
+    let warmup = triangulate(black_box(&input), &params).expect("warmup");
+    let checksum = triangle_checksum(&warmup);
+    black_box(&warmup);
+
+    let mut best = Duration::MAX;
+    let mut total = Duration::ZERO;
+    for _ in 0..samples {
+        let start = Instant::now();
+        for _ in 0..batch_size {
+            let result = triangulate(black_box(&input), &params).expect("timed fixture");
+            black_box(result);
+        }
+        let elapsed = start.elapsed();
+        best = best.min(elapsed);
+        total += elapsed;
+    }
+    black_box(checksum);
+    TimingReport {
+        name: fixture.name,
+        vertices,
+        samples,
+        batch_size,
+        triangulations,
+        best_ns: best.as_nanos() / batch_size as u128,
+        average_ns: total.as_nanos() / triangulations as u128,
+        checksum,
+    }
+}
+
+fn timing_batch_size(vertices: usize) -> usize {
+    MIN_BATCH_VERTICES
+        .div_ceil(vertices)
+        .clamp(1, MAX_BATCH_SIZE)
+}
+
+fn triangle_checksum(result: &Triangulation) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for triangle in &result.triangles {
+        for &index in triangle {
+            hash_u64(&mut hash, u64::from(index));
+        }
+    }
+    hash
+}
+
+fn ear_clip_params() -> TriParams {
+    let mut params = TriParams::default();
+    params.strategy = TriStrategy::EarClip;
+    params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CORPUS_PINS: [(&str, FixtureRole, u64); 13] = [
+        (
+            "choice_driven_quad",
+            FixtureRole::ChoiceQuality,
+            0x9e27_621e_5c12_35b7,
+        ),
+        (
+            "exact_cocircular_quad",
+            FixtureRole::TieControl,
+            0x6f01_fe1c_ee8a_2602,
+        ),
+        (
+            "near_circle_16",
+            FixtureRole::TieControl,
+            0x6036_d8f5_1e65_536c,
+        ),
+        (
+            "near_circle_64",
+            FixtureRole::TieControl,
+            0x8c7e_9310_3fef_ef5f,
+        ),
+        (
+            "near_circle_120",
+            FixtureRole::TieControl,
+            0x7883_2136_483a_dbf9,
+        ),
+        (
+            "sparse_rect_dense_hole_16",
+            FixtureRole::InputConstraint,
+            0x1aac_7386_2e82_d721,
+        ),
+        (
+            "sparse_rect_dense_hole_64",
+            FixtureRole::InputConstraint,
+            0x6e4d_3f6c_516c_412b,
+        ),
+        (
+            "sparse_rect_dense_hole_120",
+            FixtureRole::InputConstraint,
+            0x4eed_246c_6ae1_f30b,
+        ),
+        (
+            "drill_like_collinear_midpoints",
+            FixtureRole::InputConstraint,
+            0x689e_8b17_9902_c6a2,
+        ),
+        (
+            "three_hole_bridge_stress",
+            FixtureRole::TieControl,
+            0xf54c_563e_80e1_b944,
+        ),
+        (
+            "small_angle_wedge",
+            FixtureRole::InputConstraint,
+            0x3fc7_7c22_3b03_009d,
+        ),
+        (
+            "choice_scale_down_2p-200",
+            FixtureRole::ChoiceQuality,
+            0x49c5_f33e_7b05_4306,
+        ),
+        (
+            "choice_scale_up_2p200",
+            FixtureRole::ChoiceQuality,
+            0x9bf9_dca4_e4b6_8d74,
+        ),
+    ];
+
+    #[test]
+    fn fixed_corpus_triangulates_and_reports_finite_quality() {
+        for fixture in fixtures() {
+            let report = analyze(&fixture);
+            assert!(report.triangles > 0, "{}", fixture.name);
+            assert!(report.min_angle_deg.is_finite(), "{}", fixture.name);
+            assert!(report.p01_angle_deg.is_finite(), "{}", fixture.name);
+            assert!(report.worst_quality.is_finite(), "{}", fixture.name);
+            assert!(report.worst_quality > 0.0, "{}", fixture.name);
+        }
+    }
+
+    #[test]
+    fn corpus_signatures_are_pinned() {
+        let fixtures = fixtures();
+        assert_eq!(fixtures.len(), CORPUS_PINS.len());
+        for (fixture, &(expected_name, expected_role, expected_signature)) in
+            fixtures.iter().zip(&CORPUS_PINS)
+        {
+            assert_eq!(fixture.name, expected_name);
+            assert_eq!(fixture.role, expected_role, "{expected_name}");
+            assert_eq!(
+                analyze(fixture).signature,
+                expected_signature,
+                "{expected_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn power_of_two_fixtures_preserve_indices_and_every_quality_metric() {
+        let fixtures = fixtures();
+        let reports: Vec<QualityReport> = fixtures.iter().map(analyze).collect();
+        let base = &reports[0];
+        for transformed in &reports[11..=12] {
+            assert_eq!(transformed.triangles, base.triangles);
+            assert_eq!(transformed.min_angle_deg, base.min_angle_deg);
+            assert_eq!(transformed.p01_angle_deg, base.p01_angle_deg);
+            assert_eq!(transformed.worst_quality, base.worst_quality);
+            assert_eq!(transformed.below_1deg, base.below_1deg);
+            assert_eq!(transformed.below_5deg, base.below_5deg);
+            assert_eq!(transformed.below_10deg, base.below_10deg);
+        }
+
+        let params = ear_clip_params();
+        let base_prepared = fixtures[0].prepare();
+        let base_result =
+            triangulate(&base_prepared.input(), &params).expect("base fixture triangulates");
+        for transformed in &fixtures[11..=12] {
+            let prepared = transformed.prepare();
+            let result =
+                triangulate(&prepared.input(), &params).expect("scaled fixture triangulates");
+            assert_eq!(
+                result.triangles, base_result.triangles,
+                "{}",
+                transformed.name
+            );
+        }
+    }
+
+    #[test]
+    fn element_metrics_match_a_right_isosceles_triangle() {
+        let a = [0.0, 0.0];
+        let b = [1.0, 0.0];
+        let c = [0.0, 1.0];
+        assert_eq!(normalized_quality(a, b, c), 0.5);
+        assert_eq!(triangle_min_angle(a, b, c), std::f64::consts::FRAC_PI_4);
+    }
+
+    #[test]
+    fn first_percentile_uses_nearest_rank() {
+        let values: Vec<f64> = (0..101).map(f64::from).collect();
+        assert_eq!(first_percentile(&[]), 0.0);
+        assert_eq!(first_percentile(&values[..1]), 0.0);
+        assert_eq!(first_percentile(&values[..99]), 0.0);
+        assert_eq!(first_percentile(&values[..100]), 0.0);
+        assert_eq!(first_percentile(&values), 1.0);
+    }
+
+    #[test]
+    fn threshold_counts_are_strict() {
+        let values = [1.0, 5.0, 10.0];
+        assert_eq!(count_below(&values, 1.0), 0);
+        assert_eq!(
+            count_below(&values, f64::from_bits(1.0_f64.to_bits() + 1)),
+            1
+        );
+        assert_eq!(count_below(&values, 5.0), 1);
+        assert_eq!(count_below(&values, 10.0), 2);
+    }
+
+    #[test]
+    fn tiny_fixture_timings_are_batched() {
+        assert_eq!(timing_batch_size(1), MAX_BATCH_SIZE);
+        assert!(timing_batch_size(4) > 1);
+        assert_eq!(timing_batch_size(MIN_BATCH_VERTICES), 1);
+        assert_eq!(timing_batch_size(MIN_BATCH_VERTICES * 2), 1);
+    }
+}
