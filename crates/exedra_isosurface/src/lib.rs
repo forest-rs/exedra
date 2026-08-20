@@ -26,9 +26,11 @@ extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_isosurface requires either the `std` or `libm` feature");
 
+mod adaptive_transition;
 pub mod analytic;
 pub mod analytic2d;
 pub mod bounds2;
+mod cell_topology;
 pub mod dual_contour;
 pub mod hermite;
 pub mod lift;

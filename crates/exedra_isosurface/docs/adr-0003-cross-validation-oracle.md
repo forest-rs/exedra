@@ -109,3 +109,48 @@ and a `--class` CLI filter:
 
 A class whose cases mostly typed-defer is itself a result: the skip map
 documents the pipeline's real envelope per configuration family.
+
+## Amendment: typed semi-analytic extraction suite (2026-08, `bo-5zl0`)
+
+The seeded membership witness intentionally erases runtime-shaped field trees
+behind `Box<dyn ScalarField>`. That is the correct boundary for evaluating
+field sign, but it cannot preserve the optional `SemiAnalyticField`
+capability. Semi-analytic extraction therefore has a separate fixed suite in
+the same harness. Its expression trees remain statically typed through
+`Union`, `Intersection`, and `Difference`.
+
+The suite extracts aligned box/cylinder pairs at scales `1e-3`, `1`, and
+`1e4`. Every scenario must validate deeply, attribute faces to both primitive
+identities, snap at least one verified seam candidate, stay within a
+scale-relative equation-residual bound, and reproduce the same triangle-mesh
+signature and counters. A rotated pair separately proves that the declared
+closed-form envelope takes a counted unsupported QEF fallback without
+corrupting topology. Additional translated and `UniformScale`-wrapped
+through-cuts validate that the optional capability survives the public field
+adapters used by modeled scenes.
+
+Feature residual measurement does not filter vertices by the residual it is
+trying to prove. It first derives a topology-only candidate set: vertices
+incident to faces from both primitive identities. It then sorts that fixed set
+by the maximum unsigned implicit residual for the finite box and cylinder
+surface equations and measures the best `feature_snaps` entries claimed by the
+extractor. The worst of those entries must satisfy the scale-relative bound,
+and the total candidate count must equal
+`feature_snaps + ambiguous_fallbacks`. The displaced Union fixture records four
+expected multi-component `Ambiguous` cells, which explains why its
+topology-derived seam set is larger than its snapped subset; every other
+aligned typed fallback count is zero. The rotated fixture requires every active
+cell to report `Unsupported` and compares its positions and indices directly
+with ordinary QEF extraction.
+
+`--feature-obj` writes the unit-scale through-cut to
+`target/boolean_oracle/semi_analytic_box_cylinder.obj`. The local writer emits
+vertices in stable mesh order and faces grouped by `FACE_REGION`; it adds no
+serialization dependency and cannot write outside the target subtree. The
+artifact is deliberately generated rather than checked in.
+
+The non-published harness directly depends on the existing workspace
+`exedra_spatial` and `exedra_qef` crates only because constructing the public
+`DualContourParams` struct requires naming `Aabb` and `QefParams`. Re-exporting
+those types or adding a core convenience API solely for this harness would
+widen the core surface for the wrong reason.

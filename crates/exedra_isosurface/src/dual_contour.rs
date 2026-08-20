@@ -5,49 +5,51 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra::{BuildError, FaceBuildAttrs, Mesh, MeshBuilder, attr, op};
-use exedra_qef::{PlaneConstraint, QefBounds, QefParams, QefSolveError, QefSolver, SharpnessClass};
-use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
-use hashbrown::{HashMap, HashSet};
+use exedra::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
+use exedra_qef::{
+    PlaneConstraint, QefBounds, QefParams, QefResult, QefSolveError, QefSolver, SharpnessClass,
+};
+use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
+use hashbrown::HashMap;
 
+use crate::adaptive_transition::{
+    AdaptiveGrid, BalanceContext, CellKey, ComponentRoute, EdgeSegmentKey, LeafLocator, LeafSet,
+    balance_tree, enumerate_segments, leaf_keys, segment_end,
+};
+use crate::cell_topology::{CUBE_EDGES, CellTopology, classify_cell};
 use crate::hermite::locate_edge_zero;
 use crate::{
     CellHermiteData, EdgeSearchParams, ProvenanceField, ScalarField, SemiAnalyticFeature,
     SemiAnalyticField, SemiAnalyticProjectionOutcome, locate_edge_intersection,
 };
 
-const CUBE_EDGES: [(usize, usize); 12] = [
-    (0, 1),
-    (1, 3),
-    (2, 3),
-    (0, 2),
-    (4, 5),
-    (5, 7),
-    (6, 7),
-    (4, 6),
-    (0, 4),
-    (1, 5),
-    (3, 7),
-    (2, 6),
-];
-
-const MIN_ADAPTIVE_DEPTH: u8 = 2;
-const SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
+const MIN_EMITTER_DEPTH: u8 = 2;
+const LEGACY_SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
+const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
 /// Parameters controlling dual-contouring extraction.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct DualContourParams {
-    /// Root domain bounds.
+    /// Root domain bounds, preserved exactly at integer-grid coordinates `0`
+    /// and `2^max_depth`.
     pub root_bounds: Aabb,
-    /// Maximum octree depth and uniform extraction resolution.
+    /// Maximum octree depth and finest integer-grid resolution.
     pub max_depth: u8,
-    /// Optional cap on active cells emitted into the dual mesh.
+    /// Optional cap on contributing leaves emitted into the dual mesh.
+    ///
+    /// The cap does not bound interval analysis, balancing, or sparse corner
+    /// sampling. Truncation is deterministic but may leave an open mesh.
     pub cell_budget: Option<usize>,
     /// Edge intersection search parameters.
+    ///
+    /// If an exact edge-endpoint crossing has an undefined gradient, the
+    /// extractor uses the oriented primal-edge direction as its Hermite normal.
+    /// Undefined gradients at interior crossings remain invalid evidence.
     pub edge_search: EdgeSearchParams,
     /// QEF solve parameters.
     pub qef: QefParams,
@@ -56,11 +58,13 @@ pub struct DualContourParams {
 /// Extraction statistics for one dual-contouring run.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct DualContourStats {
-    /// Total octree cells stored after interval-driven subdivision.
+    /// Total octree cells stored after initial interval/error subdivision plus
+    /// transition balancing and completion refinement.
     pub octree_cells: usize,
-    /// Intersecting octree leaves that contributed one DC vertex.
+    /// Intersecting octree leaves that contributed one or more DC vertices.
     pub active_cells: usize,
-    /// Output vertex count.
+    /// Output component/compatibility-vertex count, which may differ from
+    /// `active_cells`.
     pub vertices: usize,
     /// Output face count.
     pub faces: usize,
@@ -78,17 +82,17 @@ pub struct DualContourResult {
 /// Semi-analytic projection and fallback counts for one extraction.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct SemiAnalyticContourStats {
-    /// Cells projected onto one dominant primitive surface.
+    /// Contributing leaves projected onto one dominant primitive surface.
     pub surface_projections: usize,
-    /// Cells snapped onto a supported transverse primitive intersection.
+    /// Contributing leaves snapped onto a supported primitive intersection.
     pub feature_snaps: usize,
-    /// Cells whose primitive combination has no exact feature solver.
+    /// Contributing leaves whose primitive pair has no exact feature solver.
     pub unsupported_fallbacks: usize,
-    /// Cells containing more than one candidate feature component.
+    /// Contributing leaves containing more than one surface component.
     pub ambiguous_fallbacks: usize,
-    /// Cells containing a tangent primitive contact.
+    /// Contributing leaves containing a tangent primitive contact.
     pub tangent_fallbacks: usize,
-    /// Cells containing coincident primitive surface patches.
+    /// Contributing leaves containing coincident primitive surface patches.
     pub coincident_fallbacks: usize,
     /// Projections rejected for leaving the cell or exceeding its displacement
     /// budget.
@@ -175,6 +179,7 @@ where
             field.primitive_at(point)
         },
         |point, cell| Some(field.project_cell_vertex_detailed(point, cell)),
+        RefinementMode::ErrorDriven,
     )?;
     Ok(SemiAnalyticContourResult {
         mesh: result.mesh,
@@ -183,19 +188,105 @@ where
     })
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct LeafMarker {
-    intersects_surface: bool,
+    decision: RefinementDecision,
+    analysis: Option<Box<CellAnalysis>>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 struct ActiveCell {
-    coord: (u32, u32, u32),
-    depth: u8,
-    span: u32,
+    id: CellId,
+    key: CellKey,
     bounds: Aabb,
     position: [f32; 3],
     sharpness: SharpnessClass,
+    topology: CellTopology,
+    components: Vec<ComponentVertex>,
+    compatibility: ComponentVertex,
+    emitted: Vec<Option<VertexEntry>>,
+    compatibility_emitted: Option<VertexEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveSelection {
+    cells: Vec<ActiveCell>,
+    omitted_by_budget: Vec<CellId>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct ComponentVertex {
+    position: [f32; 3],
+    sharpness: SharpnessClass,
+    constraint_count: u32,
+    qef: Option<QefResult>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CellVertices {
+    components: Vec<ComponentVertex>,
+    compatibility: ComponentVertex,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CellAnalysis {
+    corner_values: [f32; 8],
+    topology: CellTopology,
+    hermite: CellHermiteData,
+    vertices: CellVertices,
+    evidence: RefinementEvidence,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct RefinementEvidence {
+    expected_crossings: usize,
+    hermite_hits: usize,
+    complete_hermite: bool,
+    usable_constraints: u32,
+    qef_rms: f32,
+    curvature_error: f32,
+    was_clamped: bool,
+    finite: bool,
+    component_count: usize,
+    ambiguous_face: bool,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RefinementDecision {
+    Inactive(InactiveReason),
+    Refine(RefinementReason),
+    Retain,
+    MaxDepthCompatibility,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum InactiveReason {
+    IntervalExcluded,
+    NoCrossingAtMaxDepth,
+    LegacyHomogeneous,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RefinementReason {
+    #[cfg(test)]
+    ForcedUniform,
+    EmitterMinimumDepth,
+    EnclosedNoEdge,
+    PartialHermite,
+    NonFinite,
+    TopologyUnsafe,
+    Clamped,
+    Residual,
+    Curvature,
+    LegacyCrossingCount,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RefinementMode {
+    ErrorDriven,
+    Legacy,
+    #[cfg(test)]
+    ForcedUniform,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -214,7 +305,14 @@ where
     F: ScalarField,
     R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
 {
-    dual_contour_projected_impl(field, params, region_at, |_, _| None).map(|(result, _)| result)
+    dual_contour_projected_impl(
+        field,
+        params,
+        region_at,
+        |_, _| None,
+        RefinementMode::ErrorDriven,
+    )
+    .map(|(result, _)| result)
 }
 
 fn dual_contour_projected_impl<F, R, P>(
@@ -222,6 +320,7 @@ fn dual_contour_projected_impl<F, R, P>(
     params: &DualContourParams,
     region_at: R,
     project: P,
+    refinement_mode: RefinementMode,
 ) -> Result<(DualContourResult, SemiAnalyticContourStats), DualContourError>
 where
     F: ScalarField,
@@ -229,16 +328,34 @@ where
     P: Fn([f32; 3], &Aabb) -> Option<SemiAnalyticProjectionOutcome>,
 {
     let resolution = 1_u32 << params.max_depth;
-    let lattice = sample_lattice(field, params.root_bounds, resolution);
     let mut visitor = IntervalVisitor {
         field,
-        lattice: &lattice,
-        root_bounds: params.root_bounds,
-        resolution,
+        params,
+        refinement_mode,
+        grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
+        pending: None,
+        failure: None,
     };
-    let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+    let mut tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+    if let Some(error) = visitor.failure {
+        return Err(error);
+    }
+    debug_assert!(
+        visitor.pending.is_none(),
+        "octree construction must consume every retained leaf payload"
+    );
+    let (leaf_keys, segments) = prepare_transitions(&mut tree, &mut visitor)?;
+    if let Some(error) = visitor.failure {
+        return Err(error);
+    }
 
-    let mut active_cells = collect_active_cells(field, params, &tree, &lattice)?;
+    let octree_cells = tree.len();
+    let ActiveSelection {
+        cells: mut active_cells,
+        omitted_by_budget,
+    } = collect_active_cells(params, &tree, &visitor.grid);
+    let locator = LeafLocator::new(&leaf_keys, resolution);
+    drop(tree);
 
     if active_cells.is_empty() {
         return Ok((
@@ -248,7 +365,7 @@ where
                     .expect("empty mesh build should succeed")
                     .mesh,
                 stats: DualContourStats {
-                    octree_cells: tree.len(),
+                    octree_cells,
                     active_cells: 0,
                     vertices: 0,
                     faces: 0,
@@ -258,43 +375,22 @@ where
         ));
     }
 
-    active_cells.sort_by_key(|cell| (cell.coord, cell.depth));
+    active_cells.sort_by_key(|cell| (cell.key, cell.id));
     let mut semi_analytic = SemiAnalyticContourStats::default();
     for cell in &mut active_cells {
-        if let Some(outcome) = project(cell.position, &cell.bounds) {
-            apply_projection(cell, outcome, &mut semi_analytic);
-        }
+        project_active_cell(cell, &project, &mut semi_analytic);
     }
 
     let mut builder = MeshBuilder::new();
-    let mut coverage = vec![None; finest_cell_count(resolution)];
-    for cell in &active_cells {
-        let builder_index = builder.push_vertex(cell.position);
-        let entry = VertexEntry {
-            builder_index,
-            position: cell.position,
-            sharpness: sharpness_value(cell.sharpness),
-        };
-        fill_coverage(&mut coverage, resolution, cell.coord, cell.span, entry);
-    }
-
-    let mut face_count = 0_usize;
-    let mut emitted = HashSet::new();
-    let mut edge_use = HashMap::new();
-    for axis in 0..3 {
-        emit_axis_faces(
-            axis,
-            params.root_bounds,
-            resolution,
-            &lattice,
-            &coverage,
-            &mut builder,
-            &region_at,
-            &mut emitted,
-            &mut edge_use,
-            &mut face_count,
-        )?;
-    }
+    emit_transition_faces(
+        &segments,
+        &locator,
+        &visitor.grid,
+        &omitted_by_budget,
+        &mut active_cells,
+        &mut builder,
+        &region_at,
+    )?;
 
     let result = builder.build().map_err(DualContourError::Build)?;
     let mut mesh = result.mesh;
@@ -303,7 +399,7 @@ where
     Ok((
         DualContourResult {
             stats: DualContourStats {
-                octree_cells: tree.len(),
+                octree_cells,
                 active_cells: active_cells.len(),
                 vertices: mesh.vertices().count(),
                 faces: mesh.faces().count(),
@@ -314,137 +410,268 @@ where
     ))
 }
 
-fn emit_axis_faces<R>(
-    axis: usize,
-    root_bounds: Aabb,
-    resolution: u32,
-    lattice: &[f32],
-    coverage: &[Option<VertexEntry>],
+fn project_active_cell<P>(cell: &mut ActiveCell, project: &P, stats: &mut SemiAnalyticContourStats)
+where
+    P: Fn([f32; 3], &Aabb) -> Option<SemiAnalyticProjectionOutcome>,
+{
+    if cell.components.len() > 1 {
+        stats.ambiguous_fallbacks += 1;
+        return;
+    }
+    let project_component = cell.components.first().is_some_and(component_is_usable);
+    if project_component {
+        let component = cell.components[0];
+        cell.position = component.position;
+        cell.sharpness = component.sharpness;
+    } else if !cell.components.is_empty() {
+        if !component_is_usable(&cell.compatibility) {
+            stats.invalid_fallbacks += 1;
+            return;
+        }
+        cell.position = cell.compatibility.position;
+        cell.sharpness = cell.compatibility.sharpness;
+    }
+    if let Some(outcome) = project(cell.position, &cell.bounds) {
+        apply_projection(cell, outcome, stats);
+    }
+    if project_component {
+        let component = &mut cell.components[0];
+        component.position = cell.position;
+        component.sharpness = cell.sharpness;
+    } else if !cell.components.is_empty() {
+        cell.compatibility.position = cell.position;
+        cell.compatibility.sharpness = cell.sharpness;
+    }
+}
+
+fn emit_transition_faces<F, R>(
+    segments: &[EdgeSegmentKey],
+    locator: &LeafLocator,
+    grid: &AdaptiveGrid<'_, F>,
+    omitted_by_budget: &[CellId],
+    active_cells: &mut [ActiveCell],
     builder: &mut MeshBuilder,
     region_at: &R,
-    emitted: &mut HashSet<[u32; 3]>,
-    edge_use: &mut HashMap<(u32, u32), u8>,
-    face_count: &mut usize,
 ) -> Result<(), DualContourError>
 where
+    F: ScalarField,
     R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
 {
-    match axis {
-        0 => {
-            for k in 1..resolution {
-                for j in 1..resolution {
-                    for i in 0..resolution {
-                        emit_one_face(
-                            root_bounds,
-                            lattice,
-                            resolution,
-                            ((i, j, k), (i + 1, j, k)),
-                            [(i, j - 1, k - 1), (i, j, k - 1), (i, j, k), (i, j - 1, k)],
-                            coverage,
-                            builder,
-                            region_at,
-                            emitted,
-                            edge_use,
-                            face_count,
-                        )?;
+    let mut active_by_id = HashMap::with_capacity(active_cells.len());
+    for (index, cell) in active_cells.iter_mut().enumerate() {
+        active_by_id.insert(cell.id, index);
+        cell.emitted.clear();
+        cell.compatibility_emitted = None;
+        if cell.components.is_empty() {
+            let builder_index = builder.push_vertex(cell.position);
+            cell.compatibility_emitted = Some(VertexEntry {
+                builder_index,
+                position: cell.position,
+                sharpness: sharpness_value(cell.sharpness),
+            });
+        } else {
+            for component in &cell.components {
+                cell.emitted.push(component_is_usable(component).then(|| {
+                    let builder_index = builder.push_vertex(component.position);
+                    VertexEntry {
+                        builder_index,
+                        position: component.position,
+                        sharpness: sharpness_value(component.sharpness),
                     }
-                }
+                }));
             }
-        }
-        1 => {
-            for k in 1..resolution {
-                for j in 0..resolution {
-                    for i in 1..resolution {
-                        emit_one_face(
-                            root_bounds,
-                            lattice,
-                            resolution,
-                            ((i, j, k), (i, j + 1, k)),
-                            [(i - 1, j, k - 1), (i - 1, j, k), (i, j, k), (i, j, k - 1)],
-                            coverage,
-                            builder,
-                            region_at,
-                            emitted,
-                            edge_use,
-                            face_count,
-                        )?;
-                    }
-                }
-            }
-        }
-        _ => {
-            for k in 0..resolution {
-                for j in 1..resolution {
-                    for i in 1..resolution {
-                        emit_one_face(
-                            root_bounds,
-                            lattice,
-                            resolution,
-                            ((i, j, k), (i, j, k + 1)),
-                            [(i - 1, j - 1, k), (i, j - 1, k), (i, j, k), (i - 1, j, k)],
-                            coverage,
-                            builder,
-                            region_at,
-                            emitted,
-                            edge_use,
-                            face_count,
-                        )?;
-                    }
-                }
+            if cell.emitted.iter().any(Option::is_none) && component_is_usable(&cell.compatibility)
+            {
+                let builder_index = builder.push_vertex(cell.compatibility.position);
+                cell.compatibility_emitted = Some(VertexEntry {
+                    builder_index,
+                    position: cell.compatibility.position,
+                    sharpness: sharpness_value(cell.compatibility.sharpness),
+                });
             }
         }
     }
 
+    let mut face_count = 0_usize;
+    for &segment in segments {
+        let start_value = grid
+            .value(segment.start)
+            .expect("prepared segment start must be cached");
+        let end_key = segment_end(segment);
+        let end_value = grid
+            .value(end_key)
+            .expect("prepared segment end must be cached");
+        if !edge_has_crossing(start_value, end_value) {
+            continue;
+        }
+        let incident = match locator.incident_leaves(segment) {
+            Ok(Some(incident)) => incident,
+            Ok(None) => continue,
+            Err(()) => {
+                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort));
+            }
+        };
+        if incident
+            .iter()
+            .any(|leaf| omitted_by_budget.binary_search(leaf).is_ok())
+        {
+            continue;
+        }
+
+        let mut entries = Vec::with_capacity(4);
+        for leaf in incident {
+            let Some(&cell_index) = active_by_id.get(&leaf) else {
+                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort));
+            };
+            let cell = &active_cells[cell_index];
+            let route = locator.component_route(leaf, segment);
+            let Some(entry) = component_entry(cell, route) else {
+                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort));
+            };
+            entries.push(entry);
+        }
+        let mut face = cyclic_vertex_entries(entries, face_count)?;
+        if start_value > 0.0 {
+            face.reverse();
+        }
+        let region = region_at(
+            grid.point(segment.start),
+            grid.point(end_key),
+            average_points(&face),
+        );
+        emit_transition_polygon(builder, &face, region, &mut face_count)?;
+    }
     Ok(())
 }
 
-fn emit_one_face<R>(
-    root_bounds: Aabb,
-    lattice: &[f32],
-    resolution: u32,
-    edge: ((u32, u32, u32), (u32, u32, u32)),
-    surrounding: [(u32, u32, u32); 4],
-    coverage: &[Option<VertexEntry>],
+fn component_entry(cell: &ActiveCell, route: ComponentRoute) -> Option<VertexEntry> {
+    match route {
+        ComponentRoute::LocalEdge(edge) => {
+            let component = cell.topology.component_for_edge(edge)?;
+            component_vertex_entry(cell, usize::from(component))
+        }
+        ComponentRoute::OnlyComponent
+            if cell.components.is_empty() && cell.compatibility_emitted.is_some() =>
+        {
+            cell.compatibility_emitted
+        }
+        ComponentRoute::OnlyComponent if cell.components.len() == 1 => {
+            component_vertex_entry(cell, 0)
+        }
+        ComponentRoute::OnlyComponent => None,
+    }
+}
+
+fn component_vertex_entry(cell: &ActiveCell, component: usize) -> Option<VertexEntry> {
+    if component_is_usable(cell.components.get(component)?) {
+        cell.emitted.get(component).copied().flatten()
+    } else {
+        cell.compatibility_emitted
+    }
+}
+
+fn component_is_usable(component: &ComponentVertex) -> bool {
+    component.constraint_count > 0 && component.qef.is_some_and(qef_result_is_finite)
+}
+
+fn cyclic_vertex_entries(
+    entries: Vec<VertexEntry>,
+    face: usize,
+) -> Result<Vec<VertexEntry>, DualContourError> {
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if out
+            .last()
+            .is_some_and(|previous: &VertexEntry| previous.builder_index == entry.builder_index)
+        {
+            continue;
+        }
+        out.push(entry);
+    }
+    if out.len() > 1 && out[0].builder_index == out[out.len() - 1].builder_index {
+        out.pop();
+    }
+    if out.len() < 3 {
+        return Err(invalid_transition(face, FaceLoopErrorKind::TooShort));
+    }
+    for first in 0..out.len() {
+        if out[first + 1..]
+            .iter()
+            .any(|entry| entry.builder_index == out[first].builder_index)
+        {
+            return Err(invalid_transition(face, FaceLoopErrorKind::RepeatedVertex));
+        }
+    }
+    Ok(out)
+}
+
+fn emit_transition_polygon(
     builder: &mut MeshBuilder,
-    region_at: &R,
-    emitted: &mut HashSet<[u32; 3]>,
-    edge_use: &mut HashMap<(u32, u32), u8>,
+    face: &[VertexEntry],
+    region: u32,
     face_count: &mut usize,
-) -> Result<(), DualContourError>
-where
-    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
-{
-    let start_value = lattice_value(lattice, resolution, edge.0);
-    let end_value = lattice_value(lattice, resolution, edge.1);
-    if !edge_has_crossing(start_value, end_value) {
-        return Ok(());
-    }
-
-    let Some(mut face) = surrounding_vertices(surrounding, coverage, resolution) else {
-        return Ok(());
-    };
-    if start_value > 0.0 {
-        face.reverse();
-    }
-
-    let step = step_size(root_bounds, resolution);
-    let region = region_at(
-        grid_point(root_bounds, step, edge.0),
-        grid_point(root_bounds, step, edge.1),
-        average_points(&face),
-    );
-    match face.len() {
-        3 => {
+) -> Result<(), DualContourError> {
+    match face {
+        [a, b, c] => {
+            if !triangle_is_nondegenerate([a.position, b.position, c.position]) {
+                return Err(DualContourError::Build(BuildError::DegenerateTriangle {
+                    triangle: *face_count,
+                }));
+            }
+            let builder_loop = [a.builder_index, b.builder_index, c.builder_index];
+            let sharpness = loop_sharpness3(face);
+            builder
+                .add_face_with_attrs(
+                    &builder_loop,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        edge_sharpness: Some(&sharpness),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(DualContourError::Build)?;
+            *face_count += 1;
+        }
+        [a, b, c, d] => {
+            let positions = [a.position, b.position, c.position, d.position];
+            let sharpness = loop_sharpness4(face);
             let builder_loop = [
-                face[0].builder_index,
-                face[1].builder_index,
-                face[2].builder_index,
+                a.builder_index,
+                b.builder_index,
+                c.builder_index,
+                d.builder_index,
             ];
-            let sharpness = loop_sharpness3(&face);
-            if try_mark_triangle(builder_loop, emitted, edge_use) {
+            let (triangles, triangle_sharpness) = match select_quad_diagonal(positions) {
+                Some(QuadDiagonal::ZeroTwo) => (
+                    [
+                        [builder_loop[0], builder_loop[1], builder_loop[2]],
+                        [builder_loop[0], builder_loop[2], builder_loop[3]],
+                    ],
+                    [
+                        [sharpness[0], sharpness[1], 0.0],
+                        [0.0, sharpness[2], sharpness[3]],
+                    ],
+                ),
+                Some(QuadDiagonal::OneThree) => (
+                    [
+                        [builder_loop[0], builder_loop[1], builder_loop[3]],
+                        [builder_loop[1], builder_loop[2], builder_loop[3]],
+                    ],
+                    [
+                        [sharpness[0], 0.0, sharpness[3]],
+                        [sharpness[1], sharpness[2], 0.0],
+                    ],
+                ),
+                None => {
+                    return Err(DualContourError::Build(BuildError::DegenerateTriangle {
+                        triangle: *face_count,
+                    }));
+                }
+            };
+            for (triangle, sharpness) in triangles.into_iter().zip(triangle_sharpness) {
                 builder
                     .add_face_with_attrs(
-                        &builder_loop,
+                        &triangle,
                         &FaceBuildAttrs {
                             region: Some(region),
                             edge_sharpness: Some(&sharpness),
@@ -455,92 +682,13 @@ where
                 *face_count += 1;
             }
         }
-        4 => {
-            let positions = [
-                face[0].position,
-                face[1].position,
-                face[2].position,
-                face[3].position,
-            ];
-            let sharpness = loop_sharpness4(&face);
-            let builder_loop = [
-                face[0].builder_index,
-                face[1].builder_index,
-                face[2].builder_index,
-                face[3].builder_index,
-            ];
-            match select_quad_diagonal(positions) {
-                QuadDiagonal::ZeroTwo => {
-                    let tri0 = [builder_loop[0], builder_loop[1], builder_loop[2]];
-                    let tri0_sharpness = [sharpness[0], sharpness[1], 0.0];
-                    if try_mark_triangle(tri0, emitted, edge_use) {
-                        builder
-                            .add_face_with_attrs(
-                                &tri0,
-                                &FaceBuildAttrs {
-                                    region: Some(region),
-                                    edge_sharpness: Some(&tri0_sharpness),
-                                    ..FaceBuildAttrs::default()
-                                },
-                            )
-                            .map_err(DualContourError::Build)?;
-                        *face_count += 1;
-                    }
-
-                    let tri1 = [builder_loop[0], builder_loop[2], builder_loop[3]];
-                    let tri1_sharpness = [0.0, sharpness[2], sharpness[3]];
-                    if try_mark_triangle(tri1, emitted, edge_use) {
-                        builder
-                            .add_face_with_attrs(
-                                &tri1,
-                                &FaceBuildAttrs {
-                                    region: Some(region),
-                                    edge_sharpness: Some(&tri1_sharpness),
-                                    ..FaceBuildAttrs::default()
-                                },
-                            )
-                            .map_err(DualContourError::Build)?;
-                        *face_count += 1;
-                    }
-                }
-                QuadDiagonal::OneThree => {
-                    let tri0 = [builder_loop[0], builder_loop[1], builder_loop[3]];
-                    let tri0_sharpness = [sharpness[0], 0.0, sharpness[3]];
-                    if try_mark_triangle(tri0, emitted, edge_use) {
-                        builder
-                            .add_face_with_attrs(
-                                &tri0,
-                                &FaceBuildAttrs {
-                                    region: Some(region),
-                                    edge_sharpness: Some(&tri0_sharpness),
-                                    ..FaceBuildAttrs::default()
-                                },
-                            )
-                            .map_err(DualContourError::Build)?;
-                        *face_count += 1;
-                    }
-
-                    let tri1 = [builder_loop[1], builder_loop[2], builder_loop[3]];
-                    let tri1_sharpness = [sharpness[1], sharpness[2], 0.0];
-                    if try_mark_triangle(tri1, emitted, edge_use) {
-                        builder
-                            .add_face_with_attrs(
-                                &tri1,
-                                &FaceBuildAttrs {
-                                    region: Some(region),
-                                    edge_sharpness: Some(&tri1_sharpness),
-                                    ..FaceBuildAttrs::default()
-                                },
-                            )
-                            .map_err(DualContourError::Build)?;
-                        *face_count += 1;
-                    }
-                }
-            }
-        }
-        _ => {}
+        _ => return Err(invalid_transition(*face_count, FaceLoopErrorKind::TooShort)),
     }
     Ok(())
+}
+
+fn invalid_transition(face: usize, kind: FaceLoopErrorKind) -> DualContourError {
+    DualContourError::Build(BuildError::InvalidFaceLoop { face, kind })
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -549,94 +697,72 @@ enum QuadDiagonal {
     OneThree,
 }
 
-fn select_quad_diagonal(points: [[f32; 3]; 4]) -> QuadDiagonal {
-    if squared_distance(points[1], points[3]) < squared_distance(points[0], points[2]) {
-        QuadDiagonal::OneThree
-    } else {
-        QuadDiagonal::ZeroTwo
-    }
-}
-
-fn canonical_triangle(mut triangle: [u32; 3]) -> [u32; 3] {
-    triangle.sort_unstable();
-    triangle
-}
-
-fn try_mark_triangle(
-    triangle: [u32; 3],
-    emitted: &mut HashSet<[u32; 3]>,
-    edge_use: &mut HashMap<(u32, u32), u8>,
-) -> bool {
-    let canonical = canonical_triangle(triangle);
-    if !emitted.insert(canonical) {
-        return false;
+fn select_quad_diagonal(points: [[f32; 3]; 4]) -> Option<QuadDiagonal> {
+    let zero_two_valid = triangle_is_nondegenerate([points[0], points[1], points[2]])
+        && triangle_is_nondegenerate([points[0], points[2], points[3]]);
+    let one_three_valid = triangle_is_nondegenerate([points[0], points[1], points[3]])
+        && triangle_is_nondegenerate([points[1], points[2], points[3]]);
+    match (zero_two_valid, one_three_valid) {
+        (true, false) => return Some(QuadDiagonal::ZeroTwo),
+        (false, true) => return Some(QuadDiagonal::OneThree),
+        (false, false) => return None,
+        (true, true) => {}
     }
 
-    let edges = triangle_edges(triangle);
-    if edges
+    let zero_two = squared_distance(points[0], points[2]);
+    let one_three = squared_distance(points[1], points[3]);
+    let coordinate_scale = points
         .iter()
-        .any(|edge| edge_use.get(edge).copied().unwrap_or(0) >= 2)
-    {
-        emitted.remove(&canonical);
-        return false;
+        .flatten()
+        .copied()
+        .map(abs)
+        .fold(1.0_f32, f32::max);
+    let coordinate_ulp = f32::EPSILON * coordinate_scale;
+    let diagonal_scale = sqrt(zero_two.max(one_three));
+    let tie_budget = 16.0 * coordinate_ulp * (diagonal_scale + coordinate_ulp);
+    if one_three + tie_budget < zero_two {
+        Some(QuadDiagonal::OneThree)
+    } else {
+        Some(QuadDiagonal::ZeroTwo)
     }
-
-    for edge in edges {
-        *edge_use.entry(edge).or_insert(0) += 1;
-    }
-    true
 }
 
-fn triangle_edges(triangle: [u32; 3]) -> [(u32, u32); 3] {
-    [
-        canonical_edge(triangle[0], triangle[1]),
-        canonical_edge(triangle[1], triangle[2]),
-        canonical_edge(triangle[2], triangle[0]),
-    ]
+fn triangle_is_nondegenerate(points: [[f32; 3]; 3]) -> bool {
+    let points = points.map(|point| point.map(f64::from));
+    let ab = sub3_f64(points[1], points[0]);
+    let ac = sub3_f64(points[2], points[0]);
+    let bc = sub3_f64(points[2], points[1]);
+    let cross = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    let area_squared = dot3_f64(cross, cross);
+    let longest_edge_squared = dot3_f64(ab, ab).max(dot3_f64(ac, ac)).max(dot3_f64(bc, bc));
+    let relative_epsilon = 16.0 * f64::from(f32::EPSILON);
+    let minimum_area_squared =
+        relative_epsilon * relative_epsilon * longest_edge_squared * longest_edge_squared;
+    area_squared.is_finite()
+        && longest_edge_squared.is_finite()
+        && longest_edge_squared > 0.0
+        && area_squared > minimum_area_squared
 }
 
-fn canonical_edge(a: u32, b: u32) -> (u32, u32) {
-    if a < b { (a, b) } else { (b, a) }
+fn sub3_f64(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn surrounding_vertices(
-    coords: [(u32, u32, u32); 4],
-    coverage: &[Option<VertexEntry>],
-    resolution: u32,
-) -> Option<Vec<VertexEntry>> {
-    let mut out = Vec::with_capacity(4);
-    for coord in coords {
-        let entry = coverage_entry(coverage, resolution, coord)?;
-        if out
-            .iter()
-            .any(|existing: &VertexEntry| existing.builder_index == entry.builder_index)
-        {
-            continue;
-        }
-        out.push(entry);
-    }
-    if out.len() < 3 {
-        return None;
-    }
-    Some(out)
+fn dot3_f64(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn solve_active_cell<F: ScalarField>(
+fn analyze_crossing_cell<F: ScalarField>(
     field: &F,
     params: &DualContourParams,
-    lattice: &[f32],
+    corner_values: [f32; 8],
     bounds: Aabb,
-    depth: u8,
-) -> Result<Option<ActiveCell>, DualContourError> {
-    let resolution = 1_u32 << params.max_depth;
-    let coord = cell_coord(params.root_bounds, bounds, resolution);
-    let span = cell_span(resolution, depth);
-    let corner_values = cell_corner_values(lattice, resolution, coord, span);
+) -> Result<CellAnalysis, DualContourError> {
     let corner_signs = corner_sign_mask(&corner_values);
-    if corner_signs == 0 || corner_signs == 0xFF {
-        return Ok(None);
-    }
-
     let corner_positions = cube_corner_positions(bounds);
     let mut hermite = CellHermiteData::new(corner_signs);
     for (edge_index, &(start_corner, end_corner)) in CUBE_EDGES.iter().enumerate() {
@@ -651,18 +777,132 @@ fn solve_active_cell<F: ScalarField>(
             corner_positions[end_corner],
             &params.edge_search,
         );
-        let Ok(intersection) = intersection else {
+        let Ok(mut intersection) = intersection else {
             continue;
         };
+        repair_endpoint_normal(
+            &mut intersection,
+            corner_positions[start_corner],
+            corner_positions[end_corner],
+            start_value,
+            end_value,
+        );
         hermite.push(
             u8::try_from(edge_index).expect("cube edge index fits into u8"),
             intersection,
         );
     }
-    if hermite.intersections.is_empty() {
-        return Ok(None);
-    }
+    let topology = classify_cell(&corner_values);
+    let vertices = solve_cell_vertices(&topology, &hermite, bounds, &params.qef)?;
+    let compatibility = vertices.compatibility;
+    let qef_rms = hermite_rms(&hermite, compatibility.position).unwrap_or(f32::NAN);
+    let curvature_error = normal_turn_error(&hermite, bounds).unwrap_or(f32::NAN);
+    let finite = corner_values.iter().all(|value| value.is_finite())
+        && hermite.intersections.iter().all(|hit| {
+            hit.intersection
+                .position
+                .iter()
+                .chain(hit.intersection.normal.iter())
+                .all(|value| value.is_finite())
+        })
+        && compatibility.position.iter().all(|value| value.is_finite())
+        && compatibility.constraint_count
+            == u32::try_from(hermite.intersections.len()).expect("at most 12 Hermite hits")
+        && compatibility.qef.is_some_and(qef_result_is_finite)
+        && qef_rms.is_finite()
+        && curvature_error.is_finite();
+    let evidence = RefinementEvidence {
+        expected_crossings: crossing_edge_count(&corner_values),
+        hermite_hits: hermite.intersections.len(),
+        complete_hermite: hermite_edge_mask(&hermite) == crossing_edge_mask(&corner_values),
+        usable_constraints: compatibility.constraint_count,
+        qef_rms,
+        curvature_error,
+        was_clamped: compatibility.qef.is_some_and(|result| result.was_clamped),
+        finite,
+        component_count: vertices.components.len(),
+        ambiguous_face: topology.has_ambiguous_face(),
+    };
 
+    Ok(CellAnalysis {
+        corner_values,
+        topology,
+        hermite,
+        vertices,
+        evidence,
+    })
+}
+
+fn repair_endpoint_normal(
+    intersection: &mut crate::HermiteIntersection,
+    start: [f32; 3],
+    end: [f32; 3],
+    start_value: f32,
+    end_value: f32,
+) {
+    if normalize_vector(intersection.normal).is_some() {
+        return;
+    }
+    let at_endpoint = intersection.t.is_finite()
+        && ((0.0..=f32::EPSILON).contains(&intersection.t)
+            || (1.0 - f32::EPSILON..=1.0).contains(&intersection.t));
+    if !at_endpoint {
+        return;
+    }
+    let direction = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let Some(mut normal) = normalize_vector(direction) else {
+        return;
+    };
+    if end_value < start_value {
+        normal = [-normal[0], -normal[1], -normal[2]];
+    }
+    intersection.normal = normal;
+}
+
+fn solve_cell_vertices(
+    topology: &CellTopology,
+    hermite: &CellHermiteData,
+    bounds: Aabb,
+    params: &QefParams,
+) -> Result<CellVertices, DualContourError> {
+    let component_hermite = topology.partition_hermite(hermite);
+    let components = solve_component_vertices(&component_hermite, bounds, params)?;
+
+    // Refinement evidence retains the original combined-QEF compatibility
+    // result for multi-component and checkerboard cells. Transition emission
+    // consumes the component results directly; unambiguous cells can share the
+    // same solve for both roles.
+    let compatibility = if components.len() == 1
+        && !topology.has_ambiguous_face()
+        && usize::try_from(components[0].constraint_count).ok() == Some(hermite.intersections.len())
+    {
+        components[0]
+    } else {
+        solve_hermite_vertex(hermite, bounds, params)?
+    };
+
+    Ok(CellVertices {
+        components,
+        compatibility,
+    })
+}
+
+fn solve_component_vertices(
+    component_hermite: &[CellHermiteData],
+    bounds: Aabb,
+    params: &QefParams,
+) -> Result<Vec<ComponentVertex>, DualContourError> {
+    component_hermite
+        .iter()
+        .map(|hermite| solve_hermite_vertex(hermite, bounds, params))
+        .collect()
+}
+
+fn solve_hermite_vertex(
+    hermite: &CellHermiteData,
+    bounds: Aabb,
+    params: &QefParams,
+) -> Result<ComponentVertex, DualContourError> {
     let mut solver = QefSolver::new();
     for hit in &hermite.intersections {
         let _ = solver.add_constraint(PlaneConstraint {
@@ -671,88 +911,237 @@ fn solve_active_cell<F: ScalarField>(
         });
     }
     if solver.constraint_count() == 0 {
-        return Ok(Some(ActiveCell {
-            coord,
-            depth,
-            span,
-            bounds,
+        return Ok(ComponentVertex {
             position: bounds.center(),
             sharpness: SharpnessClass::Smooth,
-        }));
+            constraint_count: 0,
+            qef: None,
+        });
     }
     let result = solver
         .solve_with_anchor(
             QefBounds::new(bounds.min, bounds.max).expect("cell bounds are valid"),
-            hermite_mass_point(&hermite),
-            &params.qef,
+            hermite_mass_point(hermite),
+            params,
         )
         .map_err(DualContourError::Solve)?;
 
-    Ok(Some(ActiveCell {
-        coord,
-        depth,
-        span,
-        bounds,
+    Ok(ComponentVertex {
         position: result.position,
         sharpness: result.sharpness_class,
-    }))
+        constraint_count: solver.constraint_count(),
+        qef: Some(result),
+    })
+}
+
+fn prepare_transitions<F: ScalarField>(
+    tree: &mut Octree<LeafMarker>,
+    visitor: &mut IntervalVisitor<'_, F>,
+) -> Result<(LeafSet, Vec<EdgeSegmentKey>), DualContourError> {
+    loop {
+        balance_tree(tree, visitor);
+        if let Some(error) = visitor.failure {
+            return Err(error);
+        }
+        let leaves = leaf_keys(tree, &visitor.grid);
+        let segments = enumerate_segments(&leaves);
+        let mut endpoints = Vec::with_capacity(segments.len() * 2);
+        for &segment in &segments {
+            endpoints.push(segment.start);
+            endpoints.push(segment_end(segment));
+        }
+        visitor.grid.sample_keys(&endpoints);
+
+        let locator = LeafLocator::new(&leaves, visitor.grid.resolution());
+        let mut refine = Vec::new();
+        let mut unresolved = false;
+        for &segment in &segments {
+            let start = visitor
+                .grid
+                .value(segment.start)
+                .expect("segment start must be cached");
+            let end = visitor
+                .grid
+                .value(segment_end(segment))
+                .expect("segment end must be cached");
+            if !edge_has_crossing(start, end) {
+                continue;
+            }
+            let incident = match locator.incident_leaves(segment) {
+                Ok(Some(incident)) => incident,
+                Ok(None) => continue,
+                Err(()) => {
+                    return Err(invalid_transition(0, FaceLoopErrorKind::TooShort));
+                }
+            };
+            let mut tokens = [None; 4];
+            for (slot, leaf) in incident.into_iter().enumerate() {
+                let route = locator.component_route(leaf, segment);
+                tokens[slot] = transition_component_token(tree, leaf, route);
+                if tokens[slot].is_none() {
+                    unresolved |= !push_refinement_candidate(
+                        tree,
+                        &locator,
+                        leaf,
+                        visitor.params.max_depth,
+                        &mut refine,
+                    );
+                }
+            }
+            if tokens.iter().all(Option::is_some) {
+                let tokens = tokens.map(|token| token.expect("checked all transition tokens"));
+                if cyclic_distinct(tokens).is_err() {
+                    for leaf in incident {
+                        unresolved |= !push_refinement_candidate(
+                            tree,
+                            &locator,
+                            leaf,
+                            visitor.params.max_depth,
+                            &mut refine,
+                        );
+                    }
+                }
+            }
+        }
+
+        refine.sort_unstable_by_key(|&(key, id)| (key, id));
+        refine.dedup_by_key(|entry| entry.1);
+        if refine.is_empty() {
+            if unresolved {
+                return Err(invalid_transition(0, FaceLoopErrorKind::TooShort));
+            }
+            return Ok((leaves, segments));
+        }
+        for (_, id) in refine {
+            tree.refine_leaf(id, visitor.params.max_depth, visitor)
+                .expect("completion candidates are current octree leaves");
+        }
+        if let Some(error) = visitor.failure {
+            return Err(error);
+        }
+    }
+}
+
+fn transition_component_token(
+    tree: &Octree<LeafMarker>,
+    leaf: CellId,
+    route: ComponentRoute,
+) -> Option<(CellId, u8)> {
+    let payload = tree.cell(leaf)?.payload()?;
+    if !matches!(
+        payload.decision,
+        RefinementDecision::Retain | RefinementDecision::MaxDepthCompatibility
+    ) {
+        return None;
+    }
+    let analysis = payload.analysis.as_ref()?;
+    let component = match route {
+        ComponentRoute::LocalEdge(edge) => analysis.topology.component_for_edge(edge)?,
+        ComponentRoute::OnlyComponent if analysis.vertices.components.len() == 1 => 0,
+        ComponentRoute::OnlyComponent if analysis.vertices.components.is_empty() => {
+            return component_is_usable(&analysis.vertices.compatibility)
+                .then_some((leaf, u8::MAX));
+        }
+        ComponentRoute::OnlyComponent => return None,
+    };
+    let routed = analysis.vertices.components.get(usize::from(component))?;
+    if component_is_usable(routed) {
+        Some((leaf, component))
+    } else {
+        component_is_usable(&analysis.vertices.compatibility).then_some((leaf, u8::MAX))
+    }
+}
+
+fn push_refinement_candidate(
+    tree: &Octree<LeafMarker>,
+    locator: &LeafLocator,
+    leaf: CellId,
+    max_depth: u8,
+    out: &mut Vec<(CellKey, CellId)>,
+) -> bool {
+    let Some(cell) = tree.cell(leaf) else {
+        return false;
+    };
+    if cell.depth < max_depth {
+        out.push((locator.key(leaf), leaf));
+        true
+    } else {
+        false
+    }
+}
+
+fn cyclic_distinct<T: Copy + Eq>(values: [T; 4]) -> Result<Vec<T>, ()> {
+    let mut out = Vec::with_capacity(4);
+    for value in values {
+        if out.last().copied() != Some(value) {
+            out.push(value);
+        }
+    }
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
+    }
+    if out.len() < 3 {
+        return Err(());
+    }
+    for first in 0..out.len() {
+        if out[first + 1..].contains(&out[first]) {
+            return Err(());
+        }
+    }
+    Ok(out)
 }
 
 fn collect_active_cells<F: ScalarField>(
-    field: &F,
     params: &DualContourParams,
     tree: &Octree<LeafMarker>,
-    lattice: &[f32],
-) -> Result<Vec<ActiveCell>, DualContourError> {
+    grid: &AdaptiveGrid<'_, F>,
+) -> ActiveSelection {
     let mut active_cells = Vec::new();
+    let mut omitted_by_budget = Vec::new();
     for leaf_id in tree.leaf_ids() {
+        let Some(cell) = tree.cell(leaf_id) else {
+            continue;
+        };
+        let Some(payload) = cell.payload() else {
+            continue;
+        };
+        if !matches!(
+            payload.decision,
+            RefinementDecision::Retain | RefinementDecision::MaxDepthCompatibility
+        ) {
+            continue;
+        }
+        let Some(analysis) = payload.analysis.as_ref() else {
+            continue;
+        };
+        let compatibility = analysis.vertices.compatibility;
+        let active = ActiveCell {
+            id: cell.id,
+            key: grid.cell_key(cell.id),
+            bounds: grid.cell_bounds(grid.cell_key(cell.id)),
+            position: compatibility.position,
+            sharpness: compatibility.sharpness,
+            topology: analysis.topology.clone(),
+            components: analysis.vertices.components.clone(),
+            compatibility,
+            emitted: Vec::new(),
+            compatibility_emitted: None,
+        };
         if params
             .cell_budget
             .is_some_and(|budget| active_cells.len() >= budget)
         {
-            break;
-        }
-        let Some(cell) = tree.cell(leaf_id) else {
-            continue;
-        };
-        if !cell
-            .payload()
-            .copied()
-            .is_some_and(|payload| payload.intersects_surface)
-        {
-            continue;
-        }
-        let Some(cell_data) = solve_active_cell(field, params, lattice, cell.bounds, cell.depth)?
-        else {
-            continue;
-        };
-        active_cells.push(cell_data);
-    }
-    Ok(active_cells)
-}
-
-fn sample_lattice<F: ScalarField>(field: &F, root_bounds: Aabb, resolution: u32) -> Vec<f32> {
-    let step = step_size(root_bounds, resolution);
-    let point_count = usize::try_from((resolution + 1).pow(3)).expect("grid fits in usize");
-    let mut points = Vec::with_capacity(point_count);
-    for z in 0..=resolution {
-        for y in 0..=resolution {
-            for x in 0..=resolution {
-                points.push(grid_point(root_bounds, step, (x, y, z)));
-            }
+            omitted_by_budget.push(cell.id);
+        } else {
+            active_cells.push(active);
         }
     }
-    let mut values = vec![0.0_f32; points.len()];
-    field.eval_points(&points, &mut values);
-    values
-}
-
-fn lattice_value(lattice: &[f32], resolution: u32, coord: (u32, u32, u32)) -> f32 {
-    let stride = usize::try_from(resolution + 1).expect("resolution fits usize");
-    let x = coord.0 as usize;
-    let y = coord.1 as usize;
-    let z = coord.2 as usize;
-    lattice[(z * stride + y) * stride + x]
+    active_cells.sort_by_key(|cell| (cell.key, cell.id));
+    omitted_by_budget.sort_unstable();
+    ActiveSelection {
+        cells: active_cells,
+        omitted_by_budget,
+    }
 }
 
 fn step_size(root_bounds: Aabb, resolution: u32) -> [f32; 3] {
@@ -762,37 +1151,6 @@ fn step_size(root_bounds: Aabb, resolution: u32) -> [f32; 3] {
         extent[1] / resolution as f32,
         extent[2] / resolution as f32,
     ]
-}
-
-fn grid_point(root_bounds: Aabb, step: [f32; 3], coord: (u32, u32, u32)) -> [f32; 3] {
-    [
-        root_bounds.min[0] + step[0] * coord.0 as f32,
-        root_bounds.min[1] + step[1] * coord.1 as f32,
-        root_bounds.min[2] + step[2] * coord.2 as f32,
-    ]
-}
-
-fn cell_span(resolution: u32, depth: u8) -> u32 {
-    resolution >> depth
-}
-
-fn cell_corner_values(
-    lattice: &[f32],
-    resolution: u32,
-    coord: (u32, u32, u32),
-    span: u32,
-) -> [f32; 8] {
-    core::array::from_fn(|corner| {
-        lattice_value(
-            lattice,
-            resolution,
-            (
-                coord.0 + bit_u32(corner, 0) * span,
-                coord.1 + bit_u32(corner, 1) * span,
-                coord.2 + bit_u32(corner, 2) * span,
-            ),
-        )
-    })
 }
 
 fn corner_sign_mask(corner_values: &[f32; 8]) -> u8 {
@@ -815,6 +1173,29 @@ fn crossing_edge_count(corner_values: &[f32; 8]) -> usize {
             edge_has_crossing(corner_values[start_corner], corner_values[end_corner])
         })
         .count()
+}
+
+fn crossing_edge_mask(corner_values: &[f32; 8]) -> u16 {
+    CUBE_EDGES
+        .iter()
+        .enumerate()
+        .fold(0_u16, |mask, (edge, &(start, end))| {
+            if edge_has_crossing(corner_values[start], corner_values[end]) {
+                mask | (1_u16 << edge)
+            } else {
+                mask
+            }
+        })
+}
+
+fn hermite_edge_mask(hermite: &CellHermiteData) -> u16 {
+    hermite.intersections.iter().fold(0_u16, |mask, hit| {
+        if hit.edge_index < 12 {
+            mask | (1_u16 << hit.edge_index)
+        } else {
+            mask
+        }
+    })
 }
 
 fn cube_corner_positions(bounds: Aabb) -> [[f32; 3]; 8] {
@@ -949,120 +1330,204 @@ fn edge_has_crossing(start: f32, end: f32) -> bool {
     (start <= 0.0 && end > 0.0) || (start > 0.0 && end <= 0.0)
 }
 
-fn bit_u32(value: usize, shift: u32) -> u32 {
-    if (value & (1_usize << shift)) != 0 {
-        1
-    } else {
-        0
-    }
-}
-
-fn cell_coord(root_bounds: Aabb, bounds: Aabb, resolution: u32) -> (u32, u32, u32) {
-    let step = step_size(root_bounds, resolution);
-    (
-        coordinate_axis(root_bounds.min[0], bounds.min[0], step[0]),
-        coordinate_axis(root_bounds.min[1], bounds.min[1], step[1]),
-        coordinate_axis(root_bounds.min[2], bounds.min[2], step[2]),
-    )
-}
-
-fn coordinate_axis(root_min: f32, value: f32, step: f32) -> u32 {
-    let mut coord = 0_u32;
-    let mut best_distance = abs(value - root_min);
-    loop {
-        let next = coord + 1;
-        let next_value = root_min + step * next as f32;
-        let next_distance = abs(value - next_value);
-        if next_distance + 1.0e-6 < best_distance {
-            coord = next;
-            best_distance = next_distance;
-        } else {
-            break;
-        }
-    }
-    coord
-}
-
 struct IntervalVisitor<'a, F> {
     field: &'a F,
-    lattice: &'a [f32],
-    root_bounds: Aabb,
-    resolution: u32,
+    params: &'a DualContourParams,
+    refinement_mode: RefinementMode,
+    grid: AdaptiveGrid<'a, F>,
+    pending: Option<(CellId, LeafMarker)>,
+    failure: Option<DualContourError>,
+}
+
+impl<F: ScalarField> IntervalVisitor<'_, F> {
+    fn inspect_cell(
+        &mut self,
+        cell: CellRef,
+        at_max_depth: bool,
+    ) -> Result<LeafMarker, DualContourError> {
+        let cell_key = self.grid.locate_cell(cell);
+        let cell_bounds = self.grid.cell_bounds(cell_key);
+        let intersects = self
+            .field
+            .eval_interval(&cell_bounds)
+            .is_none_or(interval_crosses_zero);
+        if !intersects {
+            return Ok(LeafMarker {
+                decision: RefinementDecision::Inactive(InactiveReason::IntervalExcluded),
+                analysis: None,
+            });
+        }
+
+        #[cfg(test)]
+        if self.refinement_mode == RefinementMode::ForcedUniform && !at_max_depth {
+            return Ok(LeafMarker {
+                decision: RefinementDecision::Refine(RefinementReason::ForcedUniform),
+                analysis: None,
+            });
+        }
+
+        if self.refinement_mode == RefinementMode::Legacy
+            && !at_max_depth
+            && cell.depth < MIN_EMITTER_DEPTH
+        {
+            return Ok(LeafMarker {
+                decision: RefinementDecision::Refine(RefinementReason::EmitterMinimumDepth),
+                analysis: None,
+            });
+        }
+
+        let corner_values = self.grid.sample_cell_corners(cell_key);
+        let expected_crossings = crossing_edge_count(&corner_values);
+
+        if expected_crossings == 0 {
+            let decision = if at_max_depth {
+                RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
+            } else if self.refinement_mode == RefinementMode::Legacy {
+                RefinementDecision::Inactive(InactiveReason::LegacyHomogeneous)
+            } else if corner_values.iter().all(|value| value.is_finite()) {
+                RefinementDecision::Refine(RefinementReason::EnclosedNoEdge)
+            } else {
+                RefinementDecision::Refine(RefinementReason::NonFinite)
+            };
+            return Ok(LeafMarker {
+                decision,
+                analysis: None,
+            });
+        }
+
+        if !at_max_depth
+            && self.refinement_mode == RefinementMode::ErrorDriven
+            && cell.depth < MIN_EMITTER_DEPTH
+        {
+            return Ok(LeafMarker {
+                decision: RefinementDecision::Refine(RefinementReason::EmitterMinimumDepth),
+                analysis: None,
+            });
+        }
+
+        if self.refinement_mode == RefinementMode::Legacy
+            && !at_max_depth
+            && expected_crossings > LEGACY_SIMPLE_CELL_MAX_CROSSINGS
+        {
+            return Ok(LeafMarker {
+                decision: RefinementDecision::Refine(RefinementReason::LegacyCrossingCount),
+                analysis: None,
+            });
+        }
+
+        let analysis = analyze_crossing_cell(self.field, self.params, corner_values, cell_bounds)?;
+        let decision = if at_max_depth {
+            if analysis.hermite.intersections.is_empty() {
+                RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
+            } else {
+                RefinementDecision::MaxDepthCompatibility
+            }
+        } else if self.refinement_mode == RefinementMode::Legacy {
+            RefinementDecision::Retain
+        } else {
+            refinement_decision(&analysis.evidence, adaptive_error_target(self.params))
+        };
+        Ok(LeafMarker {
+            decision,
+            analysis: Some(Box::new(analysis)),
+        })
+    }
+
+    fn record_failure(&mut self, error: DualContourError) -> LeafMarker {
+        self.failure.get_or_insert(error);
+        LeafMarker {
+            decision: RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth),
+            analysis: None,
+        }
+    }
 }
 
 impl<F: ScalarField> OctreeVisitor for IntervalVisitor<'_, F> {
     type Payload = LeafMarker;
 
     fn should_subdivide(&mut self, cell: CellRef) -> bool {
-        let intersects = self
-            .field
-            .eval_interval(&cell.bounds)
-            .is_none_or(interval_crosses_zero);
-        if !intersects {
-            return false;
+        debug_assert!(
+            self.pending.is_none(),
+            "the prior retained leaf payload must be consumed before visiting another cell"
+        );
+        let inspection = match self.inspect_cell(cell, false) {
+            Ok(inspection) => inspection,
+            Err(error) => self.record_failure(error),
+        };
+        if matches!(inspection.decision, RefinementDecision::Refine(_)) {
+            true
+        } else {
+            self.pending = Some((cell.id, inspection));
+            false
         }
-        if cell.depth < MIN_ADAPTIVE_DEPTH {
-            return true;
-        }
-        let coord = cell_coord(self.root_bounds, cell.bounds, self.resolution);
-        let span = cell_span(self.resolution, cell.depth);
-        let corner_values = cell_corner_values(self.lattice, self.resolution, coord, span);
-        let signs = corner_sign_mask(&corner_values);
-        if signs == 0 || signs == 0xFF {
-            return false;
-        }
-        crossing_edge_count(&corner_values) > SIMPLE_CELL_MAX_CROSSINGS
     }
 
     fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
-        LeafMarker {
-            intersects_surface: self
-                .field
-                .eval_interval(&cell.bounds)
-                .is_none_or(interval_crosses_zero),
-        }
-    }
-}
-
-fn finest_cell_count(resolution: u32) -> usize {
-    usize::try_from(resolution)
-        .expect("resolution fits usize")
-        .pow(3)
-}
-
-fn coverage_index(resolution: u32, coord: (u32, u32, u32)) -> usize {
-    let stride = usize::try_from(resolution).expect("resolution fits usize");
-    let x = coord.0 as usize;
-    let y = coord.1 as usize;
-    let z = coord.2 as usize;
-    (z * stride + y) * stride + x
-}
-
-fn fill_coverage(
-    coverage: &mut [Option<VertexEntry>],
-    resolution: u32,
-    coord: (u32, u32, u32),
-    span: u32,
-    entry: VertexEntry,
-) {
-    for z in coord.2..coord.2 + span {
-        for y in coord.1..coord.1 + span {
-            for x in coord.0..coord.0 + span {
-                coverage[coverage_index(resolution, (x, y, z))] = Some(entry);
+        // `Octree::build_subtree` calls `make_leaf_payload` immediately after
+        // `should_subdivide` returns false. The exact-ID assertion makes that
+        // sequencing dependency visible. Max-depth cells bypass
+        // `should_subdivide` and are analyzed explicitly below.
+        if let Some((pending_id, payload)) = self.pending.take() {
+            debug_assert_eq!(
+                pending_id, cell.id,
+                "pending refinement evidence must be consumed by the same cell"
+            );
+            if pending_id == cell.id {
+                return payload;
             }
         }
+
+        match self.inspect_cell(cell, true) {
+            Ok(payload) => payload,
+            Err(error) => self.record_failure(error),
+        }
     }
 }
 
-fn coverage_entry(
-    coverage: &[Option<VertexEntry>],
-    resolution: u32,
-    coord: (u32, u32, u32),
-) -> Option<VertexEntry> {
-    coverage
-        .get(coverage_index(resolution, coord))
-        .copied()
-        .flatten()
+impl<F: ScalarField> BalanceContext for IntervalVisitor<'_, F> {
+    type Field = F;
+
+    fn transition_grid(&self) -> &AdaptiveGrid<'_, Self::Field> {
+        &self.grid
+    }
+
+    fn global_max_depth(&self) -> u8 {
+        self.params.max_depth
+    }
+
+    fn failed(&self) -> bool {
+        self.failure.is_some()
+    }
+}
+
+fn refinement_decision(evidence: &RefinementEvidence, target: f32) -> RefinementDecision {
+    if evidence.hermite_hits != evidence.expected_crossings || !evidence.complete_hermite {
+        return RefinementDecision::Refine(RefinementReason::PartialHermite);
+    }
+    if !evidence.finite
+        || evidence.usable_constraints
+            != u32::try_from(evidence.hermite_hits).expect("at most 12 Hermite hits")
+    {
+        return RefinementDecision::Refine(RefinementReason::NonFinite);
+    }
+    if evidence.component_count != 1 || evidence.ambiguous_face {
+        return RefinementDecision::Refine(RefinementReason::TopologyUnsafe);
+    }
+    if evidence.was_clamped {
+        return RefinementDecision::Refine(RefinementReason::Clamped);
+    }
+    if evidence.qef_rms > target {
+        return RefinementDecision::Refine(RefinementReason::Residual);
+    }
+    if evidence.curvature_error > target {
+        return RefinementDecision::Refine(RefinementReason::Curvature);
+    }
+    RefinementDecision::Retain
+}
+
+fn adaptive_error_target(params: &DualContourParams) -> f32 {
+    let resolution = 1_u32 << params.max_depth;
+    ADAPTIVE_ERROR_FRACTION * vector_length(step_size(params.root_bounds, resolution))
 }
 
 fn interval_crosses_zero(interval: [f32; 2]) -> bool {
@@ -1162,6 +1627,75 @@ fn hermite_mass_point(hermite: &CellHermiteData) -> [f32; 3] {
     [sum[0] * inv, sum[1] * inv, sum[2] * inv]
 }
 
+fn hermite_rms(hermite: &CellHermiteData, position: [f32; 3]) -> Option<f32> {
+    if hermite.intersections.is_empty() || !position.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+
+    let mut squared_error = 0.0_f32;
+    for hit in &hermite.intersections {
+        let normal = normalize_vector(hit.intersection.normal)?;
+        if !hit
+            .intersection
+            .position
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return None;
+        }
+        let displacement = [
+            position[0] - hit.intersection.position[0],
+            position[1] - hit.intersection.position[1],
+            position[2] - hit.intersection.position[2],
+        ];
+        let distance =
+            normal[0] * displacement[0] + normal[1] * displacement[1] + normal[2] * displacement[2];
+        squared_error += distance * distance;
+    }
+    let rms = sqrt(squared_error / hermite.intersections.len() as f32);
+    rms.is_finite().then_some(rms)
+}
+
+fn normal_turn_error(hermite: &CellHermiteData, bounds: Aabb) -> Option<f32> {
+    let mut normals = Vec::with_capacity(hermite.intersections.len());
+    for hit in &hermite.intersections {
+        normals.push(normalize_vector(hit.intersection.normal)?);
+    }
+
+    let mut minimum_dot = 1.0_f32;
+    for first in 0..normals.len() {
+        for second in first + 1..normals.len() {
+            let dot = normals[first][0] * normals[second][0]
+                + normals[first][1] * normals[second][1]
+                + normals[first][2] * normals[second][2];
+            minimum_dot = minimum_dot.min(dot.clamp(-1.0, 1.0));
+        }
+    }
+    let half_angle_sine = sqrt(((1.0 - minimum_dot) * 0.5).max(0.0));
+    Some(0.5 * vector_length(bounds.extent()) * half_angle_sine)
+}
+
+fn normalize_vector(vector: [f32; 3]) -> Option<[f32; 3]> {
+    let length = vector_length(vector);
+    if !length.is_finite() || length <= 1.0e-8 {
+        return None;
+    }
+    Some([vector[0] / length, vector[1] / length, vector[2] / length])
+}
+
+fn vector_length(vector: [f32; 3]) -> f32 {
+    sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
+}
+
+fn qef_result_is_finite(result: QefResult) -> bool {
+    result
+        .position
+        .iter()
+        .chain(result.eigenvalues.iter())
+        .all(|value| value.is_finite())
+        && result.residual_error.is_finite()
+}
+
 fn abs(value: f32) -> f32 {
     #[cfg(feature = "std")]
     {
@@ -1232,23 +1766,36 @@ fn normalize_gradient(sample: [f32; 4]) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+    use alloc::vec;
     use alloc::vec::Vec;
+    use core::mem::size_of;
 
     use super::{
-        ActiveCell, DualContourParams, IntervalVisitor, QuadDiagonal, SemiAnalyticContourStats,
-        apply_projection, collect_active_cells, dual_contour, dual_contour_semi_analytic,
-        dual_contour_with_regions, sample_lattice, select_quad_diagonal, solve_active_cell,
-        squared_distance,
+        ActiveCell, AdaptiveGrid, CellAnalysis, CellKey, ComponentRoute, ComponentVertex,
+        DualContourParams, InactiveReason, IntervalVisitor, LeafMarker, QuadDiagonal,
+        RefinementDecision, RefinementEvidence, RefinementMode, RefinementReason,
+        SemiAnalyticContourStats, VertexEntry, adaptive_error_target, analyze_crossing_cell,
+        apply_projection, collect_active_cells, cube_corner_positions, cyclic_distinct,
+        dual_contour, dual_contour_projected_impl, dual_contour_semi_analytic,
+        dual_contour_with_regions, emit_transition_polygon, hermite_rms, normal_turn_error,
+        prepare_transitions, project_active_cell, refinement_decision, repair_endpoint_normal,
+        select_quad_diagonal, solve_cell_vertices, squared_distance, transition_component_token,
+        triangle_is_nondegenerate,
     };
-    use crate::EdgeSearchParams;
-    use crate::analytic::{BoxField, CylinderField, Difference, SphereField, TaggedField, Union};
+    use crate::analytic::{
+        BoxField, CylinderField, Difference, HalfSpaceField, SphereField, TaggedField, Union,
+    };
+    use crate::cell_topology::classify_cell;
     use crate::{
-        AnalyticCylinder, AnalyticPrimitive, ProvenanceField, ScalarField, SemiAnalyticField,
+        AnalyticCylinder, AnalyticPrimitive, CellHermiteData, EdgeSearchParams,
+        HermiteIntersection, ProvenanceField, ScalarField, SemiAnalyticField,
         SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
     };
-    use exedra::{ExtractParams, attr};
+    use exedra::{BuildError, ExtractParams, FaceLoopErrorKind, attr};
     use exedra_qef::QefParams;
-    use exedra_spatial::{Aabb, Octree};
+    use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
+    use hashbrown::HashSet;
 
     fn params(bounds: Aabb, max_depth: u8) -> DualContourParams {
         DualContourParams {
@@ -1262,6 +1809,71 @@ mod tests {
         }
     }
 
+    fn assert_closed_transition_mesh(mesh: &exedra::Mesh) {
+        assert!(mesh.validate_deep().is_empty());
+        assert!(
+            mesh.boundary_loops()
+                .expect("closed fixture boundary traversal")
+                .is_empty()
+        );
+
+        let mut referenced = HashSet::new();
+        for face in mesh.faces() {
+            let corners = mesh.face_loop(face).collect::<Vec<_>>();
+            assert_eq!(corners.len(), 3, "transition output must be triangulated");
+            let mut positions = [[0.0_f32; 3]; 3];
+            for (slot, corner) in corners.into_iter().enumerate() {
+                let vertex = mesh.to_vertex(corner).expect("face corner has a vertex");
+                referenced.insert(vertex);
+                positions[slot] = *mesh.vertex_position(vertex).expect("vertex has a position");
+                let twin = mesh.twin(corner).expect("closed edge has a twin");
+                assert_ne!(
+                    mesh.face(twin),
+                    Some(exedra::FaceId::OUTSIDE),
+                    "every emitted edge must have exactly two incident faces"
+                );
+            }
+            assert!(
+                triangle_is_nondegenerate(positions),
+                "degenerate face {face:?}"
+            );
+        }
+        assert_eq!(
+            referenced.len(),
+            mesh.vertices().count(),
+            "every emitted closed-fixture vertex must be face-referenced"
+        );
+    }
+
+    fn degenerate_face_count(mesh: &exedra::Mesh) -> usize {
+        mesh.faces()
+            .filter(|&face| {
+                let positions = mesh
+                    .face_loop(face)
+                    .map(|corner| {
+                        let vertex = mesh.to_vertex(corner).expect("face corner vertex");
+                        *mesh.vertex_position(vertex).expect("vertex position")
+                    })
+                    .collect::<Vec<_>>();
+                let [a, b, c] = positions.as_slice() else {
+                    return true;
+                };
+                !triangle_is_nondegenerate([*a, *b, *c])
+            })
+            .count()
+    }
+
+    fn semi_analytic_counter_total(stats: SemiAnalyticContourStats) -> usize {
+        stats.surface_projections
+            + stats.feature_snaps
+            + stats.unsupported_fallbacks
+            + stats.ambiguous_fallbacks
+            + stats.tangent_fallbacks
+            + stats.coincident_fallbacks
+            + stats.over_budget_fallbacks
+            + stats.invalid_fallbacks
+    }
+
     struct AxisTaggedUnion {
         field: Union<BoxField, BoxField>,
     }
@@ -1269,6 +1881,133 @@ mod tests {
     struct SurfaceTaggedSphere {
         field: SphereField,
         tolerance: f32,
+    }
+
+    struct PartiallyNonFinitePlane;
+
+    struct SliceSensitivePlane {
+        retain_some_edge_hits: bool,
+    }
+
+    struct UnknownIntervalBox {
+        field: BoxField,
+    }
+
+    struct CheckerboardPairField;
+
+    struct FixedMarkerVisitor {
+        marker: LeafMarker,
+    }
+
+    impl OctreeVisitor for FixedMarkerVisitor {
+        type Payload = LeafMarker;
+
+        fn should_subdivide(&mut self, _cell: CellRef) -> bool {
+            false
+        }
+
+        fn make_leaf_payload(&mut self, _cell: CellRef) -> Self::Payload {
+            self.marker.clone()
+        }
+    }
+
+    impl ScalarField for CheckerboardPairField {
+        fn eval_interval(&self, _bounds: &Aabb) -> Option<[f32; 2]> {
+            None
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            let frequency = 2.0 * core::f32::consts::PI;
+            for (point, value) in points.iter().zip(out) {
+                *value = test_cos(frequency * point[0]) * test_cos(frequency * point[1]);
+            }
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            let frequency = 2.0 * core::f32::consts::PI;
+            for (point, gradient) in points.iter().zip(out) {
+                let x = frequency * point[0];
+                let y = frequency * point[1];
+                let value = test_cos(x) * test_cos(y);
+                *gradient = [
+                    value,
+                    -frequency * test_sin(x) * test_cos(y),
+                    -frequency * test_cos(x) * test_sin(y),
+                    0.0,
+                ];
+            }
+        }
+    }
+
+    impl SemiAnalyticField for CheckerboardPairField {
+        fn project_cell_vertex(
+            &self,
+            _point: [f32; 3],
+            _cell: &Aabb,
+        ) -> Option<SemiAnalyticProjection> {
+            None
+        }
+
+        fn primitive_at(&self, _point: [f32; 3]) -> u32 {
+            0
+        }
+    }
+
+    impl ScalarField for PartiallyNonFinitePlane {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            Some([bounds.min[0], bounds.max[0]])
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            for (point, value) in points.iter().zip(out) {
+                *value = point[0];
+            }
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            for (point, gradient) in points.iter().zip(out) {
+                *gradient = if point[1] < 0.0 {
+                    [point[0], 1.0, 0.0, 0.0]
+                } else {
+                    [point[0], f32::NAN, 0.0, 0.0]
+                };
+            }
+        }
+    }
+
+    impl ScalarField for SliceSensitivePlane {
+        fn eval_interval(&self, _bounds: &Aabb) -> Option<[f32; 2]> {
+            Some([-1.0, 1.0])
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            let expose_crossing = points.len() > 2
+                || (self.retain_some_edge_hits
+                    && points.first().is_some_and(|point| point[1] < 0.0));
+            for (point, value) in points.iter().zip(out) {
+                *value = if expose_crossing { point[0] } else { 1.0 };
+            }
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            for (point, gradient) in points.iter().zip(out) {
+                *gradient = [point[0], 1.0, 0.0, 0.0];
+            }
+        }
+    }
+
+    impl ScalarField for UnknownIntervalBox {
+        fn eval_interval(&self, _bounds: &Aabb) -> Option<[f32; 2]> {
+            None
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+        }
     }
 
     #[derive(Copy, Clone)]
@@ -1394,7 +2133,7 @@ mod tests {
         let second =
             dual_contour(&field, &params(bounds, 4)).expect("sphere extraction should be stable");
 
-        assert!(first.mesh.validate_deep().is_empty());
+        assert_closed_transition_mesh(&first.mesh);
         assert_eq!(first.stats, second.stats);
         let (tri_a, stats_a) = first.mesh.to_trimesh(&ExtractParams::default());
         let (tri_b, stats_b) = second.mesh.to_trimesh(&ExtractParams::default());
@@ -1436,7 +2175,7 @@ mod tests {
         let bounds = Aabb::new([-1.2, -1.2, -1.2], [1.2, 1.2, 1.2]).expect("bounds");
         let result = dual_contour(&field, &params(bounds, 4)).expect("box extraction should work");
 
-        assert!(result.mesh.validate_deep().is_empty());
+        assert_closed_transition_mesh(&result.mesh);
         let sharp_layer = result
             .mesh
             .attrs()
@@ -1618,13 +2357,112 @@ mod tests {
             radius: 1.0,
         };
         let bounds = Aabb::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]).expect("bounds");
-        let mut params = params(bounds, 4);
-        params.cell_budget = Some(32);
+        let uncapped =
+            dual_contour(&field, &params(bounds, 4)).expect("uncapped extraction should work");
+        let mut capped_params = params(bounds, 4);
+        capped_params.cell_budget = Some(32);
 
-        let result = dual_contour(&field, &params).expect("budgeted extraction should work");
+        let first = dual_contour(&field, &capped_params).expect("budgeted extraction should work");
+        let second = dual_contour(&field, &capped_params).expect("budgeted extraction repeats");
 
-        assert!(result.stats.active_cells <= 32);
-        assert!(result.mesh.validate_deep().is_empty());
+        assert_eq!(first.stats.active_cells, 32);
+        assert!(first.stats.faces < uncapped.stats.faces);
+        assert!(first.mesh.validate_deep().is_empty());
+        assert_eq!(mesh_geometry(&first.mesh), mesh_geometry(&second.mesh));
+    }
+
+    #[test]
+    fn nonbinding_budget_is_bit_identical_to_uncapped_output() {
+        let field = SphereField {
+            center: [0.0, 0.0, 0.0],
+            radius: 1.0,
+        };
+        let bounds = Aabb::new([-1.5; 3], [1.5; 3]).expect("bounds");
+        let uncapped = dual_contour(&field, &params(bounds, 4)).expect("uncapped extraction");
+        let mut nonbinding_params = params(bounds, 4);
+        nonbinding_params.cell_budget = Some(usize::MAX);
+        let nonbinding =
+            dual_contour(&field, &nonbinding_params).expect("nonbinding budget extraction");
+
+        assert_eq!(nonbinding.stats, uncapped.stats);
+        assert_eq!(
+            mesh_geometry(&nonbinding.mesh),
+            mesh_geometry(&uncapped.mesh)
+        );
+    }
+
+    #[test]
+    fn budget_selects_contributors_in_octree_leaf_storage_order() {
+        let field = SphereField {
+            center: [0.0, 0.0, 0.0],
+            radius: 1.0,
+        };
+        let bounds = Aabb::new([-1.5; 3], [1.5; 3]).expect("bounds");
+        let params = params(bounds, 4);
+        let resolution = 1_u32 << params.max_depth;
+        let mut visitor = IntervalVisitor {
+            field: &field,
+            params: &params,
+            refinement_mode: RefinementMode::Legacy,
+            grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
+        };
+        let mut tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        prepare_transitions(&mut tree, &mut visitor).expect("transition completion");
+        let contributors = tree
+            .leaf_ids()
+            .into_iter()
+            .filter(|&id| {
+                tree.cell(id)
+                    .and_then(|cell| cell.payload())
+                    .is_some_and(|payload| {
+                        matches!(
+                            payload.decision,
+                            RefinementDecision::Retain | RefinementDecision::MaxDepthCompatibility
+                        ) && payload.analysis.is_some()
+                    })
+            })
+            .collect::<Vec<_>>();
+        let budget = 11;
+        let mut capped_params = params;
+        capped_params.cell_budget = Some(budget);
+        let selection = collect_active_cells(&capped_params, &tree, &visitor.grid);
+
+        let mut expected_selected = contributors[..budget].to_vec();
+        expected_selected.sort_unstable_by_key(|&id| (visitor.grid.cell_key(id), id));
+        let mut expected_omitted = contributors[budget..].to_vec();
+        expected_omitted.sort_unstable();
+        assert_eq!(
+            selection
+                .cells
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<Vec<_>>(),
+            expected_selected
+        );
+        assert_eq!(selection.omitted_by_budget, expected_omitted);
+    }
+
+    #[test]
+    fn unresolved_max_depth_transition_is_not_hidden_by_nonbinding_budget() {
+        let field = SliceSensitivePlane {
+            retain_some_edge_hits: false,
+        };
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
+        for budget in [None, Some(usize::MAX)] {
+            let mut params = params(bounds, 2);
+            params.cell_budget = budget;
+            assert!(matches!(
+                dual_contour(&field, &params),
+                Err(super::DualContourError::Build(
+                    BuildError::InvalidFaceLoop {
+                        face: 0,
+                        kind: FaceLoopErrorKind::TooShort,
+                    }
+                ))
+            ));
+        }
     }
 
     #[test]
@@ -1643,7 +2481,7 @@ mod tests {
         let result =
             dual_contour(&field, &params(bounds, 4)).expect("union extraction should work");
 
-        assert!(result.mesh.validate_deep().is_empty());
+        assert_closed_transition_mesh(&result.mesh);
         let sharp_layer = result
             .mesh
             .attrs()
@@ -1672,9 +2510,15 @@ mod tests {
             let result = dual_contour_semi_analytic(&field, &params(bounds, depth))
                 .expect("semi-analytic through-cut should extract");
 
-            assert!(result.mesh.validate_deep().is_empty());
+            assert_closed_transition_mesh(&result.mesh);
             assert!(result.semi_analytic.feature_snaps > 0);
             assert!(result.semi_analytic.surface_projections > 0);
+            assert_eq!(
+                semi_analytic_counter_total(result.semi_analytic),
+                result.stats.active_cells,
+                "projection outcomes partition contributing leaves"
+            );
+            assert!(result.stats.vertices >= result.stats.active_cells);
             let rim_vertices = result
                 .mesh
                 .vertices()
@@ -1727,6 +2571,27 @@ mod tests {
             assert_eq!(first_tri.positions, second_tri.positions);
             assert_eq!(first_tri.indices, second_tri.indices);
         }
+    }
+
+    #[test]
+    fn budgeted_multi_component_cells_emit_all_components_and_count_once_per_leaf() {
+        let mut extraction_params = params(Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds"), 2);
+        extraction_params.cell_budget = Some(1);
+
+        let result = dual_contour_semi_analytic(&CheckerboardPairField, &extraction_params)
+            .expect("budgeted multi-component extraction");
+
+        assert_eq!(result.stats.active_cells, 1);
+        assert_eq!(result.semi_analytic.ambiguous_fallbacks, 1);
+        assert!(result.stats.vertices > result.stats.active_cells);
+        assert_eq!(
+            semi_analytic_counter_total(result.semi_analytic),
+            result.stats.active_cells
+        );
+        assert_eq!(
+            result.stats.faces, 0,
+            "the explicit leaf cap permits a hole"
+        );
     }
 
     #[test]
@@ -1849,12 +2714,25 @@ mod tests {
             ),
         ] {
             let mut cell = ActiveCell {
-                coord: (0, 0, 0),
-                depth: 1,
-                span: 1,
+                id: CellId::from_index(0),
+                key: CellKey {
+                    origin: crate::adaptive_transition::CornerKey::new(0, 0, 0),
+                    span: 1,
+                    depth: 1,
+                },
                 bounds,
                 position: [0.25, 0.5, 0.75],
                 sharpness: exedra_qef::SharpnessClass::Smooth,
+                topology: classify_cell(&values_for_mask(1)),
+                components: Vec::new(),
+                compatibility: ComponentVertex {
+                    position: [0.25, 0.5, 0.75],
+                    sharpness: exedra_qef::SharpnessClass::Smooth,
+                    constraint_count: 0,
+                    qef: None,
+                },
+                emitted: Vec::new(),
+                compatibility_emitted: None,
             };
             let original = cell.position;
             let mut stats = SemiAnalyticContourStats::default();
@@ -1877,12 +2755,13 @@ mod tests {
             4,
         );
         let resolution = 1_u32 << params.max_depth;
-        let lattice = sample_lattice(&field, params.root_bounds, resolution);
         let mut visitor = IntervalVisitor {
             field: &field,
-            lattice: &lattice,
-            root_bounds: params.root_bounds,
-            resolution,
+            params: &params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
         };
         let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
 
@@ -1894,21 +2773,15 @@ mod tests {
             if cell.depth != params.max_depth {
                 continue;
             }
-            if !cell
-                .payload()
-                .copied()
-                .is_some_and(|payload| payload.intersects_surface)
-            {
-                continue;
-            }
-
-            let Some(active) =
-                solve_active_cell(&field, &params, &lattice, cell.bounds, cell.depth)
-                    .expect("cell solve should work")
+            let Some(analysis) = cell.payload().and_then(|payload| payload.analysis.as_ref())
             else {
                 continue;
             };
-            if squared_distance(active.position, cell.bounds.center()) > 1.0e-8 {
+            if squared_distance(
+                analysis.vertices.compatibility.position,
+                cell.bounds.center(),
+            ) > 1.0e-8
+            {
                 found_non_center = true;
                 break;
             }
@@ -1918,14 +2791,893 @@ mod tests {
     }
 
     #[test]
+    fn multi_component_cell_solves_each_component_without_cross_talk() {
+        let values = values_for_mask(0b1000_0001);
+        let topology = classify_cell(&values);
+        let hermite = separated_component_hermite();
+        let groups = topology.partition_hermite(&hermite);
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("unit bounds");
+        let solved = solve_cell_vertices(&topology, &hermite, bounds, &QefParams::default())
+            .expect("component QEFs solve");
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0]
+                .intersections
+                .iter()
+                .map(|hit| hit.edge_index)
+                .collect::<Vec<_>>(),
+            vec![0, 3, 8]
+        );
+        assert_eq!(
+            groups[1]
+                .intersections
+                .iter()
+                .map(|hit| hit.edge_index)
+                .collect::<Vec<_>>(),
+            vec![5, 6, 10]
+        );
+        assert_eq!(solved.components.len(), 2);
+        assert_eq!(solved.components[0].position, [0.25; 3]);
+        assert_eq!(solved.components[1].position, [0.75; 3]);
+        assert_eq!(
+            solved.components[0].sharpness,
+            exedra_qef::SharpnessClass::Corner
+        );
+        assert_eq!(
+            solved.components[1].sharpness,
+            exedra_qef::SharpnessClass::Corner
+        );
+        assert_eq!(
+            solved.compatibility.position, [0.5; 3],
+            "analysis must retain the combined-QEF compatibility representative"
+        );
+    }
+
+    #[test]
+    fn constraintless_component_routes_to_one_compatibility_token() {
+        let values = values_for_mask(0b1000_0001);
+        let topology = classify_cell(&values);
+        let mut hermite = separated_component_hermite();
+        hermite
+            .intersections
+            .retain(|hit| topology.component_for_edge(hit.edge_index) == Some(0));
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("unit bounds");
+        let vertices = solve_cell_vertices(&topology, &hermite, bounds, &QefParams::default())
+            .expect("remaining component QEF solves");
+        assert_eq!(vertices.components.len(), 2);
+        assert_eq!(vertices.components[1].constraint_count, 0);
+        assert!(vertices.components[1].qef.is_none());
+        assert_eq!(vertices.components[1].position, bounds.center());
+        assert_eq!(vertices.compatibility.constraint_count, 3);
+        assert_ne!(vertices.compatibility.position, bounds.center());
+
+        let invalid_component = vertices.components[1];
+        let mut projected = ActiveCell {
+            id: CellId::from_index(0),
+            key: CellKey {
+                origin: crate::adaptive_transition::CornerKey::new(0, 0, 0),
+                span: 1,
+                depth: 0,
+            },
+            bounds,
+            position: invalid_component.position,
+            sharpness: invalid_component.sharpness,
+            topology: topology.clone(),
+            components: vec![invalid_component],
+            compatibility: vertices.compatibility,
+            emitted: Vec::new(),
+            compatibility_emitted: None,
+        };
+        let expected_input = vertices.compatibility.position;
+        let expected_output = [0.3, 0.25, 0.25];
+        let mut projection_stats = SemiAnalyticContourStats::default();
+        project_active_cell(
+            &mut projected,
+            &|point, _| {
+                assert_eq!(point, expected_input);
+                Some(SemiAnalyticProjectionOutcome::Projected(
+                    SemiAnalyticProjection {
+                        position: expected_output,
+                        feature: crate::SemiAnalyticFeature::Surface,
+                        primitive: 1,
+                    },
+                ))
+            },
+            &mut projection_stats,
+        );
+        assert_eq!(projected.components[0], invalid_component);
+        assert_eq!(projected.compatibility.position, expected_output);
+        assert_eq!(projection_stats.surface_projections, 1);
+
+        let marker = LeafMarker {
+            decision: RefinementDecision::MaxDepthCompatibility,
+            analysis: Some(Box::new(CellAnalysis {
+                corner_values: values,
+                topology: topology.clone(),
+                hermite,
+                vertices,
+                evidence: RefinementEvidence {
+                    expected_crossings: 6,
+                    hermite_hits: 3,
+                    complete_hermite: false,
+                    usable_constraints: 3,
+                    qef_rms: 0.0,
+                    curvature_error: 0.0,
+                    was_clamped: false,
+                    finite: true,
+                    component_count: 2,
+                    ambiguous_face: false,
+                },
+            })),
+        };
+        let mut visitor = FixedMarkerVisitor { marker };
+        let tree = Octree::build(bounds, 0, &mut visitor);
+        let root = tree.root_id();
+        let valid_edge = (0_u8..12)
+            .find(|&edge| topology.component_for_edge(edge) == Some(0))
+            .expect("first component edge");
+        let missing_edge = (0_u8..12)
+            .find(|&edge| topology.component_for_edge(edge) == Some(1))
+            .expect("second component edge");
+
+        assert_eq!(
+            transition_component_token(&tree, root, ComponentRoute::LocalEdge(valid_edge)),
+            Some((root, 0))
+        );
+        assert_eq!(
+            transition_component_token(&tree, root, ComponentRoute::LocalEdge(missing_edge)),
+            Some((root, u8::MAX)),
+            "constraintless components must alias the one combined-QEF compatibility token"
+        );
+    }
+
+    #[test]
+    fn cyclic_distinct_only_collapses_adjacent_repetitions() {
+        assert_eq!(cyclic_distinct([1, 1, 2, 3]), Ok(vec![1, 2, 3]));
+        assert_eq!(cyclic_distinct([1, 2, 3, 1]), Ok(vec![1, 2, 3]));
+        assert_eq!(cyclic_distinct([1, 2, 1, 3]), Err(()));
+        assert_eq!(cyclic_distinct([1, 1, 2, 2]), Err(()));
+    }
+
+    #[test]
+    fn endpoint_normal_repair_is_oriented_and_does_not_hide_interior_nan() {
+        let mut endpoint = HermiteIntersection {
+            position: [1.0, 0.0, 0.0],
+            normal: [f32::NAN; 3],
+            t: 1.0,
+        };
+        repair_endpoint_normal(&mut endpoint, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0, 1.0);
+        assert_eq!(endpoint.normal, [1.0, 0.0, 0.0]);
+
+        let mut reversed = endpoint;
+        reversed.normal = [f32::NAN; 3];
+        repair_endpoint_normal(&mut reversed, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0, -1.0);
+        assert_eq!(reversed.normal, [-1.0, 0.0, 0.0]);
+
+        let mut interior = endpoint;
+        interior.normal = [f32::NAN; 3];
+        interior.t = 0.5;
+        repair_endpoint_normal(&mut interior, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0, 1.0);
+        assert!(interior.normal.iter().all(|value| value.is_nan()));
+
+        interior.t = f32::NAN;
+        repair_endpoint_normal(&mut interior, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0, 1.0);
+        assert!(interior.normal.iter().all(|value| value.is_nan()));
+    }
+
+    #[test]
+    fn one_component_cell_reuses_the_component_result_bit_for_bit() {
+        let values = values_for_mask(0b0000_0001);
+        let topology = classify_cell(&values);
+        let mut hermite = CellHermiteData::new(0b0000_0001);
+        push_plane_hit(&mut hermite, 0, [0.25, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        push_plane_hit(&mut hermite, 3, [0.0, 0.25, 0.0], [0.0, 1.0, 0.0]);
+        push_plane_hit(&mut hermite, 8, [0.0, 0.0, 0.25], [0.0, 0.0, 1.0]);
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("unit bounds");
+
+        let solved = solve_cell_vertices(&topology, &hermite, bounds, &QefParams::default())
+            .expect("component QEF solves");
+
+        assert_eq!(solved.components.len(), 1);
+        assert_eq!(solved.compatibility, solved.components[0]);
+        assert_eq!(solved.compatibility.position, [0.25; 3]);
+    }
+
+    #[test]
+    fn refinement_reason_precedence_is_explicit() {
+        let target = 0.1;
+        let good = RefinementEvidence {
+            expected_crossings: 4,
+            hermite_hits: 4,
+            complete_hermite: true,
+            usable_constraints: 4,
+            qef_rms: 0.01,
+            curvature_error: 0.02,
+            was_clamped: false,
+            finite: true,
+            component_count: 1,
+            ambiguous_face: false,
+        };
+        assert_eq!(
+            refinement_decision(&good, target),
+            RefinementDecision::Retain
+        );
+
+        let partial = RefinementEvidence {
+            hermite_hits: 3,
+            complete_hermite: false,
+            finite: false,
+            component_count: 2,
+            was_clamped: true,
+            qef_rms: 1.0,
+            curvature_error: 1.0,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&partial, target),
+            RefinementDecision::Refine(RefinementReason::PartialHermite)
+        );
+        let partial_but_solvable = RefinementEvidence {
+            hermite_hits: 3,
+            complete_hermite: false,
+            usable_constraints: 3,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&partial_but_solvable, target),
+            RefinementDecision::Refine(RefinementReason::PartialHermite),
+            "a finite solvable subset must not stand in for a missing crossing edge"
+        );
+        let wrong_edge_set = RefinementEvidence {
+            complete_hermite: false,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&wrong_edge_set, target),
+            RefinementDecision::Refine(RefinementReason::PartialHermite)
+        );
+        let non_finite = RefinementEvidence {
+            finite: false,
+            component_count: 2,
+            was_clamped: true,
+            qef_rms: 1.0,
+            curvature_error: 1.0,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&non_finite, target),
+            RefinementDecision::Refine(RefinementReason::NonFinite)
+        );
+        let unsafe_topology = RefinementEvidence {
+            component_count: 2,
+            was_clamped: true,
+            qef_rms: 1.0,
+            curvature_error: 1.0,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&unsafe_topology, target),
+            RefinementDecision::Refine(RefinementReason::TopologyUnsafe)
+        );
+        let ambiguous_topology = RefinementEvidence {
+            ambiguous_face: true,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&ambiguous_topology, target),
+            RefinementDecision::Refine(RefinementReason::TopologyUnsafe)
+        );
+        let clamped = RefinementEvidence {
+            was_clamped: true,
+            qef_rms: 1.0,
+            curvature_error: 1.0,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&clamped, target),
+            RefinementDecision::Refine(RefinementReason::Clamped)
+        );
+        let residual = RefinementEvidence {
+            qef_rms: 1.0,
+            curvature_error: 1.0,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&residual, target),
+            RefinementDecision::Refine(RefinementReason::Residual)
+        );
+        let curvature = RefinementEvidence {
+            curvature_error: 1.0,
+            ..good
+        };
+        assert_eq!(
+            refinement_decision(&curvature, target),
+            RefinementDecision::Refine(RefinementReason::Curvature)
+        );
+    }
+
+    #[test]
+    fn rms_and_normal_turn_evidence_have_known_geometric_values() {
+        let mut hermite = CellHermiteData::new(0b0000_0011);
+        push_plane_hit(&mut hermite, 0, [0.0, 0.0, 0.0], [2.0, 0.0, 0.0]);
+        push_plane_hit(&mut hermite, 1, [2.0, 0.0, 0.0], [-3.0, 0.0, 0.0]);
+        assert_eq!(hermite_rms(&hermite, [1.0, 0.0, 0.0]), Some(1.0));
+
+        let mut quarter_turn = CellHermiteData::new(0b0000_0011);
+        push_plane_hit(&mut quarter_turn, 0, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        push_plane_hit(&mut quarter_turn, 1, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("unit bounds");
+        let turn = normal_turn_error(&quarter_turn, bounds).expect("finite normal turn");
+        assert!((0.6123..0.6124).contains(&turn), "{turn}");
+    }
+
+    #[test]
+    fn analyzed_nonfinite_hermite_data_refines_before_topology_or_error_budgets() {
+        let field = PartiallyNonFinitePlane;
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
+        let params = params(bounds, 5);
+        let corners = cube_corner_positions(bounds);
+        let mut corner_values = [0.0_f32; 8];
+        field.eval_points(&corners, &mut corner_values);
+
+        let analysis = analyze_crossing_cell(&field, &params, corner_values, bounds)
+            .expect("the two finite constraints keep the compatibility QEF solvable");
+
+        assert_eq!(analysis.evidence.expected_crossings, 4);
+        assert_eq!(analysis.evidence.hermite_hits, 4);
+        assert_eq!(analysis.evidence.usable_constraints, 2);
+        assert!(!analysis.evidence.finite);
+        assert_eq!(
+            refinement_decision(&analysis.evidence, adaptive_error_target(&params)),
+            RefinementDecision::Refine(RefinementReason::NonFinite)
+        );
+    }
+
+    #[test]
+    fn inactive_leaf_markers_do_not_embed_cell_analysis_storage() {
+        assert!(
+            size_of::<LeafMarker>() <= 4 * size_of::<usize>(),
+            "LeafMarker grew to {} bytes",
+            size_of::<LeafMarker>()
+        );
+    }
+
+    #[test]
+    fn interval_enclosure_and_max_depth_have_distinct_decisions() {
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
+        let params = params(bounds, 5);
+
+        let far_sphere = SphereField {
+            center: [5.0; 3],
+            radius: 0.25,
+        };
+        assert_eq!(
+            inspect_root(&far_sphere, &params, false).decision,
+            RefinementDecision::Inactive(InactiveReason::IntervalExcluded)
+        );
+
+        let enclosed_sphere = SphereField {
+            center: [0.0; 3],
+            radius: 0.1,
+        };
+        assert_eq!(
+            inspect_root(&enclosed_sphere, &params, false).decision,
+            RefinementDecision::Refine(RefinementReason::EnclosedNoEdge)
+        );
+        assert_eq!(
+            inspect_root(&enclosed_sphere, &params, true).decision,
+            RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
+        );
+
+        let plane = HalfSpaceField {
+            point: [0.1375, -0.08125, 0.10625],
+            normal: [1.0, 2.0, -1.0],
+        };
+        assert_eq!(
+            inspect_root(&plane, &params, false).decision,
+            RefinementDecision::Refine(RefinementReason::EmitterMinimumDepth)
+        );
+        assert_eq!(
+            inspect_root(&plane, &params, true).decision,
+            RefinementDecision::MaxDepthCompatibility
+        );
+    }
+
+    #[test]
+    fn forced_uniform_refines_an_intersecting_nonmax_cell() {
+        let field = HalfSpaceField {
+            point: [0.1375, -0.08125, 0.10625],
+            normal: [1.0, 2.0, -1.0],
+        };
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
+        let extraction_params = params(bounds, 5);
+        let mut visitor = IntervalVisitor {
+            field: &field,
+            params: &extraction_params,
+            refinement_mode: RefinementMode::ForcedUniform,
+            grid: AdaptiveGrid::new(&field, bounds, 1 << extraction_params.max_depth),
+            pending: None,
+            failure: None,
+        };
+
+        let marker = visitor
+            .inspect_cell(
+                CellRef {
+                    id: CellId::from_index(0),
+                    bounds,
+                    depth: 0,
+                    parent: None,
+                },
+                false,
+            )
+            .expect("forced-uniform inspection");
+
+        assert_eq!(
+            marker.decision,
+            RefinementDecision::Refine(RefinementReason::ForcedUniform)
+        );
+        assert!(marker.analysis.is_none());
+    }
+
+    #[test]
+    fn max_depth_decision_is_authoritative_for_partial_hermite_payloads() {
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
+        let params = params(bounds, 0);
+        let no_hits = SliceSensitivePlane {
+            retain_some_edge_hits: false,
+        };
+        let inactive = inspect_root(&no_hits, &params, true);
+        assert_eq!(
+            inactive.decision,
+            RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
+        );
+        assert!(
+            inactive.analysis.is_some(),
+            "the regression requires an analyzed but inactive payload"
+        );
+        assert_eq!(
+            dual_contour(&no_hits, &params)
+                .expect("inconsistent no-hit extraction")
+                .stats
+                .active_cells,
+            0,
+            "inactive analysis must not leak through collection"
+        );
+
+        let some_hits = SliceSensitivePlane {
+            retain_some_edge_hits: true,
+        };
+        let compatible = inspect_root(&some_hits, &params, true);
+        assert_eq!(
+            compatible.decision,
+            RefinementDecision::MaxDepthCompatibility
+        );
+        let evidence = compatible.analysis.expect("partial analysis").evidence;
+        assert!(evidence.hermite_hits > 0);
+        assert!(evidence.hermite_hits < evidence.expected_crossings);
+        assert_eq!(
+            dual_contour(&some_hits, &params)
+                .expect("inconsistent partial extraction")
+                .stats
+                .active_cells,
+            1,
+            "a partial cell with some Hermite data preserves compatibility at max depth"
+        );
+    }
+
+    #[test]
+    fn exact_plane_has_zero_curvature_and_is_retained_within_budget() {
+        let bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
+        let params = params(bounds, 6);
+        let plane = HalfSpaceField {
+            point: [0.1375, -0.08125, 0.10625],
+            normal: [1.0, 2.0, -1.0],
+        };
+        let inspected = bounds
+            .split()
+            .into_iter()
+            .flat_map(|child| child.split())
+            .map(|candidate| inspect_candidate(&plane, &params, candidate, 2, false))
+            .find(|inspection| inspection.decision == RefinementDecision::Retain)
+            .expect("at least one depth-two plane cell is retained");
+        let evidence = inspected
+            .analysis
+            .expect("plane has active evidence")
+            .evidence;
+
+        assert_eq!(inspected.decision, RefinementDecision::Retain);
+        assert!(
+            evidence.qef_rms <= adaptive_error_target(&params),
+            "{evidence:?}"
+        );
+        assert!(evidence.curvature_error <= 1.0e-6, "{evidence:?}");
+    }
+
+    #[test]
+    fn exact_plane_retention_still_provides_an_emitter_neighborhood() {
+        let bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
+        let params = params(bounds, 6);
+        let plane = HalfSpaceField {
+            point: [0.1375, -0.08125, 0.10625],
+            normal: [1.0, 2.0, -1.0],
+        };
+
+        let result = dual_contour(&plane, &params).expect("plane extraction");
+
+        assert!(result.stats.active_cells >= 3);
+        assert!(result.stats.vertices >= 3);
+        assert!(result.stats.faces > 0);
+        let (triangles, _) = result.mesh.to_trimesh(&ExtractParams::default());
+        assert!(!triangles.indices.is_empty());
+    }
+
+    #[test]
+    fn curved_sphere_candidate_refines_above_the_finest_scale_budget() {
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
+        let params = params(bounds, 6);
+        let sphere = SphereField {
+            center: [0.0; 3],
+            radius: 0.73,
+        };
+        let inspected = bounds
+            .split()
+            .into_iter()
+            .flat_map(|child| child.split())
+            .map(|candidate| inspect_candidate(&sphere, &params, candidate, 2, false))
+            .find(|inspection| {
+                matches!(
+                    inspection.decision,
+                    RefinementDecision::Refine(RefinementReason::Residual)
+                        | RefinementDecision::Refine(RefinementReason::Curvature)
+                )
+            })
+            .expect("at least one depth-two sphere cell exceeds the error budget");
+        let evidence = inspected
+            .analysis
+            .as_ref()
+            .expect("sphere octant has active evidence")
+            .evidence;
+
+        assert!(matches!(
+            inspected.decision,
+            RefinementDecision::Refine(RefinementReason::Residual)
+                | RefinementDecision::Refine(RefinementReason::Curvature)
+        ));
+        assert!(
+            evidence.qef_rms > adaptive_error_target(&params)
+                || evidence.curvature_error > adaptive_error_target(&params),
+            "{evidence:?}"
+        );
+    }
+
+    #[test]
+    fn off_lattice_box_reduces_elements_before_mesh_construction() {
+        let bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
+        let params = params(bounds, 6);
+        let field = BoxField {
+            center: [0.1375, -0.08125, 0.10625],
+            half_extents: [0.81, 0.59, 0.43],
+        };
+        let legacy = contour_with_mode(&field, &params, RefinementMode::Legacy);
+        let adaptive = contour_with_mode(&field, &params, RefinementMode::ErrorDriven);
+        let repeated = contour_with_mode(&field, &params, RefinementMode::ErrorDriven);
+
+        assert!(adaptive.stats.active_cells < legacy.stats.active_cells);
+        assert!(adaptive.stats.vertices < legacy.stats.vertices);
+        assert!(adaptive.stats.faces < legacy.stats.faces);
+        assert_eq!(adaptive.stats, repeated.stats);
+        let adaptive_tri = adaptive.mesh.to_trimesh(&ExtractParams::default());
+        let repeated_tri = repeated.mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(adaptive_tri.0.positions, repeated_tri.0.positions);
+        assert_eq!(adaptive_tri.0.indices, repeated_tri.0.indices);
+        assert_closed_transition_mesh(&adaptive.mesh);
+        assert!(
+            adaptive
+                .mesh
+                .boundary_loops()
+                .expect("adaptive box boundary traversal")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn sparse_corner_sampling_stays_below_the_finest_lattice() {
+        let field = BoxField {
+            center: [0.1375, -0.08125, 0.10625],
+            half_extents: [0.81, 0.59, 0.43],
+        };
+        let extraction_params = params(
+            Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds"),
+            6,
+        );
+        let resolution = 1_u32 << extraction_params.max_depth;
+        let mut visitor = IntervalVisitor {
+            field: &field,
+            params: &extraction_params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(&field, extraction_params.root_bounds, resolution),
+            pending: None,
+            failure: None,
+        };
+        let mut tree = Octree::build(
+            extraction_params.root_bounds,
+            extraction_params.max_depth,
+            &mut visitor,
+        );
+        let (leaves, segments) =
+            prepare_transitions(&mut tree, &mut visitor).expect("transition preparation");
+        let active = collect_active_cells(&extraction_params, &tree, &visitor.grid).cells;
+        let sparse_samples = visitor.grid.sample_count();
+        let finest_lattice = usize::try_from(resolution + 1)
+            .expect("resolution fits usize")
+            .pow(3);
+
+        assert_eq!(
+            (
+                tree.len(),
+                leaves.len(),
+                active.len(),
+                active
+                    .iter()
+                    .map(|cell| cell.components.len())
+                    .sum::<usize>(),
+                segments.len(),
+                sparse_samples,
+                finest_lattice,
+            ),
+            (5_281, 4_621, 1_176, 1_176, 19_375, 7_509, 274_625)
+        );
+        assert!(sparse_samples * 5 < finest_lattice);
+        assert_eq!(leaves.len(), tree.leaf_ids().len());
+    }
+
+    #[test]
+    fn sparse_transition_output_stays_closed_and_deterministic_after_transform() {
+        let base_bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
+        let base_field = BoxField {
+            center: [0.1375, -0.08125, 0.10625],
+            half_extents: [0.81, 0.59, 0.43],
+        };
+        let scale = 3.0_f32;
+        let translation = [13.0_f32, -7.0, 5.0];
+        let transform = |point: [f32; 3]| {
+            [
+                point[0] * scale + translation[0],
+                point[1] * scale + translation[1],
+                point[2] * scale + translation[2],
+            ]
+        };
+        let transformed_bounds =
+            Aabb::new(transform(base_bounds.min), transform(base_bounds.max)).expect("bounds");
+        let transformed_field = BoxField {
+            center: transform(base_field.center),
+            half_extents: base_field.half_extents.map(|extent| extent * scale),
+        };
+
+        let base = dual_contour(&base_field, &params(base_bounds, 6)).expect("base extraction");
+        let transformed = dual_contour(&transformed_field, &params(transformed_bounds, 6))
+            .expect("transformed extraction");
+        let transformed_repeat = dual_contour(&transformed_field, &params(transformed_bounds, 6))
+            .expect("repeated transformed extraction");
+        assert_closed_transition_mesh(&base.mesh);
+        assert_closed_transition_mesh(&transformed.mesh);
+        assert_closed_transition_mesh(&transformed_repeat.mesh);
+        assert_eq!(base.stats, transformed.stats);
+        assert_eq!(transformed.stats, transformed_repeat.stats);
+
+        let transformed_triangles = transformed.mesh.to_trimesh(&ExtractParams::default()).0;
+        let repeated_triangles = transformed_repeat
+            .mesh
+            .to_trimesh(&ExtractParams::default())
+            .0;
+        assert_eq!(transformed_triangles.indices, repeated_triangles.indices);
+        assert_eq!(
+            transformed_triangles.positions,
+            repeated_triangles.positions
+        );
+    }
+
+    #[test]
+    fn unknown_intervals_preserve_output_through_conservative_refinement() {
+        let bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
+        let params = params(bounds, 4);
+        let box_field = BoxField {
+            center: [0.1375, -0.08125, 0.10625],
+            half_extents: [0.81, 0.59, 0.43],
+        };
+        let unknown = UnknownIntervalBox { field: box_field };
+
+        let bounded = dual_contour(&box_field, &params).expect("bounded interval extraction");
+        let conservative = dual_contour(&unknown, &params).expect("unknown interval extraction");
+
+        assert!(conservative.stats.octree_cells > bounded.stats.octree_cells);
+        assert_eq!(conservative.stats.active_cells, bounded.stats.active_cells);
+        assert_eq!(conservative.stats.vertices, bounded.stats.vertices);
+        assert_eq!(conservative.stats.faces, bounded.stats.faces);
+        let bounded_triangles = bounded.mesh.to_trimesh(&ExtractParams::default()).0;
+        let conservative_triangles = conservative.mesh.to_trimesh(&ExtractParams::default()).0;
+        assert_eq!(
+            conservative_triangles.positions,
+            bounded_triangles.positions
+        );
+        assert_eq!(conservative_triangles.indices, bounded_triangles.indices);
+    }
+
+    #[test]
+    fn scaled_boxes_make_the_same_refinement_decisions() {
+        let unit_depths = active_depths_for_box(1.0);
+        assert_eq!(active_depths_for_box(1.0e-3), unit_depths);
+        assert_eq!(active_depths_for_box(1.0e3), unit_depths);
+        assert_eq!(
+            active_depths_for_box_transform(1.0, [128.0, -64.0, 32.0]),
+            unit_depths
+        );
+    }
+
+    #[test]
+    fn pending_evidence_is_consumed_by_the_exact_leaf() {
+        let field = SphereField {
+            center: [0.1, -0.05, 0.025],
+            radius: 0.73,
+        };
+        let params = params(
+            Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds"),
+            5,
+        );
+        let resolution = 1_u32 << params.max_depth;
+        let mut visitor = IntervalVisitor {
+            field: &field,
+            params: &params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
+        };
+
+        let _tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+
+        assert!(visitor.pending.is_none());
+        assert_eq!(visitor.failure, None);
+    }
+
+    fn inspect_root<F: ScalarField>(
+        field: &F,
+        params: &DualContourParams,
+        at_max_depth: bool,
+    ) -> LeafMarker {
+        inspect_candidate(field, params, params.root_bounds, 0, at_max_depth)
+    }
+
+    fn inspect_candidate<F: ScalarField>(
+        field: &F,
+        params: &DualContourParams,
+        bounds: Aabb,
+        depth: u8,
+        at_max_depth: bool,
+    ) -> LeafMarker {
+        let resolution = 1_u32 << params.max_depth;
+        let mut visitor = IntervalVisitor {
+            field,
+            params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
+        };
+        visitor
+            .inspect_cell(
+                CellRef {
+                    id: CellId::from_index(0),
+                    bounds,
+                    depth,
+                    parent: None,
+                },
+                at_max_depth,
+            )
+            .expect("root inspection")
+    }
+
+    fn contour_with_mode<F: ScalarField>(
+        field: &F,
+        params: &DualContourParams,
+        mode: RefinementMode,
+    ) -> super::DualContourResult {
+        dual_contour_projected_impl(field, params, |_, _, _| 0, |_, _| None, mode)
+            .expect("test extraction")
+            .0
+    }
+
+    fn active_depths_for_box(scale: f32) -> Vec<u8> {
+        active_depths_for_box_transform(scale, [0.0; 3])
+    }
+
+    fn active_depths_for_box_transform(scale: f32, translation: [f32; 3]) -> Vec<u8> {
+        let bounds = Aabb::new(
+            [
+                -1.4 * scale + translation[0],
+                -1.2 * scale + translation[1],
+                -1.1 * scale + translation[2],
+            ],
+            [
+                1.6 * scale + translation[0],
+                1.3 * scale + translation[1],
+                1.4 * scale + translation[2],
+            ],
+        )
+        .expect("scaled bounds");
+        let params = params(bounds, 5);
+        let field = BoxField {
+            center: [
+                0.1375 * scale + translation[0],
+                -0.08125 * scale + translation[1],
+                0.10625 * scale + translation[2],
+            ],
+            half_extents: [0.81 * scale, 0.59 * scale, 0.43 * scale],
+        };
+        let resolution = 1_u32 << params.max_depth;
+        let mut visitor = IntervalVisitor {
+            field: &field,
+            params: &params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
+        };
+        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        collect_active_cells(&params, &tree, &visitor.grid)
+            .cells
+            .into_iter()
+            .map(|cell| cell.key.depth)
+            .collect()
+    }
+
+    fn separated_component_hermite() -> CellHermiteData {
+        let mut hermite = CellHermiteData::new(0b1000_0001);
+        push_plane_hit(&mut hermite, 0, [0.25, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        push_plane_hit(&mut hermite, 3, [0.0, 0.25, 0.0], [0.0, 1.0, 0.0]);
+        push_plane_hit(&mut hermite, 8, [0.0, 0.0, 0.25], [0.0, 0.0, 1.0]);
+        push_plane_hit(&mut hermite, 5, [0.75, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        push_plane_hit(&mut hermite, 6, [0.0, 0.75, 0.0], [0.0, 1.0, 0.0]);
+        push_plane_hit(&mut hermite, 10, [0.0, 0.0, 0.75], [0.0, 0.0, 1.0]);
+        hermite
+    }
+
+    fn push_plane_hit(
+        hermite: &mut CellHermiteData,
+        edge: u8,
+        position: [f32; 3],
+        normal: [f32; 3],
+    ) {
+        hermite.push(
+            edge,
+            HermiteIntersection {
+                position,
+                normal,
+                t: 0.5,
+            },
+        );
+    }
+
+    fn values_for_mask(mask: u8) -> [f32; 8] {
+        core::array::from_fn(|corner| {
+            if mask & (1_u8 << corner) != 0 {
+                -1.0
+            } else {
+                1.0
+            }
+        })
+    }
+
+    #[test]
     fn multiscale_active_cells_span_multiple_depths() {
         let field = Union::new(
             SphereField {
-                center: [0.0, 0.0, 0.0],
+                center: [0.013, -0.017, 0.011],
                 radius: 1.0,
             },
             SphereField {
-                center: [1.2, 0.0, 0.0],
+                center: [1.213, -0.017, 0.011],
                 radius: 0.18,
             },
         );
@@ -1934,19 +3686,19 @@ mod tests {
             6,
         );
         let resolution = 1_u32 << params.max_depth;
-        let lattice = sample_lattice(&field, params.root_bounds, resolution);
         let mut visitor = IntervalVisitor {
             field: &field,
-            lattice: &lattice,
-            root_bounds: params.root_bounds,
-            resolution,
+            params: &params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
         };
         let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
-        let active =
-            collect_active_cells(&field, &params, &tree, &lattice).expect("active cells collect");
+        let active = collect_active_cells(&params, &tree, &visitor.grid).cells;
 
-        assert!(active.iter().any(|cell| cell.depth < params.max_depth));
-        assert!(active.iter().any(|cell| cell.depth == params.max_depth));
+        assert!(active.iter().any(|cell| cell.key.depth < params.max_depth));
+        assert!(active.iter().any(|cell| cell.key.depth == params.max_depth));
 
         let result = dual_contour(&field, &params).expect("multiscale extraction should work");
         assert!(result.mesh.validate_deep().is_empty());
@@ -1961,7 +3713,91 @@ mod tests {
             [0.0, 1.0, 0.0],
         ];
 
-        assert_eq!(select_quad_diagonal(skewed), QuadDiagonal::OneThree);
+        assert_eq!(select_quad_diagonal(skewed), Some(QuadDiagonal::OneThree));
+    }
+
+    #[test]
+    fn select_quad_diagonal_avoids_the_degenerate_split() {
+        let trap = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.6, 0.0],
+        ];
+
+        assert_eq!(select_quad_diagonal(trap), Some(QuadDiagonal::OneThree));
+        assert_eq!(
+            select_quad_diagonal([trap[1], trap[2], trap[3], trap[0]]),
+            Some(QuadDiagonal::ZeroTwo),
+            "a cyclic shift must preserve the physical diagonal"
+        );
+        assert_eq!(
+            select_quad_diagonal([trap[3], trap[2], trap[1], trap[0]]),
+            Some(QuadDiagonal::ZeroTwo),
+            "reversing winding must preserve the physical diagonal"
+        );
+    }
+
+    #[test]
+    fn transition_polygon_reports_when_neither_quad_split_is_valid() {
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ];
+        assert_eq!(select_quad_diagonal(positions), None);
+
+        let mut builder = exedra::MeshBuilder::new();
+        let mut face = Vec::new();
+        for position in positions {
+            face.push(VertexEntry {
+                builder_index: builder.push_vertex(position),
+                position,
+                sharpness: 0.0,
+            });
+        }
+        let mut face_count = 0;
+        assert!(matches!(
+            emit_transition_polygon(&mut builder, &face, 0, &mut face_count),
+            Err(super::DualContourError::Build(
+                BuildError::DegenerateTriangle { triangle: 0 }
+            ))
+        ));
+    }
+
+    #[test]
+    fn aligned_coincident_box_union_has_no_degenerate_transition_faces() {
+        let scale = 2.75_f32;
+        let translation = [2.3_f32, -1.1, 0.7];
+        let transform = |local: [f32; 3]| {
+            [
+                translation[0] + scale * local[0],
+                translation[1] + scale * local[1],
+                translation[2] + scale * local[2],
+            ]
+        };
+        let field = Union::new(
+            BoxField {
+                center: transform([-0.35, -0.15, 0.0]),
+                half_extents: [0.9 * scale, 0.7 * scale, 0.55 * scale],
+            },
+            BoxField {
+                center: transform([0.4, 0.3, 0.1]),
+                half_extents: [0.65 * scale, 0.8 * scale, 0.45 * scale],
+            },
+        );
+        let extraction_params = params(
+            Aabb::new(transform([-1.6, -1.5, -1.3]), transform([1.6, 1.5, 1.3]))
+                .expect("trap bounds"),
+            6,
+        );
+
+        for mode in [RefinementMode::ForcedUniform, RefinementMode::ErrorDriven] {
+            let result = contour_with_mode(&field, &extraction_params, mode);
+            assert_eq!(degenerate_face_count(&result.mesh), 0, "mode={mode:?}");
+            assert_closed_transition_mesh(&result.mesh);
+        }
     }
 
     fn tagged_box_minus_cylinder(
@@ -1993,5 +3829,508 @@ mod tests {
 
     fn length3(vector: [f32; 3]) -> f32 {
         (dot3(vector, vector)).sqrt()
+    }
+
+    fn mesh_geometry(mesh: &exedra::Mesh) -> (Vec<[f32; 3]>, Vec<Vec<u32>>) {
+        let positions = mesh
+            .vertices()
+            .map(|vertex| *mesh.vertex_position(vertex).expect("vertex position"))
+            .collect();
+        let faces = mesh
+            .faces()
+            .map(|face| {
+                mesh.face_loop(face)
+                    .map(|corner| mesh.to_vertex(corner).expect("face vertex").index())
+                    .collect()
+            })
+            .collect();
+        (positions, faces)
+    }
+
+    fn test_sin(value: f32) -> f32 {
+        #[cfg(feature = "std")]
+        {
+            value.sin()
+        }
+        #[cfg(all(not(feature = "std"), feature = "libm"))]
+        {
+            libm::sinf(value)
+        }
+    }
+
+    fn test_cos(value: f32) -> f32 {
+        #[cfg(feature = "std")]
+        {
+            value.cos()
+        }
+        #[cfg(all(not(feature = "std"), feature = "libm"))]
+        {
+            libm::cosf(value)
+        }
+    }
+
+    type ForcedPinField = Union<TaggedField<BoxField, u32>, TaggedField<BoxField, u32>>;
+
+    struct ForcedPinMeasured<F> {
+        field: F,
+        interval_cells: core::cell::RefCell<Vec<Aabb>>,
+        projection_cells: core::cell::RefCell<Vec<Aabb>>,
+    }
+
+    impl<F> ForcedPinMeasured<F> {
+        fn new(field: F) -> Self {
+            Self {
+                field,
+                interval_cells: core::cell::RefCell::new(Vec::new()),
+                projection_cells: core::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl<F: ScalarField> ScalarField for ForcedPinMeasured<F> {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.interval_cells.borrow_mut().push(*bounds);
+            self.field.eval_interval(bounds)
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+        }
+    }
+
+    impl<F: SemiAnalyticField> SemiAnalyticField for ForcedPinMeasured<F> {
+        fn project_cell_vertex(
+            &self,
+            point: [f32; 3],
+            cell: &Aabb,
+        ) -> Option<SemiAnalyticProjection> {
+            self.field.project_cell_vertex(point, cell)
+        }
+
+        fn project_cell_vertex_detailed(
+            &self,
+            point: [f32; 3],
+            cell: &Aabb,
+        ) -> SemiAnalyticProjectionOutcome {
+            self.projection_cells.borrow_mut().push(*cell);
+            self.field.project_cell_vertex_detailed(point, cell)
+        }
+
+        fn primitive_at(&self, point: [f32; 3]) -> u32 {
+            self.field.primitive_at(point)
+        }
+
+        fn leaf_primitive(&self) -> Option<AnalyticPrimitive> {
+            self.field.leaf_primitive()
+        }
+    }
+
+    #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct ForcedPinCell {
+        origin: [u32; 3],
+        span: u32,
+        depth: u8,
+    }
+
+    fn forced_pin_h1_fixture() -> (ForcedPinField, DualContourParams) {
+        let scale = 2.75_f32;
+        let translation = [2.3_f32, -1.1, 0.7];
+        let transform = |local: [f32; 3]| {
+            [
+                translation[0] + scale * local[0],
+                translation[1] + scale * local[1],
+                translation[2] + scale * local[2],
+            ]
+        };
+        let field = Union::new(
+            TaggedField {
+                field: BoxField {
+                    center: transform([-0.347, -0.153, 0.017]),
+                    half_extents: [0.893 * scale, 0.697 * scale, 0.541 * scale],
+                },
+                provenance: 10,
+            },
+            TaggedField {
+                field: BoxField {
+                    center: transform([0.407, 0.293, 0.123]),
+                    half_extents: [0.647 * scale, 0.787 * scale, 0.397 * scale],
+                },
+                provenance: 20,
+            },
+        );
+        let root_bounds = Aabb::new(transform([-1.6, -1.5, -1.3]), transform([1.6, 1.5, 1.3]))
+            .expect("forced-uniform H1 root bounds");
+        (field, params(root_bounds, 7))
+    }
+
+    fn forced_pin_extract(
+        measured: &ForcedPinMeasured<ForcedPinField>,
+        extraction_params: &DualContourParams,
+    ) -> (super::DualContourResult, SemiAnalyticContourStats) {
+        dual_contour_projected_impl(
+            measured,
+            extraction_params,
+            |start, end, fallback| {
+                let point = crate::hermite::locate_edge_zero(
+                    measured,
+                    start,
+                    end,
+                    &extraction_params.edge_search,
+                )
+                .map_or(fallback, |(point, _)| point);
+                measured.primitive_at(point)
+            },
+            |point, cell| Some(measured.project_cell_vertex_detailed(point, cell)),
+            RefinementMode::ForcedUniform,
+        )
+        .expect("forced-uniform H1 extraction")
+    }
+
+    fn forced_pin_histograms(
+        measured: &ForcedPinMeasured<ForcedPinField>,
+        root: Aabb,
+        max_depth: u8,
+    ) -> (
+        Vec<usize>,
+        Vec<usize>,
+        alloc::collections::BTreeSet<ForcedPinCell>,
+    ) {
+        let cells = measured
+            .interval_cells
+            .borrow()
+            .iter()
+            .copied()
+            .map(|bounds| forced_pin_cell(bounds, root, max_depth))
+            .collect::<alloc::collections::BTreeSet<_>>();
+        assert_eq!(
+            cells.len(),
+            measured.interval_cells.borrow().len(),
+            "the traversal must interval-test each stored cell once"
+        );
+        let mut final_depths = vec![0; usize::from(max_depth) + 1];
+        for cell in &cells {
+            if cell.depth == max_depth
+                || !forced_pin_children(*cell)
+                    .iter()
+                    .any(|child| cells.contains(child))
+            {
+                final_depths[usize::from(cell.depth)] += 1;
+            }
+        }
+
+        let projection_cells = measured
+            .projection_cells
+            .borrow()
+            .iter()
+            .copied()
+            .map(|bounds| forced_pin_cell(bounds, root, max_depth))
+            .collect::<Vec<_>>();
+        let projection_cell_set = projection_cells
+            .iter()
+            .copied()
+            .collect::<alloc::collections::BTreeSet<_>>();
+        assert_eq!(
+            projection_cell_set.len(),
+            projection_cells.len(),
+            "each contributing leaf must be projected exactly once"
+        );
+        let mut contributing_depths = vec![0; usize::from(max_depth) + 1];
+        for cell in projection_cells {
+            contributing_depths[usize::from(cell.depth)] += 1;
+        }
+        (final_depths, contributing_depths, projection_cell_set)
+    }
+
+    fn forced_pin_cell(bounds: Aabb, root: Aabb, max_depth: u8) -> ForcedPinCell {
+        let resolution = 1_u32 << max_depth;
+        let origin: [u32; 3] = core::array::from_fn(|axis| {
+            forced_pin_coordinate(root, resolution, axis, bounds.min[axis])
+        });
+        let maximum: [u32; 3] = core::array::from_fn(|axis| {
+            forced_pin_coordinate(root, resolution, axis, bounds.max[axis])
+        });
+        let spans = core::array::from_fn::<_, 3, _>(|axis| maximum[axis] - origin[axis]);
+        assert_eq!(
+            spans, [spans[0]; 3],
+            "octree cell must be cubic in key space"
+        );
+        assert!(spans[0].is_power_of_two(), "octree span must be dyadic");
+        let span = spans[0];
+        ForcedPinCell {
+            origin,
+            span,
+            depth: max_depth - u8::try_from(span.ilog2()).expect("depth fits u8"),
+        }
+    }
+
+    fn forced_pin_coordinate(root: Aabb, resolution: u32, axis: usize, target: f32) -> u32 {
+        let mut low = 0;
+        let mut high = resolution;
+        while low <= high {
+            let middle = low + (high - low) / 2;
+            match forced_pin_axis_point(root, resolution, axis, middle).total_cmp(&target) {
+                core::cmp::Ordering::Less => low = middle + 1,
+                core::cmp::Ordering::Greater => {
+                    assert!(middle > 0, "target must lie inside root bounds");
+                    high = middle - 1;
+                }
+                core::cmp::Ordering::Equal => return middle,
+            }
+        }
+        panic!("cell endpoint {target:?} is not an exact integer-grid coordinate")
+    }
+
+    fn forced_pin_axis_point(root: Aabb, resolution: u32, axis: usize, key: u32) -> f32 {
+        if key == 0 {
+            root.min[axis]
+        } else if key == resolution {
+            root.max[axis]
+        } else {
+            let step = root.extent()[axis] / resolution as f32;
+            root.min[axis] + step * key as f32
+        }
+    }
+
+    fn forced_pin_assert_coordinate_round_trip(root: Aabb, resolution: u32) {
+        for axis in 0..3 {
+            for key in 0..=resolution {
+                let point = forced_pin_axis_point(root, resolution, axis, key);
+                assert_eq!(
+                    forced_pin_coordinate(root, resolution, axis, point),
+                    key,
+                    "axis {axis} key {key} must round-trip exactly"
+                );
+            }
+        }
+    }
+
+    fn forced_pin_children(cell: ForcedPinCell) -> [ForcedPinCell; 8] {
+        let child_span = cell.span / 2;
+        core::array::from_fn(|corner| ForcedPinCell {
+            origin: core::array::from_fn(|axis| {
+                cell.origin[axis] + child_span * u32::from(((corner >> axis) & 1) != 0)
+            }),
+            span: child_span,
+            depth: cell.depth + 1,
+        })
+    }
+
+    fn forced_pin_assert_common_subset(
+        field: &ForcedPinField,
+        extraction_params: &DualContourParams,
+        projected_cells: &alloc::collections::BTreeSet<ForcedPinCell>,
+    ) {
+        use super::{
+            component_is_usable as forced_pin_component_is_usable,
+            qef_result_is_finite as forced_pin_qef_result_is_finite,
+        };
+
+        let resolution = 1_u32 << extraction_params.max_depth;
+        let mut grid = AdaptiveGrid::new(field, extraction_params.root_bounds, resolution);
+        let mut crossing_cells = alloc::collections::BTreeSet::new();
+        for x in 0..resolution {
+            for y in 0..resolution {
+                for z in 0..resolution {
+                    let key = CellKey {
+                        origin: crate::adaptive_transition::CornerKey::new(x, y, z),
+                        span: 1,
+                        depth: extraction_params.max_depth,
+                    };
+                    let corner_values = grid.sample_cell_corners(key);
+                    if super::crossing_edge_count(&corner_values) == 0 {
+                        continue;
+                    }
+                    crossing_cells.insert(ForcedPinCell {
+                        origin: [x, y, z],
+                        span: 1,
+                        depth: extraction_params.max_depth,
+                    });
+                }
+            }
+        }
+        assert_eq!(
+            &crossing_cells, projected_cells,
+            "the actual projected leaf set must exactly equal the independently scanned crossing set"
+        );
+
+        for cell in projected_cells {
+            let key = CellKey {
+                origin: crate::adaptive_transition::CornerKey::new(
+                    cell.origin[0],
+                    cell.origin[1],
+                    cell.origin[2],
+                ),
+                span: cell.span,
+                depth: cell.depth,
+            };
+            let corner_values = grid.sample_cell_corners(key);
+            let analysis = analyze_crossing_cell(
+                field,
+                extraction_params,
+                corner_values,
+                grid.cell_bounds(key),
+            )
+            .expect("forced-uniform H1 cell analysis");
+            assert_eq!(analysis.vertices.components.len(), 1);
+            assert!(!analysis.topology.has_ambiguous_face());
+            assert_eq!(
+                analysis.evidence.expected_crossings,
+                analysis.evidence.hermite_hits
+            );
+            assert!(analysis.evidence.complete_hermite);
+            assert!(analysis.evidence.finite);
+            assert!(analysis.corner_values.iter().all(|value| *value != 0.0));
+            assert_eq!(
+                super::hermite_edge_mask(&analysis.hermite),
+                super::crossing_edge_mask(&analysis.corner_values)
+            );
+            let component = analysis.vertices.components[0];
+            assert!(forced_pin_component_is_usable(&component));
+            assert!(component.qef.is_some_and(forced_pin_qef_result_is_finite));
+            assert_eq!(component, analysis.vertices.compatibility);
+        }
+    }
+
+    fn forced_pin_signature(mesh: &exedra::Mesh) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for vertex in mesh.vertices() {
+            hash = forced_pin_fnv(hash, &vertex.index().to_le_bytes());
+            for component in mesh.vertex_position(vertex).expect("vertex position") {
+                hash = forced_pin_fnv(hash, &component.to_bits().to_le_bytes());
+            }
+        }
+        let regions = mesh.attrs().dense(attr::FACE_REGION);
+        let sharpness = mesh.attrs().sparse(attr::EDGE_SHARPNESS);
+        let seams = mesh.attrs().sparse(attr::EDGE_SEAM);
+        let normals = mesh.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
+        for face in mesh.faces() {
+            hash = forced_pin_fnv(hash, &face.index().to_le_bytes());
+            hash = forced_pin_fnv(
+                hash,
+                &regions
+                    .and_then(|layer| layer.get(face.as_id()))
+                    .copied()
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            for corner in mesh.face_loop(face) {
+                let vertex = mesh.to_vertex(corner).expect("face-loop vertex");
+                hash = forced_pin_fnv(hash, &vertex.index().to_le_bytes());
+                hash = match sharpness
+                    .and_then(|layer| layer.get(corner.as_id()))
+                    .copied()
+                {
+                    Some(value) => {
+                        forced_pin_fnv(forced_pin_fnv(hash, &[1]), &value.to_bits().to_le_bytes())
+                    }
+                    None => forced_pin_fnv(hash, &[0]),
+                };
+                hash = forced_pin_fnv(
+                    hash,
+                    &[u8::from(
+                        seams
+                            .and_then(|layer| layer.get(corner.as_id()))
+                            .copied()
+                            .unwrap_or(false),
+                    )],
+                );
+                if let Some(normal) = normals.and_then(|layer| layer.get(corner.as_id())).copied() {
+                    hash = forced_pin_fnv(hash, &[1]);
+                    for component in normal {
+                        hash = forced_pin_fnv(hash, &component.to_bits().to_le_bytes());
+                    }
+                } else {
+                    hash = forced_pin_fnv(hash, &[0]);
+                }
+            }
+            hash = forced_pin_fnv(hash, &[0xff]);
+        }
+        let (triangles, _) = mesh.to_trimesh(&ExtractParams::default());
+        for position in triangles.positions {
+            for component in position {
+                hash = forced_pin_fnv(hash, &component.to_bits().to_le_bytes());
+            }
+        }
+        for index in triangles.indices {
+            hash = forced_pin_fnv(hash, &index.to_le_bytes());
+        }
+        hash
+    }
+
+    fn forced_pin_fnv(mut hash: u64, bytes: &[u8]) -> u64 {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    fn forced_pin_regions(mesh: &exedra::Mesh) -> Vec<(u32, usize)> {
+        use alloc::collections::BTreeMap as ForcedPinBTreeMap;
+
+        let regions = mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .expect("forced-uniform FACE_REGION");
+        let mut histogram = ForcedPinBTreeMap::new();
+        for face in mesh.faces() {
+            let region = regions
+                .get(face.as_id())
+                .copied()
+                .expect("every face has a region");
+            *histogram.entry(region).or_insert(0) += 1;
+        }
+        histogram.into_iter().collect()
+    }
+
+    #[test]
+    fn forced_uniform_h1_authoritative_witness_is_fully_pinned() {
+        let (field, extraction_params) = forced_pin_h1_fixture();
+        let measured = ForcedPinMeasured::new(field);
+        let (result, semi_analytic) = forced_pin_extract(&measured, &extraction_params);
+        let (final_depths, contributing_depths, projected_cells) = forced_pin_histograms(
+            &measured,
+            extraction_params.root_bounds,
+            extraction_params.max_depth,
+        );
+
+        assert_eq!(
+            result.stats,
+            super::DualContourStats {
+                octree_cells: 100_937,
+                active_cells: 30_122,
+                vertices: 30_122,
+                faces: 60_240,
+            }
+        );
+        assert_eq!(
+            semi_analytic,
+            SemiAnalyticContourStats {
+                unsupported_fallbacks: 30_122,
+                ..SemiAnalyticContourStats::default()
+            }
+        );
+        assert_eq!(
+            semi_analytic_counter_total(semi_analytic),
+            result.stats.active_cells
+        );
+        assert_eq!(final_depths, [0, 0, 0, 199, 1_388, 5_277, 21_744, 59_712]);
+        assert_eq!(contributing_depths, [0, 0, 0, 0, 0, 0, 0, 30_122]);
+        assert_eq!(
+            forced_pin_regions(&result.mesh),
+            [(10, 38_884), (20, 21_356)]
+        );
+        assert_eq!(forced_pin_signature(&result.mesh), 0xf9f3_2216_4cf5_214a);
+        assert_eq!(projected_cells.len(), result.stats.active_cells);
+        forced_pin_assert_coordinate_round_trip(
+            extraction_params.root_bounds,
+            1_u32 << extraction_params.max_depth,
+        );
+        forced_pin_assert_common_subset(&measured.field, &extraction_params, &projected_cells);
+        assert_closed_transition_mesh(&result.mesh);
     }
 }

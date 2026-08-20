@@ -21,7 +21,10 @@ pub struct SphereField {
 pub struct BoxField {
     /// Box center.
     pub center: [f32; 3],
-    /// Half extents along each axis.
+    /// Positive half extents along each axis.
+    ///
+    /// [`ScalarField::eval_interval`] returns `None` when the center or half
+    /// extents are non-finite, or when any half extent is not positive.
     pub half_extents: [f32; 3],
 }
 
@@ -197,7 +200,7 @@ impl ScalarField for SphereField {
 
 impl ScalarField for BoxField {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        Some(conservative_sampled_interval(self, bounds))
+        exact_box_interval(self, bounds)
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
@@ -205,10 +208,7 @@ impl ScalarField for BoxField {
         for (index, point) in points.iter().enumerate() {
             let delta = abs3(sub(*point, self.center));
             let q = sub(delta, self.half_extents);
-            let outside = max3(q, [0.0; 3]);
-            let outside_distance = length(outside);
-            let inside_distance = q[0].max(q[1].max(q[2])).min(0.0);
-            out[index] = outside_distance + inside_distance;
+            out[index] = box_sdf_from_q(q);
         }
     }
 
@@ -220,7 +220,7 @@ impl ScalarField for BoxField {
             let q = sub(abs_delta, self.half_extents);
             let outside = max3(q, [0.0; 3]);
             let outside_distance = length(outside);
-            out[index][0] = outside_distance + q[0].max(q[1].max(q[2])).min(0.0);
+            out[index][0] = box_sdf_from_q(q);
             out[index][1..4].copy_from_slice(&box_gradient(delta, q, outside, outside_distance));
         }
     }
@@ -783,6 +783,48 @@ fn torus_distance_and_gradient(point: [f32; 3], torus: &TorusField) -> (f32, [f3
     (distance, gradient)
 }
 
+fn exact_box_interval(field: &BoxField, bounds: &Aabb) -> Option<[f32; 2]> {
+    if !field
+        .center
+        .iter()
+        .chain(&field.half_extents)
+        .chain(&bounds.min)
+        .chain(&bounds.max)
+        .all(|value| value.is_finite())
+        || field.half_extents.iter().any(|extent| *extent <= 0.0)
+        || (0..3).any(|axis| bounds.min[axis] > bounds.max[axis])
+    {
+        return None;
+    }
+
+    let mut nearest_q = [0.0; 3];
+    let mut furthest_q = [0.0; 3];
+    for axis in 0..3 {
+        let center = field.center[axis];
+        let nearest_abs = if center < bounds.min[axis] {
+            bounds.min[axis] - center
+        } else if center > bounds.max[axis] {
+            center - bounds.max[axis]
+        } else {
+            0.0
+        };
+        let furthest_abs = abs(bounds.min[axis] - center).max(abs(bounds.max[axis] - center));
+        nearest_q[axis] = nearest_abs - field.half_extents[axis];
+        furthest_q[axis] = furthest_abs - field.half_extents[axis];
+    }
+
+    let minimum = box_sdf_from_q(nearest_q);
+    let maximum = box_sdf_from_q(furthest_q);
+    if !minimum.is_finite() || !maximum.is_finite() || minimum > maximum {
+        return None;
+    }
+    Some([minimum.next_down(), maximum.next_up()])
+}
+
+fn box_sdf_from_q(q: [f32; 3]) -> f32 {
+    length(max3(q, [0.0; 3])) + q[0].max(q[1].max(q[2])).min(0.0)
+}
+
 fn conservative_sampled_interval<F: ScalarField>(field: &F, bounds: &Aabb) -> [f32; 2] {
     let mut samples = sample_points(bounds);
     let mut values = [0.0_f32; 9];
@@ -952,9 +994,10 @@ fn sqrt(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryProvenance, BoxField, CylinderField, Difference, HalfSpaceField, OperandSource,
-        SmoothUnion, SphereField, TaggedField, TorusField, Union,
+        BinaryProvenance, BoxField, CylinderField, Difference, HalfSpaceField, Intersection,
+        OperandSource, SmoothUnion, SphereField, TaggedField, TorusField, Union, box_sdf_from_q,
     };
+    use crate::transform::{RigidTransform3, Transform3, Translate, UniformScale};
     use crate::{ProvenanceField, ScalarField};
     use exedra_spatial::Aabb;
 
@@ -990,13 +1033,13 @@ mod tests {
     fn assert_interval_covers_bruteforce<F: ScalarField>(field: &F, bounds: &Aabb) {
         let interval = field.eval_interval(bounds).expect("interval should exist");
         let mut values = [0.0_f32; 1];
-        for x in 0..=4 {
-            for y in 0..=4 {
-                for z in 0..=4 {
+        for x in 0..=8 {
+            for y in 0..=8 {
+                for z in 0..=8 {
                     let point = [
-                        bounds.min[0] + (bounds.max[0] - bounds.min[0]) * (x as f32 / 4.0),
-                        bounds.min[1] + (bounds.max[1] - bounds.min[1]) * (y as f32 / 4.0),
-                        bounds.min[2] + (bounds.max[2] - bounds.min[2]) * (z as f32 / 4.0),
+                        bounds.min[0] + (bounds.max[0] - bounds.min[0]) * (x as f32 / 8.0),
+                        bounds.min[1] + (bounds.max[1] - bounds.min[1]) * (y as f32 / 8.0),
+                        bounds.min[2] + (bounds.max[2] - bounds.min[2]) * (z as f32 / 8.0),
                     ];
                     field.eval_points(&[point], &mut values);
                     assert!(
@@ -1021,6 +1064,210 @@ mod tests {
         let bounds = Aabb::new([-1.0, -1.0, -1.0], [1.0, 0.75, 0.9]).expect("valid bounds");
 
         assert_interval_covers_bruteforce(&field, &bounds);
+    }
+
+    #[test]
+    fn box_field_interval_is_exact_then_expanded_by_one_float() {
+        let field = BoxField {
+            center: [0.0; 3],
+            half_extents: [1.0; 3],
+        };
+        let outside = Aabb::new([2.0, 0.0, 0.0], [2.0, 0.0, 0.0]).expect("point bounds");
+        let inside = Aabb::new([0.0; 3], [0.0; 3]).expect("point bounds");
+        let surface = Aabb::new([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]).expect("point bounds");
+
+        assert_eq!(
+            field.eval_interval(&outside),
+            Some([
+                f32::from_bits(1.0_f32.to_bits() - 1),
+                f32::from_bits(1.0_f32.to_bits() + 1),
+            ])
+        );
+        assert_eq!(
+            field.eval_interval(&inside),
+            Some([
+                f32::from_bits((-1.0_f32).to_bits() + 1),
+                f32::from_bits((-1.0_f32).to_bits() - 1),
+            ])
+        );
+        assert_eq!(
+            field.eval_interval(&surface),
+            Some([f32::from_bits(0x8000_0001), f32::from_bits(0x0000_0001),])
+        );
+    }
+
+    #[test]
+    fn box_field_general_interval_extrema_are_attained_before_expansion() {
+        let field = BoxField {
+            center: [0.37, -0.22, 0.41],
+            half_extents: [0.83, 0.61, 0.47],
+        };
+        let bounds = Aabb::new([-1.3, 0.1, -0.7], [1.1, 1.4, 0.2]).expect("query bounds");
+        let nearest = [field.center[0], bounds.min[1], bounds.max[2]];
+        let farthest = [bounds.min[0], bounds.max[1], bounds.min[2]];
+        let nearest_q = [
+            (nearest[0] - field.center[0]).abs() - field.half_extents[0],
+            (nearest[1] - field.center[1]).abs() - field.half_extents[1],
+            (nearest[2] - field.center[2]).abs() - field.half_extents[2],
+        ];
+        let farthest_q = [
+            (farthest[0] - field.center[0]).abs() - field.half_extents[0],
+            (farthest[1] - field.center[1]).abs() - field.half_extents[1],
+            (farthest[2] - field.center[2]).abs() - field.half_extents[2],
+        ];
+        let raw = [box_sdf_from_q(nearest_q), box_sdf_from_q(farthest_q)];
+        let mut evaluated = [0.0; 2];
+        field.eval_points(&[nearest, farthest], &mut evaluated);
+
+        assert_eq!(evaluated, raw);
+        assert_eq!(
+            field.eval_interval(&bounds),
+            Some([raw[0].next_down(), raw[1].next_up()])
+        );
+    }
+
+    #[test]
+    fn box_field_interval_rejects_invalid_primitive_and_query_inputs() {
+        let valid = BoxField {
+            center: [0.0; 3],
+            half_extents: [1.0; 3],
+        };
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("valid bounds");
+        for invalid in [
+            BoxField {
+                center: [f32::NAN, 0.0, 0.0],
+                ..valid
+            },
+            BoxField {
+                half_extents: [0.0, 1.0, 1.0],
+                ..valid
+            },
+            BoxField {
+                half_extents: [-1.0, 1.0, 1.0],
+                ..valid
+            },
+            BoxField {
+                half_extents: [f32::INFINITY, 1.0, 1.0],
+                ..valid
+            },
+        ] {
+            assert_eq!(invalid.eval_interval(&bounds), None);
+        }
+
+        for invalid in [
+            Aabb {
+                min: [f32::NAN, -1.0, -1.0],
+                max: [1.0; 3],
+            },
+            Aabb {
+                min: [2.0, -1.0, -1.0],
+                max: [1.0; 3],
+            },
+            Aabb {
+                min: [-1.0; 3],
+                max: [f32::INFINITY, 1.0, 1.0],
+            },
+        ] {
+            assert_eq!(valid.eval_interval(&invalid), None);
+        }
+
+        let overflow = Aabb::new(
+            [f32::MAX, f32::MAX, f32::MAX],
+            [f32::MAX, f32::MAX, f32::MAX],
+        )
+        .expect("ordered finite bounds");
+        assert_eq!(valid.eval_interval(&overflow), None);
+    }
+
+    #[test]
+    fn exact_box_intervals_compose_through_transforms_and_csg() {
+        let left = BoxField {
+            center: [-0.37, 0.11, -0.23],
+            half_extents: [0.83, 0.61, 0.47],
+        };
+        let right = BoxField {
+            center: [0.41, -0.29, 0.19],
+            half_extents: [0.59, 0.73, 0.31],
+        };
+        let bounds = Aabb::new([-1.3, -1.1, -0.9], [1.5, 1.2, 1.4]).expect("query bounds");
+
+        assert_interval_covers_bruteforce(
+            &Translate::new(left, [2.3, -1.7, 0.9]),
+            &Aabb {
+                min: [
+                    bounds.min[0] + 2.3,
+                    bounds.min[1] - 1.7,
+                    bounds.min[2] + 0.9,
+                ],
+                max: [
+                    bounds.max[0] + 2.3,
+                    bounds.max[1] - 1.7,
+                    bounds.max[2] + 0.9,
+                ],
+            },
+        );
+        let scaled = UniformScale::new(left, 3.25).expect("positive scale");
+        assert_interval_covers_bruteforce(
+            &scaled,
+            &Aabb::new(
+                bounds.min.map(|value| value * 3.25),
+                bounds.max.map(|value| value * 3.25),
+            )
+            .expect("scaled bounds"),
+        );
+        for (scale, offset) in [
+            (1.0e-3, [0.0; 3]),
+            (1.0, [13.0, -7.0, 5.0]),
+            (1.0e3, [128.0, -64.0, 32.0]),
+        ] {
+            let wrapped = Translate::new(
+                UniformScale::new(left, scale).expect("positive scale"),
+                offset,
+            );
+            let transform = |point: [f32; 3]| {
+                [
+                    point[0] * scale + offset[0],
+                    point[1] * scale + offset[1],
+                    point[2] * scale + offset[2],
+                ]
+            };
+            let wrapped_bounds =
+                Aabb::new(transform(bounds.min), transform(bounds.max)).expect("wrapped bounds");
+            assert_interval_covers_bruteforce(&wrapped, &wrapped_bounds);
+        }
+        let diagonal = core::f32::consts::FRAC_1_SQRT_2;
+        let rotation = RigidTransform3::new(
+            [1.7, -0.8, 0.6],
+            [diagonal, diagonal, 0.0],
+            [-diagonal, diagonal, 0.0],
+            [0.0, 0.0, 1.0],
+        )
+        .expect("rigid transform");
+        assert_interval_covers_bruteforce(
+            &Transform3::new(left, rotation),
+            &Aabb::new([0.2, -2.1, -0.3], [3.0, 0.4, 1.9]).expect("world bounds"),
+        );
+
+        assert_interval_covers_bruteforce(&Union::new(left, right), &bounds);
+        assert_interval_covers_bruteforce(&Intersection::new(left, right), &bounds);
+        assert_interval_covers_bruteforce(&Difference::new(left, right), &bounds);
+
+        let transformed_left = Translate::new(left, [0.23, -0.17, 0.31]);
+        let transformed_right = UniformScale::new(right, 1.375).expect("positive composite scale");
+        let composite_bounds =
+            Aabb::new([-1.7, -1.5, -1.3], [1.9, 1.6, 1.8]).expect("composite bounds");
+        assert_interval_covers_bruteforce(
+            &Union::new(transformed_left, transformed_right),
+            &composite_bounds,
+        );
+        assert_interval_covers_bruteforce(
+            &Intersection::new(transformed_left, transformed_right),
+            &composite_bounds,
+        );
+        assert_interval_covers_bruteforce(
+            &Difference::new(transformed_left, transformed_right),
+            &composite_bounds,
+        );
     }
 
     #[test]
