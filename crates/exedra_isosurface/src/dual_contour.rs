@@ -204,6 +204,7 @@ struct ActiveCell {
     topology: CellTopology,
     components: Vec<ComponentVertex>,
     compatibility: ComponentVertex,
+    compatibility_fallback: bool,
     emitted: Vec<Option<VertexEntry>>,
     compatibility_emitted: Option<VertexEntry>,
 }
@@ -480,7 +481,8 @@ where
                     }
                 }));
             }
-            if cell.emitted.iter().any(Option::is_none) && component_is_usable(&cell.compatibility)
+            if cell.emitted.iter().any(Option::is_none)
+                && (component_is_usable(&cell.compatibility) || cell.compatibility_fallback)
             {
                 let builder_index = builder.push_vertex(cell.compatibility.position);
                 cell.compatibility_emitted = Some(VertexEntry {
@@ -572,6 +574,34 @@ fn component_vertex_entry(cell: &ActiveCell, component: usize) -> Option<VertexE
 
 fn component_is_usable(component: &ComponentVertex) -> bool {
     component.constraint_count > 0 && component.qef.is_some_and(qef_result_is_finite)
+}
+
+fn constraintless_component(component: &ComponentVertex) -> bool {
+    component.constraint_count == 0 && component.qef.is_none()
+}
+
+fn max_depth_center_fallback_allowed(analysis: &CellAnalysis) -> bool {
+    analysis.evidence.complete_hermite
+        && analysis.corner_values.iter().all(|value| value.is_finite())
+        && analysis.hermite.intersections.iter().all(|hit| {
+            hit.intersection
+                .position
+                .iter()
+                .all(|value| value.is_finite())
+        })
+        && !analysis.hermite.intersections.is_empty()
+        && constraintless_component(&analysis.vertices.compatibility)
+        && analysis
+            .vertices
+            .components
+            .iter()
+            .all(constraintless_component)
+        && analysis
+            .vertices
+            .compatibility
+            .position
+            .iter()
+            .all(|value| value.is_finite())
 }
 
 fn cyclic_vertex_entries(
@@ -1035,11 +1065,13 @@ fn transition_component_token(
         return None;
     }
     let analysis = payload.analysis.as_ref()?;
+    let center_fallback = matches!(payload.decision, RefinementDecision::MaxDepthCompatibility)
+        && max_depth_center_fallback_allowed(analysis);
     let component = match route {
         ComponentRoute::LocalEdge(edge) => analysis.topology.component_for_edge(edge)?,
         ComponentRoute::OnlyComponent if analysis.vertices.components.len() == 1 => 0,
         ComponentRoute::OnlyComponent if analysis.vertices.components.is_empty() => {
-            return component_is_usable(&analysis.vertices.compatibility)
+            return (component_is_usable(&analysis.vertices.compatibility) || center_fallback)
                 .then_some((leaf, u8::MAX));
         }
         ComponentRoute::OnlyComponent => return None,
@@ -1047,6 +1079,8 @@ fn transition_component_token(
     let routed = analysis.vertices.components.get(usize::from(component))?;
     if component_is_usable(routed) {
         Some((leaf, component))
+    } else if center_fallback && constraintless_component(routed) {
+        Some((leaf, u8::MAX))
     } else {
         component_is_usable(&analysis.vertices.compatibility).then_some((leaf, u8::MAX))
     }
@@ -1124,6 +1158,10 @@ fn collect_active_cells<F: ScalarField>(
             topology: analysis.topology.clone(),
             components: analysis.vertices.components.clone(),
             compatibility,
+            compatibility_fallback: matches!(
+                payload.decision,
+                RefinementDecision::MaxDepthCompatibility
+            ) && max_depth_center_fallback_allowed(analysis),
             emitted: Vec::new(),
             compatibility_emitted: None,
         };
@@ -1776,7 +1814,8 @@ mod tests {
         DualContourParams, InactiveReason, IntervalVisitor, LeafMarker, QuadDiagonal,
         RefinementDecision, RefinementEvidence, RefinementMode, RefinementReason,
         SemiAnalyticContourStats, VertexEntry, adaptive_error_target, analyze_crossing_cell,
-        apply_projection, collect_active_cells, cube_corner_positions, cyclic_distinct,
+        apply_projection, collect_active_cells, constraintless_component,
+        cube_corner_positions, cyclic_distinct,
         dual_contour, dual_contour_projected_impl, dual_contour_semi_analytic,
         dual_contour_with_regions, emit_transition_polygon, hermite_rms, normal_turn_error,
         prepare_transitions, project_active_cell, refinement_decision, repair_endpoint_normal,
@@ -2731,6 +2770,7 @@ mod tests {
                     constraint_count: 0,
                     qef: None,
                 },
+                compatibility_fallback: false,
                 emitted: Vec::new(),
                 compatibility_emitted: None,
             };
@@ -2866,6 +2906,7 @@ mod tests {
             topology: topology.clone(),
             components: vec![invalid_component],
             compatibility: vertices.compatibility,
+            compatibility_fallback: false,
             emitted: Vec::new(),
             compatibility_emitted: None,
         };
@@ -2929,6 +2970,102 @@ mod tests {
             transition_component_token(&tree, root, ComponentRoute::LocalEdge(missing_edge)),
             Some((root, u8::MAX)),
             "constraintless components must alias the one combined-QEF compatibility token"
+        );
+    }
+
+    #[test]
+    fn complete_max_depth_constraintless_cell_uses_one_center_compatibility_token() {
+        let values = values_for_mask(1);
+        let topology = classify_cell(&values);
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("unit bounds");
+        let mut hermite = CellHermiteData::new(1);
+        for edge in [0_u8, 3, 8] {
+            hermite.push(
+                edge,
+                HermiteIntersection {
+                    position: [0.5; 3],
+                    normal: [f32::NAN; 3],
+                    t: 0.5,
+                },
+            );
+        }
+        let vertices = solve_cell_vertices(&topology, &hermite, bounds, &QefParams::default())
+            .expect("constraintless QEF solve should produce center representatives");
+        assert!(vertices.components.iter().all(constraintless_component));
+        assert!(constraintless_component(&vertices.compatibility));
+        assert_eq!(vertices.compatibility.position, bounds.center());
+
+        let marker = LeafMarker {
+            decision: RefinementDecision::MaxDepthCompatibility,
+            analysis: Some(Box::new(CellAnalysis {
+                corner_values: values,
+                topology: topology.clone(),
+                hermite,
+                vertices,
+                evidence: RefinementEvidence {
+                    expected_crossings: 3,
+                    hermite_hits: 3,
+                    complete_hermite: true,
+                    usable_constraints: 0,
+                    qef_rms: f32::NAN,
+                    curvature_error: f32::NAN,
+                    was_clamped: false,
+                    finite: false,
+                    component_count: 1,
+                    ambiguous_face: false,
+                },
+            })),
+        };
+        let mut visitor = FixedMarkerVisitor { marker };
+        let tree = Octree::build(bounds, 0, &mut visitor);
+        let root = tree.root_id();
+        let edge = (0_u8..12)
+            .find(|&edge| topology.component_for_edge(edge) == Some(0))
+            .expect("crossing edge");
+        assert_eq!(
+            transition_component_token(&tree, root, ComponentRoute::LocalEdge(edge)),
+            Some((root, u8::MAX))
+        );
+
+        let mut partial = tree
+            .cell(root)
+            .and_then(|cell| cell.payload())
+            .cloned()
+            .expect("fixture marker");
+        partial
+            .analysis
+            .as_mut()
+            .expect("analysis")
+            .evidence
+            .complete_hermite = false;
+        let mut partial_visitor = FixedMarkerVisitor { marker: partial };
+        let partial_tree = Octree::build(bounds, 0, &mut partial_visitor);
+        assert_eq!(
+            transition_component_token(
+                &partial_tree,
+                partial_tree.root_id(),
+                ComponentRoute::LocalEdge(edge)
+            ),
+            None,
+            "partial scalar crossing masks must not earn the center fallback"
+        );
+
+        let mut retained = partial_tree
+            .cell(partial_tree.root_id())
+            .and_then(|cell| cell.payload())
+            .cloned()
+            .expect("partial fixture marker");
+        retained.decision = RefinementDecision::Retain;
+        let mut retained_visitor = FixedMarkerVisitor { marker: retained };
+        let retained_tree = Octree::build(bounds, 0, &mut retained_visitor);
+        assert_eq!(
+            transition_component_token(
+                &retained_tree,
+                retained_tree.root_id(),
+                ComponentRoute::LocalEdge(edge)
+            ),
+            None,
+            "non-max-depth leaves must not earn the center fallback"
         );
     }
 

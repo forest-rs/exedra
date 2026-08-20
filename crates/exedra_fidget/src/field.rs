@@ -431,6 +431,23 @@ mod tests {
             .expect("fidget union extraction should succeed");
 
         assert!(result.mesh.validate_deep().is_empty());
+        assert!(
+            result
+                .mesh
+                .boundary_loops()
+                .expect("fidget union boundary traversal")
+                .is_empty()
+        );
+        for face in result.mesh.faces() {
+            for corner in result.mesh.face_loop(face) {
+                let twin = result.mesh.twin(corner).expect("fidget union edge twin");
+                assert_ne!(
+                    result.mesh.face(twin),
+                    Some(exedra::FaceId::OUTSIDE),
+                    "fidget union must have two incident faces per edge"
+                );
+            }
+        }
         assert!(result.stats.faces > 0);
     }
 

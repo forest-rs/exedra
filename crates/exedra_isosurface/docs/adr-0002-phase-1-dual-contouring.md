@@ -45,12 +45,16 @@ constraints:
 - solve one QEF per classified component and retain the original
   all-constraints QEF as compatibility data; unambiguous one-component cells
   reuse their component result only when it consumed every Hermite plane,
-- for a partial `MaxDepthCompatibility` leaf whose routed component has no
-  usable finite QEF, alias every such route in that leaf to one finite
-  all-constraints compatibility representative rather than emitting synthetic
-  component centers; cyclic validation sees that shared alias, and if neither
-  representative is usable or the alias makes the neighborhood invalid,
-  return the existing mesh `BuildError`,
+- for a `MaxDepthCompatibility` leaf whose routed component has no usable finite
+  QEF, alias the route to one compatibility representative rather than emitting
+  synthetic component centers. The ordinary path requires a finite
+  all-constraints QEF. A bounded exception admits a deterministic cell-center
+  representative only when every scalar crossing is represented by a finite
+  Hermite position and every component is constraintless; partial crossing
+  masks, non-finite corner values/positions, and all non-max-depth decisions
+  still return the existing mesh `BuildError`. Cyclic validation sees the
+  shared alias, so this fallback cannot silently create a missing or duplicate
+  edge,
 - when a zero crossing lies at a primal-edge endpoint and its sampled field
   gradient is undefined, use the oriented primal-edge direction as the narrow
   Hermite-normal fallback; non-finite interior-crossing gradients remain
