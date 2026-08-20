@@ -4,10 +4,10 @@
 //! Constructive geometry head: an immutable recipe IR with deterministic
 //! tessellation into Exedra meshes.
 //!
-//! This crate is a *compiler target*: external frontends (spec compilers,
-//! parametric evaluators) build 2D profiles and constructive bodies into
-//! recipes, and evaluation tessellates them into [`exedra::Mesh`] values
-//! with full provenance, semantic regions, and fidelity reporting.
+//! This crate is a *compiler target*: external geometry frontends build 2D
+//! profiles and constructive bodies into recipes, and evaluation tessellates
+//! them into [`exedra::Mesh`] values with full provenance, semantic regions,
+//! and fidelity reporting.
 //!
 //! The crate owns:
 //! - kurbo-backed 2D profiles closed by construction,
@@ -16,7 +16,7 @@
 //! - deterministic evaluation and tessellation with source maps and reports.
 //!
 //! It intentionally does not own: mesh topology (that is [`exedra`]),
-//! polygon triangulation (that is `exedra_triangulate`), any spec vocabulary
+//! polygon triangulation (that is `exedra_triangulate`), any source vocabulary
 //! (frontends attach opaque source identities), scene assembly across parts,
 //! or serialization formats beyond its own canonical encoding.
 //!

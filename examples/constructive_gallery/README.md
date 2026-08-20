@@ -1,15 +1,15 @@
 # constructive_gallery
 
-The spearhead gallery: six anonymous, spec-agnostic shapes built through
-`exedra_constructive`'s *public surface only*, exactly the way an external
-spec compiler would. It stands in for those (out-of-tree) frontends: if a
-scenario here needs a private API or a workaround, the integration surface is
-wrong and must be fixed in the library, never here.
+The reference gallery builds anonymous shapes through
+`exedra_constructive`'s *public surface only*, as an external geometry frontend
+would. If a scenario needs a private API or a workaround, the integration
+surface is wrong and must be fixed in the library rather than in the example.
 
 Scenarios: a rectangular prism, a concave L-prism, a rounded profile with
 true arcs, a holed ring profile, a partial revolve, and a transformed CSG
-difference (which reports the structured `eval.csg.unsupported` diagnostic
-until the mesh boolean pipeline lands).
+difference evaluated through the mesh Boolean pipeline. Configurations refused
+by that pipeline retain a structured `eval.csg.unsupported` diagnostic and an
+envelope-only result.
 
 Run the binary for a one-line-per-scenario summary with deterministic
 signatures:

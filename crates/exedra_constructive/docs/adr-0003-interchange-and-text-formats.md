@@ -7,7 +7,7 @@
 
 ## Context
 
-External spec compilers (living in separate repositories) need a wire
+External geometry frontends need a wire
 format to hand recipes to this workspace without linking Rust, and the
 workspace needs a human-diffable rendering for goldens and review. These
 are different jobs with different stability requirements.

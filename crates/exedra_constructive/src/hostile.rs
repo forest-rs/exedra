@@ -4,7 +4,7 @@
 //! Hostile-input torture: seeded random abuse of the public builder and
 //! evaluation surfaces, asserting the never-panic contract.
 //!
-//! External spec compilers feed arbitrary spec data through this API;
+//! External geometry frontends feed arbitrary authored data through this API;
 //! whatever they produce, the answer must be a typed error or a valid
 //! result — never a panic, never non-finite geometry. The corpus is
 //! seeded and trig-free, so failures reproduce exactly.

@@ -4,13 +4,12 @@ Constructive geometry head: an immutable, content-addressed recipe IR with
 deterministic tessellation into Exedra meshes.
 
 This crate is the fourth geometry head under Cambium's multi-domain
-architecture (cambium ADR-0002): a *compiler target* for pre-mesh
-construction. External spec frontends (spec compilers, parametric
-evaluators — living in their own repositories) build recipes out of kurbo-backed
-2D profiles and constructive bodies (extrude, revolve, loft, sweep, CSG,
-transforms, instances); evaluation tessellates them into `exedra::Mesh`
-values carrying a full provenance source map, semantic region/material
-slots, and an honest fidelity report.
+architecture (Cambium ADR-0002): a *compiler target* for pre-mesh construction.
+External geometry frontends build recipes from kurbo-backed 2D profiles and
+constructive bodies (extrude, revolve, loft, sweep, CSG, transforms, and
+instances); evaluation tessellates them into `exedra::Mesh` values carrying a
+full provenance source map, semantic region and material slots, and an honest
+fidelity report.
 
 Design commitments (see `docs/adr-0001-constructive-domain-scope.md`):
 
@@ -27,7 +26,8 @@ Design commitments (see `docs/adr-0001-constructive-domain-scope.md`):
   stored exactly, so loop closure is structural, not tolerance-based.
 - **Opaque source identity.** Frontends attach their own source references,
   policy ids, and issue ids; this crate round-trips them through source maps
-  and reports without ever parsing them. No spec vocabulary lives here.
+  and reports without ever parsing them. No source-domain vocabulary lives
+  here.
 
 ## License
 

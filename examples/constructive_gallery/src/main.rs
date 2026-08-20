@@ -1,8 +1,8 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The spearhead gallery: the scenario suite exercising the public constructive
-//! surface, standing in for an external spec compiler.
+//! Reference scenarios exercising the public constructive surface as an
+//! external geometry frontend would.
 
 use exedra::ExtractParams;
 use exedra_constructive::builders;

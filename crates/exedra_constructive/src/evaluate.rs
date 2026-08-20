@@ -197,16 +197,17 @@ impl core::error::Error for EvalError {}
 
 /// Evaluates `recipe` under `policy`.
 ///
-/// Supported in this slice: extrude and revolve bodies, groups, and rigid
-/// transforms; CSG nodes report [`Fidelity::EnvelopeOnly`] with a
-/// structured diagnostic (never fake geometry); other node kinds report
-/// `eval.unimplemented`. The walk starts at the recipe root and visits
-/// children depth-first in operand order.
+/// Supported nodes include constructive bodies, groups, rigid transforms, and
+/// CSG operations handled by the mesh Boolean pipeline. A refused CSG
+/// operation reports [`Fidelity::EnvelopeOnly`] and structured diagnostics
+/// rather than returning invented geometry. Other unsupported nodes report
+/// `eval.unimplemented`. The walk starts at the recipe root and visits children
+/// depth-first in operand order.
 ///
 /// # Errors
 ///
-/// Fails only when a supported body fails to tessellate; everything
-/// unsupported is a report entry, not an error.
+/// Fails when a supported body cannot be tessellated. Bounded CSG refusals and
+/// unsupported nodes are recorded in the evaluation report.
 pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, EvalError> {
     evaluate_inner(recipe, policy, None)
 }

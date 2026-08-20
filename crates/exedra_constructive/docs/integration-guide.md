@@ -1,6 +1,6 @@
 # External Frontend Integration Guide
 
-How an out-of-tree spec compiler targets `exedra_constructive`. The
+How an external geometry frontend targets `exedra_constructive`. The
 contract has two equal surfaces: the Rust API (this crate as a
 dependency) and the `exedra-recipe-v1` JSON interchange (emit recipes from
 any language). Both rebuild through the same validating builder, and
@@ -80,16 +80,16 @@ policy** and say so:
 - Evaluation reports the node `Fidelity::PolicyDefined(p)` and attributes
   every `(node, policy)` pair in `report.policy_curves`.
 
-When the spec contradicts itself, cite the issue:
+When an authored source contradicts itself, cite the issue:
 
 - `b.with_issue(b.source_ref("yourspec.issue.nonclosing-profile"))` before
   `add`. The node still builds (viewers need something on screen) but
   reports `Fidelity::Conflicted(issue)` — build, but confess.
 
-CSG nodes currently report `Fidelity::EnvelopeOnly` with an
-`eval.csg.unsupported` diagnostic and operand-union bounds; they become
-exact when the mesh boolean pipeline lands. Encode intent now — the
-schema is stable.
+CSG nodes use the mesh Boolean pipeline for handled configurations. A refused
+configuration reports `Fidelity::EnvelopeOnly`, an `eval.csg.unsupported`
+diagnostic, the pipeline diagnostics, and operand-union bounds instead of
+invented geometry.
 
 ## Regions and materials
 
