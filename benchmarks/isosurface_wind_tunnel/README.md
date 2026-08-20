@@ -24,8 +24,9 @@ not report a reduction ratio because the authoritative private comparator pin
 is depth 7. `--gate` first requires exact ordered signature, statistics,
 regions, counters, and leaf-histogram parity with that private pin. Only then
 does it run the bidirectional finite sampled-deviation oracle and report the
-current reduction result. A failed 10x reduction is reported as data; this
-executable does not tune thresholds or change production retention behavior.
+current reduction result. The gate exits unsuccessfully unless both vertices
+and triangles are reduced by at least 10x. It does not tune thresholds or
+change production retention behavior to reach that requirement.
 
 `uniform.work.lattice_bytes` is the logical byte size of the independent
 comparator's dense `(2^depth + 1)^3` `f32` scalar lattice. It excludes `Vec`

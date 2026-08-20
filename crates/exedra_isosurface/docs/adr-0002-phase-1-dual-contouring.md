@@ -33,6 +33,15 @@ constraints:
   unclamped finite QEF solve, and both its QEF RMS and normal-turn curvature
   indicator fit within one quarter of the max-depth finest-cell diagonal;
   uncertain, partial, or topology-unsafe cells refine toward `max_depth`,
+- as a strict exception when the preceding decision would refine solely for
+  normal-turn curvature, retain a leaf with the private typed
+  `RetainRedundantHermitePlanes` decision only when its normalized finite
+  Hermite normals form exact oriented groups in stable cube-edge order,
+  signed zero is canonicalized, each same-normal group is exactly coplanar in
+  cell-local coordinates against its first hit, the actual QEF rank is one
+  through three and equals the group count, every group contains at least two
+  distinct cube-edge hits, and every normalized plane has exactly zero local
+  residual at the QEF point; no tolerance or tunable threshold participates,
 - place one vertex per usable classified surface-component QEF in each
   contributing octree leaf using Hermite samples and `exedra_qef`;
   `active_cells` continues to count contributing leaves while `vertices`
@@ -165,3 +174,24 @@ diagonal times the sine of half the largest sampled normal turn. These are
 deterministic, scale-aware error indicators, not a certified Hausdorff proof;
 the independent quality oracle remains responsible for validating the final
 measured bound.
+
+`RetainRedundantHermitePlanes` is a narrower deterministic-output change under
+the same public entry points. It does not relax partial-Hermite, non-finite,
+topology, clamp, or QEF-residual precedence; it only replaces a curvature-only
+refinement after the exact witness above succeeds. Cell-local offsets and
+point-to-plane residuals avoid translation-sensitive expanded quadratics.
+Fields without useful interval bounds may still produce a more refined mesh
+because conservative subdivision creates a different 2:1 balance context;
+closed topology and deterministic output remain required, but exact sequences
+need not match an interval-capable equivalent field.
+
+The committed depth-7 H1 oracle changes from `5,570` adaptive vertices and
+`11,136` triangles to `939` vertices and `1,874` triangles against the same
+`30,122`/`60,240` forced-uniform witness: `32.078807242x` and
+`32.145144077x`. Its fixed sampled-deviation cap remains
+`5.477462339e-2`; measured maxima are `9.964946452e-4` mesh-to-analytic and
+`8.143149493e-4` analytic-to-mesh. The harder box-cylinder control remains
+closed and deterministic at `1,864` vertices and `3,728` triangles, with
+`1,700` ordinary surface projections, `164` feature snaps, and the complete
+`1,864`-leaf projection-counter partition. Consumers persisting exact adaptive
+mesh signatures must rebaseline; no call-site migration is required.

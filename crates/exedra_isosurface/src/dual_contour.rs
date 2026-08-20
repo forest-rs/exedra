@@ -257,6 +257,7 @@ enum RefinementDecision {
     Inactive(InactiveReason),
     Refine(RefinementReason),
     Retain,
+    RetainRedundantHermitePlanes,
     MaxDepthCompatibility,
 }
 
@@ -288,6 +289,25 @@ enum RefinementMode {
     Legacy,
     #[cfg(test)]
     ForcedUniform,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RedundantHermitePlanesEvidence {
+    Satisfied,
+    MissingQef,
+    InvalidRank,
+    InvalidNormal,
+    CoplanarityMismatch,
+    RankMismatch,
+    SingletonGroup,
+    NonzeroResidual,
+}
+
+#[derive(Copy, Clone)]
+struct HermitePlaneGroup {
+    normal: [u32; 3],
+    offset: f32,
+    edge_mask: u16,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1060,7 +1080,9 @@ fn transition_component_token(
     let payload = tree.cell(leaf)?.payload()?;
     if !matches!(
         payload.decision,
-        RefinementDecision::Retain | RefinementDecision::MaxDepthCompatibility
+        RefinementDecision::Retain
+            | RefinementDecision::RetainRedundantHermitePlanes
+            | RefinementDecision::MaxDepthCompatibility
     ) {
         return None;
     }
@@ -1141,7 +1163,9 @@ fn collect_active_cells<F: ScalarField>(
         };
         if !matches!(
             payload.decision,
-            RefinementDecision::Retain | RefinementDecision::MaxDepthCompatibility
+            RefinementDecision::Retain
+                | RefinementDecision::RetainRedundantHermitePlanes
+                | RefinementDecision::MaxDepthCompatibility
         ) {
             continue;
         }
@@ -1465,6 +1489,14 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         } else {
             refinement_decision(&analysis.evidence, adaptive_error_target(self.params))
         };
+        let decision = if decision == RefinementDecision::Refine(RefinementReason::Curvature)
+            && redundant_hermite_planes_evidence(&analysis, cell_bounds)
+                == RedundantHermitePlanesEvidence::Satisfied
+        {
+            RefinementDecision::RetainRedundantHermitePlanes
+        } else {
+            decision
+        };
         Ok(LeafMarker {
             decision,
             analysis: Some(Box::new(analysis)),
@@ -1478,6 +1510,94 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
             analysis: None,
         }
     }
+}
+
+fn redundant_hermite_planes_evidence(
+    analysis: &CellAnalysis,
+    bounds: Aabb,
+) -> RedundantHermitePlanesEvidence {
+    classify_redundant_hermite_planes(
+        &analysis.hermite,
+        analysis.vertices.compatibility.qef,
+        bounds.center(),
+    )
+}
+
+fn classify_redundant_hermite_planes(
+    hermite: &CellHermiteData,
+    qef: Option<QefResult>,
+    center: [f32; 3],
+) -> RedundantHermitePlanesEvidence {
+    let Some(qef) = qef else {
+        return RedundantHermitePlanesEvidence::MissingQef;
+    };
+    if !(1..=3).contains(&qef.rank) {
+        return RedundantHermitePlanesEvidence::InvalidRank;
+    }
+
+    let mut groups: [Option<HermitePlaneGroup>; 12] = [None; 12];
+    let mut group_count = 0;
+    for hit in &hermite.intersections {
+        let Some(normal) = normalize_vector(hit.intersection.normal) else {
+            return RedundantHermitePlanesEvidence::InvalidNormal;
+        };
+        let normal_key = normal.map(|component| {
+            if component == 0.0 {
+                0.0_f32.to_bits()
+            } else {
+                component.to_bits()
+            }
+        });
+        let local =
+            core::array::from_fn::<_, 3, _>(|axis| hit.intersection.position[axis] - center[axis]);
+        let offset = dot3_f32(normal, local);
+        let edge_bit = 1_u16.checked_shl(u32::from(hit.edge_index)).unwrap_or(0);
+
+        if let Some(group) = groups[..group_count]
+            .iter_mut()
+            .flatten()
+            .find(|group| group.normal == normal_key)
+        {
+            if group.offset != offset {
+                return RedundantHermitePlanesEvidence::CoplanarityMismatch;
+            }
+            group.edge_mask |= edge_bit;
+        } else {
+            let Some(slot) = groups.get_mut(group_count) else {
+                return RedundantHermitePlanesEvidence::RankMismatch;
+            };
+            *slot = Some(HermitePlaneGroup {
+                normal: normal_key,
+                offset,
+                edge_mask: edge_bit,
+            });
+            group_count += 1;
+        }
+
+        let displacement = core::array::from_fn::<_, 3, _>(|axis| {
+            qef.position[axis] - hit.intersection.position[axis]
+        });
+        if dot3_f32(normal, displacement) != 0.0 {
+            return RedundantHermitePlanesEvidence::NonzeroResidual;
+        }
+    }
+
+    if group_count != usize::from(qef.rank) {
+        return RedundantHermitePlanesEvidence::RankMismatch;
+    }
+    if groups[..group_count]
+        .iter()
+        .flatten()
+        .any(|group| group.edge_mask.count_ones() < 2)
+    {
+        return RedundantHermitePlanesEvidence::SingletonGroup;
+    }
+    RedundantHermitePlanesEvidence::Satisfied
+}
+
+#[inline]
+fn dot3_f32(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 impl<F: ScalarField> OctreeVisitor for IntervalVisitor<'_, F> {
@@ -1812,10 +1932,10 @@ mod tests {
     use super::{
         ActiveCell, AdaptiveGrid, CellAnalysis, CellKey, ComponentRoute, ComponentVertex,
         DualContourParams, InactiveReason, IntervalVisitor, LeafMarker, QuadDiagonal,
-        RefinementDecision, RefinementEvidence, RefinementMode, RefinementReason,
-        SemiAnalyticContourStats, VertexEntry, adaptive_error_target, analyze_crossing_cell,
-        apply_projection, collect_active_cells, constraintless_component,
-        cube_corner_positions, cyclic_distinct,
+        RedundantHermitePlanesEvidence, RefinementDecision, RefinementEvidence, RefinementMode,
+        RefinementReason, SemiAnalyticContourStats, VertexEntry, adaptive_error_target,
+        analyze_crossing_cell, apply_projection, classify_redundant_hermite_planes,
+        collect_active_cells, constraintless_component, cube_corner_positions, cyclic_distinct,
         dual_contour, dual_contour_projected_impl, dual_contour_semi_analytic,
         dual_contour_with_regions, emit_transition_polygon, hermite_rms, normal_turn_error,
         prepare_transitions, project_active_cell, refinement_decision, repair_endpoint_normal,
@@ -1832,7 +1952,7 @@ mod tests {
         SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
     };
     use exedra::{BuildError, ExtractParams, FaceLoopErrorKind, attr};
-    use exedra_qef::QefParams;
+    use exedra_qef::{QefParams, QefResult};
     use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
     use hashbrown::HashSet;
 
@@ -1932,10 +2052,60 @@ mod tests {
         field: BoxField,
     }
 
+    struct QuantizedGradientSphere {
+        field: SphereField,
+    }
+
+    struct ConstantGradientSphere {
+        field: SphereField,
+    }
+
     struct CheckerboardPairField;
 
     struct FixedMarkerVisitor {
         marker: LeafMarker,
+    }
+
+    impl ScalarField for QuantizedGradientSphere {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.field.eval_interval(bounds)
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+            for row in out {
+                for component in &mut row[1..] {
+                    *component = if *component > 0.0 {
+                        1.0
+                    } else if *component < 0.0 {
+                        -1.0
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        }
+    }
+
+    impl ScalarField for ConstantGradientSphere {
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.field.eval_interval(bounds)
+        }
+
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.field.eval_points(points, out);
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.field.eval_gradients(points, out);
+            for row in out {
+                row[1..].copy_from_slice(&[1.0, 0.0, 0.0]);
+            }
+        }
     }
 
     impl OctreeVisitor for FixedMarkerVisitor {
@@ -2173,6 +2343,16 @@ mod tests {
             dual_contour(&field, &params(bounds, 4)).expect("sphere extraction should be stable");
 
         assert_closed_transition_mesh(&first.mesh);
+        assert_eq!(
+            first.stats,
+            super::DualContourStats {
+                octree_cells: 585,
+                active_cells: 320,
+                vertices: 320,
+                faces: 636,
+            }
+        );
+        assert_eq!(forced_pin_signature(&first.mesh), 0xcc70_3eb1_39f6_df9f);
         assert_eq!(first.stats, second.stats);
         let (tri_a, stats_a) = first.mesh.to_trimesh(&ExtractParams::default());
         let (tri_b, stats_b) = second.mesh.to_trimesh(&ExtractParams::default());
@@ -2458,7 +2638,9 @@ mod tests {
                     .is_some_and(|payload| {
                         matches!(
                             payload.decision,
-                            RefinementDecision::Retain | RefinementDecision::MaxDepthCompatibility
+                            RefinementDecision::Retain
+                                | RefinementDecision::RetainRedundantHermitePlanes
+                                | RefinementDecision::MaxDepthCompatibility
                         ) && payload.analysis.is_some()
                     })
             })
@@ -3250,6 +3432,84 @@ mod tests {
     }
 
     #[test]
+    fn redundant_hermite_plane_evidence_has_strict_typed_failures() {
+        for (scale, translation) in [
+            (1.0e-3, [0.0; 3]),
+            (1.0, [128.0, -64.0, 32.0]),
+            (1.0e3, [0.0; 3]),
+        ] {
+            let (hermite, qef, center) = redundant_plane_fixture(scale, translation);
+            assert_eq!(
+                classify_redundant_hermite_planes(&hermite, Some(qef), center),
+                RedundantHermitePlanesEvidence::Satisfied,
+                "scale={scale} translation={translation:?}"
+            );
+
+            let mut reversed = hermite.clone();
+            reversed.intersections.reverse();
+            assert_eq!(
+                classify_redundant_hermite_planes(&reversed, Some(qef), center),
+                RedundantHermitePlanesEvidence::Satisfied
+            );
+        }
+
+        let (hermite, qef, center) = redundant_plane_fixture(1.0, [0.0; 3]);
+        assert_eq!(
+            classify_redundant_hermite_planes(&hermite, None, center),
+            RedundantHermitePlanesEvidence::MissingQef
+        );
+
+        let mut invalid_rank = qef;
+        invalid_rank.rank = 0;
+        assert_eq!(
+            classify_redundant_hermite_planes(&hermite, Some(invalid_rank), center),
+            RedundantHermitePlanesEvidence::InvalidRank
+        );
+
+        let mut invalid_normal = hermite.clone();
+        invalid_normal.intersections[0].intersection.normal[0] = f32::NAN;
+        assert_eq!(
+            classify_redundant_hermite_planes(&invalid_normal, Some(qef), center),
+            RedundantHermitePlanesEvidence::InvalidNormal
+        );
+
+        let mut offset_mismatch = hermite.clone();
+        offset_mismatch.intersections[1].intersection.position[0] += 0.125;
+        assert_eq!(
+            classify_redundant_hermite_planes(&offset_mismatch, Some(qef), center),
+            RedundantHermitePlanesEvidence::CoplanarityMismatch
+        );
+
+        let mut rank_mismatch = qef;
+        rank_mismatch.rank = 2;
+        assert_eq!(
+            classify_redundant_hermite_planes(&hermite, Some(rank_mismatch), center),
+            RedundantHermitePlanesEvidence::RankMismatch
+        );
+
+        let mut singleton = hermite.clone();
+        singleton.intersections.remove(1);
+        assert_eq!(
+            classify_redundant_hermite_planes(&singleton, Some(qef), center),
+            RedundantHermitePlanesEvidence::SingletonGroup
+        );
+
+        let mut duplicate_edge = hermite.clone();
+        duplicate_edge.intersections[1].edge_index = duplicate_edge.intersections[0].edge_index;
+        assert_eq!(
+            classify_redundant_hermite_planes(&duplicate_edge, Some(qef), center),
+            RedundantHermitePlanesEvidence::SingletonGroup
+        );
+
+        let mut nonzero_residual = qef;
+        nonzero_residual.position[0] += 0.125;
+        assert_eq!(
+            classify_redundant_hermite_planes(&hermite, Some(nonzero_residual), center),
+            RedundantHermitePlanesEvidence::NonzeroResidual
+        );
+    }
+
+    #[test]
     fn analyzed_nonfinite_hermite_data_refines_before_topology_or_error_budgets() {
         let field = PartiallyNonFinitePlane;
         let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
@@ -3563,7 +3823,7 @@ mod tests {
                 sparse_samples,
                 finest_lattice,
             ),
-            (5_281, 4_621, 1_176, 1_176, 19_375, 7_509, 274_625)
+            (1_361, 1_191, 246, 246, 5_403, 2_182, 274_625)
         );
         assert!(sparse_samples * 5 < finest_lattice);
         assert_eq!(leaves.len(), tree.leaf_ids().len());
@@ -3616,7 +3876,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_intervals_preserve_output_through_conservative_refinement() {
+    fn unknown_intervals_preserve_closed_deterministic_conservative_output() {
         let bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
         let params = params(bounds, 4);
         let box_field = BoxField {
@@ -3627,18 +3887,23 @@ mod tests {
 
         let bounded = dual_contour(&box_field, &params).expect("bounded interval extraction");
         let conservative = dual_contour(&unknown, &params).expect("unknown interval extraction");
+        let repeated =
+            dual_contour(&unknown, &params).expect("repeated unknown interval extraction");
 
         assert!(conservative.stats.octree_cells > bounded.stats.octree_cells);
-        assert_eq!(conservative.stats.active_cells, bounded.stats.active_cells);
-        assert_eq!(conservative.stats.vertices, bounded.stats.vertices);
-        assert_eq!(conservative.stats.faces, bounded.stats.faces);
-        let bounded_triangles = bounded.mesh.to_trimesh(&ExtractParams::default()).0;
+        assert!(conservative.stats.active_cells >= bounded.stats.active_cells);
+        assert!(conservative.stats.faces >= bounded.stats.faces);
+        assert_eq!(conservative.stats, repeated.stats);
+        assert_closed_transition_mesh(&bounded.mesh);
+        assert_closed_transition_mesh(&conservative.mesh);
+        assert_closed_transition_mesh(&repeated.mesh);
         let conservative_triangles = conservative.mesh.to_trimesh(&ExtractParams::default()).0;
+        let repeated_triangles = repeated.mesh.to_trimesh(&ExtractParams::default()).0;
         assert_eq!(
             conservative_triangles.positions,
-            bounded_triangles.positions
+            repeated_triangles.positions
         );
-        assert_eq!(conservative_triangles.indices, bounded_triangles.indices);
+        assert_eq!(conservative_triangles.indices, repeated_triangles.indices);
     }
 
     #[test]
@@ -3649,6 +3914,51 @@ mod tests {
         assert_eq!(
             active_depths_for_box_transform(1.0, [128.0, -64.0, 32.0]),
             unit_depths
+        );
+
+        let redundant = redundant_retention_depths_for_box_transform(1.0, [0.0; 3]);
+        assert!(!redundant.is_empty());
+        assert_eq!(
+            redundant_retention_depths_for_box_transform(1.0e-3, [0.0; 3]),
+            redundant
+        );
+        assert_eq!(
+            redundant_retention_depths_for_box_transform(1.0e3, [0.0; 3]),
+            redundant
+        );
+        assert_eq!(
+            redundant_retention_depths_for_box_transform(1.0, [128.0, -64.0, 32.0]),
+            redundant
+        );
+    }
+
+    #[test]
+    fn curved_gradient_adversaries_never_earn_redundant_plane_retention() {
+        let sphere = SphereField {
+            center: [0.137, -0.083, 0.109],
+            radius: 0.731,
+        };
+        let bounds = Aabb::new([-1.4, -1.2, -1.1], [1.6, 1.3, 1.4]).expect("bounds");
+        let extraction_params = params(bounds, 6);
+        assert!(
+            redundant_retention_depths(&sphere, &extraction_params).is_empty(),
+            "the smooth sphere must bypass the exact-plane witness"
+        );
+        assert!(
+            redundant_retention_depths(
+                &QuantizedGradientSphere { field: sphere },
+                &extraction_params
+            )
+            .is_empty(),
+            "quantized curved gradients must not mimic redundant planes"
+        );
+        assert!(
+            redundant_retention_depths(
+                &ConstantGradientSphere { field: sphere },
+                &extraction_params
+            )
+            .is_empty(),
+            "constant gradients over curved offsets must fail coplanarity"
         );
     }
 
@@ -3730,28 +4040,7 @@ mod tests {
     }
 
     fn active_depths_for_box_transform(scale: f32, translation: [f32; 3]) -> Vec<u8> {
-        let bounds = Aabb::new(
-            [
-                -1.4 * scale + translation[0],
-                -1.2 * scale + translation[1],
-                -1.1 * scale + translation[2],
-            ],
-            [
-                1.6 * scale + translation[0],
-                1.3 * scale + translation[1],
-                1.4 * scale + translation[2],
-            ],
-        )
-        .expect("scaled bounds");
-        let params = params(bounds, 5);
-        let field = BoxField {
-            center: [
-                0.1375 * scale + translation[0],
-                -0.08125 * scale + translation[1],
-                0.10625 * scale + translation[2],
-            ],
-            half_extents: [0.81 * scale, 0.59 * scale, 0.43 * scale],
-        };
+        let (field, params) = box_refinement_fixture(scale, translation);
         let resolution = 1_u32 << params.max_depth;
         let mut visitor = IntervalVisitor {
             field: &field,
@@ -3767,6 +4056,89 @@ mod tests {
             .into_iter()
             .map(|cell| cell.key.depth)
             .collect()
+    }
+
+    fn redundant_retention_depths_for_box_transform(scale: f32, translation: [f32; 3]) -> Vec<u8> {
+        let (field, params) = box_refinement_fixture(scale, translation);
+        redundant_retention_depths(&field, &params)
+    }
+
+    fn box_refinement_fixture(scale: f32, translation: [f32; 3]) -> (BoxField, DualContourParams) {
+        let bounds = Aabb::new(
+            [
+                -1.4 * scale + translation[0],
+                -1.2 * scale + translation[1],
+                -1.1 * scale + translation[2],
+            ],
+            [
+                1.6 * scale + translation[0],
+                1.3 * scale + translation[1],
+                1.4 * scale + translation[2],
+            ],
+        )
+        .expect("scaled bounds");
+        let field = BoxField {
+            center: [
+                0.1375 * scale + translation[0],
+                -0.08125 * scale + translation[1],
+                0.10625 * scale + translation[2],
+            ],
+            half_extents: [0.81 * scale, 0.59 * scale, 0.43 * scale],
+        };
+        (field, params(bounds, 5))
+    }
+
+    fn redundant_retention_depths<F: ScalarField>(
+        field: &F,
+        params: &DualContourParams,
+    ) -> Vec<u8> {
+        let resolution = 1_u32 << params.max_depth;
+        let mut visitor = IntervalVisitor {
+            field,
+            params,
+            refinement_mode: RefinementMode::ErrorDriven,
+            grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
+            pending: None,
+            failure: None,
+        };
+        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        assert_eq!(visitor.failure, None);
+        tree.leaf_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let cell = tree.cell(id)?;
+                (cell.payload()?.decision == RefinementDecision::RetainRedundantHermitePlanes)
+                    .then_some(cell.depth)
+            })
+            .collect()
+    }
+
+    fn redundant_plane_fixture(
+        scale: f32,
+        translation: [f32; 3],
+    ) -> (CellHermiteData, QefResult, [f32; 3]) {
+        let transform =
+            |point: [f32; 3]| core::array::from_fn(|axis| translation[axis] + scale * point[axis]);
+        let mut hermite = CellHermiteData::new(0b1000_0001);
+        for (edge, position, normal) in [
+            (0, [0.25, 0.0, 0.0], [1.0, -0.0, 0.0]),
+            (1, [0.25, 1.0, 0.0], [1.0, 0.0, -0.0]),
+            (2, [0.0, 0.25, 0.0], [-0.0, 1.0, 0.0]),
+            (3, [1.0, 0.25, 0.0], [0.0, 1.0, -0.0]),
+            (8, [0.0, 0.0, 0.25], [-0.0, 0.0, 1.0]),
+            (9, [1.0, 0.0, 0.25], [0.0, -0.0, 1.0]),
+        ] {
+            push_plane_hit(&mut hermite, edge, transform(position), normal);
+        }
+        let qef = QefResult {
+            position: transform([0.25; 3]),
+            residual_error: 0.0,
+            rank: 3,
+            sharpness_class: exedra_qef::SharpnessClass::Corner,
+            eigenvalues: [1.0; 3],
+            was_clamped: false,
+        };
+        (hermite, qef, transform([0.5; 3]))
     }
 
     fn separated_component_hermite() -> CellHermiteData {

@@ -41,16 +41,17 @@ const H1_PRIVATE_STATS: DualContourStats = DualContourStats {
 const H1_PRIVATE_FINAL_DEPTHS: [usize; 8] = [0, 0, 0, 199, 1_388, 5_277, 21_744, 59_712];
 const H1_PRIVATE_CONTRIBUTING_DEPTHS: [usize; 8] = [0, 0, 0, 0, 0, 0, 0, 30_122];
 const H1_PRIVATE_REGIONS: [(u32, usize); 2] = [(BOX_A_REGION, 38_884), (BOX_B_REGION, 21_356)];
-const H1_ADAPTIVE_SIGNATURE: u64 = 0x3561_34ba_cce5_f9c8;
+const H1_ADAPTIVE_SIGNATURE: u64 = 0x8528_ca68_8b8f_b2c2;
 const H1_ADAPTIVE_STATS: DualContourStats = DualContourStats {
-    octree_cells: 20_729,
-    active_cells: 5_570,
-    vertices: 5_570,
-    faces: 11_136,
+    octree_cells: 4_089,
+    active_cells: 939,
+    vertices: 939,
+    faces: 1_874,
 };
-const H1_ADAPTIVE_FINAL_DEPTHS: [usize; 8] = [0, 0, 0, 228, 1_633, 4_187, 6_730, 5_360];
-const H1_ADAPTIVE_CONTRIBUTING_DEPTHS: [usize; 8] = [0, 0, 0, 4, 130, 656, 1_834, 2_946];
-const H1_ADAPTIVE_REGIONS: [(u32, usize); 2] = [(BOX_A_REGION, 6_916), (BOX_B_REGION, 4_220)];
+const H1_ADAPTIVE_FINAL_DEPTHS: [usize; 8] = [0, 0, 1, 336, 1_184, 1_189, 708, 160];
+const H1_ADAPTIVE_CONTRIBUTING_DEPTHS: [usize; 8] = [0, 0, 0, 38, 232, 299, 288, 82];
+const H1_ADAPTIVE_REGIONS: [(u32, usize); 2] = [(BOX_A_REGION, 1_050), (BOX_B_REGION, 824)];
+const REDUCTION_GATE_FACTOR: usize = 10;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum Profile {
@@ -149,6 +150,17 @@ fn main() {
         assert_quality(&adaptive_quality);
         (uniform_quality, adaptive_quality)
     });
+    if profile == Profile::Gate {
+        assert!(
+            reduction_gate_passes(
+                uniform.stats.vertices,
+                uniform.stats.faces,
+                adaptive.result.stats.vertices,
+                adaptive.result.stats.faces,
+            ),
+            "gate requires at least {REDUCTION_GATE_FACTOR}x fewer adaptive vertices and faces"
+        );
+    }
 
     let hard = run_hard(depth.saturating_sub(1).max(4));
     let adaptive_timings = adaptive_timings(depth);
@@ -483,6 +495,22 @@ fn assert_quality(quality: &QualityReport) {
     assert!(quality.analytic_to_mesh.maximum <= quality.cap);
 }
 
+fn reduction_gate_passes(
+    uniform_vertices: usize,
+    uniform_faces: usize,
+    adaptive_vertices: usize,
+    adaptive_faces: usize,
+) -> bool {
+    adaptive_vertices > 0
+        && adaptive_faces > 0
+        && adaptive_vertices
+            .checked_mul(REDUCTION_GATE_FACTOR)
+            .is_some_and(|required| uniform_vertices >= required)
+        && adaptive_faces
+            .checked_mul(REDUCTION_GATE_FACTOR)
+            .is_some_and(|required| uniform_faces >= required)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one deterministic report owns all gate witnesses"
@@ -597,9 +625,12 @@ fn deterministic_report(
         write_quality(&mut output, "adaptive", adaptive_quality);
         let vertex_ratio = uniform.stats.vertices as f64 / adaptive.result.stats.vertices as f64;
         let face_ratio = uniform.stats.faces as f64 / adaptive.result.stats.faces as f64;
-        let reduction_gate_passed = uniform.stats.vertices
-            >= adaptive.result.stats.vertices.saturating_mul(10)
-            && uniform.stats.faces >= adaptive.result.stats.faces.saturating_mul(10);
+        let reduction_gate_passed = reduction_gate_passes(
+            uniform.stats.vertices,
+            uniform.stats.faces,
+            adaptive.result.stats.vertices,
+            adaptive.result.stats.faces,
+        );
         writeln!(output, "reduction.vertex_ratio={vertex_ratio:.9}").expect("String write");
         writeln!(output, "reduction.face_ratio={face_ratio:.9}").expect("String write");
         writeln!(output, "reduction.gate_passed={}", reduction_gate_passed).expect("String write");
@@ -736,7 +767,17 @@ mod tests {
     use exedra_spatial::Aabb;
 
     use crate::fixture::BOX_A_REGION;
-    use crate::{assert_counter_partition, report};
+    use crate::{assert_counter_partition, reduction_gate_passes, report};
+
+    #[test]
+    fn reduction_gate_requires_tenfold_vertices_and_faces() {
+        assert!(reduction_gate_passes(100, 200, 10, 20));
+        assert!(!reduction_gate_passes(99, 200, 10, 20));
+        assert!(!reduction_gate_passes(100, 199, 10, 20));
+        assert!(!reduction_gate_passes(usize::MAX, 200, usize::MAX, 20));
+        assert!(!reduction_gate_passes(100, 200, 0, 20));
+        assert!(!reduction_gate_passes(100, 200, 10, 0));
+    }
 
     #[test]
     fn tagged_single_box_exercises_successful_surface_projection() {

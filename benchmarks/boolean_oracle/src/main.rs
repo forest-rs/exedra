@@ -11,6 +11,11 @@
 //! pipeline consumes, so it attributes each disagreement to the responsible
 //! witness instead of guessing.
 //!
+//! A fixed typed suite also validates opt-in semi-analytic box/cylinder
+//! extraction across CSG operators and coordinate scales. Pass
+//! `--feature-obj` to emit its region-grouped reference mesh under
+//! `target/boolean_oracle`.
+//!
 //! Run the quick profile (the default, all classes):
 //! `cargo run --release -p boolean_oracle`
 //!
@@ -18,6 +23,7 @@
 //! `cargo run --release -p boolean_oracle -- --seed 1 --cases 200 --points 2000 --class curved_wall`
 
 mod cases;
+mod feature;
 mod membership;
 mod operands;
 mod rng;
@@ -30,6 +36,17 @@ use scenario::ScenarioClass;
 
 fn main() {
     let config = Config::from_args(std::env::args().skip(1));
+
+    let feature_reports = feature::run_suite();
+    feature::assert_suite(&feature_reports);
+    feature::print_suite(&feature_reports);
+    if config.feature_obj {
+        let path = feature::write_reference_obj().unwrap_or_else(|error| {
+            eprintln!("failed to write semi-analytic OBJ: {error}");
+            std::process::exit(1);
+        });
+        println!("semi_analytic.obj={}", path.display());
+    }
 
     // Determinism oracle before anything else: the same seed must produce
     // byte-identical outcomes, per class.
@@ -60,6 +77,7 @@ struct Config {
     cases: u64,
     points: u64,
     classes: Vec<ScenarioClass>,
+    feature_obj: bool,
 }
 
 impl Config {
@@ -69,6 +87,7 @@ impl Config {
             cases: 50,
             points: 400,
             classes: ScenarioClass::ALL.to_vec(),
+            feature_obj: false,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -97,9 +116,10 @@ impl Config {
                     };
                     config.classes = vec![class];
                 }
+                "--feature-obj" => config.feature_obj = true,
                 "--help" | "-h" => {
                     println!(
-                        "boolean_oracle --seed <u64> --cases <n> --points <per-case> [--class <key>]"
+                        "boolean_oracle --seed <u64> --cases <n> --points <per-case> [--class <key>] [--feature-obj]"
                     );
                     std::process::exit(0);
                 }

@@ -35,6 +35,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "basilica_structure_lab"
+version = "0.0.0"
+dependencies = [
+ "basilica_ruin",
+ "exedra_assembly",
+ "exedra_constructive",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -47,6 +56,8 @@ dependencies = [
  "exedra",
  "exedra_isosurface",
  "exedra_primitives",
+ "exedra_qef",
+ "exedra_spatial",
  "exedra_triangulate",
 ]
 
@@ -345,6 +356,13 @@ dependencies = [
 [[package]]
 name = "exedra_triangulate"
 version = "0.0.0"
+
+[[package]]
+name = "exedra_triangulate_bench"
+version = "0.0.0"
+dependencies = [
+ "exedra_triangulate",
+]
 
 [[package]]
 name = "exedra_wind_tunnel"
@@ -646,6 +664,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2217040acf2f123ec9ed6c37c368ba66d1e5a9f2048478c1fdd861bb5cfdecd"
 dependencies = [
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "isosurface_wind_tunnel"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "exedra_isosurface",
+ "exedra_qef",
+ "exedra_spatial",
 ]
 
 [[package]]
