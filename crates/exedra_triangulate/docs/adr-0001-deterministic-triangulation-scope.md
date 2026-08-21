@@ -31,8 +31,8 @@ determinism is an invariant, not a preference. A shared facility must sit
 - triangulation of simple polygons with holes ([`PolygonInput`] →
   [`Triangulation`]), via deterministic ear clipping with deterministic hole
   bridging ([`TriStrategy::EarClip`]);
-- the exact-sign orientation predicates (adaptive `orient2d`) those
-  algorithms rely on;
+- exact-sign planar predicates (`orient2d` and `incircle`) used by current and
+  future strategies;
 - a typed failure taxonomy ([`TriError`]) distinguishing invalid-input
   classes from internal invariant violations — the triangulator never panics
   and never returns garbage triangles.
@@ -93,6 +93,27 @@ The crate intentionally does not own: 3D triangulation, plane projection
 (callers project), polygon repair (self-intersecting input is rejected with a
 typed error, never auto-fixed), or mesh integration (adapters live with their
 consumers).
+
+### Exact `incircle` exponent domain
+
+Constrained-Delaunay edge legalization needs the sign of a degree-four
+incircle determinant. The additive `incircle` API follows the same calm
+wrapper-and-local-diagnostic shape as `orient2d`:
+
+1. the ordinary Shewchuk error-bound filter proves clear queries;
+2. an inconclusive finite query expands the homogeneous determinant directly
+   into 48 signed four-factor monomials;
+3. decoded binary64 significands are multiplied into four-word magnitudes and
+   accumulated in fixed positive and negative 132-limb arrays.
+
+Direct homogeneous expansion avoids rounded coordinate differences on the
+exact path. The accumulator covers the complete finite binary64 exponent
+domain plus the carry from all 48 monomials: it stores through relative bit
+8447 while the largest possible sum reaches at most bit 8397. The predicate
+therefore remains allocation-free, dependency-free, safe, and available under
+`no_std`. `incircle_evaluated` reports a typed per-call path and uses an
+explicit `NonFiniteInput` sentinel contract. Existing APIs and ear-clipping
+behavior are unchanged; no caller migration is required.
 
 ## Consequences
 

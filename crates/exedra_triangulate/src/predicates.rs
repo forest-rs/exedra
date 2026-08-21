@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Exact-sign orientation predicates.
+//! Exact-sign planar predicates.
 //!
 //! [`orient2d`] returns the exact sign of the 2×2 orientation determinant: a
 //! fast floating-point filter answers the overwhelming majority of queries,
@@ -10,9 +10,17 @@
 //! dyadic accumulation. No epsilons, no transcendentals, and the result is
 //! bit-identical on every platform.
 //!
+//! [`incircle()`] uses the same shape: a fast error-bound filter followed by a
+//! fixed-size exact dyadic accumulator. The exact path expands the homogeneous
+//! degree-four determinant directly, avoiding rounded coordinate differences.
+//!
 //! [`crate::PolygonInput::validate`] enforces [`MAX_COORDINATE`] for the
 //! triangulation algorithms. [`orient2d_evaluated`] exposes which arithmetic
 //! path proved one query without introducing global mutable counters.
+
+mod incircle;
+
+pub use incircle::{InCircle, IncircleEvaluation, IncirclePath, incircle, incircle_evaluated};
 
 /// Largest coordinate magnitude the predicates accept.
 ///

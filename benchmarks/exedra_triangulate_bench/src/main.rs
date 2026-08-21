@@ -9,7 +9,9 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use exedra_triangulate::predicates::{Orient2dPath, Orientation, orient2d_evaluated};
+use exedra_triangulate::predicates::{
+    InCircle, IncirclePath, Orient2dPath, Orientation, incircle_evaluated, orient2d_evaluated,
+};
 use exedra_triangulate::{PolygonInput, TriParams, TriStrategy, Triangulation, triangulate};
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -41,13 +43,17 @@ fn main() {
     }
 
     let predicate_scenarios = predicate_scenarios();
+    let incircle_scenarios = incircle_scenarios();
     println!(
         "phase=predicate_timing profile={} scenarios={}",
         profile.label(),
-        predicate_scenarios.len()
+        predicate_scenarios.len() + incircle_scenarios.len()
     );
     for scenario in predicate_scenarios {
         time_predicate_path(scenario, profile).print();
+    }
+    for scenario in incircle_scenarios {
+        time_incircle_path(scenario, profile).print();
     }
 }
 
@@ -356,6 +362,31 @@ fn predicate_scenarios() -> [PredicateScenario; 3] {
     ]
 }
 
+#[derive(Copy, Clone, Debug)]
+struct IncircleScenario {
+    name: &'static str,
+    points: [[f64; 2]; 4],
+    position: InCircle,
+    path: IncirclePath,
+}
+
+fn incircle_scenarios() -> [IncircleScenario; 2] {
+    [
+        IncircleScenario {
+            name: "incircle_filter",
+            points: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.25, 0.25]],
+            position: InCircle::Inside,
+            path: IncirclePath::Filter,
+        },
+        IncircleScenario {
+            name: "incircle_dyadic",
+            points: [[0.0, 0.0], [1e100, 0.0], [0.0, 1e100], [1e100, 1e100]],
+            position: InCircle::Cocircular,
+            path: IncirclePath::Dyadic,
+        },
+    ]
+}
+
 #[derive(Clone, Debug)]
 struct QualityReport {
     name: &'static str,
@@ -650,7 +681,7 @@ fn triangle_checksum(result: &Triangulation) -> u64 {
 #[derive(Copy, Clone, Debug)]
 struct PredicateTimingReport {
     name: &'static str,
-    path: Orient2dPath,
+    path: &'static str,
     samples: usize,
     predicates_per_sample: usize,
     best_ns: u128,
@@ -660,7 +691,7 @@ struct PredicateTimingReport {
 impl PredicateTimingReport {
     fn print(self) {
         println!(
-            "scenario={} path={:?} samples={} predicates_per_sample={} best_ns={} avg_ns={}",
+            "scenario={} path={} samples={} predicates_per_sample={} best_ns={} avg_ns={}",
             self.name,
             self.path,
             self.samples,
@@ -696,7 +727,7 @@ fn time_predicate_path(scenario: PredicateScenario, profile: Profile) -> Predica
     }
     PredicateTimingReport {
         name: scenario.name,
-        path: scenario.path,
+        path: orient2d_path_label(scenario.path),
         samples,
         predicates_per_sample,
         best_ns: best.as_nanos() / predicates_per_sample as u128,
@@ -704,6 +735,62 @@ fn time_predicate_path(scenario: PredicateScenario, profile: Profile) -> Predica
             / samples
                 .checked_mul(predicates_per_sample)
                 .expect("fixed predicate sample count must fit usize") as u128,
+    }
+}
+
+fn time_incircle_path(scenario: IncircleScenario, profile: Profile) -> PredicateTimingReport {
+    let [a, b, c, d] = scenario.points;
+    let evaluated = incircle_evaluated(a, b, c, d);
+    assert_eq!(evaluated.position, scenario.position, "{}", scenario.name);
+    assert_eq!(evaluated.path, scenario.path, "{}", scenario.name);
+
+    let samples = profile.predicate_samples();
+    let predicates_per_sample = profile.predicates_per_sample();
+    let mut best = Duration::MAX;
+    let mut total = Duration::ZERO;
+    for _ in 0..samples {
+        let started = Instant::now();
+        for _ in 0..predicates_per_sample {
+            black_box(incircle_evaluated(
+                black_box(a),
+                black_box(b),
+                black_box(c),
+                black_box(d),
+            ));
+        }
+        let elapsed = started.elapsed();
+        best = best.min(elapsed);
+        total += elapsed;
+    }
+    PredicateTimingReport {
+        name: scenario.name,
+        path: incircle_path_label(scenario.path),
+        samples,
+        predicates_per_sample,
+        best_ns: best.as_nanos() / predicates_per_sample as u128,
+        average_ns: total.as_nanos()
+            / samples
+                .checked_mul(predicates_per_sample)
+                .expect("fixed predicate sample count must fit usize") as u128,
+    }
+}
+
+const fn orient2d_path_label(path: Orient2dPath) -> &'static str {
+    match path {
+        Orient2dPath::Filter => "orient2d.filter",
+        Orient2dPath::NormalizedExpansion => "orient2d.normalized_expansion",
+        Orient2dPath::Dyadic => "orient2d.dyadic",
+        Orient2dPath::NonFiniteInput => "orient2d.nonfinite",
+        _ => "orient2d.unknown",
+    }
+}
+
+const fn incircle_path_label(path: IncirclePath) -> &'static str {
+    match path {
+        IncirclePath::Filter => "incircle.filter",
+        IncirclePath::Dyadic => "incircle.dyadic",
+        IncirclePath::NonFiniteInput => "incircle.nonfinite",
+        _ => "incircle.unknown",
     }
 }
 
@@ -797,6 +884,18 @@ mod tests {
                 "{}",
                 scenario.name
             );
+            assert_eq!(evaluated.path, scenario.path, "{}", scenario.name);
+        }
+    }
+
+    #[test]
+    fn incircle_scenarios_reach_each_typed_path() {
+        let scenarios = incircle_scenarios();
+        assert_eq!(scenarios.len(), 2);
+        for scenario in scenarios {
+            let [a, b, c, d] = scenario.points;
+            let evaluated = incircle_evaluated(a, b, c, d);
+            assert_eq!(evaluated.position, scenario.position, "{}", scenario.name);
             assert_eq!(evaluated.path, scenario.path, "{}", scenario.name);
         }
     }
