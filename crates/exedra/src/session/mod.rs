@@ -1137,6 +1137,72 @@ pub(crate) fn preflight_boundary_continuation(
     mismatch.map_or(Ok(()), Err)
 }
 
+/// Returns whether adding `loop_vertices` would leave every OUTSIDE boundary
+/// vertex with exactly one incoming and one outgoing half-edge.
+///
+/// This mirrors the boundary reuse performed by `op::add_face`, but does not
+/// mutate the mesh. Batch-style operations use it before each eager face add
+/// so a temporarily pinched boundary becomes a typed refusal rather than an
+/// invariant panic in the stitcher.
+pub(crate) fn face_preserves_boundary_continuation(
+    mesh: &Mesh,
+    loop_vertices: &[VertexId],
+) -> bool {
+    if loop_vertices.len() < 3 {
+        return false;
+    }
+    let mut reused = Vec::<HalfEdgeId>::new();
+    let mut created = Vec::<(VertexId, VertexId)>::new();
+
+    for index in 0..loop_vertices.len() {
+        let from = loop_vertices[index];
+        let to = loop_vertices[(index + 1) % loop_vertices.len()];
+        let boundary = mesh.half_edges.iter().find_map(|(id, edge)| {
+            let half_edge = HalfEdgeId::from(id);
+            (edge.face == FaceId::OUTSIDE
+                && half_edge_vertices(mesh, half_edge) == Some((from, to)))
+            .then_some(half_edge)
+        });
+        if let Some(boundary) = boundary {
+            reused.push(boundary);
+        } else {
+            // A new interior from->to edge receives an OUTSIDE twin to->from.
+            created.push((to, from));
+        }
+    }
+    reused.sort_unstable();
+
+    let mut outgoing = Vec::<VertexId>::new();
+    let mut incoming = Vec::<VertexId>::new();
+    for (id, edge) in mesh.half_edges.iter() {
+        let half_edge = HalfEdgeId::from(id);
+        if edge.face != FaceId::OUTSIDE || reused.binary_search(&half_edge).is_ok() {
+            continue;
+        }
+        let Some((from, to)) = half_edge_vertices(mesh, half_edge) else {
+            return false;
+        };
+        outgoing.push(from);
+        incoming.push(to);
+    }
+    for (from, to) in created {
+        outgoing.push(from);
+        incoming.push(to);
+    }
+
+    let outgoing_counts = count_vertices(outgoing);
+    let incoming_counts = count_vertices(incoming);
+    let mut valid = true;
+    for_each_count_join(
+        &outgoing_counts,
+        &incoming_counts,
+        |_vertex, out_count, in_count| {
+            valid &= out_count == 1 && in_count == 1;
+        },
+    );
+    valid
+}
+
 fn count_vertices(mut values: Vec<VertexId>) -> Vec<(VertexId, usize)> {
     values.sort_unstable();
     let mut counts = Vec::<(VertexId, usize)>::new();

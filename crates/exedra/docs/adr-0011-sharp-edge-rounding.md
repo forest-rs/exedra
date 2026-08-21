@@ -16,8 +16,8 @@ so rounding can be a deterministic mesh pass above them.
 
 ## Decision
 
-`exedra::round::round_sharp_edges` plans read-only and applies in one
-edit session:
+`exedra::round::round_sharp_edges` plans read-only and applies to a staged
+mesh clone in one edit session:
 
 - **Selection and chains.** Canonical edges with sharpness at or above a
   policy threshold form a graph; maximal chains through valence-2
@@ -53,12 +53,18 @@ edit session:
   neighbor's plane (breadth-first, never crossing a sharp edge, with a
   containment check). This is what makes seam-adjacent sliver flanks
   round correctly.
-- **Plan-validate-apply.** Planning pre-validates everything application
-  needs: simple loops, orientation survival, and a manifold pre-check
-  (every planned directed edge unique; every undirected edge paired
-  internally or matched by a surviving outside twin). All refusals leave
-  the mesh byte-identical; an application failure after a clean plan is
-  the typed `Internal` bug signal.
+- **Plan-validate-apply.** Planning pre-validates simple loops, orientation
+  survival, and manifold edge pairing. Application additionally preflights
+  the OUTSIDE boundary before each eager face add: after the add, every
+  boundary vertex must retain exactly one incoming and one outgoing
+  half-edge. Seam cleanup can
+  otherwise leave coincident aliases whose rewrite is edge-manifold in the
+  final plan but pinches the temporary boundary used by `add_face`. Such a
+  rewrite returns `UnsupportedTopology` instead of reaching the stitcher's
+  invariant panic. The complete rewrite happens on a clone and replaces the
+  caller's mesh only on success, so all typed failures—including `Internal`
+  bug signals—leave topology, attributes, arena generations, and revision
+  byte-identical.
 - **Attributes.** Rewritten faces keep their `FACE_REGION`; strips and
   patches take the policy region. Surviving sharpness/seam tags re-key
   onto the rewritten edges; the consumed chain edges' sharpness does not
@@ -74,4 +80,6 @@ junctions, sharp chain turns (`max_tangent_turn`), slightly non-planar
 rewritten facet walls under averaged frames, and undetected strip
 self-overlap on chains curved tighter than the offset. Extending corners
 beyond trihedral and adding concave (additive) fillets are follow-up
-work above the same substitution machinery.
+work above the same substitution machinery. Staging temporarily requires a
+second mesh-sized allocation; this is the explicit cost of an atomic compound
+rewrite until edit sessions gain rollback.

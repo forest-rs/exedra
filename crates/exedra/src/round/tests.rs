@@ -4,8 +4,10 @@
 use alloc::vec::Vec;
 
 use super::*;
-use crate::boolean::{BooleanDiagnostics, BooleanOp, BooleanScratch, boolean_mesh};
-use crate::{FaceTriangulation, MeshBuilder};
+use crate::boolean::{
+    BooleanDiagnostics, BooleanOp, BooleanScratch, SeamCleanupPolicy, boolean_mesh, cleanup_seams,
+};
+use crate::{FaceTriangulation, MeshBuilder, op};
 
 fn box_mesh(length: f64, width: f64, height: f64) -> Mesh {
     #[expect(clippy::cast_possible_truncation, reason = "test geometry narrowing")]
@@ -156,6 +158,10 @@ fn snapshot(mesh: &Mesh) -> Snapshot {
         .map(|p| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()])
         .collect();
     (faces, positions)
+}
+
+fn exact_snapshot(mesh: &Mesh) -> alloc::string::String {
+    alloc::format!("{mesh:?}")
 }
 
 fn assert_clean(mesh: &Mesh) {
@@ -432,6 +438,31 @@ fn drill_prism() -> Mesh {
 }
 
 fn drilled_slab() -> Mesh {
+    drilled_slab_rotated(0.0)
+}
+
+fn rotate_z(mesh: &mut Mesh, angle: f32) {
+    let (sin, cos) = angle.sin_cos();
+    let positions: Vec<(VertexId, [f32; 3])> = mesh
+        .vertices()
+        .filter_map(|vertex| mesh.vertex_position(vertex).copied().map(|p| (vertex, p)))
+        .collect();
+    let mut session = mesh.edit();
+    for (vertex, [x, y, z]) in positions {
+        op::set_vertex_position(
+            &mut session,
+            vertex,
+            [x * cos - y * sin, x * sin + y * cos, z],
+        )
+        .expect("collected vertex remains live");
+    }
+    #[expect(unused_must_use, reason = "discard sink output")]
+    {
+        session.finish();
+    }
+}
+
+fn drilled_slab_rotated(angle: f32) -> Mesh {
     let mut scratch = BooleanScratch::new();
     let mut diagnostics = BooleanDiagnostics::default();
     let output = boolean_mesh(
@@ -443,7 +474,9 @@ fn drilled_slab() -> Mesh {
         &mut diagnostics,
     )
     .expect("drill boolean succeeds");
-    output.mesh
+    let mut mesh = output.mesh;
+    rotate_z(&mut mesh, angle);
+    mesh
 }
 
 #[test]
@@ -491,4 +524,31 @@ fn drilled_rim_fillet_is_deterministic_and_clean() {
     assert_clean(&mesh);
     assert_eq!(euler_characteristic(&mesh), 0, "genus preserved");
     assert_eq!(snapshot(&mesh), snapshot(&build()));
+}
+
+#[test]
+fn cleaned_drilled_rim_rounding_never_panics_or_partially_rewrites() {
+    for angle in [0.0, core::f32::consts::FRAC_PI_4] {
+        let mut mesh = drilled_slab_rotated(angle);
+        let cleanup = cleanup_seams(&mut mesh, &SeamCleanupPolicy::default());
+        assert!(cleanup.collapses > 0, "fixture must exercise seam cleanup");
+
+        let before = exact_snapshot(&mesh);
+        let revision = mesh.revision();
+        let error = round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.05))
+            .expect_err("the cleaned rim is not currently roundable");
+
+        assert_eq!(
+            error,
+            RoundError::UnsupportedTopology {
+                detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+            }
+        );
+        assert_eq!(
+            exact_snapshot(&mesh),
+            before,
+            "failed rounding must be atomic"
+        );
+        assert_eq!(mesh.revision(), revision, "failed rounding keeps revision");
+    }
 }
