@@ -64,10 +64,12 @@ checksum and `black_box` prevent dead-code elimination. Cross-machine
 wall-clock values are not goldens; compare profiles on the same machine and
 build configuration.
 
-The final `predicate_timing` phase separately exercises and verifies one
-query on each typed `orient2d_evaluated` path: `Filter`,
-`NormalizedExpansion`, and `Dyadic`. Inputs are passed through `black_box` and
-the returned evaluation is consumed inside the timed loop. The reported best
-and average nanoseconds are per predicate call; they measure path cost rather
-than polygon triangulation and, like the triangulation timings, should only be
-compared on the same machine and build configuration.
+The final `predicate_timing` phase separately exercises and verifies one query
+on every finite typed path used by `orient2d_evaluated` and
+`incircle_evaluated`: the orientation filter, normalized expansion, and
+dyadic paths, plus the incircle filter and dyadic paths. Inputs are passed
+through `black_box` and the returned evaluation is consumed inside the timed
+loop. The reported best and average nanoseconds are per predicate call; they
+measure path cost rather than polygon triangulation and, like the
+triangulation timings, should only be compared on the same machine and build
+configuration.

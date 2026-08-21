@@ -3,8 +3,8 @@
 Deterministic 2D polygon triangulation for concave loops with holes.
 
 This crate owns triangulation of simple polygons with holes (deterministic ear
-clipping with deterministic hole bridging) and the exact-sign orientation
-predicates those algorithms rely on. Identical input bits produce identical
+clipping with deterministic hole bridging) and the exact-sign planar
+predicates its strategies rely on. Identical input bits produce identical
 output triangles on every platform and build mode: only f64 comparisons and
 exact-sign predicates, no transcendentals, no ambient epsilons. Every output
 vertex is an input vertex, so callers carry per-vertex provenance through
@@ -54,6 +54,15 @@ finite inputs in the documented domain retain their contract. Out-of-domain
 NaN and infinity behavior is now standardized and may differ from prior
 incidental results. Inputs whose nonzero determinant previously underflowed to
 zero now receive the mathematically correct orientation.
+
+`predicates::incircle` classifies a point against an oriented circumcircle.
+Its ordinary path uses a floating-point error-bound filter; inconclusive
+queries expand the homogeneous degree-four determinant into 48 monomials and
+sum their exact binary64 values in fixed positive and negative limb arrays.
+`incircle_evaluated` reports `IncirclePath::Filter` or
+`IncirclePath::Dyadic` without global counters. The API is additive: existing
+triangulation callers require no migration, and ear clipping does not pay for
+the new predicate.
 
 ## Quality wind tunnel
 
