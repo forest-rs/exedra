@@ -346,23 +346,16 @@ pub(super) fn vertical_wall_frame() -> Placement3 {
 }
 
 pub(super) fn transverse_wall_frame() -> Placement3 {
-    Placement3 {
-        rows: [
-            [0.0, 0.0, 1.0, 0.0],
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-        ],
-    }
+    Placement3::from_axes([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0; 3])
 }
 
 pub(super) fn centered_vertical_wall_frame(width: f64, thickness: f64) -> Placement3 {
-    Placement3 {
-        rows: [
-            [1.0, 0.0, 0.0, -width * 0.5],
-            [0.0, 0.0, -1.0, thickness * 0.5],
-            [0.0, 1.0, 0.0, 0.0],
-        ],
-    }
+    Placement3::from_axes(
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0],
+        [-width * 0.5, thickness * 0.5, 0.0],
+    )
 }
 
 pub(super) fn roof_panel_frame(
@@ -375,24 +368,22 @@ pub(super) fn roof_panel_frame(
     let (sin, cos) = (libm::sin(angle), libm::cos(angle));
     let peak = p.nave_wall_height + p.roof_rise;
     if north {
-        Placement3 {
-            rows: [
-                [1.0, 0.0, 0.0, start_x],
-                [0.0, cos, sin, 0.0],
-                [0.0, -sin, cos, peak],
-            ],
-        }
+        Placement3::from_axes(
+            [1.0, 0.0, 0.0],
+            [0.0, cos, -sin],
+            [0.0, sin, cos],
+            [start_x, 0.0, peak],
+        )
     } else {
         // Parameterize the south slope from eave to ridge so local +Z points
         // outward/up, mirroring the north slab instead of thickening inward
         // into the nave.
-        Placement3 {
-            rows: [
-                [1.0, 0.0, 0.0, start_x],
-                [0.0, cos, -sin, -run],
-                [0.0, sin, cos, p.nave_wall_height],
-            ],
-        }
+        Placement3::from_axes(
+            [1.0, 0.0, 0.0],
+            [0.0, cos, sin],
+            [0.0, -sin, cos],
+            [start_x, -run, p.nave_wall_height],
+        )
     }
 }
 
@@ -420,21 +411,19 @@ pub(super) fn aisle_roof_frame(
     let angle = libm::atan2(drop, run);
     let (sin, cos) = (libm::sin(angle), libm::cos(angle));
     if north {
-        Placement3 {
-            rows: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, cos, sin, half_nave],
-                [0.0, -sin, cos, inner_height],
-            ],
-        }
+        Placement3::from_axes(
+            [1.0, 0.0, 0.0],
+            [0.0, cos, -sin],
+            [0.0, sin, cos],
+            [0.0, half_nave, inner_height],
+        )
     } else {
-        Placement3 {
-            rows: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, -cos, sin, -half_nave],
-                [0.0, -sin, -cos, inner_height],
-            ],
-        }
+        Placement3::from_axes(
+            [1.0, 0.0, 0.0],
+            [0.0, -cos, -sin],
+            [0.0, sin, -cos],
+            [0.0, -half_nave, inner_height],
+        )
     }
 }
 

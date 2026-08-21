@@ -328,28 +328,7 @@ fn box_recipe(size: Vec3, source_name: &str) -> Recipe {
 }
 
 fn placement(solid: &OrientedBox) -> Placement3 {
-    Placement3 {
-        rows: [
-            [
-                solid.axes[0][0],
-                solid.axes[1][0],
-                solid.axes[2][0],
-                solid.origin[0],
-            ],
-            [
-                solid.axes[0][1],
-                solid.axes[1][1],
-                solid.axes[2][1],
-                solid.origin[1],
-            ],
-            [
-                solid.axes[0][2],
-                solid.axes[1][2],
-                solid.axes[2][2],
-                solid.origin[2],
-            ],
-        ],
-    }
+    Placement3::from_axes(solid.axes[0], solid.axes[1], solid.axes[2], solid.origin)
 }
 
 fn marker(center: Vec3, size: f64) -> OrientedBox {

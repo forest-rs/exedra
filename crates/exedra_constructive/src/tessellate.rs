@@ -149,6 +149,8 @@ pub enum TessellateError {
         /// Index of the offending section.
         section: usize,
     },
+    /// All loft sections are coplanar, so the loft has no volumetric span.
+    DegenerateLoft,
     /// A sweep path reverses onto itself at this point (anti-parallel
     /// adjacent segments give no miter tangent).
     PathCusp {
@@ -181,6 +183,7 @@ impl core::fmt::Display for TessellateError {
             Self::SectionMismatch { section } => {
                 write!(f, "loft section {section} does not correspond to section 0")
             }
+            Self::DegenerateLoft => write!(f, "loft sections have no volumetric span"),
             Self::PathCusp { point } => {
                 write!(f, "sweep path reverses onto itself at point {point}")
             }
@@ -895,6 +898,9 @@ pub fn tessellate_loft(
             return Err(TessellateError::SectionMismatch { section: index });
         }
     }
+    if !loft_has_volumetric_span(sections, &discretized) {
+        return Err(TessellateError::DegenerateLoft);
+    }
 
     let ring_starts = ring_starts(reference);
     let total = len_u32(reference.points_len());
@@ -1053,6 +1059,45 @@ pub fn tessellate_loft(
         mesh: result.mesh,
         source_map,
     })
+}
+
+fn loft_has_volumetric_span(
+    sections: &[(Placement3, &Profile2)],
+    discretized: &[DiscretizedProfile],
+) -> bool {
+    let first_points: Vec<[f64; 3]> = discretized[0]
+        .rings()
+        .flat_map(|ring| &ring.points)
+        .map(|point| apply_placement(&sections[0].0, [point[0], point[1], 0.0]))
+        .collect();
+    let origin = first_points[0];
+    let plane_scale = first_points
+        .iter()
+        .map(|&point| norm3(sub3(point, origin)))
+        .fold(0.0_f64, f64::max);
+    let area_tolerance = plane_scale * plane_scale * 64.0 * f64::EPSILON;
+    let Some(normal) = first_points.iter().find_map(|&a| {
+        first_points.iter().find_map(|&b| {
+            let normal = cross3(sub3(a, origin), sub3(b, origin));
+            (norm3(normal) > area_tolerance).then_some(normal)
+        })
+    }) else {
+        return false;
+    };
+    let normal_length = norm3(normal);
+    let span_tolerance = plane_scale * 64.0 * f64::EPSILON;
+
+    sections
+        .iter()
+        .zip(discretized)
+        .flat_map(|((placement, _), profile)| {
+            profile.rings().flat_map(move |ring| {
+                ring.points
+                    .iter()
+                    .map(move |point| apply_placement(placement, [point[0], point[1], 0.0]))
+            })
+        })
+        .any(|point| dot3(normal, sub3(point, origin)).abs() / normal_length > span_tolerance)
 }
 
 // --- Sweep -------------------------------------------------------------------
@@ -2009,6 +2054,19 @@ mod tests {
             tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
         assert_clean(&body);
         assert!((mesh_volume(&body.mesh) - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn zero_span_loft_is_rejected() {
+        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let sections = [
+            (Placement3::IDENTITY, &profile),
+            (Placement3::translate(1.0, 0.0, 0.0), &profile),
+        ];
+        assert!(matches!(
+            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()),
+            Err(TessellateError::DegenerateLoft)
+        ));
     }
 
     #[test]
