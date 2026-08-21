@@ -96,10 +96,11 @@ fn run_warm_reconfiguration() {
 }
 
 fn write_artifacts(output: &Path, scenario: &Scenario, obj: &str) -> (PathBuf, u64) {
-    let gltf = exedra_gltf::export_gltf(
+    let gltf = exedra_gltf::export_gltf_with_options(
         &scenario.assembly,
         &scenario.compiled,
         &scenario.render_list,
+        exedra_gltf::GltfExportOptions::z_up_to_y_up(),
     )
     .expect("the render list references its compiled assembly");
 
