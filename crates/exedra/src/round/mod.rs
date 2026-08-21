@@ -132,8 +132,8 @@ impl RoundPolicy {
 
 /// Structured rounding failure.
 ///
-/// Every variant except [`RoundError::Internal`] is detected during
-/// read-only planning: a failed pass leaves the mesh byte-identical.
+/// Every failure is detected before the staged rewrite is committed, so a
+/// failed pass leaves the mesh byte-identical.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RoundError {
     /// The policy carries a non-positive or non-finite parameter.
@@ -196,8 +196,8 @@ pub enum RoundError {
     },
     /// An application-stage edit failed after planning validated it.
     ///
-    /// Planning pre-validates everything the kernel ops check, so this
-    /// indicates a bug; the mesh may hold a valid partial rewrite.
+    /// This indicates a kernel bug. The staged rewrite is discarded, leaving
+    /// the caller's mesh byte-identical.
     Internal {
         /// The failing stage.
         detail: &'static str,
@@ -1665,6 +1665,13 @@ fn vertex_side_points(
 }
 
 fn apply(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
+    let mut staged = mesh.clone();
+    let stats = apply_staged(&mut staged, plan)?;
+    *mesh = staged;
+    Ok(stats)
+}
+
+fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
     let mut session = mesh.edit();
     if delete_faces(&mut session, &plan.affected, DeletePolicy::KeepIsolated).is_err() {
         return Err(RoundError::Internal {
@@ -1683,6 +1690,15 @@ fn apply(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
     let mut added = Vec::with_capacity(plan.faces.len());
     for planned in &plan.faces {
         let loop_vertices: Vec<VertexId> = planned.entries.iter().map(|&t| resolve(t)).collect();
+        if !crate::session::face_preserves_boundary_continuation(session.mesh(), &loop_vertices) {
+            #[expect(unused_must_use, reason = "discard sink output")]
+            {
+                session.finish();
+            }
+            return Err(RoundError::UnsupportedTopology {
+                detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+            });
+        }
         let Ok(face) = add_face(&mut session, &loop_vertices) else {
             #[expect(unused_must_use, reason = "discard sink output")]
             {
