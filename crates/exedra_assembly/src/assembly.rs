@@ -313,14 +313,15 @@ impl Assembly {
     }
 
     /// Registers a recipe-backed part; slots come from the recipe's slot
-    /// table.
+    /// table. A recipe with exactly one slot uses that slot as its default.
     ///
     /// # Errors
     ///
     /// Fails on a duplicate or invalid key.
     pub fn add_recipe_part(&mut self, key: &str, recipe: Recipe) -> Result<PartId, AssemblyError> {
         let slots = recipe.slots().to_vec();
-        self.add_part_inner(key, PartSource::Recipe(recipe), slots)
+        let default_slot = (slots.len() == 1).then_some(SlotIndex(0));
+        self.add_part_inner(key, PartSource::Recipe(recipe), slots, default_slot)
     }
 
     /// Registers a baked-mesh part with explicitly declared slots.
@@ -342,7 +343,7 @@ impl Assembly {
             seen.push(slot);
         }
         let slots = slots.iter().map(|s| (*s).to_string()).collect();
-        self.add_part_inner(key, PartSource::Baked(mesh), slots)
+        self.add_part_inner(key, PartSource::Baked(mesh), slots, None)
     }
 
     fn add_part_inner(
@@ -350,6 +351,7 @@ impl Assembly {
         key: &str,
         source: PartSource,
         slots: Vec<String>,
+        default_slot: Option<SlotIndex>,
     ) -> Result<PartId, AssemblyError> {
         if key.is_empty() {
             return Err(AssemblyError::InvalidKey(key.to_string()));
@@ -364,7 +366,7 @@ impl Assembly {
             source,
             slots,
             region_slots: Vec::new(),
-            default_slot: None,
+            default_slot,
             default_materials,
         });
         self.part_lookup.insert(key.to_string(), id);
@@ -626,6 +628,19 @@ impl Assembly {
         &self.instances
     }
 
+    /// All instance handles and values in insertion order.
+    ///
+    /// This is the ID-bearing counterpart to [`Self::instances`]. It avoids
+    /// reconstructing opaque handles from slice indices at call sites.
+    pub fn instances_with_ids(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (InstanceId, &Instance)> + ExactSizeIterator {
+        self.instances
+            .iter()
+            .enumerate()
+            .map(|(index, instance)| (InstanceId(crate::len_u32(index)), instance))
+    }
+
     /// Root instances in insertion order.
     #[must_use]
     pub fn roots(&self) -> &[InstanceId] {
@@ -700,12 +715,29 @@ mod tests {
         b.finish(node).unwrap()
     }
 
+    fn single_slot_recipe() -> Recipe {
+        let mut b = RecipeBuilder::new();
+        let surface = b.material_slot("surface");
+        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let node = b
+            .with_material(surface)
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 10.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        b.finish(node).unwrap()
+    }
+
     #[test]
     fn part_registration_and_lookup() {
         let mut asm = Assembly::new();
         let part = asm.add_recipe_part("panel", test_recipe()).unwrap();
         assert_eq!(asm.part_by_key("panel"), Some(part));
         assert_eq!(asm.part(part).unwrap().slots(), &["front", "body"]);
+        assert_eq!(asm.part(part).unwrap().default_slot(), None);
         assert_eq!(
             asm.add_recipe_part("panel", test_recipe()),
             Err(AssemblyError::DuplicatePartKey("panel".into()))
@@ -714,6 +746,17 @@ mod tests {
             asm.add_recipe_part("", test_recipe()),
             Err(AssemblyError::InvalidKey(String::new()))
         );
+    }
+
+    #[test]
+    fn single_slot_recipe_uses_its_only_slot_as_default() {
+        let mut asm = Assembly::new();
+        let part = asm
+            .add_recipe_part("single-slot", single_slot_recipe())
+            .unwrap();
+        let def = asm.part(part).unwrap();
+        assert_eq!(def.default_slot(), def.slot_index("surface"));
+        assert_eq!(def.region_slot(42), def.slot_index("surface"));
     }
 
     #[test]
@@ -735,6 +778,13 @@ mod tests {
         assert_eq!(path, InstancePath::from_segments(&["frame", "crossbar-1"]));
         assert_eq!(alloc::format!("{path}"), "frame/crossbar-1");
         assert_eq!(asm.resolve_path(&path), Some(crossbar));
+        assert_eq!(
+            asm.instances_with_ids()
+                .map(|(id, instance)| (id, instance.key()))
+                .collect::<Vec<_>>(),
+            alloc::vec![(root, "frame"), (crossbar, "crossbar-1")]
+        );
+        assert_eq!(asm.instances_with_ids().len(), asm.instances().len());
         assert_eq!(
             asm.resolve_path(&InstancePath::from_segments(&["frame", "missing"])),
             None

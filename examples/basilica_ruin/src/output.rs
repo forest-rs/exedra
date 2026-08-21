@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use exedra_assembly::{
-    Assembly, CompileCounters, CompiledParts, InstanceId, PartCompiler, PartSource, RenderList,
+    Assembly, CompileCounters, CompiledParts, PartCompiler, PartSource, RenderList,
     assembly_fingerprint, flatten,
 };
 use exedra_constructive::evaluate::evaluate;
@@ -359,11 +359,8 @@ fn render_paths(list: &RenderList) -> Vec<String> {
 
 fn assembly_paths(assembly: &Assembly) -> Vec<String> {
     assembly
-        .instances()
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            let id = InstanceId(u32::try_from(index).expect("example instance count fits u32"));
+        .instances_with_ids()
+        .map(|(id, _)| {
             assembly
                 .path_of(id)
                 .expect("every assembly instance has a path")
@@ -628,15 +625,11 @@ mod tests {
             .collect();
         let instance_paths: Vec<String> = scenario
             .assembly
-            .instances()
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
+            .instances_with_ids()
+            .map(|(id, _)| {
                 scenario
                     .assembly
-                    .path_of(exedra_assembly::InstanceId(
-                        u32::try_from(index).expect("example instance count fits u32"),
-                    ))
+                    .path_of(id)
                     .expect("existing instance has a path")
                     .to_string()
             })

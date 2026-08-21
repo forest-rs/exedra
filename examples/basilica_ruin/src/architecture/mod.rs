@@ -94,9 +94,6 @@ impl BuildContext {
             .add_recipe_part(key, recipe)
             .expect("unique constant part key");
         self.assembly
-            .set_default_slot(part, "surface")
-            .expect("every scenario recipe declares surface");
-        self.assembly
             .set_part_material(part, "surface", material)
             .expect("surface slot exists");
         part

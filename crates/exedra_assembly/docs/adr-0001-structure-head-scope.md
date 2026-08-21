@@ -25,6 +25,10 @@ deterministic, and cache-friendly.
 - **Instance trees.** Instances reference a part, carry an f64 `Placement3`,
   slot-to-material-key bindings, and an opaque metadata bag. Each instance
   has a frontend-supplied string key unique among its siblings.
+- **Calm common-case defaults.** Registering a recipe with exactly one
+  material slot makes that slot the part-wide default. Zero-slot and
+  multi-slot recipes remain explicit. Deterministic instance traversal is
+  available both as a value slice and as `(InstanceId, &Instance)` pairs.
 - **Identity.** An `InstancePath` — the key sequence from the root — is the
   stable identity contract: the same path across re-evaluations denotes the
   same logical part. Indices are never identity. Frontends choose keys;
@@ -58,6 +62,13 @@ It owns none of:
   `exedra-recipe-v1` policy.
 - Cross-part geometry operations (a boolean between two instances) are out
   of scope; frontends express those inside a single recipe instead.
+
+### Migration note
+
+`add_recipe_part` now resolves unmapped regions through the recipe's only
+slot when exactly one slot is declared. Callers that deliberately wanted a
+one-slot recipe to resolve no material must instead declare that intent with
+a multi-slot recipe or clear the material at their consuming boundary.
 
 ## Alternatives considered
 

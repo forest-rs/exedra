@@ -293,9 +293,6 @@ fn add_solid(
         )
         .map_err(|error| format!("register {part_key}: {error}"))?;
     assembly
-        .set_default_slot(part, "surface")
-        .map_err(|error| format!("set slot on {part_key}: {error}"))?;
-    assembly
         .set_part_material(part, "surface", material)
         .map_err(|error| format!("set material on {part_key}: {error}"))?;
     let instance = assembly

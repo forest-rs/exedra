@@ -196,16 +196,13 @@ pub fn resolve_instance_path(assembly: &Assembly, path: &str) -> Option<Instance
 #[must_use]
 pub fn instances_with_role(assembly: &Assembly, role: &str) -> Vec<InstanceId> {
     assembly
-        .instances()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, instance)| {
+        .instances_with_ids()
+        .filter_map(|(id, instance)| {
             let matches = instance
                 .metadata()
                 .iter()
                 .any(|(key, value)| key == names::ARCHITECTURAL_ROLE && value == role);
-            matches
-                .then(|| InstanceId(u32::try_from(index).expect("example instance count fits u32")))
+            matches.then_some(id)
         })
         .collect()
 }
