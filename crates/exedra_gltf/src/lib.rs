@@ -3,7 +3,7 @@
 
 //! glTF 2.0 export for Exedra assembly render lists.
 //!
-//! [`export_gltf`] converts a flattened [`RenderList`] plus its
+//! [`export_gltf`] and [`export_gltf_with_options`] convert a flattened [`RenderList`] plus its
 //! [`CompiledParts`] into a single-file glTF 2.0 JSON document with an
 //! embedded base64 buffer:
 //!
@@ -37,7 +37,8 @@ pub struct GltfExport {
 /// Deterministic export counters.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct GltfStats {
-    /// glTF nodes emitted (one per render item).
+    /// glTF nodes emitted (one per render item, plus an optional coordinate
+    /// conversion root).
     pub nodes: u64,
     /// Distinct glTF meshes emitted (shared across matching items).
     pub meshes: u64,
@@ -47,6 +48,39 @@ pub struct GltfStats {
     pub materials: u64,
     /// Total bytes in the embedded buffer.
     pub buffer_bytes: u64,
+}
+
+/// Coordinate-system handling for a glTF export.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GltfCoordinates {
+    /// Preserve Exedra coordinates exactly as authored.
+    #[default]
+    Preserve,
+    /// Convert Exedra's Z-up coordinates to glTF's conventional Y-up frame.
+    ///
+    /// The conversion is the right-handed rotation `(x, y, z) ->
+    /// (x, z, -y)`.
+    ZUpToYUp,
+}
+
+/// Options controlling glTF export.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct GltfExportOptions {
+    /// Coordinate-system handling for the exported scene.
+    pub coordinates: GltfCoordinates,
+}
+
+impl GltfExportOptions {
+    /// Options that present an Exedra Z-up scene in glTF's conventional
+    /// Y-up frame.
+    #[must_use]
+    pub const fn z_up_to_y_up() -> Self {
+        Self {
+            coordinates: GltfCoordinates::ZUpToYUp,
+        }
+    }
 }
 
 /// Typed export failure.
@@ -92,6 +126,25 @@ pub fn export_gltf(
     assembly: &Assembly,
     compiled: &CompiledParts,
     list: &RenderList,
+) -> Result<GltfExport, GltfError> {
+    export_gltf_with_options(assembly, compiled, list, GltfExportOptions::default())
+}
+
+/// Exports a render list with explicit coordinate-system options.
+///
+/// The Z-up to Y-up conversion is represented by one scene-root node. Mesh
+/// buffers, accessor bounds, normals, winding, and item transforms remain in
+/// their authored local coordinates and are transformed coherently by the
+/// glTF node hierarchy.
+///
+/// # Errors
+///
+/// Fails when the list references parts or bodies absent from `compiled`.
+pub fn export_gltf_with_options(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    list: &RenderList,
+    options: GltfExportOptions,
 ) -> Result<GltfExport, GltfError> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut buffer_views: Vec<Value> = Vec::new();
@@ -166,7 +219,25 @@ pub fn export_gltf(
     }
 
     stats.buffer_bytes = buffer.len() as u64;
-    let scene_nodes: Vec<usize> = (0..nodes.len()).collect();
+    let item_nodes: Vec<usize> = (0..nodes.len()).collect();
+    let scene_nodes = match options.coordinates {
+        GltfCoordinates::Preserve => item_nodes,
+        GltfCoordinates::ZUpToYUp => {
+            let root = nodes.len();
+            nodes.push(json!({
+                "name": "Exedra Z-up to glTF Y-up",
+                "matrix": [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 0.0, -1.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0
+                ],
+                "children": item_nodes,
+            }));
+            stats.nodes += 1;
+            vec![root]
+        }
+    };
     let mut document = Map::new();
     document.insert(
         "asset".into(),
@@ -427,7 +498,6 @@ mod tests {
 
         let mut asm = Assembly::new();
         let part = asm.add_recipe_part("panel", recipe).unwrap();
-        asm.set_default_slot(part, "front").unwrap();
         asm.set_part_material(part, "front", "oak").unwrap();
         let a = asm
             .add_instance(None, "a", part, Placement3::IDENTITY)
@@ -517,6 +587,28 @@ mod tests {
         let export = export_gltf(&asm, &compiled, &list).unwrap();
         assert_eq!(export.stats.nodes, 2);
         assert_eq!(export.stats.meshes, 1, "identical items share one mesh");
+    }
+
+    #[test]
+    fn z_up_to_y_up_uses_one_right_handed_scene_root() {
+        let (asm, compiled, list) = example();
+        let export =
+            export_gltf_with_options(&asm, &compiled, &list, GltfExportOptions::z_up_to_y_up())
+                .unwrap();
+        let doc: Value = serde_json::from_str(&export.json).unwrap();
+        let nodes = doc["nodes"].as_array().unwrap();
+        let root_index = usize::try_from(doc["scenes"][0]["nodes"][0].as_u64().unwrap()).unwrap();
+        let root = &nodes[root_index];
+
+        assert_eq!(root["children"], json!([0, 1]));
+        assert_eq!(
+            root["matrix"],
+            json!([
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0
+            ])
+        );
+        assert_eq!(export.stats.nodes, 3);
+        assert_eq!(nodes[0]["extras"]["instancePath"], "a");
     }
 
     #[test]

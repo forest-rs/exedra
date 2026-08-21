@@ -329,10 +329,20 @@ mod tests {
         let b = build_scenario();
         let obj_a = export_obj(&a.compiled, &a.render_list);
         let obj_b = export_obj(&b.compiled, &b.render_list);
-        let gltf_a = exedra_gltf::export_gltf(&a.assembly, &a.compiled, &a.render_list)
-            .expect("matching assembly");
-        let gltf_b = exedra_gltf::export_gltf(&b.assembly, &b.compiled, &b.render_list)
-            .expect("matching assembly");
+        let gltf_a = exedra_gltf::export_gltf_with_options(
+            &a.assembly,
+            &a.compiled,
+            &a.render_list,
+            exedra_gltf::GltfExportOptions::z_up_to_y_up(),
+        )
+        .expect("matching assembly");
+        let gltf_b = exedra_gltf::export_gltf_with_options(
+            &b.assembly,
+            &b.compiled,
+            &b.render_list,
+            exedra_gltf::GltfExportOptions::z_up_to_y_up(),
+        )
+        .expect("matching assembly");
         assert_eq!(scene_stats(&a), scene_stats(&b));
         assert_eq!(a.diagnostics, 0);
         assert_eq!(b.diagnostics, 0);
