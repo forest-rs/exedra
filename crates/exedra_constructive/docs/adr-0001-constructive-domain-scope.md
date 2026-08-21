@@ -40,7 +40,10 @@ together would break both.
   kurbo (pinned, re-exported) is the *only* curve math engine — bulge→arc
   conversion, cubic flattening, areas, winding, bounding boxes, affine
   transforms all route through it; no parallel curve math is permitted
-  except bulge-arc discretization itself.
+  except bulge-arc discretization itself. Profile construction rejects hole
+  pairs that overlap, contain one another, or touch; curved boundaries use
+  kurbo's cubic representation and a documented relative flattening
+  tolerance for that topology check.
 - **The constructive node set**: extrude, revolve (partial sweeps, cap
   flags, open shells), loft, sweep along polyline or planar paths, planar
   faces, grid surfaces, primitives (via `exedra_primitives` specs), imported
@@ -48,13 +51,18 @@ together would break both.
   stretch node. All public enums are `#[non_exhaustive]`. There is **no 3D
   curve type**: planar profiles plus placements plus polyline paths cover
   the parametric-spec domain; a spatial path variant can arrive additively if ever
-  earned.
+  earned. Loft evaluation rejects sections whose placed geometry remains
+  coplanar, because such a recipe cannot produce a volumetric solid.
 - **Two-layer identity.** A content-addressed node hash (Merkle over the
   canonical byte encoding, stamped with [`EVAL_SCHEMA_VERSION`]) keys caches
   and fingerprints; a frontend-assigned opaque source identity keys
   provenance continuity across recipe edits. The canonical encoding — f64
   bit patterns, explicit tags, documented layout — is the compatibility
   contract; serde comes later as a feature, never as the contract.
+- **Explicit placement construction.** `Placement3` stores a row-major 3x4
+  affine matrix, while `from_axes` accepts local basis vectors as matrix
+  columns plus a translation. Common axis rotations use `libm` constructors;
+  callers do not need to hand-author matrix layouts.
 - **Deterministic evaluation with honest reporting.** Evaluation is a pure
   function of recipe and policy. Output includes the mesh, a bidirectional
   source map down to profile-segment granularity, a region/material-slot

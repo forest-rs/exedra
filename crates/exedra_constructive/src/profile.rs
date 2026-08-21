@@ -12,10 +12,11 @@
 //! center-parameterized arc could not.
 //!
 //! A [`Profile2`] is one outer loop (counter-clockwise) plus hole loops
-//! (clockwise). Construction validates structure, finiteness, winding, and
-//! cheap containment; deeper geometric validation (self-intersection)
-//! happens at discretization, where the triangulator reports violations as
-//! typed errors.
+//! (clockwise). Construction validates structure, finiteness, winding,
+//! cheap containment, and that distinct holes do not overlap or touch;
+//! deeper geometric validation (self-intersection) happens at
+//! discretization, where the triangulator reports violations as typed
+//! errors.
 //!
 //! All curve mathematics routes through [`kurbo`]: conversion to
 //! [`kurbo::BezPath`] powers areas, bounding boxes, and interop. The only
@@ -435,7 +436,9 @@ impl Profile2 {
     /// deliberately — orientation is never changed implicitly). Each hole's
     /// bounding box must lie within the outer loop's bounding box (a cheap
     /// necessary condition; exact containment is verified at
-    /// discretization).
+    /// discretization). Distinct holes must not overlap, contain one
+    /// another, or touch. Curved boundaries are compared through kurbo's
+    /// cubic path representation, flattened to a relative `1e-9` tolerance.
     ///
     /// # Errors
     ///
@@ -452,6 +455,13 @@ impl Profile2 {
             let hole_bbox = hole.to_bez_path().bounding_box();
             if !outer_bbox.union(hole_bbox).same_as(outer_bbox) {
                 return Err(ProfileError::HoleOutsideOuter { hole: index });
+            }
+        }
+        for first in 0..holes.len() {
+            for second in first + 1..holes.len() {
+                if loops_conflict(&holes[first], &holes[second]) {
+                    return Err(ProfileError::OverlappingHoles { first, second });
+                }
             }
         }
         Ok(Self { outer, holes })
@@ -488,6 +498,83 @@ impl RectExt for kurbo::Rect {
     fn same_as(&self, other: Self) -> bool {
         self.x0 == other.x0 && self.y0 == other.y0 && self.x1 == other.x1 && self.y1 == other.y1
     }
+}
+
+fn loops_conflict(first: &Loop2, second: &Loop2) -> bool {
+    let first_path = first.to_bez_path();
+    let second_path = second.to_bez_path();
+    let first_bounds = first_path.bounding_box();
+    let second_bounds = second_path.bounding_box();
+    if first_bounds.x1 < second_bounds.x0
+        || second_bounds.x1 < first_bounds.x0
+        || first_bounds.y1 < second_bounds.y0
+        || second_bounds.y1 < first_bounds.y0
+    {
+        return false;
+    }
+
+    let bounds = first_bounds.union(second_bounds);
+    let scale = bounds.width().abs().max(bounds.height().abs());
+    let tolerance = (scale * 1e-9).max(f64::MIN_POSITIVE);
+    let first_points = flattened_ring(&first_path, tolerance);
+    let second_points = flattened_ring(&second_path, tolerance);
+    if rings_intersect(&first_points, &second_points) {
+        return true;
+    }
+
+    second_path.contains(first_points[0]) || first_path.contains(second_points[0])
+}
+
+fn flattened_ring(path: &BezPath, tolerance: f64) -> Vec<Point> {
+    let mut points = Vec::new();
+    kurbo::flatten(path.iter(), tolerance, |element| match element {
+        PathEl::MoveTo(point) | PathEl::LineTo(point) => points.push(point),
+        PathEl::ClosePath => {}
+        PathEl::QuadTo(..) | PathEl::CurveTo(..) => {
+            unreachable!("kurbo::flatten emits only lines")
+        }
+    });
+    if points.first() == points.last() {
+        points.pop();
+    }
+    points
+}
+
+fn rings_intersect(first: &[Point], second: &[Point]) -> bool {
+    first.iter().enumerate().any(|(first_index, &first_start)| {
+        let first_end = first[(first_index + 1) % first.len()];
+        second
+            .iter()
+            .enumerate()
+            .any(|(second_index, &second_start)| {
+                let second_end = second[(second_index + 1) % second.len()];
+                segments_intersect(first_start, first_end, second_start, second_end)
+            })
+    })
+}
+
+fn segments_intersect(a: Point, b: Point, c: Point, d: Point) -> bool {
+    let ab_c = cross(a, b, c);
+    let ab_d = cross(a, b, d);
+    let cd_a = cross(c, d, a);
+    let cd_b = cross(c, d, b);
+    ((ab_c > 0.0 && ab_d < 0.0) || (ab_c < 0.0 && ab_d > 0.0))
+        && ((cd_a > 0.0 && cd_b < 0.0) || (cd_a < 0.0 && cd_b > 0.0))
+        || ab_c == 0.0 && point_on_segment(c, a, b)
+        || ab_d == 0.0 && point_on_segment(d, a, b)
+        || cd_a == 0.0 && point_on_segment(a, c, d)
+        || cd_b == 0.0 && point_on_segment(b, c, d)
+}
+
+fn cross(a: Point, b: Point, c: Point) -> f64 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+fn point_on_segment(point: Point, start: Point, end: Point) -> bool {
+    point.x >= start.x.min(end.x)
+        && point.x <= start.x.max(end.x)
+        && point.y >= start.y.min(end.y)
+        && point.y <= start.y.max(end.y)
 }
 
 fn normalize_point(p: &mut Point) {
@@ -536,6 +623,14 @@ pub enum ProfileError {
         /// Index of the offending hole.
         hole: usize,
     },
+    /// Two hole interiors overlap, one contains the other, or their
+    /// boundaries touch.
+    OverlappingHoles {
+        /// Index of the first conflicting hole.
+        first: usize,
+        /// Index of the second conflicting hole.
+        second: usize,
+    },
     /// A `BezPath` conversion input was not a single closed subpath of
     /// supported elements.
     UnsupportedPath,
@@ -567,6 +662,9 @@ impl core::fmt::Display for ProfileError {
             Self::WrongWinding { hole: Some(i) } => write!(f, "hole {i} must wind clockwise"),
             Self::HoleOutsideOuter { hole } => {
                 write!(f, "hole {hole} bounding box escapes the outer loop")
+            }
+            Self::OverlappingHoles { first, second } => {
+                write!(f, "holes {first} and {second} overlap or touch")
             }
             Self::UnsupportedPath => {
                 write!(
@@ -765,6 +863,79 @@ mod tests {
         assert_eq!(
             Profile2::new(outer, vec![escaping]),
             Err(ProfileError::HoleOutsideOuter { hole: 0 })
+        );
+    }
+
+    #[test]
+    fn profile_rejects_overlapping_contained_and_touching_holes() {
+        fn hole(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop2 {
+            Loop2::new(vec![
+                Seg2::line((x0, y0)),
+                Seg2::line((x0, y1)),
+                Seg2::line((x1, y1)),
+                Seg2::line((x1, y0)),
+            ])
+            .expect("valid clockwise rectangle")
+        }
+
+        let outer = Loop2::new(vec![
+            Seg2::line((0.0, 0.0)),
+            Seg2::line((10.0, 0.0)),
+            Seg2::line((10.0, 10.0)),
+            Seg2::line((0.0, 10.0)),
+        ])
+        .expect("valid outer loop");
+        let cases = [
+            (hole(1.0, 1.0, 4.0, 4.0), hole(3.0, 3.0, 6.0, 6.0)),
+            (hole(1.0, 1.0, 5.0, 5.0), hole(2.0, 2.0, 3.0, 3.0)),
+            (hole(1.0, 1.0, 3.0, 3.0), hole(3.0, 1.0, 5.0, 3.0)),
+        ];
+        for (first, second) in cases {
+            assert_eq!(
+                Profile2::new(outer.clone(), vec![first, second]),
+                Err(ProfileError::OverlappingHoles {
+                    first: 0,
+                    second: 1,
+                })
+            );
+        }
+
+        assert!(
+            Profile2::new(
+                outer,
+                vec![hole(1.0, 1.0, 3.0, 3.0), hole(4.0, 1.0, 6.0, 3.0)]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn profile_rejects_overlapping_curved_holes() {
+        fn circular_hole(center_x: f64, radius: f64) -> Loop2 {
+            Loop2::new(vec![
+                Seg2::arc((center_x + radius, 0.0), 1.0),
+                Seg2::arc((center_x - radius, 0.0), 1.0),
+            ])
+            .expect("valid circle")
+            .reversed()
+        }
+
+        let outer = Loop2::new(vec![
+            Seg2::line((-5.0, -5.0)),
+            Seg2::line((5.0, -5.0)),
+            Seg2::line((5.0, 5.0)),
+            Seg2::line((-5.0, 5.0)),
+        ])
+        .expect("valid outer loop");
+        assert_eq!(
+            Profile2::new(
+                outer,
+                vec![circular_hole(-0.75, 1.0), circular_hole(0.75, 1.0)]
+            ),
+            Err(ProfileError::OverlappingHoles {
+                first: 0,
+                second: 1,
+            })
         );
     }
 

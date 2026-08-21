@@ -89,10 +89,42 @@ impl Placement3 {
         }
     }
 
+    /// Rotation about +X by `radians` (libm trig), then translation.
+    #[must_use]
+    pub fn rotate_x_then_translate(radians: f64, x: f64, y: f64, z: f64) -> Self {
+        let (s, c) = libm::sincos(radians);
+        Self {
+            rows: [[1.0, 0.0, 0.0, x], [0.0, c, -s, y], [0.0, s, c, z]],
+        }
+    }
+
+    /// Builds a placement from local basis axes and a translation.
+    ///
+    /// The three axes become the matrix columns: transforming local
+    /// `[1, 0, 0]`, `[0, 1, 0]`, and `[0, 0, 1]` yields `x_axis`, `y_axis`,
+    /// and `z_axis`, respectively. This constructor does not normalize or
+    /// validate the axes; recipe insertion applies the usual placement
+    /// validation.
+    #[must_use]
+    pub const fn from_axes(
+        x_axis: [f64; 3],
+        y_axis: [f64; 3],
+        z_axis: [f64; 3],
+        translation: [f64; 3],
+    ) -> Self {
+        Self {
+            rows: [
+                [x_axis[0], y_axis[0], z_axis[0], translation[0]],
+                [x_axis[1], y_axis[1], z_axis[1], translation[1]],
+                [x_axis[2], y_axis[2], z_axis[2], translation[2]],
+            ],
+        }
+    }
+
     /// Rotation about +Z by `radians` (libm trig), then translation.
     #[must_use]
     pub fn rotate_z_then_translate(radians: f64, x: f64, y: f64, z: f64) -> Self {
-        let (s, c) = (libm::sin(radians), libm::cos(radians));
+        let (s, c) = libm::sincos(radians);
         Self {
             rows: [[c, -s, 0.0, x], [s, c, 0.0, y], [0.0, 0.0, 1.0, z]],
         }
@@ -1528,6 +1560,11 @@ mod tests {
 
     #[test]
     fn placement_constructors() {
+        let x = Placement3::rotate_x_then_translate(core::f64::consts::FRAC_PI_2, 1.0, 2.0, 3.0);
+        // Rotating +Y by 90 degrees about X gives +Z.
+        let y = [x.rows[0][1], x.rows[1][1], x.rows[2][1]];
+        assert!(y[1].abs() < 1e-12 && (y[2] - 1.0).abs() < 1e-12);
+
         let p = Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_2, 1.0, 2.0, 3.0);
         // Rotating +X by 90 degrees about Z gives +Y.
         let x = [p.rows[0][0], p.rows[1][0], p.rows[2][0]];
@@ -1539,6 +1576,21 @@ mod tests {
             [1.0, 2.0, 3.0],
         );
         assert!((e.rows[1][0] - 1.0).abs() < 1e-12);
+
+        let axes = Placement3::from_axes(
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [4.0, 5.0, 6.0],
+        );
+        assert_eq!(
+            axes.rows,
+            [
+                [0.0, 0.0, 1.0, 4.0],
+                [1.0, 0.0, 0.0, 5.0],
+                [0.0, 1.0, 0.0, 6.0]
+            ]
+        );
 
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));

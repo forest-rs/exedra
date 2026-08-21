@@ -227,73 +227,56 @@ fn member_templates<'metadata>(
 }
 
 fn tie_frame(half_nave: f64) -> Placement3 {
-    Placement3 {
-        rows: [
-            [0.0, -1.0, 0.0, TIE_WIDTH * 0.5],
-            [1.0, 0.0, 0.0, -half_nave],
-            [0.0, 0.0, 1.0, TIE_BASE],
-        ],
-    }
+    Placement3::from_axes(
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [TIE_WIDTH * 0.5, -half_nave, TIE_BASE],
+    )
 }
 
 fn rafter_frame(geometry: &TrussGeometry, north: bool) -> Placement3 {
     let offset = RAFTER_DEPTH + ROOF_CLEARANCE;
     if north {
-        Placement3 {
-            rows: [
-                [0.0, -1.0, 0.0, RAFTER_WIDTH * 0.5],
-                [
-                    geometry.roof_cos,
-                    0.0,
-                    geometry.roof_sin,
-                    -geometry.roof_sin * offset,
-                ],
-                [
-                    -geometry.roof_sin,
-                    0.0,
-                    geometry.roof_cos,
-                    geometry.roof_peak - geometry.roof_cos * offset,
-                ],
+        Placement3::from_axes(
+            [0.0, geometry.roof_cos, -geometry.roof_sin],
+            [-1.0, 0.0, 0.0],
+            [0.0, geometry.roof_sin, geometry.roof_cos],
+            [
+                RAFTER_WIDTH * 0.5,
+                -geometry.roof_sin * offset,
+                geometry.roof_peak - geometry.roof_cos * offset,
             ],
-        }
+        )
     } else {
-        Placement3 {
-            rows: [
-                [0.0, 1.0, 0.0, -RAFTER_WIDTH * 0.5],
-                [
-                    -geometry.roof_cos,
-                    0.0,
-                    -geometry.roof_sin,
-                    geometry.roof_sin * offset,
-                ],
-                [
-                    -geometry.roof_sin,
-                    0.0,
-                    geometry.roof_cos,
-                    geometry.roof_peak - geometry.roof_cos * offset,
-                ],
+        Placement3::from_axes(
+            [0.0, -geometry.roof_cos, -geometry.roof_sin],
+            [1.0, 0.0, 0.0],
+            [0.0, -geometry.roof_sin, geometry.roof_cos],
+            [
+                -RAFTER_WIDTH * 0.5,
+                geometry.roof_sin * offset,
+                geometry.roof_peak - geometry.roof_cos * offset,
             ],
-        }
+        )
     }
 }
 
 fn brace_frame(geometry: &TrussGeometry, north: bool) -> Placement3 {
     if north {
-        Placement3 {
-            rows: [
-                [0.0, -1.0, 0.0, BRACE_WIDTH * 0.5],
-                [geometry.brace_cos, 0.0, -geometry.brace_sin, 0.0],
-                [geometry.brace_sin, 0.0, geometry.brace_cos, BRACE_BASE],
-            ],
-        }
+        Placement3::from_axes(
+            [0.0, geometry.brace_cos, geometry.brace_sin],
+            [-1.0, 0.0, 0.0],
+            [0.0, -geometry.brace_sin, geometry.brace_cos],
+            [BRACE_WIDTH * 0.5, 0.0, BRACE_BASE],
+        )
     } else {
-        Placement3 {
-            rows: [
-                [0.0, 1.0, 0.0, -BRACE_WIDTH * 0.5],
-                [-geometry.brace_cos, 0.0, geometry.brace_sin, 0.0],
-                [geometry.brace_sin, 0.0, geometry.brace_cos, BRACE_BASE],
-            ],
-        }
+        Placement3::from_axes(
+            [0.0, -geometry.brace_cos, geometry.brace_sin],
+            [1.0, 0.0, 0.0],
+            [0.0, geometry.brace_sin, geometry.brace_cos],
+            [-BRACE_WIDTH * 0.5, 0.0, BRACE_BASE],
+        )
     }
 }
 
