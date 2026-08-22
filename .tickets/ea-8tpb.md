@@ -2,7 +2,7 @@
 id: ea-8tpb
 status: open
 deps: []
-links: []
+links: [exe-zqct]
 type: bug
 priority: 1
 ---
