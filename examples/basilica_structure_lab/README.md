@@ -88,7 +88,7 @@ key.
 The bright bearing cubes and frame axes are deliberately oversized,
 nonphysical diagnostic markers. The principal-rafter/wall-plate record is an
 `anchor-contact`, not a modeled birdsmouth or heel-seat cut. Detailed mating
-faces belong to the follow-on joint specimen ticket.
+faces belong to the `joiner` promotion ticket (`bsl-6ihj`; see ADR 0002).
 
 This is schema, geometric-coherence, contact, transfer-witness, and load-path
 validation. It is **not** a
