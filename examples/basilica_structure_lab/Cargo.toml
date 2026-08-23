@@ -20,3 +20,4 @@ exedra_assembly = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_math = { features = ["std"], workspace = true }
 joiner = { features = ["std"], workspace = true }
+setout_joiner = { features = ["std"], workspace = true }

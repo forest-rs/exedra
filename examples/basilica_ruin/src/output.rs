@@ -117,12 +117,13 @@ fn write_artifacts(output: &Path, scenario: &Scenario, obj: &str) -> (PathBuf, u
 fn print_scenario_summary(scenario: &Scenario, obj: &str, gltf_meshes: u64) {
     let stats = scene_stats(scenario);
     println!(
-        "basilica instances={} items={} triangles={} vertices={} nave_walls={} aisles={} aisle_roofs={} arches={} interior_arcades={} interior_arcade_openings={} buttresses={} crossing_piers={} crossing_stages={} pendentives={} drum_windows={} cornice_bands={} chancel_openings={} apses={} drums={} domes={} ruined_bays={} nave_trusses={} nave_truss_members={} omitted_nave_trusses={} parts_compiled={} cache_hits={} gltf_meshes={} diagnostics={} fingerprint={:032x} signature={:016x}",
+        "basilica instances={} items={} triangles={} vertices={} nave_walls={} nave_wall_plates={} aisles={} aisle_roofs={} arches={} interior_arcades={} interior_arcade_openings={} buttresses={} crossing_piers={} crossing_stages={} pendentives={} drum_windows={} cornice_bands={} chancel_openings={} apses={} drums={} domes={} ruined_bays={} nave_trusses={} nave_truss_members={} omitted_nave_trusses={} parts_compiled={} cache_hits={} gltf_meshes={} diagnostics={} fingerprint={:032x} signature={:016x}",
         stats.instances,
         stats.render_items,
         stats.triangles,
         stats.vertices,
         scenario.inventory.nave_walls,
+        scenario.inventory.nave_wall_plates,
         scenario.inventory.aisles,
         scenario.inventory.aisle_roofs,
         scenario.inventory.round_head_openings,
@@ -598,7 +599,7 @@ mod tests {
         assert!(obj.contains("g crossing-dome"));
         assert_eq!(
             obj.lines().filter(|line| line.starts_with("g ")).count(),
-            107
+            112
         );
         let vertices = obj.lines().filter(|line| line.starts_with("v ")).count();
         let mut max_index = 0_usize;
@@ -635,11 +636,16 @@ mod tests {
                     .to_string()
             })
             .collect();
-        const ACCEPTED_PATHS: [&str; 71] = [
+        const ACCEPTED_PATHS: [&str; 76] = [
             "nave-wall-north-west",
             "nave-wall-south-west-broken",
             "nave-wall-north-east",
             "nave-wall-south-east",
+            "nave-wall-plate-north-west",
+            "nave-wall-plate-south-west-a",
+            "nave-wall-plate-south-west-b",
+            "nave-wall-plate-north-east",
+            "nave-wall-plate-south-east",
             "aisle-wall-north",
             "aisle-wall-south",
             "west-facade",
@@ -748,12 +754,12 @@ mod tests {
             "nave-truss-east-00-diagonal-brace-south",
         ];
 
-        assert_eq!(instance_paths.len(), 107);
-        assert_eq!(groups.len(), 107);
-        assert_eq!(&instance_paths[..71], ACCEPTED_PATHS);
-        assert_eq!(&groups[..71], ACCEPTED_PATHS);
-        assert_eq!(&instance_paths[71..], TRUSS_PATHS);
-        assert_eq!(&groups[71..], TRUSS_PATHS);
+        assert_eq!(instance_paths.len(), 112);
+        assert_eq!(groups.len(), 112);
+        assert_eq!(&instance_paths[..76], ACCEPTED_PATHS);
+        assert_eq!(&groups[..76], ACCEPTED_PATHS);
+        assert_eq!(&instance_paths[76..], TRUSS_PATHS);
+        assert_eq!(&groups[76..], TRUSS_PATHS);
     }
 
     #[test]
@@ -770,7 +776,7 @@ mod tests {
         );
 
         assert_eq!(proof.changed_parts, [names::parts::CROSSING_DOME]);
-        assert_eq!(proof.groups, 107);
+        assert_eq!(proof.groups, 112);
         assert_eq!(
             proof.groups,
             reconfiguration.warm.assembly.instances().len()

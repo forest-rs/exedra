@@ -6,6 +6,7 @@ use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
 
 use super::{BuildContext, crossing_platform_base};
 use crate::geometry::ruled_loft_recipe;
+use crate::roof_setout::RoofSection;
 use crate::{BasilicaParams, names};
 
 const WEB_OUTER: f64 = 4.18;
@@ -21,10 +22,10 @@ const WEB_TOP_OVERLAP: f64 = 0.02;
 /// section stays over the corner pier/arch shoulders; successive sections
 /// broaden inward until their upper chords overlap the drum footprint. This
 /// preserves the legible load path without blocking the four crossing arches.
-pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams) {
+pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, roof: &RoofSection) {
     let web = context.add_part(
         names::parts::PENDENTIVE_WEB,
-        faceted_pendentive_recipe(crossing_platform_base(p)),
+        faceted_pendentive_recipe(crossing_platform_base(roof)),
         "warm-stone",
     );
     for (key, angle) in [
@@ -91,12 +92,17 @@ mod tests {
     use super::super::crossing_platform_base;
     use super::{WEB_BOTTOM, WEB_OUTER, WEB_TOP_OVERLAP, faceted_pendentive_recipe};
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{BasilicaParams, instances_with_role, names, resolve_instance_path};
+    use crate::{
+        BasilicaParams, BasilicaRoofSetout, instances_with_role, names, resolve_instance_path,
+    };
 
     #[test]
     fn one_pendentive_is_a_clean_outward_oriented_solid() {
         let p = BasilicaParams::default();
-        let platform_base = crossing_platform_base(&p);
+        // The transition must meet the same roof-controlled bearing datum as
+        // production geometry, rather than reconstructing it from parameters.
+        let roof = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let platform_base = crossing_platform_base(roof.section());
         let evaluated = evaluate(
             &faceted_pendentive_recipe(platform_base),
             &EvalPolicy::default(),
@@ -152,7 +158,10 @@ mod tests {
     #[test]
     fn webs_contact_the_bearing_datum_without_entering_the_crossing_floor() {
         let p = BasilicaParams::default();
-        let platform_base = crossing_platform_base(&p);
+        // This assertion guards the interface between setting-out and the
+        // independently tessellated crossing platform.
+        let roof = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let platform_base = crossing_platform_base(roof.section());
         let scenario = build_scenario();
         let (platform_min, _) = bounds_for_path(
             &scenario.compiled,

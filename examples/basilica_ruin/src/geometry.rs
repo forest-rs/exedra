@@ -4,8 +4,10 @@
 use exedra_constructive::builders;
 use exedra_constructive::ir::{CapMode, LoftPolicy, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
+use exedra_math::scale;
+use setout_joiner::lower_point;
 
-use crate::BasilicaParams;
+use crate::{BasilicaParams, RoofSection, RoofSide};
 
 const HALF_PI: f64 = core::f64::consts::FRAC_PI_2;
 
@@ -238,17 +240,18 @@ pub(super) fn drum_panel_profile(width: f64, height: f64, window: bool) -> Profi
     Profile2::new(outer.outer().clone(), vec![hole]).expect("drum window lies inside panel")
 }
 
-pub(super) fn west_facade_profile(p: &BasilicaParams) -> Profile2 {
-    let half_nave = p.nave_width * 0.5;
+pub(super) fn west_facade_profile(p: &BasilicaParams, roof: &RoofSection) -> Profile2 {
+    let half_nave = roof.half_span.as_metres();
     let half_total = p.total_width * 0.5;
-    let peak = p.nave_wall_height + p.roof_rise;
+    let wall_plate_top = roof.wall_plate_top.as_metres();
+    let peak = roof.ridge_height.as_metres();
     let outer = Loop2::new(vec![
         Seg2::line((half_total, 0.0)).tagged(SegTag(0)),
         Seg2::line((half_total, p.aisle_wall_height)).tagged(SegTag(1)),
         Seg2::line((half_nave, p.aisle_wall_height)).tagged(SegTag(2)),
-        Seg2::line((half_nave, p.nave_wall_height)).tagged(SegTag(3)),
+        Seg2::line((half_nave, wall_plate_top)).tagged(SegTag(3)),
         Seg2::line((0.0, peak)).tagged(SegTag(4)),
-        Seg2::line((-half_nave, p.nave_wall_height)).tagged(SegTag(5)),
+        Seg2::line((-half_nave, wall_plate_top)).tagged(SegTag(5)),
         Seg2::line((-half_nave, p.aisle_wall_height)).tagged(SegTag(6)),
         Seg2::line((-half_total, p.aisle_wall_height)).tagged(SegTag(7)),
         Seg2::line((-half_total, 0.0)).tagged(SegTag(8)),
@@ -270,13 +273,14 @@ pub(super) fn gable_profile(width: f64, rise: f64) -> Profile2 {
     .expect("crossing gable winds counter-clockwise")
 }
 
-pub(super) fn east_chancel_profile(p: &BasilicaParams) -> Profile2 {
-    let width = p.nave_width;
+pub(super) fn east_chancel_profile(roof: &RoofSection) -> Profile2 {
+    let width = roof.span.as_metres();
+    let wall_plate_top = roof.wall_plate_top.as_metres();
     let outer = Loop2::new(vec![
         Seg2::line((width, 0.0)).tagged(SegTag(0)),
-        Seg2::line((width, p.nave_wall_height)).tagged(SegTag(1)),
-        Seg2::line((width * 0.5, p.nave_wall_height + p.roof_rise)).tagged(SegTag(2)),
-        Seg2::line((0.0, p.nave_wall_height)).tagged(SegTag(3)),
+        Seg2::line((width, wall_plate_top)).tagged(SegTag(1)),
+        Seg2::line((width * 0.5, roof.ridge_height.as_metres())).tagged(SegTag(2)),
+        Seg2::line((0.0, wall_plate_top)).tagged(SegTag(3)),
         Seg2::line((0.0, 0.0)).tagged(SegTag(4)),
     ])
     .expect("valid chancel gable");
@@ -358,31 +362,31 @@ pub(super) fn centered_vertical_wall_frame(width: f64, thickness: f64) -> Placem
     )
 }
 
-pub(super) fn roof_panel_frame(
-    start_x: f64,
-    run: f64,
-    p: &BasilicaParams,
-    north: bool,
-) -> Placement3 {
-    let angle = libm::atan2(p.roof_rise, run);
-    let (sin, cos) = (libm::sin(angle), libm::cos(angle));
-    let peak = p.nave_wall_height + p.roof_rise;
+pub(super) fn roof_panel_frame(start_x: f64, roof: &RoofSection, north: bool) -> Placement3 {
+    let x_axis = [1.0, 0.0, 0.0];
     if north {
+        let mut ridge = lower_point(roof.ridge_point);
+        ridge[0] = start_x;
+        // The north skin is parameterized ridge-to-eave. Negating the exact
+        // inward structural slope preserves the same pitch through the
+        // overhang without re-running trigonometry in the geometry layer.
+        let ridge_to_eave = scale(roof.inward_slope(RoofSide::North), -1.0);
         Placement3::from_axes(
-            [1.0, 0.0, 0.0],
-            [0.0, cos, -sin],
-            [0.0, sin, cos],
-            [start_x, 0.0, peak],
+            x_axis,
+            ridge_to_eave,
+            roof.outward_normal(RoofSide::North),
+            ridge,
         )
     } else {
-        // Parameterize the south slope from eave to ridge so local +Z points
-        // outward/up, mirroring the north slab instead of thickening inward
-        // into the nave.
+        let mut eave = lower_point(roof.roof_eave(RoofSide::South));
+        eave[0] = start_x;
+        // The south skin runs eave-to-ridge so X×Y remains the outward roof
+        // normal. This keeps both frames right-handed while they mirror.
         Placement3::from_axes(
-            [1.0, 0.0, 0.0],
-            [0.0, cos, sin],
-            [0.0, -sin, cos],
-            [start_x, -run, p.nave_wall_height],
+            x_axis,
+            roof.inward_slope(RoofSide::South),
+            roof.outward_normal(RoofSide::South),
+            eave,
         )
     }
 }
@@ -430,21 +434,19 @@ pub(super) fn aisle_roof_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BasilicaRoofSetout;
 
     #[test]
     fn nave_roof_frames_preserve_the_baseline_and_point_thickness_outward() {
-        const THICKNESS: f64 = 0.28;
-
         let p = BasilicaParams::default();
-        let run = p.nave_width * 0.5 + 0.35;
-        let slope = libm::sqrt(run * run + p.roof_rise * p.roof_rise);
-        let roof_sin = p.roof_rise / slope;
-        let roof_cos = run / slope;
-        let peak = p.nave_wall_height + p.roof_rise;
+        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let roof = setout.section();
+        let slope = roof.roof_slope_length.as_metres();
+        let thickness = roof.roof_skin_depth.as_metres();
         let start_x = 10.75;
         let segment_length = 7.15;
-        let north = roof_panel_frame(start_x, run, &p, true);
-        let south = roof_panel_frame(start_x, run, &p, false);
+        let north = roof_panel_frame(start_x, roof, true);
+        let south = roof_panel_frame(start_x, roof, false);
 
         assert_close(rotation_determinant(&north), 1.0);
         assert_close(rotation_determinant(&south), 1.0);
@@ -453,19 +455,27 @@ mod tests {
         let north_eave = transform_point(&north, [0.0, slope, 0.0]);
         let south_eave = transform_point(&south, [0.0, 0.0, 0.0]);
         let south_ridge = transform_point(&south, [0.0, slope, 0.0]);
-        assert_point_close(north_ridge, [start_x, 0.0, peak]);
-        assert_point_close(north_eave, [start_x, run, p.nave_wall_height]);
-        assert_point_close(south_eave, [start_x, -run, p.nave_wall_height]);
-        assert_point_close(south_ridge, [start_x, 0.0, peak]);
+        let with_x = |point: setout::Point3| {
+            let mut point = lower_point(point);
+            point[0] = start_x;
+            point
+        };
+        assert_point_close(north_ridge, with_x(roof.ridge_point));
+        assert_point_close(north_eave, with_x(roof.north_roof_eave));
+        assert_point_close(south_eave, with_x(roof.south_roof_eave));
+        assert_point_close(south_ridge, with_x(roof.ridge_point));
 
-        for (frame, baseline, normal_y) in [
-            (&north, north_ridge, roof_sin),
-            (&south, south_eave, -roof_sin),
+        for (frame, baseline, normal) in [
+            (&north, north_ridge, roof.outward_normal(RoofSide::North)),
+            (&south, south_eave, roof.outward_normal(RoofSide::South)),
         ] {
-            let outer = transform_point(frame, [0.0, 0.0, THICKNESS]);
-            let signed_thickness =
-                normal_y * (outer[1] - baseline[1]) + roof_cos * (outer[2] - baseline[2]);
-            assert_close(signed_thickness, THICKNESS);
+            // Project the displaced face back onto the resolved outward
+            // normal: roof thickness must not intrude into the nave volume.
+            let outer = transform_point(frame, [0.0, 0.0, thickness]);
+            let signed_thickness = normal[0] * (outer[0] - baseline[0])
+                + normal[1] * (outer[1] - baseline[1])
+                + normal[2] * (outer[2] - baseline[2]);
+            assert_close(signed_thickness, thickness);
         }
 
         for frame in [&north, &south] {
@@ -474,6 +484,24 @@ mod tests {
             assert_close(x0, start_x);
             assert_close(x1, start_x + segment_length);
         }
+    }
+
+    #[test]
+    fn nave_roof_bears_on_the_wall_plate_at_the_wall_line() {
+        // This is the seam the old model only approximated: its roof slope was
+        // drawn from the outer overhang to the ridge, so it passed above the
+        // wall line without being derived from the wall plate. The roof may
+        // overhang beyond this point, but its underside must pass exactly
+        // through the plate top where the load enters the clerestory wall.
+        let p = BasilicaParams::default();
+        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let roof = setout.section();
+        let frame = roof_panel_frame(0.0, roof, true);
+        // The structural rafter length is exactly the ridge-to-seat distance,
+        // so this samples the skin at the actual load-transfer line.
+        let wall_line = transform_point(&frame, [0.0, roof.rafter_length.as_metres(), 0.0]);
+
+        assert_point_close(wall_line, lower_point(roof.north_wall_seat));
     }
 
     fn transform_point(placement: &Placement3, point: [f64; 3]) -> [f64; 3] {

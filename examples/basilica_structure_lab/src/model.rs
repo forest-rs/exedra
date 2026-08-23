@@ -10,7 +10,7 @@
 
 use std::fmt::Write as _;
 
-use basilica_ruin::BasilicaParams;
+use basilica_ruin::{BasilicaParams, BasilicaRoofSetout, RoofSide};
 use exedra_math::{add, cross, norm, normalize, scale, sub};
 use joiner::{
     Anchor, Construction, ContactMeaning, ContactPatch, Element, Evidence, EvidenceClass,
@@ -315,6 +315,7 @@ struct SideData {
     slope: Vec3,
     normal: Vec3,
     outer_eave: Vec3,
+    principal_extent: OrientedBox,
     masonry: String,
     wall_plate: String,
     purlins: Vec<(&'static str, f64, String)>,
@@ -327,37 +328,53 @@ struct SideData {
 )]
 pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
     let mut author = Author::new();
+    let roof_setout = BasilicaRoofSetout::new(params).expect("basilica roof must set out");
+    let roof = roof_setout.section();
 
     let x0 = 0.0;
     let x1 = 4.0;
     let bay_length = x1 - x0;
-    let half_nave = params.nave_width * 0.5;
-    let wall_top = params.nave_wall_height;
-    let roof_length = (half_nave * half_nave + params.roof_rise * params.roof_rise).sqrt();
-    let roof_cos = half_nave / roof_length;
-    let roof_sin = params.roof_rise / roof_length;
+    let half_nave = roof.half_span.as_metres();
+    let wall_top = roof.wall_head.as_metres();
+    let roof_length = roof.rafter_length.as_metres();
 
     let covering_depth = 0.08;
     let boarding_depth = 0.04;
     let common_depth = 0.16;
     let purlin_depth = 0.22;
-    let principal_depth = 0.24;
+    let principal_depth = roof.principal_rafter_depth.as_metres();
+    // Setout endpoints describe the principal-rafter centerline. Secondary
+    // layers therefore accumulate from its outer face, half a depth away,
+    // rather than silently treating that centerline as the timber's inner face.
     let stack_depth =
-        covering_depth + boarding_depth + common_depth + purlin_depth + principal_depth;
+        covering_depth + boarding_depth + common_depth + purlin_depth + principal_depth * 0.5;
     let common_width = 0.12;
     let purlin_width = 0.18;
-    let principal_width = 0.26;
-    let wall_plate_width = 0.30;
-    let wall_plate_height = 0.18;
+    let principal_width = roof.principal_rafter_width.as_metres();
+    let wall_plate_width = roof.wall_plate_width.as_metres();
+    let wall_plate_height = roof.wall_plate_height.as_metres();
     let masonry_width = 0.45;
     let x_axis = [1.0, 0.0, 0.0];
     let z_axis = [0.0, 0.0, 1.0];
 
+    let principal_geometry = [
+        roof_setout
+            .principal_rafter_geometry(RoofSide::South)
+            .expect("south principal rafter resolves"),
+        roof_setout
+            .principal_rafter_geometry(RoofSide::North)
+            .expect("north principal rafter resolves"),
+    ];
     let mut side_data: Vec<SideData> = Vec::new();
-    for (side_name, side) in [("south", -1.0), ("north", 1.0)] {
-        let slope = [0.0, -side * roof_cos, roof_sin];
-        let normal = [0.0, side * roof_sin, roof_cos];
-        let wall_point = [0.0, side * half_nave, wall_top + wall_plate_height];
+    for (index, (side_name, side)) in [("south", -1.0), ("north", 1.0)].into_iter().enumerate() {
+        let resolved = &principal_geometry[index];
+        let slope = resolved.extent.axes[0];
+        let normal = resolved.extent.axes[2];
+        let wall_point = setout_joiner::lower_point(roof.wall_seat(if side < 0.0 {
+            RoofSide::South
+        } else {
+            RoofSide::North
+        }));
         let outer_eave = add(wall_point, scale(normal, stack_depth));
 
         let masonry = author.element(
@@ -576,6 +593,7 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             slope,
             normal,
             outer_eave,
+            principal_extent: resolved.extent.clone(),
             masonry,
             wall_plate,
             purlins,
@@ -585,11 +603,11 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
     for (station_name, station_x) in [("west", x0), ("east", x1)] {
         let south_heel = author.node(
             format!("node-truss-{station_name}-heel-south"),
-            [station_x, -half_nave, wall_top + wall_plate_height],
+            [station_x, -half_nave, roof.wall_plate_top.as_metres()],
         );
         let north_heel = author.node(
             format!("node-truss-{station_name}-heel-north"),
-            [station_x, half_nave, wall_top + wall_plate_height],
+            [station_x, half_nave, roof.wall_plate_top.as_metres()],
         );
         let ridge_inner = add(
             side_data[0].outer_eave,
@@ -613,7 +631,7 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             OrientedBox {
                 origin: [station_x - 0.15, -half_nave, wall_top],
                 axes: [[0.0, 1.0, 0.0], x_axis, z_axis],
-                size: [params.nave_width, 0.30, 0.30],
+                size: [roof.span.as_metres(), 0.30, 0.30],
             },
             EvidenceClass::ModernEngineeringInference,
             2,
@@ -628,7 +646,11 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
         );
         for data in &side_data {
             let (name, side, masonry) = (data.name, data.side, data.masonry.as_str());
-            let local_y = if side < 0.0 { 0.0 } else { params.nave_width };
+            let local_y = if side < 0.0 {
+                0.0
+            } else {
+                roof.span.as_metres()
+            };
             author.bearing(
                 &format!("bearing-tie-{station_name}-on-{name}-masonry"),
                 Anchor::new(&tie, [local_y, 0.15, 0.0]),
@@ -649,23 +671,13 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
 
         let mut station_principals: Vec<(&'static str, String)> = Vec::new();
         for data in &side_data {
-            let (name, side, slope, normal, outer_eave) = (
-                data.name,
-                data.side,
-                data.slope,
-                data.normal,
-                data.outer_eave,
-            );
+            let (name, side, slope, normal) = (data.name, data.side, data.slope, data.normal);
             let wall_plate = data.wall_plate.as_str();
             let key = format!("principal-rafter-{name}-{station_name}");
-            let extent = OrientedBox {
-                origin: add(
-                    [station_x - principal_width * 0.5, 0.0, 0.0],
-                    sub(outer_eave, scale(normal, stack_depth)),
-                ),
-                axes: [slope, x_axis, normal],
-                size: [roof_length, principal_width, principal_depth],
-            };
+            // The adapter is the sole exact-to-f64 lowering for principal
+            // rafters. A station only adds its longitudinal translation.
+            let mut extent = data.principal_extent.clone();
+            extent.origin[0] += station_x;
             let principal = author.element(
                 key.clone(),
                 ElementRole::PrincipalRafter,
@@ -682,7 +694,10 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             );
             author.bearing(
                 &format!("bearing-principal-{name}-{station_name}-on-wall-plate"),
-                Anchor::new(&principal, [0.0, principal_width * 0.5, 0.0]),
+                Anchor::new(
+                    &principal,
+                    [0.0, principal_width * 0.5, principal_depth * 0.5],
+                ),
                 Anchor::new(
                     wall_plate,
                     [station_x - x0, wall_plate_width * 0.5, wall_plate_height],

@@ -13,8 +13,14 @@ use crate::geometry::{
     transverse_wall_frame, vertical_wall_frame,
 };
 use crate::names;
+use crate::roof_setout::RoofSection;
 
-pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layout) {
+pub(super) fn build(
+    context: &mut BuildContext,
+    p: &BasilicaParams,
+    layout: Layout,
+    roof: &RoofSection,
+) {
     let Layout {
         crossing_west,
         crossing_east,
@@ -27,8 +33,8 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
     // crossing-transition system fills the four corners below that ring.
     let crossing_span = crossing_east - crossing_west;
     let half_crossing = crossing_span * 0.5;
-    let drum_base = crossing_drum_base(p);
-    let platform_base = crossing_platform_base(p);
+    let drum_base = crossing_drum_base(roof);
+    let platform_base = crossing_platform_base(roof);
     let pier_size = 1.15;
     let crossing_pier = context.add_part(
         "crossing-pier",

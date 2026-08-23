@@ -10,15 +10,21 @@ use crate::geometry::{
     transverse_wall_frame,
 };
 use crate::names;
+use crate::roof_setout::RoofSection;
 
-pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layout) {
+pub(super) fn build(
+    context: &mut BuildContext,
+    p: &BasilicaParams,
+    layout: Layout,
+    roof: &RoofSection,
+) {
     let half_nave = layout.half_nave;
     // A transverse chancel wall closes the nave roof end while a broad
     // round-headed opening keeps the apse spatially continuous.
     let east_chancel = context.add_part(
         names::parts::EAST_CHANCEL_GABLE,
         extruded_profile_recipe(
-            east_chancel_profile(p),
+            east_chancel_profile(roof),
             0.5,
             transverse_wall_frame(),
             "basilica:east-chancel-gable",
