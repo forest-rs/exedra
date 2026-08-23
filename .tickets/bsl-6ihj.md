@@ -129,3 +129,14 @@ to `exedra::boolean`, not a `joiner` workaround. Profile offset prerequisite
 Validation passed: `typos`, `cargo fmt --all`, `taplo fmt`, workspace clippy
 with warnings denied, all-feature workspace tests, `cargo doc --no-deps`, and
 `cargo check -p joiner --no-default-features`.
+
+## Notes
+
+**2026-08-23T02:00:31Z**
+
+`OrientedBox` is `Placement3` plus an extent. It has no home in `exedra_assembly`
+(instances carry no declared extent; `Aabb3` is a compiled envelope, the opposite
+direction). Candidate: an oriented extent type in `exedra_constructive` beside
+`Placement3`, with `joiner::OrientedBox` a re-export or thin wrapper. Trigger:
+setout Slice D, when exact-endpoint bindings become a second consumer. Do not
+move it on one consumer.
