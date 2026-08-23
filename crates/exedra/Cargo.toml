@@ -10,6 +10,7 @@ keywords = ["mesh", "half-edge", "topology", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+exedra_math.workspace = true
 exedra_triangulate.workspace = true
 hashbrown.workspace = true
 invalidation.workspace = true
@@ -17,8 +18,8 @@ libm = { optional = true, workspace = true }
 
 [features]
 default = ["std"]
-libm = ["dep:libm"]
-std = []
+libm = ["dep:libm", "exedra_math/libm"]
+std = ["exedra_math/std"]
 
 [dev-dependencies]
 exedra_testkit = { features = ["std"], workspace = true }

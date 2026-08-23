@@ -31,6 +31,7 @@ use exedra_triangulate::predicates::{Orientation3d, orient3d};
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::{BooleanCandidatePair, BooleanScratch, BooleanTriangleRef};
 use crate::{CornerId, FaceTriangulation, Mesh};
+use exedra_math::{cross, dot, lerp, sub};
 
 /// How an intersection endpoint relates to one of the two triangles.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -245,30 +246,6 @@ enum PairOutcome {
     Coplanar,
     Degenerate,
     Unstable,
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
 }
 
 /// Exact plane-side signs of `points` against the plane of `(p0, p1, p2)`:

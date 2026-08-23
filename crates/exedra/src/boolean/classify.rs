@@ -50,6 +50,7 @@ use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::graph::IntersectionGraph;
 use super::split::{MeshSide, MeshSplitOutcome};
 use crate::{FaceId, FaceTriangulation, Mesh, VertexId};
+use exedra_math::promote;
 
 /// Which side of the other mesh a patch lies on.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -474,7 +475,7 @@ fn face_contact(
             else {
                 continue;
             };
-            let projected = project_point(promote(p), entry.axis);
+            let projected = project_point(promote(*p), entry.axis);
             own_polygon.push(projected);
             match place_point_in_polygon(projected, counterpart) {
                 Placement::Inside => strictly_inside += 1,
@@ -546,7 +547,7 @@ fn interior_sample_placement(
                 .to_vertex(*corner)
                 .and_then(|v| mesh.vertex_position(v))
             {
-                Some(p) => *slot = promote(p),
+                Some(p) => *slot = promote(*p),
                 None => live = false,
             }
         }
@@ -606,7 +607,7 @@ fn sample_point(
     if let Some(vertex) = best
         && let Some(p) = mesh.vertex_position(vertex)
     {
-        return promote(p);
+        return promote(*p);
     }
     // All patch vertices lie on the cut: sample the centroid of the
     // largest triangle in the patch (patch faces are sorted ascending).
@@ -622,7 +623,7 @@ fn sample_point(
                     .to_vertex(*corner)
                     .and_then(|v| mesh.vertex_position(v))
                 {
-                    Some(p) => *slot = promote(p),
+                    Some(p) => *slot = promote(*p),
                     None => live = false,
                 }
             }
@@ -658,10 +659,6 @@ fn sample_point(
     best_centroid
 }
 
-fn promote(p: &[f32; 3]) -> [f64; 3] {
-    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
-}
-
 /// The fixed ray-direction set: mixed-component directions first (least
 /// likely to graze axis-aligned geometry), axis-aligned last. Documented
 /// order; first non-degenerate ray wins.
@@ -694,7 +691,7 @@ fn ray_parity(
     let mut max = point;
     for vertex in mesh.vertices() {
         if let Some(p) = mesh.vertex_position(vertex) {
-            let p = promote(p);
+            let p = promote(*p);
             for axis in 0..3 {
                 min[axis] = min[axis].min(p[axis]);
                 max[axis] = max[axis].max(p[axis]);
@@ -721,7 +718,7 @@ fn ray_parity(
                         .to_vertex(*corner)
                         .and_then(|v| mesh.vertex_position(v))
                     {
-                        Some(p) => *slot = promote(p),
+                        Some(p) => *slot = promote(*p),
                         None => live = false,
                     }
                 }

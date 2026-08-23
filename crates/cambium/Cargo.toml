@@ -14,13 +14,14 @@ exedra.workspace = true
 exedra_analytic.workspace = true
 exedra_assembly.workspace = true
 exedra_constructive.workspace = true
+exedra_math.workspace = true
 invalidation.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]
 default = ["std"]
-libm = ["dep:libm", "exedra/libm", "exedra_analytic/libm"]
-std = ["exedra/std", "exedra_analytic/std", "exedra_constructive/std"]
+libm = ["dep:libm", "exedra/libm", "exedra_analytic/libm", "exedra_math/libm"]
+std = ["exedra/std", "exedra_analytic/std", "exedra_constructive/std", "exedra_math/std"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time.workspace = true

@@ -11,6 +11,7 @@
 use std::fmt::Write as _;
 
 use basilica_ruin::BasilicaParams;
+use exedra_math::{add, cross, norm, normalize, scale, sub};
 use joiner::{
     Anchor, Construction, ContactMeaning, ContactPatch, Element, Evidence, EvidenceClass,
     EvidenceSource, Member, Node, OrientedBox, Relation, RelationKind, Support, TransferEdge,
@@ -1145,7 +1146,8 @@ fn beam_between(from: Vec3, to: Vec3, width: f64, depth: f64) -> OrientedBox {
     let length = norm(delta);
     let along = scale(delta, 1.0 / length);
     let across = [1.0, 0.0, 0.0];
-    let normal = normalize(cross(along, across));
+    let normal =
+        normalize(cross(along, across)).expect("authored beam directions are non-degenerate");
     OrientedBox {
         origin: sub(
             sub(from, scale(across, width * 0.5)),
@@ -1154,30 +1156,6 @@ fn beam_between(from: Vec3, to: Vec3, width: f64, depth: f64) -> OrientedBox {
         axes: [along, across, normal],
         size: [length, width, depth],
     }
-}
-
-pub(crate) fn add(a: Vec3, b: Vec3) -> Vec3 {
-    joiner::geometry::add(a, b)
-}
-
-pub(crate) fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    joiner::geometry::sub(a, b)
-}
-
-pub(crate) fn scale(a: Vec3, factor: f64) -> Vec3 {
-    joiner::geometry::scale(a, factor)
-}
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    joiner::geometry::cross(a, b)
-}
-
-fn norm(a: Vec3) -> f64 {
-    joiner::geometry::norm(a)
-}
-
-fn normalize(a: Vec3) -> Vec3 {
-    joiner::geometry::normalize(a).expect("authored beam directions are non-degenerate")
 }
 
 #[cfg(test)]

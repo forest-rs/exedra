@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::ScalarField;
+use exedra_math::lerp;
 
 /// Hermite data at one edge-surface intersection.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -156,14 +157,6 @@ fn sample_gradient<F: ScalarField>(
 
 fn same_sign(a: f32, b: f32) -> bool {
     (a < 0.0 && b < 0.0) || (a > 0.0 && b > 0.0)
-}
-
-fn lerp(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
 }
 
 #[cfg(test)]

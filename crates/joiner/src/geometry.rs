@@ -1,19 +1,26 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Declared structural extents and the small vector algebra the graph needs.
+//! Declared structural extents.
 //!
 //! This module is deliberately tiny. `joiner` owns no geometry math: cuts,
 //! offsets, booleans, and tessellation belong to `exedra_constructive` and
-//! `exedra`. What lives here is the *analytic proxy* every element declares
-//! for itself — an [`OrientedBox`] extent — plus the dot/cross arithmetic
-//! that contact validation measures with. Nothing here evaluates a recipe or
-//! touches a mesh.
+//! `exedra`, and vector arithmetic to `exedra_math`. What lives here is the
+//! *analytic proxy* every element declares for itself — an [`OrientedBox`]
+//! extent — and the tolerance its frame is held to. Nothing here evaluates a
+//! recipe or touches a mesh.
 
 use exedra_constructive::ir::Placement3;
+use exedra_math::{add, dot, finite, is_orthogonal_frame, is_unit, scale, sub};
 
 /// A point or direction in world space, in metres.
 pub type Vec3 = [f64; 3];
+
+/// How far a declared frame may stray from unit length and orthogonality
+/// before [`crate::validate()`] reports it. A published number, like
+/// [`crate::CONTACT_TOLERANCE`]: authored axes are expected to be exact to
+/// well within it.
+pub const FRAME_TOLERANCE: f64 = 1.0e-9;
 
 /// The declared structural extent of an element: an oriented box.
 ///
@@ -113,8 +120,8 @@ impl OrientedBox {
         finite(self.origin)
             && finite(self.size)
             && self.size.iter().all(|value| *value > 0.0)
-            && self.axes.iter().copied().all(is_unit)
-            && is_orthogonal_frame(self.axes)
+            && self.axes.iter().all(|axis| is_unit(*axis, FRAME_TOLERANCE))
+            && is_orthogonal_frame(self.axes, FRAME_TOLERANCE)
     }
 
     /// The projection of the box onto `axis`, as a `(minimum, maximum)`
@@ -127,78 +134,6 @@ impl OrientedBox {
             .sum::<f64>();
         (center - radius, center + radius)
     }
-}
-
-/// Componentwise sum.
-#[must_use]
-pub fn add(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-/// Componentwise difference.
-#[must_use]
-pub fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-/// Uniform scaling.
-#[must_use]
-pub fn scale(a: Vec3, factor: f64) -> Vec3 {
-    [a[0] * factor, a[1] * factor, a[2] * factor]
-}
-
-/// Dot product.
-#[must_use]
-pub fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Cross product.
-#[must_use]
-pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-/// Euclidean length, through `libm` so `no_std` builds stay identical.
-#[must_use]
-pub fn norm(a: Vec3) -> f64 {
-    libm::sqrt(dot(a, a))
-}
-
-/// The unit vector along `a`, or `None` when `a` is degenerate or
-/// non-finite.
-#[must_use]
-pub fn normalize(a: Vec3) -> Option<Vec3> {
-    let length = norm(a);
-    if !length.is_finite() || length <= 0.0 {
-        return None;
-    }
-    let unit = scale(a, 1.0 / length);
-    finite(unit).then_some(unit)
-}
-
-/// Whether every component is finite.
-#[must_use]
-pub fn finite(a: Vec3) -> bool {
-    a.iter().all(|value| value.is_finite())
-}
-
-/// Whether `a` is finite and of unit length within `1e-9`.
-#[must_use]
-pub fn is_unit(a: Vec3) -> bool {
-    finite(a) && (norm(a) - 1.0).abs() < 1.0e-9
-}
-
-/// Whether three axes are mutually orthogonal within `1e-9`.
-#[must_use]
-pub fn is_orthogonal_frame(axes: [Vec3; 3]) -> bool {
-    dot(axes[0], axes[1]).abs() <= 1.0e-9
-        && dot(axes[0], axes[2]).abs() <= 1.0e-9
-        && dot(axes[1], axes[2]).abs() <= 1.0e-9
 }
 
 /// The length of the overlap between two closed intervals, never negative.
@@ -260,14 +195,12 @@ mod tests {
             reflected.is_well_formed(),
             "reflected local frames are explicit and supported"
         );
-        assert_eq!(normalize([0.0; 3]), None, "degenerate direction");
-        assert_eq!(
-            normalize([f64::NAN, 0.0, 0.0]),
-            None,
-            "non-finite direction"
-        );
-        assert_eq!(normalize([0.0, 3.0, 0.0]), Some([0.0, 1.0, 0.0]));
-        assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+        let nan = OrientedBox {
+            origin: [0.0; 3],
+            axes: [[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            size: [1.0; 3],
+        };
+        assert!(!nan.is_well_formed(), "non-finite axes are malformed");
     }
 
     #[test]

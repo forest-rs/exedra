@@ -6,6 +6,7 @@
 use exedra_spatial::Aabb;
 
 use crate::{ProvenanceField, ScalarField, SpecializableField};
+use exedra_math::{add, dot, normalize, scale, sub};
 
 /// Translation wrapper for any scalar field.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -115,12 +116,12 @@ impl RigidTransform3 {
         y_axis: [f32; 3],
         z_axis: [f32; 3],
     ) -> Option<Self> {
-        let x_axis = normalize3(x_axis)?;
-        let y_axis = normalize3(y_axis)?;
-        let z_axis = normalize3(z_axis)?;
-        if abs(dot3(x_axis, y_axis)) > 1.0e-4
-            || abs(dot3(x_axis, z_axis)) > 1.0e-4
-            || abs(dot3(y_axis, z_axis)) > 1.0e-4
+        let x_axis = normalize(x_axis)?;
+        let y_axis = normalize(y_axis)?;
+        let z_axis = normalize(z_axis)?;
+        if abs(dot(x_axis, y_axis)) > 1.0e-4
+            || abs(dot(x_axis, z_axis)) > 1.0e-4
+            || abs(dot(y_axis, z_axis)) > 1.0e-4
         {
             return None;
         }
@@ -159,20 +160,20 @@ impl RigidTransform3 {
     /// Maps a world-space point into local coordinates.
     #[must_use]
     pub fn world_to_local_point(&self, point: [f32; 3]) -> [f32; 3] {
-        let delta = sub3(point, self.origin);
+        let delta = sub(point, self.origin);
         [
-            dot3(delta, self.x_axis),
-            dot3(delta, self.y_axis),
-            dot3(delta, self.z_axis),
+            dot(delta, self.x_axis),
+            dot(delta, self.y_axis),
+            dot(delta, self.z_axis),
         ]
     }
 
     /// Maps a local-space vector into world coordinates.
     #[must_use]
     pub fn local_to_world_vector(&self, vector: [f32; 3]) -> [f32; 3] {
-        add3(
-            add3(mul3(self.x_axis, vector[0]), mul3(self.y_axis, vector[1])),
-            mul3(self.z_axis, vector[2]),
+        add(
+            add(scale(self.x_axis, vector[0]), scale(self.y_axis, vector[1])),
+            scale(self.z_axis, vector[2]),
         )
     }
 
@@ -219,7 +220,7 @@ impl<F: ScalarField> ScalarField for Translate<F> {
         let mut local_points = [[0.0; 3]; 16];
         for (points, out) in points.chunks(16).zip(out.chunks_mut(16)) {
             for (index, point) in points.iter().enumerate() {
-                local_points[index] = sub3(*point, self.offset);
+                local_points[index] = sub(*point, self.offset);
             }
             self.field
                 .eval_points(points_to_local(points, &local_points), out);
@@ -231,7 +232,7 @@ impl<F: ScalarField> ScalarField for Translate<F> {
         let mut local_points = [[0.0; 3]; 16];
         for (points, out) in points.chunks(16).zip(out.chunks_mut(16)) {
             for (index, point) in points.iter().enumerate() {
-                local_points[index] = sub3(*point, self.offset);
+                local_points[index] = sub(*point, self.offset);
             }
             self.field
                 .eval_gradients(points_to_local(points, &local_points), out);
@@ -252,7 +253,7 @@ impl<F: ScalarField> ScalarField for UniformScale<F> {
         let mut local_points = [[0.0; 3]; 16];
         for (points, out) in points.chunks(16).zip(out.chunks_mut(16)) {
             for (index, point) in points.iter().enumerate() {
-                local_points[index] = mul3(*point, 1.0 / self.factor);
+                local_points[index] = scale(*point, 1.0 / self.factor);
             }
             self.field
                 .eval_points(points_to_local(points, &local_points), out);
@@ -267,7 +268,7 @@ impl<F: ScalarField> ScalarField for UniformScale<F> {
         let mut local_points = [[0.0; 3]; 16];
         for (points, out) in points.chunks(16).zip(out.chunks_mut(16)) {
             for (index, point) in points.iter().enumerate() {
-                local_points[index] = mul3(*point, 1.0 / self.factor);
+                local_points[index] = scale(*point, 1.0 / self.factor);
             }
             self.field
                 .eval_gradients(points_to_local(points, &local_points), out);
@@ -356,7 +357,7 @@ impl<F: ProvenanceField> ProvenanceField for Translate<F> {
     }
 
     fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
-        self.field.point_provenance(sub3(point, self.offset))
+        self.field.point_provenance(sub(point, self.offset))
     }
 }
 
@@ -376,7 +377,7 @@ impl<F: ProvenanceField> ProvenanceField for UniformScale<F> {
     }
 
     fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
-        self.field.point_provenance(mul3(point, 1.0 / self.factor))
+        self.field.point_provenance(scale(point, 1.0 / self.factor))
     }
 }
 
@@ -399,12 +400,12 @@ fn points_to_local<'a>(points: &[[f32; 3]], local_points: &'a [[f32; 3]; 16]) ->
 }
 
 fn translate_bounds(bounds: &Aabb, offset: [f32; 3]) -> Option<Aabb> {
-    Aabb::new(add3(bounds.min, offset), add3(bounds.max, offset))
+    Aabb::new(add(bounds.min, offset), add(bounds.max, offset))
 }
 
 fn scale_bounds(bounds: &Aabb, factor: f32) -> Option<Aabb> {
-    let min = mul3(bounds.min, factor);
-    let max = mul3(bounds.max, factor);
+    let min = scale(bounds.min, factor);
+    let max = scale(bounds.max, factor);
     Aabb::new(min3(min, max), max3(min, max))
 }
 
@@ -425,22 +426,6 @@ fn assert_same_len(expected: usize, found: usize, label: &str) {
     assert_eq!(expected, found, "{label} slice lengths must match");
 }
 
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn mul3(a: [f32; 3], scalar: f32) -> [f32; 3] {
-    [a[0] * scalar, a[1] * scalar, a[2] * scalar]
-}
-
 fn neg3(vector: [f32; 3]) -> [f32; 3] {
     [-vector[0], -vector[1], -vector[2]]
 }
@@ -453,17 +438,6 @@ fn min3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])]
 }
 
-fn normalize3(vector: [f32; 3]) -> Option<[f32; 3]> {
-    if !vector.iter().all(|component| component.is_finite()) {
-        return None;
-    }
-    let vector_length = sqrt(dot3(vector, vector));
-    if vector_length == 0.0 {
-        return None;
-    }
-    Some(mul3(vector, 1.0 / vector_length))
-}
-
 fn abs(value: f32) -> f32 {
     #[cfg(feature = "std")]
     {
@@ -473,16 +447,6 @@ fn abs(value: f32) -> f32 {
     {
         libm::fabsf(value)
     }
-}
-
-#[cfg(feature = "std")]
-fn sqrt(value: f32) -> f32 {
-    value.sqrt()
-}
-
-#[cfg(all(not(feature = "std"), feature = "libm"))]
-fn sqrt(value: f32) -> f32 {
-    libm::sqrtf(value)
 }
 
 #[cfg(test)]

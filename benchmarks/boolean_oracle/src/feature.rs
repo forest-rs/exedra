@@ -15,6 +15,7 @@ use exedra_isosurface::{
     DualContourParams, EdgeSearchParams, SemiAnalyticContourResult, SemiAnalyticField, Translate,
     UniformScale, dual_contour, dual_contour_semi_analytic,
 };
+use exedra_math::{add, dot, scale, sub};
 use exedra_qef::QefParams;
 use exedra_spatial::Aabb;
 
@@ -513,7 +514,7 @@ fn cylinder_residual(point: [f32; 3], geometry: Geometry) -> f32 {
     let axis = normalize(geometry.cylinder_axis);
     let delta = sub(point, geometry.cylinder_center);
     let axial = dot(delta, axis);
-    let radial_vector = sub(delta, mul(axis, axial));
+    let radial_vector = sub(delta, scale(axis, axial));
     let radial = dot(radial_vector, radial_vector).sqrt();
     let side = radial - geometry.cylinder_radius;
     let cap = axial.abs() - geometry.cylinder_half_height;
@@ -526,24 +527,7 @@ fn joint_implicit_residual(point: [f32; 3], geometry: Geometry) -> f32 {
 }
 
 fn normalize(value: [f32; 3]) -> [f32; 3] {
-    let inverse_length = dot(value, value).sqrt().recip();
-    mul(value, inverse_length)
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn mul(value: [f32; 3], factor: f32) -> [f32; 3] {
-    [value[0] * factor, value[1] * factor, value[2] * factor]
+    exedra_math::normalize(value).unwrap_or([f32::NAN; 3])
 }
 
 fn mesh_signature(mesh: &Mesh) -> u64 {

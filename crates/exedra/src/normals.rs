@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use crate::math::FloatExt;
 use crate::{CornerId, FaceId, HalfEdgeId, Mesh};
+use exedra_math::{dot, normalize, sub};
 
 /// Weighting mode used for derived corner normals.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -280,7 +281,7 @@ fn edge_is_sharp_between(
     let Some(normal_b) = face_normal_data(face_b, face_normals) else {
         return true;
     };
-    let dot = dot3(normal_a.unit, normal_b.unit).clamp(-1.0, 1.0);
+    let dot = dot(normal_a.unit, normal_b.unit).clamp(-1.0, 1.0);
     let threshold_radians = threshold_degrees * core::f32::consts::PI / 180.0;
     dot <= threshold_radians.cos_ext()
 }
@@ -319,29 +320,19 @@ fn corner_angle(mesh: &Mesh, corner: CornerId) -> Option<f32> {
     let center = mesh.vertex_position(vertex)?;
     let prev = mesh.vertex_position(prev_vertex)?;
     let next = mesh.vertex_position(next_vertex)?;
-    let a = sub3(*prev, *center);
-    let b = sub3(*next, *center);
+    let a = sub(*prev, *center);
+    let b = sub(*next, *center);
     let a_unit = normalize3(a)?;
     let b_unit = normalize3(b)?;
-    let dot = dot3(a_unit, b_unit).clamp(-1.0, 1.0);
+    let dot = dot(a_unit, b_unit).clamp(-1.0, 1.0);
     Some(dot.acos_ext())
 }
 
 fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
-    let len_sq = dot3(value, value);
-    if len_sq <= 1.0e-12 {
+    if dot(value, value) <= 1.0e-12 {
         return None;
     }
-    let inv = 1.0 / len_sq.sqrt_ext();
-    Some([value[0] * inv, value[1] * inv, value[2] * inv])
-}
-
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    normalize(value)
 }
 
 #[cfg(test)]

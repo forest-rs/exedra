@@ -6,6 +6,7 @@
 use exedra_spatial::Aabb;
 
 use crate::{ProvenanceField, ScalarField};
+use exedra_math::{add, dot, norm, normalize, scale, sub};
 
 /// Analytic sphere signed-distance field.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -175,15 +176,15 @@ impl ScalarField for SphereField {
             farthest_axis(self.center[2], bounds.min[2], bounds.max[2]),
         ];
         Some([
-            length(sub(nearest, self.center)) - self.radius,
-            length(sub(furthest, self.center)) - self.radius,
+            norm(sub(nearest, self.center)) - self.radius,
+            norm(sub(furthest, self.center)) - self.radius,
         ])
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
         assert_same_len(points.len(), out.len(), "point/value");
         for (index, point) in points.iter().enumerate() {
-            out[index] = length(sub(*point, self.center)) - self.radius;
+            out[index] = norm(sub(*point, self.center)) - self.radius;
         }
     }
 
@@ -191,7 +192,7 @@ impl ScalarField for SphereField {
         assert_same_len(points.len(), out.len(), "point/gradient");
         for (index, point) in points.iter().enumerate() {
             let delta = sub(*point, self.center);
-            let distance = length(delta);
+            let distance = norm(delta);
             out[index][0] = distance - self.radius;
             out[index][1..4].copy_from_slice(&normalize_or_nan(delta));
         }
@@ -219,7 +220,7 @@ impl ScalarField for BoxField {
             let abs_delta = abs3(delta);
             let q = sub(abs_delta, self.half_extents);
             let outside = max3(q, [0.0; 3]);
-            let outside_distance = length(outside);
+            let outside_distance = norm(outside);
             out[index][0] = box_sdf_from_q(q);
             out[index][1..4].copy_from_slice(&box_gradient(delta, q, outside, outside_distance));
         }
@@ -274,11 +275,11 @@ impl ScalarField for TorusField {
 
 impl ScalarField for HalfSpaceField {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        let normal = normalize3(self.normal)?;
-        let mut minimum = dot3(normal, sub(bounds.min, self.point));
+        let normal = normalize(self.normal)?;
+        let mut minimum = dot(normal, sub(bounds.min, self.point));
         let mut maximum = minimum;
         for corner in corners(bounds) {
-            let value = dot3(normal, sub(corner, self.point));
+            let value = dot(normal, sub(corner, self.point));
             minimum = minimum.min(value);
             maximum = maximum.max(value);
         }
@@ -289,7 +290,7 @@ impl ScalarField for HalfSpaceField {
         assert_same_len(points.len(), out.len(), "point/value");
         let gradient = normalize_or_nan(self.normal);
         for (index, point) in points.iter().enumerate() {
-            out[index] = dot3(gradient, sub(*point, self.point));
+            out[index] = dot(gradient, sub(*point, self.point));
         }
     }
 
@@ -297,7 +298,7 @@ impl ScalarField for HalfSpaceField {
         assert_same_len(points.len(), out.len(), "point/gradient");
         let gradient = normalize_or_nan(self.normal);
         for (index, point) in points.iter().enumerate() {
-            out[index][0] = dot3(gradient, sub(*point, self.point));
+            out[index][0] = dot(gradient, sub(*point, self.point));
             out[index][1..4].copy_from_slice(&gradient);
         }
     }
@@ -721,14 +722,14 @@ fn box_gradient(
 }
 
 fn cylinder_distance_and_gradient(point: [f32; 3], cylinder: &CylinderField) -> (f32, [f32; 3]) {
-    let Some(axis) = normalize3(cylinder.axis) else {
+    let Some(axis) = normalize(cylinder.axis) else {
         return (f32::NAN, [f32::NAN; 3]);
     };
     let delta = sub(point, cylinder.center);
-    let axial = dot3(delta, axis);
-    let axial_component = mul3(axis, axial);
+    let axial = dot(delta, axis);
+    let axial_component = scale(axis, axial);
     let radial = sub(delta, axial_component);
-    let radial_length = length(radial);
+    let radial_length = norm(radial);
     let q = [
         radial_length - cylinder.radius,
         abs(axial) - cylinder.half_height,
@@ -739,10 +740,10 @@ fn cylinder_distance_and_gradient(point: [f32; 3], cylinder: &CylinderField) -> 
 
     if outside_distance > 0.0 {
         let radial_dir = normalize_or_nan(radial);
-        let axial_dir = mul3(axis, sign_nonzero(axial).unwrap_or(f32::NAN));
-        let gradient = add3(
-            mul3(radial_dir, outside[0] / outside_distance),
-            mul3(axial_dir, outside[1] / outside_distance),
+        let axial_dir = scale(axis, sign_nonzero(axial).unwrap_or(f32::NAN));
+        let gradient = add(
+            scale(radial_dir, outside[0] / outside_distance),
+            scale(axial_dir, outside[1] / outside_distance),
         );
         return (distance, gradient);
     }
@@ -755,18 +756,18 @@ fn cylinder_distance_and_gradient(point: [f32; 3], cylinder: &CylinderField) -> 
     }
     (
         distance,
-        mul3(axis, sign_nonzero(axial).unwrap_or(f32::NAN)),
+        scale(axis, sign_nonzero(axial).unwrap_or(f32::NAN)),
     )
 }
 
 fn torus_distance_and_gradient(point: [f32; 3], torus: &TorusField) -> (f32, [f32; 3]) {
-    let Some(axis) = normalize3(torus.axis) else {
+    let Some(axis) = normalize(torus.axis) else {
         return (f32::NAN, [f32::NAN; 3]);
     };
     let delta = sub(point, torus.center);
-    let axial = dot3(delta, axis);
-    let radial = sub(delta, mul3(axis, axial));
-    let radial_length = length(radial);
+    let axial = dot(delta, axis);
+    let radial = sub(delta, scale(axis, axial));
+    let radial_length = norm(radial);
     let q = [radial_length - torus.major_radius, axial];
     let q_length = length2(q);
     let distance = q_length - torus.minor_radius;
@@ -775,10 +776,10 @@ fn torus_distance_and_gradient(point: [f32; 3], torus: &TorusField) -> (f32, [f3
         return (distance, [f32::NAN; 3]);
     }
 
-    let radial_dir = mul3(radial, 1.0 / radial_length);
-    let gradient = add3(
-        mul3(radial_dir, q[0] / q_length),
-        mul3(axis, q[1] / q_length),
+    let radial_dir = scale(radial, 1.0 / radial_length);
+    let gradient = add(
+        scale(radial_dir, q[0] / q_length),
+        scale(axis, q[1] / q_length),
     );
     (distance, gradient)
 }
@@ -822,7 +823,7 @@ fn exact_box_interval(field: &BoxField, bounds: &Aabb) -> Option<[f32; 2]> {
 }
 
 fn box_sdf_from_q(q: [f32; 3]) -> f32 {
-    length(max3(q, [0.0; 3])) + q[0].max(q[1].max(q[2])).min(0.0)
+    norm(max3(q, [0.0; 3])) + q[0].max(q[1].max(q[2])).min(0.0)
 }
 
 fn conservative_sampled_interval<F: ScalarField>(field: &F, bounds: &Aabb) -> [f32; 2] {
@@ -830,7 +831,7 @@ fn conservative_sampled_interval<F: ScalarField>(field: &F, bounds: &Aabb) -> [f
     let mut values = [0.0_f32; 9];
     field.eval_points(&samples, &mut values);
 
-    let inflation = length(sub(bounds.max, bounds.min));
+    let inflation = norm(sub(bounds.max, bounds.min));
     let mut minimum = values[0];
     let mut maximum = values[0];
     for value in values {
@@ -923,22 +924,6 @@ fn farthest_axis(center: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn mul3(a: [f32; 3], scalar: f32) -> [f32; 3] {
-    [a[0] * scalar, a[1] * scalar, a[2] * scalar]
-}
-
 fn abs(value: f32) -> f32 {
     #[cfg(feature = "std")]
     {
@@ -958,27 +943,12 @@ fn max3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]
 }
 
-fn length(vector: [f32; 3]) -> f32 {
-    sqrt(dot3(vector, vector))
-}
-
 fn length2(vector: [f32; 2]) -> f32 {
     sqrt(vector[0] * vector[0] + vector[1] * vector[1])
 }
 
-fn normalize3(vector: [f32; 3]) -> Option<[f32; 3]> {
-    if !vector.iter().all(|component| component.is_finite()) {
-        return None;
-    }
-    let vector_length = length(vector);
-    if vector_length == 0.0 {
-        return None;
-    }
-    Some(mul3(vector, 1.0 / vector_length))
-}
-
 fn normalize_or_nan(vector: [f32; 3]) -> [f32; 3] {
-    normalize3(vector).unwrap_or([f32::NAN; 3])
+    normalize(vector).unwrap_or([f32::NAN; 3])
 }
 
 #[cfg(feature = "std")]

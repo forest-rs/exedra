@@ -6,6 +6,7 @@
 use exedra::{ExtractParams, Mesh};
 
 use crate::fixture::RectPatch;
+use exedra_math::{add, cross, dot, norm, scale as mul, sub};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct Triangle {
@@ -408,31 +409,7 @@ fn centroid(triangle: [[f64; 3]; 3]) -> [f64; 3] {
 }
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    dot(sub(a, b), sub(a, b)).sqrt()
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn mul(value: [f64; 3], factor: f64) -> [f64; 3] {
-    [value[0] * factor, value[1] * factor, value[2] * factor]
+    norm(sub(a, b))
 }
 
 #[cfg(test)]

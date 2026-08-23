@@ -13,7 +13,8 @@ use joiner::{
     Construction, OrientedBox, TransferKind, TransferTarget, instance_path, lower_selected,
 };
 
-use crate::model::{ElementRole, Vec3, add, scale, sub};
+use crate::model::{ElementRole, Vec3};
+use exedra_math::{add, cross, dot, normalize, scale, sub};
 
 const SELECTED_BEARING: &str = "bearing-principal-south-east-on-wall-plate";
 #[cfg(test)]
@@ -380,8 +381,9 @@ fn beam_between(from: Vec3, to: Vec3, width: f64) -> OrientedBox {
     } else {
         [0.0, 1.0, 0.0]
     };
-    let across = normalize(cross(reference, along));
-    let normal = normalize(cross(along, across));
+    let across =
+        normalize(cross(reference, along)).expect("authored frame axes are non-degenerate");
+    let normal = normalize(cross(along, across)).expect("authored frame axes are non-degenerate");
     OrientedBox {
         origin: sub(
             sub(from, scale(across, width * 0.5)),
@@ -531,22 +533,6 @@ fn linear_determinant(placement: &Placement3) -> f64 {
     rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
         - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
         + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0])
-}
-
-fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(value: Vec3) -> Vec3 {
-    scale(value, 1.0 / dot(value, value).sqrt())
 }
 
 #[cfg(test)]

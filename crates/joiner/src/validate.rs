@@ -34,12 +34,12 @@ use alloc::{format, vec};
 
 use hashbrown::HashSet;
 
+use exedra_math::{dot, finite, is_orthogonal_frame, is_unit, norm, sub};
+
 use crate::construction::{Construction, ElementId};
 use crate::element::Element;
 use crate::evidence::Evidence;
-use crate::geometry::{
-    Vec3, dot, finite, interval_overlap, is_orthogonal_frame, is_unit, norm, sub,
-};
+use crate::geometry::{FRAME_TOLERANCE, Vec3, interval_overlap};
 use crate::relation::RelationKind;
 use crate::rule::{ContactMeaning, ContactPatch, TransferEdge, TransferKind, TransferTarget};
 
@@ -271,9 +271,11 @@ fn contact_is_valid_witness(construction: &Construction, contact: &ContactPatch)
 }
 
 fn valid_contact_frame(normal: Vec3, tangents: [Vec3; 2]) -> bool {
-    is_unit(normal)
-        && tangents.iter().copied().all(is_unit)
-        && is_orthogonal_frame([normal, tangents[0], tangents[1]])
+    is_unit(normal, FRAME_TOLERANCE)
+        && tangents
+            .iter()
+            .all(|tangent| is_unit(*tangent, FRAME_TOLERANCE))
+        && is_orthogonal_frame([normal, tangents[0], tangents[1]], FRAME_TOLERANCE)
 }
 
 /// Traces a named route from `element` to ground, or `None` when no witnessed
