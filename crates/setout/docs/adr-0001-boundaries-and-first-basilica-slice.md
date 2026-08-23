@@ -20,10 +20,11 @@ load-path validation, dirty channels, and lowering to `exedra_assembly`.
 arrays. The basilica structure lab consumes `joiner`.
 
 The remaining defect is upstream of construction. Roof dimensions, endpoints,
-and world-space anchors are still authored or recomputed independently. They
-agree by convention instead of following from one set of premises. The basilica
-also needs to explain the historical basis of those premises without making
-historical reconstruction vocabulary universal arithmetic policy.
+and world-space anchors are still authored or recomputed independently in the
+accepted ruin's geometry helpers, its nave-truss builder, and the structure lab.
+They agree by convention instead of following from one set of premises. The
+basilica also needs to explain the historical basis of those premises without
+making historical reconstruction vocabulary universal arithmetic policy.
 
 The long-term design adds deterministic generative expansion, but the first
 milestone must reach a real basilica contact seam before that broader layer
@@ -169,7 +170,9 @@ or applies a rule implicitly.
 ## First milestone
 
 The first milestone is the exact basilica roof spine, delivered as reviewable
-slices rather than one unreviewable commit.
+slices rather than one unreviewable commit. It must improve the accepted
+`basilica_ruin` as well as the structure lab: both consume one frontend-owned
+roof hypothesis, and neither independently recomputes its derived geometry.
 
 1. `setout`: typed quantities; exact iota `Length` and `Point3`; checked
    `Rational`; stable claim, support, candidate, and decision identity;
@@ -178,8 +181,9 @@ slices rather than one unreviewable commit.
    counterfactuals; strict access; explain; fingerprints; from-scratch oracle.
 2. `setout_joiner`: segment-member and box bindings; one-time exact-to-float
    lowering; stable key mapping; delta-to-dirty mapping; the basilica roof
-   fixture deriving rafter foot, head, and slope length without a duplicated
-   frontend world coordinate; joiner contact and recipe validation still pass.
+   fixture deriving wall-plate, ridge, gable, roof-skin, and rafter geometry
+   without duplicated frontend world coordinates; joiner contact, recipe, and
+   load-path validation still pass.
 3. `setout_reconstruction`: source and calculation axes; limiting-premise
    assessment; explicit proposals; analysis-only invalidation; annotated roof
    explain. It does not automatically replace joiner evidence.
@@ -187,6 +191,13 @@ slices rather than one unreviewable commit.
 `setout_generate` follows with stable invocations, labeled choices, strict staged
 expansion, orphaned overrides, and incremental equivalence. It does not land as a
 placeholder in the first milestone.
+
+The milestone also proves a roof-rise or pitch edit end to end. The evaluation
+names the changed quantities, the adapter maps them to the affected joiner dirty
+channels and accepted ruin assembly parts, warm and fresh outputs agree, and
+unrelated systems such as the crossing and apse remain clean. The goal is not to
+preserve an accidentally inconsistent visual golden: intentional corrections to
+roof bearing or alignment are reviewed as improvements to the accepted artifact.
 
 ## Extension points
 
