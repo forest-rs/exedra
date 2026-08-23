@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 use basilica_ruin::BasilicaParams;
 
+use joiner::Construction;
+
 use crate::emit::Layer;
-use crate::model::StructuralModel;
 
 fn main() {
     if let Err(error) = run() {
@@ -22,9 +23,9 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let command = parse_args()?;
-    let model = StructuralModel::western_bay(&BasilicaParams::default());
-    let report = model.validate();
-    println!("{}", model.stats_line());
+    let construction = model::western_bay(&BasilicaParams::default());
+    let report = model::check(&construction);
+    println!("{}", model::stats_line(&construction));
     println!("{report}");
     if !report.is_clean() {
         return Err("refusing to emit invalid structural geometry".to_owned());
@@ -33,21 +34,20 @@ fn run() -> Result<(), String> {
     match command {
         Command::Check => Ok(()),
         Command::Explain(key) => {
-            let explanation = model
-                .explain(&key)?
+            let explanation = model::explain(&construction, &key)?
                 .ok_or_else(|| format!("unknown structural key {key:?}"))?;
             println!("{explanation}");
             Ok(())
         }
         Command::Layer { layer, path } => {
-            export_layer(&model, layer, &path)?;
+            export_layer(&construction, layer, &path)?;
             Ok(())
         }
         Command::All => {
             let output = default_output_dir();
             for layer in Layer::ALL {
                 export_layer(
-                    &model,
+                    &construction,
                     layer,
                     &output.join(format!("{}.obj", layer.label())),
                 )?;
@@ -100,8 +100,8 @@ fn parse_args() -> Result<Command, String> {
     }
 }
 
-fn export_layer(model: &StructuralModel, layer: Layer, path: &Path) -> Result<(), String> {
-    let scene = emit::emit(model, layer)?;
+fn export_layer(construction: &Construction, layer: Layer, path: &Path) -> Result<(), String> {
+    let scene = emit::emit(construction, layer)?;
     scene.write_grouped_obj(path)?;
     println!(
         "layer={} parts={} groups={} obj={}",

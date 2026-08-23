@@ -41,6 +41,7 @@ dependencies = [
  "basilica_ruin",
  "exedra_assembly",
  "exedra_constructive",
+ "joiner",
 ]
 
 [[package]]

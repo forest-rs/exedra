@@ -9,10 +9,11 @@ use exedra_assembly::{Assembly, CompiledParts, PartCompiler, RenderList, flatten
 use exedra_constructive::builders;
 use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::tessellate::EvalPolicy;
-
-use crate::model::{
-    ElementRole, OrientedBox, StructuralModel, TransferKind, TransferTarget, Vec3, add, scale, sub,
+use joiner::{
+    Construction, OrientedBox, TransferKind, TransferTarget, instance_path, lower_selected,
 };
+
+use crate::model::{ElementRole, Vec3, add, scale, sub};
 
 const SELECTED_BEARING: &str = "bearing-principal-south-east-on-wall-plate";
 #[cfg(test)]
@@ -64,6 +65,13 @@ impl Layer {
         }
     }
 
+    /// Whether an element carrying this opaque `joiner` role label belongs in
+    /// the layer. An unrecognised label is kept: the lab never silently drops
+    /// geometry it does not recognise.
+    fn includes_label(self, label: &str) -> bool {
+        ElementRole::from_label(label).is_none_or(|role| self.includes(role))
+    }
+
     fn element_material(self, role: ElementRole) -> &'static str {
         match self {
             Self::Bearings => "diagnostic-context",
@@ -110,28 +118,31 @@ impl EmittedScene {
     }
 }
 
-pub(crate) fn emit(model: &StructuralModel, layer: Layer) -> Result<EmittedScene, String> {
-    let mut assembly = Assembly::new();
+pub(crate) fn emit(construction: &Construction, layer: Layer) -> Result<EmittedScene, String> {
+    // The elements come from `joiner`: one root instance per geometry-bearing
+    // element, keyed by the element key, with every part edit already
+    // composed into its recipe. The lab only re-binds materials for the
+    // layer it is drawing and adds its own diagnostic markers on top.
+    let mut assembly = lower_selected(construction, |element| layer.includes_label(&element.role))
+        .map_err(|error| format!("lower structural construction: {error}"))?;
 
-    for element in &model.elements {
-        if !element.present || !layer.includes(element.role) {
+    for element in construction.elements() {
+        let Some(role) = ElementRole::from_label(&element.role) else {
             continue;
-        }
-        add_solid(
-            &mut assembly,
-            &element.key,
-            &element.solid,
-            layer.element_material(element.role),
-            element.role.label(),
-            &element.evidence.to_string(),
-        )?;
+        };
+        let Some(instance) = assembly.resolve_path(&instance_path(&element.key)) else {
+            continue;
+        };
+        assembly
+            .bind_material(instance, "surface", layer.element_material(role))
+            .map_err(|error| format!("bind material on {}: {error}", element.key))?;
     }
 
     match layer {
-        Layer::LoadPath => add_transfer_diagnostics(&mut assembly, model)?,
+        Layer::LoadPath => add_transfer_diagnostics(&mut assembly, construction)?,
         Layer::Bearings => {
-            add_bearing_diagnostics(&mut assembly, model)?;
-            add_support_diagnostics(&mut assembly, model)?;
+            add_bearing_diagnostics(&mut assembly, construction)?;
+            add_support_diagnostics(&mut assembly, construction)?;
         }
         Layer::Full | Layer::Structure | Layer::TransparentRoof => {}
     }
@@ -150,38 +161,43 @@ pub(crate) fn emit(model: &StructuralModel, layer: Layer) -> Result<EmittedScene
 
 fn add_transfer_diagnostics(
     assembly: &mut Assembly,
-    model: &StructuralModel,
+    construction: &Construction,
 ) -> Result<(), String> {
-    for transfer in &model.transfers {
-        let Some(from) = model.elements.get(transfer.from.0) else {
+    for transfer in construction.transfers() {
+        let Some(from) = construction.element(&transfer.from) else {
             continue;
         };
         if !from.present {
             continue;
         }
-        let from_point = from.solid.center();
-        let to_point = match transfer.to {
-            TransferTarget::Element(id) => {
-                let Some(target) = model.elements.get(id.0) else {
+        let from_point = from.extent.center();
+        let to_point = match &transfer.to {
+            TransferTarget::Element(key) => {
+                let Some(target) = construction.element(key) else {
                     continue;
                 };
                 if !target.present {
                     continue;
                 }
-                target.solid.center()
+                target.extent.center()
             }
-            TransferTarget::Support(id) => {
-                let Some(support) = model.supports.get(id.0) else {
+            TransferTarget::Support(key) => {
+                let Some(support) = construction.support(key) else {
                     continue;
                 };
-                let center = model.elements[support.element.0].solid.center();
+                let Some(element) = construction.element(&support.element) else {
+                    continue;
+                };
+                let center = element.extent.center();
                 [center[0], center[1], 0.0]
             }
+            _ => continue,
         };
         let material = match transfer.kind {
-            TransferKind::Bearing => "diagnostic-transfer-bearing",
+            TransferKind::Contact => "diagnostic-transfer-bearing",
             TransferKind::Joint => "diagnostic-transfer-joint",
             TransferKind::Ground => "diagnostic-transfer-ground",
+            _ => "diagnostic-transfer-bearing",
         };
         add_solid(
             assembly,
@@ -195,19 +211,22 @@ fn add_transfer_diagnostics(
     Ok(())
 }
 
-fn add_bearing_diagnostics(assembly: &mut Assembly, model: &StructuralModel) -> Result<(), String> {
-    for bearing in &model.bearings {
-        let Some(carried) = model.elements.get(bearing.carried.element.0) else {
+fn add_bearing_diagnostics(
+    assembly: &mut Assembly,
+    construction: &Construction,
+) -> Result<(), String> {
+    for bearing in construction.contacts() {
+        let Some(carried) = construction.element(&bearing.carried.element) else {
             continue;
         };
-        let Some(carrier) = model.elements.get(bearing.carrier.element.0) else {
+        let Some(carrier) = construction.element(&bearing.carrier.element) else {
             continue;
         };
         if !carried.present || !carrier.present {
             continue;
         }
-        let carried_point = carried.solid.anchor(bearing.carried.local);
-        let carrier_point = carrier.solid.anchor(bearing.carrier.local);
+        let carried_point = carried.extent.anchor(bearing.carried.local);
+        let carrier_point = carrier.extent.anchor(bearing.carrier.local);
         let center = scale(add(carried_point, carrier_point), 0.5);
         add_solid(
             assembly,
@@ -215,7 +234,7 @@ fn add_bearing_diagnostics(assembly: &mut Assembly, model: &StructuralModel) -> 
             &marker(center, 0.09),
             "diagnostic-bearing",
             "bearing",
-            &bearing.evidence.to_string(),
+            bearing.evidence.class.label(),
         )?;
         if bearing.key == SELECTED_BEARING {
             add_solid(
@@ -262,9 +281,15 @@ fn add_bearing_diagnostics(assembly: &mut Assembly, model: &StructuralModel) -> 
     Ok(())
 }
 
-fn add_support_diagnostics(assembly: &mut Assembly, model: &StructuralModel) -> Result<(), String> {
-    for support in &model.supports {
-        let center = model.elements[support.element.0].solid.center();
+fn add_support_diagnostics(
+    assembly: &mut Assembly,
+    construction: &Construction,
+) -> Result<(), String> {
+    for support in construction.supports() {
+        let Some(element) = construction.element(&support.element) else {
+            continue;
+        };
+        let center = element.extent.center();
         add_solid(
             assembly,
             &support.key,
@@ -515,38 +540,54 @@ mod tests {
 
     use super::*;
 
+    fn present_elements(construction: &Construction) -> usize {
+        construction
+            .elements()
+            .iter()
+            .filter(|element| element.present)
+            .count()
+    }
+
+    fn element_keys(construction: &Construction) -> Vec<String> {
+        construction
+            .elements()
+            .iter()
+            .filter(|element| element.present)
+            .map(|element| element.key.clone())
+            .collect()
+    }
+
     #[test]
     fn full_layer_preserves_one_group_per_present_element() {
-        let model = StructuralModel::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaParams::default());
         let scene = emit(&model, Layer::Full).expect("clean graph emits");
-        assert_eq!(scene.group_count(), model.elements.len());
+        assert_eq!(scene.group_count(), present_elements(&model));
         let paths: Vec<String> = scene
             .render_list
             .items
             .iter()
             .map(|item| item.path.to_string())
             .collect();
-        let expected: Vec<String> = model
-            .elements
-            .iter()
-            .map(|element| element.key.clone())
-            .collect();
+        let expected: Vec<String> = element_keys(&model);
         assert_eq!(paths, expected);
     }
 
     #[test]
     fn diagnostic_layers_add_only_named_graph_diagnostics() {
-        let model = StructuralModel::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaParams::default());
         let load_path = emit(&model, Layer::LoadPath).expect("load path emits");
         assert_eq!(
             load_path.group_count(),
-            model.elements.len() + model.transfers.len()
+            present_elements(&model) + model.transfers().len()
         );
-        let expected_load_paths: Vec<&str> = model
-            .elements
-            .iter()
-            .map(|element| element.key.as_str())
-            .chain(model.transfers.iter().map(|transfer| transfer.key.as_str()))
+        let expected_load_paths: Vec<String> = element_keys(&model)
+            .into_iter()
+            .chain(
+                model
+                    .transfers()
+                    .iter()
+                    .map(|transfer| transfer.key.clone()),
+            )
             .collect();
         assert_eq!(
             load_path
@@ -560,17 +601,13 @@ mod tests {
         let bearings = emit(&model, Layer::Bearings).expect("bearings emit");
         assert_eq!(
             bearings.group_count(),
-            model.elements.len()
-                + model.bearings.len()
-                + model.supports.len()
+            present_elements(&model)
+                + model.contacts().len()
+                + model.supports().len()
                 + SELECTED_BEARING_DIAGNOSTICS
         );
-        let mut expected_bearing_paths: Vec<String> = model
-            .elements
-            .iter()
-            .map(|element| element.key.clone())
-            .collect();
-        for bearing in &model.bearings {
+        let mut expected_bearing_paths: Vec<String> = element_keys(&model);
+        for bearing in model.contacts() {
             expected_bearing_paths.push(bearing.key.clone());
             if bearing.key == SELECTED_BEARING {
                 expected_bearing_paths.extend(
@@ -585,7 +622,7 @@ mod tests {
                 );
             }
         }
-        expected_bearing_paths.extend(model.supports.iter().map(|support| support.key.clone()));
+        expected_bearing_paths.extend(model.supports().iter().map(|support| support.key.clone()));
         assert_eq!(
             bearings
                 .render_list
@@ -599,11 +636,11 @@ mod tests {
 
     #[test]
     fn two_independent_builds_export_byte_identically() {
-        let first_model = StructuralModel::western_bay(&BasilicaParams::default());
-        let second_model = StructuralModel::western_bay(&BasilicaParams::default());
+        let first_model = crate::model::western_bay(&BasilicaParams::default());
+        let second_model = crate::model::western_bay(&BasilicaParams::default());
         assert_eq!(
-            first_model.deterministic_signature(),
-            second_model.deterministic_signature()
+            crate::model::deterministic_signature(&first_model),
+            crate::model::deterministic_signature(&second_model)
         );
         for layer in Layer::ALL {
             let first = emit(&first_model, layer).expect("first build emits");
@@ -616,7 +653,7 @@ mod tests {
 
     #[test]
     fn every_layer_emits_deep_valid_geometry() {
-        let model = StructuralModel::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaParams::default());
         for layer in Layer::ALL {
             let scene = emit(&model, layer).expect("layer emits");
             for part in scene.compiled.parts() {

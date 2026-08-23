@@ -52,8 +52,12 @@ subtractive mating faces are deferred to the joint specimen ticket.
   validation failure.
 - Every emitted geometry group is addressable by the same stable graph key
   used in diagnostics.
-- The graph stays example-private until a later ticket demonstrates a reusable
-  boundary.
+- The graph stayed example-private until a reusable boundary was demonstrated.
+  It has been: the mechanism now lives in the `joiner` crate (see
+  [ADR 0002](adr-0002-joiner-construction-layer.md) and
+  `crates/joiner/docs/adr-0001-construction-layer-scope.md`), and this lab is
+  a consumer of it. What remains here is the basilica hypothesis itself and
+  its OBJ emission.
 - The first slice uses only existing workspace crates and simple oriented-box
   geometry. Detailed subtractive joinery and solver integration remain
   extension points, not hidden claims.
