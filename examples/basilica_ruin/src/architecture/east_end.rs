@@ -66,6 +66,7 @@ mod tests {
     use exedra_constructive::evaluate::evaluate;
     use exedra_constructive::ir::Placement3;
     use exedra_constructive::tessellate::EvalPolicy;
+    use exedra_math::{cross, dot, sub};
 
     use super::{apse_conch_recipe, apse_shell_profile};
     use crate::geometry::extruded_profile_recipe;
@@ -255,8 +256,8 @@ mod tests {
         direction: [f64; 3],
         triangle: [[f64; 3]; 3],
     ) -> Option<f64> {
-        let edge_a = subtract(triangle[1], triangle[0]);
-        let edge_b = subtract(triangle[2], triangle[0]);
+        let edge_a = sub(triangle[1], triangle[0]);
+        let edge_b = sub(triangle[2], triangle[0]);
         let perpendicular = cross(direction, edge_b);
         let determinant = dot(edge_a, perpendicular);
         if determinant.abs() < 1.0e-10 {
@@ -264,7 +265,7 @@ mod tests {
         }
 
         let inverse = determinant.recip();
-        let from_vertex = subtract(origin, triangle[0]);
+        let from_vertex = sub(origin, triangle[0]);
         let u = inverse * dot(from_vertex, perpendicular);
         if !(0.0..=1.0).contains(&u) {
             return None;
@@ -276,21 +277,5 @@ mod tests {
         }
         let distance = inverse * dot(edge_b, second_perpendicular);
         (distance > 1.0e-8).then_some(distance)
-    }
-
-    fn subtract(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-    }
-
-    fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    }
-
-    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
     }
 }

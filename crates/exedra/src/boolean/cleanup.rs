@@ -34,6 +34,7 @@ use alloc::vec::Vec;
 
 use crate::op::{collapse_edge, flip_edge};
 use crate::{FaceId, HalfEdgeId, Mesh, VertexId, attr};
+use exedra_math::{add, cross, distance_squared, dot, promote, sub};
 
 /// Explicit thresholds for [`cleanup_seams`]. No hidden constants: every
 /// decision the pass makes is derived from these fields.
@@ -208,7 +209,7 @@ impl TriangleShape {
         for (i, slot) in lengths.iter_mut().enumerate() {
             let (_, a) = corners[i];
             let (_, b) = corners[(i + 1) % 3];
-            *slot = distance_sq(a, b);
+            *slot = distance_squared(a, b);
         }
         let (mut min_edge, mut max_edge) = (0, 0);
         for i in 1..3 {
@@ -523,35 +524,6 @@ fn drift_budget(mesh: &Mesh, policy: &SeamCleanupPolicy) -> f64 {
     policy.relative_volume_budget * scale
 }
 
-fn promote(p: [f32; 3]) -> [f64; 3] {
-    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn distance_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let d = sub(b, a);
-    dot(d, d)
-}
-
 fn normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
     cross(sub(b, a), sub(c, a))
 }
@@ -565,9 +537,9 @@ fn triangle_area_sq(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
 /// Squaring is monotone on the nonnegative quality, so comparisons are
 /// unchanged and the pass needs no square roots.
 fn triangle_quality(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
-    let longest = distance_sq(a, b)
-        .max(distance_sq(b, c))
-        .max(distance_sq(c, a));
+    let longest = distance_squared(a, b)
+        .max(distance_squared(b, c))
+        .max(distance_squared(c, a));
     if longest <= 0.0 || !longest.is_finite() {
         return 0.0;
     }

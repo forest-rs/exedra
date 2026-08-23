@@ -6,6 +6,7 @@
 use exedra_spatial::Aabb;
 
 use crate::{ScalarField, ScalarField2d};
+use exedra_math::{add, norm, scale, sub};
 
 /// Finite extrusion of a 2D profile field along the world-space z axis.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -95,9 +96,9 @@ impl<F: ScalarField2d> ScalarField for Extrude<F> {
             let profile_normal = [profile_gradient[0][1], profile_gradient[0][2], 0.0];
             let axial_normal = [0.0, 0.0, sign_nonzero(point[2]).unwrap_or(f32::NAN)];
             let gradient = if outside_distance > 0.0 {
-                add3(
-                    mul3(profile_normal, outside[0] / outside_distance),
-                    mul3(axial_normal, outside[1] / outside_distance),
+                add(
+                    scale(profile_normal, outside[0] / outside_distance),
+                    scale(axial_normal, outside[1] / outside_distance),
                 )
             } else if (profile_distance - axial_distance).abs() <= 1.0e-6 {
                 [f32::NAN; 3]
@@ -171,7 +172,7 @@ fn conservative_sampled_interval<F: ScalarField>(field: &F, bounds: &Aabb) -> [f
     let mut values = [0.0_f32; 9];
     field.eval_points(&samples, &mut values);
 
-    let inflation = length3(sub3(bounds.max, bounds.min));
+    let inflation = norm(sub(bounds.max, bounds.min));
     let mut minimum = values[0];
     let mut maximum = values[0];
     for value in values {
@@ -238,24 +239,8 @@ fn abs(value: f32) -> f32 {
     }
 }
 
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn mul3(a: [f32; 3], scalar: f32) -> [f32; 3] {
-    [a[0] * scalar, a[1] * scalar, a[2] * scalar]
-}
-
 fn length2(vector: [f32; 2]) -> f32 {
     sqrt(vector[0] * vector[0] + vector[1] * vector[1])
-}
-
-fn length3(vector: [f32; 3]) -> f32 {
-    sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
 }
 
 #[cfg(feature = "std")]

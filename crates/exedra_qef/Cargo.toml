@@ -14,8 +14,9 @@ workspace = true
 
 [features]
 default = ["std"]
-libm = ["dep:libm"]
-std = []
+libm = ["dep:libm", "exedra_math/libm"]
+std = ["exedra_math/std"]
 
 [dependencies]
+exedra_math.workspace = true
 libm = { optional = true, workspace = true }

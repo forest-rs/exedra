@@ -27,6 +27,7 @@ use crate::{
     CellHermiteData, EdgeSearchParams, ProvenanceField, ScalarField, SemiAnalyticFeature,
     SemiAnalyticField, SemiAnalyticProjectionOutcome, locate_edge_intersection,
 };
+use exedra_math::{distance_squared, dot, norm, normalize, sub};
 
 const MIN_EMITTER_DEPTH: u8 = 2;
 const LEGACY_SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
@@ -759,8 +760,8 @@ fn select_quad_diagonal(points: [[f32; 3]; 4]) -> Option<QuadDiagonal> {
         (true, true) => {}
     }
 
-    let zero_two = squared_distance(points[0], points[2]);
-    let one_three = squared_distance(points[1], points[3]);
+    let zero_two = distance_squared(points[0], points[2]);
+    let one_three = distance_squared(points[1], points[3]);
     let coordinate_scale = points
         .iter()
         .flatten()
@@ -779,16 +780,16 @@ fn select_quad_diagonal(points: [[f32; 3]; 4]) -> Option<QuadDiagonal> {
 
 fn triangle_is_nondegenerate(points: [[f32; 3]; 3]) -> bool {
     let points = points.map(|point| point.map(f64::from));
-    let ab = sub3_f64(points[1], points[0]);
-    let ac = sub3_f64(points[2], points[0]);
-    let bc = sub3_f64(points[2], points[1]);
+    let ab = sub(points[1], points[0]);
+    let ac = sub(points[2], points[0]);
+    let bc = sub(points[2], points[1]);
     let cross = [
         ab[1] * ac[2] - ab[2] * ac[1],
         ab[2] * ac[0] - ab[0] * ac[2],
         ab[0] * ac[1] - ab[1] * ac[0],
     ];
-    let area_squared = dot3_f64(cross, cross);
-    let longest_edge_squared = dot3_f64(ab, ab).max(dot3_f64(ac, ac)).max(dot3_f64(bc, bc));
+    let area_squared = dot(cross, cross);
+    let longest_edge_squared = dot(ab, ab).max(dot(ac, ac)).max(dot(bc, bc));
     let relative_epsilon = 16.0 * f64::from(f32::EPSILON);
     let minimum_area_squared =
         relative_epsilon * relative_epsilon * longest_edge_squared * longest_edge_squared;
@@ -796,14 +797,6 @@ fn triangle_is_nondegenerate(points: [[f32; 3]; 3]) -> bool {
         && longest_edge_squared.is_finite()
         && longest_edge_squared > 0.0
         && area_squared > minimum_area_squared
-}
-
-fn sub3_f64(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot3_f64(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn analyze_crossing_cell<F: ScalarField>(
@@ -1309,8 +1302,8 @@ fn apply_projection(
                 stats.over_budget_fallbacks += 1;
                 return;
             }
-            let cell_diagonal_squared = squared_distance(cell.bounds.min, cell.bounds.max);
-            if squared_distance(cell.position, projection.position) > cell_diagonal_squared {
+            let cell_diagonal_squared = distance_squared(cell.bounds.min, cell.bounds.max);
+            if distance_squared(cell.position, projection.position) > cell_diagonal_squared {
                 stats.over_budget_fallbacks += 1;
                 return;
             }
@@ -1379,13 +1372,6 @@ fn loop_sharpness4(face: &[VertexEntry]) -> [f32; 4] {
         face[2].sharpness.max(face[3].sharpness),
         face[3].sharpness.max(face[0].sharpness),
     ]
-}
-
-fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    dx * dx + dy * dy + dz * dz
 }
 
 fn edge_has_crossing(start: f32, end: f32) -> bool {
@@ -1550,7 +1536,7 @@ fn classify_redundant_hermite_planes(
         });
         let local =
             core::array::from_fn::<_, 3, _>(|axis| hit.intersection.position[axis] - center[axis]);
-        let offset = dot3_f32(normal, local);
+        let offset = dot(normal, local);
         let edge_bit = 1_u16.checked_shl(u32::from(hit.edge_index)).unwrap_or(0);
 
         if let Some(group) = groups[..group_count]
@@ -1577,7 +1563,7 @@ fn classify_redundant_hermite_planes(
         let displacement = core::array::from_fn::<_, 3, _>(|axis| {
             qef.position[axis] - hit.intersection.position[axis]
         });
-        if dot3_f32(normal, displacement) != 0.0 {
+        if dot(normal, displacement) != 0.0 {
             return RedundantHermitePlanesEvidence::NonzeroResidual;
         }
     }
@@ -1593,11 +1579,6 @@ fn classify_redundant_hermite_planes(
         return RedundantHermitePlanesEvidence::SingletonGroup;
     }
     RedundantHermitePlanesEvidence::Satisfied
-}
-
-#[inline]
-fn dot3_f32(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 impl<F: ScalarField> OctreeVisitor for IntervalVisitor<'_, F> {
@@ -1685,7 +1666,7 @@ fn refinement_decision(evidence: &RefinementEvidence, target: f32) -> Refinement
 
 fn adaptive_error_target(params: &DualContourParams) -> f32 {
     let resolution = 1_u32 << params.max_depth;
-    ADAPTIVE_ERROR_FRACTION * vector_length(step_size(params.root_bounds, resolution))
+    ADAPTIVE_ERROR_FRACTION * norm(step_size(params.root_bounds, resolution))
 }
 
 fn interval_crosses_zero(interval: [f32; 2]) -> bool {
@@ -1719,7 +1700,7 @@ fn populate_corner_normals<F: ScalarField>(field: &F, mesh: &mut Mesh) {
 
     let mut session = mesh.edit();
     for (corner, gradient) in corners.into_iter().zip(gradients) {
-        if let Some(normal) = normalize_gradient(gradient) {
+        if let Some(normal) = normalize([gradient[1], gradient[2], gradient[3]]) {
             op::set_corner_normal_override(&mut session, corner, Some(normal))
                 .expect("collected corner must stay live during normal population");
         }
@@ -1830,19 +1811,15 @@ fn normal_turn_error(hermite: &CellHermiteData, bounds: Aabb) -> Option<f32> {
         }
     }
     let half_angle_sine = sqrt(((1.0 - minimum_dot) * 0.5).max(0.0));
-    Some(0.5 * vector_length(bounds.extent()) * half_angle_sine)
+    Some(0.5 * norm(bounds.extent()) * half_angle_sine)
 }
 
 fn normalize_vector(vector: [f32; 3]) -> Option<[f32; 3]> {
-    let length = vector_length(vector);
+    let length = norm(vector);
     if !length.is_finite() || length <= 1.0e-8 {
         return None;
     }
     Some([vector[0] / length, vector[1] / length, vector[2] / length])
-}
-
-fn vector_length(vector: [f32; 3]) -> f32 {
-    sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
 }
 
 fn qef_result_is_finite(result: QefResult) -> bool {
@@ -1907,27 +1884,13 @@ fn inset_corner_sample(position: [f32; 3], face_center: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-fn normalize_gradient(sample: [f32; 4]) -> Option<[f32; 3]> {
-    let gradient = [sample[1], sample[2], sample[3]];
-    let length_squared =
-        gradient[0] * gradient[0] + gradient[1] * gradient[1] + gradient[2] * gradient[2];
-    if !length_squared.is_finite() || length_squared <= 0.0 {
-        return None;
-    }
-    let inv_length = sqrt(length_squared).recip();
-    Some([
-        gradient[0] * inv_length,
-        gradient[1] * inv_length,
-        gradient[2] * inv_length,
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
     use alloc::vec;
     use alloc::vec::Vec;
     use core::mem::size_of;
+    use exedra_math::{distance_squared, dot, norm};
 
     use super::{
         ActiveCell, AdaptiveGrid, CellAnalysis, CellKey, ComponentRoute, ComponentVertex,
@@ -1939,7 +1902,7 @@ mod tests {
         dual_contour, dual_contour_projected_impl, dual_contour_semi_analytic,
         dual_contour_with_regions, emit_transition_polygon, hermite_rms, normal_turn_error,
         prepare_transitions, project_active_cell, refinement_decision, repair_endpoint_normal,
-        select_quad_diagonal, solve_cell_vertices, squared_distance, transition_component_token,
+        select_quad_diagonal, solve_cell_vertices, transition_component_token,
         triangle_is_nondegenerate,
     };
     use crate::analytic::{
@@ -2379,7 +2342,7 @@ mod tests {
                     let Some(position) = first.mesh.vertex_position(vertex) else {
                         return false;
                     };
-                    dot3(normal, *position) > 0.5 && (length3(normal) - 1.0).abs() < 1.0e-3
+                    dot(normal, *position) > 0.5 && (norm(normal) - 1.0).abs() < 1.0e-3
                 })
         );
     }
@@ -2998,7 +2961,7 @@ mod tests {
             else {
                 continue;
             };
-            if squared_distance(
+            if distance_squared(
                 analysis.vertices.compatibility.position,
                 cell.bounds.center(),
             ) > 1.0e-8
@@ -4329,14 +4292,6 @@ mod tests {
                 provenance: 20,
             },
         )
-    }
-
-    fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-    }
-
-    fn length3(vector: [f32; 3]) -> f32 {
-        (dot3(vector, vector)).sqrt()
     }
 
     fn mesh_geometry(mesh: &exedra::Mesh) -> (Vec<[f32; 3]>, Vec<Vec<u32>>) {

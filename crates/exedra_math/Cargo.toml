@@ -1,0 +1,22 @@
+[package]
+name = "exedra_math"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Small deterministic 3-vector helpers over plain arrays for the Exedra workspace"
+readme = "README.md"
+keywords = ["vector", "geometry", "no_std", "deterministic"]
+categories = ["mathematics", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+libm = ["dep:libm"]
+std = []
+
+[dependencies]
+libm = { optional = true, workspace = true }

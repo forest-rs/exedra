@@ -49,6 +49,7 @@ use crate::{
         set_vertex_position, split_edge,
     },
 };
+use exedra_math::{narrow, promote, sub};
 
 /// Which mesh of the boolean pair is being split.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -153,8 +154,8 @@ pub fn split_mesh_along_graph(
         for ((u, v), mut points) in edge_groups {
             // Order points along the edge by the dominant axis of the
             // (promoted) edge vector: deterministic, division-free compare.
-            let from = session.mesh().vertex_position(u).map(promote);
-            let to = session.mesh().vertex_position(v).map(promote);
+            let from = session.mesh().vertex_position(u).copied().map(promote);
+            let to = session.mesh().vertex_position(v).copied().map(promote);
             let (Some(from), Some(to)) = (from, to) else {
                 continue;
             };
@@ -251,14 +252,6 @@ pub fn split_mesh_along_graph(
     outcome
 }
 
-fn promote(p: &[f32; 3]) -> [f64; 3] {
-    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
 fn dominant_axis(v: [f64; 3]) -> usize {
     let abs = [v[0].abs(), v[1].abs(), v[2].abs()];
     if abs[0] >= abs[1] && abs[0] >= abs[2] {
@@ -267,17 +260,6 @@ fn dominant_axis(v: [f64; 3]) -> usize {
         1
     } else {
         2
-    }
-}
-
-/// The single documented f64 -> f32 narrowing for split geometry.
-fn narrow(p: [f64; 3]) -> [f32; 3] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "deliberate narrowing of constructed intersection positions"
-    )]
-    {
-        [p[0] as f32, p[1] as f32, p[2] as f32]
     }
 }
 
@@ -838,6 +820,7 @@ fn split_face_with_interior_loops(
     let outer3: Vec<[f64; 3]> = loop_vertices
         .iter()
         .filter_map(|&v| mesh.vertex_position(v))
+        .copied()
         .map(promote)
         .collect();
     if outer3.len() != loop_vertices.len() || outer3.len() < 3 {

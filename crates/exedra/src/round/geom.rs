@@ -1,66 +1,20 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! f64 vector helpers for the rounding pass.
+//! f64 geometry helpers for the rounding pass.
 //!
 //! Geometry is constructed in f64 and narrowed to f32 exactly once when new
 //! vertices materialize — the same single-narrowing discipline as boolean
-//! splitting and constructive tessellation.
+//! splitting and constructive tessellation. Vector arithmetic and the
+//! promote/narrow pair come from `exedra_math`; what lives here is the
+//! polygon-level work the pass defines the meaning of: Newell normals, plane
+//! solves, line closest approach, and arc sampling.
 
 use alloc::vec::Vec;
 
+use exedra_math::{add, cross, dot, norm, normalize, scale, sub};
+
 use crate::math::FloatExt;
-
-pub(super) fn promote(p: [f32; 3]) -> [f64; 3] {
-    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
-}
-
-pub(super) fn narrow(p: [f64; 3]) -> [f32; 3] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the documented single f64 -> f32 narrowing point of the pass"
-    )]
-    {
-        [p[0] as f32, p[1] as f32, p[2] as f32]
-    }
-}
-
-pub(super) fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-pub(super) fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub(super) fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-pub(super) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub(super) fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt_ext()
-}
-
-/// Unit vector, or `None` for (near-)zero input.
-pub(super) fn normalize(a: [f64; 3]) -> Option<[f64; 3]> {
-    let len = norm(a);
-    if len <= f64::MIN_POSITIVE.sqrt_ext() {
-        return None;
-    }
-    Some(scale(a, 1.0 / len))
-}
 
 /// Unnormalized Newell normal of a polygon.
 pub(super) fn newell(points: &[[f64; 3]]) -> [f64; 3] {

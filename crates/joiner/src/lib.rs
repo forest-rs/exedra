@@ -177,7 +177,7 @@ mod seeds;
 pub use construction::{Construction, ConstructionError, ElementId, channel};
 pub use element::{DEFAULT_SLOT, Element, ElementOrigin, Member, Node, Part, Restraints, Support};
 pub use evidence::{Evidence, EvidenceClass, EvidenceSource};
-pub use geometry::{OrientedBox, Vec3};
+pub use geometry::{FRAME_TOLERANCE, OrientedBox, Vec3};
 pub use lower::{LowerError, compose, instance_path, lower, lower_selected, part_key};
 pub use relation::{Relation, RelationKind};
 pub use rule::{

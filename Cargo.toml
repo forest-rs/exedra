@@ -19,6 +19,7 @@ members = [
     "crates/exedra_fidget",
     "crates/exedra_gltf",
     "crates/exedra_isosurface",
+    "crates/exedra_math",
     "crates/exedra_primitives",
     "crates/exedra_qef",
     "crates/exedra_spatial",
@@ -100,6 +101,7 @@ exedra_constructive = { default-features = false, path = "crates/exedra_construc
 exedra_fidget = { default-features = false, path = "crates/exedra_fidget" }
 exedra_gltf = { default-features = false, path = "crates/exedra_gltf" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
+exedra_math = { default-features = false, path = "crates/exedra_math" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }

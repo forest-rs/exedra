@@ -17,6 +17,8 @@ extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_qef requires either the `std` or `libm` feature");
 
+use exedra_math::{dot, normalize};
+
 /// One point-normal plane constraint used by the QEF solver.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PlaneConstraint {
@@ -163,7 +165,7 @@ impl QefSolver {
 
     /// Adds one constraint record.
     pub fn add_constraint(&mut self, constraint: PlaneConstraint) -> bool {
-        let Some(unit_normal) = normalize3(constraint.normal) else {
+        let Some(unit_normal) = normalize(constraint.normal) else {
             return false;
         };
         if !constraint
@@ -174,7 +176,7 @@ impl QefSolver {
             return false;
         }
 
-        let plane_distance = dot3(unit_normal, constraint.position);
+        let plane_distance = dot(unit_normal, constraint.position);
         accumulate_outer(&mut self.ata, unit_normal);
         for (axis, component) in unit_normal.into_iter().enumerate() {
             self.atb[axis] += component * plane_distance;
@@ -260,26 +262,6 @@ fn accumulate_outer(matrix: &mut [[f32; 3]; 3], vector: [f32; 3]) {
     }
 }
 
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize3(vector: [f32; 3]) -> Option<[f32; 3]> {
-    if !vector.iter().all(|component| component.is_finite()) {
-        return None;
-    }
-    let length_squared = dot3(vector, vector);
-    if length_squared <= 0.0 {
-        return None;
-    }
-    let inv_length = sqrt(length_squared).recip();
-    Some([
-        vector[0] * inv_length,
-        vector[1] * inv_length,
-        vector[2] * inv_length,
-    ])
-}
-
 fn effective_rank(eigenvalues: [f32; 3], relative_cutoff: f32) -> u8 {
     let max_eigenvalue = eigenvalues[0].max(0.0);
     if max_eigenvalue <= f32::EPSILON {
@@ -313,13 +295,9 @@ fn reconstruct_from_columns(matrix: [[f32; 3]; 3], coeffs: [f32; 3]) -> [f32; 3]
 }
 
 fn residual(ata: [[f32; 3]; 3], atb: [f32; 3], btb: f32, point: [f32; 3]) -> f32 {
-    let ata_point = [
-        dot3(ata[0], point),
-        dot3(ata[1], point),
-        dot3(ata[2], point),
-    ];
-    let quadratic = dot3(point, ata_point);
-    let linear = 2.0 * dot3(point, atb);
+    let ata_point = [dot(ata[0], point), dot(ata[1], point), dot(ata[2], point)];
+    let quadratic = dot(point, ata_point);
+    let linear = 2.0 * dot(point, atb);
     (quadratic - linear + btb).max(0.0)
 }
 

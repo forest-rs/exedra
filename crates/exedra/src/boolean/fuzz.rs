@@ -29,6 +29,7 @@ use super::{
     BooleanDiagnostics, BooleanError, BooleanOp, BooleanOutput, BooleanScratch, boolean_mesh,
 };
 use crate::{FaceTriangulation, Mesh, MeshBuilder};
+use exedra_math::narrow;
 
 /// `SplitMix64`: tiny deterministic PRNG for corpus generation.
 struct Rng(u64);
@@ -91,17 +92,6 @@ const SECTIONS: [&[[f64; 2]]; 4] = [
         [0.5, -0.85],
     ],
 ];
-
-/// The single documented f64 -> f32 narrowing for fuzz geometry.
-fn narrow(p: [f64; 3]) -> [f32; 3] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "deliberate narrowing of generated fuzz positions"
-    )]
-    {
-        [p[0] as f32, p[1] as f32, p[2] as f32]
-    }
-}
 
 /// A random convex prism: a cross-section template scaled, rotated about
 /// z, and translated. Watertight and outward-oriented by construction.

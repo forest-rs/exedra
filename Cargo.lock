@@ -31,6 +31,7 @@ dependencies = [
  "exedra_assembly",
  "exedra_constructive",
  "exedra_gltf",
+ "exedra_math",
  "libm",
 ]
 
@@ -41,6 +42,7 @@ dependencies = [
  "basilica_ruin",
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_math",
  "joiner",
 ]
 
@@ -56,6 +58,7 @@ version = "0.0.0"
 dependencies = [
  "exedra",
  "exedra_isosurface",
+ "exedra_math",
  "exedra_primitives",
  "exedra_qef",
  "exedra_spatial",
@@ -89,6 +92,7 @@ dependencies = [
  "exedra_analytic",
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_math",
  "exedra_testkit",
  "invalidation",
  "libm",
@@ -222,6 +226,7 @@ dependencies = [
 name = "exedra"
 version = "0.1.0"
 dependencies = [
+ "exedra_math",
  "exedra_testkit",
  "exedra_triangulate",
  "hashbrown 0.16.1",
@@ -234,6 +239,7 @@ name = "exedra_analytic"
 version = "0.1.0"
 dependencies = [
  "exedra",
+ "exedra_math",
  "exedra_triangulate",
  "libm",
 ]
@@ -255,6 +261,7 @@ name = "exedra_constructive"
 version = "0.0.0"
 dependencies = [
  "exedra",
+ "exedra_math",
  "exedra_testkit",
  "exedra_triangulate",
  "hashbrown 0.16.1",
@@ -301,9 +308,17 @@ name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [
  "exedra",
+ "exedra_math",
  "exedra_qef",
  "exedra_spatial",
  "hashbrown 0.16.1",
+ "libm",
+]
+
+[[package]]
+name = "exedra_math"
+version = "0.0.0"
+dependencies = [
  "libm",
 ]
 
@@ -319,6 +334,7 @@ dependencies = [
 name = "exedra_qef"
 version = "0.0.0"
 dependencies = [
+ "exedra_math",
  "libm",
 ]
 
@@ -673,6 +689,7 @@ version = "0.0.0"
 dependencies = [
  "exedra",
  "exedra_isosurface",
+ "exedra_math",
  "exedra_qef",
  "exedra_spatial",
 ]
@@ -689,9 +706,9 @@ version = "0.0.0"
 dependencies = [
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_math",
  "hashbrown 0.16.1",
  "invalidation",
- "libm",
 ]
 
 [[package]]

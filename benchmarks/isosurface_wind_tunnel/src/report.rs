@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use exedra::{ExtractParams, Mesh, VertexId, attr};
+use exedra_math::{dot, sub};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TopologyReport {
@@ -212,14 +213,6 @@ fn triangle_is_nondegenerate(points: [[f32; 3]; 3]) -> bool {
         && longest_edge_squared.is_finite()
         && longest_edge_squared > 0.0
         && area_squared > minimum_area_squared
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn hash_optional_f32(hash: u64, value: Option<f32>) -> u64 {

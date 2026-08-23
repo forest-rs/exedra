@@ -36,6 +36,7 @@ use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, orien
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::{BooleanCandidatePair, BooleanScratch, BooleanTriangleRef};
 use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
+use exedra_math::{promote, sub};
 
 /// One coplanar face-on-face contact with positive-area overlap.
 ///
@@ -309,10 +310,6 @@ pub(super) fn place_point_in_polygon(p: [f64; 2], polygon: &[[f64; 2]]) -> Place
     }
 }
 
-fn promote(p: &[f32; 3]) -> [f64; 3] {
-    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
-}
-
 fn face_polygon(mesh: &Mesh, face: FaceId, out: &mut Vec<[f64; 3]>) {
     out.clear();
     for half_edge in mesh.face_loop(face) {
@@ -320,7 +317,7 @@ fn face_polygon(mesh: &Mesh, face: FaceId, out: &mut Vec<[f64; 3]>) {
             .to_vertex(half_edge)
             .and_then(|v| mesh.vertex_position(v))
         {
-            out.push(promote(p));
+            out.push(promote(*p));
         }
     }
 }
@@ -342,7 +339,7 @@ fn face_triangles(
                 .to_vertex(*corner)
                 .and_then(|v| mesh.vertex_position(v))
             {
-                Some(p) => *slot = promote(p),
+                Some(p) => *slot = promote(*p),
                 None => live = false,
             }
         }
@@ -350,10 +347,6 @@ fn face_triangles(
             out.push(triangle);
         }
     }
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 fn triangle_normal(t: &[[f64; 3]; 3]) -> [f64; 3] {

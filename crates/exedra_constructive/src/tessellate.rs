@@ -20,6 +20,7 @@ use crate::discretize::{DiscretizePolicy, DiscretizedProfile, discretize_profile
 use crate::ir::{CapMode, Placement3};
 use crate::len_u32;
 use crate::profile::Profile2;
+use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
 
 /// Evaluation policy shared by body tessellation.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -226,25 +227,16 @@ fn apply_placement(p: &Placement3, v: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// The single documented f64 -> f32 narrowing point.
-fn narrow(v: [f64; 3]) -> [f32; 3] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the deliberate f64->f32 narrowing at mesh emission (ADR-0001)"
-    )]
-    {
-        [v[0] as f32, v[1] as f32, v[2] as f32]
-    }
-}
-
 /// Determinant of the placement's linear part. Negative means the
 /// placement reflects, and emitted face loops must reverse to keep
 /// outward orientation.
 pub(crate) fn det3(p: &Placement3) -> f64 {
     let r = &p.rows;
-    r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
-        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
-        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+    exedra_math::det3([
+        [r[0][0], r[0][1], r[0][2]],
+        [r[1][0], r[1][1], r[1][2]],
+        [r[2][0], r[2][1], r[2][2]],
+    ])
 }
 
 /// Reorders per-edge attributes for a reversed face loop: reversed edge
@@ -1073,18 +1065,18 @@ fn loft_has_volumetric_span(
     let origin = first_points[0];
     let plane_scale = first_points
         .iter()
-        .map(|&point| norm3(sub3(point, origin)))
+        .map(|&point| norm(sub(point, origin)))
         .fold(0.0_f64, f64::max);
     let area_tolerance = plane_scale * plane_scale * 64.0 * f64::EPSILON;
     let Some(normal) = first_points.iter().find_map(|&a| {
         first_points.iter().find_map(|&b| {
-            let normal = cross3(sub3(a, origin), sub3(b, origin));
-            (norm3(normal) > area_tolerance).then_some(normal)
+            let normal = cross(sub(a, origin), sub(b, origin));
+            (norm(normal) > area_tolerance).then_some(normal)
         })
     }) else {
         return false;
     };
-    let normal_length = norm3(normal);
+    let normal_length = norm(normal);
     let span_tolerance = plane_scale * 64.0 * f64::EPSILON;
 
     sections
@@ -1097,38 +1089,10 @@ fn loft_has_volumetric_span(
                     .map(move |point| apply_placement(placement, [point[0], point[1], 0.0]))
             })
         })
-        .any(|point| dot3(normal, sub3(point, origin)).abs() / normal_length > span_tolerance)
+        .any(|point| dot(normal, sub(point, origin)).abs() / normal_length > span_tolerance)
 }
 
 // --- Sweep -------------------------------------------------------------------
-
-fn norm3(v: [f64; 3]) -> f64 {
-    libm::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-}
-
-fn scale3(v: [f64; 3], k: f64) -> [f64; 3] {
-    [v[0] * k, v[1] * k, v[2] * k]
-}
-
-fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 
 /// One sweep frame: `(origin, u, v, t)` with `u x v = t` (right-handed).
 type SweepFrame = ([f64; 3], [f64; 3], [f64; 3], [f64; 3]);
@@ -1146,20 +1110,20 @@ fn sweep_frames(
     let n = points.len();
     let mut dirs: Vec<[f64; 3]> = Vec::with_capacity(n - 1);
     for w in points.windows(2) {
-        let d = sub3(w[1], w[0]);
-        dirs.push(scale3(d, 1.0 / norm3(d)));
+        let d = sub(w[1], w[0]);
+        dirs.push(scale(d, 1.0 / norm(d)));
     }
     // Miter tangents: endpoints use their segment, interior points the
     // bisector; anti-parallel segments have no bisector (typed cusp).
     let mut tangents: Vec<[f64; 3]> = Vec::with_capacity(n);
     tangents.push(dirs[0]);
     for i in 1..n - 1 {
-        let sum = add3(dirs[i - 1], dirs[i]);
-        let len = norm3(sum);
+        let sum = add(dirs[i - 1], dirs[i]);
+        let len = norm(sum);
         if len <= 1e-12 {
             return Err(TessellateError::PathCusp { point: i });
         }
-        tangents.push(scale3(sum, 1.0 / len));
+        tangents.push(scale(sum, 1.0 / len));
     }
     tangents.push(dirs[n - 2]);
 
@@ -1176,28 +1140,28 @@ fn sweep_frames(
     };
     let mut axis = [0.0; 3];
     axis[axis_index] = 1.0;
-    let mut u = sub3(axis, scale3(t0, dot3(axis, t0)));
-    u = scale3(u, 1.0 / norm3(u));
+    let mut u = sub(axis, scale(t0, dot(axis, t0)));
+    u = scale(u, 1.0 / norm(u));
 
     let mut frames = Vec::with_capacity(n);
-    let v0 = cross3(tangents[0], u);
+    let v0 = cross(tangents[0], u);
     frames.push((points[0], u, v0, tangents[0]));
     for i in 1..n {
         // Double reflection (Wang et al.): transport (u, t) from point
         // i-1 to point i without spin.
         let (p_prev, u_prev, _, t_prev) = frames[i - 1];
-        let v1 = sub3(points[i], p_prev);
-        let c1 = dot3(v1, v1);
-        let u_l = sub3(u_prev, scale3(v1, 2.0 / c1 * dot3(v1, u_prev)));
-        let t_l = sub3(t_prev, scale3(v1, 2.0 / c1 * dot3(v1, t_prev)));
-        let v2 = sub3(tangents[i], t_l);
-        let c2 = dot3(v2, v2);
+        let v1 = sub(points[i], p_prev);
+        let c1 = dot(v1, v1);
+        let u_l = sub(u_prev, scale(v1, 2.0 / c1 * dot(v1, u_prev)));
+        let t_l = sub(t_prev, scale(v1, 2.0 / c1 * dot(v1, t_prev)));
+        let v2 = sub(tangents[i], t_l);
+        let c2 = dot(v2, v2);
         let u_i = if c2 <= 1e-24 {
             u_l
         } else {
-            sub3(u_l, scale3(v2, 2.0 / c2 * dot3(v2, u_l)))
+            sub(u_l, scale(v2, 2.0 / c2 * dot(v2, u_l)))
         };
-        let v_i = cross3(tangents[i], u_i);
+        let v_i = cross(tangents[i], u_i);
         frames.push((points[i], u_i, v_i, tangents[i]));
     }
     let _ = policy;
@@ -1234,10 +1198,10 @@ pub fn tessellate_sweep(
     let corner_ring_sharp: Vec<bool> = {
         let mut flags = alloc::vec![false; frames.len()];
         for i in 1..path.len() - 1 {
-            let a = sub3(path[i], path[i - 1]);
-            let b = sub3(path[i + 1], path[i]);
-            let cross = norm3(cross3(a, b));
-            flags[i] = cross > policy.sharp_sin_threshold * norm3(a) * norm3(b);
+            let a = sub(path[i], path[i - 1]);
+            let b = sub(path[i + 1], path[i]);
+            let cross = norm(cross(a, b));
+            flags[i] = cross > policy.sharp_sin_threshold * norm(a) * norm(b);
         }
         flags
     };
@@ -1248,7 +1212,7 @@ pub fn tessellate_sweep(
     for (origin, u, v, _) in &frames {
         for ring in d.rings() {
             for p in &ring.points {
-                let local = add3(add3(*origin, scale3(*u, p[0])), scale3(*v, p[1]));
+                let local = add(add(*origin, scale(*u, p[0])), scale(*v, p[1]));
                 builder.push_vertex(narrow(apply_placement(placement, local)));
             }
         }

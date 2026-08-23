@@ -25,6 +25,7 @@ compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 use alloc::vec::Vec;
 
 use exedra::{FaceId, Mesh, MeshBuilder};
+use exedra_math::{cross, dot, sub};
 
 /// Region ID carried by analytic faces and written into tessellated meshes.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -1055,48 +1056,15 @@ fn point_on_polygon_edge(point: [f32; 2], polygon: &[ProjectedVertex]) -> bool {
         .any(|edge| on_segment(edge.0, edge.1, point))
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
 fn normalize(vector: [f32; 3]) -> Option<[f32; 3]> {
-    let length_sq = dot(vector, vector);
-    if length_sq <= PLANAR_EPSILON * PLANAR_EPSILON {
+    if dot(vector, vector) <= PLANAR_EPSILON * PLANAR_EPSILON {
         return None;
     }
-    let inv_length = 1.0 / sqrt(length_sq);
-    Some([
-        vector[0] * inv_length,
-        vector[1] * inv_length,
-        vector[2] * inv_length,
-    ])
+    exedra_math::normalize(vector)
 }
 
 fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("analytic index overflowed u32")
-}
-
-fn sqrt(value: f32) -> f32 {
-    #[cfg(feature = "std")]
-    {
-        value.sqrt()
-    }
-    #[cfg(all(not(feature = "std"), feature = "libm"))]
-    {
-        libm::sqrtf(value)
-    }
 }
 
 #[cfg(test)]

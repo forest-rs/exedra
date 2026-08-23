@@ -30,6 +30,7 @@ use crate::fixture::{BOX_A_REGION, BOX_B_REGION, CYLINDER_REGION};
 use crate::measure::{DyadicMeasurements, Measured, WorkMeasurements, reconstruct_dyadic};
 use crate::quality::QualityReport;
 use crate::report::TopologyReport;
+use exedra_math::dot;
 
 const H1_PRIVATE_STATS: DualContourStats = DualContourStats {
     octree_cells: 100_937,
@@ -401,7 +402,7 @@ fn cylinder_implicit_residual(
         .sum::<f32>()
         .sqrt();
     let axis = axis.map(|value| value / axis_length);
-    let axial_position = dot3(delta, axis);
+    let axial_position = dot(delta, axis);
     let radial = core::array::from_fn::<_, 3, _>(|component| {
         delta[component] - axial_position * axis[component]
     });
@@ -414,10 +415,6 @@ fn cylinder_implicit_residual(
     let outside = q.map(|value| value.max(0.0));
     let outside_length = (outside[0] * outside[0] + outside[1] * outside[1]).sqrt();
     (outside_length + q[0].max(q[1]).min(0.0)).abs()
-}
-
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn assert_uniform_private_pin(

@@ -15,6 +15,7 @@ use exedra_qef::{PlaneConstraint, QefBounds, QefSolver, SharpnessClass};
 use exedra_spatial::Aabb;
 
 use crate::fixture::{H1Field, H1Fixture};
+use exedra_math::{distance_squared, dot, sub};
 
 const CUBE_EDGES: [(usize, usize); 12] = [
     (0, 1),
@@ -295,8 +296,8 @@ fn project_active_cells(
                     projection.position[axis] >= bounds.min[axis]
                         && projection.position[axis] <= bounds.max[axis]
                 });
-                let displacement = squared_distance(cell.position, projection.position);
-                let budget = squared_distance(bounds.min, bounds.max);
+                let displacement = distance_squared(cell.position, projection.position);
+                let budget = distance_squared(bounds.min, bounds.max);
                 if !projection.position.iter().all(|value| value.is_finite()) {
                     stats.invalid_fallbacks += 1;
                 } else if !inside || displacement > budget {
@@ -394,8 +395,8 @@ fn emit_quad(builder: &mut MeshBuilder, entries: [ActiveCell; 4], region: u32, f
         && triangle_is_nondegenerate([points[0], points[2], points[3]]);
     let one_three_valid = triangle_is_nondegenerate([points[0], points[1], points[3]])
         && triangle_is_nondegenerate([points[1], points[2], points[3]]);
-    let zero_two = squared_distance(points[0], points[2]);
-    let one_three = squared_distance(points[1], points[3]);
+    let zero_two = distance_squared(points[0], points[2]);
+    let one_three = distance_squared(points[1], points[3]);
     let coordinate_scale = points
         .iter()
         .flatten()
@@ -685,16 +686,16 @@ fn sharpness(value: SharpnessClass) -> f32 {
 
 fn triangle_is_nondegenerate(points: [[f32; 3]; 3]) -> bool {
     let points = points.map(|point| point.map(f64::from));
-    let ab = sub3(points[1], points[0]);
-    let ac = sub3(points[2], points[0]);
-    let bc = sub3(points[2], points[1]);
+    let ab = sub(points[1], points[0]);
+    let ac = sub(points[2], points[0]);
+    let bc = sub(points[2], points[1]);
     let cross = [
         ab[1] * ac[2] - ab[2] * ac[1],
         ab[2] * ac[0] - ab[0] * ac[2],
         ab[0] * ac[1] - ab[1] * ac[0],
     ];
-    let area_squared = dot3(cross, cross);
-    let longest = dot3(ab, ab).max(dot3(ac, ac)).max(dot3(bc, bc));
+    let area_squared = dot(cross, cross);
+    let longest = dot(ab, ab).max(dot(ac, ac)).max(dot(bc, bc));
     let relative = 16.0 * f64::from(f32::EPSILON);
     area_squared.is_finite()
         && longest.is_finite()
@@ -724,7 +725,7 @@ fn populate_corner_normals(field: &H1Field, mesh: &mut Mesh) {
     let mut session = mesh.edit();
     for (corner, gradient) in corners.into_iter().zip(gradients) {
         let vector = [gradient[1], gradient[2], gradient[3]];
-        let length_squared = dot3_f32(vector, vector);
+        let length_squared = dot(vector, vector);
         if length_squared.is_finite() && length_squared > 0.0 {
             let inverse = length_squared.sqrt().recip();
             op::set_corner_normal_override(
@@ -784,25 +785,6 @@ fn face_centroid(mesh: &Mesh, corners: &[exedra::CornerId]) -> [f32; 3] {
     }
     let inverse = 1.0 / corners.len() as f32;
     sum.map(|value| value * inverse)
-}
-
-fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    dot3_f32(
-        [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
-        [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
-    )
-}
-
-fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn dot3_f32(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn align_down(value: u32, span: u32) -> u32 {

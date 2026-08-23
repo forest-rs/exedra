@@ -17,6 +17,7 @@ use exedra_spatial::Aabb;
 use crate::ScalarField;
 use crate::analytic::{BoxField, CylinderField, Difference, Intersection, TaggedField, Union};
 use crate::transform::{RigidTransform3, Transform3, Translate, UniformScale};
+use exedra_math::{add, distance_squared, dot, scale, sub};
 
 /// Geometric classification of a semi-analytic projection.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -256,16 +257,16 @@ impl SemiAnalyticField for TaggedField<CylinderField, u32> {
 impl<F: SemiAnalyticField> SemiAnalyticField for Translate<F> {
     fn project_cell_vertex(&self, point: [f32; 3], cell: &Aabb) -> Option<SemiAnalyticProjection> {
         let offset = self.offset();
-        let local_cell = Aabb::new(sub3(cell.min, offset), sub3(cell.max, offset))?;
+        let local_cell = Aabb::new(sub(cell.min, offset), sub(cell.max, offset))?;
         map_projection_position(
             self.field()
-                .project_cell_vertex(sub3(point, offset), &local_cell),
-            |position| add3(position, offset),
+                .project_cell_vertex(sub(point, offset), &local_cell),
+            |position| add(position, offset),
         )
     }
 
     fn primitive_at(&self, point: [f32; 3]) -> u32 {
-        self.field().primitive_at(sub3(point, self.offset()))
+        self.field().primitive_at(sub(point, self.offset()))
     }
 
     fn project_cell_vertex_detailed(
@@ -274,13 +275,13 @@ impl<F: SemiAnalyticField> SemiAnalyticField for Translate<F> {
         cell: &Aabb,
     ) -> SemiAnalyticProjectionOutcome {
         let offset = self.offset();
-        let Some(local_cell) = Aabb::new(sub3(cell.min, offset), sub3(cell.max, offset)) else {
+        let Some(local_cell) = Aabb::new(sub(cell.min, offset), sub(cell.max, offset)) else {
             return SemiAnalyticProjectionOutcome::Invalid;
         };
         map_outcome_position(
             self.field()
-                .project_cell_vertex_detailed(sub3(point, offset), &local_cell),
-            |position| add3(position, offset),
+                .project_cell_vertex_detailed(sub(point, offset), &local_cell),
+            |position| add(position, offset),
         )
     }
 
@@ -293,17 +294,17 @@ impl<F: SemiAnalyticField> SemiAnalyticField for UniformScale<F> {
     fn project_cell_vertex(&self, point: [f32; 3], cell: &Aabb) -> Option<SemiAnalyticProjection> {
         let factor = self.factor();
         let inv = factor.recip();
-        let local_cell = Aabb::new(mul3(cell.min, inv), mul3(cell.max, inv))?;
+        let local_cell = Aabb::new(scale(cell.min, inv), scale(cell.max, inv))?;
         map_projection_position(
             self.field()
-                .project_cell_vertex(mul3(point, inv), &local_cell),
-            |position| mul3(position, factor),
+                .project_cell_vertex(scale(point, inv), &local_cell),
+            |position| scale(position, factor),
         )
     }
 
     fn primitive_at(&self, point: [f32; 3]) -> u32 {
         self.field()
-            .primitive_at(mul3(point, self.factor().recip()))
+            .primitive_at(scale(point, self.factor().recip()))
     }
 
     fn project_cell_vertex_detailed(
@@ -313,13 +314,13 @@ impl<F: SemiAnalyticField> SemiAnalyticField for UniformScale<F> {
     ) -> SemiAnalyticProjectionOutcome {
         let factor = self.factor();
         let inv = factor.recip();
-        let Some(local_cell) = Aabb::new(mul3(cell.min, inv), mul3(cell.max, inv)) else {
+        let Some(local_cell) = Aabb::new(scale(cell.min, inv), scale(cell.max, inv)) else {
             return SemiAnalyticProjectionOutcome::Invalid;
         };
         map_outcome_position(
             self.field()
-                .project_cell_vertex_detailed(mul3(point, inv), &local_cell),
-            |position| mul3(position, factor),
+                .project_cell_vertex_detailed(scale(point, inv), &local_cell),
+            |position| scale(position, factor),
         )
     }
 
@@ -566,8 +567,8 @@ fn project_box_cylinder_feature(
         1 => [0, 2],
         _ => [0, 1],
     };
-    let box_min = sub3(box_value.center, box_value.half_extents);
-    let box_max = add3(box_value.center, box_value.half_extents);
+    let box_min = sub(box_value.center, box_value.half_extents);
+    let box_max = add(box_value.center, box_value.half_extents);
     let cylinder_min = cylinder.center[axis] - cylinder.half_height;
     let cylinder_max = cylinder.center[axis] + cylinder.half_height;
     let tolerance = feature_tolerance(box_value, cylinder, cell);
@@ -749,11 +750,11 @@ fn project_box_cylinder_feature(
             && cylinder_surface_residual(candidate.position, cylinder) <= tolerance
     });
     candidates.sort_by(|a, b| {
-        squared_distance(point, a.position)
-            .total_cmp(&squared_distance(point, b.position))
+        distance_squared(point, a.position)
+            .total_cmp(&distance_squared(point, b.position))
             .then(a.descriptor.cmp(&b.descriptor))
     });
-    candidates.dedup_by(|a, b| squared_distance(a.position, b.position) <= tolerance * tolerance);
+    candidates.dedup_by(|a, b| distance_squared(a.position, b.position) <= tolerance * tolerance);
     if candidates.len() > 1 {
         return PairProjection::Fallback(SemiAnalyticProjectionOutcome::Ambiguous);
     }
@@ -764,8 +765,8 @@ fn project_box_cylinder_feature(
             PairProjection::NoFeature
         };
     };
-    let cell_diagonal = sqrt(squared_distance(cell.min, cell.max));
-    if squared_distance(point, candidate.position) > cell_diagonal * cell_diagonal {
+    let cell_diagonal = sqrt(distance_squared(cell.min, cell.max));
+    if distance_squared(point, candidate.position) > cell_diagonal * cell_diagonal {
         return PairProjection::Fallback(SemiAnalyticProjectionOutcome::OverBudget);
     }
     PairProjection::Feature(SemiAnalyticProjection {
@@ -901,9 +902,9 @@ fn clipped_circle_components(
         })
         .collect::<Vec<_>>();
     events.sort_by(|a, b| angle_cmp(a.direction, b.direction));
-    events.dedup_by(|a, b| squared_distance(a.position, b.position) <= tolerance * tolerance);
+    events.dedup_by(|a, b| distance_squared(a.position, b.position) <= tolerance * tolerance);
     if events.len() > 1
-        && squared_distance(events[0].position, events[events.len() - 1].position)
+        && distance_squared(events[0].position, events[events.len() - 1].position)
             <= tolerance * tolerance
     {
         events.pop();
@@ -965,8 +966,8 @@ fn clipped_circle_components(
         }
         let end = (last_arc + 1) % events.len();
         let mut best = events[start].position;
-        let mut best_distance = squared_distance(point, best);
-        let end_distance = squared_distance(point, events[end].position);
+        let mut best_distance = distance_squared(point, best);
+        let end_distance = distance_squared(point, events[end].position);
         if end_distance.total_cmp(&best_distance).is_lt() {
             best = events[end].position;
             best_distance = end_distance;
@@ -980,7 +981,7 @@ fn clipped_circle_components(
                     radial_direction,
                     events[next].direction,
                 ) {
-                    let distance = squared_distance(point, radial_position);
+                    let distance = distance_squared(point, radial_position);
                     if distance.total_cmp(&best_distance).is_lt() {
                         best = radial_position;
                     }
@@ -1132,10 +1133,10 @@ fn cylinder_surface_residual(point: [f32; 3], value: AnalyticCylinder) -> f32 {
     let Some(axis) = canonical_axis(value.axis) else {
         return f32::INFINITY;
     };
-    let delta = sub3(point, value.center);
-    let axial = dot3(delta, axis);
-    let radial = sub3(delta, mul3(axis, axial));
-    let radius = sqrt(dot3(radial, radial));
+    let delta = sub(point, value.center);
+    let axial = dot(delta, axis);
+    let radial = sub(delta, scale(axis, axial));
+    let radius = sqrt(dot(radial, radial));
     let side = abs(radius - value.radius).max((abs(axial) - value.half_height).max(0.0));
     let cap = abs(abs(axial) - value.half_height).max((radius - value.radius).max(0.0));
     side.min(cap)
@@ -1212,7 +1213,7 @@ fn project_box(value: AnalyticBox, point: [f32; 3]) -> Option<SemiAnalyticProjec
             } else {
                 value.half_extents[axis]
             };
-            let distance = squared_distance(local, candidate);
+            let distance = distance_squared(local, candidate);
             let descriptor = u8::try_from(axis * 2 + side).expect("box face descriptor fits u8");
             if best.is_none_or(|(_, best_distance, best_descriptor)| {
                 distance.total_cmp(&best_distance).is_lt()
@@ -1249,20 +1250,23 @@ fn project_cylinder(value: AnalyticCylinder, point: [f32; 3]) -> Option<SemiAnal
         return None;
     }
 
-    let delta = sub3(point, value.center);
-    let axial = dot3(delta, axis);
-    let radial = sub3(delta, mul3(axis, axial));
-    let radial_length = sqrt(dot3(radial, radial));
+    let delta = sub(point, value.center);
+    let axial = dot(delta, axis);
+    let radial = sub(delta, scale(axis, axial));
+    let radial_length = sqrt(dot(radial, radial));
     let radial_direction = if radial_length > 0.0 {
-        mul3(radial, radial_length.recip())
+        scale(radial, radial_length.recip())
     } else {
         canonical_perpendicular(axis)?
     };
 
     let side_axial = clamp(axial, -value.half_height, value.half_height);
-    let side = add3(
+    let side = add(
         value.center,
-        add3(mul3(axis, side_axial), mul3(radial_direction, value.radius)),
+        add(
+            scale(axis, side_axial),
+            scale(radial_direction, value.radius),
+        ),
     );
     let side_feature = if abs(side_axial) == value.half_height {
         SemiAnalyticFeature::Edge
@@ -1271,17 +1275,17 @@ fn project_cylinder(value: AnalyticCylinder, point: [f32; 3]) -> Option<SemiAnal
     };
 
     let cap_radial = if radial_length > value.radius {
-        mul3(radial_direction, value.radius)
+        scale(radial_direction, value.radius)
     } else {
         radial
     };
-    let cap_min = add3(
+    let cap_min = add(
         value.center,
-        add3(mul3(axis, -value.half_height), cap_radial),
+        add(scale(axis, -value.half_height), cap_radial),
     );
-    let cap_max = add3(
+    let cap_max = add(
         value.center,
-        add3(mul3(axis, value.half_height), cap_radial),
+        add(scale(axis, value.half_height), cap_radial),
     );
     let cap_feature = if radial_length >= value.radius {
         SemiAnalyticFeature::Edge
@@ -1295,9 +1299,9 @@ fn project_cylinder(value: AnalyticCylinder, point: [f32; 3]) -> Option<SemiAnal
         (cap_max, cap_feature, 2_u8),
     ];
     let mut best = candidates[0];
-    let mut best_distance = squared_distance(point, best.0);
+    let mut best_distance = distance_squared(point, best.0);
     for candidate in candidates.into_iter().skip(1) {
-        let distance = squared_distance(point, candidate.0);
+        let distance = distance_squared(point, candidate.0);
         if distance.total_cmp(&best_distance).is_lt()
             || (distance == best_distance && candidate.2 < best.2)
         {
@@ -1326,24 +1330,24 @@ fn valid_box(value: AnalyticBox) -> bool {
         && value
             .axes
             .iter()
-            .all(|axis| abs(dot3(*axis, *axis) - 1.0) <= 1.0e-4)
-        && abs(dot3(value.axes[0], value.axes[1])) <= 1.0e-4
-        && abs(dot3(value.axes[0], value.axes[2])) <= 1.0e-4
-        && abs(dot3(value.axes[1], value.axes[2])) <= 1.0e-4
+            .all(|axis| abs(dot(*axis, *axis) - 1.0) <= 1.0e-4)
+        && abs(dot(value.axes[0], value.axes[1])) <= 1.0e-4
+        && abs(dot(value.axes[0], value.axes[2])) <= 1.0e-4
+        && abs(dot(value.axes[1], value.axes[2])) <= 1.0e-4
 }
 
 fn canonical_axis(axis: [f32; 3]) -> Option<[f32; 3]> {
-    let length_squared = dot3(axis, axis);
+    let length_squared = dot(axis, axis);
     if !axis.iter().all(|component| component.is_finite()) || length_squared <= 0.0 {
         return None;
     }
-    let mut normalized = mul3(axis, sqrt(length_squared).recip());
+    let mut normalized = scale(axis, sqrt(length_squared).recip());
     let first = normalized
         .iter()
         .copied()
         .find(|component| *component != 0.0)?;
     if first < 0.0 {
-        normalized = mul3(normalized, -1.0);
+        normalized = scale(normalized, -1.0);
     }
     Some(normalized)
 }
@@ -1358,30 +1362,33 @@ fn canonical_perpendicular(axis: [f32; 3]) -> Option<[f32; 3]> {
     };
     let mut basis = [0.0_f32; 3];
     basis[basis_index] = 1.0;
-    let perpendicular = sub3(basis, mul3(axis, dot3(basis, axis)));
-    let length = sqrt(dot3(perpendicular, perpendicular));
+    let perpendicular = sub(basis, scale(axis, dot(basis, axis)));
+    let length = sqrt(dot(perpendicular, perpendicular));
     if length > 0.0 {
-        Some(mul3(perpendicular, length.recip()))
+        Some(scale(perpendicular, length.recip()))
     } else {
         None
     }
 }
 
 fn box_local_point(value: AnalyticBox, point: [f32; 3]) -> [f32; 3] {
-    let delta = sub3(point, value.center);
+    let delta = sub(point, value.center);
     [
-        dot3(delta, value.axes[0]),
-        dot3(delta, value.axes[1]),
-        dot3(delta, value.axes[2]),
+        dot(delta, value.axes[0]),
+        dot(delta, value.axes[1]),
+        dot(delta, value.axes[2]),
     ]
 }
 
 fn box_world_point(value: AnalyticBox, point: [f32; 3]) -> [f32; 3] {
-    add3(
+    add(
         value.center,
-        add3(
-            add3(mul3(value.axes[0], point[0]), mul3(value.axes[1], point[1])),
-            mul3(value.axes[2], point[2]),
+        add(
+            add(
+                scale(value.axes[0], point[0]),
+                scale(value.axes[1], point[1]),
+            ),
+            scale(value.axes[2], point[2]),
         ),
     )
 }
@@ -1392,11 +1399,11 @@ fn translate_primitive(
 ) -> Option<AnalyticPrimitive> {
     Some(match primitive {
         AnalyticPrimitive::Box(mut value) => {
-            value.center = add3(value.center, offset);
+            value.center = add(value.center, offset);
             AnalyticPrimitive::Box(value)
         }
         AnalyticPrimitive::Cylinder(mut value) => {
-            value.center = add3(value.center, offset);
+            value.center = add(value.center, offset);
             AnalyticPrimitive::Cylinder(value)
         }
     })
@@ -1408,12 +1415,12 @@ fn scale_primitive(primitive: AnalyticPrimitive, factor: f32) -> Option<Analytic
     }
     Some(match primitive {
         AnalyticPrimitive::Box(mut value) => {
-            value.center = mul3(value.center, factor);
-            value.half_extents = mul3(value.half_extents, factor);
+            value.center = scale(value.center, factor);
+            value.half_extents = scale(value.half_extents, factor);
             AnalyticPrimitive::Box(value)
         }
         AnalyticPrimitive::Cylinder(mut value) => {
-            value.center = mul3(value.center, factor);
+            value.center = scale(value.center, factor);
             value.radius *= factor;
             value.half_height *= factor;
             AnalyticPrimitive::Cylinder(value)
@@ -1478,7 +1485,7 @@ fn map_outcome_position(
 }
 
 fn local_to_world_point(transform: RigidTransform3, point: [f32; 3]) -> [f32; 3] {
-    add3(transform.origin(), transform.local_to_world_vector(point))
+    add(transform.origin(), transform.local_to_world_vector(point))
 }
 
 fn aabb_corners(bounds: &Aabb) -> [[f32; 3]; 8] {
@@ -1505,26 +1512,6 @@ fn aabb_corners(bounds: &Aabb) -> [[f32; 3]; 8] {
 
 const fn identity_axes() -> [[f32; 3]; 3] {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-}
-
-fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    dot3(sub3(a, b), sub3(a, b))
-}
-
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn mul3(value: [f32; 3], scalar: f32) -> [f32; 3] {
-    [value[0] * scalar, value[1] * scalar, value[2] * scalar]
 }
 
 fn clamp(value: f32, minimum: f32, maximum: f32) -> f32 {

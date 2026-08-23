@@ -52,10 +52,8 @@ use crate::op::{
 };
 use crate::{DeletePolicy, FaceId, HalfEdgeId, Mesh, VertexId, attr};
 
-use geom::{
-    Plane, add, arc_points, cross, dot, line_intersection, narrow, newell, normalize, promote,
-    scale, solve3, sub,
-};
+use exedra_math::{add, cross, dot, narrow, norm, normalize, promote, scale, sub};
+use geom::{Plane, arc_points, line_intersection, newell, solve3};
 
 /// The rounding profile applied along each sharp chain.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -795,9 +793,9 @@ impl Planner<'_> {
         let raw = newell(points);
         let mut perimeter = 0.0;
         for i in 0..points.len() {
-            perimeter += geom::norm(sub(points[(i + 1) % points.len()], points[i]));
+            perimeter += norm(sub(points[(i + 1) % points.len()], points[i]));
         }
-        (geom::norm(raw) > SLIVER_NEWELL_FLOOR * perimeter * perimeter)
+        (norm(raw) > SLIVER_NEWELL_FLOOR * perimeter * perimeter)
             .then(|| normalize(raw))
             .flatten()
     }

@@ -24,6 +24,7 @@ use crate::patch::region::{SelectedFace, selected_face_region};
 use crate::plan::PlanHasher;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_face_set};
 use crate::{Artifacts, DiagCode, EditOperator, OpContext, OpError, OpErrorKind, OpReport};
+use exedra_math::{add, cross, distance_squared, dot, norm, normalize, scale, sub};
 
 /// Parameters for [`ExtrudeFaces`].
 #[derive(Clone, Debug, PartialEq)]
@@ -1118,8 +1119,8 @@ impl EditOperator for CutRectFace {
                 "cut_rect requires non-degenerate source face",
             )
         })?;
-        let u_len = length3(params.frame_u);
-        let v_len = length3(params.frame_v);
+        let u_len = norm(params.frame_u);
+        let v_len = norm(params.frame_v);
         if !(u_len.is_finite() && v_len.is_finite() && u_len > 0.0 && v_len > 0.0) {
             return Err(op_error(
                 ctx,
@@ -1128,9 +1129,9 @@ impl EditOperator for CutRectFace {
                 "cut_rect frame axes must be finite non-zero vectors",
             ));
         }
-        let u = scale3(params.frame_u, 1.0 / u_len);
-        let v = scale3(params.frame_v, 1.0 / v_len);
-        if dot3(normal, u).abs() > 1e-4 || dot3(normal, v).abs() > 1e-4 {
+        let u = scale(params.frame_u, 1.0 / u_len);
+        let v = scale(params.frame_v, 1.0 / v_len);
+        if dot(normal, u).abs() > 1e-4 || dot(normal, v).abs() > 1e-4 {
             return Err(op_error(
                 ctx,
                 OpErrorKind::PreconditionFailed,
@@ -1160,9 +1161,9 @@ impl EditOperator for CutRectFace {
         ];
         let mut inner_positions = [[0.0_f32; 3]; 4];
         for (i, local) in rect_local.iter().copied().enumerate() {
-            let point = add3(
+            let point = add(
                 params.frame_origin,
-                add3(scale3(u, local[0]), scale3(v, local[1])),
+                add(scale(u, local[0]), scale(v, local[1])),
             );
             if !point.iter().all(|value| value.is_finite()) {
                 return Err(op_error(
@@ -1175,16 +1176,15 @@ impl EditOperator for CutRectFace {
             inner_positions[i] = point;
         }
 
-        let basis_u =
-            normalize3(sub3(outer_positions[1], outer_positions[0])).ok_or_else(|| {
-                op_error(
-                    ctx,
-                    OpErrorKind::NumericFailure,
-                    DiagCode::NumericToleranceIssue,
-                    "cut_rect source face has degenerate edge",
-                )
-            })?;
-        let basis_v = cross3(normal, basis_u);
+        let basis_u = normalize(sub(outer_positions[1], outer_positions[0])).ok_or_else(|| {
+            op_error(
+                ctx,
+                OpErrorKind::NumericFailure,
+                DiagCode::NumericToleranceIssue,
+                "cut_rect source face has degenerate edge",
+            )
+        })?;
+        let basis_v = cross(normal, basis_u);
         let outer_2d = outer_positions
             .map(|p| project_to_basis(p, outer_positions[0], basis_u, basis_v))
             .to_vec();
@@ -1207,7 +1207,7 @@ impl EditOperator for CutRectFace {
         let mut best_score = f32::INFINITY;
         for perm in permutations4() {
             let score = (0..4)
-                .map(|i| distance_sq3(outer_positions[i], inner_positions[perm[i]]))
+                .map(|i| distance_squared(outer_positions[i], inner_positions[perm[i]]))
                 .sum::<f32>();
             if score < best_score {
                 best_score = score;
@@ -1394,52 +1394,14 @@ impl EditOperator for CutRectFace {
     }
 }
 
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale3(a: [f32; 3], s: f32) -> [f32; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn length3(a: [f32; 3]) -> f32 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt_ext()
-}
-
-fn normalize3(a: [f32; 3]) -> Option<[f32; 3]> {
-    let len = length3(a);
-    (len > 0.0).then(|| scale3(a, 1.0 / len))
-}
-
-fn distance_sq3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let d = sub3(a, b);
-    dot3(d, d)
-}
-
 fn project_to_basis(
     point: [f32; 3],
     origin: [f32; 3],
     basis_u: [f32; 3],
     basis_v: [f32; 3],
 ) -> [f32; 2] {
-    let delta = sub3(point, origin);
-    [dot3(delta, basis_u), dot3(delta, basis_v)]
+    let delta = sub(point, origin);
+    [dot(delta, basis_u), dot(delta, basis_v)]
 }
 
 fn point_in_convex_polygon_2d(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {

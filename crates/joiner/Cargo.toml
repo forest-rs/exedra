@@ -15,11 +15,11 @@ workspace = true
 
 [features]
 default = ["std"]
-std = ["exedra_assembly/std", "exedra_constructive/std"]
+std = ["exedra_assembly/std", "exedra_constructive/std", "exedra_math/std"]
 
 [dependencies]
 exedra_assembly.workspace = true
 exedra_constructive.workspace = true
+exedra_math = { features = ["libm"], workspace = true }
 hashbrown.workspace = true
 invalidation.workspace = true
-libm.workspace = true
