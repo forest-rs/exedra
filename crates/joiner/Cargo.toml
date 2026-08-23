@@ -1,0 +1,25 @@
+[package]
+name = "joiner"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Construction layer: building elements, their relations, fitting rules, and lowering to an assembly"
+readme = "README.md"
+keywords = ["construction", "architecture", "geometry", "no_std"]
+categories = ["graphics", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["exedra_assembly/std", "exedra_constructive/std"]
+
+[dependencies]
+exedra_assembly.workspace = true
+exedra_constructive.workspace = true
+hashbrown.workspace = true
+invalidation.workspace = true
+libm.workspace = true

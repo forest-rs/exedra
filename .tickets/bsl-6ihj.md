@@ -1,6 +1,6 @@
 ---
 id: bsl-6ihj
-status: open
+status: in_progress
 deps: [ec-uoij]
 links: []
 created: 2026-08-21T13:40:52Z

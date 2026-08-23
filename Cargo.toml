@@ -24,6 +24,7 @@ members = [
     "crates/exedra_spatial",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
+    "crates/joiner",
     "examples/basilica_ruin",
     "examples/basilica_structure_lab",
     "examples/constructive_gallery",
@@ -107,6 +108,7 @@ exedra_triangulate = { default-features = false, path = "crates/exedra_triangula
 fidget = { default-features = false, version = "0.4.2" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
 invalidation = "0.2.0"
+joiner = { default-features = false, path = "crates/joiner" }
 # Pinned exactly: kurbo flattening output feeds content hashes and goldens in
 # the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }

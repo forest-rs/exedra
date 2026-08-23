@@ -27,6 +27,9 @@ Construction and extraction crates:
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
   stable paths, material-slot binding, cached compilation, and deterministic
   flattening.
+- **[joiner](crates/joiner/)** - Construction layer: building elements, the
+  three relation kinds that connect them, the typed rule seam and its uniform
+  output, evidence labelling, layered validation, and lowering to an assembly.
 - **[exedra_triangulate](crates/exedra_triangulate/)** - Deterministic,
   dependency-free planar polygon triangulation and exact predicate seams.
 - **[exedra_primitives](crates/exedra_primitives/)** - Deterministic mesh
