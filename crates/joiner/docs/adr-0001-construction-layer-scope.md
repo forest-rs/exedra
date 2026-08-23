@@ -125,7 +125,11 @@ the claim the structure lab already made.
 An extent frame may be right- or left-handed. Both are finite orthonormal
 frames, and lowering preserves the handedness in the explicit placement. This
 lets paired building elements share local construction coordinates without
-silently rewriting a reflected frame.
+silently rewriting a reflected frame. A renderer that retains the instance
+transform can communicate its negative determinant downstream; a renderer that
+bakes the transform into vertices must reverse triangle winding. The structure
+lab's OBJ path does the latter and pins the reflected north roof covering as a
+regression fixture.
 
 ### Contact meaning decides what can carry load
 

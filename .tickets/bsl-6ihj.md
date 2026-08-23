@@ -84,20 +84,48 @@ return for the IR and **stops for review before stage 2 begins**.
 
 ## Acceptance
 
-- [ ] `crates/joiner` exists (`no_std` + `alloc`) with the element graph,
+### Stage 1
+
+- [x] `crates/joiner` exists (`no_std` + `alloc`) with the element graph,
       three relation kinds, the rule trait, the uniform rule output, and a
       crate-local ADR 0001 restating scope from structure-lab ADR 0002.
-- [ ] Lowering produces an `exedra_assembly::Assembly` whose instance paths
+- [x] Lowering produces an `exedra_assembly::Assembly` whose instance paths
       derive deterministically from element keys.
-- [ ] The lab's contact and load-path validation runs unchanged over rule
-      output.
+- [x] The lab's contact and load-path validation runs over merged rule output.
+- [x] `basilica_structure_lab` consumes `joiner`; its README no longer defers
+      mating faces.
+- [x] Evidence source and class are carried on every element, relation, and
+      rule application.
+- [x] Both relation families are exercised by deterministic fixtures.
+
+### Remaining stages
+
 - [ ] `joiner_timber`: heel and king-post-foot rules; both sides from one
       nominal interface; fit class is a typed parameter.
 - [ ] `joiner_masonry`: opening void plus sill/lintel/jambs and a minimal
       coursing rule.
-- [ ] `basilica_structure_lab` consumes `joiner`; its README no longer
-      defers mating faces.
-- [ ] Evidence source and class carried on every element, relation, and rule
-      application.
-- [ ] Definition of Done (typos, fmt, taplo, clippy `-D warnings`, doc,
-      tests) on every crate touched.
+- [ ] Definition of Done (typos, fmt, taplo, clippy `-D warnings`, doc, and
+      tests) passes for every later stage.
+
+## Stage 1 gate
+
+Accepted on 2026-08-23. The mechanism crate and lab migration are complete;
+concrete timber and masonry knowledge remain stages 2 and 3. The two seed
+fixtures prove member/member and host/fill rule output, lowering, contact
+validation, and load-path validation without embedding either rule in the
+mechanism.
+
+Review fixed atomic duplicate rejection and transfer dirtiness, and made two
+model invariants explicit in the crate ADR: member joints use analytic-extent
+incidence rather than centreline intersection, and finite orthonormal extent
+frames may have either handedness. glTF retains reflected node transforms; the
+lab's baked OBJ reverses triangle winding when the world determinant is
+negative, with `roof-covering-north` as a regression fixture.
+
+Stage 2 is blocked on `exe-zqct`; ordinary multi-cutter boolean failures belong
+to `exedra::boolean`, not a `joiner` workaround. Profile offset prerequisite
+`ec-uoij` is closed.
+
+Validation passed: `typos`, `cargo fmt --all`, `taplo fmt`, workspace clippy
+with warnings denied, all-feature workspace tests, `cargo doc --no-deps`, and
+`cargo check -p joiner --no-default-features`.

@@ -402,6 +402,7 @@ fn export_obj(
     let mut vertex_base = 1_u32;
     let mut materials = BTreeSet::new();
     for item in &list.items {
+        let reflected = linear_determinant(&item.world) < 0.0;
         let body = &compiled
             .part(item.part)
             .expect("render item part is compiled")
@@ -431,8 +432,15 @@ fn export_obj(
         }
         for triangle in body.tri.indices.chunks_exact(3) {
             let a = vertex_base + triangle[0];
-            let b = vertex_base + triangle[1];
-            let c = vertex_base + triangle[2];
+            let (b, c) = if reflected {
+                // Baking a negative-determinant transform into positions
+                // reverses orientation. OBJ has no remaining node transform
+                // to signal that reflection to a viewer, so restore outward
+                // winding while keeping each corner's UV and normal attached.
+                (vertex_base + triangle[2], vertex_base + triangle[1])
+            } else {
+                (vertex_base + triangle[1], vertex_base + triangle[2])
+            };
             writeln!(out, "f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}").expect("write String");
         }
         vertex_base += u32::try_from(body.tri.positions.len()).expect("lab output fits u32");
@@ -518,6 +526,13 @@ fn transform_vector(placement: &Placement3, vector: [f32; 3]) -> Vec3 {
     ]
 }
 
+fn linear_determinant(placement: &Placement3) -> f64 {
+    let rows = &placement.rows;
+    rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+        - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+        + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0])
+}
+
 fn dot(a: Vec3, b: Vec3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -557,6 +572,33 @@ mod tests {
             .collect()
     }
 
+    fn obj_vector(line: &str) -> Vec3 {
+        let mut fields = line.split_whitespace().skip(1);
+        [
+            fields.next().expect("x").parse().expect("finite x"),
+            fields.next().expect("y").parse().expect("finite y"),
+            fields.next().expect("z").parse().expect("finite z"),
+        ]
+    }
+
+    fn obj_corner(corner: &str) -> (usize, usize) {
+        let mut fields = corner.split('/');
+        let position = fields
+            .next()
+            .expect("position index")
+            .parse::<usize>()
+            .expect("numeric position index")
+            - 1;
+        fields.next().expect("texture index");
+        let normal = fields
+            .next()
+            .expect("normal index")
+            .parse::<usize>()
+            .expect("numeric normal index")
+            - 1;
+        (position, normal)
+    }
+
     #[test]
     fn full_layer_preserves_one_group_per_present_element() {
         let model = crate::model::western_bay(&BasilicaParams::default());
@@ -570,6 +612,59 @@ mod tests {
             .collect();
         let expected: Vec<String> = element_keys(&model);
         assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn reflected_roof_obj_winding_agrees_with_exported_normals() {
+        let model = crate::model::western_bay(&BasilicaParams::default());
+        let scene = emit(&model, Layer::Full).expect("clean graph emits");
+        let reflected = scene
+            .render_list
+            .items
+            .iter()
+            .find(|item| item.path.to_string() == "roof-covering-north")
+            .expect("north roof covering");
+        assert!(
+            linear_determinant(&reflected.world) < 0.0,
+            "fixture must exercise a reflected world placement"
+        );
+
+        let (obj, _) = export_obj(&scene.compiled, &scene.render_list, "layer.mtl");
+        let positions: Vec<Vec3> = obj
+            .lines()
+            .filter(|line| line.starts_with("v "))
+            .map(obj_vector)
+            .collect();
+        let normals: Vec<Vec3> = obj
+            .lines()
+            .filter(|line| line.starts_with("vn "))
+            .map(obj_vector)
+            .collect();
+        let mut in_reflected_group = false;
+        let mut triangle_count = 0;
+        for line in obj.lines() {
+            if let Some(group) = line.strip_prefix("g ") {
+                in_reflected_group = group == "roof-covering-north";
+            } else if in_reflected_group && line.starts_with("f ") {
+                let corners: Vec<(usize, usize)> =
+                    line.split_whitespace().skip(1).map(obj_corner).collect();
+                let geometric = cross(
+                    sub(positions[corners[1].0], positions[corners[0].0]),
+                    sub(positions[corners[2].0], positions[corners[0].0]),
+                );
+                for (_, normal) in corners {
+                    assert!(
+                        dot(geometric, normals[normal]) > 0.0,
+                        "reflected OBJ winding must agree with its exported normals"
+                    );
+                }
+                triangle_count += 1;
+            }
+        }
+        assert!(
+            triangle_count > 0,
+            "fixture must export reflected triangles"
+        );
     }
 
     #[test]
