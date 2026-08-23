@@ -26,6 +26,9 @@ members = [
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
     "crates/joiner",
+    "crates/setout",
+    "crates/setout_joiner",
+    "crates/setout_reconstruction",
     "examples/basilica_ruin",
     "examples/basilica_structure_lab",
     "examples/constructive_gallery",
@@ -111,11 +114,17 @@ fidget = { default-features = false, version = "0.4.2" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
 invalidation = "0.2.0"
 joiner = { default-features = false, path = "crates/joiner" }
+joto_constants = "0.2.0"
+joto_format = "0.1.0"
+joto_parse = "0.2.0"
 # Pinned exactly: kurbo flattening output feeds content hashes and goldens in
 # the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
+setout = { default-features = false, path = "crates/setout" }
+setout_joiner = { default-features = false, path = "crates/setout_joiner" }
+setout_reconstruction = { default-features = false, path = "crates/setout_reconstruction" }
 # float_roundtrip is required for correctness, not comfort: interchange
 # formats promise that serialized f64 values re-parse to identical bits, and
 # serde_json's default parser is shortest-print but lossy-parse.

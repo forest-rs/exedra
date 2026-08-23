@@ -33,6 +33,9 @@ dependencies = [
  "exedra_gltf",
  "exedra_math",
  "libm",
+ "setout",
+ "setout_joiner",
+ "setout_reconstruction",
 ]
 
 [[package]]
@@ -44,6 +47,7 @@ dependencies = [
  "exedra_constructive",
  "exedra_math",
  "joiner",
+ "setout_joiner",
 ]
 
 [[package]]
@@ -712,6 +716,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "joto_constants"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d34cd7ad25e6256500742e8b4ab81d659ea863342322381a7d72aa6c80661fe"
+
+[[package]]
+name = "joto_format"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8844dcdfa52a47190fb4430de0d8eec47ae49cdb8101f3fc50287c5096a48252"
+dependencies = [
+ "joto_constants",
+ "joto_parse",
+]
+
+[[package]]
+name = "joto_parse"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49ba875b64e7787bf48ab21c7f1a10a35236b77a1257009dfb5742ec1dfc3202"
+dependencies = [
+ "joto_constants",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1086,6 +1115,32 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "setout"
+version = "0.0.0"
+dependencies = [
+ "joto_constants",
+ "joto_format",
+ "joto_parse",
+ "libm",
+]
+
+[[package]]
+name = "setout_joiner"
+version = "0.0.0"
+dependencies = [
+ "exedra_math",
+ "joiner",
+ "setout",
+]
+
+[[package]]
+name = "setout_reconstruction"
+version = "0.0.0"
+dependencies = [
+ "setout",
 ]
 
 [[package]]

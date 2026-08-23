@@ -5,7 +5,7 @@ use cambium::assembly::{LinearOccurrence, NamedAssemblyPattern, instantiate_name
 use exedra_assembly::{Assembly, PartId};
 use exedra_constructive::ir::{Placement3, Recipe};
 
-use crate::{BasilicaParams, names};
+use crate::{BasilicaParams, BasilicaRoofSetout, RoofSection, names};
 
 mod aisles;
 mod buttresses;
@@ -19,12 +19,12 @@ mod nave_trusses;
 const CLERESTORY_BASE: f64 = 5.75;
 const CROSSING_PLATFORM_HEIGHT: f64 = 0.22;
 
-fn crossing_drum_base(p: &BasilicaParams) -> f64 {
-    p.nave_wall_height + p.roof_rise + 0.55
+fn crossing_drum_base(roof: &RoofSection) -> f64 {
+    roof.ridge_height.as_metres() + 0.55
 }
 
-fn crossing_platform_base(p: &BasilicaParams) -> f64 {
-    crossing_drum_base(p) - CROSSING_PLATFORM_HEIGHT
+fn crossing_platform_base(roof: &RoofSection) -> f64 {
+    crossing_drum_base(roof) - CROSSING_PLATFORM_HEIGHT
 }
 
 #[derive(Copy, Clone)]
@@ -51,6 +51,7 @@ impl Layout {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Inventory {
     pub(crate) nave_walls: u32,
+    pub(crate) nave_wall_plates: u32,
     pub(crate) aisles: u32,
     pub(crate) aisle_roofs: u32,
     pub(crate) round_head_openings: u32,
@@ -126,23 +127,27 @@ impl BuildContext {
 pub(crate) fn build_assembly(p: &BasilicaParams) -> (Assembly, Inventory) {
     let mut context = BuildContext::new();
     let layout = Layout::from_params(p);
+    let roof_setout = BasilicaRoofSetout::new(p).expect("basilica roof parameters must set out");
+    let roof = roof_setout.section();
 
     // Architectural systems join the scenario here in deterministic assembly
     // order. A new detail system should be one focused module and one call in
     // the architectural sequence, not another capability on `BuildContext`.
-    nave::build(&mut context, p, layout);
+    nave::build(&mut context, p, layout, roof);
     aisles::build(&mut context, p, layout);
     interior_arcades::build(&mut context, p, layout);
-    east_end::build(&mut context, p, layout);
-    crossing::build(&mut context, p, layout);
-    crossing_transition::build(&mut context, p);
+    east_end::build(&mut context, p, layout, roof);
+    crossing::build(&mut context, p, layout, roof);
+    crossing_transition::build(&mut context, p, roof);
     buttresses::build(&mut context, p, layout);
-    // Append interior timber detail after the accepted primary fabric so its
-    // 71 instance paths remain an exact stable prefix of every export.
-    nave_trusses::build(&mut context, p, layout);
+    // Append interior timber detail after the accepted primary fabric. Stable
+    // identities survive the new continuous wall plates even though the old
+    // artifact's numeric instance prefix intentionally grows.
+    nave_trusses::build(&mut context, p, layout, &roof_setout);
 
     let inventory = Inventory {
         nave_walls: 4,
+        nave_wall_plates: 5,
         aisles: 2,
         aisle_roofs: 2,
         round_head_openings: p.arcade_bays * 2 + 12 + 12 + 1,
@@ -179,6 +184,7 @@ mod tests {
             scenario.inventory,
             Inventory {
                 nave_walls: 4,
+                nave_wall_plates: 5,
                 aisles: 2,
                 aisle_roofs: 2,
                 round_head_openings: 39,

@@ -8,6 +8,11 @@ use exedra_assembly::{Assembly, InstanceId, InstancePath};
 mod architecture;
 mod geometry;
 mod output;
+mod roof_setout;
+
+pub use roof_setout::{
+    BasilicaRoofSetout, RoofReconfiguration, RoofSection, RoofSetoutError, RoofSide,
+};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 /// Parameters controlling the example's architectural massing.
@@ -21,11 +26,11 @@ pub struct BasilicaParams {
     pub nave_width: f64,
     /// Overall width across both side aisles.
     pub total_width: f64,
-    /// Height of the nave clerestory walls at the eaves.
+    /// Height of the masonry nave wall head below the timber wall plate.
     pub nave_wall_height: f64,
     /// Height of the exterior aisle arcade walls.
     pub aisle_wall_height: f64,
-    /// Rise from the nave eaves to its roof ridge.
+    /// Rise from the wall-plate bearing datum to the roof ridge.
     pub roof_rise: f64,
     /// Longitudinal center of the crossing and dome.
     pub crossing_x: f64,
@@ -83,6 +88,14 @@ pub mod names {
         pub const NAVE_CLERESTORY_WEST: &str = "nave-clerestory-west";
         /// The short clerestory segment east of the open crossing.
         pub const NAVE_CLERESTORY_EAST: &str = "nave-clerestory-east";
+        /// Continuous north wall plate west of the crossing.
+        pub const NAVE_WALL_PLATE_WEST: &str = "nave-wall-plate-west";
+        /// Surviving west portion of the broken south wall plate.
+        pub const NAVE_WALL_PLATE_RUIN_A: &str = "nave-wall-plate-ruin-a";
+        /// Surviving east portion of the broken south wall plate.
+        pub const NAVE_WALL_PLATE_RUIN_B: &str = "nave-wall-plate-ruin-b";
+        /// Wall plate reused on both sides east of the crossing.
+        pub const NAVE_WALL_PLATE_EAST: &str = "nave-wall-plate-east";
         /// The long lower nave-to-aisle arcade segment west of the crossing.
         pub const INTERIOR_ARCADE_WEST: &str = "interior-arcade-west";
         /// The short lower nave-to-aisle arcade segment east of the crossing.
@@ -115,6 +128,16 @@ pub mod names {
         pub const NAVE_WALL_SOUTH_WEST_RUIN: &str = "nave-wall-south-west-broken";
         /// Path of the north-east nave clerestory segment.
         pub const NAVE_WALL_NORTH_EAST: &str = "nave-wall-north-east";
+        /// Path of the continuous north-west nave wall plate.
+        pub const NAVE_WALL_PLATE_NORTH_WEST: &str = "nave-wall-plate-north-west";
+        /// Path of the surviving west part of the south-west wall plate.
+        pub const NAVE_WALL_PLATE_SOUTH_WEST_A: &str = "nave-wall-plate-south-west-a";
+        /// Path of the surviving east part of the south-west wall plate.
+        pub const NAVE_WALL_PLATE_SOUTH_WEST_B: &str = "nave-wall-plate-south-west-b";
+        /// Path of the north-east nave wall plate.
+        pub const NAVE_WALL_PLATE_NORTH_EAST: &str = "nave-wall-plate-north-east";
+        /// Path of the south-east nave wall plate.
+        pub const NAVE_WALL_PLATE_SOUTH_EAST: &str = "nave-wall-plate-south-east";
         /// Path of the north-west nave-to-aisle arcade segment.
         pub const INTERIOR_ARCADE_NORTH_WEST: &str = "interior-arcade-north-west";
         /// Path of the south-west nave-to-aisle arcade segment.
@@ -159,6 +182,8 @@ pub mod names {
         pub const PENDENTIVE: &str = "pendentive";
         /// Independently addressable structural members of the nave roof trusses.
         pub const NAVE_TRUSS_MEMBER: &str = "nave_truss_member";
+        /// Continuous timber bearing between the roof and clerestory wall.
+        pub const NAVE_WALL_PLATE: &str = "nave_wall_plate";
     }
 }
 
@@ -352,7 +377,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0xcb8f_38b3_2198_594d_b662_d171_ec8d_2f18
+            0x9a6f_3c0f_4ad4_9a83_0a23_96a3_27e7_fadd
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);

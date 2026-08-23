@@ -1,0 +1,23 @@
+[package]
+name = "setout_joiner"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Exact geometry and invalidation adapter from setout to joiner"
+readme = "README.md"
+keywords = ["geometry", "construction", "constraints", "no-std"]
+categories = ["algorithms", "data-structures", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = ["exedra_math/std", "joiner/std", "setout/std"]
+
+[dependencies]
+exedra_math = { features = ["libm"], workspace = true }
+joiner.workspace = true
+setout.workspace = true

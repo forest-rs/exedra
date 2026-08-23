@@ -14,6 +14,27 @@ architecture is deliberately clearer than its ornament: the scenario is a
 workflow proof and visual regression fixture, not an archaeological
 reconstruction.
 
+## What setting-out means here
+
+In building work, **setting-out** is the translation of design intent and
+controlling measurements into the datums, points, dimensions, and alignments
+from which construction is located. It is the connective tissue between “the
+nave has this span and rise” and “this wall plate, rafter seat, ridge, gable,
+and roof face belong at these exact points.”
+
+The basilica now has one exact roof setting-out hypothesis. It fixes the old
+visible mismatch in which the roof was pitched from its outer overhang and
+therefore passed above the wall line. The roof is now resolved through the top
+of a modeled continuous wall plate first, then extended beyond it at the same
+pitch. The same resolved section drives the ruin assembly, principal rafters,
+gables, crossing height, and the separate Joiner structure laboratory.
+
+Migration note: `BasilicaParams::nave_wall_height` now names the masonry wall
+head and `roof_rise` is measured from the top of the 180 mm wall plate. A caller
+that must retain an old absolute ridge height should subtract 0.18 m from its
+former `roof_rise`; the default intentionally accepts the taller, correctly
+seated roof.
+
 Run it from the workspace root:
 
 ```sh
@@ -63,6 +84,8 @@ There is one normal path through the example:
 
 ```text
 BasilicaParams
+    -> exact BasilicaRoofSetout
+        -> resolved roof section + provenance + reconstruction assessment
     -> build_basilica_assembly
         -> architecture::{nave, aisles, interior_arcades, east_end, crossing,
                          crossing_transition, buttresses, nave_trusses}

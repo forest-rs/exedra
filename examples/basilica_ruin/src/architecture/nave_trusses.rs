@@ -6,28 +6,24 @@ use cambium::assembly::{
 };
 use exedra_assembly::PartId;
 use exedra_constructive::ir::Placement3;
+use exedra_math::{scale, sub};
+use setout_joiner::ResolvedElementGeometry;
 
 use super::{BuildContext, Layout};
 use crate::geometry::box_recipe;
-use crate::{BasilicaParams, names};
+use crate::{BasilicaParams, BasilicaRoofSetout, RoofSide, names};
 
 const WEST_BAYS: u32 = 5;
 const OMITTED_WEST_SLOT: u32 = 2;
 const TIE_WIDTH: f64 = 0.30;
 const TIE_DEPTH: f64 = 0.34;
-const TIE_BASE: f64 = 10.90;
-const RAFTER_WIDTH: f64 = 0.26;
-const RAFTER_DEPTH: f64 = 0.24;
-// Keep the structural pair visibly separate from the modeled roof skin. A
-// near-flush 35 mm gap made the near-side rafter disappear in oblique views.
-const ROOF_CLEARANCE: f64 = 0.12;
 const KING_POST_WIDTH: f64 = 0.26;
-const KING_POST_BASE: f64 = 11.10;
+const KING_POST_SEAT_BELOW_PLATE_TOP: f64 = 0.08;
 const KING_POST_RAFTER_OVERLAP: f64 = 0.025;
 const BRACE_RUN: f64 = 2.40;
 const BRACE_WIDTH: f64 = 0.20;
 const BRACE_DEPTH: f64 = 0.18;
-const BRACE_BASE: f64 = 11.22;
+const BRACE_SEAT_BELOW_PLATE_TOP: f64 = 0.04;
 
 struct MemberParts {
     tie: PartId,
@@ -37,11 +33,24 @@ struct MemberParts {
 }
 
 struct TrussGeometry {
+    half_nave: f64,
+    #[cfg(test)]
     roof_sin: f64,
+    #[cfg(test)]
     roof_cos: f64,
+    #[cfg(test)]
     roof_peak: f64,
     rafter_length: f64,
+    rafter_width: f64,
+    rafter_depth: f64,
+    #[cfg(test)]
+    roof_clearance: f64,
+    north_rafter_frame: Placement3,
+    south_rafter_frame: Placement3,
+    tie_base: f64,
+    king_post_base: f64,
     king_post_height: f64,
+    brace_base: f64,
     brace_length: f64,
     brace_cos: f64,
     brace_sin: f64,
@@ -49,20 +58,24 @@ struct TrussGeometry {
 
 /// Adds the open timber frames that visibly carry the two nave roof slopes.
 ///
-/// The tie beam also acts as a wall plate: the existing roof planes use their
-/// exterior overhang as the slope run, leaving their underside slightly above
-/// the nave wall heads. Its depth bridges that gap while tying the walls
-/// against rafter spread. The missing west slot repeats the authored south-west
+/// Each principal rafter is lowered through `setout_joiner` from the exact wall
+/// seat and ridge claims. The visible clearance is then applied once, normal to
+/// that resolved extent. The missing west slot repeats the authored south-west
 /// clerestory and roof loss rather than placing intact structure beneath it.
-pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layout) {
-    let geometry = TrussGeometry::from_params(p, layout);
-    let parts = add_member_parts(context, p, &geometry);
+pub(super) fn build(
+    context: &mut BuildContext,
+    p: &BasilicaParams,
+    layout: Layout,
+    setout: &BasilicaRoofSetout,
+) {
+    let geometry = TrussGeometry::from_setout(setout);
+    let parts = add_member_parts(context, &geometry);
     let west_pitch = (layout.crossing_west - 4.0) / f64::from(WEST_BAYS);
     let role = [MetadataEntry {
         key: names::ARCHITECTURAL_ROLE,
         value: names::roles::NAVE_TRUSS_MEMBER,
     }];
-    let members = member_templates(&parts, &geometry, layout, &role);
+    let members = member_templates(&parts, &geometry, &role);
     let west_occurrences = repeat_linear(&LinearRepeat {
         count: WEST_BAYS + 1,
         start: [2.0, 0.0, 0.0],
@@ -100,28 +113,57 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, layout: Layo
 }
 
 impl TrussGeometry {
-    fn from_params(p: &BasilicaParams, layout: Layout) -> Self {
-        let roof_run = layout.half_nave + 0.35;
-        let roof_slope = libm::sqrt(roof_run * roof_run + p.roof_rise * p.roof_rise);
-        let roof_cos = roof_run / roof_slope;
-        let roof_sin = p.roof_rise / roof_slope;
-        let roof_peak = p.nave_wall_height + p.roof_rise;
-        let rafter_length = layout.half_nave / roof_cos;
-        let rafter_lower_ridge = roof_peak - roof_cos * (RAFTER_DEPTH + ROOF_CLEARANCE);
-        let king_post_height = rafter_lower_ridge + KING_POST_RAFTER_OVERLAP - KING_POST_BASE;
+    fn from_setout(setout: &BasilicaRoofSetout) -> Self {
+        let roof = setout.section();
+        let north = setout
+            .principal_rafter_geometry(RoofSide::North)
+            .expect("accepted north rafter binding resolves");
+        let south = setout
+            .principal_rafter_geometry(RoofSide::South)
+            .expect("accepted south rafter binding resolves");
+        let roof_clearance = roof.principal_rafter_reveal.as_metres();
+        let north_rafter_frame = recessed_member_frame(&north, roof_clearance);
+        let south_rafter_frame = recessed_member_frame(&south, roof_clearance);
+        let roof_sin = north.extent.axes[0][2];
+        let roof_cos = -north.extent.axes[0][1];
+        let roof_peak = roof.ridge_height.as_metres();
+        let rafter_length = north.extent.size[0];
+        let rafter_width = north.extent.size[1];
+        let rafter_depth = north.extent.size[2];
+        let tie_base = roof.wall_plate_top.as_metres() - TIE_DEPTH;
+        let king_post_base = roof.wall_plate_top.as_metres() - KING_POST_SEAT_BELOW_PLATE_TOP;
+        let rafter_lower_ridge = roof_peak - roof_cos * (rafter_depth + roof_clearance);
+        let king_post_height = rafter_lower_ridge + KING_POST_RAFTER_OVERLAP - king_post_base;
 
-        let brace_target_x = (BRACE_RUN + roof_sin * (RAFTER_DEPTH + ROOF_CLEARANCE)) / roof_cos;
-        let brace_target_z =
-            roof_peak - roof_sin * brace_target_x - roof_cos * (RAFTER_DEPTH + ROOF_CLEARANCE);
-        let brace_rise = brace_target_z - BRACE_BASE;
+        // The brace meets the inner rafter face at a fixed plan run. Resolve
+        // that intersection against the shared pitch and normal offset rather
+        // than treating its upper endpoint as an independent design datum.
+        let rafter_offset = rafter_depth + roof_clearance;
+        let brace_target_x = (BRACE_RUN + roof_sin * rafter_offset) / roof_cos;
+        let brace_target_z = roof_peak - roof_sin * brace_target_x - roof_cos * rafter_offset;
+        let brace_base = roof.wall_plate_top.as_metres() - BRACE_SEAT_BELOW_PLATE_TOP;
+        let brace_rise = brace_target_z - brace_base;
         let brace_length = libm::sqrt(BRACE_RUN * BRACE_RUN + brace_rise * brace_rise);
 
         Self {
+            half_nave: roof.half_span.as_metres(),
+            #[cfg(test)]
             roof_sin,
+            #[cfg(test)]
             roof_cos,
+            #[cfg(test)]
             roof_peak,
             rafter_length,
+            rafter_width,
+            rafter_depth,
+            #[cfg(test)]
+            roof_clearance,
+            north_rafter_frame,
+            south_rafter_frame,
+            tie_base,
+            king_post_base,
             king_post_height,
+            brace_base,
             brace_length,
             brace_cos: BRACE_RUN / brace_length,
             brace_sin: brace_rise / brace_length,
@@ -129,16 +171,34 @@ impl TrussGeometry {
     }
 }
 
-fn add_member_parts(
-    context: &mut BuildContext,
-    p: &BasilicaParams,
-    geometry: &TrussGeometry,
-) -> MemberParts {
+fn recessed_member_frame(resolved: &ResolvedElementGeometry, clearance: f64) -> Placement3 {
+    let extent = &resolved.extent;
+    // SegmentMemberBinding centers depth on the exact endpoint line. Moving
+    // inward by half the member depth plus the reveal places its outer face at
+    // exactly the specified clearance beneath the roof underside.
+    let origin = sub(
+        extent.origin,
+        scale(extent.axes[2], extent.size[2] * 0.5 + clearance),
+    );
+    let mut placement =
+        Placement3::from_axes(extent.axes[0], extent.axes[1], extent.axes[2], origin);
+    // Matrix composition and direct placement must agree bit-for-bit for the
+    // assembly fingerprint. IEEE -0.0 is geometrically identical but hashes
+    // differently, so normalize only signed zero at this lowering boundary.
+    for value in placement.rows.iter_mut().flatten() {
+        if *value == 0.0 {
+            *value = 0.0;
+        }
+    }
+    placement
+}
+
+fn add_member_parts(context: &mut BuildContext, geometry: &TrussGeometry) -> MemberParts {
     MemberParts {
         tie: context.add_part(
             names::parts::NAVE_TRUSS_TIE_BEAM,
             box_recipe(
-                [p.nave_width, TIE_WIDTH, TIE_DEPTH],
+                [geometry.half_nave * 2.0, TIE_WIDTH, TIE_DEPTH],
                 "basilica:nave-truss-tie-beam",
             ),
             "aged-timber",
@@ -146,7 +206,11 @@ fn add_member_parts(
         rafter: context.add_part(
             names::parts::NAVE_TRUSS_PRINCIPAL_RAFTER,
             box_recipe(
-                [geometry.rafter_length, RAFTER_WIDTH, RAFTER_DEPTH],
+                [
+                    geometry.rafter_length,
+                    geometry.rafter_width,
+                    geometry.rafter_depth,
+                ],
                 "basilica:nave-truss-principal-rafter",
             ),
             "aged-timber",
@@ -173,14 +237,13 @@ fn add_member_parts(
 fn member_templates<'metadata>(
     parts: &MemberParts,
     geometry: &TrussGeometry,
-    layout: Layout,
     metadata: &'metadata [MetadataEntry<'metadata>],
 ) -> [InstanceTemplate<'metadata>; 6] {
     [
         InstanceTemplate {
             key_suffix: "tie-beam",
             part: parts.tie,
-            placement: tie_frame(layout.half_nave),
+            placement: tie_frame(geometry),
             bindings: &[],
             metadata,
         },
@@ -204,7 +267,7 @@ fn member_templates<'metadata>(
             placement: Placement3::translate(
                 -KING_POST_WIDTH * 0.5,
                 -KING_POST_WIDTH * 0.5,
-                KING_POST_BASE,
+                geometry.king_post_base,
             ),
             bindings: &[],
             metadata,
@@ -226,39 +289,20 @@ fn member_templates<'metadata>(
     ]
 }
 
-fn tie_frame(half_nave: f64) -> Placement3 {
+fn tie_frame(geometry: &TrussGeometry) -> Placement3 {
     Placement3::from_axes(
         [0.0, 1.0, 0.0],
         [-1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0],
-        [TIE_WIDTH * 0.5, -half_nave, TIE_BASE],
+        [TIE_WIDTH * 0.5, -geometry.half_nave, geometry.tie_base],
     )
 }
 
 fn rafter_frame(geometry: &TrussGeometry, north: bool) -> Placement3 {
-    let offset = RAFTER_DEPTH + ROOF_CLEARANCE;
     if north {
-        Placement3::from_axes(
-            [0.0, geometry.roof_cos, -geometry.roof_sin],
-            [-1.0, 0.0, 0.0],
-            [0.0, geometry.roof_sin, geometry.roof_cos],
-            [
-                RAFTER_WIDTH * 0.5,
-                -geometry.roof_sin * offset,
-                geometry.roof_peak - geometry.roof_cos * offset,
-            ],
-        )
+        geometry.north_rafter_frame
     } else {
-        Placement3::from_axes(
-            [0.0, -geometry.roof_cos, -geometry.roof_sin],
-            [1.0, 0.0, 0.0],
-            [0.0, -geometry.roof_sin, geometry.roof_cos],
-            [
-                -RAFTER_WIDTH * 0.5,
-                geometry.roof_sin * offset,
-                geometry.roof_peak - geometry.roof_cos * offset,
-            ],
-        )
+        geometry.south_rafter_frame
     }
 }
 
@@ -268,14 +312,14 @@ fn brace_frame(geometry: &TrussGeometry, north: bool) -> Placement3 {
             [0.0, geometry.brace_cos, geometry.brace_sin],
             [-1.0, 0.0, 0.0],
             [0.0, -geometry.brace_sin, geometry.brace_cos],
-            [BRACE_WIDTH * 0.5, 0.0, BRACE_BASE],
+            [BRACE_WIDTH * 0.5, 0.0, geometry.brace_base],
         )
     } else {
         Placement3::from_axes(
             [0.0, -geometry.brace_cos, geometry.brace_sin],
             [1.0, 0.0, 0.0],
             [0.0, geometry.brace_sin, geometry.brace_cos],
-            [-BRACE_WIDTH * 0.5, 0.0, BRACE_BASE],
+            [-BRACE_WIDTH * 0.5, 0.0, geometry.brace_base],
         )
     }
 }
@@ -303,13 +347,14 @@ mod tests {
     fn named_patterns_match_the_accepted_station_loops() {
         let p = BasilicaParams::default();
         let layout = Layout::from_params(&p);
-        let geometry = TrussGeometry::from_params(&p, layout);
+        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let geometry = TrussGeometry::from_setout(&setout);
 
         let mut patterned = BuildContext::new();
-        build(&mut patterned, &p, layout);
+        build(&mut patterned, &p, layout, &setout);
 
         let mut legacy = BuildContext::new();
-        let parts = add_member_parts(&mut legacy, &p, &geometry);
+        let parts = add_member_parts(&mut legacy, &geometry);
         let west_pitch = (layout.crossing_west - 4.0) / f64::from(WEST_BAYS);
         for slot in 0..=WEST_BAYS {
             if slot != OMITTED_WEST_SLOT {
@@ -317,7 +362,6 @@ mod tests {
                     &mut legacy,
                     &parts,
                     &geometry,
-                    layout,
                     "west",
                     slot,
                     2.0 + f64::from(slot) * west_pitch,
@@ -328,7 +372,6 @@ mod tests {
             &mut legacy,
             &parts,
             &geometry,
-            layout,
             "east",
             0,
             (layout.crossing_east + p.length) * 0.5,
@@ -337,6 +380,43 @@ mod tests {
         let patterned = patterned.finish();
         let legacy = legacy.finish();
         assert_eq!(patterned.instances().len(), 36);
+        for (patterned_part, legacy_part) in patterned.parts().iter().zip(legacy.parts()) {
+            assert_eq!(patterned_part.key(), legacy_part.key());
+            assert_eq!(
+                patterned_part.default_materials(),
+                legacy_part.default_materials()
+            );
+            let (PartSource::Recipe(patterned_recipe), PartSource::Recipe(legacy_recipe)) =
+                (patterned_part.source(), legacy_part.source())
+            else {
+                panic!("truss test uses recipe parts");
+            };
+            assert_eq!(
+                patterned_recipe.recipe_fingerprint(),
+                legacy_recipe.recipe_fingerprint(),
+                "{}",
+                patterned_part.key()
+            );
+        }
+        for ((_, patterned), (_, legacy)) in patterned
+            .instances_with_ids()
+            .zip(legacy.instances_with_ids())
+        {
+            assert_eq!(patterned.key(), legacy.key());
+            assert_eq!(patterned.part(), legacy.part());
+            assert_eq!(
+                patterned.placement(),
+                legacy.placement(),
+                "{}",
+                patterned.key()
+            );
+            assert_eq!(
+                patterned.metadata(),
+                legacy.metadata(),
+                "{}",
+                patterned.key()
+            );
+        }
         assert_eq!(
             assembly_fingerprint(&patterned),
             assembly_fingerprint(&legacy)
@@ -347,7 +427,6 @@ mod tests {
         context: &mut BuildContext,
         parts: &MemberParts,
         geometry: &TrussGeometry,
-        layout: Layout,
         segment: &str,
         slot: u32,
         x: f64,
@@ -357,7 +436,7 @@ mod tests {
             (
                 "tie-beam",
                 parts.tie,
-                legacy_station_placement(x, tie_frame(layout.half_nave)),
+                legacy_station_placement(x, tie_frame(geometry)),
             ),
             (
                 "principal-rafter-north",
@@ -375,7 +454,7 @@ mod tests {
                 Placement3::translate(
                     x - KING_POST_WIDTH * 0.5,
                     -KING_POST_WIDTH * 0.5,
-                    KING_POST_BASE,
+                    geometry.king_post_base,
                 ),
             ),
             (
@@ -487,41 +566,47 @@ mod tests {
     #[test]
     fn rafters_clear_the_roof_underside_and_bear_through_the_ties() {
         let p = BasilicaParams::default();
+        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let geometry = TrussGeometry::from_setout(&setout);
+        let roof = setout.section();
         let scenario = build_scenario();
-        let roof_run = p.nave_width * 0.5 + 0.35;
-        let roof_slope = libm::sqrt(roof_run * roof_run + p.roof_rise * p.roof_rise);
-        let roof_sin = p.roof_rise / roof_slope;
-        let roof_cos = roof_run / roof_slope;
-        let roof_peak = p.nave_wall_height + p.roof_rise;
 
         for prefix in FRAME_PREFIXES {
             let tie_path = format!("{prefix}-tie-beam");
             let (tie_min, tie_max) =
                 bounds_for_path(&scenario.compiled, &scenario.render_list, &tie_path);
-            assert_close(tie_min[1], -p.nave_width * 0.5);
-            assert_close(tie_max[1], p.nave_width * 0.5);
-            assert!(tie_min[2] < p.nave_wall_height && tie_max[2] > p.nave_wall_height);
+            assert_close(tie_min[1], -geometry.half_nave);
+            assert_close(tie_max[1], geometry.half_nave);
+            assert!(
+                tie_min[2] < roof.wall_head.as_metres()
+                    && tie_max[2] >= roof.wall_plate_top.as_metres() - 1.0e-5
+            );
 
             for side in ["north", "south"] {
                 let path = format!("{prefix}-principal-rafter-{side}");
                 let item = render_item(&scenario, &path);
                 let body = &scenario.compiled.part(item.part).unwrap().bodies[item.body as usize];
-                let normal_y = if side == "north" { roof_sin } else { -roof_sin };
+                let normal_y = if side == "north" {
+                    geometry.roof_sin
+                } else {
+                    -geometry.roof_sin
+                };
                 let max_plane_distance = body
                     .tri
                     .positions
                     .iter()
                     .map(|&position| transform_point(&item.world, position))
                     .map(|position| {
-                        normal_y * position[1] + roof_cos * position[2] - roof_cos * roof_peak
+                        normal_y * position[1] + geometry.roof_cos * position[2]
+                            - geometry.roof_cos * geometry.roof_peak
                     })
                     .fold(f64::NEG_INFINITY, f64::max);
                 assert!(
-                    max_plane_distance <= -ROOF_CLEARANCE + 1.0e-5,
+                    max_plane_distance <= -geometry.roof_clearance + 1.0e-5,
                     "{path} protrudes into the roof: {max_plane_distance}"
                 );
                 assert!(
-                    (max_plane_distance + ROOF_CLEARANCE).abs() < 1.0e-5,
+                    (max_plane_distance + geometry.roof_clearance).abs() < 1.0e-5,
                     "{path} must retain the designed roof clearance: {max_plane_distance}"
                 );
                 let (rafter_min, _) =
@@ -538,7 +623,11 @@ mod tests {
                 &format!("{prefix}-king-post"),
             );
             assert!(king_min[2] < tie_max[2]);
-            assert!(king_max[2] > roof_peak - roof_cos * (RAFTER_DEPTH + ROOF_CLEARANCE));
+            assert!(
+                king_max[2]
+                    > geometry.roof_peak
+                        - geometry.roof_cos * (geometry.rafter_depth + geometry.roof_clearance)
+            );
 
             for side in ["north", "south"] {
                 let (brace_min, brace_max) = bounds_for_path(
@@ -547,7 +636,7 @@ mod tests {
                     &format!("{prefix}-diagonal-brace-{side}"),
                 );
                 assert!(brace_min[2] < tie_max[2]);
-                assert!(brace_max[2] > BRACE_BASE + 1.0);
+                assert!(brace_max[2] > geometry.brace_base + 1.0);
             }
         }
     }
@@ -565,12 +654,9 @@ mod tests {
         ];
 
         let p = BasilicaParams::default();
+        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let geometry = TrussGeometry::from_setout(&setout);
         let scenario = build_scenario();
-        let roof_run = p.nave_width * 0.5 + 0.35;
-        let roof_slope = libm::sqrt(roof_run * roof_run + p.roof_rise * p.roof_rise);
-        let roof_sin = p.roof_rise / roof_slope;
-        let roof_cos = roof_run / roof_slope;
-        let roof_peak = p.nave_wall_height + p.roof_rise;
 
         for prefix in FRAME_PREFIXES {
             let north_path = format!("{prefix}-principal-rafter-north");
@@ -596,7 +682,10 @@ mod tests {
             assert_close(north_min[2], south_min[2]);
             assert_close(north_max[2], south_max[2]);
 
-            for (path, normal_y) in [(&north_path, roof_sin), (&south_path, -roof_sin)] {
+            for (path, normal_y) in [
+                (&north_path, geometry.roof_sin),
+                (&south_path, -geometry.roof_sin),
+            ] {
                 let item = render_item(&scenario, path);
                 let body = &scenario.compiled.part(item.part).unwrap().bodies[item.body as usize];
                 let max_plane_distance = body
@@ -605,7 +694,8 @@ mod tests {
                     .iter()
                     .map(|&position| transform_point(&item.world, position))
                     .map(|position| {
-                        normal_y * position[1] + roof_cos * position[2] - roof_cos * roof_peak
+                        normal_y * position[1] + geometry.roof_cos * position[2]
+                            - geometry.roof_cos * geometry.roof_peak
                     })
                     .fold(f64::NEG_INFINITY, f64::max);
                 let reveal = -max_plane_distance;
@@ -613,7 +703,7 @@ mod tests {
                     reveal >= MIN_VISIBLE_ROOF_REVEAL,
                     "{path} is present but visually swallowed by the roof: reveal={reveal}m"
                 );
-                assert_close(reveal, ROOF_CLEARANCE);
+                assert_close(reveal, geometry.roof_clearance);
             }
         }
 
@@ -634,7 +724,14 @@ mod tests {
         let scenario = build_scenario();
         assert!(resolve_instance_path(&scenario.assembly, "nave-truss-west-02-tie-beam").is_none());
 
-        for item in &scenario.render_list.items[71..] {
+        // Select by stable semantic path: unrelated assembly insertions must
+        // not silently change which elements this ruin-boundary test covers.
+        for item in scenario
+            .render_list
+            .items
+            .iter()
+            .filter(|item| item.path.to_string().starts_with("nave-truss-"))
+        {
             let path = item.path.to_string();
             let (min, max) = bounds_for_path(&scenario.compiled, &scenario.render_list, &path);
             if path.starts_with("nave-truss-west") {

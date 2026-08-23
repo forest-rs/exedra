@@ -1,0 +1,21 @@
+[package]
+name = "setout_reconstruction"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Historical-reconstruction assessment sidecar for setout provenance"
+readme = "README.md"
+keywords = ["provenance", "architecture", "no-std"]
+categories = ["data-structures", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = ["setout/std"]
+
+[dependencies]
+setout.workspace = true
