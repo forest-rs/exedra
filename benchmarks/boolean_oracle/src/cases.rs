@@ -81,7 +81,7 @@ impl SkipReason {
 pub(crate) struct Finding {
     /// Which witness disagreed with the referee.
     pub(crate) witness: &'static str,
-    /// Case seed (reproduce with `--seed <seed> --cases 1 --class <key>`).
+    /// Case seed (reproduce with `--case-seed <seed> --class <key>`).
     pub(crate) case_seed: u64,
     /// The sample point.
     pub(crate) point: [f64; 3],

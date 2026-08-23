@@ -50,17 +50,19 @@ pub(crate) fn earclip_ring(
 
     while live.len > 3 {
         let mut clipped = false;
+        let mut collinear = None;
         for &pos in &scan {
             if !live.alive[pos as usize] {
                 continue;
             }
             match live.classify(pos) {
                 VertexClass::CollinearBetween => {
-                    // Zero-area vertex on the segment between its
-                    // neighbors: removing it leaves the polygon unchanged.
-                    live.remove(pos);
-                    clipped = true;
-                    break;
+                    // Prefer genuine ears. In a bridged polygon, vertices
+                    // from separate aligned boundary components can become
+                    // temporarily collinear in the composite ring; pruning
+                    // one before adjacent ears are clipped changes which
+                    // input boundary the triangulation represents.
+                    let _ = collinear.get_or_insert(pos);
                 }
                 VertexClass::Spike => return Err(TriError::NonSimple),
                 VertexClass::Reflex => {}
@@ -73,6 +75,10 @@ pub(crate) fn earclip_ring(
                     }
                 }
             }
+        }
+        if !clipped && let Some(pos) = collinear {
+            live.remove(pos);
+            clipped = true;
         }
         if !clipped {
             // Two-ears theorem: a simple polygon always has an ear, so the

@@ -20,6 +20,12 @@ Deep sweep:
 cargo run --release -p boolean_oracle -- --seed 1 --cases 400 --points 2000
 ```
 
+Reproduce one reported case without reapplying the batch-seed expansion:
+
+```sh
+cargo run --release -p boolean_oracle -- --class chained --case-seed 16616483859594386079 --points 2000
+```
+
 The fixed suite runs on every invocation. It covers `Union`, `Intersection`,
 and `Difference` at scales `1e-3`, `1`, and `1e4`, plus a rotated pair that
 must take counted QEF fallbacks. Translated and `UniformScale`-wrapped
@@ -46,5 +52,5 @@ diagnostic artifact, not a checked-in golden file.
 
 Output follows the wind-tunnel `key=value` convention; the determinism
 oracle runs before any counting. Typed mesh-pipeline deferrals (coplanar
-contact, deferred split configurations) are counted skip categories, never
-failures.
+contact, deferred split configurations) are counted skip categories. A mesh
+or field disagreement exits non-zero so a deep sweep can serve as a CI gate.

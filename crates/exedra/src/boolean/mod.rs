@@ -14,6 +14,8 @@
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
+use exedra_math::{cross, promote, sub};
+
 use crate::{CornerId, FaceId, FaceTriangulation, Mesh};
 
 mod classify;
@@ -306,7 +308,10 @@ impl BooleanBvh {
         self.strategy
     }
 
-    /// Number of triangles in this hierarchy.
+    /// Number of surface triangles in this hierarchy. Zero-area triangles
+    /// introduced only by triangulating a positive-area polygon are omitted;
+    /// an all-degenerate face remains present so the narrow phase can diagnose
+    /// invalid input rather than silently accepting it.
     #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.triangles.len()
@@ -479,7 +484,19 @@ fn collect_mesh_triangles(
         // variant reuses one allocation across every face.
         let _ = mesh.face_triangles_into(face, strategy, scratch_faces);
         counters.face_enumerations += 1;
+        // A valid polygon can contain collinear seam vertices. Fan
+        // triangulation then emits some zero-area triangles even though the
+        // face has positive area. They carry no surface and must not poison a
+        // later boolean. Keep them only when the entire face is degenerate so
+        // the narrow phase still reports genuinely invalid input.
+        let face_has_area = scratch_faces
+            .iter()
+            .copied()
+            .any(|corners| !triangle_is_degenerate(mesh, corners));
         for (triangle_index, corners) in scratch_faces.iter().copied().enumerate() {
+            if face_has_area && triangle_is_degenerate(mesh, corners) {
+                continue;
+            }
             let bounds = triangle_bounds(mesh, corners);
             triangles.push(TriangleEntry {
                 reference: BooleanTriangleRef {
@@ -491,6 +508,21 @@ fn collect_mesh_triangles(
             });
         }
     }
+}
+
+fn triangle_is_degenerate(mesh: &Mesh, corners: [CornerId; 3]) -> bool {
+    let mut points = [[0.0_f64; 3]; 3];
+    for (point, corner) in points.iter_mut().zip(corners) {
+        let vertex = mesh
+            .to_vertex(corner)
+            .expect("triangulated corner must have a destination vertex");
+        *point = promote(
+            *mesh
+                .vertex_position(vertex)
+                .expect("live mesh vertex must have a required position"),
+        );
+    }
+    cross(sub(points[1], points[0]), sub(points[2], points[0])) == [0.0; 3]
 }
 
 fn triangle_bounds(mesh: &Mesh, corners: [CornerId; 3]) -> Aabb {
@@ -616,6 +648,28 @@ mod tests {
 
         assert_eq!(bvh.triangle_count(), 2);
         assert!(bvh.node_count() > 0);
+    }
+
+    #[test]
+    fn bvh_omits_zero_area_fan_artifacts_from_valid_faces() {
+        // The face walk starts at input vertex 1, and vertices 1..=3 are
+        // collinear, so fan triangle 0 carries no surface. The BVH must retain
+        // the other two triangles without feeding that artifact downstream.
+        let mesh = Mesh::from_polygons(
+            &[
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4]],
+        )
+        .expect("collinear boundary sample is a valid polygon");
+        let mut scratch = BooleanScratch::new();
+        let bvh = BooleanBvh::build(&mesh, FaceTriangulation::Fan, &mut scratch);
+
+        assert_eq!(bvh.triangle_count(), 2);
     }
 
     #[test]

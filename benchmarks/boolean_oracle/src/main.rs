@@ -51,29 +51,39 @@ fn main() {
     // Determinism oracle before anything else: the same seed must produce
     // byte-identical outcomes, per class.
     for &class in &config.classes {
-        let probe = run_case(class, config.seed, config.points.min(120));
-        let reprobe = run_case(class, config.seed, config.points.min(120));
+        let determinism_seed = config.case_seed.unwrap_or(config.seed);
+        let probe = run_case(class, determinism_seed, config.points.min(120));
+        let reprobe = run_case(class, determinism_seed, config.points.min(120));
         assert!(
             probe == reprobe,
             "oracle run is not deterministic for class {} seed {}",
             class.key(),
-            config.seed
+            determinism_seed
         );
     }
     println!("determinism=ok");
 
     let mut reports = BTreeMap::new();
     for &class in &config.classes {
-        reports.insert(
-            class,
-            run_batch(class, config.seed, config.cases, config.points),
-        );
+        let report = if let Some(case_seed) = config.case_seed {
+            let mut report = Report::default();
+            let outcome = run_case(class, case_seed, config.points);
+            absorb(&mut report, case_seed, &outcome);
+            report
+        } else {
+            run_batch(class, config.seed, config.cases, config.points)
+        };
+        reports.insert(class, report);
     }
-    print_report(&reports, &config);
+    let (mesh_findings, field_findings) = print_report(&reports, &config);
+    if mesh_findings > 0 || field_findings > 0 {
+        std::process::exit(1);
+    }
 }
 
 struct Config {
     seed: u64,
+    case_seed: Option<u64>,
     cases: u64,
     points: u64,
     classes: Vec<ScenarioClass>,
@@ -84,6 +94,7 @@ impl Config {
     fn from_args(mut args: impl Iterator<Item = String>) -> Self {
         let mut config = Self {
             seed: 1,
+            case_seed: None,
             cases: 50,
             points: 400,
             classes: ScenarioClass::ALL.to_vec(),
@@ -91,7 +102,7 @@ impl Config {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--seed" | "--cases" | "--points" => {
+                "--seed" | "--case-seed" | "--cases" | "--points" => {
                     let value = args
                         .next()
                         .and_then(|v| v.parse::<u64>().ok())
@@ -101,6 +112,7 @@ impl Config {
                         });
                     match arg.as_str() {
                         "--seed" => config.seed = value,
+                        "--case-seed" => config.case_seed = Some(value),
                         "--cases" => config.cases = value,
                         _ => config.points = value,
                     }
@@ -119,7 +131,7 @@ impl Config {
                 "--feature-obj" => config.feature_obj = true,
                 "--help" | "-h" => {
                     println!(
-                        "boolean_oracle --seed <u64> --cases <n> --points <per-case> [--class <key>] [--feature-obj]"
+                        "boolean_oracle --seed <u64> --cases <n> --points <per-case> [--class <key>] [--case-seed <u64>] [--feature-obj]"
                     );
                     std::process::exit(0);
                 }
@@ -193,9 +205,19 @@ fn absorb(report: &mut Report, case_seed: u64, outcome: &CaseOutcome) {
     report.findings.extend(outcome.findings.iter().cloned());
 }
 
-fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) {
+fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) -> (usize, usize) {
     println!("seed={}", config.seed);
-    println!("cases_requested_per_class={}", config.cases);
+    if let Some(case_seed) = config.case_seed {
+        println!("case_seed={case_seed}");
+    }
+    println!(
+        "cases_requested_per_class={}",
+        if config.case_seed.is_some() {
+            1
+        } else {
+            config.cases
+        }
+    );
     println!("points_per_case={}", config.points);
 
     let mut total_mesh_findings = 0_usize;
@@ -283,11 +305,12 @@ fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) {
     }
     println!("mesh_disagreements={total_mesh_findings}");
     println!("field_disagreements={total_field_findings}");
+    (total_mesh_findings, total_field_findings)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{case_seed_for, run_batch};
+    use super::{Config, case_seed_for, run_batch};
     use crate::cases::run_case;
     use crate::scenario::ScenarioClass;
 
@@ -328,5 +351,41 @@ mod tests {
             let b = run_case(class, seed, 150);
             assert!(a == b, "class {} diverged between reruns", class.key());
         }
+    }
+
+    /// Same-position graph welding must not change membership in chained or
+    /// curved-wall booleans. These seeds each exposed a deeply valid mesh that
+    /// disagreed with the independent closed-form referee far outside its
+    /// numerical exclusion band.
+    #[test]
+    fn narrowed_endpoint_welding_preserves_oracle_membership() {
+        for (class, seed) in [
+            (ScenarioClass::Chained, 16_616_483_859_594_386_079),
+            (ScenarioClass::Chained, 7_985_499_786_951_827_535),
+            (ScenarioClass::CurvedWall, 17_750_669_123_436_025_581),
+        ] {
+            let outcome = run_case(class, seed, 2_000);
+            assert_eq!(outcome.skip, None, "{} seed {seed} deferred", class.key());
+            assert!(
+                outcome.findings.is_empty(),
+                "{} seed {seed}: {:?}",
+                class.key(),
+                outcome.findings
+            );
+        }
+    }
+
+    /// `--case-seed` must reproduce the reported expanded case directly,
+    /// without applying the batch seed hash a second time.
+    #[test]
+    fn direct_case_seed_is_parsed_separately_from_batch_seed() {
+        let config = Config::from_args(
+            ["--seed", "7", "--case-seed", "11", "--class", "chained"]
+                .into_iter()
+                .map(String::from),
+        );
+        assert_eq!(config.seed, 7);
+        assert_eq!(config.case_seed, Some(11));
+        assert_eq!(config.classes, vec![ScenarioClass::Chained]);
     }
 }

@@ -107,10 +107,10 @@ pub struct BooleanOutput {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum BooleanError {
-    /// Classification produced suspect patches; the result would be
-    /// unreliable. The diagnostics accumulator holds the details.
+    /// Splitting or classification left unresolved regions; the result would
+    /// be unreliable. The diagnostics accumulator holds the details.
     SuspectPatches {
-        /// Number of suspect patches.
+        /// Conservative count of unresolved regions.
         count: u64,
     },
     /// The output mesh could not be rebuilt (an internal invariant
@@ -129,7 +129,7 @@ impl core::fmt::Display for BooleanError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::SuspectPatches { count } => {
-                write!(f, "{count} suspect patches; boolean result withheld")
+                write!(f, "{count} unresolved regions; boolean result withheld")
             }
             Self::Build(e) => write!(f, "stitch rebuild failed: {e:?}"),
             Self::InvariantViolation { count } => {
@@ -231,10 +231,9 @@ pub fn boolean_mesh(
             count: (invariant_now - invariant_baseline) as u64,
         });
     }
-    if classification.any_suspect() {
-        return Err(BooleanError::SuspectPatches {
-            count: classification.stats.suspect_patches,
-        });
+    let unresolved = unresolved_region_count(&outcome_a, &outcome_b, &classification);
+    if unresolved > 0 {
+        return Err(BooleanError::SuspectPatches { count: unresolved });
     }
 
     let mut stats = BooleanStats {
@@ -260,6 +259,26 @@ pub fn boolean_mesh(
         stats,
     })
     .map_err(BooleanError::Build)
+}
+
+/// Counts unresolved regions conservatively without double-counting the same
+/// failed cut as both a deferred face and its downstream suspect patch.
+///
+/// Classification normally poisons every patch adjacent to a deferred split,
+/// but that reconstruction is intentionally not the safety boundary: if a
+/// graph vertex materializes elsewhere, classification may not be able to
+/// identify the original unsplit face. Either stage reporting uncertainty is
+/// therefore sufficient to withhold geometry.
+fn unresolved_region_count(
+    outcome_a: &MeshSplitOutcome,
+    outcome_b: &MeshSplitOutcome,
+    classification: &PatchClassification,
+) -> u64 {
+    let deferred_faces = outcome_a
+        .stats
+        .deferred_faces
+        .saturating_add(outcome_b.stats.deferred_faces);
+    deferred_faces.max(classification.stats.suspect_patches)
 }
 
 /// Whether a classified patch is kept, and whether its faces flip.
@@ -525,6 +544,32 @@ mod tests {
         volume / 6.0
     }
 
+    fn zero_area_faces(mesh: &Mesh) -> Vec<(FaceId, Vec<[f32; 3]>)> {
+        mesh.faces()
+            .filter_map(|face| {
+                let points: Vec<[f32; 3]> = mesh
+                    .face_loop(face)
+                    .filter_map(|half_edge| mesh.to_vertex(half_edge))
+                    .filter_map(|vertex| mesh.vertex_position(vertex).copied())
+                    .collect();
+                let has_area = (1..points.len().saturating_sub(1)).any(|index| {
+                    let a = points[0];
+                    let b = points[index];
+                    let c = points[index + 1];
+                    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                    let cross = [
+                        ab[1] * ac[2] - ab[2] * ac[1],
+                        ab[2] * ac[0] - ab[0] * ac[2],
+                        ab[0] * ac[1] - ab[1] * ac[0],
+                    ];
+                    cross != [0.0; 3]
+                });
+                (!has_area).then_some((face, points))
+            })
+            .collect()
+    }
+
     fn run(op: BooleanOp) -> (BooleanOutput, BooleanDiagnostics) {
         let mut mesh_a = cube([0.0, 0.0, 0.0]);
         let mesh_b = cube([0.5, 0.5, 0.5]);
@@ -697,6 +742,39 @@ mod tests {
         builder.build().expect("valid box").mesh
     }
 
+    /// Builds the same geometry with the wall-first face order emitted by
+    /// `exedra_constructive`'s rectangle extrusion. Face order changes stable
+    /// face IDs and therefore deterministic graph labels, so it is part of
+    /// this fixture even though the solid is geometrically identical.
+    fn extruded_box_mesh(min: [f32; 3], max: [f32; 3]) -> Mesh {
+        let positions = [
+            [min[0], min[1], min[2]],
+            [max[0], min[1], min[2]],
+            [max[0], max[1], min[2]],
+            [min[0], max[1], min[2]],
+            [min[0], min[1], max[2]],
+            [max[0], min[1], max[2]],
+            [max[0], max[1], max[2]],
+            [min[0], max[1], max[2]],
+        ];
+        let faces: [[u32; 4]; 6] = [
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+            [3, 2, 1, 0],
+            [4, 5, 6, 7],
+        ];
+        let mut builder = MeshBuilder::new();
+        for position in positions {
+            builder.push_vertex(position);
+        }
+        for face in faces {
+            builder.add_face(&face).expect("valid box face");
+        }
+        builder.build().expect("valid box").mesh
+    }
+
     fn run_boolean(
         mesh_a: &Mesh,
         mesh_b: &Mesh,
@@ -765,6 +843,110 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         let volume = signed_volume(&output.mesh);
         assert!((volume - 1.25).abs() < 1e-6, "union volume {volume}");
+    }
+
+    #[test]
+    fn union_with_centered_partial_face_overlap_is_watertight() {
+        // A's bottom face is centered within B's top face along X while
+        // sharing its full Y span. The two interior contact-boundary edges
+        // must separate the shared wall from the exterior surface patch.
+        let mesh_a = box_mesh([2.4, -0.1, 1.8], [3.6, 0.7, 3.2]);
+        let mesh_b = box_mesh([2.2, -0.1, 1.6], [3.8, 0.7, 1.8]);
+        let (output, diagnostics) = run_boolean(&mesh_a, &mesh_b, BooleanOp::Union)
+            .expect("centered partial-overlap union");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 1.6).abs() < 1e-5, "union volume {volume}");
+    }
+
+    #[test]
+    fn difference_output_is_valid_input_to_another_boolean() {
+        // Pins the first stage of a chained difference. A drilled cap may
+        // retain collinear seam labels, but it must not emit zero-area faces
+        // that the next narrow phase can only reject as degenerate input.
+        let host = extruded_box_mesh([0.0, 0.0, 0.0], [6.0, 0.6, 4.0]);
+        let cutter = extruded_box_mesh([2.4, -0.1, 1.8], [3.6, 0.7, 3.2]);
+        let (output, diagnostics) =
+            run_boolean(&host, &cutter, BooleanOp::Difference).expect("first difference");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let zero_area = zero_area_faces(&output.mesh);
+        assert!(
+            zero_area.is_empty(),
+            "zero-area output faces: {zero_area:?}"
+        );
+
+        // The follow-up cutter meets the first cut exactly at z=1.8. This
+        // exercises the downstream operation as well as inspecting its input.
+        let flush_cutter = extruded_box_mesh([2.2, -0.1, 1.6], [3.8, 0.7, 1.8]);
+        let (chained, diagnostics) =
+            run_boolean(&output.mesh, &flush_cutter, BooleanOp::Difference).unwrap_or_else(
+                |(error, diagnostics)| panic!("{error:?}: {:?}", diagnostics.entries()),
+            );
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(chained.mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn chained_flush_cutters_are_order_independent() {
+        // The shallow cutter creates a cap that the taller cutter opens on
+        // the next step. Reversing the original regression order must retain
+        // the same connected void instead of leaving a dangling graph chain.
+        let host = extruded_box_mesh([0.0, 0.0, 0.0], [6.0, 0.6, 4.0]);
+        let shallow = extruded_box_mesh([2.2, -0.1, 1.6], [3.8, 0.7, 1.8]);
+        let (first, diagnostics) =
+            run_boolean(&host, &shallow, BooleanOp::Difference).expect("first difference");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+
+        let tall = extruded_box_mesh([2.4, -0.1, 1.8], [3.6, 0.7, 3.2]);
+        let (output, diagnostics) = run_boolean(&first.mesh, &tall, BooleanOp::Difference)
+            .unwrap_or_else(|(error, diagnostics)| {
+                panic!("{error:?}: {:?}", diagnostics.entries())
+            });
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(output.mesh.validate_deep().is_empty());
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 13.2).abs() < 1e-5, "difference volume {volume}");
+    }
+
+    #[test]
+    fn union_of_interpenetrating_aligned_boxes_is_watertight() {
+        // Pins the n-ary cutter fold: the short box overlaps the bottom of
+        // the tall box, so their coplanar side contacts meet transversal cut
+        // chains without corrupting the OUTSIDE half-edge cycle.
+        let tall = extruded_box_mesh([2.4, -0.1, 1.8], [3.6, 0.7, 3.2]);
+        let short = extruded_box_mesh([2.2, -0.1, 1.6], [3.8, 0.7, 2.0]);
+        let (output, diagnostics) =
+            run_boolean(&tall, &short, BooleanOp::Union).expect("overlapping cutter union");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 1.664).abs() < 1e-5, "union volume {volume}");
+    }
+
+    #[test]
+    fn difference_drills_four_disconnected_box_cutters() {
+        // Four disjoint cutter components create four cap holes in one pass;
+        // every hole boundary must survive triangulation and stitch into one
+        // watertight host body with the expected removed volume.
+        let host = box_mesh([0.0, 0.0, 0.0], [6.0, 0.6, 4.0]);
+        let mut cutter = box_mesh([0.3, -0.1, 1.5], [0.9, 0.7, 2.5]);
+        for (min_x, max_x) in [(1.5, 2.1), (2.7, 3.3), (3.9, 4.5)] {
+            let next = box_mesh([min_x, -0.1, 1.5], [max_x, 0.7, 2.5]);
+            cutter = run_boolean(&cutter, &next, BooleanOp::Union)
+                .expect("disjoint cutter union")
+                .0
+                .mesh;
+        }
+
+        let (output, diagnostics) =
+            run_boolean(&host, &cutter, BooleanOp::Difference).expect("four-cutter difference");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(output.mesh.validate_deep().is_empty());
+        let volume = signed_volume(&output.mesh);
+        assert!((volume - 12.96).abs() < 1e-5, "difference volume {volume}");
     }
 
     #[test]
@@ -876,6 +1058,22 @@ mod tests {
                 assert!(!diagnostics.is_clean(), "refusal carries diagnostics");
             }
         }
+    }
+
+    #[test]
+    fn deferred_split_with_clean_classification_still_withholds_geometry() {
+        // A graph vertex may materialize on another face and hide the original
+        // incomplete cut from classification. The split-stage deferral remains
+        // independently sufficient to refuse the result.
+        let mut outcome_a = MeshSplitOutcome::default();
+        outcome_a.stats.deferred_faces = 1;
+        let outcome_b = MeshSplitOutcome::default();
+        let classification = PatchClassification::default();
+
+        assert_eq!(
+            unresolved_region_count(&outcome_a, &outcome_b, &classification),
+            1
+        );
     }
 
     #[test]

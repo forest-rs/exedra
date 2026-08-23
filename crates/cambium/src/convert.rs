@@ -376,9 +376,8 @@ mod tests {
     }
 
     #[test]
-    fn constructive_csg_maps_to_unsupported_diagnostic() {
+    fn constructive_csg_emits_supported_geometry_without_fallback() {
         use super::{ConstructiveToMeshParams, constructive_recipe_to_mesh};
-        use crate::diag::{DiagCode, DiagLevel};
         use exedra_constructive::builders;
         use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, RecipeBuilder};
 
@@ -410,13 +409,12 @@ mod tests {
 
         let out = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
             .expect("converts");
-        // This fixture's operands share coplanar faces, which the pipeline
-        // still typed-defers (exe-45bt): the CSG falls back honestly, with
-        // the pipeline's own diagnostics surfaced alongside the fallback.
-        assert!(out.bodies.is_empty());
-        assert!(out.diagnostics.iter().any(|d| d.level == DiagLevel::Error
-            && d.code == DiagCode::UnsupportedOperation
-            && d.message.starts_with("eval.csg.unsupported")));
-        assert_eq!(out.report.counters.envelope_only, 1);
+        // Coplanar faces on ordinary box unions are supported core geometry;
+        // the Cambium adapter must preserve the body instead of translating
+        // an obsolete constructive fallback into an error diagnostic.
+        assert_eq!(out.bodies.len(), 1);
+        assert!(out.bodies[0].body.mesh.validate_deep().is_empty());
+        assert!(out.diagnostics.is_empty());
+        assert_eq!(out.report.counters.envelope_only, 0);
     }
 }

@@ -39,9 +39,10 @@ pub mod predicates;
 #[cfg(test)]
 mod torture;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::bridge::bridge_holes;
+use crate::bridge::{bridge_holes, prune_collinear_between};
 use crate::earclip::{earclip_ring, len_u32, twice_signed_area};
 pub use crate::predicates::MAX_COORDINATE;
 
@@ -116,6 +117,10 @@ fn validate_loop(points: &[[f64; 2]], hole: Option<usize>) -> Result<(), TriErro
 /// simple, clockwise, strictly inside the outer loop, and mutually disjoint.
 /// Output triangles wind counter-clockwise and index the virtual
 /// concatenation `outer ++ holes[0] ++ holes[1] ++ …`.
+/// A successful result also preserves the simplified input rings exactly:
+/// every boundary edge has one incident triangle and every bridge or interior
+/// edge has two. This rules out zero-width bridge corridors, which can have
+/// the correct summed area while silently joining two aligned holes.
 ///
 /// Deterministic: identical input bits and parameters produce identical
 /// output on every platform. Never panics; every failure is a typed
@@ -155,10 +160,93 @@ pub fn triangulate(
         }
     }
 
-    let composite = bridge_holes(&points, ring, &hole_ranges)?;
-    let mut triangles = Vec::with_capacity(points.len().saturating_sub(2));
-    earclip_ring(&points, &composite, &mut triangles)?;
-    Ok(Triangulation { triangles })
+    // Preserve the historical hole and candidate ordering first. Aligned
+    // holes can make that traversal weakly simple in area yet topologically
+    // wrong; bounded fallbacks reverse the exact-x hole tie and prefer short
+    // visible bridges. The incidence check below, not successful ear clipping
+    // alone, decides whether an attempt represents these exact input rings.
+    let mut last_error = TriError::NonSimple;
+    for (descending_y_ties, nearest_candidates) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let composite = match bridge_holes(
+            &points,
+            ring.clone(),
+            &hole_ranges,
+            descending_y_ties,
+            nearest_candidates,
+        ) {
+            Ok(composite) => composite,
+            Err(error) => {
+                last_error = error;
+                continue;
+            }
+        };
+        let mut triangles = Vec::with_capacity(points.len().saturating_sub(2));
+        if let Err(error) = earclip_ring(&points, &composite, &mut triangles) {
+            last_error = error;
+            continue;
+        }
+        if triangulation_preserves_boundaries(
+            &points,
+            len_u32(input.outer.len()),
+            &hole_ranges,
+            &triangles,
+        ) {
+            return Ok(Triangulation { triangles });
+        }
+        last_error = TriError::NonSimple;
+    }
+    Err(last_error)
+}
+
+/// Checks that triangle edge incidence reproduces exactly the simplified
+/// input rings: boundary edges occur once and every bridge/interior edge
+/// occurs twice. Area agreement alone cannot detect a zero-width bridge
+/// corridor that silently joins two aligned holes.
+fn triangulation_preserves_boundaries(
+    points: &[[f64; 2]],
+    outer_len: u32,
+    holes: &[(u32, u32)],
+    triangles: &[[u32; 3]],
+) -> bool {
+    let edge = |a: u32, b: u32| (a.min(b), a.max(b));
+    let mut expected = Vec::<(u32, u32)>::new();
+    let mut rings = Vec::<Vec<u32>>::with_capacity(holes.len() + 1);
+    rings.push((0..outer_len).collect());
+    rings.extend(
+        holes
+            .iter()
+            .map(|&(base, len)| (base..base + len).collect()),
+    );
+    for mut ring in rings {
+        prune_collinear_between(points, &mut ring);
+        if ring.len() < 3 {
+            return false;
+        }
+        for index in 0..ring.len() {
+            expected.push(edge(ring[index], ring[(index + 1) % ring.len()]));
+        }
+    }
+    expected.sort_unstable();
+
+    let mut incidence = BTreeMap::<(u32, u32), u8>::new();
+    for triangle in triangles {
+        for corner in 0..3 {
+            let count = incidence
+                .entry(edge(triangle[corner], triangle[(corner + 1) % 3]))
+                .or_default();
+            *count = count.saturating_add(1);
+            if *count > 2 {
+                return false;
+            }
+        }
+    }
+    let actual: Vec<_> = incidence
+        .into_iter()
+        .filter_map(|(edge, count)| (count == 1).then_some(edge))
+        .collect();
+    actual == expected
 }
 
 /// Triangulation parameters.
@@ -383,6 +471,18 @@ mod tests {
         (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
     }
 
+    /// Twice the signed shoelace area of one test ring.
+    fn ring_area2(points: &[[f64; 2]]) -> f64 {
+        points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let next = points[(index + 1) % points.len()];
+                point[0] * next[1] - next[0] * point[1]
+            })
+            .sum()
+    }
+
     /// Asserts the invariants every successful triangulation must satisfy:
     /// n-2 triangle count bound, positive (CCW) triangle areas, area sum
     /// matching the polygon, and double-run determinism.
@@ -548,6 +648,121 @@ mod tests {
         let right: [[f64; 2]; 3] = [[0.7, 0.1], [0.7, 0.3], [0.9, 0.2]];
         let hole_area2 = 2.0 * (0.5 * 0.2 * 0.2);
         assert_holed_triangulation(&SQUARE, &[&left, &right], 2.0 - 2.0 * hole_area2);
+    }
+
+    #[test]
+    fn rectangle_with_four_aligned_rectangular_holes() {
+        // Pins the four-cutter cap that used to exhaust ear clipping when
+        // collinear samples made several equal-x hole bridges compete.
+        let outer = [[0.0, 0.0], [4.0, 0.0], [4.0, 6.0], [0.0, 6.0]];
+        let left = [
+            [2.3750000430736695, 0.8999999761581421],
+            [2.5, 0.8999999761581421],
+            [2.5, 0.8250000064726907],
+            [2.5, 0.30000001192092896],
+            [1.6249999569263305, 0.30000001192092896],
+            [1.5, 0.30000001192092896],
+            [1.5, 0.3749999816063804],
+            [1.5, 0.8999999761581421],
+        ];
+        let middle_left = [
+            [2.3750000430736695, 2.0999999046325684],
+            [2.5, 2.0999999046325684],
+            [2.5, 2.024999942397695],
+            [2.5, 1.5],
+            [1.6249999569263305, 1.5],
+            [1.5, 1.5],
+            [1.5, 1.5749999622348734],
+            [1.5, 2.0999999046325684],
+        ];
+        let middle_right = [
+            [2.3750000430736695, 2.700000047683716],
+            [1.800000031789144, 2.700000047683716],
+            [1.5, 2.700000047683716],
+            [1.5, 3.224999990081411],
+            [1.5, 3.299999952316284],
+            [1.6249999569263305, 3.299999952316284],
+            [2.1999999682108564, 3.299999952316284],
+            [2.5, 3.299999952316284],
+            [2.5, 2.775000009918589],
+            [2.5, 2.700000047683716],
+        ];
+        let right = [
+            [1.5, 4.5],
+            [2.3750000430736695, 4.5],
+            [2.5, 4.5],
+            [2.5, 4.425000037765127],
+            [2.5, 3.9000000953674316],
+            [1.6249999569263305, 3.9000000953674316],
+            [1.5, 3.9000000953674316],
+            [1.5, 3.975000057602305],
+        ];
+        let expected = ring_area2(&outer)
+            + ring_area2(&left)
+            + ring_area2(&middle_left)
+            + ring_area2(&middle_right)
+            + ring_area2(&right);
+        assert_holed_triangulation(
+            &outer,
+            &[&left, &middle_left, &middle_right, &right],
+            expected,
+        );
+    }
+
+    #[test]
+    fn rotated_rectangle_with_four_aligned_rectangular_holes() {
+        // Pins the opposite cap from the same boolean: its rotated sampling
+        // once returned correct area with a zero-width corridor between two
+        // holes, so success must preserve all five boundary components.
+        let outer = [[6.0, 0.0], [6.0, 4.0], [0.0, 4.0], [0.0, 0.0]];
+        let first = [
+            [3.299999952316284, 2.5],
+            [3.299999952316284, 2.3749999965075403],
+            [3.299999952316284, 1.800000031789144],
+            [3.299999952316284, 1.5],
+            [2.775000037858262, 1.5],
+            [2.700000047683716, 1.5],
+            [2.700000047683716, 1.6250000034924597],
+            [2.700000047683716, 2.1999999682108564],
+            [2.700000047683716, 2.5],
+            [3.224999962141738, 2.5],
+        ];
+        let second = [
+            [3.9000000953674316, 2.3749999965075403],
+            [3.9000000953674316, 2.5],
+            [3.975000085541978, 2.5],
+            [4.5, 2.5],
+            [4.5, 1.6250000034924597],
+            [4.5, 1.5],
+            [4.425000009825453, 1.5],
+            [3.9000000953674316, 1.5],
+        ];
+        let third = [
+            [0.30000001192092896, 1.5],
+            [0.30000001192092896, 2.3749999965075403],
+            [0.30000001192092896, 2.5],
+            [0.3750000095460563, 2.5],
+            [0.8999999761581421, 2.5],
+            [0.8999999761581421, 1.6250000034924597],
+            [0.8999999761581421, 1.5],
+            [0.8249999785330148, 1.5],
+        ];
+        let fourth = [
+            [1.5, 1.5],
+            [1.5, 2.3749999965075403],
+            [1.5, 2.5],
+            [1.5749999901745464, 2.5],
+            [2.0999999046325684, 2.5],
+            [2.0999999046325684, 1.6250000034924597],
+            [2.0999999046325684, 1.5],
+            [2.024999914458022, 1.5],
+        ];
+        let expected = ring_area2(&outer)
+            + ring_area2(&first)
+            + ring_area2(&second)
+            + ring_area2(&third)
+            + ring_area2(&fourth);
+        assert_holed_triangulation(&outer, &[&first, &second, &third, &fourth], expected);
     }
 
     #[test]
