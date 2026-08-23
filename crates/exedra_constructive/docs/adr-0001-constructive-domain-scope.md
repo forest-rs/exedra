@@ -44,6 +44,24 @@ together would break both.
   pairs that overlap, contain one another, or touch; curved boundaries use
   kurbo's cubic representation and a documented relative flattening
   tolerance for that topology check.
+- **Profile operations** are construction-time functions over `Profile2`,
+  not IR nodes: their output is an ordinary segment profile that hashes and
+  evaluates like any other, so adding one never touches
+  `EVAL_SCHEMA_VERSION`. Today that is the generic builders (rectangle,
+  rounded rectangle, L, circle, ring) and **offset** — a signed distance
+  with an explicit corner policy (round, or miter with a limit), used for
+  clearance geometry. Offset keeps the exactness contract above: lines
+  offset to parallel lines and bulge arcs to concentric arcs with the same
+  center and sweep, with no flattening and libm-only arithmetic; only
+  cubics go through kurbo's offset fitting, which is documented as outside
+  the cross-platform bit-identity contract because kurbo's fitting trig
+  dispatches to `std` under feature unification. Degenerate results
+  (collapsed arcs and loops, self-intersection, undercut material, holes
+  reaching the outer loop) are typed `ProfileError`s; consistent with the
+  no-auto-repair non-goal, self-intersection is detected and rejected,
+  never healed, and no loop-trimming or offset-cleanup algorithm is in
+  scope. Self-intersection, undercut, and hole contact are decided from
+  kurbo-flattened rings at a documented relative tolerance.
 - **The constructive node set**: extrude, revolve (partial sweeps, cap
   flags, open shells), loft, sweep along polyline or planar paths, planar
   faces, grid surfaces, primitives (via `exedra_primitives` specs), imported

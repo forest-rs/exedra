@@ -81,6 +81,7 @@ mod goldens;
 mod hostile;
 pub mod interchange;
 pub mod ir;
+pub mod offset;
 pub mod profile;
 pub mod source_map;
 pub mod tessellate;
