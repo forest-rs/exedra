@@ -269,8 +269,102 @@ fn classify_one_side(
         }
     }
 
-    // --- Flood fill across shared edges, stopping at cut edges.
+    // --- Coplanar membership is also a patch boundary. The contact outline
+    // can follow an existing mesh edge, in which case the transversal
+    // intersection graph contributes no cut edge there. Classify each face
+    // before flooding so contact faces cannot merge with adjacent clear
+    // surface faces across that existing edge.
     let faces: Vec<FaceId> = mesh.faces().collect();
+    let zero_area_faces: Vec<FaceId> = faces
+        .iter()
+        .copied()
+        .filter(|&face| !face_has_area(mesh, face, strategy, buffer))
+        .collect();
+    let mut face_contacts: HashMap<FaceId, PatchContact> = HashMap::new();
+    for &face in &faces {
+        let origin = origins.get(&face).copied().unwrap_or(face);
+        let membership = contacts_by_face
+            .get(&origin)
+            .map_or(PatchContact::Clear, |indices| {
+                face_contact(mesh, face, contacts, indices, side, strategy, buffer)
+            });
+        face_contacts.insert(face, membership);
+    }
+    // A split can leave a collinear bookkeeping face exactly on a contact
+    // outline. It carries the edge subdivision needed by neighboring faces
+    // but has no interior point to classify. Inherit a consistent adjacent
+    // contact rather than isolating it as a clear patch and asking ray parity
+    // to classify a point on the boundary.
+    // Iterate in stable face order to a fixed point: a run of adjacent
+    // bookkeeping faces may need the contact verdict to propagate across
+    // more than one face. Each pass changes Clear to a terminal verdict, so
+    // convergence is bounded by the number of zero-area faces.
+    loop {
+        let mut changed = false;
+        for &face in &zero_area_faces {
+            if face_contacts.get(&face) != Some(&PatchContact::Clear) {
+                continue;
+            }
+            let mut inherited: Option<bool> = None;
+            for half_edge in mesh.face_loop(face) {
+                let Some(neighbor) = mesh.twin(half_edge).and_then(|twin| mesh.face(twin)) else {
+                    continue;
+                };
+                match face_contacts.get(&neighbor).copied() {
+                    Some(PatchContact::Contact { opposed }) => match inherited {
+                        None => inherited = Some(opposed),
+                        Some(seen) if seen == opposed => {}
+                        Some(_) => {
+                            face_contacts.insert(face, PatchContact::Ambiguous);
+                            inherited = None;
+                            changed = true;
+                            break;
+                        }
+                    },
+                    Some(PatchContact::Ambiguous) => {
+                        face_contacts.insert(face, PatchContact::Ambiguous);
+                        inherited = None;
+                        changed = true;
+                        break;
+                    }
+                    Some(PatchContact::Clear) | None => {}
+                }
+            }
+            if let Some(opposed) = inherited {
+                face_contacts.insert(face, PatchContact::Contact { opposed });
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut contact_edges: HashSet<(VertexId, VertexId)> = HashSet::new();
+    for &face in &faces {
+        for half_edge in mesh.face_loop(face) {
+            let (Some(from), Some(to), Some(twin)) = (
+                mesh.from_vertex(half_edge),
+                mesh.to_vertex(half_edge),
+                mesh.twin(half_edge),
+            ) else {
+                continue;
+            };
+            let Some(neighbor) = mesh.face(twin) else {
+                continue;
+            };
+            if neighbor == FaceId::OUTSIDE {
+                continue;
+            }
+            if face_contacts.get(&face) != face_contacts.get(&neighbor) {
+                cut_vertices.insert(from);
+                cut_vertices.insert(to);
+                contact_edges.insert(sorted_pair(from, to));
+            }
+        }
+    }
+
+    // --- Flood fill across shared edges, stopping at transversal cuts and
+    // coplanar-contact boundaries.
     let mut assigned: HashMap<FaceId, usize> = HashMap::new();
     let mut patches: Vec<Patch> = Vec::new();
 
@@ -290,7 +384,8 @@ fn classify_one_side(
                 else {
                     continue;
                 };
-                if cut_edges.contains(&sorted_pair(from, to)) {
+                let edge = sorted_pair(from, to);
+                if cut_edges.contains(&edge) || contact_edges.contains(&edge) {
                     continue;
                 }
                 let Some(twin) = mesh.twin(half_edge) else {
@@ -331,16 +426,7 @@ fn classify_one_side(
         // them. A patch must be entirely contact (consistent normal
         // agreement) or entirely clear — a mix means the contact region
         // was not carved out cleanly, which is typed, not guessed.
-        match patch_contact(
-            mesh,
-            patch,
-            contacts,
-            &contacts_by_face,
-            &origins,
-            side,
-            strategy,
-            buffer,
-        ) {
+        match patch_contact(patch, &face_contacts) {
             PatchContact::Clear => {}
             PatchContact::Contact { opposed } => {
                 patch.side = PatchSide::Boundary { opposed };
@@ -385,7 +471,34 @@ fn sorted_pair(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
     }
 }
 
+/// True when the face contributes positive-area surface geometry under the
+/// pipeline's triangulation strategy. Split operations can leave collinear
+/// bookkeeping faces where an intersection follows an existing edge; those
+/// faces bound no volume and must not become classifiable surface patches.
+fn face_has_area(
+    mesh: &Mesh,
+    face: FaceId,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+) -> bool {
+    let _ = mesh.face_triangles_into(face, strategy, buffer);
+    buffer.iter().any(|triangle| {
+        let mut corners = [[0.0_f64; 3]; 3];
+        for (slot, corner) in corners.iter_mut().zip(triangle) {
+            let Some(position) = mesh
+                .to_vertex(*corner)
+                .and_then(|vertex| mesh.vertex_position(vertex))
+            else {
+                return false;
+            };
+            *slot = promote(*position);
+        }
+        !triangle_is_flat(corners)
+    })
+}
+
 /// Whether a patch is a coplanar contact region.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum PatchContact {
     /// No face of the patch lies in a contact region.
     Clear,
@@ -399,29 +512,15 @@ enum PatchContact {
     Ambiguous,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading fixed classification context"
-)]
-fn patch_contact(
-    mesh: &Mesh,
-    patch: &Patch,
-    contacts: &[CoplanarContact],
-    contacts_by_face: &HashMap<FaceId, Vec<u32>>,
-    origins: &HashMap<FaceId, FaceId>,
-    side: MeshSide,
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
-) -> PatchContact {
+fn patch_contact(patch: &Patch, face_contacts: &HashMap<FaceId, PatchContact>) -> PatchContact {
     let mut contact: Option<bool> = None;
     let mut clear = false;
     for &face in &patch.faces {
-        let origin = origins.get(&face).copied().unwrap_or(face);
-        let Some(indices) = contacts_by_face.get(&origin) else {
-            clear = true;
-            continue;
-        };
-        match face_contact(mesh, face, contacts, indices, side, strategy, buffer) {
+        match face_contacts
+            .get(&face)
+            .copied()
+            .unwrap_or(PatchContact::Clear)
+        {
             PatchContact::Clear => clear = true,
             PatchContact::Contact { opposed } => match contact {
                 None => contact = Some(opposed),

@@ -981,7 +981,10 @@ mod tests {
     }
 
     #[test]
-    fn csg_reports_envelope_only_and_emits_nothing() {
+    fn csg_difference_emits_exact_geometry() {
+        // Two overlapping box extrusions exercise the ordinary CSG path:
+        // supported geometry must be emitted as an exact, deeply valid body
+        // without the old envelope-only fallback diagnostic.
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
         let e1 = b
@@ -1009,19 +1012,10 @@ mod tests {
         let recipe = b.finish(csg).expect("valid recipe");
 
         let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
-        assert!(result.bodies.is_empty(), "no fake geometry under CSG");
-        assert_eq!(result.report.fidelity_of(csg), Some(Fidelity::EnvelopeOnly));
-        let (_, env) = result.report.envelopes[0];
-        assert_eq!(env.min, [0.0, 0.0, 0.0]);
-        assert_eq!(env.max, [1.5, 1.5, 1.0]);
-        assert!(
-            result
-                .report
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "eval.csg.unsupported"),
-            "structured diagnostic present"
-        );
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(csg), Some(Fidelity::Exact));
+        assert!(result.bodies[0].body.mesh.validate_deep().is_empty());
+        assert!(result.report.clean_at(Severity::Warning));
     }
 
     #[test]
@@ -1417,6 +1411,372 @@ mod tests {
         }
         vol /= 6.0;
         assert!((vol - 3.0).abs() < 1e-4, "grid volume {vol}");
+    }
+}
+
+#[cfg(test)]
+mod multi_cutter_regression {
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::builders;
+    use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, RecipeBuilder};
+    use crate::tessellate::EvalPolicy;
+
+    #[derive(Copy, Clone)]
+    struct BoxSpec {
+        size: [f64; 3],
+        origin: [f64; 3],
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    enum DifferenceForm {
+        Nary,
+        Chained,
+    }
+
+    fn add_box(builder: &mut RecipeBuilder, size: [f64; 3], origin: [f64; 3]) -> NodeId {
+        let profile = builder.add_profile(builders::rect(size[0], size[1]).expect("valid box"));
+        builder
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::translate(origin[0], origin[1], origin[2]),
+                height: size[2],
+                caps: CapMode::Both,
+            })
+            .expect("valid box")
+    }
+
+    fn difference_recipe(cutters: &[BoxSpec], form: DifferenceForm, scale: f64) -> Recipe {
+        let mut builder = RecipeBuilder::new();
+        let base = add_box(
+            &mut builder,
+            [6.0 * scale, 0.6 * scale, 4.0 * scale],
+            [0.0, 0.0, 0.0],
+        );
+        let cutters: Vec<NodeId> = cutters
+            .iter()
+            .map(|spec| add_box(&mut builder, spec.size, spec.origin))
+            .collect();
+        let root = match form {
+            DifferenceForm::Nary => {
+                let mut operands = Vec::with_capacity(cutters.len() + 1);
+                operands.push(base);
+                operands.extend(cutters);
+                builder
+                    .add(NodeKind::Csg {
+                        op: CsgOp::Difference,
+                        operands,
+                    })
+                    .expect("valid n-ary difference")
+            }
+            DifferenceForm::Chained => cutters.into_iter().fold(base, |left, right| {
+                builder
+                    .add(NodeKind::Csg {
+                        op: CsgOp::Difference,
+                        operands: vec![left, right],
+                    })
+                    .expect("valid chained difference")
+            }),
+        };
+        builder.finish(root).expect("valid recipe")
+    }
+
+    /// Computes the exact set-theoretic volume of the axis-aligned fixture by
+    /// partitioning at every host/cutter coordinate. This is independent of
+    /// both CSG spellings and catches a clean, one-body result with the wrong
+    /// retained region.
+    fn expected_volume(cutters: &[BoxSpec], scale: f64) -> f64 {
+        let host_max = [6.0 * scale, 0.6 * scale, 4.0 * scale];
+        let mut coordinates = [
+            vec![0.0, host_max[0]],
+            vec![0.0, host_max[1]],
+            vec![0.0, host_max[2]],
+        ];
+        for cutter in cutters {
+            for axis in 0..3 {
+                let min = cutter.origin[axis].clamp(0.0, host_max[axis]);
+                let max = (cutter.origin[axis] + cutter.size[axis]).clamp(0.0, host_max[axis]);
+                coordinates[axis].extend([min, max]);
+            }
+        }
+        for axis in &mut coordinates {
+            axis.sort_by(f64::total_cmp);
+            axis.dedup();
+        }
+
+        let mut volume = 0.0;
+        for x in coordinates[0].windows(2) {
+            for y in coordinates[1].windows(2) {
+                for z in coordinates[2].windows(2) {
+                    let midpoint = [
+                        (x[0] + x[1]) * 0.5,
+                        (y[0] + y[1]) * 0.5,
+                        (z[0] + z[1]) * 0.5,
+                    ];
+                    let removed = cutters.iter().any(|cutter| {
+                        (0..3).all(|axis| {
+                            let min = cutter.origin[axis];
+                            let max = min + cutter.size[axis];
+                            (min..max).contains(&midpoint[axis])
+                        })
+                    });
+                    if !removed {
+                        volume += (x[1] - x[0]) * (y[1] - y[0]) * (z[1] - z[0]);
+                    }
+                }
+            }
+        }
+        volume
+    }
+
+    /// Signed volume via the divergence theorem over each planar face fan.
+    fn mesh_volume(mesh: &exedra::Mesh) -> f64 {
+        let mut volume = 0.0;
+        for face in mesh.faces() {
+            let points: Vec<[f64; 3]> = mesh
+                .face_loop(face)
+                .filter_map(|half_edge| mesh.to_vertex(half_edge))
+                .filter_map(|vertex| mesh.vertex_position(vertex))
+                .map(|point| point.map(f64::from))
+                .collect();
+            for index in 1..points.len().saturating_sub(1) {
+                let (a, b, c) = (points[0], points[index], points[index + 1]);
+                volume += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            }
+        }
+        volume / 6.0
+    }
+
+    /// Representative unit-scale axis-aligned box cutters remain exact across
+    /// two through six cutters, selected operand permutations,
+    /// proximity/contact/overlap, and n-ary versus chained CSG spelling.
+    #[test]
+    fn axis_aligned_multi_cutter_differences_produce_one_body() {
+        let well_separated = [
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [0.3, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [1.5, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [2.7, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [3.9, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [5.1, -0.1, 1.5],
+            },
+        ];
+        let six_well_separated = [
+            BoxSpec {
+                size: [0.4, 0.8, 1.0],
+                origin: [0.2, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.4, 0.8, 1.0],
+                origin: [1.1, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.4, 0.8, 1.0],
+                origin: [2.0, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.4, 0.8, 1.0],
+                origin: [2.9, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.4, 0.8, 1.0],
+                origin: [3.8, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.4, 0.8, 1.0],
+                origin: [4.7, -0.1, 1.5],
+            },
+        ];
+        let flush = [
+            BoxSpec {
+                size: [1.2, 0.8, 1.4],
+                origin: [2.4, -0.1, 1.8],
+            },
+            BoxSpec {
+                size: [1.6, 0.8, 0.2],
+                origin: [2.2, -0.1, 1.6],
+            },
+        ];
+        let interpenetrating = [
+            BoxSpec {
+                size: [1.2, 0.8, 1.4],
+                origin: [2.4, -0.1, 1.8],
+            },
+            BoxSpec {
+                size: [1.6, 0.8, 0.4],
+                origin: [2.2, -0.1, 1.6],
+            },
+        ];
+        let close_disjoint = [
+            BoxSpec {
+                size: [1.2, 0.8, 0.5],
+                origin: [2.4, -0.1, 0.8],
+            },
+            BoxSpec {
+                size: [1.4, 0.8, 0.5],
+                origin: [2.3, -0.1, 1.31],
+            },
+            BoxSpec {
+                size: [1.6, 0.8, 0.5],
+                origin: [2.2, -0.1, 1.82],
+            },
+        ];
+        let mut flush_reversed = flush;
+        flush_reversed.reverse();
+        let mut interpenetrating_reversed = interpenetrating;
+        interpenetrating_reversed.reverse();
+        let mut close_disjoint_reversed = close_disjoint;
+        close_disjoint_reversed.reverse();
+        let cases = [
+            ("two-well-separated", &well_separated[..2]),
+            ("three-well-separated", &well_separated[..3]),
+            ("four-well-separated", &well_separated[..4]),
+            ("five-well-separated", &well_separated[..]),
+            ("six-well-separated", &six_well_separated[..]),
+            ("flush", &flush[..]),
+            ("flush-reversed", &flush_reversed[..]),
+            ("interpenetrating", &interpenetrating[..]),
+            ("interpenetrating-reversed", &interpenetrating_reversed[..]),
+            ("close-disjoint", &close_disjoint[..]),
+            ("close-disjoint-reversed", &close_disjoint_reversed[..]),
+        ];
+
+        let mut failures = Vec::new();
+        let scale = 1.0;
+        for (name, cutters) in cases {
+            let expected_volume = expected_volume(cutters, scale);
+            for form in [DifferenceForm::Nary, DifferenceForm::Chained] {
+                let recipe = difference_recipe(cutters, form, scale);
+                let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+                let pipeline_clean = result
+                    .report
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code != "eval.csg.pipeline");
+                let actual_volume = result
+                    .bodies
+                    .first()
+                    .map_or(f64::NAN, |body| mesh_volume(&body.body.mesh));
+                let volume_tolerance = expected_volume.abs() * 1.0e-5 + 1.0e-12;
+                if result.bodies.len() != 1
+                    || !pipeline_clean
+                    || (actual_volume - expected_volume).abs() > volume_tolerance
+                {
+                    failures.push(format!(
+                            "scale={scale} {name}/{form:?}: bodies={}, volume={actual_volume}, expected={expected_volume}, diagnostics={:?}",
+                        result.bodies.len(),
+                        result.report.diagnostics
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Scale extremes may remain outside the supported boolean envelope, but
+    /// they must either produce the exact analytic volume or refuse
+    /// explicitly—never panic or return a clean, wrong body.
+    #[test]
+    fn scale_and_flush_order_stress_is_exact_or_typed() {
+        let flush = [
+            BoxSpec {
+                size: [1.2, 0.8, 1.4],
+                origin: [2.4, -0.1, 1.8],
+            },
+            BoxSpec {
+                size: [1.6, 0.8, 0.2],
+                origin: [2.2, -0.1, 1.6],
+            },
+        ];
+        let mut flush_reversed = flush;
+        flush_reversed.reverse();
+        let five = [
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [0.3, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [1.5, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [2.7, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [3.9, -0.1, 1.5],
+            },
+            BoxSpec {
+                size: [0.6, 0.8, 1.0],
+                origin: [5.1, -0.1, 1.5],
+            },
+        ];
+        for (name, cutters, scale) in [
+            ("milli-flush", &flush[..], 1.0e-3),
+            ("milli-flush-reversed", &flush_reversed[..], 1.0e-3),
+            ("kilo-five-cutters", &five[..], 1.0e4),
+        ] {
+            let scaled: Vec<BoxSpec> = cutters
+                .iter()
+                .map(|cutter| BoxSpec {
+                    size: cutter.size.map(|coordinate| coordinate * scale),
+                    origin: cutter.origin.map(|coordinate| coordinate * scale),
+                })
+                .collect();
+            let expected_volume = expected_volume(&scaled, scale);
+            for form in [DifferenceForm::Nary, DifferenceForm::Chained] {
+                let recipe = difference_recipe(&scaled, form, scale);
+                let result =
+                    evaluate(&recipe, &EvalPolicy::default()).expect("evaluation is total");
+                if let [body] = result.bodies.as_slice() {
+                    let actual_volume = mesh_volume(&body.body.mesh);
+                    let tolerance = expected_volume.abs() * 1.0e-5 + 1.0e-12;
+                    assert!(
+                        (actual_volume - expected_volume).abs() <= tolerance,
+                        "{name}/{form:?}: volume={actual_volume}, expected={expected_volume}"
+                    );
+                    assert!(
+                        result
+                            .report
+                            .diagnostics
+                            .iter()
+                            .all(|diagnostic| diagnostic.code != "eval.csg.pipeline"),
+                        "{name}/{form:?}: exact geometry carried pipeline diagnostics"
+                    );
+                } else {
+                    assert!(
+                        result.bodies.is_empty(),
+                        "{name}/{form:?}: partial body set"
+                    );
+                    assert!(
+                        result
+                            .report
+                            .diagnostics
+                            .iter()
+                            .any(|diagnostic| diagnostic.code == "eval.csg.unsupported"),
+                        "{name}/{form:?}: refusal was not explicit"
+                    );
+                }
+            }
+        }
     }
 }
 

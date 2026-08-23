@@ -39,9 +39,9 @@ pub enum BooleanFailureKind {
     /// An internal invariant was violated; always a bug, never an input
     /// problem.
     InternalInvariantViolation,
-    /// A splitting configuration outside the current envelope (junctions,
-    /// interior loops, dangling cuts); the face is left unsplit and the
-    /// deferral is reported instead of guessed.
+    /// A splitting configuration outside the current envelope (for example
+    /// mixed open chains and loops, dangling cuts, or ambiguous sub-loop
+    /// assignment); the face is left unsplit and reported instead of guessed.
     SplitDeferred,
     /// An input triangle is degenerate (zero area / collinear corners).
     DegenerateTriangle,

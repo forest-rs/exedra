@@ -27,16 +27,17 @@
 //! disk per loop, so classification can separate the ring from the disk
 //! along real mesh edges.
 //!
-//! Configurations outside the v1 envelope are typed deferrals, never
-//! silent: faces containing junction vertices (local degree ≥ 3), faces
-//! mixing open chains with interior loops, dangling chains ending inside
-//! a face, chains whose sub-loop assignment is ambiguous, and interior
-//! loops whose projection or triangulation degenerates all leave the face
-//! unsplit and report [`BooleanFailureKind::SplitDeferred`].
+//! Configurations outside the supported envelope are typed deferrals, never
+//! silent: faces mixing open chains with interior loops, dangling chains
+//! ending inside a face, chains whose sub-loop assignment is ambiguous, and
+//! interior loops whose projection or triangulation degenerates all leave the
+//! face unsplit and report [`BooleanFailureKind::SplitDeferred`]. Planar
+//! T-junctions are decomposed into straight boundary chains followed by their
+//! residual branches, so later cutters may meet earlier cut seams.
 
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 use exedra_triangulate::predicates::{Orientation, orient2d};
 
@@ -49,7 +50,7 @@ use crate::{
         set_vertex_position, split_edge,
     },
 };
-use exedra_math::{narrow, promote, sub};
+use exedra_math::{dot, narrow, promote, sub};
 
 /// Which mesh of the boolean pair is being split.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -310,99 +311,152 @@ fn split_one_face(
     for neighbors in local.values_mut() {
         neighbors.sort_unstable();
     }
-    if local.values().any(|n| n.len() >= 3) {
-        defer(
-            "face contains an intersection junction (local degree >= 3)",
-            outcome,
-            diagnostics,
-        );
-        return;
-    }
+    let loop_vertices: Vec<VertexId> = mesh
+        .face_loop(face)
+        .filter_map(|he| mesh.to_vertex(he))
+        .collect();
+    let is_boundary_vertex = |graph_vertex: u32| {
+        outcome.graph_vertices[graph_vertex as usize]
+            .is_some_and(|vertex| loop_vertices.contains(&vertex))
+    };
 
-    // Trace face-local chains between boundary-resolved endpoints.
+    // Degree-three vertices are normal when a later cutter meets an earlier
+    // cut: the new face carries an outer crossing chain with an interior
+    // branch into the old seam. Continue straight through such junctions
+    // first. That produces boundary-to-boundary chains before the residual
+    // branch chains, whose endpoints become real vertices when the straight
+    // chains are cut below.
     let mut terminals: Vec<u32> = local
         .iter()
-        .filter(|(_, neighbors)| neighbors.len() == 1)
+        .filter(|(vertex, neighbors)| neighbors.len() == 1 || is_boundary_vertex(**vertex))
         .map(|(&vertex, _)| vertex)
         .collect();
     terminals.sort_unstable();
-    if terminals.is_empty() && !local.is_empty() {
+    if terminals.is_empty()
+        && !local.is_empty()
+        && local.values().all(|neighbors| neighbors.len() == 2)
+    {
         split_face_with_interior_loops(mesh, graph, face, &local, outcome, diagnostics);
         return;
     }
 
+    let edge_key = |a: u32, b: u32| (a.min(b), a.max(b));
     let mut visited: HashMap<(u32, u32), bool> = HashMap::new();
     let mut chains: Vec<Vec<u32>> = Vec::new();
+    let trace = |start: u32, next: u32, visited: &mut HashMap<(u32, u32), bool>| -> Vec<u32> {
+        let mut chain = alloc::vec![start, next];
+        let mut previous = start;
+        let mut current = next;
+        visited.insert(edge_key(start, next), true);
+        loop {
+            // A cut that reaches the face boundary must stop there. Letting a
+            // chain pass through that vertex would place the same mesh vertex
+            // both on the old loop and inside the new chord, producing a
+            // repeated vertex and corrupting the OUTSIDE half-edge cycle.
+            if current != start && is_boundary_vertex(current) {
+                break;
+            }
+            let candidates: Vec<u32> = local[&current]
+                .iter()
+                .copied()
+                .filter(|&candidate| !visited.contains_key(&edge_key(current, candidate)))
+                .collect();
+            if candidates.is_empty() {
+                break;
+            }
+            let step = if local[&current].len() == 2 {
+                candidates.first().copied()
+            } else {
+                // At a branch, pair the incoming edge with the most nearly
+                // straight continuation. Intersections computed by adjacent
+                // triangle pairs can differ by a few f64 rounding bits even
+                // when their source edges are collinear, so exact collinearity
+                // is too strict here. The squared projection score compares
+                // direction without a tolerance or a square root; only an
+                // obtuse continuation can win, and graph-index order breaks
+                // exact ties deterministically.
+                let incoming = sub(
+                    graph.vertices[previous as usize].position,
+                    graph.vertices[current as usize].position,
+                );
+                candidates
+                    .iter()
+                    .copied()
+                    .filter_map(|candidate| {
+                        let outgoing = sub(
+                            graph.vertices[candidate as usize].position,
+                            graph.vertices[current as usize].position,
+                        );
+                        let projection = dot(incoming, outgoing);
+                        let score = projection * projection / dot(outgoing, outgoing);
+                        (projection < 0.0 && score.is_finite()).then_some((candidate, score))
+                    })
+                    .max_by(|(a, score_a), (b, score_b)| {
+                        score_a.total_cmp(score_b).then_with(|| b.cmp(a))
+                    })
+                    .map(|(candidate, _)| candidate)
+            };
+            let Some(step) = step else { break };
+            visited.insert(edge_key(current, step), true);
+            chain.push(step);
+            previous = current;
+            current = step;
+        }
+        chain
+    };
     for &start in &terminals {
         for &next in &local[&start] {
-            let key = (start.min(next), start.max(next));
+            let key = edge_key(start, next);
             if visited.contains_key(&key) {
                 continue;
             }
-            let mut chain = alloc::vec![start];
-            let mut previous = start;
-            let mut current = next;
-            visited.insert(key, true);
-            chain.push(current);
-            while local[&current].len() == 2 {
-                let &step = local[&current]
-                    .iter()
-                    .find(|&&candidate| candidate != previous)
-                    .expect("degree-2 vertex has another neighbor");
-                let key = (current.min(step), current.max(step));
-                if visited.contains_key(&key) {
-                    break;
-                }
-                visited.insert(key, true);
-                chain.push(step);
-                previous = current;
-                current = step;
-            }
-            chains.push(chain);
+            chains.push(trace(start, next, &mut visited));
         }
     }
 
-    // Any edge left unvisited by chain tracing belongs to a closed loop
-    // coexisting with open chains in the same face. Composing hole
-    // triangulation with chain cuts would need per-sub-loop containment
-    // assignment; typed deferral until that lands.
-    for &edge_index in edge_indices {
-        let [p, q] = graph.edges[edge_index as usize].vertices;
-        if !visited.contains_key(&(p.min(q), p.max(q))) {
+    // Trace residual branch-to-branch chains after the terminal chains.
+    // A residual component made only of degree-two vertices is a closed loop
+    // mixed with open cuts; the hole path cannot yet assign it to a sub-loop.
+    loop {
+        let mut branch_starts: Vec<u32> = edge_indices
+            .iter()
+            .filter_map(|&edge_index| {
+                let [a, b] = graph.edges[edge_index as usize].vertices;
+                (!visited.contains_key(&edge_key(a, b))).then_some([a, b])
+            })
+            .flatten()
+            .filter(|vertex| local[vertex].len() != 2)
+            .collect();
+        branch_starts.sort_unstable();
+        branch_starts.dedup();
+        let remaining = edge_indices.iter().any(|&edge_index| {
+            let [a, b] = graph.edges[edge_index as usize].vertices;
+            !visited.contains_key(&edge_key(a, b))
+        });
+        if !remaining {
+            break;
+        }
+        let Some(start) = branch_starts.first().copied() else {
             defer(
                 "face mixes open cut chains with interior closed loops",
                 outcome,
                 diagnostics,
             );
             return;
-        }
+        };
+        let next = local[&start]
+            .iter()
+            .copied()
+            .find(|&candidate| !visited.contains_key(&edge_key(start, candidate)))
+            .expect("remaining branch start has an unvisited edge");
+        chains.push(trace(start, next, &mut visited));
     }
 
-    // Every chain endpoint must already be a mesh vertex on this face's
-    // loop; interiors must be face-interior graph vertices.
-    let loop_vertices: Vec<VertexId> = mesh
-        .face_loop(face)
-        .filter_map(|he| mesh.to_vertex(he))
-        .collect();
-    for chain in &chains {
-        let first = *chain.first().expect("chains are nonempty");
-        let last = *chain.last().expect("chains are nonempty");
-        for endpoint in [first, last] {
-            let resolved = outcome.graph_vertices[endpoint as usize];
-            let on_loop = resolved.is_some_and(|v| loop_vertices.contains(&v));
-            if !on_loop {
-                defer(
-                    "intersection chain ends inside the face (dangling cut)",
-                    outcome,
-                    diagnostics,
-                );
-                return;
-            }
-        }
-    }
-
-    // Cut the face polygon along each chain in deterministic order.
-    let mut sub_loops: Vec<Vec<VertexId>> = alloc::vec![loop_vertices];
+    // Cut any chain whose endpoints currently share one sub-loop. Straight
+    // chains through a junction run first because their original boundary
+    // endpoints are already resolved; materializing their interior vertices
+    // then makes residual branch endpoints eligible without geometric guesses.
+    let mut sub_loops: Vec<Vec<VertexId>> = alloc::vec![loop_vertices.clone()];
     let mut pending: Vec<&Vec<u32>> = chains.iter().collect();
     pending.sort_unstable_by_key(|chain| {
         let first = *chain.first().expect("nonempty");
@@ -426,19 +480,53 @@ fn split_one_face(
         vertex
     };
 
-    for chain in pending {
-        let first = outcome.graph_vertices[*chain.first().expect("nonempty") as usize]
-            .expect("endpoints validated on the loop");
-        let last = outcome.graph_vertices[*chain.last().expect("nonempty") as usize]
-            .expect("endpoints validated on the loop");
-        // Locate the sub-loop containing both endpoints.
-        let mut candidates = sub_loops
-            .iter()
-            .enumerate()
-            .filter(|(_, sub)| sub.contains(&first) && sub.contains(&last));
-        let Some((slot, _)) = candidates.next() else {
+    while !pending.is_empty() {
+        let mut ready = None;
+        for (pending_index, chain) in pending.iter().enumerate() {
+            let Some(first) = outcome.graph_vertices[*chain.first().expect("nonempty") as usize]
+            else {
+                continue;
+            };
+            let Some(last) = outcome.graph_vertices[*chain.last().expect("nonempty") as usize]
+            else {
+                continue;
+            };
+            let slots: Vec<usize> = sub_loops
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, sub)| {
+                    (sub.contains(&first) && sub.contains(&last)).then_some(slot)
+                })
+                .collect();
+            if slots.len() == 1 {
+                ready = Some((pending_index, slots[0], first, last));
+                break;
+            }
+            if slots.len() > 1 {
+                defer(
+                    "chain endpoints lie on a previous cut (ambiguous cut)",
+                    outcome,
+                    diagnostics,
+                );
+                #[expect(unused_must_use, reason = "discard sink output")]
+                {
+                    session.finish();
+                }
+                return;
+            }
+        }
+        let Some((pending_index, slot, first, last)) = ready else {
+            let unresolved = pending.iter().any(|chain| {
+                [chain.first(), chain.last()].into_iter().any(|endpoint| {
+                    endpoint.is_none_or(|&vertex| outcome.graph_vertices[vertex as usize].is_none())
+                })
+            });
             defer(
-                "chain endpoints span different sub-loops (ambiguous cut)",
+                if unresolved {
+                    "intersection chain ends inside the face (dangling cut)"
+                } else {
+                    "chain endpoints span different sub-loops (ambiguous cut)"
+                },
                 outcome,
                 diagnostics,
             );
@@ -448,18 +536,7 @@ fn split_one_face(
             }
             return;
         };
-        if candidates.next().is_some() {
-            defer(
-                "chain endpoints lie on a previous cut (ambiguous cut)",
-                outcome,
-                diagnostics,
-            );
-            #[expect(unused_must_use, reason = "discard sink output")]
-            {
-                session.finish();
-            }
-            return;
-        }
+        let chain = pending.remove(pending_index);
 
         let sub = sub_loops.swap_remove(slot);
         let iu = sub.iter().position(|&v| v == first).expect("contained");
@@ -512,6 +589,19 @@ fn split_one_face(
         return; // Nothing actually cut.
     }
 
+    // Rebuilding the partition one face at a time must keep the OUTSIDE
+    // boundary a set of simple loops after every addition. A geometrically
+    // valid partition can otherwise panic the incremental stitcher when a
+    // later sub-loop first touches the growing region at a bare vertex.
+    let Some(rebuild_order) = order_sub_loops(&loop_vertices, &sub_loops) else {
+        defer(
+            "face partition has no ambiguity-free incremental rebuild order",
+            outcome,
+            diagnostics,
+        );
+        return;
+    };
+
     // Capture attributes, delete, re-add, re-apply, record origins.
     let region = mesh
         .attrs()
@@ -549,7 +639,8 @@ fn split_one_face(
         return;
     }
     let mut created = 0_u64;
-    for sub in &sub_loops {
+    for index in rebuild_order {
+        let sub = &sub_loops[index];
         match add_face(&mut session, sub) {
             Ok(new_face) => {
                 outcome.face_origins.push((new_face, face));
@@ -585,6 +676,76 @@ fn split_one_face(
     }
     outcome.stats.faces_split += 1;
     outcome.stats.faces_created += created;
+}
+
+/// Orders polygonal sub-loops so every face addition attaches along an open
+/// edge at each vertex it shares with the growing partition.
+///
+/// The original boundary is already present through neighboring faces after
+/// the crossed face is deleted. Internal edges admit two new faces; original
+/// boundary edges admit one. This is the polygonal counterpart of
+/// [`order_fragments`] for drilled-face triangles.
+fn order_sub_loops(boundary: &[VertexId], sub_loops: &[Vec<VertexId>]) -> Option<Vec<usize>> {
+    let edge_key = |a: VertexId, b: VertexId| {
+        if a <= b { (a, b) } else { (b, a) }
+    };
+    let mut present: HashSet<VertexId> = boundary.iter().copied().collect();
+    let mut capacity: HashMap<(VertexId, VertexId), u8> = HashMap::new();
+    for index in 0..boundary.len() {
+        capacity.insert(
+            edge_key(boundary[index], boundary[(index + 1) % boundary.len()]),
+            1,
+        );
+    }
+
+    let mut order = Vec::with_capacity(sub_loops.len());
+    let mut added = alloc::vec![false; sub_loops.len()];
+    loop {
+        let mut progressed = false;
+        for (index, sub_loop) in sub_loops.iter().enumerate() {
+            if added[index] {
+                continue;
+            }
+            let open = |a: VertexId, b: VertexId, capacity: &HashMap<(VertexId, VertexId), u8>| {
+                capacity.get(&edge_key(a, b)).copied().unwrap_or(0) > 0
+            };
+            let mut attaches = false;
+            let mut safe = true;
+            for corner in 0..sub_loop.len() {
+                let vertex = sub_loop[corner];
+                if !present.contains(&vertex) {
+                    continue;
+                }
+                let previous = sub_loop[(corner + sub_loop.len() - 1) % sub_loop.len()];
+                let next = sub_loop[(corner + 1) % sub_loop.len()];
+                if open(vertex, previous, &capacity) || open(vertex, next, &capacity) {
+                    attaches = true;
+                } else {
+                    safe = false;
+                    break;
+                }
+            }
+            if !safe || !attaches {
+                continue;
+            }
+            added[index] = true;
+            order.push(index);
+            for corner in 0..sub_loop.len() {
+                let a = sub_loop[corner];
+                let b = sub_loop[(corner + 1) % sub_loop.len()];
+                let entry = capacity.entry(edge_key(a, b)).or_insert(2);
+                *entry = entry.saturating_sub(1);
+                present.insert(a);
+            }
+            progressed = true;
+        }
+        if order.len() == sub_loops.len() {
+            return Some(order);
+        }
+        if !progressed {
+            return None;
+        }
+    }
 }
 
 /// Orders fragment triangles so each addition attaches to the growing
@@ -667,17 +828,21 @@ fn order_fragments(outer_len: u32, fragments: &[[u32; 3]]) -> Option<Vec<usize>>
 
 /// Reinserts labels the triangulator dropped as exactly-collinear ring
 /// vertices. Every label indexes `points`; a dropped label lies exactly on
-/// the chord that replaced it, so it is found on at least one fragment
-/// edge — every fragment carrying such an edge splits in two, keeping the
-/// vertex referenced and the fragment set a manifold cover. Missing labels
-/// resolve in ascending order, so chains of collinear vertices on one
-/// chord reinsert incrementally. Returns `false` when a missing label lies
-/// on no fragment edge (the caller defers, typed).
+/// the chord that replaced it. The label is reinserted only on a boundary
+/// edge of this ring's fragment cover (one incident triangle), never on an
+/// arbitrary interior diagonal or another aligned ring. Missing labels
+/// resolve in ascending order, so chains of collinear vertices on one chord
+/// reinsert incrementally. Returns `false` when a missing label lies on no
+/// eligible fragment boundary edge (the caller defers, typed).
 fn reinsert_dropped_labels(
     points: &[[f64; 2]],
     expected: core::ops::Range<usize>,
     fragments: &mut Vec<[u32; 3]>,
 ) -> bool {
+    let ring_len = expected.end.saturating_sub(expected.start);
+    if ring_len < 3 {
+        return false;
+    }
     let mut used = alloc::vec![false; points.len()];
     for fragment in fragments.iter() {
         for &label in fragment {
@@ -694,6 +859,39 @@ fn reinsert_dropped_labels(
             return false;
         };
         let point = points[missing];
+        // Hole bridges can subdivide the chord that replaced a collinear
+        // input label. Recover the label from the current triangulation
+        // boundary, not from arbitrary containing triangle diagonals: the
+        // ring edge has exactly one incident fragment. Several aligned
+        // boundary edges can contain the point, so prefer the shortest and
+        // resolve exact ties by endpoint labels.
+        let mut incidence: HashMap<(u32, u32), usize> = HashMap::new();
+        for fragment in fragments.iter() {
+            for corner in 0..3 {
+                let a = fragment[corner];
+                let b = fragment[(corner + 1) % 3];
+                *incidence.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let mut target: Option<(u32, u32, f64)> = None;
+        for (&(a, b), &count) in &incidence {
+            if count != 1 || !strictly_between(points[a as usize], points[b as usize], point) {
+                continue;
+            }
+            let delta = [
+                points[b as usize][0] - points[a as usize][0],
+                points[b as usize][1] - points[a as usize][1],
+            ];
+            let length2 = delta[0] * delta[0] + delta[1] * delta[1];
+            if target.is_none_or(|(best_a, best_b, best_length2)| {
+                length2 < best_length2 || (length2 == best_length2 && (a, b) < (best_a, best_b))
+            }) {
+                target = Some((a, b, length2));
+            }
+        }
+        let Some((target_a, target_b, _)) = target else {
+            return false;
+        };
         let mut inserted = false;
         let mut index = 0;
         while index < fragments.len() {
@@ -702,18 +900,20 @@ fn reinsert_dropped_labels(
                 let a = fragment[corner];
                 let b = fragment[(corner + 1) % 3];
                 let c = fragment[(corner + 2) % 3];
-                if strictly_between(points[a as usize], points[b as usize], point) {
-                    fragments[index] = [a, label, c];
-                    fragments.push([label, b, c]);
-                    inserted = true;
-                    break;
+                if (a.min(b), a.max(b)) != (target_a, target_b) {
+                    continue;
                 }
+                fragments[index] = [a, label, c];
+                fragments.push([label, b, c]);
+                inserted = true;
+                break;
             }
             index += 1;
         }
         if !inserted {
             return false;
         }
+        used[missing] = true;
     }
     true
 }
@@ -764,8 +964,8 @@ fn split_face_with_interior_loops(
 ) {
     // Trace the loops deterministically: the lowest unconsumed vertex
     // starts a loop, stepping first to its lowest-index neighbor. Every
-    // vertex is degree 2 here (junctions deferred earlier), so each loop
-    // is a simple cycle.
+    // vertex is degree 2 here: the caller routes only pure closed-loop
+    // components to this path, so each loop is a simple cycle.
     let mut loop_starts: Vec<u32> = local.keys().copied().collect();
     loop_starts.sort_unstable();
     let mut visited: HashMap<(u32, u32), bool> = HashMap::new();
@@ -936,13 +1136,30 @@ fn split_face_with_interior_loops(
     // they lie on (exact collinearity + strict betweenness), splitting
     // those fragments in place, before combining the two sides.
     let mut fragment_labels: Vec<[u32; 3]> = ring_triangles.triangles.clone();
-    if !reinsert_dropped_labels(&label_points, 0..label_points.len(), &mut fragment_labels) {
+    if !reinsert_dropped_labels(&label_points, 0..outer_len as usize, &mut fragment_labels) {
         defer(
             "drilled face ring lost a collinear cut vertex the fragments cannot host",
             outcome,
             diagnostics,
         );
         return;
+    }
+    let mut ring_base = outer_len;
+    for points in &hole_projected {
+        let count = u32::try_from(points.len()).unwrap_or(u32::MAX);
+        if !reinsert_dropped_labels(
+            &label_points,
+            ring_base as usize..(ring_base + count) as usize,
+            &mut fragment_labels,
+        ) {
+            defer(
+                "drilled face ring lost a collinear cut vertex the fragments cannot host",
+                outcome,
+                diagnostics,
+            );
+            return;
+        }
+        ring_base += count;
     }
     let mut base = outer_len;
     for (points, triangles) in hole_projected.iter().zip(&disk_triangles) {
@@ -1085,8 +1302,8 @@ mod tests {
     };
     use crate::{FaceTriangulation, MeshBuilder};
 
-    /// A collinear vertex the triangulator dropped is reinserted onto the
-    /// chord that replaced it, splitting every fragment carrying it.
+    /// A collinear vertex dropped by triangulation returns on the fragment
+    /// boundary chord that replaced its original ring edges.
     #[test]
     fn reinsert_recovers_dropped_collinear_label() {
         // Square with a collinear midpoint (label 1) on its bottom edge;
