@@ -398,27 +398,41 @@ fn append_bulge_arc(path: &mut BezPath, from: Point, to: Point, bulge: f64) {
     });
 }
 
-/// Derives `(center, radius, start_angle, sweep)` for a bulge arc.
+/// Derives `(center, radius)` for a bulge arc with libm-only math.
 ///
-/// Pure arithmetic plus `sqrt` and `atan2`; used for interop rendering.
-/// The deterministic discretization path re-derives what it needs with
-/// libm-only calls.
-pub(crate) fn bulge_arc_parts(from: Point, to: Point, bulge: f64) -> (Point, f64, f64, f64) {
-    let chord = to - from;
-    let half_chord = 0.5 * chord.hypot();
+/// Arithmetic plus one [`libm::sqrt`] — no `hypot`, no trig — so the result
+/// is bit-identical on every platform and safe on paths that feed content
+/// hashes. The signed radius from the intersecting-chords theorem carries
+/// the bulge sign, which places the center on the correct side for both
+/// sweep directions and for major as well as minor arcs.
+pub(crate) fn bulge_arc_center_radius(from: Point, to: Point, bulge: f64) -> (Point, f64) {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let half_chord = 0.5 * libm::sqrt(dx * dx + dy * dy);
     // sagitta = bulge * half chord; radius from the intersecting chords
     // theorem: r = (h² + s²) / (2 s).
     let sagitta = bulge * half_chord;
-    let radius = (half_chord * half_chord + sagitta * sagitta) / (2.0 * sagitta);
-    let mid = from.midpoint(to);
-    // Unit normal to the left of the chord.
-    let norm = kurbo::Vec2::new(-chord.y, chord.x) * (0.5 / half_chord);
-    let center = mid + norm * (radius - sagitta);
-    let start = from - center;
-    let start_angle = start.atan2();
+    let signed_radius = (half_chord * half_chord + sagitta * sagitta) / (2.0 * sagitta);
+    let inv_chord = 0.5 / half_chord;
+    let offset = signed_radius - sagitta;
+    let center = Point::new(
+        (from.x + to.x) * 0.5 + (-dy * inv_chord) * offset,
+        (from.y + to.y) * 0.5 + (dx * inv_chord) * offset,
+    );
+    (center, signed_radius.abs())
+}
+
+/// Derives `(center, radius, start_angle, sweep)` for a bulge arc.
+///
+/// Arithmetic plus libm `sqrt`, `atan2`, and `atan`; used for interop
+/// rendering. The deterministic discretization path re-derives what it needs
+/// with its own libm-only calls.
+pub(crate) fn bulge_arc_parts(from: Point, to: Point, bulge: f64) -> (Point, f64, f64, f64) {
+    let (center, radius) = bulge_arc_center_radius(from, to, bulge);
+    let start_angle = libm::atan2(from.y - center.y, from.x - center.x);
     // sweep = 4 * atan(bulge), positive counter-clockwise.
     let sweep = 4.0 * libm::atan(bulge);
-    (center, radius.abs(), start_angle, sweep)
+    (center, radius, start_angle, sweep)
 }
 
 /// A profile: one counter-clockwise outer loop plus clockwise hole loops.
@@ -525,22 +539,37 @@ fn loops_conflict(first: &Loop2, second: &Loop2) -> bool {
     second_path.contains(first_points[0]) || first_path.contains(second_points[0])
 }
 
-fn flattened_ring(path: &BezPath, tolerance: f64) -> Vec<Point> {
-    let mut points = Vec::new();
+/// Flattens a closed path into its ring of vertices.
+///
+/// Curved boundaries are compared through kurbo's cubic path
+/// representation, flattened to the caller's absolute `tolerance` (callers
+/// derive it from a bounding-box scale so the vertex count stays
+/// scale-independent). Repeated vertices are dropped — kurbo emits them on
+/// dense subdivisions, and a zero-length edge makes its two neighbors look
+/// like a contact — and so is the duplicate closing vertex, so the ring is
+/// cyclic and non-degenerate: edge `i` runs from `ring[i]` to
+/// `ring[(i + 1) % len]`.
+pub(crate) fn flattened_ring(path: &BezPath, tolerance: f64) -> Vec<Point> {
+    let mut points: Vec<Point> = Vec::new();
     kurbo::flatten(path.iter(), tolerance, |element| match element {
-        PathEl::MoveTo(point) | PathEl::LineTo(point) => points.push(point),
+        PathEl::MoveTo(point) | PathEl::LineTo(point) => {
+            if points.last() != Some(&point) {
+                points.push(point);
+            }
+        }
         PathEl::ClosePath => {}
         PathEl::QuadTo(..) | PathEl::CurveTo(..) => {
             unreachable!("kurbo::flatten emits only lines")
         }
     });
-    if points.first() == points.last() {
+    if points.len() > 1 && points.first() == points.last() {
         points.pop();
     }
     points
 }
 
-fn rings_intersect(first: &[Point], second: &[Point]) -> bool {
+/// Whether any edge of `first` crosses or touches any edge of `second`.
+pub(crate) fn rings_intersect(first: &[Point], second: &[Point]) -> bool {
     first.iter().enumerate().any(|(first_index, &first_start)| {
         let first_end = first[(first_index + 1) % first.len()];
         second
@@ -551,6 +580,68 @@ fn rings_intersect(first: &[Point], second: &[Point]) -> bool {
                 segments_intersect(first_start, first_end, second_start, second_end)
             })
     })
+}
+
+/// Whether any two non-adjacent edges of a single ring cross or touch.
+///
+/// Adjacent edges always share an endpoint by construction, so only pairs
+/// at least two apart around the cycle are tested. The ring must be free of
+/// repeated vertices ([`flattened_ring`] guarantees that), or a zero-length
+/// edge would make its neighbors look like a contact. Bounding boxes reject
+/// the overwhelming majority of pairs before the orientation tests run.
+pub(crate) fn ring_self_intersects(ring: &[Point]) -> bool {
+    let n = ring.len();
+    if n < 4 {
+        return false;
+    }
+    for i in 0..n {
+        let a = ring[i];
+        let b = ring[(i + 1) % n];
+        let (ax0, ax1) = (a.x.min(b.x), a.x.max(b.x));
+        let (ay0, ay1) = (a.y.min(b.y), a.y.max(b.y));
+        for j in i + 2..n {
+            if i == 0 && j == n - 1 {
+                continue;
+            }
+            let c = ring[j];
+            let d = ring[(j + 1) % n];
+            if c.x.min(d.x) > ax1 || c.x.max(d.x) < ax0 || c.y.min(d.y) > ay1 || c.y.max(d.y) < ay0
+            {
+                continue;
+            }
+            if segments_intersect(a, b, c, d) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Shortest distance from `point` to the closed polyline `ring`.
+pub(crate) fn distance_to_ring(point: Point, ring: &[Point]) -> f64 {
+    let n = ring.len();
+    let mut best = f64::INFINITY;
+    for index in 0..n {
+        let distance = point_segment_distance(point, ring[index], ring[(index + 1) % n]);
+        if distance < best {
+            best = distance;
+        }
+    }
+    best
+}
+
+fn point_segment_distance(point: Point, start: Point, end: Point) -> f64 {
+    let seg = end - start;
+    let len2 = seg.x * seg.x + seg.y * seg.y;
+    let rel = point - start;
+    let t = if len2 > 0.0 {
+        ((rel.x * seg.x + rel.y * seg.y) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let dx = rel.x - t * seg.x;
+    let dy = rel.y - t * seg.y;
+    libm::sqrt(dx * dx + dy * dy)
 }
 
 fn segments_intersect(a: Point, b: Point, c: Point, d: Point) -> bool {
@@ -642,6 +733,60 @@ pub enum ProfileError {
         /// Index of the offending segment.
         seg: usize,
     },
+    /// An offset distance was NaN or infinite.
+    OffsetDistanceNotFinite,
+    /// Offsetting an arc segment would drive its radius to zero or below,
+    /// so no concentric arc exists (for example an inward offset of a
+    /// rounded corner by at least its corner radius).
+    OffsetArcCollapsed {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+        /// Index of the offending source segment.
+        seg: usize,
+    },
+    /// A [`crate::offset::CornerPolicy::Miter`] corner would need a miter
+    /// longer than the policy's limit. Offsets never silently bevel: pick
+    /// [`crate::offset::CornerPolicy::Round`] or raise the limit.
+    OffsetMiterLimitExceeded {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+        /// Index of the source segment before the offending corner.
+        seg: usize,
+    },
+    /// A corner where the offset segments overlap needs trimming, but at
+    /// least one side is a fitted cubic. Only line and arc segments — the
+    /// exact offset path — can be trimmed analytically.
+    OffsetCornerUnsupported {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+        /// Index of the source segment before the offending corner.
+        seg: usize,
+    },
+    /// The offset loop is not constructible or lost its orientation: the
+    /// loop was consumed by the offset.
+    OffsetLoopDegenerate {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+    },
+    /// The offset loop crosses or touches itself. Self-intersection is
+    /// reported, never healed.
+    OffsetSelfIntersects {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+    },
+    /// The offset loop comes closer to its source loop than the offset
+    /// distance, so material collapsed — for example a hole eaten by an
+    /// outward offset larger than half its width.
+    OffsetUndercut {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+    },
+    /// After offsetting, a hole crosses, touches, or escapes the outer
+    /// loop.
+    OffsetLoopContact {
+        /// Index of the offending hole.
+        hole: usize,
+    },
 }
 
 impl core::fmt::Display for ProfileError {
@@ -681,11 +826,64 @@ impl core::fmt::Display for ProfileError {
             Self::NestedPolicy { seg } => {
                 write!(f, "segment {seg}: policy realizations must be concrete")
             }
+            Self::OffsetDistanceNotFinite => write!(f, "offset distance is not finite"),
+            Self::OffsetArcCollapsed { hole, seg } => {
+                write!(
+                    f,
+                    "{}: arc {seg} offsets to a non-positive radius",
+                    Loc(*hole)
+                )
+            }
+            Self::OffsetMiterLimitExceeded { hole, seg } => {
+                write!(
+                    f,
+                    "{}: corner after segment {seg} exceeds the miter limit",
+                    Loc(*hole)
+                )
+            }
+            Self::OffsetCornerUnsupported { hole, seg } => {
+                write!(
+                    f,
+                    "{}: corner after segment {seg} needs trimming a fitted cubic",
+                    Loc(*hole)
+                )
+            }
+            Self::OffsetLoopDegenerate { hole } => {
+                write!(f, "{}: consumed by the offset", Loc(*hole))
+            }
+            Self::OffsetSelfIntersects { hole } => {
+                write!(f, "{}: self-intersects after the offset", Loc(*hole))
+            }
+            Self::OffsetUndercut { hole } => {
+                write!(
+                    f,
+                    "{}: offset result undercuts the offset distance",
+                    Loc(*hole)
+                )
+            }
+            Self::OffsetLoopContact { hole } => {
+                write!(
+                    f,
+                    "hole {hole} touches or escapes the outer loop after the offset"
+                )
+            }
         }
     }
 }
 
 impl core::error::Error for ProfileError {}
+
+/// Renders a loop reference (`None` = outer) for error messages.
+struct Loc(Option<usize>);
+
+impl core::fmt::Display for Loc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            None => write!(f, "outer loop"),
+            Some(index) => write!(f, "hole {index}"),
+        }
+    }
+}
 
 /// Deterministic canonical byte encoding.
 ///
