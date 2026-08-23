@@ -18,3 +18,4 @@ workspace = true
 basilica_ruin = { path = "../basilica_ruin" }
 exedra_assembly = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
+joiner = { features = ["std"], workspace = true }

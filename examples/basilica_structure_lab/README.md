@@ -5,14 +5,17 @@ western bay of the basilica. It authors a deterministic graph first, proves
 named contacts and gravity-transfer paths, and only then emits geometry. It
 does not alter or replace the accepted `basilica_ruin` artifact.
 
-The canonical workflow is:
+The graph itself is no longer local. The element graph, the three relation
+kinds, evidence labelling, layered validation, and lowering to an assembly all
+live in the [`joiner`](../../crates/joiner/) construction crate; this lab
+authors a hypothesis into it and draws the result.
 
 ```text
-BasilicaParams + evidence-labelled hypothesis
-    -> StructuralModel
-    -> schema/contact/load-path validation
-    -> one Assembly instance per geometry-bearing element
-    -> grouped OBJ + semantic diagnostic layers
+BasilicaParams + evidence-labelled hypothesis    (this lab)
+    -> joiner::Construction
+    -> joiner::validate      schema/contact/load-path
+    -> joiner::lower         one Assembly instance per geometry-bearing element
+    -> grouped OBJ + semantic diagnostic layers  (this lab)
 ```
 
 Run the complete first-slice export:
@@ -40,7 +43,9 @@ bearing also gets carried/carrier anchor and frame groups. Nodes and joints
 are inspectable with `--explain` but are not emitted as OBJ diagnostics.
 
 Explain selectors are typed: `element:`, `node:`, `member:`, `joint:`,
-`bearing:`, `support:`, `transfer:`, or `evidence:`. A bare key is accepted
+`bearing:`, `support:`, `transfer:`, or `evidence:`. They keep this lab's own
+vocabulary: `joint:` finds the member/member relation that *is* the joint, and
+`bearing:` finds the contact patch behind it. A bare key is accepted
 only when it exists in exactly one category. For example, bare
 `wall-plate-south` is rejected because its element and member deliberately
 share that stable key.
@@ -66,10 +71,10 @@ north principal/wall-plate, and south ridge-purlin/principal interfaces.
 
 - Every roof and framing element has a deterministic named route to a ground
   support.
-- Every transfer is witnessed according to its declared kind: a `Bearing`
-  transfer requires a matching carried/carrier bearing, a `Joint` transfer
-  requires a joint incident to members of both elements, and a `Ground`
-  transfer must target the support belonging to its source element.
+- Every transfer is witnessed according to its declared kind: a `Contact`
+  transfer requires a matching load-carrying contact patch, a `Joint` transfer
+  requires a member/member relation incident to members of both elements, and
+  a `Ground` transfer must target the support belonging to its source element.
 - Covering, boarding, common rafters, purlins, principal trusses, wall plates,
   masonry, and ground supports form one explicit chain.
 - Analytic bearing anchors reject both a floating covering and an embedded
@@ -87,8 +92,11 @@ key.
 
 The bright bearing cubes and frame axes are deliberately oversized,
 nonphysical diagnostic markers. The principal-rafter/wall-plate record is an
-`anchor-contact`, not a modeled birdsmouth or heel-seat cut. Detailed mating
-faces belong to the `joiner` promotion ticket (`bsl-6ihj`; see ADR 0002).
+`anchor-contact`, not a modeled birdsmouth or heel-seat cut. `joiner` can now
+express such a cut — a rule returns coordinated part edits, contacts, and
+transfers, and lowering composes them into the participants' recipes — but no
+timber or masonry rule exists yet, so this bay is still authored uncut. Those
+rules are stages 2 and 3 of `bsl-6ihj` (see ADR 0002).
 
 This is schema, geometric-coherence, contact, transfer-witness, and load-path
 validation. It is **not** a
