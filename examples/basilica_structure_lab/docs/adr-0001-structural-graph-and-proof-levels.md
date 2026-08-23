@@ -3,7 +3,10 @@
 ## Status
 
 Accepted for the isolated experiment; adoption into `basilica_ruin` remains a
-separate gate.
+separate gate. The consequence that the graph "stays example-private until a
+later ticket demonstrates a reusable boundary" is superseded by
+[ADR 0002](adr-0002-joiner-construction-layer.md), which names that boundary
+and the `joiner` crate that will own it.
 
 ## Context
 
