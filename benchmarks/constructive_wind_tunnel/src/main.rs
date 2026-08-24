@@ -2,31 +2,48 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Executable wind-tunnel scenarios for constructive recipe evaluation:
-//! CT-1 (evaluation + source-map lookups at scale) and CT-2 (incremental
+//! CT-1 (evaluation + source-map lookups at scale), CT-2 (incremental
 //! regeneration: a one-parameter edit re-tessellates exactly one body,
-//! bit-identical to a full rebuild, with the speedup reported).
+//! bit-identical to a full rebuild), and CT-3 (the gallery's direct
+//! Boolean-plus-rounding card, timed by phase).
 //!
 //! Run the quick profile (the default):
 //! `cargo run --release -p constructive_wind_tunnel -- --quick`
 //!
 //! Run the formal stress profile:
 //! `cargo run --release -p constructive_wind_tunnel -- --ct1-stress`
+//!
+//! Isolate the gallery fixture for profiling:
+//! `cargo run --release -p constructive_wind_tunnel -- --gallery-stress`
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use exedra::ExtractParams;
+use exedra::boolean::{BooleanDiagnostics, BooleanOp, BooleanScratch, BooleanStats, boolean_mesh};
+use exedra::round::{RoundPolicy, RoundStats, round_sharp_edges};
+use exedra::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder};
 use exedra_constructive::builders;
 use exedra_constructive::cache::EvalCache;
 use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_testkit::trimesh_signature;
 
 fn main() {
-    let profile = Profile::from_args(std::env::args().skip(1));
-    run_ct1(profile);
-    run_ct2(profile);
+    let config = Config::from_args(std::env::args().skip(1));
+    if config.gallery_only {
+        run_ct3(config.profile);
+    } else {
+        run_ct1(config.profile);
+        run_ct2(config.profile);
+        run_ct3(config.profile);
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct Config {
+    profile: Profile,
+    gallery_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -36,26 +53,6 @@ enum Profile {
 }
 
 impl Profile {
-    fn from_args(args: impl Iterator<Item = String>) -> Self {
-        let mut profile = Self::Quick;
-        for arg in args {
-            match arg.as_str() {
-                "--quick" => profile = Self::Quick,
-                "--ct1-stress" => profile = Self::Stress,
-                "--help" | "-h" => {
-                    print_help();
-                    std::process::exit(0);
-                }
-                _ => {
-                    eprintln!("unknown argument: {arg}");
-                    print_help();
-                    std::process::exit(2);
-                }
-            }
-        }
-        profile
-    }
-
     const fn label(self) -> &'static str {
         match self {
             Self::Quick => "quick",
@@ -85,10 +82,52 @@ impl Profile {
             Self::Stress => 400,
         }
     }
+
+    /// Iterations for the gallery-shaped Boolean and rounding phases. The
+    /// stress count keeps each phase alive long enough for `sample` while the
+    /// quick count remains suitable for local before/after measurements.
+    const fn gallery_iterations(self) -> u32 {
+        match self {
+            Self::Quick => 8,
+            Self::Stress => 32,
+        }
+    }
+}
+
+impl Config {
+    fn from_args(args: impl Iterator<Item = String>) -> Self {
+        let mut config = Self {
+            profile: Profile::Quick,
+            gallery_only: false,
+        };
+        for arg in args {
+            match arg.as_str() {
+                "--quick" => config.profile = Profile::Quick,
+                "--ct1-stress" => config.profile = Profile::Stress,
+                "--gallery" => config.gallery_only = true,
+                "--gallery-stress" => {
+                    config.profile = Profile::Stress;
+                    config.gallery_only = true;
+                }
+                "--help" | "-h" => {
+                    print_help();
+                    std::process::exit(0);
+                }
+                _ => {
+                    eprintln!("unknown argument: {arg}");
+                    print_help();
+                    std::process::exit(2);
+                }
+            }
+        }
+        config
+    }
 }
 
 fn print_help() {
-    eprintln!("usage: constructive_wind_tunnel [--quick | --ct1-stress]");
+    eprintln!(
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress]"
+    );
 }
 
 /// Builds the `index`-th parameterized recipe: a rounded-profile extrusion
@@ -329,9 +368,294 @@ fn run_ct2(profile: Profile) {
     );
 }
 
+/// CT-3 operands mirror the gallery's rounded-drill card: a 4 × 4 × 1 slab
+/// minus a 16-gon prism which passes through both caps. Keeping this fixture in
+/// the benchmark crate lets profiling isolate the kernel phases without OBJ
+/// formatting, filesystem I/O, or the gallery's other scenarios.
+fn build_gallery_drill_operands() -> (Mesh, Mesh) {
+    let mut slab = MeshBuilder::new();
+    for position in [
+        [0.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        [4.0, 4.0, 0.0],
+        [0.0, 4.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [4.0, 0.0, 1.0],
+        [4.0, 4.0, 1.0],
+        [0.0, 4.0, 1.0],
+    ] {
+        slab.push_vertex(position);
+    }
+    for face in [
+        [3_u32, 2, 1, 0],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+    ] {
+        slab.add_face(&face).expect("slab face is valid");
+    }
+
+    let sides = 16_u32;
+    let mut drill = MeshBuilder::new();
+    for z in [-1.0_f64, 2.0] {
+        for side in 0..sides {
+            let angle = core::f64::consts::TAU * f64::from(side) / f64::from(sides);
+            let point = [2.0 + 0.8 * angle.cos(), 2.0 + 0.8 * angle.sin(), z];
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the gallery fixture stores finite unit-scale f32 positions"
+            )]
+            drill.push_vertex([point[0] as f32, point[1] as f32, point[2] as f32]);
+        }
+    }
+    let bottom: Vec<u32> = (0..sides).rev().collect();
+    drill.add_face(&bottom).expect("drill bottom cap is valid");
+    let top: Vec<u32> = (sides..2 * sides).collect();
+    drill.add_face(&top).expect("drill top cap is valid");
+    for side in 0..sides {
+        let next = (side + 1) % sides;
+        drill
+            .add_face(&[side, next, sides + next, sides + side])
+            .expect("drill wall is valid");
+    }
+
+    (
+        slab.build().expect("slab is manifold").mesh,
+        drill.build().expect("drill is manifold").mesh,
+    )
+}
+
+/// The gallery's public constructive CSG card. Unlike the direct 16-sided
+/// rounding fixture, this uses the default circle discretization and therefore
+/// exercises the higher-resolution face-splitting path seen in the gallery
+/// process sample.
+fn build_gallery_csg_recipe() -> Recipe {
+    let mut builder = RecipeBuilder::new();
+    let block = builder.add_profile(builders::rect(200.0, 100.0).expect("valid block profile"));
+    let drill = builder.add_profile(builders::circle(30.0).expect("valid drill profile"));
+    let block = builder
+        .add(NodeKind::Extrude {
+            profile: block,
+            placement: Placement3::IDENTITY,
+            height: 80.0,
+            caps: CapMode::Both,
+        })
+        .expect("valid block extrusion");
+    let drill = builder
+        .add(NodeKind::Extrude {
+            profile: drill,
+            placement: Placement3::translate(130.0, 50.0, -20.0),
+            height: 120.0,
+            caps: CapMode::Both,
+        })
+        .expect("valid drill extrusion");
+    let difference = builder
+        .add(NodeKind::Csg {
+            op: CsgOp::Difference,
+            operands: vec![block, drill],
+        })
+        .expect("valid difference");
+    let moved = builder
+        .add(NodeKind::Transform {
+            child: difference,
+            xf: Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_4, 50.0, 0.0, 0.0),
+        })
+        .expect("valid transform");
+    builder.finish(moved).expect("valid gallery CSG recipe")
+}
+
+fn gallery_boolean(slab: &Mesh, drill: &Mesh) -> (Mesh, BooleanStats) {
+    let mut scratch = BooleanScratch::new();
+    let mut diagnostics = BooleanDiagnostics::default();
+    let output = boolean_mesh(
+        slab,
+        drill,
+        BooleanOp::Difference,
+        FaceTriangulation::Fan,
+        &mut scratch,
+        &mut diagnostics,
+    )
+    .expect("gallery drill Boolean succeeds");
+    assert!(
+        diagnostics.is_clean(),
+        "gallery drill diagnostics: {:?}",
+        diagnostics.entries()
+    );
+    (output.mesh, output.stats)
+}
+
+fn gallery_round(drilled: &Mesh) -> (Mesh, RoundStats) {
+    let mut rounded = drilled.clone();
+    let mut policy = RoundPolicy::fillet(0.3);
+    policy.region = Some(9);
+    let stats = round_sharp_edges(&mut rounded, &policy).expect("gallery drill rounds");
+    (rounded, stats)
+}
+
+/// Times a complete phase, including destruction of its returned allocation.
+/// Best and average are both reported: best is useful for before/after local
+/// comparisons, while a large best/average gap exposes scheduler noise.
+fn time_phase(iterations: u32, mut phase: impl FnMut()) -> (Duration, Duration) {
+    let mut best = Duration::MAX;
+    let mut total = Duration::ZERO;
+    for _ in 0..iterations {
+        let start = Instant::now();
+        phase();
+        let elapsed = start.elapsed();
+        best = best.min(elapsed);
+        total += elapsed;
+    }
+    (best, total / iterations)
+}
+
+/// CT-3: the gallery's direct Boolean-plus-rounding card, with Boolean,
+/// rounding, and render extraction measured independently. Determinism and
+/// deep validity are established before timing so performance work cannot
+/// trade away topology, attributes, or orientation.
+fn run_ct3(profile: Profile) {
+    let policy = EvalPolicy::default();
+    let recipe = build_gallery_csg_recipe();
+    let evaluated_a = evaluate(&recipe, &policy).expect("gallery CSG evaluates");
+    let evaluated_b = evaluate(&recipe, &policy).expect("gallery CSG evaluates");
+    assert_eq!(
+        fold_signature(&evaluated_a),
+        fold_signature(&evaluated_b),
+        "constructive CSG is deterministic"
+    );
+    assert!(
+        evaluated_a
+            .bodies
+            .iter()
+            .all(|body| body.body.mesh.validate_deep().is_empty()),
+        "constructive CSG bodies are valid"
+    );
+    let constructive_signature = fold_signature(&evaluated_a);
+    let constructive_faces: usize = evaluated_a
+        .bodies
+        .iter()
+        .map(|body| body.body.mesh.faces().count())
+        .sum();
+
+    let (slab, drill) = build_gallery_drill_operands();
+    let (drilled_a, boolean_stats_a) = gallery_boolean(&slab, &drill);
+    let (drilled_b, boolean_stats_b) = gallery_boolean(&slab, &drill);
+    assert_eq!(boolean_stats_a, boolean_stats_b, "Boolean stats are stable");
+    assert!(
+        drilled_a.validate_deep().is_empty(),
+        "drilled mesh is valid"
+    );
+    let drilled_signature = fold_mesh_signature(&drilled_a);
+    assert_eq!(
+        drilled_signature,
+        fold_mesh_signature(&drilled_b),
+        "drilled mesh is deterministic"
+    );
+
+    let (rounded_a, round_stats_a) = gallery_round(&drilled_a);
+    let (rounded_b, round_stats_b) = gallery_round(&drilled_a);
+    assert_eq!(round_stats_a, round_stats_b, "rounding stats are stable");
+    assert!(
+        rounded_a.validate_deep().is_empty(),
+        "rounded mesh is valid"
+    );
+    let rounded_signature = fold_mesh_signature(&rounded_a);
+    assert_eq!(
+        rounded_signature,
+        fold_mesh_signature(&rounded_b),
+        "rounded mesh is deterministic"
+    );
+
+    let iterations = profile.gallery_iterations();
+    let (constructive_best, constructive_avg) = time_phase(iterations, || {
+        black_box(evaluate(black_box(&recipe), black_box(&policy)).expect("gallery CSG evaluates"));
+    });
+    let (boolean_best, boolean_avg) = time_phase(iterations, || {
+        black_box(gallery_boolean(black_box(&slab), black_box(&drill)));
+    });
+    let (round_best, round_avg) = time_phase(iterations, || {
+        black_box(gallery_round(black_box(&drilled_a)));
+    });
+    let params = ExtractParams::default();
+    let (extract_best, extract_avg) = time_phase(iterations, || {
+        black_box(rounded_a.to_trimesh(black_box(&params)));
+    });
+
+    println!(
+        "scenario=CT-3 profile={} iterations={} constructive_best_ns={} constructive_avg_ns={} \
+         boolean_best_ns={} boolean_avg_ns={} \
+         round_best_ns={} round_avg_ns={} extract_best_ns={} extract_avg_ns={} \
+         constructive_faces={} drilled_faces={} rounded_faces={} segments={} seam_edges={} \
+         strip_faces={} constructive_signature={constructive_signature:016x} \
+         drilled_signature={drilled_signature:016x} rounded_signature={rounded_signature:016x}",
+        profile.label(),
+        iterations,
+        constructive_best.as_nanos(),
+        constructive_avg.as_nanos(),
+        boolean_best.as_nanos(),
+        boolean_avg.as_nanos(),
+        round_best.as_nanos(),
+        round_avg.as_nanos(),
+        extract_best.as_nanos(),
+        extract_avg.as_nanos(),
+        constructive_faces,
+        drilled_a.faces().count(),
+        rounded_a.faces().count(),
+        boolean_stats_a.segments,
+        boolean_stats_a.seam_edges,
+        round_stats_a.strip_faces,
+    );
+}
+
+fn fold_mesh_signature(mesh: &Mesh) -> u64 {
+    let (triangles, _) = mesh.to_trimesh(&ExtractParams::default());
+    trimesh_signature(&triangles)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ct3_gallery_contract_is_deterministic_and_valid() {
+        // The profiling fixtures must remain the gallery's two through-drill
+        // paths: public constructive evaluation plus the direct Boolean mesh
+        // used for rounding. Both must be deterministic and deeply valid.
+        let recipe = build_gallery_csg_recipe();
+        let policy = EvalPolicy::default();
+        let evaluated_a = evaluate(&recipe, &policy).expect("evaluates");
+        let evaluated_b = evaluate(&recipe, &policy).expect("evaluates");
+        assert_eq!(fold_signature(&evaluated_a), fold_signature(&evaluated_b));
+        assert!(
+            evaluated_a
+                .bodies
+                .iter()
+                .all(|body| body.body.mesh.validate_deep().is_empty())
+        );
+
+        let (slab, drill) = build_gallery_drill_operands();
+        let (drilled_a, boolean_a) = gallery_boolean(&slab, &drill);
+        let (drilled_b, boolean_b) = gallery_boolean(&slab, &drill);
+        assert_eq!(boolean_a, boolean_b);
+        assert!(boolean_a.segments > 0);
+        assert!(boolean_a.seam_edges > 0);
+        assert!(drilled_a.validate_deep().is_empty());
+        assert_eq!(
+            fold_mesh_signature(&drilled_a),
+            fold_mesh_signature(&drilled_b)
+        );
+
+        let (rounded_a, round_a) = gallery_round(&drilled_a);
+        let (rounded_b, round_b) = gallery_round(&drilled_a);
+        assert_eq!(round_a, round_b);
+        assert!(round_a.strip_faces > 0);
+        assert!(rounded_a.validate_deep().is_empty());
+        assert_eq!(
+            fold_mesh_signature(&rounded_a),
+            fold_mesh_signature(&rounded_b)
+        );
+    }
 
     #[test]
     fn ct2_incremental_contract() {
