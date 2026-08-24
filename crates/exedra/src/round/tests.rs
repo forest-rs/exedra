@@ -397,6 +397,57 @@ fn rounding_without_selection_is_a_noop() {
 }
 
 #[test]
+fn rounding_refuses_a_zero_length_sharp_edge_without_welding_it() {
+    // Rounding is a geometric rewrite, not an identity repair pass. This
+    // topologically manifold cube contains two distinct coincident vertices
+    // on one marked edge and must fail atomically with the typed geometry
+    // error instead of merging those identities by coordinate.
+    let positions = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+        [0.0, 0.0, 0.0],
+    ];
+    let faces: [&[u32]; 6] = [
+        &[3, 2, 1, 8, 0],
+        &[4, 5, 6, 7],
+        &[0, 8, 1, 5, 4],
+        &[1, 2, 6, 5],
+        &[2, 3, 7, 6],
+        &[3, 0, 4, 7],
+    ];
+    let mut builder = MeshBuilder::new();
+    for position in positions {
+        builder.push_vertex(position);
+    }
+    for face in faces {
+        builder.add_face(face).expect("topologically valid face");
+    }
+    let mut mesh = builder.build().expect("manifold cube topology").mesh;
+    tag_sharp(&mut mesh, |mesh, edge| {
+        mesh.from_vertex(edge)
+            .and_then(|vertex| mesh.vertex_position(vertex))
+            .zip(
+                mesh.to_vertex(edge)
+                    .and_then(|vertex| mesh.vertex_position(vertex)),
+            )
+            .is_some_and(|(from, to)| from == to)
+    });
+    let before = exact_snapshot(&mesh);
+
+    let error = round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.1))
+        .expect_err("zero-length selected edge is invalid input");
+
+    assert!(matches!(error, RoundError::DegenerateEdge { .. }));
+    assert_eq!(exact_snapshot(&mesh), before);
+}
+
+#[test]
 fn rounding_is_deterministic() {
     let build = || {
         let mut mesh = box_mesh(2.0, 1.5, 1.0);
@@ -528,9 +579,9 @@ fn drilled_rim_fillet_is_deterministic_and_clean() {
 
 #[test]
 fn cleaned_drilled_rim_rounding_never_panics_or_partially_rewrites() {
-    // A drilled rim may or may not need seam collapses depending on how its
-    // cap was triangulated. Either way, an unsupported fillet must fail
-    // atomically instead of leaving a partial topology rewrite behind.
+    // Seam cleanup may simplify collinear rim runs before rounding. Whatever
+    // valid topology it returns, an unsupported fillet must fail atomically
+    // instead of leaving a partial topology rewrite behind.
     for angle in [0.0, core::f32::consts::FRAC_PI_4] {
         let mut mesh = drilled_slab_rotated(angle);
         let _cleanup = cleanup_seams(&mut mesh, &SeamCleanupPolicy::default());

@@ -44,10 +44,11 @@ mesh clone in one edit session:
   is shared by both adjoining strips, and the patch ring is recovered by
   walking the boundary the strips leave open — orientation is derived,
   never assumed. Chamfer corners are single triangles.
-- **Seam-duplicate merging.** Boolean seams carry distinct vertices at
-  identical narrowed positions; their zero-length chain edges merge into
-  one cross-section with alias substitution, and faces that collapse to
-  fewer than three distinct points (exactly-degenerate slivers) vanish.
+- **Seam identity boundary.** Boolean stitching canonicalizes exact stored
+  positions within each connected seam before downstream finishing passes.
+  Rounding therefore treats a selected zero-length edge as `DegenerateEdge`;
+  it does not weld identities by coordinate or delete source faces to make a
+  rewrite fit.
 - **Sliver plane borrowing.** A face whose Newell norm is below
   `1e-4 · perimeter²` has a noise normal; it borrows a verified coplanar
   neighbor's plane (breadth-first, never crossing a sharp edge, with a
@@ -57,14 +58,11 @@ mesh clone in one edit session:
   survival, and manifold edge pairing. Application additionally preflights
   the OUTSIDE boundary before each eager face add: after the add, every
   boundary vertex must retain exactly one incoming and one outgoing
-  half-edge. Seam cleanup can
-  otherwise leave coincident aliases whose rewrite is edge-manifold in the
-  final plan but pinches the temporary boundary used by `add_face`. Such a
-  rewrite returns `UnsupportedTopology` instead of reaching the stitcher's
-  invariant panic. The complete rewrite happens on a clone and replaces the
-  caller's mesh only on success, so all typed failures—including `Internal`
-  bug signals—leave topology, attributes, arena generations, and revision
-  byte-identical.
+  half-edge. A rewrite that pinches that temporary boundary returns
+  `UnsupportedTopology` instead of reaching the stitcher's invariant panic.
+  The complete rewrite happens on a clone and replaces the caller's mesh only
+  on success, so all typed failures—including `Internal` bug signals—leave
+  topology, attributes, arena generations, and revision byte-identical.
 - **Attributes.** Rewritten faces keep their `FACE_REGION`; strips and
   patches take the policy region. Surviving sharpness/seam tags re-key
   onto the rewritten edges; the consumed chain edges' sharpness does not
