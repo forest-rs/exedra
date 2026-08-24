@@ -494,6 +494,21 @@ mod tests {
     }
 
     #[test]
+    fn chained_face_partition_keeps_boundary_continuation_unambiguous() {
+        // A deep chained sweep found this partition order adding a sub-face
+        // while two distinct OUTSIDE continuations met at vertex 16. The
+        // splitter must either rebuild the face safely or report a typed
+        // deferral; malformed intermediate topology must never reach the
+        // stitcher's invariant panic.
+        let outcome = run_case(ScenarioClass::Chained, 7_497_488_052_617_644_153, 1);
+
+        assert_eq!(outcome.skip, Some(SkipReason::SplitDeferred));
+        assert_eq!(outcome.mesh_validation_errors, 0);
+        assert_eq!(outcome.mesh_bookkeeping_errors, 0);
+        assert_eq!(outcome.seam_identity_conflicts, 0);
+    }
+
+    #[test]
     fn shared_edge_union_has_a_named_geometric_skip() {
         // This fixed adversarial seed is two boxes with a partial shared edge
         // under Union. The oracle must report the public geometric refusal,
