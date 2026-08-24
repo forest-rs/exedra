@@ -32,6 +32,8 @@ dependencies = [
  "exedra_constructive",
  "exedra_gltf",
  "exedra_math",
+ "joiner",
+ "joiner_timber",
  "libm",
  "setout",
  "setout_joiner",

@@ -165,7 +165,7 @@ pub(crate) fn build_assembly(p: &BasilicaParams) -> (Assembly, Inventory) {
         domes: 1,
         ruined_bays: 1,
         nave_trusses: 6,
-        nave_truss_members: 36,
+        nave_truss_members: 42,
         omitted_nave_trusses: 1,
     };
     (context.finish(), inventory)
@@ -179,6 +179,8 @@ mod tests {
 
     #[test]
     fn architectural_inventory_is_explicit_and_restrained() {
+        // The gallery inventory is a deliberate public review surface; the
+        // generated key adds exactly one visible truss member per station.
         let scenario = build_scenario();
         assert_eq!(
             scenario.inventory,
@@ -202,7 +204,7 @@ mod tests {
                 domes: 1,
                 ruined_bays: 1,
                 nave_trusses: 6,
-                nave_truss_members: 36,
+                nave_truss_members: 42,
                 omitted_nave_trusses: 1,
             }
         );
