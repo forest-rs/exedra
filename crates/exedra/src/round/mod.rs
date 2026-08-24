@@ -47,8 +47,8 @@ use core::fmt;
 
 use crate::math::FloatExt;
 use crate::op::{
-    add_face, add_vertex, delete_faces, delete_vertices, set_edge_seam, set_edge_sharpness,
-    set_face_region,
+    AddFaceError, add_face, add_vertex, delete_faces, delete_vertices, set_edge_seam,
+    set_edge_sharpness, set_face_region,
 };
 use crate::{DeletePolicy, FaceId, HalfEdgeId, Mesh, VertexId, attr};
 
@@ -1610,23 +1610,26 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
     let mut added = Vec::with_capacity(plan.faces.len());
     for planned in &plan.faces {
         let loop_vertices: Vec<VertexId> = planned.entries.iter().map(|&t| resolve(t)).collect();
-        if !crate::session::face_preserves_boundary_continuation(session.mesh(), &loop_vertices) {
-            #[expect(unused_must_use, reason = "discard sink output")]
-            {
-                session.finish();
+        let face = match add_face(&mut session, &loop_vertices) {
+            Ok(face) => face,
+            Err(AddFaceError::NonManifoldVertex { .. }) => {
+                #[expect(unused_must_use, reason = "discard sink output")]
+                {
+                    session.finish();
+                }
+                return Err(RoundError::UnsupportedTopology {
+                    detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+                });
             }
-            return Err(RoundError::UnsupportedTopology {
-                detail: "face rewrite would pinch an OUTSIDE boundary vertex",
-            });
-        }
-        let Ok(face) = add_face(&mut session, &loop_vertices) else {
-            #[expect(unused_must_use, reason = "discard sink output")]
-            {
-                session.finish();
+            Err(_) => {
+                #[expect(unused_must_use, reason = "discard sink output")]
+                {
+                    session.finish();
+                }
+                return Err(RoundError::Internal {
+                    detail: "planned face was rejected by add_face",
+                });
             }
-            return Err(RoundError::Internal {
-                detail: "planned face was rejected by add_face",
-            });
         };
         if let Some(region) = planned.region {
             let _ = set_face_region(&mut session, face, region);

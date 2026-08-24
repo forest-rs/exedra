@@ -5,8 +5,7 @@ use alloc::vec::Vec;
 
 use crate::session::{
     clear_deleted_corner_attrs, collect_half_edge_vertices, contains_face, find_outgoing_half_edge,
-    find_outgoing_half_edge_linear_scan, preflight_boundary_continuation,
-    should_use_global_outgoing_index, sort_dedup, stitch_outside_loops,
+    preflight_boundary_continuation, sort_dedup, stitch_outside_loops_for_vertices,
 };
 use crate::{ChangeSink, DeletePolicy, EditSession, FaceId, HalfEdgeId, VertexId};
 
@@ -99,13 +98,16 @@ pub fn delete_faces<S: ChangeSink>(
     }
     sort_dedup(&mut dirty_vertices);
 
-    stitch_outside_loops(session.mesh_mut());
-
     // Deleting and replacing half-edges makes any index inherited from an
-    // earlier operation in this edit session stale. Invalidate before vertex
-    // `out` repair can ask for the index; invalidating only at return allowed
-    // that repair to retain a half-edge deleted above.
+    // earlier operation in this edit session stale. Rebuild it once, then use
+    // its directional boundary caches to repair only continuations at changed
+    // vertices. An OUTSIDE `next` link is determined entirely by the incoming
+    // and outgoing boundary edges at its shared vertex, so untouched vertices
+    // cannot need repair. This replaces the former whole-mesh collect, sort,
+    // and stitch pass and leaves the rebuilt index available for `out` repair.
     session.invalidate_outgoing_index();
+    let _ = session.ensure_outgoing_index();
+    stitch_outside_loops_for_vertices(session, &dirty_vertices);
 
     for face in dirty_faces {
         session.mark_face_dirty(face);
@@ -115,14 +117,8 @@ pub fn delete_faces<S: ChangeSink>(
         }
     }
     let mut isolated = Vec::<VertexId>::new();
-    let use_global_index =
-        should_use_global_outgoing_index(dirty_vertices.len(), session.mesh().half_edges.len());
-    let outgoing_index = use_global_index.then(|| session.ensure_outgoing_index().to_vec());
     for &vertex in &dirty_vertices {
-        let new_out = outgoing_index
-            .as_deref()
-            .and_then(|index| find_outgoing_half_edge(index, vertex))
-            .or_else(|| find_outgoing_half_edge_linear_scan(session.mesh(), vertex));
+        let new_out = find_outgoing_half_edge(session.ensure_outgoing_index(), vertex);
         let Some(record) = session.mesh_mut().vertices.get_mut(vertex.as_id()) else {
             continue;
         };

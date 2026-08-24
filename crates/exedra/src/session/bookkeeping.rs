@@ -67,6 +67,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
         let Self {
             mesh,
             outgoing_index: _,
+            boundary_index: _,
             outgoing_index_valid: _,
             sink,
         } = self;

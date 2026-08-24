@@ -27,6 +27,18 @@ pub(crate) struct OutgoingAdj {
     face: FaceId,
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct BoundaryAdj {
+    incoming: Option<HalfEdgeId>,
+    outgoing: Option<HalfEdgeId>,
+}
+
+pub(crate) enum FaceEdgeUse {
+    Boundary(HalfEdgeId),
+    Occupied,
+    Vacant,
+}
+
 mod attrs;
 mod bookkeeping;
 pub(crate) mod propagation;
@@ -710,7 +722,12 @@ impl fmt::Display for SplitFaceError {
 impl core::error::Error for SplitFaceError {}
 
 /// Structured face-creation error from [`crate::op::add_face`].
+///
+/// This enum is non-exhaustive so topology validation can gain more precise
+/// refusal reasons without forcing downstream source breaks. Callers should
+/// retain a wildcard arm when matching it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum AddFaceError {
     /// Face loop must have at least three vertices.
     LoopTooShort,
@@ -738,6 +755,11 @@ pub enum AddFaceError {
         /// Larger endpoint index.
         b: u32,
     },
+    /// Adding the face would give one vertex multiple boundary fans.
+    NonManifoldVertex {
+        /// Vertex where OUTSIDE boundary continuation would become ambiguous.
+        vertex: u32,
+    },
 }
 
 impl fmt::Display for AddFaceError {
@@ -753,6 +775,9 @@ impl fmt::Display for AddFaceError {
             }
             Self::NonManifoldEdge { a, b } => {
                 write!(f, "adding face would create non-manifold edge: ({a}, {b})")
+            }
+            Self::NonManifoldVertex { vertex } => {
+                write!(f, "adding face would create non-manifold vertex: {vertex}")
             }
         }
     }
@@ -779,6 +804,7 @@ impl core::error::Error for AddFaceError {}
 pub struct EditSession<'a, S: ChangeSink = DiscardChanges> {
     mesh: &'a mut Mesh,
     outgoing_index: Vec<OutgoingAdj>,
+    boundary_index: Vec<BoundaryAdj>,
     outgoing_index_valid: bool,
     sink: S,
 }
@@ -793,6 +819,7 @@ impl Mesh {
         EditSession {
             mesh: self,
             outgoing_index: Vec::new(),
+            boundary_index: Vec::new(),
             outgoing_index_valid: false,
             sink: DiscardChanges,
         }
@@ -806,6 +833,7 @@ impl Mesh {
         EditSession {
             mesh: self,
             outgoing_index: Vec::new(),
+            boundary_index: Vec::new(),
             outgoing_index_valid: false,
             sink,
         }
@@ -816,6 +844,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
     pub(crate) fn ensure_outgoing_index(&mut self) -> &[OutgoingAdj] {
         if !self.outgoing_index_valid {
             self.outgoing_index = build_outgoing_index(self.mesh);
+            self.boundary_index = build_boundary_index(self.mesh, &self.outgoing_index);
             self.outgoing_index_valid = true;
         }
         &self.outgoing_index
@@ -839,7 +868,13 @@ impl<S: ChangeSink> EditSession<'_, S> {
             "add_face must preflight through the outgoing index before refreshing it"
         );
         self.outgoing_index.reserve(changed.len());
+        self.boundary_index
+            .resize(self.mesh.vertices.slot_count(), BoundaryAdj::default());
 
+        // Remove every old boundary contribution before adding replacements.
+        // Around a closing face, one changed edge can replace another at the
+        // same destination, and their half-edge ID order is unrelated to that
+        // dependency.
         for &half_edge in changed {
             let replacement = self
                 .mesh
@@ -862,6 +897,23 @@ impl<S: ChangeSink> EditSession<'_, S> {
                 Ok(position) => {
                     // Reused boundary edges keep their ordered key; only the
                     // face classification changes from OUTSIDE to interior.
+                    let previous = self.outgoing_index[position];
+                    if previous.face == FaceId::OUTSIDE {
+                        let incoming_slot = previous.to.index() as usize;
+                        let outgoing_slot = previous.from.index() as usize;
+                        debug_assert_eq!(
+                            self.boundary_index[incoming_slot].incoming,
+                            Some(previous.half_edge),
+                            "incoming-boundary cache must name the reused edge"
+                        );
+                        debug_assert_eq!(
+                            self.boundary_index[outgoing_slot].outgoing,
+                            Some(previous.half_edge),
+                            "outgoing-boundary cache must name the reused edge"
+                        );
+                        self.boundary_index[incoming_slot].incoming = None;
+                        self.boundary_index[outgoing_slot].outgoing = None;
+                    }
                     self.outgoing_index[position] = replacement;
                 }
                 Err(position) => {
@@ -870,6 +922,30 @@ impl<S: ChangeSink> EditSession<'_, S> {
                     // without searching the whole vector by half-edge ID.
                     self.outgoing_index.insert(position, replacement);
                 }
+            }
+        }
+
+        for &half_edge in changed {
+            let edge = self
+                .mesh
+                .half_edges
+                .get(half_edge.as_id())
+                .expect("add_face index refresh receives live half-edges");
+            if edge.face == FaceId::OUTSIDE {
+                let (from, to) = half_edge_vertices(self.mesh, half_edge)
+                    .expect("add_face index refresh receives connected half-edges");
+                let incoming_slot = to.index() as usize;
+                let outgoing_slot = from.index() as usize;
+                debug_assert!(
+                    self.boundary_index[incoming_slot].incoming.is_none(),
+                    "valid topology has at most one incoming boundary edge per vertex"
+                );
+                debug_assert!(
+                    self.boundary_index[outgoing_slot].outgoing.is_none(),
+                    "valid topology has at most one outgoing boundary edge per vertex"
+                );
+                self.boundary_index[incoming_slot].incoming = Some(half_edge);
+                self.boundary_index[outgoing_slot].outgoing = Some(half_edge);
             }
         }
     }
@@ -884,6 +960,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
         has_undirected_edge_in_index(index, a, b)
     }
 
+    #[cfg(test)]
     pub(crate) fn find_boundary_half_edge(
         &mut self,
         from: VertexId,
@@ -893,10 +970,93 @@ impl<S: ChangeSink> EditSession<'_, S> {
         find_boundary_half_edge_in_index(index, from, to)
     }
 
+    /// Classifies one directed edge requested by `add_face` in a single
+    /// adjacency lookup. A matching OUTSIDE half-edge can be reused; any other
+    /// orientation or interior use means the undirected edge is occupied.
+    pub(crate) fn face_edge_use(&mut self, from: VertexId, to: VertexId) -> FaceEdgeUse {
+        let index = self.ensure_outgoing_index();
+        face_edge_use_in_index(index, from, to)
+    }
+
+    pub(crate) fn find_half_edge(&mut self, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
+        let index = self.ensure_outgoing_index();
+        find_half_edge_in_index(index, from, to)
+    }
+
+    /// Finds the first loop vertex whose post-add OUTSIDE fan would not be
+    /// zero-or-one incoming edge paired with zero-or-one outgoing edge.
+    ///
+    /// `add_face` has already rejected repeated vertices and collected the
+    /// boundary edge reused by each directed loop edge. On valid input mesh
+    /// topology, a boundary vertex starts with one incoming and one outgoing
+    /// edge, while an interior vertex starts with neither. At each loop vertex,
+    /// reusing an adjacent edge removes one side of that pair and creating an
+    /// edge contributes the oppositely directed OUTSIDE twin. Applying those
+    /// four local deltas proves the final fan without rescanning the mesh.
+    pub(crate) fn first_non_manifold_vertex_after_face(
+        &mut self,
+        loop_vertices: &[VertexId],
+        reused_boundary: &[Option<HalfEdgeId>],
+    ) -> Option<VertexId> {
+        debug_assert_eq!(
+            loop_vertices.len(),
+            reused_boundary.len(),
+            "add_face records one boundary-reuse decision per loop edge"
+        );
+        // Building the outgoing index also builds `boundary_index`. Valid
+        // manifold topology has either no boundary edge at a vertex or one
+        // incoming/outgoing pair, so that slot is the complete initial count.
+        // Reusing it avoids two binary searches through all half-edges for
+        // every corner of every face added by Boolean reconstruction.
+        let _ = self.ensure_outgoing_index();
+        for i in 0..loop_vertices.len() {
+            let vertex = loop_vertices[i];
+            let previous = (i + loop_vertices.len() - 1) % loop_vertices.len();
+            let initial = usize::from(matches!(
+                self.boundary_index.get(vertex.index() as usize),
+                Some(BoundaryAdj {
+                    incoming: Some(_),
+                    outgoing: Some(_),
+                })
+            ));
+
+            // The current face edge leaves `vertex`; reusing it removes an
+            // outgoing boundary edge. A newly created previous face edge gets
+            // an OUTSIDE twin that leaves `vertex`.
+            let mut outgoing = initial;
+            if reused_boundary[i].is_some() {
+                let Some(remainder) = outgoing.checked_sub(1) else {
+                    return Some(vertex);
+                };
+                outgoing = remainder;
+            }
+            outgoing += usize::from(reused_boundary[previous].is_none());
+
+            // The previous face edge enters `vertex`; reusing it removes an
+            // incoming boundary edge. A newly created current face edge gets
+            // an OUTSIDE twin that enters `vertex`.
+            let mut incoming = initial;
+            if reused_boundary[previous].is_some() {
+                let Some(remainder) = incoming.checked_sub(1) else {
+                    return Some(vertex);
+                };
+                incoming = remainder;
+            }
+            incoming += usize::from(reused_boundary[i].is_none());
+
+            if outgoing > 1 || incoming > 1 || outgoing != incoming {
+                return Some(vertex);
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     fn assert_outgoing_index_consistent(&mut self) {
         let actual = self.ensure_outgoing_index().to_vec();
         let expected = build_outgoing_index(self.mesh);
+        let actual_boundary_index = self.boundary_index.clone();
+        let expected_boundary_index = build_boundary_index(self.mesh, &expected);
 
         assert_eq!(
             actual.len(),
@@ -935,6 +1095,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
                 b.face.index()
             );
         }
+        assert_eq!(actual_boundary_index, expected_boundary_index);
     }
 }
 
@@ -1005,6 +1166,7 @@ fn has_undirected_edge_in_index(outgoing_index: &[OutgoingAdj], a: VertexId, b: 
     false
 }
 
+#[cfg(test)]
 fn find_boundary_half_edge_in_index(
     outgoing_index: &[OutgoingAdj],
     from: VertexId,
@@ -1014,6 +1176,49 @@ fn find_boundary_half_edge_in_index(
     outgoing_index[range].iter().find_map(|entry| {
         (entry.face == FaceId::OUTSIDE && entry.to == to).then_some(entry.half_edge)
     })
+}
+
+#[inline]
+fn face_edge_use_in_index(
+    outgoing_index: &[OutgoingAdj],
+    from: VertexId,
+    to: VertexId,
+) -> FaceEdgeUse {
+    let forward = equal_range_in_outgoing(outgoing_index, from);
+    for entry in &outgoing_index[forward] {
+        if entry.to != to {
+            continue;
+        }
+        return if entry.face == FaceId::OUTSIDE {
+            FaceEdgeUse::Boundary(entry.half_edge)
+        } else {
+            FaceEdgeUse::Occupied
+        };
+    }
+    let reverse = equal_range_in_outgoing(outgoing_index, to);
+    if outgoing_index[reverse].iter().any(|entry| entry.to == from) {
+        FaceEdgeUse::Occupied
+    } else {
+        FaceEdgeUse::Vacant
+    }
+}
+
+fn find_half_edge_in_index(
+    outgoing_index: &[OutgoingAdj],
+    from: VertexId,
+    to: VertexId,
+) -> Option<HalfEdgeId> {
+    let forward = equal_range_in_outgoing(outgoing_index, from);
+    if let Some(half_edge) = outgoing_index[forward]
+        .iter()
+        .find_map(|entry| (entry.to == to).then_some(entry.half_edge))
+    {
+        return Some(half_edge);
+    }
+    let reverse = equal_range_in_outgoing(outgoing_index, to);
+    outgoing_index[reverse]
+        .iter()
+        .find_map(|entry| (entry.to == from).then_some(entry.half_edge))
 }
 
 fn build_outgoing_index(mesh: &Mesh) -> Vec<OutgoingAdj> {
@@ -1030,12 +1235,63 @@ fn build_outgoing_index(mesh: &Mesh) -> Vec<OutgoingAdj> {
             })
         })
         .collect::<Vec<_>>();
-    // Arena iteration already emits ascending half-edge IDs. A stable sort by
-    // origin retains that order for ties, producing the same deterministic
-    // `(from, half_edge)` index without comparing a compound key throughout
-    // the sort.
-    pairs.sort_by_key(|entry| entry.from);
-    pairs
+    if pairs.len() < 2 {
+        return pairs;
+    }
+
+    let vertex_slots = mesh.vertices.slot_count();
+    if vertex_slots > pairs.len().saturating_mul(8) {
+        // A heavily tombstoned arena would make a slot-indexed count table
+        // larger than the adjacency itself. Stable comparison sorting keeps
+        // this unusual sparse case proportional to live topology.
+        pairs.sort_by_key(|entry| entry.from);
+        return pairs;
+    }
+
+    // Vertex IDs are arena-slot IDs. Stable counting placement is therefore
+    // linear for the compact meshes produced during Boolean construction and
+    // preserves the input's ascending half-edge order within each origin.
+    // That yields the same deterministic `(from, half_edge)` index as a stable
+    // comparison sort, without spending the rebuild path in driftsort.
+    let mut next = alloc::vec![0_usize; vertex_slots + 1];
+    for entry in &pairs {
+        next[entry.from.index() as usize + 1] += 1;
+    }
+    for index in 1..next.len() {
+        next[index] += next[index - 1];
+    }
+    let mut ordered = Vec::with_capacity(pairs.len());
+    ordered.resize(pairs.len(), pairs[0]);
+    for entry in pairs {
+        let bucket = entry.from.index() as usize;
+        ordered[next[bucket]] = entry;
+        next[bucket] += 1;
+    }
+    ordered
+}
+
+fn build_boundary_index(mesh: &Mesh, outgoing_index: &[OutgoingAdj]) -> Vec<BoundaryAdj> {
+    let mut boundary = alloc::vec![BoundaryAdj::default(); mesh.vertices.slot_count()];
+    for entry in outgoing_index {
+        if entry.face != FaceId::OUTSIDE {
+            continue;
+        }
+        let incoming_slot = entry.to.index() as usize;
+        let outgoing_slot = entry.from.index() as usize;
+        let previous_incoming = boundary[incoming_slot].incoming.replace(entry.half_edge);
+        assert!(
+            previous_incoming.is_none(),
+            "mesh topology corruption: more than one incoming boundary edge at vertex {}",
+            entry.to.index()
+        );
+        let previous_outgoing = boundary[outgoing_slot].outgoing.replace(entry.half_edge);
+        assert!(
+            previous_outgoing.is_none(),
+            "mesh topology corruption: more than one outgoing boundary edge at vertex {}",
+            entry.from.index()
+        );
+    }
+    boundary
 }
 
 pub(crate) fn find_outgoing_half_edge_linear_scan(
@@ -1063,6 +1319,7 @@ pub(crate) fn find_outgoing_half_edge(
     outgoing_index.get(range.start).map(|entry| entry.half_edge)
 }
 
+#[inline]
 fn equal_range_in_outgoing(
     outgoing_index: &[OutgoingAdj],
     vertex: VertexId,
@@ -1070,19 +1327,6 @@ fn equal_range_in_outgoing(
     let lower = outgoing_index.partition_point(|entry| entry.from < vertex);
     let upper = outgoing_index.partition_point(|entry| entry.from <= vertex);
     lower..upper
-}
-
-pub(crate) fn should_use_global_outgoing_index(
-    affected_vertices: usize,
-    total_half_edges: usize,
-) -> bool {
-    if affected_vertices == 0 || total_half_edges == 0 {
-        return false;
-    }
-    // Heuristic: switch to global index once the affected set is at least
-    // about 1/8 of total half-edges; this avoids expensive repeated linear
-    // scans near crossover cases.
-    affected_vertices.saturating_mul(8) > total_half_edges
 }
 
 pub(crate) fn corner_uv_for_face_to_vertex(
@@ -1190,72 +1434,6 @@ pub(crate) fn preflight_boundary_continuation(
     mismatch.map_or(Ok(()), Err)
 }
 
-/// Returns whether adding `loop_vertices` would leave every OUTSIDE boundary
-/// vertex with exactly one incoming and one outgoing half-edge.
-///
-/// This mirrors the boundary reuse performed by `op::add_face`, but does not
-/// mutate the mesh. Batch-style operations use it before each eager face add
-/// so a temporarily pinched boundary becomes a typed refusal rather than an
-/// invariant panic in the stitcher.
-pub(crate) fn face_preserves_boundary_continuation(
-    mesh: &Mesh,
-    loop_vertices: &[VertexId],
-) -> bool {
-    if loop_vertices.len() < 3 {
-        return false;
-    }
-    let mut reused = Vec::<HalfEdgeId>::new();
-    let mut created = Vec::<(VertexId, VertexId)>::new();
-
-    for index in 0..loop_vertices.len() {
-        let from = loop_vertices[index];
-        let to = loop_vertices[(index + 1) % loop_vertices.len()];
-        let boundary = mesh.half_edges.iter().find_map(|(id, edge)| {
-            let half_edge = HalfEdgeId::from(id);
-            (edge.face == FaceId::OUTSIDE
-                && half_edge_vertices(mesh, half_edge) == Some((from, to)))
-            .then_some(half_edge)
-        });
-        if let Some(boundary) = boundary {
-            reused.push(boundary);
-        } else {
-            // A new interior from->to edge receives an OUTSIDE twin to->from.
-            created.push((to, from));
-        }
-    }
-    reused.sort_unstable();
-
-    let mut outgoing = Vec::<VertexId>::new();
-    let mut incoming = Vec::<VertexId>::new();
-    for (id, edge) in mesh.half_edges.iter() {
-        let half_edge = HalfEdgeId::from(id);
-        if edge.face != FaceId::OUTSIDE || reused.binary_search(&half_edge).is_ok() {
-            continue;
-        }
-        let Some((from, to)) = half_edge_vertices(mesh, half_edge) else {
-            return false;
-        };
-        outgoing.push(from);
-        incoming.push(to);
-    }
-    for (from, to) in created {
-        outgoing.push(from);
-        incoming.push(to);
-    }
-
-    let outgoing_counts = count_vertices(outgoing);
-    let incoming_counts = count_vertices(incoming);
-    let mut valid = true;
-    for_each_count_join(
-        &outgoing_counts,
-        &incoming_counts,
-        |_vertex, out_count, in_count| {
-            valid &= out_count == 1 && in_count == 1;
-        },
-    );
-    valid
-}
-
 fn count_vertices(mut values: Vec<VertexId>) -> Vec<(VertexId, usize)> {
     values.sort_unstable();
     let mut counts = Vec::<(VertexId, usize)>::new();
@@ -1271,55 +1449,6 @@ fn count_vertices(mut values: Vec<VertexId>) -> Vec<(VertexId, usize)> {
     counts
 }
 
-pub(crate) fn stitch_outside_loops(mesh: &mut Mesh) {
-    let boundary = mesh
-        .half_edges
-        .iter()
-        .filter_map(|(id, edge)| (edge.face == FaceId::OUTSIDE).then_some(HalfEdgeId::from(id)))
-        .collect::<Vec<_>>();
-    // TODO(exe-8w2z): This currently re-stitches all OUTSIDE loops globally.
-    // We can scope to affected boundary components once delete kernels track
-    // local boundary frontiers.
-
-    // Build a deterministic index of boundary starts:
-    // start(boundary_h) == to(twin(boundary_h)).
-    let mut starts = boundary
-        .iter()
-        .copied()
-        .map(|boundary_half_edge| {
-            let twin = mesh
-                .twin(boundary_half_edge)
-                .expect("boundary half-edge must have twin");
-            let start = mesh
-                .to_vertex(twin)
-                .expect("boundary twin must have destination vertex");
-            (start, boundary_half_edge)
-        })
-        .collect::<Vec<_>>();
-    starts.sort_unstable_by_key(|(start, boundary_half_edge)| (*start, *boundary_half_edge));
-
-    for half_edge in &boundary {
-        let to = mesh
-            .to_vertex(*half_edge)
-            .expect("boundary half-edge must have destination vertex");
-
-        let range = equal_range_by_vertex(&starts, to);
-        let candidates = range.end.saturating_sub(range.start);
-        if candidates != 1 {
-            panic!(
-                "mesh topology corruption: OUTSIDE stitch failed at vertex {} ({} candidates)",
-                to.index(),
-                candidates
-            );
-        }
-        let next = starts[range.start].1;
-        mesh.half_edges
-            .get_mut(half_edge.as_id())
-            .expect("boundary half-edge must be live")
-            .next = next;
-    }
-}
-
 pub(crate) fn stitch_outside_loops_for_vertices<S: ChangeSink>(
     session: &mut EditSession<'_, S>,
     affected_vertices: &[VertexId],
@@ -1328,67 +1457,39 @@ pub(crate) fn stitch_outside_loops_for_vertices<S: ChangeSink>(
         return;
     }
 
-    let mut affected = affected_vertices.to_vec();
-    sort_dedup(&mut affected);
-
-    let updates = {
-        let index = session.ensure_outgoing_index();
-        let mut updates = Vec::<(HalfEdgeId, HalfEdgeId)>::new();
-        for entry in index {
-            if entry.face != FaceId::OUTSIDE || affected.binary_search(&entry.to).is_err() {
-                continue;
-            }
-
-            // The index is ordered by origin, so the boundary continuation at
-            // this edge's destination is a small range lookup. Interior edges
-            // at the same vertex are deliberately ignored.
-            let range = equal_range_in_outgoing(index, entry.to);
-            let mut candidates = index[range]
-                .iter()
-                .filter(|candidate| candidate.face == FaceId::OUTSIDE);
-            let next = candidates.next().map(|candidate| candidate.half_edge);
-            let conflicting = candidates.next().map(|candidate| candidate.half_edge);
-            if next.is_none() || conflicting.is_some() {
-                let candidate_count = usize::from(next.is_some())
-                    + usize::from(conflicting.is_some())
-                    + candidates.count();
-                // Internal invariant: add_face preflight should prevent
-                // user-input ambiguity here. If this trips, topology state is
-                // inconsistent. The first two half-edge IDs distinguish a
-                // duplicate cache entry from two distinct boundary gaps.
-                panic!(
-                    "mesh topology corruption: OUTSIDE local stitch failed at vertex {} ({} candidates, first={:?}, second={:?})",
-                    entry.to.index(),
-                    candidate_count,
-                    next.map(HalfEdgeId::index),
-                    conflicting.map(HalfEdgeId::index),
-                );
-            }
-            updates.push((
-                entry.half_edge,
-                next.expect("checked boundary continuation"),
-            ));
+    // Callers provide a deduplicated face loop or dirty-vertex frontier, so
+    // each boundary link is visited exactly once. Compute one continuation in
+    // a shared-borrow scope and apply it immediately afterwards; this avoids
+    // allocating an updates vector solely to satisfy the borrow checker.
+    for &vertex in affected_vertices {
+        let boundary = {
+            session.ensure_outgoing_index();
+            // Both directions are cached by vertex because local stitching is
+            // on every reconstructed face's hot path. The full origin-sorted
+            // index remains necessary for arbitrary edge queries, but a binary
+            // search there would be repeated three times per triangle.
+            session.boundary_index[vertex.index() as usize]
+        };
+        if boundary.incoming.is_none() != boundary.outgoing.is_none() {
+            // Internal invariant: the caller's topology preflight should
+            // prevent user-input ambiguity here. If this trips, topology state
+            // is inconsistent.
+            panic!(
+                "mesh topology corruption: OUTSIDE local stitch failed at vertex {} (incoming={:?}, outgoing={:?})",
+                vertex.index(),
+                boundary.incoming.map(HalfEdgeId::index),
+                boundary.outgoing.map(HalfEdgeId::index),
+            );
         }
-        updates
-    };
-
-    for (half_edge, next) in updates {
-        session
-            .mesh_mut()
-            .half_edges
-            .get_mut(half_edge.as_id())
-            .expect("boundary half-edge must be live")
-            .next = next;
+        if let (Some(incoming), Some(outgoing)) = (boundary.incoming, boundary.outgoing) {
+            session
+                .mesh_mut()
+                .half_edges
+                .get_mut(incoming.as_id())
+                .expect("boundary half-edge must be live")
+                .next = outgoing;
+        }
     }
-}
-
-fn equal_range_by_vertex(
-    starts: &[(VertexId, HalfEdgeId)],
-    vertex: VertexId,
-) -> core::ops::Range<usize> {
-    let lower = starts.partition_point(|(candidate, _)| *candidate < vertex);
-    let upper = starts.partition_point(|(candidate, _)| *candidate <= vertex);
-    lower..upper
 }
 
 #[cfg(test)]
@@ -2698,6 +2799,55 @@ mod tests {
     }
 
     #[test]
+    fn add_face_rejects_vertex_only_contact_before_mutation() {
+        // Two faces that meet only at one vertex would give that vertex two
+        // independent OUTSIDE continuations. Public input must be rejected
+        // before face or half-edge storage is changed, rather than reaching
+        // the stitcher's internal-invariant panic.
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        let shared = txn.add_vertex([0.0, 0.0, 0.0]);
+        let a = txn.add_vertex([1.0, 0.0, 0.0]);
+        let b = txn.add_vertex([0.0, 1.0, 0.0]);
+        let c = txn.add_vertex([-1.0, 0.0, 0.0]);
+        let d = txn.add_vertex([0.0, -1.0, 0.0]);
+        let _ = txn
+            .add_face(&[shared, a, b])
+            .expect("first triangle should be valid");
+        let _ = txn.finish();
+
+        let before = (
+            mesh.vertices.len(),
+            mesh.faces.len(),
+            mesh.half_edges.len(),
+            mesh.revision(),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut txn = mesh.edit();
+            txn.add_face(&[shared, c, d])
+        }));
+
+        assert!(result.is_ok(), "invalid public input must not panic");
+        assert_eq!(
+            result.expect("checked above"),
+            Err(AddFaceError::NonManifoldVertex {
+                vertex: shared.index()
+            })
+        );
+        assert_eq!(
+            (
+                mesh.vertices.len(),
+                mesh.faces.len(),
+                mesh.half_edges.len(),
+                mesh.revision(),
+            ),
+            before,
+            "failed face insertion must leave mesh state unchanged"
+        );
+        assert!(mesh.validate_deep().is_empty());
+    }
+
+    #[test]
     fn outgoing_index_queries_update_after_topology_edits() {
         let mut mesh = Mesh::new();
         let v0 = mesh.add_vertex([0.0, 0.0, 0.0]);
@@ -3096,10 +3246,11 @@ mod tests {
 
     #[test]
     fn outgoing_index_consistent_after_delete_faces() {
+        // Deleting a face must rebuild the directional adjacency caches before
+        // locally stitching the new opening; this primes the old cache so the
+        // test would catch either stale entries or a missed boundary link.
         let (mut mesh, faces) = closed_box_mesh();
         let mut txn = mesh.edit_with(ChangeSetBuilder::new());
-        // Prime the cache before deletion: this pins the invalidation order so
-        // vertex `out` repair cannot consult half-edges the deletion removed.
         let _ = txn.ensure_outgoing_index();
         txn.delete_faces(&[faces[0]], DeletePolicy::CleanupIsolated)
             .expect("delete_faces should succeed");
@@ -3198,19 +3349,6 @@ mod tests {
         assert_eq!(mesh.revision(), baseline_revision);
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
-    }
-
-    #[test]
-    fn outgoing_index_strategy_prefers_localized_scans_for_small_edits() {
-        assert!(!should_use_global_outgoing_index(1, 1_000));
-        assert!(!should_use_global_outgoing_index(8, 10_000));
-        assert!(!should_use_global_outgoing_index(0, 100));
-    }
-
-    #[test]
-    fn outgoing_index_strategy_switches_to_global_for_large_affected_sets() {
-        assert!(should_use_global_outgoing_index(130, 1_000));
-        assert!(should_use_global_outgoing_index(1_300, 10_000));
     }
 
     #[test]
