@@ -25,15 +25,17 @@
 //! into a triangulated ring (the original boundary with the loops as
 //! holes, via `exedra_triangulate`'s hole bridging) plus a triangulated
 //! disk per loop, so classification can separate the ring from the disk
-//! along real mesh edges.
+//! along real mesh edges. When open chains and closed loops share a face, the
+//! chains first define simple regions and each loop is assigned to exactly
+//! one region before the same ring-and-disk refacing. This is the common
+//! timber configuration of an end/shoulder cut plus a blind housing.
 //!
 //! Configurations outside the supported envelope are typed deferrals, never
-//! silent: faces mixing open chains with interior loops, dangling chains
-//! ending inside a face, chains whose sub-loop assignment is ambiguous, and
-//! interior loops whose projection or triangulation degenerates all leave the
-//! face unsplit and report [`BooleanFailureKind::SplitDeferred`]. Planar
-//! T-junctions are decomposed into straight boundary chains followed by their
-//! residual branches, so later cutters may meet earlier cut seams.
+//! silent: dangling chains ending inside a face, ambiguous region assignment,
+//! and loops whose projection or triangulation degenerates all leave the face
+//! unsplit and report [`BooleanFailureKind::SplitDeferred`]. Planar T-junctions
+//! are decomposed into straight boundary chains followed by their residual
+//! branches, so later cutters may meet earlier cut seams.
 
 use alloc::vec::Vec;
 
@@ -347,6 +349,7 @@ fn split_one_face(
     let edge_key = |a: u32, b: u32| (a.min(b), a.max(b));
     let mut visited: HashMap<(u32, u32), bool> = HashMap::new();
     let mut chains: Vec<Vec<u32>> = Vec::new();
+    let mut closed_loops: Vec<Vec<u32>> = Vec::new();
     let trace = |start: u32, next: u32, visited: &mut HashMap<(u32, u32), bool>| -> Vec<u32> {
         let mut chain = alloc::vec![start, next];
         let mut previous = start;
@@ -418,9 +421,11 @@ fn split_one_face(
         }
     }
 
-    // Trace residual branch-to-branch chains after the terminal chains.
-    // A residual component made only of degree-two vertices is a closed loop
-    // mixed with open cuts; the hole path cannot yet assign it to a sub-loop.
+    // Trace residual branch-to-branch chains after the terminal chains. Once
+    // only degree-two components remain, preserve them as closed loops. They
+    // are assigned to the open-chain partitions below in face space; cutter
+    // order must not decide whether a blind housing can coexist with a
+    // shoulder cut on the same timber face.
     loop {
         let mut branch_starts: Vec<u32> = edge_indices
             .iter()
@@ -441,12 +446,42 @@ fn split_one_face(
             break;
         }
         let Some(start) = branch_starts.first().copied() else {
-            defer(
-                "face mixes open cut chains with interior closed loops",
-                outcome,
-                diagnostics,
-            );
-            return;
+            while let Some([start, next]) = edge_indices.iter().find_map(|&edge_index| {
+                let [a, b] = graph.edges[edge_index as usize].vertices;
+                (!visited.contains_key(&edge_key(a, b))).then_some([a, b])
+            }) {
+                let mut ring = alloc::vec![start];
+                let mut previous = start;
+                let mut current = next;
+                visited.insert(edge_key(start, next), true);
+                while current != start {
+                    ring.push(current);
+                    let Some(step) = local[&current].iter().copied().find(|&candidate| {
+                        candidate != previous
+                            && !visited.contains_key(&edge_key(current, candidate))
+                    }) else {
+                        defer(
+                            "mixed interior cut loop is not a closed degree-two component",
+                            outcome,
+                            diagnostics,
+                        );
+                        return;
+                    };
+                    visited.insert(edge_key(current, step), true);
+                    previous = current;
+                    current = step;
+                }
+                if ring.len() < 3 {
+                    defer(
+                        "mixed interior cut loop has fewer than three vertices",
+                        outcome,
+                        diagnostics,
+                    );
+                    return;
+                }
+                closed_loops.push(ring);
+            }
+            break;
         };
         let next = local[&start]
             .iter()
@@ -580,6 +615,20 @@ fn split_one_face(
     if sub_loops.iter().any(|sub_loop| !is_simple_loop(sub_loop)) {
         defer(
             "face partition produced a non-simple sub-loop",
+            outcome,
+            diagnostics,
+        );
+        return;
+    }
+
+    if !closed_loops.is_empty() {
+        split_face_with_partitioned_interior_loops(
+            mesh,
+            graph,
+            face,
+            &boundary_partition,
+            &sub_loops,
+            &closed_loops,
             outcome,
             diagnostics,
         );
@@ -987,6 +1036,400 @@ fn projected_area2(points: &[[f64; 2]]) -> f64 {
         sum += a[0] * b[1] - b[0] * a[1];
     }
     sum
+}
+
+/// Classifies a point against a projected polygon, returning `None` when it
+/// lies on the boundary.
+///
+/// Mixed open and closed cuts should never touch without sharing graph
+/// vertices. Treating boundary contact as ambiguous keeps that invariant
+/// explicit instead of assigning a hole to whichever partition happens to
+/// be visited first.
+fn point_in_projected_loop(point: [f64; 2], polygon: &[[f64; 2]]) -> Option<bool> {
+    let mut winding = 0_i32;
+    for index in 0..polygon.len() {
+        let a = polygon[index];
+        let b = polygon[(index + 1) % polygon.len()];
+        let orientation = orient2d(a, b, point);
+        let within_x = point[0] >= a[0].min(b[0]) && point[0] <= a[0].max(b[0]);
+        let within_y = point[1] >= a[1].min(b[1]) && point[1] <= a[1].max(b[1]);
+        if orientation == Orientation::Collinear && within_x && within_y {
+            return None;
+        }
+        // The half-open y tests count a vertex once, and the adaptive exact
+        // predicate decides which side of the edge the point occupies. This
+        // avoids a division and keeps region ownership stable across scale.
+        if a[1] <= point[1] && b[1] > point[1] && orientation == Orientation::Ccw {
+            winding += 1;
+        } else if a[1] > point[1] && b[1] <= point[1] && orientation == Orientation::Cw {
+            winding -= 1;
+        }
+    }
+    Some(winding != 0)
+}
+
+/// Re-faces open-chain partitions that also contain closed interior loops.
+///
+/// Open chains first divide the original face into simple polygonal regions.
+/// Each closed loop is then assigned geometrically to exactly one region and
+/// triangulated twice: once as a hole in that region and once as the disk on
+/// the other side of the cut. Planning and insertion ordering complete before
+/// the mesh is mutated, preserving all-or-defer for typed geometric failures.
+/// A later mesh-edit rejection is an internal invariant violation, as in the
+/// existing pure-loop re-facer, and is reported as such rather than disguised
+/// as an unsupported input.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the split transaction is explicit"
+)]
+fn split_face_with_partitioned_interior_loops(
+    mesh: &mut Mesh,
+    graph: &IntersectionGraph,
+    face: FaceId,
+    boundary: &[FacePartitionVertex],
+    regions: &[Vec<FacePartitionVertex>],
+    loops: &[Vec<u32>],
+    outcome: &mut MeshSplitOutcome,
+    diagnostics: &mut BooleanDiagnostics,
+) {
+    let position = |vertex: FacePartitionVertex| -> Option<[f64; 3]> {
+        match vertex {
+            FacePartitionVertex::Mesh(vertex) => mesh.vertex_position(vertex).copied().map(promote),
+            FacePartitionVertex::Graph(vertex) => {
+                graph.vertices.get(vertex as usize).map(|v| v.position)
+            }
+        }
+    };
+    let boundary3: Vec<[f64; 3]> = boundary.iter().copied().filter_map(position).collect();
+    if boundary3.len() != boundary.len() || boundary3.len() < 3 {
+        defer(
+            "mixed-cut face has an unresolvable boundary loop",
+            outcome,
+            diagnostics,
+        );
+        return;
+    }
+    let mut normal = [0.0_f64; 3];
+    for index in 0..boundary3.len() {
+        let a = boundary3[index];
+        let b = boundary3[(index + 1) % boundary3.len()];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let axis = dominant_axis(normal);
+    if normal[axis] == 0.0 || !normal[axis].is_finite() {
+        defer(
+            "mixed-cut face has a degenerate projection plane",
+            outcome,
+            diagnostics,
+        );
+        return;
+    }
+    let (u, v) = if normal[axis] > 0.0 {
+        ((axis + 1) % 3, (axis + 2) % 3)
+    } else {
+        ((axis + 2) % 3, (axis + 1) % 3)
+    };
+    let project = |point: [f64; 3]| [point[u], point[v]];
+
+    let mut region_symbols = regions.to_vec();
+    let mut region_points = Vec::with_capacity(regions.len());
+    for symbols in &mut region_symbols {
+        let Some(mut points) = symbols
+            .iter()
+            .copied()
+            .map(|vertex| position(vertex).map(project))
+            .collect::<Option<Vec<_>>>()
+        else {
+            defer(
+                "mixed-cut partition has an unresolvable vertex",
+                outcome,
+                diagnostics,
+            );
+            return;
+        };
+        if projected_area2(&points) < 0.0 {
+            points.reverse();
+            symbols.reverse();
+        }
+        region_points.push(points);
+    }
+
+    let mut loop_symbols: Vec<Vec<FacePartitionVertex>> = loops
+        .iter()
+        .map(|ring| {
+            ring.iter()
+                .copied()
+                .map(FacePartitionVertex::Graph)
+                .collect()
+        })
+        .collect();
+    let mut loop_points: Vec<Vec<[f64; 2]>> = loops
+        .iter()
+        .map(|ring| {
+            ring.iter()
+                .map(|&vertex| project(graph.vertices[vertex as usize].position))
+                .collect()
+        })
+        .collect();
+    for (symbols, points) in loop_symbols.iter_mut().zip(&mut loop_points) {
+        // Hole rings wind opposite the counter-clockwise region boundary.
+        if projected_area2(points) > 0.0 {
+            points.reverse();
+            symbols.reverse();
+        }
+    }
+
+    let mut assigned: Vec<Vec<usize>> = alloc::vec![Vec::new(); regions.len()];
+    for (loop_index, points) in loop_points.iter().enumerate() {
+        let owners: Vec<usize> = region_points
+            .iter()
+            .enumerate()
+            .filter_map(|(region_index, region)| {
+                points
+                    .iter()
+                    .all(|&point| point_in_projected_loop(point, region) == Some(true))
+                    .then_some(region_index)
+            })
+            .collect();
+        let [owner] = owners.as_slice() else {
+            defer(
+                "interior cut loop does not belong to exactly one face partition",
+                outcome,
+                diagnostics,
+            );
+            return;
+        };
+        assigned[*owner].push(loop_index);
+    }
+
+    let params = exedra_triangulate::TriParams::default();
+    let mut fragments: Vec<Vec<FacePartitionVertex>> = Vec::new();
+    for region_index in 0..region_symbols.len() {
+        let holes: Vec<&[[f64; 2]]> = assigned[region_index]
+            .iter()
+            .map(|&loop_index| loop_points[loop_index].as_slice())
+            .collect();
+        let input = exedra_triangulate::PolygonInput {
+            outer: &region_points[region_index],
+            holes: &holes,
+        };
+        let Ok(triangulation) = exedra_triangulate::triangulate(&input, &params) else {
+            defer(
+                "mixed-cut partition failed hole triangulation",
+                outcome,
+                diagnostics,
+            );
+            return;
+        };
+        let mut labels = region_symbols[region_index].clone();
+        let mut points = region_points[region_index].clone();
+        for &loop_index in &assigned[region_index] {
+            labels.extend(loop_symbols[loop_index].iter().copied());
+            points.extend(loop_points[loop_index].iter().copied());
+        }
+        let mut triangles = triangulation.triangles;
+        let outer_len = region_symbols[region_index].len();
+        if !reinsert_dropped_labels(&points, 0..outer_len, &mut triangles) {
+            defer(
+                "mixed-cut partition lost a collinear boundary vertex",
+                outcome,
+                diagnostics,
+            );
+            return;
+        }
+        let mut base = outer_len;
+        for &loop_index in &assigned[region_index] {
+            let end = base + loop_symbols[loop_index].len();
+            if !reinsert_dropped_labels(&points, base..end, &mut triangles) {
+                defer(
+                    "mixed-cut partition lost a collinear loop vertex",
+                    outcome,
+                    diagnostics,
+                );
+                return;
+            }
+            base = end;
+        }
+        fragments.extend(triangles.into_iter().map(|triangle| {
+            triangle
+                .into_iter()
+                .map(|label| labels[label as usize])
+                .collect()
+        }));
+
+        // The disk is required as well as the ring: classification needs a
+        // real face on each side of every cut-loop edge.
+        for &loop_index in &assigned[region_index] {
+            let disk_points: Vec<[f64; 2]> =
+                loop_points[loop_index].iter().rev().copied().collect();
+            let disk_symbols: Vec<FacePartitionVertex> =
+                loop_symbols[loop_index].iter().rev().copied().collect();
+            let disk_input = exedra_triangulate::PolygonInput {
+                outer: &disk_points,
+                holes: &[],
+            };
+            let Ok(disk) = exedra_triangulate::triangulate(&disk_input, &params) else {
+                defer(
+                    "mixed-cut loop disk failed triangulation",
+                    outcome,
+                    diagnostics,
+                );
+                return;
+            };
+            let mut triangles = disk.triangles;
+            if !reinsert_dropped_labels(&disk_points, 0..disk_points.len(), &mut triangles) {
+                defer(
+                    "mixed-cut loop disk lost a collinear vertex",
+                    outcome,
+                    diagnostics,
+                );
+                return;
+            }
+            fragments.extend(triangles.into_iter().map(|triangle| {
+                triangle
+                    .into_iter()
+                    .map(|label| disk_symbols[label as usize])
+                    .collect()
+            }));
+        }
+    }
+
+    if fragments.iter().any(|fragment| !is_simple_loop(fragment)) {
+        defer(
+            "mixed-cut triangulation produced a degenerate fragment",
+            outcome,
+            diagnostics,
+        );
+        return;
+    }
+    // Mixed regions are triangulated, so use the stricter fragment scheduler
+    // used by drilled faces. Original boundary labels come first; every
+    // chain and loop vertex follows in stable first-seen order.
+    let mut labels = boundary.to_vec();
+    let fragment_labels: Vec<[u32; 3]> = fragments
+        .iter()
+        .map(|fragment| {
+            core::array::from_fn(|corner| {
+                let vertex = fragment[corner];
+                let index = if let Some(index) = labels.iter().position(|&item| item == vertex) {
+                    index
+                } else {
+                    labels.push(vertex);
+                    labels.len() - 1
+                };
+                u32::try_from(index).unwrap_or(u32::MAX)
+            })
+        })
+        .collect();
+    let Some(order) = order_fragments(
+        u32::try_from(boundary.len()).unwrap_or(u32::MAX),
+        &fragment_labels,
+    ) else {
+        defer(
+            "mixed-cut fragments admit no safe insertion order",
+            outcome,
+            diagnostics,
+        );
+        return;
+    };
+
+    let region = mesh
+        .attrs()
+        .dense(attr::FACE_REGION)
+        .and_then(|layer| layer.get(face.as_id()).copied());
+    let boundary_attrs: Vec<(VertexId, VertexId, Option<f32>, Option<bool>)> = {
+        let mut captured = Vec::new();
+        for half_edge in mesh.face_loop(face) {
+            let (Some(from), Some(to)) = (mesh.from_vertex(half_edge), mesh.to_vertex(half_edge))
+            else {
+                continue;
+            };
+            let sharpness = mesh.edge_sharpness(half_edge).filter(|value| *value != 0.0);
+            let seam = mesh.edge_seam(half_edge).filter(|value| *value);
+            if sharpness.is_some() || seam.is_some() {
+                captured.push((from, to, sharpness, seam));
+            }
+        }
+        captured
+    };
+
+    let mut materialized = fragments;
+    let mut session = mesh.edit();
+    for fragment in &mut materialized {
+        for vertex in fragment {
+            if let FacePartitionVertex::Graph(graph_vertex) = *vertex {
+                let mesh_vertex =
+                    if let Some(existing) = outcome.graph_vertices[graph_vertex as usize] {
+                        existing
+                    } else {
+                        let created = add_vertex(
+                            &mut session,
+                            narrow(graph.vertices[graph_vertex as usize].position),
+                        );
+                        outcome.graph_vertices[graph_vertex as usize] = Some(created);
+                        outcome.stats.interior_vertices += 1;
+                        created
+                    };
+                *vertex = FacePartitionVertex::Mesh(mesh_vertex);
+            }
+        }
+    }
+    if delete_faces(&mut session, &[face], DeletePolicy::KeepIsolated).is_err() {
+        diagnostics.push(BooleanDiagnostic {
+            kind: BooleanFailureKind::InternalInvariantViolation,
+            a: None,
+            b: None,
+            detail: "mixed-cut face could not be deleted for re-facing",
+        });
+        #[expect(unused_must_use, reason = "discard sink output")]
+        {
+            session.finish();
+        }
+        return;
+    }
+    let mut created = 0_u64;
+    for index in order {
+        let vertices: Vec<VertexId> = materialized[index]
+            .iter()
+            .map(|vertex| match vertex {
+                FacePartitionVertex::Mesh(vertex) => *vertex,
+                FacePartitionVertex::Graph(_) => unreachable!("materialized above"),
+            })
+            .collect();
+        match add_face(&mut session, &vertices) {
+            Ok(new_face) => {
+                outcome.face_origins.push((new_face, face));
+                if let Some(region) = region {
+                    let _ = set_face_region(&mut session, new_face, region);
+                }
+                created += 1;
+            }
+            Err(_) => diagnostics.push(BooleanDiagnostic {
+                kind: BooleanFailureKind::InternalInvariantViolation,
+                a: None,
+                b: None,
+                detail: "mixed-cut fragment was rejected by add_face",
+            }),
+        }
+    }
+    for (from, to, sharpness, seam) in boundary_attrs {
+        if let Some(half_edge) = session.find_half_edge(from, to) {
+            if let Some(sharpness) = sharpness {
+                let _ = set_edge_sharpness(&mut session, half_edge, sharpness);
+            }
+            if let Some(seam) = seam {
+                let _ = set_edge_seam(&mut session, half_edge, seam);
+            }
+        }
+    }
+    #[expect(unused_must_use, reason = "discard sink output")]
+    {
+        session.finish();
+    }
+    outcome.stats.faces_split += 1;
+    outcome.stats.faces_created += created;
 }
 
 /// Re-faces a face crossed only by closed interior loops — the
@@ -1470,6 +1913,204 @@ mod tests {
             diagnostic.kind == BooleanFailureKind::SplitDeferred
                 && diagnostic.detail == "chain endpoints span different sub-loops (ambiguous cut)"
         }));
+    }
+
+    #[test]
+    fn open_partition_and_interior_loop_reface_together() {
+        // A shoulder cut can cross a timber face while blind housings make
+        // closed loops in both resulting regions. Every seam must become a
+        // mesh edge in one atomic re-face; cutter order must not defer either
+        // housing merely because the shoulder chain was traced first.
+        let mut mesh = slab();
+        let face = mesh
+            .faces()
+            .find(|&face| {
+                mesh.face_loop(face).all(|half_edge| {
+                    mesh.to_vertex(half_edge)
+                        .and_then(|vertex| mesh.vertex_position(vertex))
+                        .is_some_and(|point| point[2] == 0.5)
+                })
+            })
+            .expect("slab top face");
+        let tagged_edge = mesh.face_loop(face).next().expect("top face has edges");
+        let tagged_endpoints = (
+            mesh.from_vertex(tagged_edge).expect("edge start"),
+            mesh.to_vertex(tagged_edge).expect("edge end"),
+        );
+        {
+            let mut session = mesh.edit();
+            set_face_region(&mut session, face, 37).expect("tag source face");
+            set_edge_sharpness(&mut session, tagged_edge, 2.5).expect("tag source edge");
+            set_edge_seam(&mut session, tagged_edge, true).expect("mark source seam");
+            #[expect(unused_must_use, reason = "discard sink output")]
+            {
+                session.finish();
+            }
+        }
+        let vertex_at = |position: [f32; 3]| {
+            mesh.vertices()
+                .find(|&vertex| mesh.vertex_position(vertex) == Some(&position))
+                .expect("fixture corner exists")
+        };
+        let a = vertex_at([-2.0, -2.0, 0.5]);
+        let c = vertex_at([2.0, 2.0, 0.5]);
+        let boundary_vertex = |mesh_vertex: VertexId| GraphVertex {
+            position: promote(
+                *mesh
+                    .vertex_position(mesh_vertex)
+                    .expect("boundary vertex is live"),
+            ),
+            anchor_a: MeshAnchor::Vertex(mesh_vertex),
+            anchor_b: MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+            faces_a: alloc::vec![face],
+            faces_b: Vec::new(),
+        };
+        let interior_vertex = |position| GraphVertex {
+            position,
+            anchor_a: MeshAnchor::FaceInterior(face),
+            anchor_b: MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+            faces_a: alloc::vec![face],
+            faces_b: Vec::new(),
+        };
+        let graph = IntersectionGraph {
+            vertices: alloc::vec![
+                boundary_vertex(a),
+                boundary_vertex(c),
+                interior_vertex([0.5, -1.25, 0.5]),
+                interior_vertex([1.25, -1.25, 0.5]),
+                interior_vertex([1.25, -0.5, 0.5]),
+                interior_vertex([0.5, -0.5, 0.5]),
+                interior_vertex([-1.25, 0.5, 0.5]),
+                interior_vertex([-0.5, 0.5, 0.5]),
+                interior_vertex([-0.5, 1.25, 0.5]),
+                interior_vertex([-1.25, 1.25, 0.5]),
+            ],
+            edges: alloc::vec![
+                GraphEdge {
+                    vertices: [0, 1],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [2, 3],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [3, 4],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [4, 5],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [2, 5],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [6, 7],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [7, 8],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [8, 9],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [6, 9],
+                    crossings: Vec::new(),
+                },
+            ],
+            ..IntersectionGraph::default()
+        };
+        let mut outcome = MeshSplitOutcome {
+            graph_vertices: alloc::vec![
+                Some(a),
+                Some(c),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            ..MeshSplitOutcome::default()
+        };
+        let mut diagnostics = BooleanDiagnostics::default();
+
+        split_one_face(
+            &mut mesh,
+            &graph,
+            face,
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8],
+            &mut outcome,
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert_eq!(outcome.stats.deferred_faces, 0);
+        assert_eq!(outcome.stats.faces_split, 1);
+        assert!(mesh.validate_deep().is_empty());
+        let descendants: Vec<FaceId> = outcome
+            .face_origins
+            .iter()
+            .filter_map(|&(created, original)| (original == face).then_some(created))
+            .collect();
+        assert_eq!(
+            descendants.len() as u64,
+            outcome.stats.faces_created,
+            "every mixed-cut fragment retains its source face"
+        );
+        for descendant in descendants {
+            assert_eq!(
+                mesh.attrs()
+                    .dense(attr::FACE_REGION)
+                    .and_then(|regions| regions.get(descendant.as_id()))
+                    .copied(),
+                Some(37),
+                "source face region propagates to every fragment"
+            );
+        }
+        let tagged_edge = find_half_edge(&mesh, tagged_endpoints.0, tagged_endpoints.1)
+            .or_else(|| find_half_edge(&mesh, tagged_endpoints.1, tagged_endpoints.0))
+            .expect("tagged boundary edge survives re-facing");
+        assert_eq!(mesh.edge_sharpness(tagged_edge), Some(2.5));
+        assert_eq!(mesh.edge_seam(tagged_edge), Some(true));
+        for edge in &graph.edges {
+            let [from, to] = edge.vertices.map(|index| {
+                outcome.graph_vertices[index as usize].expect("cut vertex materialized")
+            });
+            assert!(
+                find_half_edge(&mesh, from, to).is_some()
+                    || find_half_edge(&mesh, to, from).is_some(),
+                "every open-chain and loop segment becomes a mesh edge"
+            );
+        }
+    }
+
+    #[test]
+    fn projected_loop_ownership_handles_winding_scale_and_boundary_points() {
+        // Region assignment must not depend on polygon winding or model
+        // scale, and a loop touching a partition seam must remain ambiguous
+        // instead of being assigned to whichever region is visited first.
+        for scale in [1.0e-9, 1.0, 1.0e9] {
+            let mut square = alloc::vec![[0.0, 0.0], [scale, 0.0], [scale, scale], [0.0, scale],];
+            let inside = [scale * 0.25, scale * 0.75];
+            let outside = [scale * 1.25, scale * 0.75];
+            let boundary = [scale * 0.5, 0.0];
+            assert_eq!(point_in_projected_loop(inside, &square), Some(true));
+            assert_eq!(point_in_projected_loop(outside, &square), Some(false));
+            assert_eq!(point_in_projected_loop(boundary, &square), None);
+
+            square.reverse();
+            assert_eq!(point_in_projected_loop(inside, &square), Some(true));
+            assert_eq!(point_in_projected_loop(outside, &square), Some(false));
+            assert_eq!(point_in_projected_loop(boundary, &square), None);
+        }
     }
 
     fn cube(origin: [f32; 3]) -> Mesh {
