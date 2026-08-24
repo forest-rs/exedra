@@ -519,6 +519,22 @@ mod tests {
         assert_eq!(outcome.skip, Some(SkipReason::NonManifoldContact));
         assert!(outcome.findings.is_empty());
     }
+
+    #[test]
+    fn scale_sliver_collapse_is_a_typed_numerical_skip() {
+        // This fixed kilo-scale seed contains an intersection seam edge whose
+        // distinct f64 endpoints narrow to one f32 point. Collapsing the seam
+        // would give a neighboring output edge four faces, so the pipeline
+        // must report numerical uncertainty rather than leak BuildError.
+        let outcome = run_case(ScenarioClass::Scale, 6_750_632_535_653_330_089, 80);
+
+        assert_eq!(outcome.submode, "kilo");
+        assert_eq!(outcome.skip, Some(SkipReason::OtherSuspect));
+        assert_eq!(outcome.mesh_validation_errors, 0);
+        assert_eq!(outcome.mesh_bookkeeping_errors, 0);
+        assert_eq!(outcome.seam_identity_conflicts, 0);
+        assert!(outcome.findings.is_empty());
+    }
 }
 
 #[cfg(test)]

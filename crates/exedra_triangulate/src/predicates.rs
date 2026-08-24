@@ -484,6 +484,7 @@ const O3D_ERRBOUND_A: f64 = (7.0 + 56.0 * U) * U;
 /// sign is exact for all finite inputs within [`MAX_COORDINATE`], and the
 /// result is bit-identical on every platform.
 #[must_use]
+#[inline]
 pub fn orient3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Orientation3d {
     let adx = a[0] - d[0];
     let ady = a[1] - d[1];
