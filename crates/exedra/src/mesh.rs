@@ -1411,11 +1411,16 @@ impl Mesh {
 
     /// Returns the origin vertex for a half-edge.
     ///
-    /// This call is `O(face_degree)` because it derives origin via [`Mesh::prev`].
+    /// A half-edge and its twin have opposite directions, so the twin's
+    /// destination is this half-edge's origin. Valid topology therefore takes
+    /// an `O(1)` path. Edit kernels can briefly remove a twin before repairing
+    /// a surviving face loop; that transient state falls back to [`Mesh::prev`]
+    /// to preserve the origin accessor's behavior during eager edits.
     #[must_use]
     pub fn from_vertex(&self, half_edge: HalfEdgeId) -> Option<VertexId> {
-        let prev = self.prev(half_edge)?;
-        self.to_vertex(prev)
+        self.twin(half_edge)
+            .and_then(|twin| self.to_vertex(twin))
+            .or_else(|| self.prev(half_edge).and_then(|prev| self.to_vertex(prev)))
     }
 
     /// Returns true when corner UV values are discontinuous across an edge.
@@ -1460,8 +1465,7 @@ impl Mesh {
     /// Iteration is deterministic in half-edge slot order.
     ///
     /// Current v0.1 implementation scans all half-edges and filters by
-    /// [`Mesh::from_vertex`], so it is `O(total_half_edges * face_degree)` in
-    /// the worst case.
+    /// [`Mesh::from_vertex`], so it is `O(total_half_edges)`.
     pub fn vertex_star(&self, vertex: VertexId) -> impl Iterator<Item = HalfEdgeId> + '_ {
         self.half_edges.iter().filter_map(move |(id, _)| {
             let typed = HalfEdgeId::from(id);
