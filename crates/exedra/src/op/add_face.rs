@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use crate::session::stitch_outside_loops_for_vertices;
+use crate::session::{FaceEdgeUse, stitch_outside_loops_for_vertices};
 use crate::{ChangeSink, EditSession, FaceId, HalfEdge, HalfEdgeId, VertexId};
 
 use super::AddFaceError;
@@ -51,14 +51,24 @@ pub fn add_face<S: ChangeSink>(
     for i in 0..loop_vertices.len() {
         let from = loop_vertices[i];
         let to = loop_vertices[(i + 1) % loop_vertices.len()];
-        let reuse = session.find_boundary_half_edge(from, to);
-        if reuse.is_none() && session.has_undirected_edge(from, to) {
-            return Err(AddFaceError::NonManifoldEdge {
-                a: u32::min(from.index(), to.index()),
-                b: u32::max(from.index(), to.index()),
-            });
-        }
+        let reuse = match session.face_edge_use(from, to) {
+            FaceEdgeUse::Boundary(half_edge) => Some(half_edge),
+            FaceEdgeUse::Occupied => {
+                return Err(AddFaceError::NonManifoldEdge {
+                    a: u32::min(from.index(), to.index()),
+                    b: u32::max(from.index(), to.index()),
+                });
+            }
+            FaceEdgeUse::Vacant => None,
+        };
         reuse_boundary.push(reuse);
+    }
+    if let Some(vertex) =
+        session.first_non_manifold_vertex_after_face(loop_vertices, &reuse_boundary)
+    {
+        return Err(AddFaceError::NonManifoldVertex {
+            vertex: vertex.index(),
+        });
     }
 
     let degree = u32::try_from(loop_vertices.len()).expect("face loop length should fit into u32");

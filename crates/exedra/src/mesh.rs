@@ -185,7 +185,12 @@ impl core::error::Error for BuildError {}
 
 /// Structured validation error returned by [`Mesh::validate_fast`] and
 /// [`Mesh::validate_deep`].
+///
+/// This enum is non-exhaustive so validation can report newly distinguished
+/// topology failures without forcing downstream source breaks. Callers should
+/// retain a wildcard arm when matching it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// A dense attribute layer length does not match domain capacity.
     DenseCapacityMismatch {
@@ -240,6 +245,19 @@ pub enum ValidationError {
         half_edge: u32,
         /// Face index found on half-edge.
         found_face: u32,
+    },
+    /// Consecutive half-edges in a face loop do not share an endpoint.
+    FaceLoopDiscontinuous {
+        /// Face containing the discontinuity.
+        face: u32,
+        /// Half-edge whose destination does not meet the next origin.
+        half_edge: u32,
+        /// Next half-edge in the face loop.
+        next_half_edge: u32,
+        /// Destination vertex of `half_edge`.
+        current_to: u32,
+        /// Origin vertex implied by the next half-edge's twin.
+        next_from: u32,
     },
     /// Vertex-star walk did not terminate.
     VertexStarNotClosed {
@@ -307,6 +325,16 @@ impl fmt::Display for ValidationError {
             } => write!(
                 f,
                 "foreign half-edge in face loop: face {face}, half-edge {half_edge}, found {found_face}"
+            ),
+            Self::FaceLoopDiscontinuous {
+                face,
+                half_edge,
+                next_half_edge,
+                current_to,
+                next_from,
+            } => write!(
+                f,
+                "discontinuous face loop {face}: half-edge {half_edge} ends at {current_to}, next half-edge {next_half_edge} starts at {next_from}"
             ),
             Self::VertexStarNotClosed { vertex } => {
                 write!(f, "vertex star not closed: {vertex}")
@@ -961,6 +989,7 @@ impl Mesh {
     ///
     /// Returns `None` for [`FaceId::OUTSIDE`].
     #[must_use]
+    #[inline]
     pub fn face_edge(&self, face: FaceId) -> Option<HalfEdgeId> {
         if face == FaceId::OUTSIDE {
             return None;
@@ -970,6 +999,7 @@ impl Mesh {
 
     /// Returns the twin half-edge.
     #[must_use]
+    #[inline]
     pub fn twin(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {
         self.half_edges
             .get(half_edge.as_id())
@@ -1051,6 +1081,7 @@ impl Mesh {
 
     /// Returns the next half-edge in the owning face loop.
     #[must_use]
+    #[inline]
     pub fn next(&self, half_edge: HalfEdgeId) -> Option<HalfEdgeId> {
         self.half_edges
             .get(half_edge.as_id())
@@ -1059,6 +1090,7 @@ impl Mesh {
 
     /// Returns the owning face for a half-edge.
     #[must_use]
+    #[inline]
     pub fn face(&self, half_edge: HalfEdgeId) -> Option<FaceId> {
         self.half_edges
             .get(half_edge.as_id())
@@ -1362,6 +1394,7 @@ impl Mesh {
 
     /// Returns the destination vertex for a half-edge.
     #[must_use]
+    #[inline]
     pub fn to_vertex(&self, half_edge: HalfEdgeId) -> Option<VertexId> {
         self.half_edges
             .get(half_edge.as_id())
@@ -1417,6 +1450,7 @@ impl Mesh {
     /// a surviving face loop; that transient state falls back to [`Mesh::prev`]
     /// to preserve the origin accessor's behavior during eager edits.
     #[must_use]
+    #[inline]
     pub fn from_vertex(&self, half_edge: HalfEdgeId) -> Option<VertexId> {
         self.twin(half_edge)
             .and_then(|twin| self.to_vertex(twin))
@@ -2039,6 +2073,22 @@ impl Mesh {
                     });
                     break;
                 }
+                // `from_vertex` deliberately derives its O(1) answer from the
+                // twin. Validation must not use that same relation as proof
+                // that the face loop itself is continuous: compare the current
+                // destination with the next edge's twin destination directly.
+                if let Some(next_record) = self.half_edges.get(record.next.as_id())
+                    && let Some(next_twin) = self.half_edges.get(next_record.twin.as_id())
+                    && record.to != next_twin.to
+                {
+                    errors.push(ValidationError::FaceLoopDiscontinuous {
+                        face: face.index(),
+                        half_edge: cursor.index(),
+                        next_half_edge: record.next.index(),
+                        current_to: record.to.index(),
+                        next_from: next_twin.to.index(),
+                    });
+                }
                 count += 1;
                 cursor = record.next;
                 if cursor == face_record.edge {
@@ -2469,6 +2519,7 @@ pub struct FaceLoopIter<'a> {
 impl Iterator for FaceLoopIter<'_> {
     type Item = HalfEdgeId;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.exhausted {
             return None;
@@ -4231,6 +4282,41 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ValidationError::BoundaryInvariantBroken { half_edge } if *half_edge == outside.index()))
         );
+    }
+
+    #[test]
+    fn validate_deep_rejects_discontinuous_face_loop() {
+        // Twin pairs still describe valid edges, but this permutation makes
+        // consecutive half-edges of the quad disagree about their shared
+        // endpoint. Deep validation must inspect that relation directly; an
+        // O(1) origin derived from the twin cannot independently prove it.
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad builds");
+        let face = mesh.faces().next().expect("quad has a face");
+        let edges = mesh.face_loop(face).collect::<Vec<_>>();
+        assert_eq!(edges.len(), 4);
+        let order = [edges[0], edges[2], edges[1], edges[3]];
+        for i in 0..order.len() {
+            mesh.half_edges
+                .get_mut(order[i].as_id())
+                .expect("face half-edge is live")
+                .next = order[(i + 1) % order.len()];
+        }
+
+        let errors = mesh.validate_deep();
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            ValidationError::FaceLoopDiscontinuous { face: found, .. }
+                if *found == face.index()
+        )));
     }
 
     #[test]
