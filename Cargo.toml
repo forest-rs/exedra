@@ -20,12 +20,14 @@ members = [
     "crates/exedra_gltf",
     "crates/exedra_isosurface",
     "crates/exedra_math",
+    "crates/exedra_measurements",
     "crates/exedra_primitives",
     "crates/exedra_qef",
     "crates/exedra_spatial",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
     "crates/joiner",
+    "crates/joiner_timber",
     "crates/setout",
     "crates/setout_joiner",
     "crates/setout_reconstruction",
@@ -105,6 +107,7 @@ exedra_fidget = { default-features = false, path = "crates/exedra_fidget" }
 exedra_gltf = { default-features = false, path = "crates/exedra_gltf" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_math = { default-features = false, path = "crates/exedra_math" }
+exedra_measurements = { default-features = false, path = "crates/exedra_measurements" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
@@ -114,6 +117,7 @@ fidget = { default-features = false, version = "0.4.2" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
 invalidation = "0.2.0"
 joiner = { default-features = false, path = "crates/joiner" }
+joiner_timber = { default-features = false, path = "crates/joiner_timber" }
 joto_constants = "0.2.0"
 joto_format = "0.1.0"
 joto_parse = "0.2.0"
