@@ -67,6 +67,7 @@ pub fn add_face<S: ChangeSink>(
         degree,
     }));
     let mut loop_half_edges = Vec::<HalfEdgeId>::with_capacity(loop_vertices.len());
+    let mut changed_half_edges = Vec::<HalfEdgeId>::with_capacity(loop_vertices.len() * 2);
     for i in 0..loop_vertices.len() {
         let from = loop_vertices[i];
         let to = loop_vertices[(i + 1) % loop_vertices.len()];
@@ -78,6 +79,7 @@ pub fn add_face<S: ChangeSink>(
                 .expect("preflight-validated boundary half-edge must be live")
                 .face = face;
             loop_half_edges.push(boundary);
+            changed_half_edges.push(boundary);
             session.mark_corner_dirty(boundary);
             continue;
         }
@@ -101,6 +103,8 @@ pub fn add_face<S: ChangeSink>(
             .expect("new interior half-edge must be live")
             .twin = boundary;
         loop_half_edges.push(interior);
+        changed_half_edges.push(interior);
+        changed_half_edges.push(boundary);
         session.record_created_half_edge(interior);
         session.record_created_half_edge(boundary);
         session.mark_corner_dirty(interior);
@@ -124,7 +128,11 @@ pub fn add_face<S: ChangeSink>(
         .expect("new face must be live")
         .edge = loop_half_edges[0];
 
-    stitch_outside_loops_for_vertices(session.mesh_mut(), loop_vertices);
+    // Preflight built a valid outgoing index. Patch only the reused/new edges
+    // before stitching so a batch of face additions does not repeatedly sort
+    // the complete mesh and boundary topology.
+    session.refresh_outgoing_index(&changed_half_edges);
+    stitch_outside_loops_for_vertices(session, loop_vertices);
     let vertex_slots = session.mesh().vertices.slot_count();
     let face_slots = session.mesh().faces.slot_count();
     let half_edge_slots = session.mesh().half_edges.slot_count();
@@ -145,6 +153,5 @@ pub fn add_face<S: ChangeSink>(
         }
     }
 
-    session.invalidate_outgoing_index();
     Ok(face)
 }

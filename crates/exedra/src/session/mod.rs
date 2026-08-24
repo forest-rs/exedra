@@ -825,6 +825,55 @@ impl<S: ChangeSink> EditSession<'_, S> {
         self.outgoing_index_valid = false;
     }
 
+    /// Refreshes a small set of topology records without rebuilding the full
+    /// outgoing index.
+    ///
+    /// `add_face` first preflights through the index, so the index is valid
+    /// when its mutation starts. Face creation changes only the listed
+    /// half-edges: reused boundary records acquire an interior face, while new
+    /// edge pairs acquire fresh entries. Updating those records in place
+    /// avoids sorting every half-edge again for every triangle in a batch.
+    pub(crate) fn refresh_outgoing_index(&mut self, changed: &[HalfEdgeId]) {
+        debug_assert!(
+            self.outgoing_index_valid,
+            "add_face must preflight through the outgoing index before refreshing it"
+        );
+        self.outgoing_index.reserve(changed.len());
+
+        for &half_edge in changed {
+            let replacement = self
+                .mesh
+                .half_edges
+                .get(half_edge.as_id())
+                .and_then(|edge| {
+                    half_edge_vertices(self.mesh, half_edge).map(|(from, to)| OutgoingAdj {
+                        from,
+                        to,
+                        half_edge,
+                        face: edge.face,
+                    })
+                })
+                .expect("add_face index refresh receives live half-edges");
+            let key = (replacement.from, replacement.half_edge);
+            match self
+                .outgoing_index
+                .binary_search_by_key(&key, |candidate| (candidate.from, candidate.half_edge))
+            {
+                Ok(position) => {
+                    // Reused boundary edges keep their ordered key; only the
+                    // face classification changes from OUTSIDE to interior.
+                    self.outgoing_index[position] = replacement;
+                }
+                Err(position) => {
+                    // Newly allocated half-edges have no existing entry. The
+                    // insertion point retains deterministic `(from, id)` order
+                    // without searching the whole vector by half-edge ID.
+                    self.outgoing_index.insert(position, replacement);
+                }
+            }
+        }
+    }
+
     pub(crate) fn vertex_has_incident_half_edge(&mut self, vertex: VertexId) -> bool {
         let index = self.ensure_outgoing_index();
         vertex_has_incident_half_edge_in_index(index, vertex)
@@ -981,7 +1030,11 @@ fn build_outgoing_index(mesh: &Mesh) -> Vec<OutgoingAdj> {
             })
         })
         .collect::<Vec<_>>();
-    pairs.sort_unstable_by_key(|entry| (entry.from, entry.half_edge));
+    // Arena iteration already emits ascending half-edge IDs. A stable sort by
+    // origin retains that order for ties, producing the same deterministic
+    // `(from, half_edge)` index without comparing a compound key throughout
+    // the sort.
+    pairs.sort_by_key(|entry| entry.from);
     pairs
 }
 
@@ -1267,7 +1320,10 @@ pub(crate) fn stitch_outside_loops(mesh: &mut Mesh) {
     }
 }
 
-pub(crate) fn stitch_outside_loops_for_vertices(mesh: &mut Mesh, affected_vertices: &[VertexId]) {
+pub(crate) fn stitch_outside_loops_for_vertices<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
+    affected_vertices: &[VertexId],
+) {
     if affected_vertices.is_empty() {
         return;
     }
@@ -1275,51 +1331,51 @@ pub(crate) fn stitch_outside_loops_for_vertices(mesh: &mut Mesh, affected_vertic
     let mut affected = affected_vertices.to_vec();
     sort_dedup(&mut affected);
 
-    let mut starts = Vec::<(VertexId, HalfEdgeId)>::new();
-    let mut impacted = Vec::<HalfEdgeId>::new();
-    for (id, edge) in mesh.half_edges.iter() {
-        if edge.face != FaceId::OUTSIDE {
-            continue;
-        }
-        let half_edge = HalfEdgeId::from(id);
-        let to = mesh
-            .to_vertex(half_edge)
-            .expect("boundary half-edge must have destination vertex");
-        let start = mesh
-            .twin(half_edge)
-            .and_then(|twin| mesh.to_vertex(twin))
-            .expect("boundary half-edge must have twin with destination vertex");
-        starts.push((start, half_edge));
-        if affected.binary_search(&to).is_ok() {
-            impacted.push(half_edge);
-        }
-    }
+    let updates = {
+        let index = session.ensure_outgoing_index();
+        let mut updates = Vec::<(HalfEdgeId, HalfEdgeId)>::new();
+        for entry in index {
+            if entry.face != FaceId::OUTSIDE || affected.binary_search(&entry.to).is_err() {
+                continue;
+            }
 
-    if impacted.is_empty() {
-        return;
-    }
-
-    starts.sort_unstable_by_key(|(start, boundary_half_edge)| (*start, *boundary_half_edge));
-    impacted.sort_unstable();
-    impacted.dedup();
-
-    for half_edge in impacted {
-        let to = mesh
-            .to_vertex(half_edge)
-            .expect("boundary half-edge must have destination vertex");
-        let range = equal_range_by_vertex(&starts, to);
-        let candidates = range.end.saturating_sub(range.start);
-        if candidates != 1 {
-            // Internal invariant: add_face preflight should prevent user-input
-            // ambiguity here. If this trips, topology state is inconsistent.
-            panic!(
-                "mesh topology corruption: OUTSIDE local stitch failed at vertex {} ({} candidates)",
-                to.index(),
-                candidates
-            );
+            // The index is ordered by origin, so the boundary continuation at
+            // this edge's destination is a small range lookup. Interior edges
+            // at the same vertex are deliberately ignored.
+            let range = equal_range_in_outgoing(index, entry.to);
+            let mut candidates = index[range]
+                .iter()
+                .filter(|candidate| candidate.face == FaceId::OUTSIDE);
+            let next = candidates.next().map(|candidate| candidate.half_edge);
+            let conflicting = candidates.next().map(|candidate| candidate.half_edge);
+            if next.is_none() || conflicting.is_some() {
+                let candidate_count = usize::from(next.is_some())
+                    + usize::from(conflicting.is_some())
+                    + candidates.count();
+                // Internal invariant: add_face preflight should prevent
+                // user-input ambiguity here. If this trips, topology state is
+                // inconsistent. The first two half-edge IDs distinguish a
+                // duplicate cache entry from two distinct boundary gaps.
+                panic!(
+                    "mesh topology corruption: OUTSIDE local stitch failed at vertex {} ({} candidates, first={:?}, second={:?})",
+                    entry.to.index(),
+                    candidate_count,
+                    next.map(HalfEdgeId::index),
+                    conflicting.map(HalfEdgeId::index),
+                );
+            }
+            updates.push((
+                entry.half_edge,
+                next.expect("checked boundary continuation"),
+            ));
         }
-        let next = starts[range.start].1;
-        mesh.half_edges
+        updates
+    };
+
+    for (half_edge, next) in updates {
+        session
+            .mesh_mut()
+            .half_edges
             .get_mut(half_edge.as_id())
             .expect("boundary half-edge must be live")
             .next = next;
@@ -3042,9 +3098,14 @@ mod tests {
     fn outgoing_index_consistent_after_delete_faces() {
         let (mut mesh, faces) = closed_box_mesh();
         let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        // Prime the cache before deletion: this pins the invalidation order so
+        // vertex `out` repair cannot consult half-edges the deletion removed.
+        let _ = txn.ensure_outgoing_index();
         txn.delete_faces(&[faces[0]], DeletePolicy::CleanupIsolated)
             .expect("delete_faces should succeed");
         txn.assert_outgoing_index_consistent();
+        let errors = txn.mesh().validate_deep();
+        assert!(errors.is_empty(), "post-delete mesh: {errors:?}");
     }
 
     #[test]

@@ -101,6 +101,12 @@ pub fn delete_faces<S: ChangeSink>(
 
     stitch_outside_loops(session.mesh_mut());
 
+    // Deleting and replacing half-edges makes any index inherited from an
+    // earlier operation in this edit session stale. Invalidate before vertex
+    // `out` repair can ask for the index; invalidating only at return allowed
+    // that repair to retain a half-edge deleted above.
+    session.invalidate_outgoing_index();
+
     for face in dirty_faces {
         session.mark_face_dirty(face);
         let corners = session.mesh().face_loop(face).collect::<Vec<_>>();
@@ -140,6 +146,5 @@ pub fn delete_faces<S: ChangeSink>(
             }
         }
     }
-    session.invalidate_outgoing_index();
     Ok(())
 }
