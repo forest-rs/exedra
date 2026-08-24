@@ -1,0 +1,17 @@
+[package]
+name = "exedra_measurements"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Exact physical measurement values for the Exedra workspace"
+readme = "README.md"
+keywords = ["measurement", "units", "geometry", "no-std"]
+categories = ["data-structures", "mathematics", "no-std"]
+
+[lints]
+workspace = true
+
+[dependencies]
+joto_constants.workspace = true

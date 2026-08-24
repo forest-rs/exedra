@@ -169,8 +169,8 @@ re-intern to the same indices yields `LowerError::PolicyRemapUnsupported`.
   channels and their marking are, and `Construction::take_dirty` drains them
   deterministically; a consumer can already re-lower selectively. Making
   `lower` itself incremental is follow-on work.
-- Lowering depends on the boolean pipeline handling an n-ary difference. It
-  does for well-separated cutters; cutters that touch, overlap, or share a
-  projection can still evaluate to an empty body. That is an `exedra`
-  limitation, recorded against the promotion ticket rather than worked around
-  here.
+- Lowering depends on the Boolean pipeline handling an n-ary difference,
+  including cutters that touch, overlap, or share a projection. That behavior
+  is owned and regression-tested in `exedra`; rule libraries continue to emit
+  the ordinary n-ary operation and must not reorder, separate, or otherwise
+  disguise interacting cutters.
