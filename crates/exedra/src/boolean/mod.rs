@@ -22,6 +22,7 @@ mod classify;
 mod cleanup;
 mod coplanar;
 mod diag;
+mod edge_index;
 #[cfg(test)]
 mod fuzz;
 mod graph;

@@ -64,6 +64,7 @@ use hashbrown::HashMap;
 use super::classify::{PatchClassification, PatchSide, classify_patches};
 use super::coplanar::{CoplanarContact, collect_coplanar_contacts};
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
+use super::edge_index::HalfEdgeIndex;
 use super::graph::{IntersectionGraph, MeshAnchor, build_intersection_graph};
 use super::narrow::narrow_phase;
 use super::split::{MeshSide, MeshSplitOutcome, split_mesh_along_graph};
@@ -174,8 +175,9 @@ impl core::error::Error for BooleanError {}
 ///
 /// # Errors
 ///
-/// [`BooleanError::SuspectPatches`] when classification could not soundly
-/// decide every patch (deferred splits, exhausted rays, coplanar overlap);
+/// [`BooleanError::SuspectPatches`] when the pipeline could not soundly
+/// represent or decide every region (deferred splits, exhausted rays,
+/// coplanar overlap, stored-position seam collapse);
 /// [`BooleanError::NonManifoldContact`] when otherwise-manifold operands meet
 /// only along an edge that would have four incident result faces;
 /// [`BooleanError::InvariantViolation`] when any stage diagnosed an
@@ -292,6 +294,15 @@ pub fn boolean_mesh(
             });
             Err(BooleanError::NonManifoldContact)
         }
+        Err(StitchError::RepresentationalCollapse) => {
+            diagnostics.push(BooleanDiagnostic {
+                kind: BooleanFailureKind::NumericalInstability,
+                a: None,
+                b: None,
+                detail: "stored-position seam collapse would make an output edge non-manifold",
+            });
+            Err(BooleanError::SuspectPatches { count: 1 })
+        }
         Err(StitchError::Build(error)) => Err(BooleanError::Build(error)),
     }
 }
@@ -343,6 +354,9 @@ type Provenance = Vec<(FaceId, MeshSide, FaceId)>;
 enum StitchError {
     /// An exact edge-only operand contact, classified from source topology.
     NonManifoldContact,
+    /// Stored-position seam aliases collapse a sliver and would put more than
+    /// two selected faces on a neighboring output edge.
+    RepresentationalCollapse,
     /// Any rebuild failure not proven to be an operand-contact limitation.
     Build(BuildError),
 }
@@ -580,6 +594,10 @@ fn stitch(
 
     // --- Weld-seam crease policy plus captured attribute re-application.
     let vertex_of = |index: u32| result.vertex_ids.get(index as usize).copied();
+    // Topology is stable throughout this attribute-only scope. Build one edge
+    // identity index instead of walking every output face for every seam and
+    // captured source attribute.
+    let half_edge_index = HalfEdgeIndex::build(&mesh);
     {
         let mut session = mesh.edit();
         for polyline in &graph.polylines {
@@ -598,7 +616,7 @@ fn stitch(
                 let Some((u, v)) = pair else {
                     continue;
                 };
-                if let Some(half_edge) = find_half_edge(session.mesh(), u, v) {
+                if let Some(half_edge) = half_edge_index.find(u, v) {
                     let _ = set_edge_sharpness(&mut session, half_edge, 1.0);
                     let _ = set_edge_seam(&mut session, half_edge, true);
                     stats.seam_edges += 1;
@@ -610,7 +628,7 @@ fn stitch(
             let Some((u, v)) = pair else {
                 continue;
             };
-            if let Some(half_edge) = find_half_edge(session.mesh(), u, v) {
+            if let Some(half_edge) = half_edge_index.find(u, v) {
                 if let Some(sharpness) = sharpness {
                     let _ = set_edge_sharpness(&mut session, half_edge, sharpness);
                 }
@@ -787,43 +805,64 @@ fn classify_stitch_build_error(
     let BuildError::NonManifoldEdge { a, b, count } = error else {
         return StitchError::Build(error);
     };
-    if op != BooleanOp::Union {
-        return StitchError::Build(error);
-    }
     let output_edge = [a.min(b), a.max(b)];
-    let Some(graph_edge) = graph.edges.iter().find(|edge| {
-        let [p, q] = edge.vertices.map(|index| index as usize);
-        seam_builder_indices
-            .get(p)
-            .copied()
-            .flatten()
-            .zip(seam_builder_indices.get(q).copied().flatten())
-            .is_some_and(|(u, v)| [u.min(v), u.max(v)] == output_edge)
-    }) else {
-        return StitchError::Build(error);
+    let proven_contact = 'contact: {
+        if op != BooleanOp::Union {
+            break 'contact false;
+        }
+        let Some(graph_edge) = graph.edges.iter().find(|edge| {
+            let [p, q] = edge.vertices.map(|index| index as usize);
+            seam_builder_indices
+                .get(p)
+                .copied()
+                .flatten()
+                .zip(seam_builder_indices.get(q).copied().flatten())
+                .is_some_and(|(u, v)| [u.min(v), u.max(v)] == output_edge)
+        }) else {
+            break 'contact false;
+        };
+        let [p, q] = graph_edge.vertices.map(|index| index as usize);
+        let Some((start, end)) = graph.vertices.get(p).zip(graph.vertices.get(q)) else {
+            break 'contact false;
+        };
+        if !anchors_are_one_mesh_edge(source_mesh_a, start.anchor_a, end.anchor_a)
+            || !anchors_are_one_mesh_edge(source_mesh_b, start.anchor_b, end.anchor_b)
+            || contact_bounds_graph_edge(contacts, start, end)
+        {
+            break 'contact false;
+        }
+
+        let (faces_a, faces_b) = selected_edge_face_counts(
+            output_edge,
+            mesh_a,
+            mesh_b,
+            op,
+            classification,
+            map_a,
+            map_b,
+        );
+        count == 4 && faces_a == 2 && faces_b == 2
     };
-    let [p, q] = graph_edge.vertices.map(|index| index as usize);
-    let Some((start, end)) = graph.vertices.get(p).zip(graph.vertices.get(q)) else {
-        return StitchError::Build(error);
-    };
-    if !anchors_are_one_mesh_edge(source_mesh_a, start.anchor_a, end.anchor_a)
-        || !anchors_are_one_mesh_edge(source_mesh_b, start.anchor_b, end.anchor_b)
-        || contact_bounds_graph_edge(contacts, start, end)
-    {
-        return StitchError::Build(error);
+    if proven_contact {
+        return StitchError::NonManifoldContact;
     }
 
-    let (faces_a, faces_b) = selected_edge_face_counts(
-        output_edge,
-        mesh_a,
-        mesh_b,
-        op,
-        classification,
-        map_a,
-        map_b,
-    );
-    if count == 4 && faces_a == 2 && faces_b == 2 {
-        StitchError::NonManifoldContact
+    // Canonical seam representatives intentionally collapse graph points that
+    // are distinct in f64 but identical in the stored f32 mesh. If a failed
+    // edge touches a builder identity shared by several such graph points,
+    // the non-manifold incidence is a representational sliver collapse—not an
+    // unexplained builder invariant. Withhold the result as typed numerical
+    // uncertainty; repairing the surface would require local retriangulation.
+    let touches_alias = output_edge.iter().any(|&endpoint| {
+        seam_builder_indices
+            .iter()
+            .filter(|builder| **builder == Some(endpoint))
+            .take(2)
+            .count()
+            > 1
+    });
+    if count > 2 && touches_alias {
+        StitchError::RepresentationalCollapse
     } else {
         StitchError::Build(error)
     }
@@ -1395,6 +1434,35 @@ mod tests {
         );
 
         assert!(matches!(classified, StitchError::Build(error) if error == build));
+    }
+
+    #[test]
+    fn non_manifold_edge_touching_a_seam_alias_is_typed_numerical_uncertainty() {
+        // Builder vertex 0 represents two graph vertices after f64-to-f32 seam
+        // canonicalization. A four-face edge incident to that identity is a
+        // known representational collapse, not an unexplained builder fault.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]);
+        let classified = classify_stitch_build_error(
+            BuildError::NonManifoldEdge {
+                a: 0,
+                b: 1,
+                count: 4,
+            },
+            BooleanOp::Intersection,
+            &mesh_a,
+            &mesh_b,
+            &mesh_a,
+            &mesh_b,
+            &IntersectionGraph::default(),
+            &[],
+            &PatchClassification::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[Some(0), Some(0), Some(1)],
+        );
+
+        assert!(matches!(classified, StitchError::RepresentationalCollapse));
     }
 
     #[test]

@@ -116,28 +116,40 @@ pub fn collect_coplanar_contacts(
     let mut polygon_b3: Vec<[f64; 3]> = Vec::new();
     let mut triangles_a: Vec<[[f64; 3]; 3]> = Vec::new();
     let mut triangles_b: Vec<[[f64; 3]; 3]> = Vec::new();
+    let mut cached_face_a = None;
+    let mut cached_plane_a = None;
+    let mut cached_a_planar = false;
 
     for (face_a, face_b) in face_pairs {
         stats.face_pairs += 1;
-        face_polygon(mesh_a, face_a, &mut polygon_a3);
+        if cached_face_a != Some(face_a) {
+            // `face_pairs` is sorted by A then B, so one source face commonly
+            // participates in a run of candidate pairs. Its immutable
+            // pre-split geometry and exact planarity proof are identical for
+            // every pair in that run; recomputing them dominated the sampled
+            // coplanar rejection path.
+            face_polygon(mesh_a, face_a, &mut polygon_a3);
+            face_triangles(mesh_a, face_a, strategy, &mut buffer, &mut triangles_a);
+            cached_plane_a = triangles_a
+                .iter()
+                .copied()
+                .find(|tri| !triangle_is_flat(tri));
+            cached_a_planar = cached_plane_a.is_some_and(|plane| on_plane(&plane, &polygon_a3));
+            cached_face_a = Some(face_a);
+        }
         face_polygon(mesh_b, face_b, &mut polygon_b3);
         if polygon_a3.len() < 3 || polygon_b3.len() < 3 {
             continue; // Degenerate loops; narrow-phase diagnostics own these.
         }
-        face_triangles(mesh_a, face_a, strategy, &mut buffer, &mut triangles_a);
         face_triangles(mesh_b, face_b, strategy, &mut buffer, &mut triangles_b);
-        let Some(plane_a) = triangles_a
-            .iter()
-            .copied()
-            .find(|tri| !triangle_is_flat(tri))
-        else {
+        let Some(plane_a) = cached_plane_a else {
             continue; // All-degenerate face; narrow-phase diagnostics own it.
         };
 
         // Quick exact rejection: most candidate face pairs are not
         // coplanar and reject on the first off-plane vertex.
         let b_on_plane = on_plane(&plane_a, &polygon_b3);
-        let a_planar = on_plane(&plane_a, &polygon_a3);
+        let a_planar = cached_a_planar;
         if !(a_planar && b_on_plane) {
             // Whole-face contact is off the table. Planar faces on
             // distinct planes have no coplanar triangles (the transversal
@@ -368,6 +380,19 @@ fn triangle_is_flat(t: &[[f64; 3]; 3]) -> bool {
 /// True when every point lies exactly on the plane of `plane` (exact
 /// [`orient3d`] signs).
 fn on_plane(plane: &[[f64; 3]; 3], points: &[[f64; 3]]) -> bool {
+    for axis in 0..3 {
+        let coordinate = plane[0][axis];
+        if plane[1][axis] == coordinate && plane[2][axis] == coordinate {
+            // All mesh positions originate as f32 and are promoted exactly to
+            // f64. When a non-flat defining triangle has one constant
+            // coordinate, its plane is exactly axis-aligned, so equality on
+            // that coordinate is the complete predicate—not a tolerance or a
+            // floating-point shortcut. Gallery solids contain many such caps
+            // and walls, where adaptive orient3d would otherwise construct an
+            // exact zero expansion for every vertex of every candidate pair.
+            return points.iter().all(|point| point[axis] == coordinate);
+        }
+    }
     points
         .iter()
         // The three defining vertices are coplanar by identity. Sending them
@@ -383,13 +408,9 @@ fn has_coplanar_triangle_pair(
     triangles_a: &[[[f64; 3]; 3]],
     triangles_b: &[[[f64; 3]; 3]],
 ) -> bool {
-    triangles_a.iter().any(|ta| {
-        !triangle_is_flat(ta)
-            && triangles_b.iter().any(|tb| {
-                tb.iter()
-                    .all(|&p| orient3d(ta[0], ta[1], ta[2], p) == Orientation3d::Coplanar)
-            })
-    })
+    triangles_a
+        .iter()
+        .any(|ta| !triangle_is_flat(ta) && triangles_b.iter().any(|tb| on_plane(ta, tb)))
 }
 
 fn project_triangle(t: &[[f64; 3]; 3], axis: usize) -> [[f64; 2]; 3] {
@@ -433,15 +454,27 @@ mod tests {
     use crate::boolean::{BooleanBvh, BooleanScratch};
 
     #[test]
-    fn plane_membership_skips_defining_vertices_but_checks_the_remainder() {
-        // The defining triangle is known to lie on its own plane; this test
-        // pins that only additional vertices decide polygon planarity.
+    fn axis_aligned_plane_membership_is_exact() {
+        // This pins the constant-coordinate fast path: exact equality accepts
+        // the fourth corner but rejects even the next representable z value.
         let plane = [[0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]];
         let mut polygon = plane.to_vec();
         polygon.push([1.0, 1.0, 2.0]);
         assert!(on_plane(&plane, &polygon));
         // One ulp at 2.0 is `2 * EPSILON`.
         polygon.push([0.5, 0.5, 2.0 + 2.0 * f64::EPSILON]);
+        assert!(!on_plane(&plane, &polygon));
+    }
+
+    #[test]
+    fn oblique_plane_membership_retains_exact_predicates() {
+        // A non-axis-aligned plane must continue through orient3d's adaptive
+        // exact path rather than inheriting the coordinate-plane shortcut.
+        let plane = [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]];
+        let mut polygon = plane.to_vec();
+        polygon.push([1.0, 1.0, 2.0]);
+        assert!(on_plane(&plane, &polygon));
+        polygon.push([1.0, 1.0, 2.0 + 2.0 * f64::EPSILON]);
         assert!(!on_plane(&plane, &polygon));
     }
 

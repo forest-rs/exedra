@@ -42,6 +42,7 @@ use hashbrown::{HashMap, HashSet};
 use exedra_triangulate::predicates::{Orientation, orient2d};
 
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
+use super::edge_index::HalfEdgeIndex;
 use super::graph::{IntersectionGraph, MeshAnchor};
 use crate::{
     DeletePolicy, FaceId, Mesh, PropagatePolicy, VertexId, attr,
@@ -124,6 +125,7 @@ pub fn split_mesh_along_graph(
             degree[vertex as usize] += 1;
         }
     }
+    let mut half_edge_index = HalfEdgeIndex::build(mesh);
 
     // --- Stage 1: resolve vertex-anchored and edge-anchored graph
     // vertices to mesh vertices (kernel edge splits for the latter).
@@ -134,7 +136,7 @@ pub fn split_mesh_along_graph(
                 outcome.graph_vertices[index] = Some(vertex);
             }
             MeshAnchor::EdgeSpan(u, v) => {
-                if vertex_degree > 0 && find_half_edge(mesh, u, v).is_some() {
+                if vertex_degree > 0 && half_edge_index.find(u, v).is_some() {
                     on_edge
                         .entry((u, v))
                         .or_default()
@@ -174,7 +176,7 @@ pub fn split_mesh_along_graph(
 
             let mut cursor = u;
             for point in points {
-                let Some(half_edge) = find_half_edge(session.mesh(), cursor, v) else {
+                let Some(half_edge) = half_edge_index.find(cursor, v) else {
                     diagnostics.push(BooleanDiagnostic {
                         kind: BooleanFailureKind::InternalInvariantViolation,
                         a: None,
@@ -192,6 +194,7 @@ pub fn split_mesh_along_graph(
                     });
                     break;
                 };
+                half_edge_index.refresh_after_split(session.mesh(), half_edge, cursor, v);
                 let position = narrow(graph.vertices[point as usize].position);
                 let _ = set_vertex_position(&mut session, new_vertex, position);
                 outcome.graph_vertices[point as usize] = Some(new_vertex);
@@ -214,7 +217,7 @@ pub fn split_mesh_along_graph(
         let [p, q] = edge.vertices;
         let on_mesh_edge = outcome.graph_vertices[p as usize]
             .zip(outcome.graph_vertices[q as usize])
-            .is_some_and(|(u, v)| find_half_edge(mesh, u, v).is_some());
+            .is_some_and(|(u, v)| half_edge_index.find(u, v).is_some());
         if on_mesh_edge {
             outcome.stats.on_edge_edges += 1;
             continue;
@@ -264,19 +267,9 @@ fn dominant_axis(v: [f64; 3]) -> usize {
     }
 }
 
-/// Finds a half-edge between `from` and `to` in either direction, if the
-/// mesh has that undirected edge. Linear in the half-edge count (v1;
-/// splitting is a construction stage).
+#[cfg(test)]
 fn find_half_edge(mesh: &Mesh, from: VertexId, to: VertexId) -> Option<crate::HalfEdgeId> {
-    for face in mesh.faces() {
-        for half_edge in mesh.face_loop(face) {
-            let ends = (mesh.from_vertex(half_edge), mesh.to_vertex(half_edge));
-            if ends == (Some(from), Some(to)) || ends == (Some(to), Some(from)) {
-                return Some(half_edge);
-            }
-        }
-    }
-    None
+    HalfEdgeIndex::build(mesh).find(from, to)
 }
 
 fn defer(
@@ -291,6 +284,17 @@ fn defer(
         b: None,
         detail,
     });
+}
+
+/// A face-partition vertex before the partition has been accepted.
+///
+/// Graph vertices stay symbolic while chains are traced and validated. This
+/// keeps every typed deferral truly non-mutating: only a complete, simple,
+/// incrementally rebuildable partition is allowed to allocate mesh vertices.
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum FacePartitionVertex {
+    Mesh(VertexId),
+    Graph(u32),
 }
 
 fn split_one_face(
@@ -456,7 +460,18 @@ fn split_one_face(
     // chains through a junction run first because their original boundary
     // endpoints are already resolved; materializing their interior vertices
     // then makes residual branch endpoints eligible without geometric guesses.
-    let mut sub_loops: Vec<Vec<VertexId>> = alloc::vec![loop_vertices.clone()];
+    let partition_vertex = |graph_vertex: u32, outcome: &MeshSplitOutcome| {
+        outcome.graph_vertices[graph_vertex as usize].map_or(
+            FacePartitionVertex::Graph(graph_vertex),
+            FacePartitionVertex::Mesh,
+        )
+    };
+    let boundary_partition: Vec<FacePartitionVertex> = loop_vertices
+        .iter()
+        .copied()
+        .map(FacePartitionVertex::Mesh)
+        .collect();
+    let mut sub_loops = alloc::vec![boundary_partition.clone()];
     let mut pending: Vec<&Vec<u32>> = chains.iter().collect();
     pending.sort_unstable_by_key(|chain| {
         let first = *chain.first().expect("nonempty");
@@ -464,33 +479,11 @@ fn split_one_face(
         (first.min(last), first.max(last))
     });
 
-    // Interior chain vertices materialize lazily, once per graph vertex.
-    let mut session = mesh.edit();
-    let resolve = |vertex_index: u32,
-                   session: &mut crate::EditSession<'_, crate::DiscardChanges>,
-                   outcome: &mut MeshSplitOutcome|
-     -> VertexId {
-        if let Some(vertex) = outcome.graph_vertices[vertex_index as usize] {
-            return vertex;
-        }
-        let position = narrow(graph.vertices[vertex_index as usize].position);
-        let vertex = add_vertex(session, position);
-        outcome.graph_vertices[vertex_index as usize] = Some(vertex);
-        outcome.stats.interior_vertices += 1;
-        vertex
-    };
-
     while !pending.is_empty() {
         let mut ready = None;
         for (pending_index, chain) in pending.iter().enumerate() {
-            let Some(first) = outcome.graph_vertices[*chain.first().expect("nonempty") as usize]
-            else {
-                continue;
-            };
-            let Some(last) = outcome.graph_vertices[*chain.last().expect("nonempty") as usize]
-            else {
-                continue;
-            };
+            let first = partition_vertex(*chain.first().expect("nonempty"), outcome);
+            let last = partition_vertex(*chain.last().expect("nonempty"), outcome);
             let slots: Vec<usize> = sub_loops
                 .iter()
                 .enumerate()
@@ -508,17 +501,16 @@ fn split_one_face(
                     outcome,
                     diagnostics,
                 );
-                #[expect(unused_must_use, reason = "discard sink output")]
-                {
-                    session.finish();
-                }
                 return;
             }
         }
         let Some((pending_index, slot, first, last)) = ready else {
             let unresolved = pending.iter().any(|chain| {
                 [chain.first(), chain.last()].into_iter().any(|endpoint| {
-                    endpoint.is_none_or(|&vertex| outcome.graph_vertices[vertex as usize].is_none())
+                    endpoint.is_none_or(|&graph_vertex| {
+                        let vertex = partition_vertex(graph_vertex, outcome);
+                        !sub_loops.iter().any(|sub_loop| sub_loop.contains(&vertex))
+                    })
                 })
             });
             defer(
@@ -530,10 +522,6 @@ fn split_one_face(
                 outcome,
                 diagnostics,
             );
-            #[expect(unused_must_use, reason = "discard sink output")]
-            {
-                session.finish();
-            }
             return;
         };
         let chain = pending.remove(pending_index);
@@ -549,13 +537,13 @@ fn split_one_face(
             sub_loops.push(sub);
             continue;
         }
-        let interior: Vec<VertexId> = chain[1..chain.len() - 1]
+        let interior: Vec<FacePartitionVertex> = chain[1..chain.len() - 1]
             .iter()
-            .map(|&v| resolve(v, &mut session, outcome))
+            .map(|&vertex| partition_vertex(vertex, outcome))
             .collect();
 
         // Loop 1: first .. last along the loop, then chain reversed back.
-        let mut loop_one: Vec<VertexId> = Vec::new();
+        let mut loop_one = Vec::new();
         let mut i = iu;
         loop {
             loop_one.push(sub[i]);
@@ -566,7 +554,7 @@ fn split_one_face(
         }
         loop_one.extend(interior.iter().rev().copied());
         // Loop 2: last .. first along the loop, then chain forward.
-        let mut loop_two: Vec<VertexId> = Vec::new();
+        let mut loop_two = Vec::new();
         let mut i = iw;
         loop {
             loop_two.push(sub[i]);
@@ -580,11 +568,6 @@ fn split_one_face(
         sub_loops.push(loop_one);
         sub_loops.push(loop_two);
     }
-    #[expect(unused_must_use, reason = "discard sink output")]
-    {
-        session.finish();
-    }
-
     if sub_loops.len() <= 1 {
         return; // Nothing actually cut.
     }
@@ -607,7 +590,7 @@ fn split_one_face(
     // boundary a set of simple loops after every addition. A geometrically
     // valid partition can otherwise panic the incremental stitcher when a
     // later sub-loop first touches the growing region at a bare vertex.
-    let Some(rebuild_order) = order_sub_loops(&loop_vertices, &sub_loops) else {
+    let Some(rebuild_order) = order_sub_loops(&boundary_partition, &sub_loops) else {
         defer(
             "face partition has no ambiguity-free incremental rebuild order",
             outcome,
@@ -615,6 +598,39 @@ fn split_one_face(
         );
         return;
     };
+
+    // The partition is now fully accepted. Materialize its symbolic graph
+    // vertices once, immediately before the mesh rebuild. No earlier typed
+    // deferral can leave an isolated vertex, grow an arena, or advance the
+    // mesh revision.
+    let mut materialized_sub_loops = Vec::with_capacity(sub_loops.len());
+    let mut session = mesh.edit();
+    for sub_loop in sub_loops {
+        let mut materialized = Vec::with_capacity(sub_loop.len());
+        for vertex in sub_loop {
+            let vertex = match vertex {
+                FacePartitionVertex::Mesh(vertex) => vertex,
+                FacePartitionVertex::Graph(graph_vertex) => {
+                    if let Some(vertex) = outcome.graph_vertices[graph_vertex as usize] {
+                        vertex
+                    } else {
+                        let position = narrow(graph.vertices[graph_vertex as usize].position);
+                        let vertex = add_vertex(&mut session, position);
+                        outcome.graph_vertices[graph_vertex as usize] = Some(vertex);
+                        outcome.stats.interior_vertices += 1;
+                        vertex
+                    }
+                }
+            };
+            materialized.push(vertex);
+        }
+        materialized_sub_loops.push(materialized);
+    }
+    #[expect(unused_must_use, reason = "discard sink output")]
+    {
+        session.finish();
+    }
+    let sub_loops = materialized_sub_loops;
 
     // Capture attributes, delete, re-add, re-apply, record origins.
     let region = mesh
@@ -675,7 +691,7 @@ fn split_one_face(
     }
     // Re-apply captured boundary edge attributes where the edges survive.
     for (from, to, sharpness, seam) in boundary_attrs {
-        if let Some(half_edge) = find_half_edge(session.mesh(), from, to) {
+        if let Some(half_edge) = session.find_half_edge(from, to) {
             if let Some(sharpness) = sharpness {
                 let _ = set_edge_sharpness(&mut session, half_edge, sharpness);
             }
@@ -698,7 +714,7 @@ fn split_one_face(
 /// Length and vertex uniqueness cover the structural failures the splitter
 /// can introduce. All vertices came from the live source face or were created
 /// earlier in this function, so liveness does not need another pass here.
-fn is_simple_loop(vertices: &[VertexId]) -> bool {
+fn is_simple_loop<T: PartialEq>(vertices: &[T]) -> bool {
     vertices.len() >= 3
         && vertices
             .iter()
@@ -713,12 +729,15 @@ fn is_simple_loop(vertices: &[VertexId]) -> bool {
 /// the crossed face is deleted. Internal edges admit two new faces; original
 /// boundary edges admit one. This is the polygonal counterpart of
 /// [`order_fragments`] for drilled-face triangles.
-fn order_sub_loops(boundary: &[VertexId], sub_loops: &[Vec<VertexId>]) -> Option<Vec<usize>> {
-    let edge_key = |a: VertexId, b: VertexId| {
+fn order_sub_loops<T>(boundary: &[T], sub_loops: &[Vec<T>]) -> Option<Vec<usize>>
+where
+    T: Copy + Eq + core::hash::Hash + Ord,
+{
+    let edge_key = |a: T, b: T| {
         if a <= b { (a, b) } else { (b, a) }
     };
-    let mut present: HashSet<VertexId> = boundary.iter().copied().collect();
-    let mut capacity: HashMap<(VertexId, VertexId), u8> = HashMap::new();
+    let mut present: HashSet<T> = boundary.iter().copied().collect();
+    let mut capacity: HashMap<(T, T), u8> = HashMap::new();
     for index in 0..boundary.len() {
         capacity.insert(
             edge_key(boundary[index], boundary[(index + 1) % boundary.len()]),
@@ -734,7 +753,7 @@ fn order_sub_loops(boundary: &[VertexId], sub_loops: &[Vec<VertexId>]) -> Option
             if added[index] {
                 continue;
             }
-            let open = |a: VertexId, b: VertexId, capacity: &HashMap<(VertexId, VertexId), u8>| {
+            let open = |a: T, b: T, capacity: &HashMap<(T, T), u8>| {
                 capacity.get(&edge_key(a, b)).copied().unwrap_or(0) > 0
             };
             let mut attaches = false;
@@ -1304,7 +1323,7 @@ fn split_face_with_interior_loops(
     }
     // Re-apply captured boundary edge attributes where the edges survive.
     for (from, to, sharpness, seam) in boundary_attrs {
-        if let Some(half_edge) = find_half_edge(session.mesh(), from, to) {
+        if let Some(half_edge) = session.find_half_edge(from, to) {
             if let Some(sharpness) = sharpness {
                 let _ = set_edge_sharpness(&mut session, half_edge, sharpness);
             }
@@ -1324,6 +1343,7 @@ fn split_face_with_interior_loops(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boolean::graph::{GraphEdge, GraphVertex};
     use crate::boolean::{
         BooleanBvh, BooleanDiagnostics, BooleanScratch, IntersectionGraph,
         build_intersection_graph, narrow_phase,
@@ -1352,6 +1372,104 @@ mod tests {
             0..stray.len(),
             &mut fragments
         ));
+    }
+
+    #[test]
+    fn deferred_crossing_chains_do_not_materialize_partition_vertices() {
+        // The first diagonal can split this quad and contains one interior
+        // graph vertex. The second diagonal then spans the two new sub-loops,
+        // forcing a typed ambiguity. Planning must stay symbolic so that the
+        // rejected batch leaves neither the center vertex nor a revision bump.
+        let mut builder = MeshBuilder::new();
+        for position in [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ] {
+            builder.push_vertex(position);
+        }
+        builder.add_face(&[0, 1, 2, 3]).expect("valid quad");
+        let mut mesh = builder.build().expect("valid open quad").mesh;
+        let face = mesh.faces().next().expect("quad face");
+        let boundary: Vec<VertexId> = mesh
+            .face_loop(face)
+            .filter_map(|half_edge| mesh.to_vertex(half_edge))
+            .collect();
+        let [a, b, c, d] = boundary.as_slice() else {
+            panic!("quad must have four boundary vertices");
+        };
+        let vertex = |mesh_vertex: VertexId| GraphVertex {
+            position: promote(
+                *mesh
+                    .vertex_position(mesh_vertex)
+                    .expect("boundary vertex is live"),
+            ),
+            anchor_a: MeshAnchor::Vertex(mesh_vertex),
+            anchor_b: MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+            faces_a: alloc::vec![face],
+            faces_b: Vec::new(),
+        };
+        // Graph order makes a-center-c the first planned chain, followed by
+        // b-d. Edge endpoint arrays retain the graph's canonical order.
+        let graph = IntersectionGraph {
+            vertices: alloc::vec![
+                vertex(*a),
+                vertex(*c),
+                vertex(*b),
+                vertex(*d),
+                GraphVertex {
+                    position: [1.0, 1.0, 0.0],
+                    anchor_a: MeshAnchor::FaceInterior(face),
+                    anchor_b: MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+                    faces_a: alloc::vec![face],
+                    faces_b: Vec::new(),
+                },
+            ],
+            edges: alloc::vec![
+                GraphEdge {
+                    vertices: [0, 4],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [1, 4],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [2, 3],
+                    crossings: Vec::new(),
+                },
+            ],
+            ..IntersectionGraph::default()
+        };
+        let mut outcome = MeshSplitOutcome {
+            graph_vertices: alloc::vec![Some(*a), Some(*c), Some(*b), Some(*d), None],
+            ..MeshSplitOutcome::default()
+        };
+        let baseline_vertices = mesh.vertices().count();
+        let baseline_revision = mesh.revision();
+        let mut diagnostics = BooleanDiagnostics::default();
+
+        split_one_face(
+            &mut mesh,
+            &graph,
+            face,
+            &[0, 1, 2],
+            &mut outcome,
+            &mut diagnostics,
+        );
+
+        assert_eq!(outcome.stats.deferred_faces, 1);
+        assert_eq!(outcome.stats.interior_vertices, 0);
+        assert_eq!(outcome.graph_vertices[4], None);
+        assert_eq!(mesh.vertices().count(), baseline_vertices);
+        assert_eq!(mesh.revision(), baseline_revision);
+        assert_eq!(mesh.faces().collect::<Vec<_>>(), alloc::vec![face]);
+        assert!(mesh.validate_deep().is_empty());
+        assert!(diagnostics.entries().iter().any(|diagnostic| {
+            diagnostic.kind == BooleanFailureKind::SplitDeferred
+                && diagnostic.detail == "chain endpoints span different sub-loops (ambiguous cut)"
+        }));
     }
 
     fn cube(origin: [f32; 3]) -> Mesh {
