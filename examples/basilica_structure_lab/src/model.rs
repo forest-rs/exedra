@@ -14,15 +14,25 @@ use basilica_ruin::{BasilicaParams, BasilicaRoofSetout, RoofSide};
 use exedra_math::{add, cross, norm, normalize, scale, sub};
 use joiner::{
     Anchor, Construction, ContactMeaning, ContactPatch, Element, Evidence, EvidenceClass,
-    EvidenceSource, Member, Node, OrientedBox, Relation, RelationKind, Support, TransferEdge,
-    TransferKind, TransferTarget, ValidationReport, is_witnessed, measure_contact, trace_to_ground,
-    validate,
+    EvidenceSource, Member, Node, OrientedBox, Relation, RelationKind, Rule, RuleApplication,
+    RuleContext, Support, TransferEdge, TransferKind, TransferTarget, ValidationReport,
+    is_witnessed, measure_contact, trace_to_ground, validate,
+};
+use joiner_timber::{
+    HeelParams, HeelRule, HousedBearingParams, KingPostTieParams, KingPostTieRule, Length,
+    RafterToKingPostRule, StrutToKingPostRule, StrutToRafterRule,
 };
 
 pub(crate) type Vec3 = [f64; 3];
 
 /// The tolerance `joiner` measures contact at, republished for diagnostics.
 pub(crate) const CONTACT_TOLERANCE: f64 = joiner::CONTACT_TOLERANCE;
+const TIE_END_RELISH: f64 = 0.18;
+const KING_POST_WIDTH: f64 = 0.36;
+
+fn length_millimeters(value: u64) -> Length {
+    Length::millimeters(value).expect("authored lab dimensions must be positive")
+}
 
 /// What part an element plays in this roof.
 ///
@@ -105,24 +115,21 @@ impl ElementRole {
 
 /// The connection hypothesis at a joint.
 ///
-/// These are uncut connectivity claims in this slice; they name the fit a
-/// timber rule will eventually cut, and travel as the relation's opaque
-/// detail label.
+/// Travels as the relation's opaque detail label. Every variant used by the
+/// primary trusses is instantiated by a concrete `joiner_timber` rule.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum JointKind {
     BearingSeat,
-    MortiseTenon,
-    HousedMortiseTenon,
-    ThroughTenon,
+    HousedBearing,
+    KeyedThroughTenon,
 }
 
 impl JointKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::BearingSeat => "bearing-seat",
-            Self::MortiseTenon => "mortise-tenon",
-            Self::HousedMortiseTenon => "housed-mortise-tenon",
-            Self::ThroughTenon => "through-tenon",
+            Self::HousedBearing => "housed-bearing",
+            Self::KeyedThroughTenon => "keyed-through-tenon",
         }
     }
 }
@@ -262,6 +269,38 @@ impl Author {
                 evidence(class),
             ))
             .expect("joint references resolve");
+    }
+
+    fn fit<R: Rule>(
+        &mut self,
+        application: &str,
+        relation: &str,
+        rule: &R,
+        params: &R::Params,
+        class: EvidenceClass,
+    ) {
+        let output = {
+            let context = RuleContext::new(&self.construction, relation)
+                .expect("the relation was registered immediately before fitting");
+            let applicability = rule.assess(&context);
+            assert!(
+                applicability.is_suitable(),
+                "{} refused {relation}: {:?}",
+                rule.key(),
+                applicability.rejections()
+            );
+            rule.instantiate(&context, params)
+                .unwrap_or_else(|error| panic!("{} could not fit {relation}: {error}", rule.key()))
+        };
+        self.construction
+            .apply(RuleApplication::new(
+                application,
+                rule.key(),
+                relation,
+                evidence(class),
+                output,
+            ))
+            .expect("assessed rule output merges atomically");
     }
 
     #[expect(
@@ -616,12 +655,14 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
                 scale(side_data[0].normal, -stack_depth),
             ),
         );
-        let apex = author.node(
-            format!("node-truss-{station_name}-apex"),
-            [station_x, 0.0, ridge_inner[2]],
+        let king_params = KingPostTieParams::default();
+        let king_tenon_length = king_params.tenon_length.as_meters();
+        let king_foot = author.node(
+            format!("node-truss-{station_name}-king-tenon-tip"),
+            [station_x, 0.0, wall_top + 0.30 - king_tenon_length],
         );
-        let tie_center = author.node(
-            format!("node-truss-{station_name}-tie-center"),
+        let king_shoulder = author.node(
+            format!("node-truss-{station_name}-king-shoulder"),
             [station_x, 0.0, wall_top + 0.30],
         );
 
@@ -629,9 +670,9 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             format!("tie-beam-{station_name}"),
             ElementRole::TieBeam,
             OrientedBox {
-                origin: [station_x - 0.15, -half_nave, wall_top],
+                origin: [station_x - 0.15, -half_nave - TIE_END_RELISH, wall_top],
                 axes: [[0.0, 1.0, 0.0], x_axis, z_axis],
-                size: [roof.span.as_metres(), 0.30, 0.30],
+                size: [roof.span.as_metres() + 2.0 * TIE_END_RELISH, 0.30, 0.30],
             },
             EvidenceClass::ModernEngineeringInference,
             2,
@@ -647,9 +688,9 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
         for data in &side_data {
             let (name, side, masonry) = (data.name, data.side, data.masonry.as_str());
             let local_y = if side < 0.0 {
-                0.0
+                TIE_END_RELISH
             } else {
-                roof.span.as_metres()
+                roof.span.as_metres() + TIE_END_RELISH
             };
             author.bearing(
                 &format!("bearing-tie-{station_name}-on-{name}-masonry"),
@@ -669,7 +710,16 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             );
         }
 
-        let mut station_principals: Vec<(&'static str, String)> = Vec::new();
+        let head_params = HousedBearingParams {
+            // Opposing full-depth rafter housings must leave a sound web in
+            // the king head; the 360 mm post is sized below so these 120 mm
+            // pockets remain separate rather than silently unioning.
+            housing_depth: length_millimeters(120),
+            minimum_carrier_relish: length_millimeters(5),
+            ..HousedBearingParams::default()
+        };
+        let head_housing_depth = head_params.housing_depth.as_meters();
+        let mut station_principals: Vec<(&'static str, String, String)> = Vec::new();
         for data in &side_data {
             let (name, side, slope, normal) = (data.name, data.side, data.slope, data.normal);
             let wall_plate = data.wall_plate.as_str();
@@ -678,6 +728,23 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             // rafters. A station only adds its longitudinal translation.
             let mut extent = data.principal_extent.clone();
             extent.origin[0] += station_x;
+            // Each rafter terminates on an internal bearing shoulder rather
+            // than overlapping its mirror at the ridge centreline. For a
+            // vertical-sided king head, the setback that leaves the requested
+            // housing depth follows directly from the rafter's plan slope.
+            let head_setback = KING_POST_WIDTH * 0.5 / slope[1].abs() - head_housing_depth;
+            assert!(
+                head_setback > 0.0 && head_setback < extent.size[0],
+                "rafter-head setback must lie inside {key}: {head_setback} of {}",
+                extent.size[0]
+            );
+            extent.size[0] -= head_setback;
+            let head_point =
+                extent.anchor([extent.size[0], extent.size[1] * 0.5, extent.size[2] * 0.5]);
+            let head_node = author.node(
+                format!("node-principal-{name}-{station_name}-head-shoulder"),
+                head_point,
+            );
             let principal = author.element(
                 key.clone(),
                 ElementRole::PrincipalRafter,
@@ -689,7 +756,7 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
                 key.clone(),
                 &principal,
                 if side < 0.0 { &south_heel } else { &north_heel },
-                &apex,
+                &head_node,
                 EvidenceClass::ModernEngineeringInference,
             );
             author.bearing(
@@ -732,15 +799,21 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
                     TransferKind::Contact,
                 );
             }
-            station_principals.push((name, key));
+            station_principals.push((name, key, head_node));
         }
 
-        let king_base = [station_x, 0.0, wall_top + 0.30];
-        let king_top = [station_x, 0.0, ridge_inner[2]];
+        // The modeled member includes its tenon: it begins at the tip inside
+        // the tie, while the shoulder and strut feet remain on the tie top.
+        let king_base = [station_x, 0.0, wall_top + 0.30 - king_tenon_length];
+        // The head projects above both internal rafter shoulders so their
+        // complete depth remains surrounded by timber at the bearing plane.
+        let king_top = [station_x, 0.0, ridge_inner[2] + 0.12];
+        let king_top_node =
+            author.node(format!("node-truss-{station_name}-king-head-top"), king_top);
         let king = author.element(
             format!("king-post-{station_name}"),
             ElementRole::KingPost,
-            beam_between(king_base, king_top, 0.26, 0.26),
+            beam_between(king_base, king_top, KING_POST_WIDTH, KING_POST_WIDTH),
             EvidenceClass::ModernEngineeringInference,
             1,
         );
@@ -748,30 +821,77 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
         author.member(
             king_member.clone(),
             &king,
-            &tie_center,
-            &apex,
+            &king_foot,
+            &king_top_node,
             EvidenceClass::ModernEngineeringInference,
         );
-        author.transfer(
-            format!("load-king-post-{station_name}-to-tie"),
-            &king,
-            TransferTarget::element(&tie),
-            TransferKind::Joint,
+        author.joint(
+            &format!("joint-king-post-to-tie-{station_name}"),
+            &king_shoulder,
+            &[tie_member.as_str(), king_member.as_str()],
+            JointKind::KeyedThroughTenon,
+            EvidenceClass::ModernEngineeringInference,
         );
-
-        let mut strut_members: Vec<String> = Vec::new();
+        author.fit(
+            &format!("fit-king-post-tie-{station_name}"),
+            &format!("joint-king-post-to-tie-{station_name}"),
+            &KingPostTieRule,
+            &king_params,
+            EvidenceClass::ModernEngineeringInference,
+        );
+        let strut_post_params = HousedBearingParams {
+            housing_depth: length_millimeters(80),
+            minimum_carrier_relish: length_millimeters(10),
+            ..HousedBearingParams::default()
+        };
+        let strut_rafter_params = HousedBearingParams {
+            housing_depth: length_millimeters(40),
+            minimum_carrier_relish: length_millimeters(10),
+            ..HousedBearingParams::default()
+        };
+        let strut_post_housing_depth = strut_post_params.housing_depth.as_meters();
+        let strut_rafter_housing_depth = strut_rafter_params.housing_depth.as_meters();
         for data in &side_data {
-            let (name, slope, normal, outer_eave) =
-                (data.name, data.slope, data.normal, data.outer_eave);
+            let (name, side) = (data.name, data.side);
+            let (_, principal_member, _) = station_principals
+                .iter()
+                .find(|(side_name, _, _)| *side_name == name)
+                .expect("station principal exists");
+            let principal_extent = author
+                .construction
+                .element(principal_member.as_str())
+                .expect("station principal extent exists")
+                .extent
+                .clone();
+            let target_surface = principal_extent.anchor([
+                principal_extent.size[0] * 0.58,
+                principal_extent.size[1] * 0.5,
+                0.0,
+            ]);
+            let foot_surface = [
+                station_x,
+                side * KING_POST_WIDTH * 0.5,
+                wall_top + 0.30 + 0.35,
+            ];
+            let strut_axis = normalize(sub(target_surface, foot_surface))
+                .expect("strut bearing faces are distinct");
+            // Housing depth belongs to each carrier, not to the visible strut
+            // length. Moving both endpoints inward along the common axis
+            // keeps the authored member straight and places each endpoint on
+            // its rule's internal bearing shoulder.
+            let foot = sub(foot_surface, scale(strut_axis, strut_post_housing_depth));
             let target = add(
-                add(outer_eave, scale(slope, roof_length * 0.58)),
-                scale(normal, -stack_depth),
+                target_surface,
+                scale(strut_axis, strut_rafter_housing_depth),
             );
-            let foot = king_base;
-            let target = [station_x, target[1], target[2]];
-            let foot_node = author.node(format!("node-strut-{name}-{station_name}-foot"), foot);
-            let target_node =
-                author.node(format!("node-strut-{name}-{station_name}-target"), target);
+            let foot_node = author.node(
+                format!("node-strut-{name}-{station_name}-post-shoulder"),
+                foot,
+            );
+            let target_node = author.node(
+                format!("node-strut-{name}-{station_name}-rafter-shoulder"),
+                target,
+            );
             let strut = author.element(
                 format!("strut-{name}-{station_name}"),
                 ElementRole::Strut,
@@ -787,62 +907,66 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
                 &target_node,
                 EvidenceClass::ModernEngineeringInference,
             );
-            author.transfer(
-                format!("load-strut-{name}-{station_name}-to-tie"),
-                &strut,
-                TransferTarget::element(&tie),
-                TransferKind::Joint,
+            author.joint(
+                &format!("joint-strut-foot-{name}-{station_name}"),
+                &foot_node,
+                &[king_member.as_str(), strut_member.as_str()],
+                JointKind::HousedBearing,
+                EvidenceClass::ModernEngineeringInference,
             );
-            let principal_member = station_principals
-                .iter()
-                .find(|(side_name, _)| *side_name == name)
-                .map(|(_, member)| member.clone())
-                .expect("station principal exists");
+            author.fit(
+                &format!("fit-strut-foot-{name}-{station_name}"),
+                &format!("joint-strut-foot-{name}-{station_name}"),
+                &StrutToKingPostRule,
+                &strut_post_params,
+                EvidenceClass::ModernEngineeringInference,
+            );
             author.joint(
                 &format!("joint-strut-to-principal-{name}-{station_name}"),
                 &target_node,
-                &[&strut_member, &principal_member],
-                JointKind::HousedMortiseTenon,
+                &[strut_member.as_str(), principal_member.as_str()],
+                JointKind::HousedBearing,
                 EvidenceClass::ModernEngineeringInference,
             );
-            strut_members.push(strut_member);
+            author.fit(
+                &format!("fit-strut-to-principal-{name}-{station_name}"),
+                &format!("joint-strut-to-principal-{name}-{station_name}"),
+                &StrutToRafterRule,
+                &strut_rafter_params,
+                EvidenceClass::ModernEngineeringInference,
+            );
         }
 
-        author.joint(
-            &format!("joint-apex-{station_name}"),
-            &apex,
-            &[
-                station_principals[0].1.as_str(),
-                station_principals[1].1.as_str(),
-                king_member.as_str(),
-            ],
-            JointKind::MortiseTenon,
-            EvidenceClass::ModernEngineeringInference,
-        );
-        author.joint(
-            &format!("joint-king-post-to-tie-{station_name}"),
-            &tie_center,
-            &[
-                tie_member.as_str(),
-                king_member.as_str(),
-                strut_members[0].as_str(),
-                strut_members[1].as_str(),
-            ],
-            JointKind::ThroughTenon,
-            EvidenceClass::ModernEngineeringInference,
-        );
+        for (name, principal_member, head_node) in &station_principals {
+            author.joint(
+                &format!("joint-principal-head-{name}-{station_name}"),
+                head_node,
+                &[principal_member.as_str(), king_member.as_str()],
+                JointKind::HousedBearing,
+                EvidenceClass::ModernEngineeringInference,
+            );
+            author.fit(
+                &format!("fit-principal-head-{name}-{station_name}"),
+                &format!("joint-principal-head-{name}-{station_name}"),
+                &RafterToKingPostRule,
+                &head_params,
+                EvidenceClass::ModernEngineeringInference,
+            );
+        }
         for (index, heel) in [(0_usize, &south_heel), (1_usize, &north_heel)] {
             let name = side_data[index].name;
-            let wall_plate_member = format!("wall-plate-{name}");
             author.joint(
                 &format!("joint-heel-{name}-{station_name}"),
                 heel,
-                &[
-                    tie_member.as_str(),
-                    station_principals[index].1.as_str(),
-                    wall_plate_member.as_str(),
-                ],
+                &[tie_member.as_str(), station_principals[index].1.as_str()],
                 JointKind::BearingSeat,
+                EvidenceClass::ModernEngineeringInference,
+            );
+            author.fit(
+                &format!("fit-heel-{name}-{station_name}"),
+                &format!("joint-heel-{name}-{station_name}"),
+                &HeelRule,
+                &HeelParams::default(),
                 EvidenceClass::ModernEngineeringInference,
             );
         }
@@ -888,7 +1012,7 @@ pub(crate) fn check(construction: &Construction) -> ValidationReport {
 /// One line of counts plus a signature that pins the authored graph.
 pub(crate) fn stats_line(construction: &Construction) -> String {
     format!(
-        "nodes={} elements={} members={} joints={} bearings={} supports={} transfers={} evidence_sources={} signature={:016x}",
+        "nodes={} elements={} members={} joints={} rule_applications={} part_edits={} bearings={} supports={} transfers={} evidence_sources={} signature={:016x}",
         construction.nodes().len(),
         construction
             .elements()
@@ -897,6 +1021,8 @@ pub(crate) fn stats_line(construction: &Construction) -> String {
             .count(),
         construction.members().len(),
         construction.relations().len(),
+        construction.applications().len(),
+        construction.part_edits().len(),
         construction.contacts().len(),
         construction.supports().len(),
         construction.transfers().len(),
@@ -954,6 +1080,20 @@ pub(crate) fn deterministic_signature(construction: &Construction) -> u64 {
         fold(relation.key.as_bytes());
         fold(relation.kind.label().as_bytes());
         fold(relation.detail.as_bytes());
+    }
+    for application in construction.applications() {
+        fold(application.key.as_bytes());
+        fold(application.rule.as_bytes());
+        fold(application.relation.as_bytes());
+    }
+    for edit in construction.part_edits() {
+        fold(edit.target.as_bytes());
+        fold(edit.op.label().as_bytes());
+        fold(edit.op.tool().key.as_bytes());
+        fold(&edit.op.tool().recipe.recipe_fingerprint().0.to_le_bytes());
+        for value in edit.op.tool().placement.rows.into_iter().flatten() {
+            fold(&value.to_bits().to_le_bytes());
+        }
     }
     for contact in construction.contacts() {
         fold(contact.key.as_bytes());
@@ -1060,15 +1200,26 @@ pub(crate) fn explain(
         "joint" => construction
             .relation(key)
             .and_then(|relation| match &relation.kind {
-                RelationKind::MemberMember { node, members } => Some(format!(
-                    "joint {} kind={} geometry=uncut-connectivity-hypothesis node={} members={} evidence={} source={}",
-                    relation.key,
-                    relation.detail,
-                    node,
-                    members.join(","),
-                    relation.evidence.class,
-                    relation.evidence.source
-                )),
+                RelationKind::MemberMember { node, members } => {
+                    let geometry = construction
+                        .applications()
+                        .iter()
+                        .find(|application| application.relation == relation.key)
+                        .map_or_else(
+                            || "uncut-connectivity-hypothesis".to_owned(),
+                            |application| format!("rule-applied:{}", application.rule),
+                        );
+                    Some(format!(
+                        "joint {} kind={} geometry={} node={} members={} evidence={} source={}",
+                        relation.key,
+                        relation.detail,
+                        geometry,
+                        node,
+                        members.join(","),
+                        relation.evidence.class,
+                        relation.evidence.source
+                    ))
+                }
                 _ => None,
             }),
         "bearing" => construction.contact(key).and_then(|contact| {
@@ -1198,10 +1349,13 @@ mod tests {
 
     #[test]
     fn canonical_bay_is_clean_and_every_element_reaches_ground() {
+        // The finished reference bay must satisfy every graph validator, and
+        // generated keys count as real load-path elements rather than render
+        // decorations that can be omitted from the support proof.
         let construction = model();
         let report = check(&construction);
         assert!(report.is_clean(), "{report}");
-        assert_eq!(construction.elements().len(), 32);
+        assert_eq!(construction.elements().len(), 34);
         assert!(
             construction
                 .elements()
@@ -1213,6 +1367,8 @@ mod tests {
 
     #[test]
     fn canonical_element_order_and_graph_signature_are_pinned() {
+        // Stable authoring order keeps OBJ groups, diagnostics, and generated
+        // key identities deterministic across otherwise equivalent builds.
         let construction = model();
         let expected = [
             "masonry-south",
@@ -1239,12 +1395,14 @@ mod tests {
             "principal-rafter-south-west",
             "principal-rafter-north-west",
             "king-post-west",
+            "joint-king-post-to-tie-west-key",
             "strut-south-west",
             "strut-north-west",
             "tie-beam-east",
             "principal-rafter-south-east",
             "principal-rafter-north-east",
             "king-post-east",
+            "joint-king-post-to-tie-east-key",
             "strut-south-east",
             "strut-north-east",
         ];
@@ -1261,6 +1419,122 @@ mod tests {
             deterministic_signature(&model()),
             "the signature is a pure function of the authored graph"
         );
+    }
+
+    #[test]
+    fn concrete_timber_rules_fit_every_primary_truss_joint() {
+        // Each station must apply the same nine-rule set: two heels, the keyed
+        // tie connection, both ends of two struts, and both rafter heads.
+        // Per-member edit counts pin the actual joinery, not just rule labels.
+        let construction = model();
+        assert_eq!(construction.applications().len(), 18);
+        for (rule, expected) in [
+            (joiner_timber::HEEL_RULE_KEY, 4),
+            (joiner_timber::KING_POST_TIE_RULE_KEY, 2),
+            (joiner_timber::STRUT_KING_POST_RULE_KEY, 4),
+            (joiner_timber::STRUT_RAFTER_RULE_KEY, 4),
+            (joiner_timber::RAFTER_KING_POST_RULE_KEY, 4),
+        ] {
+            assert_eq!(
+                construction
+                    .applications()
+                    .iter()
+                    .filter(|application| application.rule == rule)
+                    .count(),
+                expected,
+                "{rule}"
+            );
+        }
+        for station in ["west", "east"] {
+            assert_eq!(
+                construction
+                    .part_edits_for(&format!("tie-beam-{station}"))
+                    .count(),
+                3,
+                "two heel housings and one king-post mortise"
+            );
+            assert_eq!(
+                construction
+                    .part_edits_for(&format!("king-post-{station}"))
+                    .count(),
+                7,
+                "two tenon shoulders, one key slot, and four housed bearings"
+            );
+            for side in ["south", "north"] {
+                assert_eq!(
+                    construction
+                        .part_edits_for(&format!("principal-rafter-{side}-{station}"))
+                        .count(),
+                    2,
+                    "one heel seat and one strut housing"
+                );
+                assert_eq!(
+                    construction
+                        .part_edits_for(&format!("strut-{side}-{station}"))
+                        .count(),
+                    0,
+                    "full-section struts terminate on authored bearing shoulders"
+                );
+            }
+        }
+
+        let strut_head = construction
+            .contact("contact-joint-strut-to-principal-south-west")
+            .expect("fitted strut-head contact exists");
+        assert_eq!(strut_head.carried.element, "principal-rafter-south-west");
+        assert_eq!(strut_head.carrier.element, "strut-south-west");
+        assert!(
+            construction.transfers().iter().all(|transfer| transfer.key
+                != "load-principal-rafter-south-west-through-joint-strut-to-principal-south-west"),
+            "the physical bearing closes a truss triangle, so it must not close a cycle in the acyclic support graph"
+        );
+    }
+
+    #[test]
+    fn every_concrete_timber_recipe_evaluates_cleanly() {
+        // Assembly compilation reports only a part id. Evaluating each fitted
+        // timber by stable element key makes a failed joint name the member
+        // and retain the constructive diagnostics that explain it.
+        let construction = model();
+        for element in construction.elements().iter().filter(|element| {
+            matches!(
+                ElementRole::from_label(&element.role),
+                Some(
+                    ElementRole::PrincipalRafter
+                        | ElementRole::TieBeam
+                        | ElementRole::KingPost
+                        | ElementRole::Strut
+                )
+            ) || element.role == "king-post-key"
+        }) {
+            let recipe = joiner::compose(&construction, element)
+                .unwrap_or_else(|error| panic!("{} does not compose: {error}", element.key));
+            let evaluated = exedra_constructive::evaluate::evaluate(
+                &recipe,
+                &exedra_constructive::tessellate::EvalPolicy::default(),
+            )
+            .unwrap_or_else(|error| panic!("{} does not evaluate: {error}", element.key));
+            assert_eq!(
+                evaluated.bodies.len(),
+                1,
+                "{}: {:?}",
+                element.key,
+                evaluated.report.diagnostics
+            );
+            assert!(
+                evaluated
+                    .report
+                    .clean_at(exedra_constructive::evaluate::Severity::Warning),
+                "{}: {:?}",
+                element.key,
+                evaluated.report.diagnostics
+            );
+            assert!(
+                evaluated.bodies[0].body.mesh.validate_deep().is_empty(),
+                "{}",
+                element.key
+            );
+        }
     }
 
     #[test]
@@ -1427,10 +1701,13 @@ mod tests {
 
     #[test]
     fn a_moved_element_leaves_its_own_centreline_behind() {
+        // Moving the fitted tie leaves both its authored member and the heel
+        // relation nodes behind; rule-generated cuts do not mask that graph
+        // incoherence.
         let mut construction = model();
-        shift(&mut construction, "wall-plate-south", [0.0, 0.0, 2.0]);
+        shift(&mut construction, "tie-beam-west", [0.0, 0.0, 2.0]);
         let report = check(&construction);
-        assert!(report.has("member-endpoint-outside-extent", "wall-plate-south"));
+        assert!(report.has("member-endpoint-outside-extent", "tie-beam-west"));
         assert!(report.has("relation-not-incident-to-member", "joint-heel-south-west"));
     }
 
@@ -1472,10 +1749,26 @@ mod tests {
         assert!(evidence.contains("class=modern-engineering-inference"));
         assert!(evidence.contains("claim:"));
 
-        let joint = explain(&construction, "joint:joint-apex-west")
+        let joint = explain(&construction, "joint:joint-principal-head-south-west")
             .expect("valid selector")
             .expect("joint exists");
-        assert!(joint.contains("kind=mortise-tenon"));
-        assert!(joint.contains("geometry=uncut-connectivity-hypothesis"));
+        // The paired ridge interfaces are concrete housed bearings, so their
+        // explanation must name the applied rule rather than an old apex
+        // connectivity hypothesis.
+        assert!(joint.contains("kind=housed-bearing"));
+        assert!(joint.contains(&format!(
+            "geometry=rule-applied:{}",
+            joiner_timber::RAFTER_KING_POST_RULE_KEY
+        )));
+
+        let fitted = explain(&construction, "joint:joint-king-post-to-tie-west")
+            .expect("valid selector")
+            .expect("joint exists");
+        // A concrete rule is reported by its stable key, so an explanation
+        // cannot accidentally describe its edited geometry as uncut.
+        assert!(fitted.contains(&format!(
+            "geometry=rule-applied:{}",
+            joiner_timber::KING_POST_TIE_RULE_KEY
+        )));
     }
 }

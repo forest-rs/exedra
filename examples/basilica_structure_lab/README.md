@@ -61,11 +61,13 @@ The bounded Blender checkpoint renderer consumes those named OBJ layers:
   --render-dir target/basilica_structure_lab/renders
 ```
 
-Its six views cover exposed framing, explicit transfer edges, a transparent
-roof, both wall-plate bearings, and the ridge bearing. These are semantic
-inspection images, not a photoreal acceptance replacement for the basilica.
-The three bearing close-ups isolate the named south principal/wall-plate,
-north principal/wall-plate, and south ridge-purlin/principal interfaces.
+Its ten views cover exposed framing, explicit transfer edges, a transparent
+roof, both wall-plate bearings, the ridge bearing, isolated heel and keyed-tie
+fits, and assembled/exploded views of one complete braced king-post truss.
+These are semantic inspection images, not a photoreal acceptance replacement
+for the basilica. The joint views use the real rule-edited members and
+contrasting role materials; they do not exaggerate the production fit
+allowance.
 
 ## What this proves
 
@@ -91,12 +93,18 @@ their minima, the frame, the tolerance, evidence class, and evidence-source
 key.
 
 The bright bearing cubes and frame axes are deliberately oversized,
-nonphysical diagnostic markers. The principal-rafter/wall-plate record is an
-`anchor-contact`, not a modeled birdsmouth or heel-seat cut. `joiner` can now
-express such a cut — a rule returns coordinated part edits, contacts, and
-transfers, and lowering composes them into the participants' recipes — but no
-timber or masonry rule exists yet, so this bay is still authored uncut. Those
-rules are stages 2 and 3 of `bsl-6ihj` (see ADR 0002).
+nonphysical diagnostic markers. `joiner_timber` now fits every primary joint
+in each braced king-post truss: housed heels, a keyed through-tenon suspending
+the tie, both ends of both compression struts, and both principal-rafter
+bearings in the king head. Every receiving cut is derived from the carried
+section, with the typed fit allowance applied only to receiving geometry; the
+key slot keeps its two load-bearing faces line-to-line. The upper strut bearing
+is a physical contact but not a directed transfer because it closes the
+truss's internal force triangle, while `joiner` intentionally validates an
+acyclic support explanation rather than solving statics. The separate
+principal-rafter/wall-plate `anchor-contact` and masonry relations remain
+explicit hypotheses. Masonry knowledge remains stage 3 of `bsl-6ihj` (see ADR
+0002).
 
 This is schema, geometric-coherence, contact, transfer-witness, and load-path
 validation. It is **not** a
@@ -111,9 +119,9 @@ The graph links every element, member, joint, and bearing to a named evidence
 source and one of four evidence classes:
 `Observed`, `DocumentedReconstruction`, `RegionalAnalogy`, or
 `ModernEngineeringInference`. Source existence and class compatibility are
-validated. The current connected, uncut king-post layout is a modern
-engineering inference informed by historic comparanda; it is not presented as
-a reconstruction of one known Byzantine roof or as finished join geometry.
+validated. The complete fitted truss is a modern engineering inference
+informed by historic comparanda; it is not presented as a reconstruction of
+one known Byzantine roof or as a capacity-checked design.
 
 - The University of Michigan Kelsey Museum reports that the timber nave roof
   at Saint Catherine's, Sinai, was dated to 548-565 through inscriptions
@@ -136,9 +144,18 @@ a reconstruction of one known Byzantine roof or as finished join geometry.
   inference labels visible:
   <https://whc.unesco.org/document/185314>
 - The Timber Frame Engineering Council design guide informs modern housed
-  bearing and mortise-and-tenon semantics. It is technical guidance, not
-  Byzantine evidence:
+  bearing semantics, heel-relish checks, struts bearing into the king above
+  the tie, and the need for an explicit king-post tension connection. It is
+  technical guidance, not Byzantine evidence:
   <https://timberframehq.com/wp-content/uploads/2021/12/TFEC-DG-1-2021.pdf>
+- Historic England records later king-post roofs with raking struts and metal
+  straps under the tie. That is a useful tension-mechanism comparison, not a
+  claim that this basilica used the same detail:
+  <https://historicengland.org.uk/images-books/publications/south-east-farmsteads-character-statement/se-farmsteads-guidance/>
+- NPS documentation illustrates historic king-post-to-chord stirrup straps
+  and forelock bolts. The lab deliberately uses an inspectable timber key
+  instead of silently implying such unmodeled metalwork:
+  <https://www.nps.gov/articles/000/timber-framed-steeples-reproducing-burned-or-destroyed-steeples.htm>
 - NPS preservation research explains why hinges, continuity, partial
   continuity, supports, and sheathing stiffness must be modeled explicitly:
   <https://www.nps.gov/articles/000/timber-framed-steeples-engineering-a-steeple-restoration.htm>
