@@ -26,7 +26,11 @@ cargo run --release -p constructive_wind_tunnel -- --quick
 cargo run --release -p constructive_wind_tunnel -- --ct1-stress
 cargo run --release -p constructive_wind_tunnel -- --gallery
 cargo run --release -p constructive_wind_tunnel -- --gallery-stress
+cargo run --release -p constructive_wind_tunnel -- --gallery-sample
 ```
+
+`--gallery-sample` repeats the unchanged CT-3 workload long enough for an
+external sampling profiler to attach; it is not a distinct benchmark case.
 
 ## License
 
