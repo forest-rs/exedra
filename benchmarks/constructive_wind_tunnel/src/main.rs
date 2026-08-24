@@ -15,6 +15,9 @@
 //!
 //! Isolate the gallery fixture for profiling:
 //! `cargo run --release -p constructive_wind_tunnel -- --gallery-stress`
+//!
+//! Keep the gallery fixture alive for an external sampling profiler:
+//! `cargo run --release -p constructive_wind_tunnel -- --gallery-sample`
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -50,6 +53,7 @@ struct Config {
 enum Profile {
     Quick,
     Stress,
+    Sample,
 }
 
 impl Profile {
@@ -57,6 +61,7 @@ impl Profile {
         match self {
             Self::Quick => "quick",
             Self::Stress => "stress",
+            Self::Sample => "sample",
         }
     }
 
@@ -64,14 +69,14 @@ impl Profile {
     const fn recipe_count(self) -> u32 {
         match self {
             Self::Quick => 64,
-            Self::Stress => 1024,
+            Self::Stress | Self::Sample => 1024,
         }
     }
 
     const fn iterations(self) -> u32 {
         match self {
             Self::Quick => 4,
-            Self::Stress => 3,
+            Self::Stress | Self::Sample => 3,
         }
     }
 
@@ -79,7 +84,7 @@ impl Profile {
     const fn ct2_nodes(self) -> u32 {
         match self {
             Self::Quick => 100,
-            Self::Stress => 400,
+            Self::Stress | Self::Sample => 400,
         }
     }
 
@@ -90,6 +95,10 @@ impl Profile {
         match self {
             Self::Quick => 8,
             Self::Stress => 32,
+            // About one minute on the gallery fixture: long enough for an
+            // external profiler to attach through a separate process and
+            // collect steady-state stacks without changing the workload.
+            Self::Sample => 4096,
         }
     }
 }
@@ -109,6 +118,10 @@ impl Config {
                     config.profile = Profile::Stress;
                     config.gallery_only = true;
                 }
+                "--gallery-sample" => {
+                    config.profile = Profile::Sample;
+                    config.gallery_only = true;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -126,7 +139,7 @@ impl Config {
 
 fn print_help() {
     eprintln!(
-        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress]"
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample]"
     );
 }
 
@@ -688,6 +701,7 @@ mod tests {
         // Pin the profile contract like WT-1 does.
         assert_eq!(Profile::Quick.recipe_count(), 64);
         assert_eq!(Profile::Stress.recipe_count(), 1024);
+        assert_eq!(Profile::Sample.gallery_iterations(), 4096);
         let recipes: Vec<Recipe> = (0..4).map(build_recipe).collect();
         let policy = EvalPolicy::default();
         let a = run_pass(&recipes, &policy);
