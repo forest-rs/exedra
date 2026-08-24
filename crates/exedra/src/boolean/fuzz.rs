@@ -265,6 +265,14 @@ fn boolean_pipeline_fuzz_never_panics_and_honors_its_contract() {
                                 "pair {pair} {op:?}: suspect failure left no diagnostics"
                             );
                         }
+                        BooleanError::NonManifoldContact => {
+                            assert!(
+                                first_diagnostics
+                                    .count_of(super::BooleanFailureKind::NonManifoldContact)
+                                    > 0,
+                                "pair {pair} {op:?}: contact refusal left no diagnostic"
+                            );
+                        }
                         BooleanError::Build(e) => {
                             panic!("pair {pair} {op:?}: internal build failure {e:?}")
                         }

@@ -22,6 +22,9 @@ pub enum BooleanFailureKind {
     /// Input topology is non-manifold where the pipeline requires
     /// manifoldness.
     NonManifoldInput,
+    /// Individually manifold operands meet only along an edge in a way whose
+    /// volumetric boundary would have more than two faces at that edge.
+    NonManifoldContact,
     /// A single input mesh intersects itself.
     SelfIntersectionDetected,
     /// An exactly coplanar configuration outside the handled face-on-face
@@ -51,6 +54,7 @@ impl core::fmt::Display for BooleanFailureKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let name = match self {
             Self::NonManifoldInput => "non-manifold input",
+            Self::NonManifoldContact => "non-manifold operand contact",
             Self::SelfIntersectionDetected => "self-intersection detected",
             Self::CoplanarAmbiguity => "coplanar ambiguity",
             Self::ToleranceExceeded => "tolerance exceeded",

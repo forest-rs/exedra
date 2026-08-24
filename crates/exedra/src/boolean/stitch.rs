@@ -39,6 +39,13 @@
 //! crease policy tags every cut edge with full sharpness and a seam mark —
 //! the seam is a real feature line of the new solid.
 //!
+//! Zero-area operand contacts are regularized only when the half-edge model
+//! can still represent the result. An isolated shared point retains one
+//! shell-local vertex per operand, yielding two valid closed shells. A shared
+//! edge would put four boundary faces on one edge, so it is refused as
+//! [`BooleanError::NonManifoldContact`] instead of leaking a mesh-builder
+//! invariant error.
+//!
 //! Suspect patches are typed poison: the operation fails with
 //! [`BooleanError::SuspectPatches`] rather than emitting geometry that
 //! might be wrong. An empty result (for example the intersection of
@@ -49,9 +56,9 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 
 use super::classify::{PatchClassification, PatchSide, classify_patches};
-use super::coplanar::collect_coplanar_contacts;
-use super::diag::BooleanDiagnostics;
-use super::graph::{IntersectionGraph, build_intersection_graph};
+use super::coplanar::{CoplanarContact, collect_coplanar_contacts};
+use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
+use super::graph::{IntersectionGraph, MeshAnchor, build_intersection_graph};
 use super::narrow::narrow_phase;
 use super::split::{MeshSide, MeshSplitOutcome, split_mesh_along_graph};
 use super::{BooleanBvh, BooleanScratch};
@@ -113,6 +120,11 @@ pub enum BooleanError {
         /// Conservative count of unresolved regions.
         count: u64,
     },
+    /// The operands meet along a zero-area edge whose selected volumetric
+    /// boundary would be non-manifold. Both inputs may be valid manifold
+    /// meshes; it is their contact that cannot be represented by this
+    /// half-edge result.
+    NonManifoldContact,
     /// The output mesh could not be rebuilt (an internal invariant
     /// violation, not an input problem).
     Build(BuildError),
@@ -130,6 +142,9 @@ impl core::fmt::Display for BooleanError {
         match self {
             Self::SuspectPatches { count } => {
                 write!(f, "{count} unresolved regions; boolean result withheld")
+            }
+            Self::NonManifoldContact => {
+                f.write_str("operand edge contact would produce a non-manifold result")
             }
             Self::Build(e) => write!(f, "stitch rebuild failed: {e:?}"),
             Self::InvariantViolation { count } => {
@@ -155,6 +170,8 @@ impl core::error::Error for BooleanError {}
 ///
 /// [`BooleanError::SuspectPatches`] when classification could not soundly
 /// decide every patch (deferred splits, exhausted rays, coplanar overlap);
+/// [`BooleanError::NonManifoldContact`] when otherwise-manifold operands meet
+/// only along an edge that would have four incident result faces;
 /// [`BooleanError::InvariantViolation`] when any stage diagnosed an
 /// internal invariant violation (always a pipeline bug, never an input
 /// problem — the result is withheld rather than returned wrong);
@@ -168,8 +185,7 @@ pub fn boolean_mesh(
     diagnostics: &mut BooleanDiagnostics,
 ) -> Result<BooleanOutput, BooleanError> {
     // Splitting mutates: the pipeline works on private clones.
-    let invariant_baseline =
-        diagnostics.count_of(super::BooleanFailureKind::InternalInvariantViolation);
+    let invariant_baseline = diagnostics.count_of(BooleanFailureKind::InternalInvariantViolation);
     let mut split_a = mesh_a.clone();
     let mut split_b = mesh_b.clone();
 
@@ -225,7 +241,7 @@ pub fn boolean_mesh(
     // problems: a stage that recorded one has left its mesh in a state the
     // pipeline no longer vouches for, so the result is withheld even when
     // classification looks clean.
-    let invariant_now = diagnostics.count_of(super::BooleanFailureKind::InternalInvariantViolation);
+    let invariant_now = diagnostics.count_of(BooleanFailureKind::InternalInvariantViolation);
     if invariant_now > invariant_baseline {
         return Err(BooleanError::InvariantViolation {
             count: (invariant_now - invariant_baseline) as u64,
@@ -242,23 +258,36 @@ pub fn boolean_mesh(
         ..BooleanStats::default()
     };
 
-    stitch(
+    match stitch(
         op,
+        mesh_a,
+        mesh_b,
         &split_a,
         &split_b,
         &graph,
         &outcome_a,
         &outcome_b,
+        &contacts,
         &classification,
         &mut stats,
-    )
-    .map(|(mesh, face_provenance)| BooleanOutput {
-        mesh,
-        face_provenance,
-        classification,
-        stats,
-    })
-    .map_err(BooleanError::Build)
+    ) {
+        Ok((mesh, face_provenance)) => Ok(BooleanOutput {
+            mesh,
+            face_provenance,
+            classification,
+            stats,
+        }),
+        Err(StitchError::NonManifoldContact) => {
+            diagnostics.push(BooleanDiagnostic {
+                kind: BooleanFailureKind::NonManifoldContact,
+                a: None,
+                b: None,
+                detail: "selected shells share an edge with four incident boundary faces",
+            });
+            Err(BooleanError::NonManifoldContact)
+        }
+        Err(StitchError::Build(error)) => Err(BooleanError::Build(error)),
+    }
 }
 
 /// Counts unresolved regions conservatively without double-counting the same
@@ -305,20 +334,30 @@ fn selection(op: BooleanOp, mesh: MeshSide, side: PatchSide) -> Option<bool> {
 
 type Provenance = Vec<(FaceId, MeshSide, FaceId)>;
 
+enum StitchError {
+    /// An exact edge-only operand contact, classified from source topology.
+    NonManifoldContact,
+    /// Any rebuild failure not proven to be an operand-contact limitation.
+    Build(BuildError),
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "internal stage threading fixed pipeline context"
 )]
 fn stitch(
     op: BooleanOp,
+    source_mesh_a: &Mesh,
+    source_mesh_b: &Mesh,
     mesh_a: &Mesh,
     mesh_b: &Mesh,
     graph: &IntersectionGraph,
     outcome_a: &MeshSplitOutcome,
     outcome_b: &MeshSplitOutcome,
+    contacts: &[CoplanarContact],
     classification: &PatchClassification,
     stats: &mut BooleanStats,
-) -> Result<(Mesh, Provenance), BuildError> {
+) -> Result<(Mesh, Provenance), StitchError> {
     let mut builder = MeshBuilder::new();
 
     // --- Identity-based vertex maps, seam vertices pre-welded: one output
@@ -327,6 +366,24 @@ fn stitch(
     let mut map_b: HashMap<VertexId, u32> = HashMap::new();
     let mut seam_builder_indices: Vec<Option<u32>> = alloc::vec![None; graph.vertices.len()];
     for (index, slot) in seam_builder_indices.iter_mut().enumerate() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "graph vertex indices originate as u32"
+        )]
+        let graph_index = index as u32;
+        let isolated_touch = graph.touch_points.binary_search(&graph_index).is_ok()
+            && !graph
+                .edges
+                .iter()
+                .any(|edge| edge.vertices.contains(&graph_index));
+        if isolated_touch {
+            // A point-only contact is not a seam. Welding it would join two
+            // closed shells at one topology vertex and manufacture a
+            // non-manifold vertex; the per-side maps below deliberately keep
+            // one coincident identity in each regularized shell. Touches at
+            // the endpoint of a real graph edge still belong to that edge.
+            continue;
+        }
         if let (Some(va), Some(vb)) = (
             outcome_a.graph_vertices[index],
             outcome_b.graph_vertices[index],
@@ -397,19 +454,36 @@ fn stitch(
                 .attrs()
                 .dense(attr::FACE_REGION)
                 .and_then(|layer| layer.get(face.as_id()).copied());
-            builder.add_face_with_attrs(
-                &loop_indices,
-                &FaceBuildAttrs {
-                    region,
-                    ..FaceBuildAttrs::default()
-                },
-            )?;
+            builder
+                .add_face_with_attrs(
+                    &loop_indices,
+                    &FaceBuildAttrs {
+                        region,
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(StitchError::Build)?;
             sources.push((patch.mesh, face));
             stats.kept_faces += 1;
         }
     }
 
-    let result = builder.build()?;
+    let result = builder.build().map_err(|error| {
+        classify_stitch_build_error(
+            error,
+            op,
+            source_mesh_a,
+            source_mesh_b,
+            mesh_a,
+            mesh_b,
+            graph,
+            contacts,
+            classification,
+            &map_a,
+            &map_b,
+            &seam_builder_indices,
+        )
+    })?;
     let mut mesh = result.mesh;
 
     // --- Compose provenance through the split stage's origin mapping.
@@ -475,6 +549,171 @@ fn stitch(
     }
 
     Ok((mesh, face_provenance))
+}
+
+/// Separates a geometric edge-contact refusal from a genuine stitch bug.
+///
+/// `MeshBuilder` only knows that four selected faces reached one output edge;
+/// it cannot know why. Calling every such error an operand limitation would
+/// hide classification and stitching defects. We therefore recognize the
+/// narrow edge-contact case only when all of the following source facts agree:
+///
+/// - the failing builder edge is one intersection-graph edge;
+/// - that graph edge is a real pre-existing mesh edge on both operands;
+/// - exactly two selected faces from each operand use it; and
+/// - it does not bound a positive-area coplanar contact already handled by
+///   the contact-selection table.
+///
+/// Anything else remains [`BooleanError::Build`] via [`StitchError::Build`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "classification needs the stitch artifacts that prove source ownership"
+)]
+fn classify_stitch_build_error(
+    error: BuildError,
+    op: BooleanOp,
+    source_mesh_a: &Mesh,
+    source_mesh_b: &Mesh,
+    mesh_a: &Mesh,
+    mesh_b: &Mesh,
+    graph: &IntersectionGraph,
+    contacts: &[CoplanarContact],
+    classification: &PatchClassification,
+    map_a: &HashMap<VertexId, u32>,
+    map_b: &HashMap<VertexId, u32>,
+    seam_builder_indices: &[Option<u32>],
+) -> StitchError {
+    let BuildError::NonManifoldEdge { a, b, count } = error else {
+        return StitchError::Build(error);
+    };
+    if op != BooleanOp::Union {
+        return StitchError::Build(error);
+    }
+    let output_edge = [a.min(b), a.max(b)];
+    let Some(graph_edge) = graph.edges.iter().find(|edge| {
+        let [p, q] = edge.vertices.map(|index| index as usize);
+        seam_builder_indices
+            .get(p)
+            .copied()
+            .flatten()
+            .zip(seam_builder_indices.get(q).copied().flatten())
+            .is_some_and(|(u, v)| [u.min(v), u.max(v)] == output_edge)
+    }) else {
+        return StitchError::Build(error);
+    };
+    let [p, q] = graph_edge.vertices.map(|index| index as usize);
+    let Some((start, end)) = graph.vertices.get(p).zip(graph.vertices.get(q)) else {
+        return StitchError::Build(error);
+    };
+    if !anchors_are_one_mesh_edge(source_mesh_a, start.anchor_a, end.anchor_a)
+        || !anchors_are_one_mesh_edge(source_mesh_b, start.anchor_b, end.anchor_b)
+        || contact_bounds_graph_edge(contacts, start, end)
+    {
+        return StitchError::Build(error);
+    }
+
+    let (faces_a, faces_b) = selected_edge_face_counts(
+        output_edge,
+        mesh_a,
+        mesh_b,
+        op,
+        classification,
+        map_a,
+        map_b,
+    );
+    if count == 4 && faces_a == 2 && faces_b == 2 {
+        StitchError::NonManifoldContact
+    } else {
+        StitchError::Build(error)
+    }
+}
+
+/// Returns whether two graph anchors identify the same real mesh edge.
+/// `EdgeSpan` can also denote a triangulation diagonal, hence the final
+/// topology lookup rather than trusting provenance shape alone.
+fn anchors_are_one_mesh_edge(mesh: &Mesh, start: MeshAnchor, end: MeshAnchor) -> bool {
+    let carrier = match (start, end) {
+        (MeshAnchor::Vertex(a), MeshAnchor::Vertex(b)) if a != b => Some((a, b)),
+        (MeshAnchor::Vertex(vertex), MeshAnchor::EdgeSpan(a, b))
+        | (MeshAnchor::EdgeSpan(a, b), MeshAnchor::Vertex(vertex))
+            if vertex == a || vertex == b =>
+        {
+            Some((a, b))
+        }
+        (MeshAnchor::EdgeSpan(a, b), MeshAnchor::EdgeSpan(c, d))
+            if sorted_vertex_pair(a, b) == sorted_vertex_pair(c, d) =>
+        {
+            Some((a, b))
+        }
+        _ => None,
+    };
+    carrier.is_some_and(|(a, b)| find_half_edge(mesh, a, b).is_some())
+}
+
+fn sorted_vertex_pair(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
+    if a.index() <= b.index() {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// A positive-area coplanar region adjacent to this graph edge means contact
+/// selection, rather than edge-only regularization, owns the configuration.
+fn contact_bounds_graph_edge(
+    contacts: &[CoplanarContact],
+    start: &super::graph::GraphVertex,
+    end: &super::graph::GraphVertex,
+) -> bool {
+    contacts.iter().any(|contact| {
+        start.faces_a.contains(&contact.face_a)
+            && end.faces_a.contains(&contact.face_a)
+            && start.faces_b.contains(&contact.face_b)
+            && end.faces_b.contains(&contact.face_b)
+    })
+}
+
+/// Counts selected face loops that use one builder edge, separated by source
+/// operand. This recomputes only on the exceptional rebuild path, keeping the
+/// ordinary stitch allocation-calm.
+fn selected_edge_face_counts(
+    output_edge: [u32; 2],
+    mesh_a: &Mesh,
+    mesh_b: &Mesh,
+    op: BooleanOp,
+    classification: &PatchClassification,
+    map_a: &HashMap<VertexId, u32>,
+    map_b: &HashMap<VertexId, u32>,
+) -> (usize, usize) {
+    let mut counts = [0_usize; 2];
+    for patch in &classification.patches {
+        if selection(op, patch.mesh, patch.side).is_none() {
+            continue;
+        }
+        let (mesh, map, side) = match patch.mesh {
+            MeshSide::A => (mesh_a, map_a, 0),
+            MeshSide::B => (mesh_b, map_b, 1),
+        };
+        for &face in &patch.faces {
+            let indices: Vec<u32> = mesh
+                .face_loop(face)
+                .filter_map(|half_edge| mesh.to_vertex(half_edge))
+                .filter_map(|vertex| map.get(&vertex).copied())
+                .collect();
+            if indices.len() < 2 {
+                continue;
+            }
+            let uses_edge = (0..indices.len()).any(|index| {
+                let a = indices[index];
+                let b = indices[(index + 1) % indices.len()];
+                [a.min(b), a.max(b)] == output_edge
+            });
+            if uses_edge {
+                counts[side] += 1;
+            }
+        }
+    }
+    (counts[0], counts[1])
 }
 
 /// Finds a half-edge between `from` and `to` in either direction. Linear
@@ -828,6 +1067,98 @@ mod tests {
         }
         // The contact outline is a tagged seam of the merged solid.
         assert!(output.stats.seam_edges >= 4, "{:?}", output.stats);
+    }
+
+    #[test]
+    fn shared_edge_union_returns_a_typed_geometric_refusal() {
+        // Two otherwise-disjoint boxes share exactly one vertical edge. The
+        // volumetric union is not a 2-manifold there, so the public error must
+        // describe operand contact rather than expose a builder invariant.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 1.0, 0.0], [2.0, 2.0, 1.0]);
+        let (error, diagnostics) = run_boolean(&mesh_a, &mesh_b, BooleanOp::Union)
+            .expect_err("shared-edge union is not a manifold solid");
+
+        assert_eq!(error, BooleanError::NonManifoldContact);
+        assert_eq!(
+            diagnostics.count_of(BooleanFailureKind::NonManifoldContact),
+            1,
+            "typed refusal retains an inspectable geometric diagnostic"
+        );
+    }
+
+    #[test]
+    fn unproven_non_manifold_rebuild_error_remains_internal() {
+        // The contact classifier must not launder an arbitrary builder error
+        // into a supported geometric refusal. Without graph/source evidence,
+        // the same low-level shape remains an internal stitch failure.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]);
+        let build = BuildError::NonManifoldEdge {
+            a: 0,
+            b: 1,
+            count: 4,
+        };
+        let classified = classify_stitch_build_error(
+            build,
+            BooleanOp::Union,
+            &mesh_a,
+            &mesh_b,
+            &mesh_a,
+            &mesh_b,
+            &IntersectionGraph::default(),
+            &[],
+            &PatchClassification::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+
+        assert!(matches!(classified, StitchError::Build(error) if error == build));
+    }
+
+    #[test]
+    fn shared_edge_non_union_ops_keep_their_regularized_volumes() {
+        // Edge-only contact has no common volume: Intersection is empty and
+        // Difference leaves A intact. Only Union needs the non-manifold
+        // refusal because only it would retain all four incident faces.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 1.0, 0.0], [2.0, 2.0, 1.0]);
+
+        let (intersection, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Intersection).expect("empty intersection");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert_eq!(intersection.mesh.faces().count(), 0);
+
+        let (difference, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Difference).expect("unchanged difference");
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(difference.mesh.validate_deep().is_empty());
+        assert!((signed_volume(&difference.mesh) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shared_vertex_union_preserves_two_regularized_shells() {
+        // A point contact has zero volume and needs no welded topology. Keeping
+        // shell-local vertex identities yields two valid closed components
+        // instead of creating a non-manifold vertex in one shell complex.
+        let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let mesh_b = box_mesh([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]);
+        let (output, diagnostics) =
+            run_boolean(&mesh_a, &mesh_b, BooleanOp::Union).expect("point contact regularizes");
+
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        assert!(output.mesh.validate_deep().is_empty());
+        assert_eq!(output.mesh.faces().count(), 12, "both cube shells survive");
+        assert_eq!(
+            output
+                .mesh
+                .vertices()
+                .filter(|&vertex| output.mesh.vertex_position(vertex) == Some(&[1.0, 1.0, 1.0]))
+                .count(),
+            2,
+            "the coincident point retains one identity per closed shell"
+        );
     }
 
     #[test]
