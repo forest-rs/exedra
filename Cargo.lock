@@ -47,6 +47,7 @@ dependencies = [
  "exedra_constructive",
  "exedra_math",
  "joiner",
+ "joiner_timber",
  "setout_joiner",
 ]
 

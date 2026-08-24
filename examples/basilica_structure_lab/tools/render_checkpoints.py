@@ -138,6 +138,54 @@ def focus_bearing_view(output: Path) -> None:
                     vertex.co = center + (vertex.co - center) * 1.8
 
 
+def focus_joint_view(output: Path) -> None:
+    """Isolate fitted timber members and apply any requested explosion."""
+    offsets: dict[str, Vector] = {}
+    if output.name == "heel_south_exploded.png":
+        visible = ("tie-beam-east", "principal-rafter-south-east")
+        offsets = {"principal-rafter-south-east": Vector((-0.55, -0.20, 0.24))}
+    elif output.name == "king_post_tie_exploded.png":
+        visible = ("tie-beam-east", "king-post-east", "king-post-to-tie-east-key")
+        offsets = {"king-post-east": Vector((0.0, 0.0, 0.42))}
+    elif output.name in ("truss_assembled.png", "truss_exploded.png"):
+        visible = (
+            "tie-beam-east",
+            "principal-rafter-south-east",
+            "principal-rafter-north-east",
+            "king-post-east",
+            "king-post-to-tie-east-key",
+            "strut-south-east",
+            "strut-north-east",
+        )
+        if output.name == "truss_exploded.png":
+            # Pull members in the truss plane and lift the keyed post as a
+            # whole. The offsets are large enough to expose every bearing
+            # face without changing the exported meshes themselves.
+            offsets = {
+                "tie-beam-east": Vector((0.0, 0.0, -0.28)),
+                "principal-rafter-south-east": Vector((0.0, -0.42, 0.25)),
+                "principal-rafter-north-east": Vector((0.0, 0.42, 0.25)),
+                "king-post-east": Vector((0.34, 0.0, 0.22)),
+                "king-post-to-tie-east-key": Vector((0.62, 0.0, 0.0)),
+                "strut-south-east": Vector((-0.30, -0.24, 0.0)),
+                "strut-north-east": Vector((-0.30, 0.24, 0.0)),
+            }
+    else:
+        return
+
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH":
+            continue
+        obj.hide_render = not any(token in obj.name for token in visible)
+        for token, offset in offsets.items():
+            if token not in obj.name:
+                continue
+            # Move the complete fitted member, not its vertices, so its cut
+            # faces and normals remain exactly as exported.
+            obj.location += offset
+            break
+
+
 def render_view(
     obj: Path,
     output: Path,
@@ -147,7 +195,9 @@ def render_view(
     reset_scene()
     import_obj(obj)
     focus_bearing_view(output)
-    add_ground()
+    focus_joint_view(output)
+    if "exploded" not in output.name:
+        add_ground()
     add_lighting()
     add_camera(location, target)
     configure_scene(output)
@@ -195,6 +245,30 @@ def main() -> None:
             "bearing_ridge_close.png",
             (6.7, -3.8, 15.0),
             (4.0, 0.0, 13.6),
+        ),
+        (
+            "structure.obj",
+            "heel_south_exploded.png",
+            (5.8, -6.5, 12.4),
+            (4.0, -4.5, 11.3),
+        ),
+        (
+            "structure.obj",
+            "king_post_tie_exploded.png",
+            (5.7, -2.6, 12.3),
+            (4.0, 0.0, 11.5),
+        ),
+        (
+            "structure.obj",
+            "truss_assembled.png",
+            (8.8, -11.5, 13.6),
+            (4.0, 0.0, 12.0),
+        ),
+        (
+            "structure.obj",
+            "truss_exploded.png",
+            (8.8, -11.5, 13.8),
+            (4.0, 0.0, 12.0),
         ),
     ]
     for obj_name, output_name, location, target in checkpoints:

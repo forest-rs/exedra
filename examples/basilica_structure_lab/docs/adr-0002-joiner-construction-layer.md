@@ -160,15 +160,33 @@ IR is not shaped by one:
 1. **Mechanism and fixtures**: create `joiner`, migrate the structure lab to
    consume it, and express a member/member truss heel and a host/fill window as
    hand-authored rule-output fixtures. This is the review gate.
-2. **Timber knowledge**: implement the heel and king-post-foot rules in
-   `joiner_timber`, then replace the overlap constants in `basilica_ruin`.
+2. **Timber knowledge**: implement enough rules for one complete braced
+   king-post truss in `joiner_timber`, then replace the overlap constants in
+   `basilica_ruin`.
 3. **Masonry knowledge**: implement the clerestory opening and minimal
    coursing rule in `joiner_masonry`.
 
-The structure lab's `model.rs` is the seed of the mechanism crate. The staged
-fixtures prove that both relation families fit the mechanism without claiming
-that either rule library already exists. Breaking `basilica_ruin` later to get
-the right core shape is explicitly allowed by the workspace North Star.
+Stage 2 completed on 2026-08-25 without changing this boundary. The timber
+library fits housed heels, a keyed king-post through-tenon, both ends of the
+compression struts, and paired principal-rafter bearings at the king head.
+The tie relation names the shoulder on the tie top while the post extent and
+member include the exposed tenon tip below it. Full-section housed bearings
+name the carried member endpoint and cut only the carrier. These public
+geometric contracts, minimum-relish checks, and load mechanisms are documented
+beside the rules and pinned by constructive evaluation tests. The lab renders
+isolated fits plus assembled and exploded complete trusses; `basilica_ruin`
+reuses the same fitted recipes in every intact station.
+
+The upper strut bearing records the rafter as physically carried by the strut
+but deliberately adds no directed transfer. That contact closes the
+rafter/strut/king force triangle; representing every internal force as a
+downstream edge would create a cycle and misrepresent `joiner`'s acyclic
+support explanation as a statics model. The heel uses the same contact-only
+principle at the other edge of the truss triangle.
+
+The structure lab's `model.rs` seeded the mechanism crate. The stage-1 fixtures
+proved that both relation families fit the mechanism before the rule libraries
+existed; stage 2 replaces the timber fixture geometry with concrete rules.
 
 ## Consequences
 
