@@ -370,6 +370,10 @@ fn triangle_is_flat(t: &[[f64; 3]; 3]) -> bool {
 fn on_plane(plane: &[[f64; 3]; 3], points: &[[f64; 3]]) -> bool {
     points
         .iter()
+        // The three defining vertices are coplanar by identity. Sending them
+        // through orient3d proves an exact zero with expansion arithmetic,
+        // which is both redundant and the common path for face planarity.
+        .filter(|point| !plane.contains(point))
         .all(|&p| orient3d(plane[0], plane[1], plane[2], p) == Orientation3d::Coplanar)
 }
 
@@ -427,6 +431,19 @@ mod tests {
     use super::*;
     use crate::MeshBuilder;
     use crate::boolean::{BooleanBvh, BooleanScratch};
+
+    #[test]
+    fn plane_membership_skips_defining_vertices_but_checks_the_remainder() {
+        // The defining triangle is known to lie on its own plane; this test
+        // pins that only additional vertices decide polygon planarity.
+        let plane = [[0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]];
+        let mut polygon = plane.to_vec();
+        polygon.push([1.0, 1.0, 2.0]);
+        assert!(on_plane(&plane, &polygon));
+        // One ulp at 2.0 is `2 * EPSILON`.
+        polygon.push([0.5, 0.5, 2.0 + 2.0 * f64::EPSILON]);
+        assert!(!on_plane(&plane, &polygon));
+    }
 
     /// Builds an axis-aligned box mesh spanning `min..max`.
     fn box_mesh(min: [f32; 3], max: [f32; 3]) -> Mesh {
