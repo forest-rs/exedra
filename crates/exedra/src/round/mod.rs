@@ -250,9 +250,6 @@ pub struct RoundStats {
     pub patch_faces: u32,
     /// Pre-existing faces rewritten.
     pub rewritten_faces: u32,
-    /// Exactly-degenerate sliver faces that vanished with the rewrite
-    /// (their vertices were coincident seam duplicates).
-    pub vanished_faces: u32,
     /// Consumed chain vertices removed.
     pub removed_vertices: u32,
     /// New vertices added.
@@ -340,10 +337,6 @@ struct DirEdge {
 #[derive(Clone, Debug)]
 struct Chain {
     verts: Vec<VertexId>,
-    /// Coincident mesh vertices merged into each chain position: boolean
-    /// seams carry distinct vertices at identical narrowed positions, whose
-    /// zero-length connecting edges collapse into one cross-section.
-    aliases: Vec<Vec<VertexId>>,
     edges: Vec<DirEdge>,
     closed: bool,
     segments: u32,
@@ -522,16 +515,13 @@ impl Planner<'_> {
             _ => VertexKind::Corner,
         };
 
-        // Per-edge geometry checks. Zero-length edges (distinct seam
-        // vertices at identical narrowed positions) skip them: they merge
-        // into one chain position during tracing.
+        // Validate every selected edge before tracing. In particular, a
+        // zero-length edge is invalid mesh input: Boolean stitching owns seam
+        // identity canonicalization, and rounding must not silently weld
+        // topology using only coordinates.
         let mut sweeps = Vec::with_capacity(selected.len());
         for edge in selected {
-            if self.position(edge.a) == self.position(edge.b) {
-                sweeps.push(None);
-            } else {
-                sweeps.push(Some(self.edge_sweep(edge)?));
-            }
+            sweeps.push(self.edge_sweep(edge)?);
         }
 
         // Chains.
@@ -560,7 +550,7 @@ impl Planner<'_> {
         // Trihedral corners (also builds corner-end sections).
         let corners = self.build_corners(&mut chains, &adjacency, selected, &vertex_faces)?;
 
-        // Flank substitutions (reps and coincident aliases alike).
+        // Flank substitutions.
         for chain in &chains {
             for (index, edge) in chain.edges.iter().enumerate() {
                 let next = (index + 1) % chain.vertex_count();
@@ -574,10 +564,6 @@ impl Planner<'_> {
                 ];
                 for (face, position, point) in subs {
                     self.register(face, chain.verts[position], Subst::Point(point))?;
-                    for alias_index in 0..chain.aliases[position].len() {
-                        let alias = chain.aliases[position][alias_index];
-                        self.register(face, alias, Subst::Point(point))?;
-                    }
                 }
             }
         }
@@ -909,13 +895,11 @@ impl Planner<'_> {
         &self,
         selected: &[SelEdge],
         adjacency: &BTreeMap<VertexId, Vec<usize>>,
-        sweeps: &[Option<f64>],
+        sweeps: &[f64],
     ) -> Result<Vec<Chain>, RoundError> {
         let mut visited = alloc::vec![false; selected.len()];
         let mut raw = Vec::new();
 
-        // Each walked edge pairs with its sweep; `None` marks a zero-length
-        // edge that merges away below.
         let walk = |first_vertex: VertexId, first_edge: usize, visited: &mut Vec<bool>| {
             let mut verts = alloc::vec![first_vertex];
             let mut edges = Vec::new();
@@ -930,16 +914,13 @@ impl Planner<'_> {
                 } else {
                     (edge.b, edge.a, edge.right, edge.left)
                 };
-                edges.push((
-                    DirEdge {
-                        a,
-                        b,
-                        left,
-                        right,
-                        sweep: sweeps[edge_index].unwrap_or(0.0),
-                    },
-                    sweeps[edge_index].is_none(),
-                ));
+                edges.push(DirEdge {
+                    a,
+                    b,
+                    left,
+                    right,
+                    sweep: sweeps[edge_index],
+                });
                 current = b;
                 verts.push(b);
                 let incident = &adjacency[&current];
@@ -987,12 +968,10 @@ impl Planner<'_> {
 
         let mut chains = Vec::with_capacity(raw.len());
         for (verts, edges, closed) in raw {
-            let (verts, aliases, edges) = merge_coincident(verts, edges, closed)?;
             let segments = self.chain_segments(&edges)?;
             let count = verts.len();
             chains.push(Chain {
                 verts,
-                aliases,
                 edges,
                 closed,
                 segments,
@@ -1342,16 +1321,18 @@ impl Planner<'_> {
             }
         }
 
-        // Coincident seam vertices map to one point: zero-length old edges
-        // collapse, and a face made entirely of them vanishes.
+        // Adjacent substitution images legitimately share endpoints (for
+        // example an end-face splice meeting its flank point), so normalize
+        // those consecutive tokens. Any face that then has fewer than three
+        // corners exceeded geometric clearance; rounding does not delete
+        // source topology to make the rewrite fit.
         let mut entries: Vec<Tok> = images.iter().flatten().copied().collect();
         entries.dedup();
         while entries.len() > 1 && entries.first() == entries.last() {
             entries.pop();
         }
         if entries.len() < 3 {
-            self.stats.vanished_faces += 1;
-            return Ok(());
+            return Err(RoundError::ClearanceExceeded { face: face.index() });
         }
         let mut sorted = entries.clone();
         sorted.sort_unstable();
@@ -1579,65 +1560,6 @@ impl Planner<'_> {
     }
 }
 
-/// Merges runs of coincident chain vertices connected by zero-length
-/// edges into single positions with alias lists.
-#[expect(clippy::type_complexity, reason = "internal chain assembly")]
-fn merge_coincident(
-    verts: Vec<VertexId>,
-    edges: Vec<(DirEdge, bool)>,
-    closed: bool,
-) -> Result<(Vec<VertexId>, Vec<Vec<VertexId>>, Vec<DirEdge>), RoundError> {
-    if !edges.iter().any(|(_, zero)| !zero) {
-        return Err(RoundError::UnsupportedTopology {
-            detail: "sharp chain degenerates to a point",
-        });
-    }
-    let (verts, edges) = if closed {
-        // Rotate the ring so it neither starts nor ends on a zero-length
-        // edge boundary: begin right after a surviving edge.
-        let count = edges.len();
-        let offset = (0..count)
-            .find(|&j| !edges[(j + count - 1) % count].1)
-            .expect("a surviving edge exists");
-        let verts: Vec<VertexId> = (0..count).map(|i| verts[(offset + i) % count]).collect();
-        let edges: Vec<(DirEdge, bool)> = (0..count).map(|i| edges[(offset + i) % count]).collect();
-        (verts, edges)
-    } else {
-        if edges.first().is_some_and(|(_, zero)| *zero)
-            || edges.last().is_some_and(|(_, zero)| *zero)
-        {
-            return Err(RoundError::UnsupportedTopology {
-                detail: "zero-length sharp edge at a chain end",
-            });
-        }
-        (verts, edges)
-    };
-
-    let mut merged_verts = alloc::vec![verts[0]];
-    let mut aliases: Vec<Vec<VertexId>> = alloc::vec![Vec::new()];
-    let mut merged_edges = Vec::new();
-    for (index, (edge, zero)) in edges.iter().enumerate() {
-        let target = verts[(index + 1) % verts.len()];
-        if *zero {
-            aliases.last_mut().expect("non-empty").push(target);
-        } else {
-            merged_edges.push(*edge);
-            if closed && index == edges.len() - 1 {
-                // The ring's final edge returns to position zero.
-                continue;
-            }
-            merged_verts.push(target);
-            aliases.push(Vec::new());
-        }
-    }
-    if closed && merged_verts.len() != merged_edges.len() {
-        return Err(RoundError::UnsupportedTopology {
-            detail: "ring chain merge lost its closure",
-        });
-    }
-    Ok((merged_verts, aliases, merged_edges))
-}
-
 /// Averaged side normals and section endpoints for a non-corner chain
 /// vertex, used to classify vertex-only faces.
 fn vertex_side_points(
@@ -1646,7 +1568,7 @@ fn vertex_side_points(
 ) -> Option<([f64; 3], [f64; 3], u32, u32)> {
     for chain in chains {
         for (index, &v) in chain.verts.iter().enumerate() {
-            if v != vertex && !chain.aliases[index].contains(&vertex) {
+            if v != vertex {
                 continue;
             }
             let (left_normal, right_normal) = chain.frames[index]?;

@@ -14,6 +14,14 @@ near-zero-area cap slivers hugging every ring. With `collapse_edge` and
 `flip_edge` in the kernel (ADR-0009), a cleanup pass can remove them —
 the question is under what contract.
 
+Boolean stitching first canonicalizes graph constructions that land on
+the same stored `f32` position within one connected seam component. If
+that identity merge pinches a selected source face, stitching decomposes
+its boundary walk into simple cycles and repeats the source provenance for
+each emitted face. This is intentionally topology-scoped: equal positions
+in disconnected seams or shells remain distinct. Cleanup therefore receives
+identity-canonical seams and is not a positional welding fallback.
+
 ## Decision 1: geometry-conservative, refusal over degradation
 
 `boolean::cleanup_seams(&mut Mesh, &SeamCleanupPolicy)` never moves a

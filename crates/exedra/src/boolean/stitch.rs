@@ -38,6 +38,11 @@
 //! vertex, and every other vertex maps per source mesh. The weld-seam
 //! crease policy tags every cut edge with full sharpness and a seam mark —
 //! the seam is a real feature line of the new solid.
+//! Graph points in one connected seam that narrow to one stored `f32` point
+//! are representational aliases, however: they map to the lowest-index
+//! component survivor. This is topology-constrained identity recovery, not
+//! global coordinate welding; unrelated equal-position seams and shells
+//! remain distinct.
 //!
 //! Zero-area operand contacts are regularized only when the half-edge model
 //! can still represent the result. An isolated shared point retains one
@@ -53,6 +58,7 @@
 
 use alloc::vec::Vec;
 
+use exedra_math::narrow;
 use hashbrown::HashMap;
 
 use super::classify::{PatchClassification, PatchSide, classify_patches};
@@ -360,12 +366,22 @@ fn stitch(
 ) -> Result<(Mesh, Provenance), StitchError> {
     let mut builder = MeshBuilder::new();
 
-    // --- Identity-based vertex maps, seam vertices pre-welded: one output
-    // vertex per graph vertex materialized on both meshes.
+    // --- Identity-based vertex maps, seam vertices pre-welded. One connected
+    // graph component can contain distinct f64 constructions that narrow to
+    // one stored f32 point; those representational aliases share one builder
+    // identity. Equal positions in unrelated graph components remain distinct.
     let mut map_a: HashMap<VertexId, u32> = HashMap::new();
     let mut map_b: HashMap<VertexId, u32> = HashMap::new();
     let mut seam_builder_indices: Vec<Option<u32>> = alloc::vec![None; graph.vertices.len()];
-    for (index, slot) in seam_builder_indices.iter_mut().enumerate() {
+    let representatives = canonical_seam_representatives(graph);
+    let mut representative_builder_indices: Vec<Option<u32>> =
+        alloc::vec![None; graph.vertices.len()];
+    let mut representative_positions: Vec<Option<[f32; 3]>> =
+        alloc::vec![None; graph.vertices.len()];
+    let mut representative_materializations = alloc::vec![0_u32; graph.vertices.len()];
+    let mut representative_has_a = alloc::vec![false; graph.vertices.len()];
+    let mut representative_has_b = alloc::vec![false; graph.vertices.len()];
+    for (index, &representative) in representatives.iter().enumerate() {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "graph vertex indices originate as u32"
@@ -384,24 +400,66 @@ fn stitch(
             // the endpoint of a real graph edge still belong to that edge.
             continue;
         }
-        if let (Some(va), Some(vb)) = (
-            outcome_a.graph_vertices[index],
-            outcome_b.graph_vertices[index],
-        ) {
-            let Some(position) = mesh_a.vertex_position(va) else {
-                continue;
-            };
-            debug_assert_eq!(
-                mesh_b.vertex_position(vb),
-                Some(position),
-                "both sides materialize the identical narrowed position"
-            );
-            let builder_index = builder.push_vertex(*position);
-            map_a.insert(va, builder_index);
-            map_b.insert(vb, builder_index);
-            *slot = Some(builder_index);
-            stats.welded_vertices += 1;
+        let representative = representative as usize;
+        let mut materialized = false;
+        if let Some(vertex) = outcome_a.graph_vertices[index]
+            && let Some(&position) = mesh_a.vertex_position(vertex)
+        {
+            record_representative_position(&mut representative_positions[representative], position);
+            representative_has_a[representative] = true;
+            materialized = true;
         }
+        if let Some(vertex) = outcome_b.graph_vertices[index]
+            && let Some(&position) = mesh_b.vertex_position(vertex)
+        {
+            record_representative_position(&mut representative_positions[representative], position);
+            representative_has_b[representative] = true;
+            materialized = true;
+        }
+        if materialized {
+            representative_materializations[representative] =
+                representative_materializations[representative].saturating_add(1);
+        }
+    }
+    for representative in 0..representative_positions.len() {
+        let shared_across_operands =
+            representative_has_a[representative] && representative_has_b[representative];
+        let has_aliases = representative_materializations[representative] > 1;
+        if (shared_across_operands || has_aliases)
+            && let Some(position) = representative_positions[representative]
+        {
+            representative_builder_indices[representative] = Some(builder.push_vertex(position));
+            if shared_across_operands {
+                stats.welded_vertices += 1;
+            }
+        }
+    }
+    // Every materialized vertex in an alias group maps to its survivor. A and
+    // B need not materialize the same graph record: shared stored identity is
+    // a property of the entire topology-scoped group.
+    for (index, slot) in seam_builder_indices.iter_mut().enumerate() {
+        let representative = representatives[index] as usize;
+        let Some(builder_index) = representative_builder_indices[representative] else {
+            continue;
+        };
+        let expected_position = representative_positions[representative];
+        if let Some(vertex) = outcome_a.graph_vertices[index] {
+            debug_assert_eq!(
+                mesh_a.vertex_position(vertex).copied(),
+                expected_position,
+                "collapsed seam component stores one narrowed position"
+            );
+            map_a.insert(vertex, builder_index);
+        }
+        if let Some(vertex) = outcome_b.graph_vertices[index] {
+            debug_assert_eq!(
+                mesh_b.vertex_position(vertex).copied(),
+                expected_position,
+                "collapsed seam component stores one narrowed position"
+            );
+            map_b.insert(vertex, builder_index);
+        }
+        *slot = Some(builder_index);
     }
 
     // --- Kept faces in deterministic order (classification is already
@@ -418,6 +476,7 @@ fn stitch(
             MeshSide::B => (mesh_b, &mut map_b),
         };
         for &face in &patch.faces {
+            let captured_attrs_start = captured_attrs.len();
             let mut loop_indices: Vec<u32> = Vec::new();
             for half_edge in mesh.face_loop(face) {
                 let Some(vertex) = mesh.to_vertex(half_edge) else {
@@ -447,24 +506,42 @@ fn stitch(
                     captured_attrs.push((from, to, sharpness, seam));
                 }
             }
-            if flip {
-                loop_indices.reverse();
+            // Canonical seam identities can turn a formerly simple source
+            // loop into a closed walk which visits the survivor more than
+            // once. Split that walk at repeated survivors: each emitted loop
+            // remains a simple face, while two-edge and point loops have no
+            // representable area and disappear. No new diagonal is invented;
+            // the cycles partition the source boundary edges.
+            let mut face_loops = simple_cycles(loop_indices);
+            if face_loops.is_empty() {
+                // The source face narrowed entirely onto a seam point or
+                // segment. Its captured attributes have no surviving edge.
+                captured_attrs.truncate(captured_attrs_start);
+                continue;
             }
             let region = mesh
                 .attrs()
                 .dense(attr::FACE_REGION)
                 .and_then(|layer| layer.get(face.as_id()).copied());
-            builder
-                .add_face_with_attrs(
-                    &loop_indices,
-                    &FaceBuildAttrs {
-                        region,
-                        ..FaceBuildAttrs::default()
-                    },
-                )
-                .map_err(StitchError::Build)?;
-            sources.push((patch.mesh, face));
-            stats.kept_faces += 1;
+            for loop_indices in &mut face_loops {
+                if flip {
+                    loop_indices.reverse();
+                }
+                builder
+                    .add_face_with_attrs(
+                        loop_indices,
+                        &FaceBuildAttrs {
+                            region,
+                            ..FaceBuildAttrs::default()
+                        },
+                    )
+                    .map_err(StitchError::Build)?;
+                // A pinched source face may become several simple output
+                // faces. Repeating its source here preserves one provenance
+                // row per emitted face and deterministic encounter order.
+                sources.push((patch.mesh, face));
+                stats.kept_faces += 1;
+            }
         }
     }
 
@@ -549,6 +626,130 @@ fn stitch(
     }
 
     Ok((mesh, face_provenance))
+}
+
+fn record_representative_position(slot: &mut Option<[f32; 3]>, position: [f32; 3]) {
+    if let Some(existing) = slot {
+        debug_assert_eq!(
+            stored_position_key(*existing),
+            stored_position_key(position),
+            "one seam-identity group must store one canonical position key"
+        );
+    } else {
+        *slot = Some(position);
+    }
+}
+
+/// Lowest-index representative for every exact stored position within one
+/// connected intersection-graph component.
+///
+/// Graph provenance intentionally keeps distinct `f64` constructions when
+/// their carriers differ. Stitching cannot preserve that distinction within
+/// one seam after both points narrow to the same mesh position: adjacent
+/// aliases create zero-length edges, while non-adjacent aliases pinch the seam
+/// ring. Scoping the coordinate key by graph connectivity retains the
+/// provenance fence against unrelated coincident seams and shells.
+fn canonical_seam_representatives(graph: &IntersectionGraph) -> Vec<u32> {
+    let mut components: Vec<u32> = (0..graph.vertices.len())
+        .map(|index| u32::try_from(index).expect("intersection graph vertex count fits u32"))
+        .collect();
+    for edge in &graph.edges {
+        let [a, b] = edge.vertices;
+        let root_a = representative(&components, a);
+        let root_b = representative(&components, b);
+        if root_a != root_b {
+            let (survivor, alias) = (root_a.min(root_b), root_a.max(root_b));
+            components[alias as usize] = survivor;
+        }
+    }
+    for index in 0..components.len() {
+        components[index] = representative(
+            &components,
+            u32::try_from(index).expect("intersection graph vertex count fits u32"),
+        );
+    }
+
+    let mut parents: Vec<u32> = (0..graph.vertices.len())
+        .map(|index| u32::try_from(index).expect("intersection graph vertex count fits u32"))
+        .collect();
+    let mut survivors = HashMap::<(u32, [u32; 3]), u32>::new();
+    for (index, vertex) in graph.vertices.iter().enumerate() {
+        let index = u32::try_from(index).expect("intersection graph vertex count fits u32");
+        let key = (
+            components[index as usize],
+            stored_position_key(narrow(vertex.position)),
+        );
+        if let Some(&survivor) = survivors.get(&key) {
+            parents[index as usize] = survivor;
+        } else {
+            survivors.insert(key, index);
+        }
+    }
+    parents
+}
+
+/// Hashable numerical identity for a stored mesh position.
+///
+/// Signed zero has two IEEE bit patterns but only one geometric value. Other
+/// coordinates retain their exact stored bits; tolerance welding would cross
+/// the topology/provenance fence established by the intersection graph.
+fn stored_position_key(position: [f32; 3]) -> [u32; 3] {
+    position.map(|coordinate| {
+        if coordinate == 0.0 {
+            0.0_f32.to_bits()
+        } else {
+            coordinate.to_bits()
+        }
+    })
+}
+
+fn representative(parents: &[u32], mut index: u32) -> u32 {
+    while parents[index as usize] != index {
+        index = parents[index as usize];
+    }
+    index
+}
+
+/// Decomposes a closed vertex walk into simple cycles after aliases merge.
+///
+/// Each repeated vertex closes the suffix since its previous visit. Keeping
+/// that shared vertex on the remaining prefix preserves all non-degenerate
+/// source edges without manufacturing a diagonal. Cycles shorter than three
+/// vertices are exact point/segment collapses and cannot be mesh faces.
+fn simple_cycles(mut walk: Vec<u32>) -> Vec<Vec<u32>> {
+    walk.dedup();
+    if walk.len() > 1 && walk.first() == walk.last() {
+        walk.pop();
+    }
+    if walk.len() < 3 {
+        return Vec::new();
+    }
+
+    let first = walk[0];
+    let mut path = alloc::vec![first];
+    let mut offsets = HashMap::new();
+    offsets.insert(first, 0_usize);
+    let mut cycles = Vec::new();
+    for vertex in walk.into_iter().skip(1).chain(core::iter::once(first)) {
+        if let Some(&start) = offsets.get(&vertex) {
+            let cycle = path[start..].to_vec();
+            for removed in path.drain(start + 1..) {
+                offsets.remove(&removed);
+            }
+            if cycle.len() >= 3 {
+                cycles.push(cycle);
+            }
+        } else {
+            offsets.insert(vertex, path.len());
+            path.push(vertex);
+        }
+    }
+    debug_assert_eq!(
+        path,
+        [first],
+        "closing the walk must consume every extracted cycle"
+    );
+    cycles
 }
 
 /// Separates a geometric edge-contact refusal from a genuine stitch bug.
@@ -732,8 +933,87 @@ fn find_half_edge(mesh: &Mesh, from: VertexId, to: VertexId) -> Option<crate::Ha
 
 #[cfg(test)]
 mod tests {
+    use super::super::graph::{GraphEdge, GraphVertex};
     use super::*;
     use crate::op::set_face_region;
+    use alloc::vec;
+
+    fn graph_vertex(position: [f64; 3]) -> GraphVertex {
+        GraphVertex {
+            position,
+            anchor_a: MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+            anchor_b: MeshAnchor::FaceInterior(FaceId::OUTSIDE),
+            faces_a: Vec::new(),
+            faces_b: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn seam_identity_merges_non_adjacent_vertices_in_one_component() {
+        // Two graph constructions can reach the same stored point through an
+        // intervening edge. This also pins f64 narrowing and signed-zero
+        // canonicalization: they are one identity because the connected seam
+        // would otherwise revisit an indistinguishable stored vertex.
+        let graph = IntersectionGraph {
+            vertices: vec![
+                graph_vertex([1.0, 0.0, 0.0]),
+                graph_vertex([2.0, 0.0, 0.0]),
+                graph_vertex([1.0 + f64::EPSILON, -0.0, 0.0]),
+            ],
+            edges: vec![
+                GraphEdge {
+                    vertices: [0, 1],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [1, 2],
+                    crossings: Vec::new(),
+                },
+            ],
+            ..IntersectionGraph::default()
+        };
+
+        assert_eq!(canonical_seam_representatives(&graph), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn seam_identity_keeps_disconnected_coincident_components_distinct() {
+        // Equal coordinates do not imply shared topology. Separate seam
+        // components (and, by extension, separate shells) retain independent
+        // identities even when their f32 positions match exactly.
+        let graph = IntersectionGraph {
+            vertices: vec![
+                graph_vertex([0.0, 0.0, 0.0]),
+                graph_vertex([1.0, 0.0, 0.0]),
+                graph_vertex([0.0, 0.0, 0.0]),
+                graph_vertex([-1.0, 0.0, 0.0]),
+            ],
+            edges: vec![
+                GraphEdge {
+                    vertices: [0, 1],
+                    crossings: Vec::new(),
+                },
+                GraphEdge {
+                    vertices: [2, 3],
+                    crossings: Vec::new(),
+                },
+            ],
+            ..IntersectionGraph::default()
+        };
+
+        assert_eq!(canonical_seam_representatives(&graph), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn alias_pinches_split_into_simple_face_cycles() {
+        // Canonicalizing vertex 1 turns one source boundary into two lobes
+        // which share only that survivor. Each lobe must become a simple
+        // face; emitting the original walk would violate mesh invariants.
+        assert_eq!(
+            simple_cycles(vec![0, 1, 2, 3, 1, 4, 5]),
+            vec![vec![1, 2, 3], vec![0, 1, 4, 5]]
+        );
+    }
 
     fn cube(origin: [f32; 3]) -> Mesh {
         let o = origin;

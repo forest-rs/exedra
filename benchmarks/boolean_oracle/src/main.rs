@@ -159,6 +159,9 @@ struct Report {
     mesh_band_points: u64,
     field_band_points: u64,
     exhausted_points: u64,
+    mesh_validation_errors: u64,
+    mesh_bookkeeping_errors: u64,
+    seam_identity_conflicts: u64,
     findings: Vec<Finding>,
     skipped_case_seeds: Vec<(&'static str, u64)>,
 }
@@ -202,6 +205,9 @@ fn absorb(report: &mut Report, case_seed: u64, outcome: &CaseOutcome) {
     report.mesh_band_points += outcome.mesh_band_points;
     report.field_band_points += outcome.field_band_points;
     report.exhausted_points += outcome.exhausted_points;
+    report.mesh_validation_errors += outcome.mesh_validation_errors;
+    report.mesh_bookkeeping_errors += outcome.mesh_bookkeeping_errors;
+    report.seam_identity_conflicts += outcome.seam_identity_conflicts;
     report.findings.extend(outcome.findings.iter().cloned());
 }
 
@@ -222,6 +228,7 @@ fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) -> (
 
     let mut total_mesh_findings = 0_usize;
     let mut total_field_findings = 0_usize;
+    let mut total_mesh_topology_findings = 0_u64;
     for (class, report) in reports {
         let key = class.key();
         println!("class.{key}.cases_run={}", report.cases_run);
@@ -248,6 +255,18 @@ fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) -> (
             "class.{key}.ray_exhausted_points={}",
             report.exhausted_points
         );
+        println!(
+            "class.{key}.mesh_validation_errors={}",
+            report.mesh_validation_errors
+        );
+        println!(
+            "class.{key}.mesh_bookkeeping_errors={}",
+            report.mesh_bookkeeping_errors
+        );
+        println!(
+            "class.{key}.seam_identity_conflicts={}",
+            report.seam_identity_conflicts
+        );
         let mesh_findings = report
             .findings
             .iter()
@@ -262,6 +281,10 @@ fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) -> (
         println!("class.{key}.field_disagreements={field_findings}");
         total_mesh_findings += mesh_findings;
         total_field_findings += field_findings;
+        total_mesh_topology_findings = total_mesh_topology_findings
+            .saturating_add(report.mesh_validation_errors)
+            .saturating_add(report.mesh_bookkeeping_errors)
+            .saturating_add(report.seam_identity_conflicts);
 
         let mut by_case: BTreeMap<(&'static str, u64), u64> = BTreeMap::new();
         for finding in &report.findings {
@@ -304,8 +327,12 @@ fn print_report(reports: &BTreeMap<ScenarioClass, Report>, config: &Config) -> (
         }
     }
     println!("mesh_disagreements={total_mesh_findings}");
+    println!("mesh_topology_findings={total_mesh_topology_findings}");
     println!("field_disagreements={total_field_findings}");
-    (total_mesh_findings, total_field_findings)
+    (
+        total_mesh_findings + usize::try_from(total_mesh_topology_findings).unwrap_or(usize::MAX),
+        total_field_findings,
+    )
 }
 
 #[cfg(test)]
@@ -326,6 +353,24 @@ mod tests {
                 "class {}: cross-witness disagreements: {:?}",
                 class.key(),
                 report.findings
+            );
+            assert_eq!(
+                report.mesh_validation_errors,
+                0,
+                "class {}: output failed deep mesh validation",
+                class.key()
+            );
+            assert_eq!(
+                report.mesh_bookkeeping_errors,
+                0,
+                "class {}: output face bookkeeping disagreed with its mesh",
+                class.key()
+            );
+            assert_eq!(
+                report.seam_identity_conflicts,
+                0,
+                "class {}: coincident identities remain in a marked seam",
+                class.key()
             );
             assert!(
                 report.field_points > 0,

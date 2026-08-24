@@ -52,5 +52,10 @@ diagnostic artifact, not a checked-in golden file.
 
 Output follows the wind-tunnel `key=value` convention; the determinism
 oracle runs before any counting. Typed mesh-pipeline deferrals (coplanar
-contact, deferred split configurations) are counted skip categories. A mesh
-or field disagreement exits non-zero so a deep sweep can serve as a CI gate.
+contact, deferred split configurations) are counted skip categories. Every
+successful Boolean stage is deep-validated before it becomes a chained
+operand; its ordered face provenance and `kept_faces` count must cover the
+emitted mesh exactly; and marked seam components are checked for duplicate
+exact `f32` positions under distinct vertex identities. A mesh membership
+disagreement, topology/bookkeeping finding, or field disagreement exits
+non-zero so a deep sweep can serve as a CI gate.

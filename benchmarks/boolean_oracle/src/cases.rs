@@ -27,10 +27,13 @@
 //! is an isosurface finding. Bands scale linearly with the case's
 //! coordinate scale.
 
-use exedra::FaceTriangulation;
+use std::collections::{BTreeMap, BTreeSet};
+
 use exedra::boolean::{
-    BooleanDiagnostics, BooleanError, BooleanFailureKind, BooleanOp, BooleanScratch, boolean_mesh,
+    BooleanDiagnostics, BooleanError, BooleanFailureKind, BooleanOp, BooleanOutput, BooleanScratch,
+    boolean_mesh,
 };
+use exedra::{FaceTriangulation, Mesh, VertexId};
 use exedra_isosurface::ScalarField;
 use exedra_isosurface::analytic::{Difference, Intersection, Union};
 
@@ -117,8 +120,53 @@ pub(crate) struct CaseOutcome {
     pub(crate) submode: &'static str,
     /// True when the mesh witness returned a zero-face (empty) result.
     pub(crate) empty_result: bool,
+    /// Structural errors reported by the kernel's deep validator.
+    pub(crate) mesh_validation_errors: u64,
+    /// Boolean outputs whose face provenance or kept-face count disagrees
+    /// with the emitted mesh.
+    pub(crate) mesh_bookkeeping_errors: u64,
+    /// Additional vertices that duplicate a stored position within one
+    /// connected marked-seam component.
+    pub(crate) seam_identity_conflicts: u64,
     /// Disagreements found in this case.
     pub(crate) findings: Vec<Finding>,
+}
+
+#[derive(Default)]
+struct MeshChecks {
+    validation_errors: u64,
+    bookkeeping_errors: u64,
+    seam_identity_conflicts: u64,
+}
+
+/// Applies structural checks before a chained Boolean output becomes the
+/// operand of its parent expression.
+///
+/// Checking only the final tree result can hide a bad intermediate if a later
+/// operation removes the affected faces. Provenance order and `kept_faces`
+/// are checked here because face-cycle decomposition can turn one selected
+/// source face into several emitted faces.
+fn inspect_boolean_output(output: &BooleanOutput, checks: &mut MeshChecks) {
+    checks.validation_errors = checks
+        .validation_errors
+        .saturating_add(u64::try_from(output.mesh.validate_deep().len()).unwrap_or(u64::MAX));
+    checks.seam_identity_conflicts = checks
+        .seam_identity_conflicts
+        .saturating_add(seam_identity_conflicts(&output.mesh));
+
+    let face_count = output.mesh.faces().count();
+    let provenance_matches = output.face_provenance.len() == face_count
+        && output
+            .face_provenance
+            .iter()
+            .map(|&(face, _, _)| face)
+            .eq(output.mesh.faces());
+    if !provenance_matches {
+        checks.bookkeeping_errors = checks.bookkeeping_errors.saturating_add(1);
+    }
+    if output.stats.kept_faces != u64::try_from(face_count).unwrap_or(u64::MAX) {
+        checks.bookkeeping_errors = checks.bookkeeping_errors.saturating_add(1);
+    }
 }
 
 /// Evaluates a tree through the boolean pipeline. Chained classes make
@@ -128,14 +176,15 @@ fn eval_mesh_tree(
     operands: &[Operand],
     scratch: &mut BooleanScratch,
     diagnostics: &mut BooleanDiagnostics,
-) -> Result<exedra::Mesh, SkipReason> {
+    checks: &mut MeshChecks,
+) -> Result<Mesh, SkipReason> {
     match node {
         Node::Leaf(index) => Ok(operands[*index].mesh.clone()),
         Node::Op(op, left, right) => {
-            let left = eval_mesh_tree(left, operands, scratch, diagnostics)?;
-            let right = eval_mesh_tree(right, operands, scratch, diagnostics)?;
+            let left = eval_mesh_tree(left, operands, scratch, diagnostics, checks)?;
+            let right = eval_mesh_tree(right, operands, scratch, diagnostics, checks)?;
             diagnostics.clear();
-            boolean_mesh(
+            let output = boolean_mesh(
                 &left,
                 &right,
                 *op,
@@ -143,8 +192,9 @@ fn eval_mesh_tree(
                 scratch,
                 diagnostics,
             )
-            .map(|output| output.mesh)
-            .map_err(|error| classify_skip(&error, diagnostics))
+            .map_err(|error| classify_skip(&error, diagnostics))?;
+            inspect_boolean_output(&output, checks);
+            Ok(output.mesh)
         }
     }
 }
@@ -195,17 +245,26 @@ pub(crate) fn run_case(class: ScenarioClass, case_seed: u64, points_per_case: u6
     // --- Mesh witness. ---
     let mut scratch = BooleanScratch::default();
     let mut diagnostics = BooleanDiagnostics::new(64);
-    let mesh_triangles =
-        match eval_mesh_tree(&case.tree, &case.operands, &mut scratch, &mut diagnostics) {
-            Ok(mesh) => {
-                outcome.empty_result = mesh.faces().count() == 0;
-                Some(mesh_triangles_f64(&mesh))
-            }
-            Err(reason) => {
-                outcome.skip = Some(reason);
-                None
-            }
-        };
+    let mut mesh_checks = MeshChecks::default();
+    let mesh_triangles = match eval_mesh_tree(
+        &case.tree,
+        &case.operands,
+        &mut scratch,
+        &mut diagnostics,
+        &mut mesh_checks,
+    ) {
+        Ok(mesh) => {
+            outcome.empty_result = mesh.faces().count() == 0;
+            Some(mesh_triangles_f64(&mesh))
+        }
+        Err(reason) => {
+            outcome.skip = Some(reason);
+            None
+        }
+    };
+    outcome.mesh_validation_errors = mesh_checks.validation_errors;
+    outcome.mesh_bookkeeping_errors = mesh_checks.bookkeeping_errors;
+    outcome.seam_identity_conflicts = mesh_checks.seam_identity_conflicts;
 
     // --- Field witness. ---
     let field = field_tree(&case.tree, &case.operands);
@@ -279,6 +338,66 @@ pub(crate) fn run_case(class: ScenarioClass, case_seed: u64, points_per_case: u6
         }
     }
     outcome
+}
+
+/// Counts exact-position identity aliases within connected marked seams.
+///
+/// Equal positions in different shells are valid (for example a regularized
+/// point contact), so this walks only edges carrying the Boolean seam mark and
+/// scopes the position table to one connected seam component at a time.
+fn seam_identity_conflicts(mesh: &Mesh) -> u64 {
+    let mut adjacency = BTreeMap::<VertexId, Vec<VertexId>>::new();
+    for face in mesh.faces() {
+        for half_edge in mesh.face_loop(face) {
+            if mesh.edge_seam(half_edge) != Some(true) {
+                continue;
+            }
+            let Some((from, to)) = mesh.from_vertex(half_edge).zip(mesh.to_vertex(half_edge))
+            else {
+                continue;
+            };
+            adjacency.entry(from).or_default().push(to);
+            adjacency.entry(to).or_default().push(from);
+        }
+    }
+    for neighbors in adjacency.values_mut() {
+        neighbors.sort_unstable();
+        neighbors.dedup();
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut conflicts = 0_u64;
+    for &seed in adjacency.keys() {
+        if !visited.insert(seed) {
+            continue;
+        }
+        let mut stack = vec![seed];
+        let mut positions = BTreeMap::<[u32; 3], VertexId>::new();
+        while let Some(vertex) = stack.pop() {
+            if let Some(position) = mesh.vertex_position(vertex) {
+                // Signed zero is one geometric mesh coordinate even though
+                // IEEE-754 exposes two bit patterns for it.
+                let key = position.map(|coordinate| {
+                    if coordinate == 0.0 {
+                        0.0_f32.to_bits()
+                    } else {
+                        coordinate.to_bits()
+                    }
+                });
+                if positions.insert(key, vertex).is_some() {
+                    conflicts += 1;
+                }
+            }
+            if let Some(neighbors) = adjacency.get(&vertex) {
+                for &neighbor in neighbors.iter().rev() {
+                    if visited.insert(neighbor) {
+                        stack.push(neighbor);
+                    }
+                }
+            }
+        }
+    }
+    conflicts
 }
 
 fn classify_skip(error: &BooleanError, diagnostics: &BooleanDiagnostics) -> SkipReason {
@@ -361,6 +480,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn curved_wall_seed_one_has_canonical_seam_identity() {
+        // This chained curved-wall case formerly emitted three zero-length
+        // marked edges at stage 1 because distinct graph points narrowed to
+        // one f32 position. It must now remain supported and oracle-clean.
+        let outcome = run_case(ScenarioClass::CurvedWall, 1, 400);
+
+        assert_eq!(outcome.skip, None);
+        assert_eq!(outcome.mesh_validation_errors, 0);
+        assert_eq!(outcome.mesh_bookkeeping_errors, 0);
+        assert_eq!(outcome.seam_identity_conflicts, 0);
+        assert!(outcome.findings.is_empty());
+    }
+
+    #[test]
     fn shared_edge_union_has_a_named_geometric_skip() {
         // This fixed adversarial seed is two boxes with a partial shared edge
         // under Union. The oracle must report the public geometric refusal,
@@ -400,8 +533,8 @@ mod triage {
         operands: &[Operand],
         scratch: &mut BooleanScratch,
         diagnostics: &mut BooleanDiagnostics,
-        stages: &mut Vec<(BooleanOp, exedra::Mesh, exedra::Mesh)>,
-    ) -> exedra::Mesh {
+        stages: &mut Vec<(BooleanOp, Mesh, Mesh)>,
+    ) -> Mesh {
         match node {
             Node::Leaf(index) => operands[*index].mesh.clone(),
             Node::Op(op, left, right) => {
@@ -515,6 +648,26 @@ mod triage {
             graph.polylines.len(),
             graph.polylines.iter().filter(|p| p.closed).count(),
         );
+        for edge in &graph.edges {
+            let [a, b] = edge.vertices.map(|index| index as usize);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "triage inspects the graph-to-mesh f32 boundary"
+            )]
+            let narrow = |point: [f64; 3]| point.map(|value| value as f32);
+            if narrow(graph.vertices[a].position) == narrow(graph.vertices[b].position) {
+                eprintln!(
+                    "  zero graph edge {}-{} position={:?} anchors=({:?}, {:?})/({:?}, {:?})",
+                    a,
+                    b,
+                    narrow(graph.vertices[a].position),
+                    graph.vertices[a].anchor_a,
+                    graph.vertices[b].anchor_a,
+                    graph.vertices[a].anchor_b,
+                    graph.vertices[b].anchor_b,
+                );
+            }
+        }
         let outcome_a = split_mesh_along_graph(&mut split_a, &graph, MeshSide::A, &mut diagnostics);
         let outcome_b = split_mesh_along_graph(&mut split_b, &graph, MeshSide::B, &mut diagnostics);
         eprintln!(
@@ -595,7 +748,7 @@ mod triage {
             scratch: &mut BooleanScratch,
             diagnostics: &mut BooleanDiagnostics,
             counter: &mut usize,
-        ) -> exedra::Mesh {
+        ) -> Mesh {
             match node {
                 Node::Leaf(index) => case.operands[*index].mesh.clone(),
                 Node::Op(op, left, right) => {
@@ -623,6 +776,46 @@ mod triage {
                         Ok(output) => {
                             let mesh = output.mesh;
                             let deep = mesh.validate_deep().len();
+                            let zero_length_edges = mesh
+                                .faces()
+                                .flat_map(|face| mesh.face_loop(face))
+                                .filter(|&half_edge| {
+                                    mesh.from_vertex(half_edge)
+                                        .and_then(|vertex| mesh.vertex_position(vertex))
+                                        .zip(
+                                            mesh.to_vertex(half_edge)
+                                                .and_then(|vertex| mesh.vertex_position(vertex)),
+                                        )
+                                        .is_some_and(|(from, to)| from == to)
+                                })
+                                .count()
+                                / 2;
+                            if zero_length_edges > 0 {
+                                for face in mesh.faces() {
+                                    for half_edge in mesh.face_loop(face) {
+                                        let Some((from_vertex, to_vertex)) = mesh
+                                            .from_vertex(half_edge)
+                                            .zip(mesh.to_vertex(half_edge))
+                                        else {
+                                            continue;
+                                        };
+                                        if from_vertex.index() >= to_vertex.index()
+                                            || mesh.vertex_position(from_vertex)
+                                                != mesh.vertex_position(to_vertex)
+                                        {
+                                            continue;
+                                        }
+                                        eprintln!(
+                                            "  zero edge {}-{} position={:?} seam={:?} sharpness={:?}",
+                                            from_vertex.index(),
+                                            to_vertex.index(),
+                                            mesh.vertex_position(from_vertex),
+                                            mesh.edge_seam(half_edge),
+                                            mesh.edge_sharpness(half_edge),
+                                        );
+                                    }
+                                }
+                            }
                             let triangles = mesh_triangles_f64(&mesh);
                             let mut volume = 0.0_f64;
                             for [a, b, c] in &triangles {
@@ -632,7 +825,7 @@ mod triage {
                                     / 6.0;
                             }
                             eprintln!(
-                                "stage {stage} ({op:?}): faces={} deep_errors={deep} volume={volume:.6} diag_clean={}",
+                                "stage {stage} ({op:?}): faces={} deep_errors={deep} zero_length_edges={zero_length_edges} volume={volume:.6} diag_clean={}",
                                 mesh.faces().count(),
                                 diagnostics.is_clean(),
                             );
