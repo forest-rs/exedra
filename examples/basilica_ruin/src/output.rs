@@ -586,6 +586,8 @@ mod tests {
 
     #[test]
     fn obj_groups_and_indices_are_well_formed() {
+        // Every assembly instance, including the six new timber keys, must
+        // become one OBJ group whose face indices reference emitted vertices.
         let scenario = build_scenario();
         let obj = export_obj(&scenario.compiled, &scenario.render_list);
         assert!(obj.contains("g nave-wall-south-west-broken"));
@@ -595,7 +597,7 @@ mod tests {
         assert!(obj.contains("g crossing-dome"));
         assert_eq!(
             obj.lines().filter(|line| line.starts_with("g ")).count(),
-            112
+            118
         );
         let vertices = obj.lines().filter(|line| line.starts_with("v ")).count();
         let mut max_index = 0_usize;
@@ -615,6 +617,9 @@ mod tests {
 
     #[test]
     fn obj_group_order_preserves_every_existing_instance_identity() {
+        // Export order is a stable review contract: the fitted truss groups
+        // append their key between king post and braces without disturbing
+        // any pre-existing architecture path.
         let scenario = build_scenario();
         let obj = export_obj(&scenario.compiled, &scenario.render_list);
         let groups: Vec<&str> = obj
@@ -711,47 +716,53 @@ mod tests {
             "buttress-south-07",
         ];
 
-        const TRUSS_PATHS: [&str; 36] = [
+        const TRUSS_PATHS: [&str; 42] = [
             "nave-truss-west-00-tie-beam",
             "nave-truss-west-00-principal-rafter-north",
             "nave-truss-west-00-principal-rafter-south",
             "nave-truss-west-00-king-post",
+            "nave-truss-west-00-king-post-key",
             "nave-truss-west-00-diagonal-brace-north",
             "nave-truss-west-00-diagonal-brace-south",
             "nave-truss-west-01-tie-beam",
             "nave-truss-west-01-principal-rafter-north",
             "nave-truss-west-01-principal-rafter-south",
             "nave-truss-west-01-king-post",
+            "nave-truss-west-01-king-post-key",
             "nave-truss-west-01-diagonal-brace-north",
             "nave-truss-west-01-diagonal-brace-south",
             "nave-truss-west-03-tie-beam",
             "nave-truss-west-03-principal-rafter-north",
             "nave-truss-west-03-principal-rafter-south",
             "nave-truss-west-03-king-post",
+            "nave-truss-west-03-king-post-key",
             "nave-truss-west-03-diagonal-brace-north",
             "nave-truss-west-03-diagonal-brace-south",
             "nave-truss-west-04-tie-beam",
             "nave-truss-west-04-principal-rafter-north",
             "nave-truss-west-04-principal-rafter-south",
             "nave-truss-west-04-king-post",
+            "nave-truss-west-04-king-post-key",
             "nave-truss-west-04-diagonal-brace-north",
             "nave-truss-west-04-diagonal-brace-south",
             "nave-truss-west-05-tie-beam",
             "nave-truss-west-05-principal-rafter-north",
             "nave-truss-west-05-principal-rafter-south",
             "nave-truss-west-05-king-post",
+            "nave-truss-west-05-king-post-key",
             "nave-truss-west-05-diagonal-brace-north",
             "nave-truss-west-05-diagonal-brace-south",
             "nave-truss-east-00-tie-beam",
             "nave-truss-east-00-principal-rafter-north",
             "nave-truss-east-00-principal-rafter-south",
             "nave-truss-east-00-king-post",
+            "nave-truss-east-00-king-post-key",
             "nave-truss-east-00-diagonal-brace-north",
             "nave-truss-east-00-diagonal-brace-south",
         ];
 
-        assert_eq!(instance_paths.len(), 112);
-        assert_eq!(groups.len(), 112);
+        assert_eq!(instance_paths.len(), 118);
+        assert_eq!(groups.len(), 118);
         assert_eq!(&instance_paths[..76], ACCEPTED_PATHS);
         assert_eq!(&groups[..76], ACCEPTED_PATHS);
         assert_eq!(&instance_paths[76..], TRUSS_PATHS);
@@ -760,6 +771,8 @@ mod tests {
 
     #[test]
     fn warm_dome_reconfiguration_reuses_every_unaffected_named_part() {
+        // Adding fitted truss parts must not widen the warm-update invalidation
+        // set: changing the dome still reuses every non-dome part and group.
         let reconfiguration = build_warm_reconfiguration();
         let proof = validate_warm_reconfiguration(&reconfiguration);
         let baseline_obj = export_obj(
@@ -772,7 +785,7 @@ mod tests {
         );
 
         assert_eq!(proof.changed_parts, [names::parts::CROSSING_DOME]);
-        assert_eq!(proof.groups, 112);
+        assert_eq!(proof.groups, 118);
         assert_eq!(
             proof.groups,
             reconfiguration.warm.assembly.instances().len()

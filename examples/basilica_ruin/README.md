@@ -108,6 +108,15 @@ The buttress elevations and nave-truss stations use
 exported identities: the missing west truss at ordinal `02` stays a named gap,
 while later stations keep their existing paths and insertion order.
 
+Each intact nave station is a complete `joiner_timber` braced king-post truss,
+composed once and then repeated as immutable assembly parts. Housed heels,
+strut bearings, paired rafter-head bearings, and the keyed king-post-to-tie
+connection are real recipe edits; the transverse timber key is a separate
+named instance below the tie. North rafters and braces are the canonical
+recipes; their south counterparts use winding-correct `Recipe::mirrored`
+composition. Both remain distinct named parts under proper-rigid assembly
+placements, so no exporter-specific winding repair or mesh baking is needed.
+
 ## Name-addressable assembly API
 
 The crate is both a library and an executable. Build the uncompiled assembly,

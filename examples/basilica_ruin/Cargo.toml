@@ -20,6 +20,8 @@ exedra_assembly = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_gltf = { workspace = true }
 exedra_math = { features = ["std"], workspace = true }
+joiner = { features = ["std"], workspace = true }
+joiner_timber = { features = ["std"], workspace = true }
 libm.workspace = true
 setout = { features = ["std"], workspace = true }
 setout_joiner = { features = ["std"], workspace = true }

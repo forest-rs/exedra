@@ -76,9 +76,9 @@ return for the IR and **stops for review before stage 2 begins**.
    `model.rs`. The IR must be shown to express *both* seed cases (a truss
    heel and a window opening) as fixtures or doc examples, even though
    neither rule exists yet. Review gate here.
-2. **Timber.** `joiner_timber` heel and king-post-foot rules; the lab
-   consumes them; `KING_POST_RAFTER_OVERLAP` and `ROOF_CLEARANCE` deleted
-   from `basilica_ruin`. Depends on `ec-uoij`.
+2. **Timber.** `joiner_timber` rules for a complete braced king-post truss;
+   the lab and repeated `basilica_ruin` stations consume the fitted recipes.
+   Depends on `ec-uoij` and `exe-zqct`.
 3. **Masonry.** `joiner_masonry` opening void, sill/lintel/jambs, minimal
    coursing rule; one clerestory window in the lab.
 
@@ -100,8 +100,9 @@ return for the IR and **stops for review before stage 2 begins**.
 
 ### Remaining stages
 
-- [ ] `joiner_timber`: heel and king-post-foot rules; both sides from one
-      nominal interface; fit class is a typed parameter.
+- [x] `joiner_timber`: housed heels, keyed king-post-to-tie through-tenon,
+      housed strut ends, and paired rafter-head bearings; interfaces are
+      derived from participant sections and fit class is a typed parameter.
 - [ ] `joiner_masonry`: opening void plus sill/lintel/jambs and a minimal
       coursing rule.
 - [ ] Definition of Done (typos, fmt, taplo, clippy `-D warnings`, doc, and
@@ -122,15 +123,46 @@ frames may have either handedness. glTF retains reflected node transforms; the
 lab's baked OBJ reverses triangle winding when the world determinant is
 negative, with `roof-covering-north` as a regression fixture.
 
-Stage 2 is blocked on `exe-zqct`; ordinary multi-cutter boolean failures belong
-to `exedra::boolean`, not a `joiner` workaround. Profile offset prerequisite
-`ec-uoij` is closed.
+Stage 2 dependencies `exe-zqct` and `ec-uoij` are closed.
 
 Validation passed: `typos`, `cargo fmt --all`, `taplo fmt`, workspace clippy
 with warnings denied, all-feature workspace tests, `cargo doc --no-deps`, and
 `cargo check -p joiner --no-default-features`.
 
 ## Notes
+
+**2026-08-25 — Stage 2**
+
+The timber slice now fits one complete braced king-post truss rather than two
+isolated specimens. The tie is suspended by an exposed through-tenon and
+transverse timber key; the contacts route tie load through the key and tenon
+slot instead of claiming a shoulder carries tension. Struts bear into the king
+above the tie and into the rafters, and the rafter heads bear in two separate
+housings. The 360 mm reference king head preserves a web between the paired
+120 mm pockets. These checks establish geometry and intended transfer only,
+not connection capacity or certification.
+
+The lab evaluates every finished member, exports assembled and exploded truss
+checkpoints, and retains named load paths to ground. `basilica_ruin` composes
+the joinery once for each canonical north member, derives the south rafter and
+brace through winding-correct constructive mirrors, and repeats seven
+proper-rigid parts per intact station, including the generated key. The mirror
+lives in each counterpart recipe rather than an assembly placement or an
+exporter-specific mesh rewrite.
+
+The combined post recipe exposed one remaining Boolean topology case: a face
+split by a shoulder chain can also contain a closed blind-housing loop. The
+splitter now assigns each loop to exactly one open-chain partition and re-faces
+the ring and disk atomically; a direct regression and the complete post recipe
+pin the behavior. No joiner-specific cutter reordering or geometric nudge was
+introduced.
+
+Validation passed on 2026-08-25: `typos`; `cargo fmt --all --check`;
+`taplo fmt --check`; warnings-denied all-target/all-feature workspace clippy;
+all-feature workspace tests; workspace rustdoc without dependencies; and the
+`joiner_timber` tests with default features disabled. The structure lab
+exported a clean 34-element, 18-joint construction, and Blender regenerated all
+ten semantic checkpoints from those exported meshes.
 
 **2026-08-23T02:00:31Z**
 

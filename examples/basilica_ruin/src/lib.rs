@@ -112,12 +112,18 @@ pub mod names {
         pub const EAST_CHANCEL_GABLE: &str = "east-chancel-gable";
         /// The transverse timber tying the nave walls in each roof truss.
         pub const NAVE_TRUSS_TIE_BEAM: &str = "nave-truss-tie-beam";
-        /// The sloping timber reused on both sides of every nave roof truss.
+        /// The canonical north-side principal-rafter part.
         pub const NAVE_TRUSS_PRINCIPAL_RAFTER: &str = "nave-truss-principal-rafter";
+        /// The mirror-composed south-side principal-rafter part.
+        pub const NAVE_TRUSS_PRINCIPAL_RAFTER_SOUTH: &str = "nave-truss-principal-rafter-south";
         /// The vertical timber joining each tie beam to the roof apex.
         pub const NAVE_TRUSS_KING_POST: &str = "nave-truss-king-post";
-        /// The diagonal timber reused on both sides of every nave roof truss.
+        /// The transverse key suspending each tie from its king post.
+        pub const NAVE_TRUSS_KING_POST_KEY: &str = "nave-truss-king-post-key";
+        /// The canonical north-side diagonal-brace part.
         pub const NAVE_TRUSS_DIAGONAL_BRACE: &str = "nave-truss-diagonal-brace";
+        /// The mirror-composed south-side diagonal-brace part.
+        pub const NAVE_TRUSS_DIAGONAL_BRACE_SOUTH: &str = "nave-truss-diagonal-brace-south";
     }
 
     /// Stable root-instance paths for major architectural elements.
@@ -241,6 +247,8 @@ mod tests {
 
     #[test]
     fn public_names_resolve_parts_paths_and_roles() {
+        // Stable selectors must still resolve after the fitted trusses add a
+        // generated key and distinct handed member recipes behind one role.
         let assembly = build_basilica_assembly(&BasilicaParams::default());
 
         let dome_part = assembly
@@ -265,6 +273,17 @@ mod tests {
             pendentive_part
         );
 
+        for key in [
+            names::parts::NAVE_TRUSS_PRINCIPAL_RAFTER_SOUTH,
+            names::parts::NAVE_TRUSS_KING_POST_KEY,
+            names::parts::NAVE_TRUSS_DIAGONAL_BRACE_SOUTH,
+        ] {
+            assert!(
+                assembly.part_by_key(key).is_some(),
+                "new fitted member part is publicly addressable: {key}"
+            );
+        }
+
         let buttresses = instances_with_role(&assembly, names::roles::AISLE_BUTTRESS);
         let windows = instances_with_role(&assembly, names::roles::DRUM_WINDOW);
         let intact_nave_walls = instances_with_role(&assembly, names::roles::NAVE_CLERESTORY);
@@ -276,7 +295,7 @@ mod tests {
         assert_eq!(intact_nave_walls.len(), 3);
         assert_eq!(ruined_nave_walls.len(), 1);
         assert_eq!(pendentives.len(), 4);
-        assert_eq!(truss_members.len(), 36);
+        assert_eq!(truss_members.len(), 42);
         assert!(buttresses.iter().all(|&id| {
             assembly.instance(id).unwrap().part()
                 == assembly.part_by_key(names::parts::AISLE_BUTTRESS).unwrap()
@@ -303,10 +322,22 @@ mod tests {
             names::parts::NAVE_TRUSS_PRINCIPAL_RAFTER,
             "nave-truss-principal-rafter"
         );
+        assert_eq!(
+            names::parts::NAVE_TRUSS_PRINCIPAL_RAFTER_SOUTH,
+            "nave-truss-principal-rafter-south"
+        );
         assert_eq!(names::parts::NAVE_TRUSS_KING_POST, "nave-truss-king-post");
+        assert_eq!(
+            names::parts::NAVE_TRUSS_KING_POST_KEY,
+            "nave-truss-king-post-key"
+        );
         assert_eq!(
             names::parts::NAVE_TRUSS_DIAGONAL_BRACE,
             "nave-truss-diagonal-brace"
+        );
+        assert_eq!(
+            names::parts::NAVE_TRUSS_DIAGONAL_BRACE_SOUTH,
+            "nave-truss-diagonal-brace-south"
         );
         assert_eq!(names::instances::CROSSING_DOME, "crossing-dome");
         assert_eq!(
@@ -350,6 +381,8 @@ mod tests {
 
     #[test]
     fn evaluation_and_export_are_deterministic() {
+        // Rebuilding the complete gallery twice must reproduce its assembly,
+        // fitted timber meshes, OBJ text, and glTF payload exactly.
         let a = build_scenario();
         let b = build_scenario();
         let obj_a = export_obj(&a.compiled, &a.render_list);
@@ -377,7 +410,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0xc2a7_5f5b_437f_2cc5_4daf_b43e_8f73_4e47
+            0x1753_3223_4ae1_c211_886b_3b44_7c76_0f26
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);
