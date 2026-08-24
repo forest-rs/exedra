@@ -56,6 +56,8 @@ pub(crate) enum SkipReason {
     SplitDeferred,
     /// Classification refused the result for another diagnosed reason.
     OtherSuspect,
+    /// Otherwise-manifold operands form an edge-only non-manifold contact.
+    NonManifoldContact,
     /// The pipeline reported an internal build failure.
     BuildFailure,
     /// The pipeline reported an invariant violation (typed).
@@ -70,6 +72,7 @@ impl SkipReason {
             Self::CoplanarAmbiguity => "coplanar_ambiguity",
             Self::SplitDeferred => "split_deferred",
             Self::OtherSuspect => "other_suspect",
+            Self::NonManifoldContact => "non_manifold_contact",
             Self::BuildFailure => "build_failure",
             Self::InvariantViolation => "invariant_violation",
         }
@@ -280,6 +283,7 @@ pub(crate) fn run_case(class: ScenarioClass, case_seed: u64, points_per_case: u6
 
 fn classify_skip(error: &BooleanError, diagnostics: &BooleanDiagnostics) -> SkipReason {
     match error {
+        BooleanError::NonManifoldContact => SkipReason::NonManifoldContact,
         BooleanError::Build(_) => SkipReason::BuildFailure,
         BooleanError::InvariantViolation { .. } => SkipReason::InvariantViolation,
         BooleanError::SuspectPatches { .. } => {
@@ -350,6 +354,23 @@ fn sample_point(rng: &mut SplitMix64, case: &Case, bounds: &Bounds, offset: f64)
         f64::from(p[1]) + rng.range_f64(-offset, offset),
         f64::from(p[2]) + rng.range_f64(-offset, offset),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_edge_union_has_a_named_geometric_skip() {
+        // This fixed adversarial seed is two boxes with a partial shared edge
+        // under Union. The oracle must report the public geometric refusal,
+        // never regress to its generic internal-build-failure bucket.
+        let outcome = run_case(ScenarioClass::Adversarial, 11_008_669_762_952_232_555, 80);
+
+        assert_eq!(outcome.submode, "shared_edge");
+        assert_eq!(outcome.skip, Some(SkipReason::NonManifoldContact));
+        assert!(outcome.findings.is_empty());
+    }
 }
 
 #[cfg(test)]

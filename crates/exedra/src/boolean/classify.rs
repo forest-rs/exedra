@@ -236,6 +236,21 @@ fn classify_one_side(
             cut_edges.insert(sorted_pair(u, v));
         }
     }
+    // Isolated touches do not bound a patch, but their materialized vertices
+    // lie exactly on the other operand and are therefore invalid ray origins.
+    // Excluding them from `sample_point` lets an otherwise-clear face vertex
+    // classify the patch; treating them as cut edges would invent topology
+    // for a zero-area contact.
+    for &touch in &graph.touch_points {
+        if let Some(vertex) = outcome
+            .graph_vertices
+            .get(touch as usize)
+            .copied()
+            .flatten()
+        {
+            cut_vertices.insert(vertex);
+        }
+    }
 
     // --- Suspect faces: a graph edge attributed solely to a live face on
     // this side whose endpoints do not form a mesh edge means the split
