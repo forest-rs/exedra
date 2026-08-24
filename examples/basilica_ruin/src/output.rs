@@ -5,10 +5,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use exedra_assembly::{
-    Assembly, CompileCounters, CompiledParts, PartCompiler, PartSource, RenderList,
+    Assembly, CompileCounters, CompiledParts, PartCompiler, PartId, RenderList,
     assembly_fingerprint, flatten,
 };
-use exedra_constructive::evaluate::evaluate;
 use exedra_constructive::ir::Placement3;
 use exedra_constructive::tessellate::EvalPolicy;
 
@@ -200,24 +199,21 @@ fn build_warm_reconfiguration() -> WarmReconfiguration {
 fn compile_scenario(params: &BasilicaParams, compiler: &mut PartCompiler) -> Scenario {
     let (assembly, inventory) = build_assembly(params);
     let policy = EvalPolicy::default();
-    // Assembly compilation does not yet retain constructive reports
-    // (ea-8tpb), so the scenario audits each recipe before compilation.
-    let diagnostics = assembly
-        .parts()
-        .iter()
-        .map(|part| match part.source() {
-            PartSource::Recipe(recipe) => evaluate(recipe, &policy)
-                .expect("constant basilica recipe evaluates")
-                .report
-                .diagnostics
-                .len(),
-            PartSource::Baked(_) => 0,
-        })
-        .sum();
     let counters_before = compiler.counters();
     let compiled = compiler
         .compile_parts(&assembly, &policy)
         .expect("constant basilica recipes evaluate");
+    let diagnostics = compiled
+        .parts()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let id = PartId(u32::try_from(index).expect("part count is bounded by PartId"));
+            compiled
+                .report(id)
+                .map_or(0, |report| report.diagnostics.len())
+        })
+        .sum();
     let render_list = flatten(&assembly, &compiled);
     Scenario {
         assembly,

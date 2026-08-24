@@ -7,7 +7,10 @@
 //! `(content fingerprint, policy fingerprint)` pair; any number of
 //! instances share the compiled result. Compilation is deterministic, so
 //! the cache is pure memoization: hits and misses can never change output,
-//! only work.
+//! only work. Constructive reports are cached with the geometry: callers can
+//! inspect every diagnostic on successful (including partial) evaluations,
+//! while an error-level refusal that emits no bodies is a typed compilation
+//! failure and can never disappear during flattening.
 //!
 //! Dirty tracking runs through the `invalidation` crate: part-content
 //! edits are marked on a parts channel, and the next compile drains the
@@ -19,7 +22,7 @@ use alloc::vec::Vec;
 
 use exedra::{ExtractParams, FaceTriangulation, TriMesh};
 use exedra_constructive::EVAL_SCHEMA_VERSION;
-use exedra_constructive::evaluate::{EvalError, evaluate};
+use exedra_constructive::evaluate::{EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
@@ -129,6 +132,13 @@ pub enum CompileError {
         /// The underlying evaluation failure.
         error: EvalError,
     },
+    /// Evaluation explicitly refused a recipe and produced no geometry.
+    NoGeometry {
+        /// The rejected part.
+        part: PartId,
+        /// The complete constructive report, including the refusal reason.
+        report: Rc<GeometryReport>,
+    },
 }
 
 impl core::fmt::Display for CompileError {
@@ -136,6 +146,21 @@ impl core::fmt::Display for CompileError {
         match self {
             Self::Evaluate { part, error } => {
                 write!(f, "part {part:?} failed to evaluate: {error}")
+            }
+            Self::NoGeometry { part, report } => {
+                let diagnostic = report
+                    .diagnostics
+                    .iter()
+                    .find(|diagnostic| diagnostic.severity >= Severity::Error);
+                if let Some(diagnostic) = diagnostic {
+                    write!(
+                        f,
+                        "part {part:?} produced no geometry: {}: {}",
+                        diagnostic.code, diagnostic.message
+                    )
+                } else {
+                    write!(f, "part {part:?} produced no geometry")
+                }
             }
         }
     }
@@ -148,6 +173,8 @@ impl core::error::Error for CompileError {}
 pub struct CompiledParts {
     /// Compiled entry per part, indexed by [`PartId`].
     parts: Vec<Rc<CompiledPart>>,
+    /// Constructive report per recipe part, parallel to `parts`.
+    reports: Vec<Option<Rc<GeometryReport>>>,
 }
 
 impl CompiledParts {
@@ -162,12 +189,34 @@ impl CompiledParts {
     pub fn parts(&self) -> &[Rc<CompiledPart>] {
         &self.parts
     }
+
+    /// The constructive evaluation report for a recipe part.
+    ///
+    /// Baked parts have no constructive evaluation and return `None`, as do
+    /// unknown part ids. A cache hit returns the content-addressed report
+    /// captured with the compiled part; its evaluation counters therefore
+    /// describe the original compilation. Use [`PartCompiler::counters`] to
+    /// measure work performed by the current compiler call.
+    #[must_use]
+    pub fn report(&self, id: PartId) -> Option<&GeometryReport> {
+        self.reports.get(id.0 as usize).and_then(Option::as_deref)
+    }
+}
+
+/// One successful content-addressed cache entry.
+///
+/// The report is cached beside the geometry rather than recomputed on a hit:
+/// diagnostics are part of the compilation result, not incidental logging.
+#[derive(Clone, Debug)]
+struct CachedCompilation {
+    part: Rc<CompiledPart>,
+    report: Option<Rc<GeometryReport>>,
 }
 
 /// Memoizing part compiler with invalidation-channel eviction.
 #[derive(Debug, Default)]
 pub struct PartCompiler {
-    cache: HashMap<(PartFingerprint, PolicyFingerprint), Rc<CompiledPart>>,
+    cache: HashMap<(PartFingerprint, PolicyFingerprint), CachedCompilation>,
     /// Cache keys last produced for each part, so channel-driven eviction
     /// can find them without scanning.
     part_keys: HashMap<PartId, Vec<(PartFingerprint, PolicyFingerprint)>>,
@@ -212,8 +261,9 @@ impl PartCompiler {
     ///
     /// # Errors
     ///
-    /// Fails when a recipe part fails to evaluate; the cache keeps all
-    /// other entries.
+    /// Fails when a recipe part fails to evaluate, or when its evaluation
+    /// reports an error and emits no bodies. The cache keeps all other
+    /// entries.
     pub fn compile_parts(
         &mut self,
         assembly: &Assembly,
@@ -226,23 +276,33 @@ impl PartCompiler {
         }
         let policy_fp = policy_fingerprint(policy);
         let mut out = Vec::with_capacity(assembly.parts().len());
+        let mut reports = Vec::with_capacity(assembly.parts().len());
         for (index, def) in assembly.parts().iter().enumerate() {
             let id = PartId(crate::len_u32(index));
             let content_fp = self.part_fingerprint(id, def.source());
             let key = (content_fp, policy_fp);
             if let Some(hit) = self.cache.get(&key) {
                 self.counters.cache_hits += 1;
-                out.push(Rc::clone(hit));
+                out.push(Rc::clone(&hit.part));
+                reports.push(hit.report.as_ref().map(Rc::clone));
                 continue;
             }
-            let compiled = Rc::new(compile_source(id, def.source(), policy, content_fp)?);
+            let (part, report) = compile_source(id, def.source(), policy, content_fp)?;
+            let compiled = CachedCompilation {
+                part: Rc::new(part),
+                report: report.map(Rc::new),
+            };
             self.counters.parts_compiled += 1;
-            self.counters.triangles_emitted += compiled.triangle_count();
-            self.cache.insert(key, Rc::clone(&compiled));
+            self.counters.triangles_emitted += compiled.part.triangle_count();
+            self.cache.insert(key, compiled.clone());
             self.part_keys.entry(id).or_default().push(key);
-            out.push(compiled);
+            out.push(compiled.part);
+            reports.push(compiled.report);
         }
-        Ok(CompiledParts { parts: out })
+        Ok(CompiledParts {
+            parts: out,
+            reports,
+        })
     }
 
     fn drain_dirty(&mut self) {
@@ -285,23 +345,37 @@ fn compile_source(
     source: &PartSource,
     policy: &EvalPolicy,
     fingerprint: PartFingerprint,
-) -> Result<CompiledPart, CompileError> {
-    let bodies = match source {
+) -> Result<(CompiledPart, Option<GeometryReport>), CompileError> {
+    let (bodies, report) = match source {
         PartSource::Recipe(recipe) => {
             let evaluation =
                 evaluate(recipe, policy).map_err(|error| CompileError::Evaluate { part, error })?;
-            evaluation
+            // Constructive refusals are represented as reports rather than
+            // `EvalError`s. Reject only when an Error leaves the entire part
+            // empty: partial geometry stays usable, but its complete report is
+            // retained below so the limitation remains visible to callers.
+            if evaluation.bodies.is_empty() && !evaluation.report.clean_at(Severity::Error) {
+                return Err(CompileError::NoGeometry {
+                    part,
+                    report: Rc::new(evaluation.report),
+                });
+            }
+            let bodies = evaluation
                 .bodies
                 .iter()
                 .map(|placed| compile_body(&placed.body.mesh))
-                .collect()
+                .collect();
+            (bodies, Some(evaluation.report))
         }
-        PartSource::Baked(mesh) => alloc::vec![compile_body(mesh)],
+        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh)], None),
     };
-    Ok(CompiledPart {
-        fingerprint,
-        bodies,
-    })
+    Ok((
+        CompiledPart {
+            fingerprint,
+            bodies,
+        },
+        report,
+    ))
 }
 
 /// Extracts render buffers and regroups the index buffer so each
@@ -486,6 +560,43 @@ mod tests {
         b.finish(node).unwrap()
     }
 
+    fn unsupported_planar_face_recipe() -> Recipe {
+        let mut b = RecipeBuilder::new();
+        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let node = b
+            .add(NodeKind::PlanarFace {
+                profile,
+                placement: Placement3::IDENTITY,
+            })
+            .unwrap();
+        b.finish(node).unwrap()
+    }
+
+    fn partially_supported_recipe() -> Recipe {
+        let mut b = RecipeBuilder::new();
+        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let solid = b
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 10.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let unsupported = b
+            .add(NodeKind::PlanarFace {
+                profile,
+                placement: Placement3::translate(0.0, 0.0, 20.0),
+            })
+            .unwrap();
+        let root = b
+            .add(NodeKind::Group {
+                children: alloc::vec![solid, unsupported],
+            })
+            .unwrap();
+        b.finish(root).unwrap()
+    }
+
     fn n_instance_assembly(n: u32) -> Assembly {
         let mut asm = Assembly::new();
         let part = asm.add_recipe_part("panel", prism_recipe(40.0)).unwrap();
@@ -521,6 +632,75 @@ mod tests {
             compiled.part(PartId(0)).unwrap(),
             again.part(PartId(0)).unwrap()
         ));
+    }
+
+    #[test]
+    fn error_diagnostic_cannot_compile_as_an_empty_part() {
+        // A currently unsupported constructive node evaluates without a hard
+        // `EvalError`, but it emits an Error diagnostic and no bodies. Assembly
+        // compilation must not turn that explicit refusal into a successful,
+        // silently omitted instance.
+        let mut asm = Assembly::new();
+        let part = asm
+            .add_recipe_part("unsupported", unsupported_planar_face_recipe())
+            .unwrap();
+        asm.add_instance(None, "omitted", part, Placement3::IDENTITY)
+            .unwrap();
+
+        let error = PartCompiler::new()
+            .compile_parts(&asm, &EvalPolicy::default())
+            .expect_err("an error diagnostic with no geometry must fail compilation");
+        let CompileError::NoGeometry {
+            part: rejected,
+            report,
+        } = error
+        else {
+            panic!("expected the report-bearing no-geometry error");
+        };
+        assert_eq!(rejected, part);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "eval.unimplemented")
+        );
+    }
+
+    #[test]
+    fn partial_geometry_retains_its_report_across_cache_hits() {
+        // A group may deliberately preserve usable geometry even when one
+        // child is refused. Compilation succeeds, but the refusal—including
+        // diagnostics of every severity—must remain inspectable and must not
+        // change when the content-addressed geometry cache is hit.
+        let mut asm = Assembly::new();
+        let part = asm
+            .add_recipe_part("partial", partially_supported_recipe())
+            .unwrap();
+        asm.add_instance(None, "partial", part, Placement3::IDENTITY)
+            .unwrap();
+        let mut compiler = PartCompiler::new();
+
+        let first = compiler
+            .compile_parts(&asm, &EvalPolicy::default())
+            .unwrap();
+        assert_eq!(first.part(part).unwrap().bodies.len(), 1);
+        let first_report = first.report(part).expect("recipe report");
+        assert!(
+            first_report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "eval.unimplemented")
+        );
+
+        let again = compiler
+            .compile_parts(&asm, &EvalPolicy::default())
+            .unwrap();
+        let cached_report = again.report(part).expect("cached recipe report");
+        assert_eq!(cached_report, first_report);
+        assert!(
+            core::ptr::eq(cached_report, first_report),
+            "the report must be cached with its compiled geometry"
+        );
     }
 
     #[test]
@@ -654,6 +834,10 @@ mod tests {
         let entry = compiled.part(part).unwrap();
         assert_eq!(entry.bodies.len(), 1);
         assert!(entry.triangle_count() > 0);
+        assert!(
+            compiled.report(part).is_none(),
+            "baked parts do not have constructive reports"
+        );
         // Second run reuses the memoized baked fingerprint and hits.
         compiler
             .compile_parts(&asm, &EvalPolicy::default())

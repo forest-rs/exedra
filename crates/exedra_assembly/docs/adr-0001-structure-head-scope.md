@@ -35,8 +35,10 @@ deterministic, and cache-friendly.
   this crate only guarantees their stability semantics.
 - **Compilation and sharing.** Parts compile (tessellate) once per distinct
   (content fingerprint, policy fingerprint) pair; instances share compiled
-  results. Dirty tracking runs through the `invalidation` crate so a changed
-  part invalidates only its own entry.
+  results and their constructive reports. Dirty tracking runs through the
+  `invalidation` crate so a changed part invalidates only its own entry. An
+  error-level evaluation that emits no bodies is a typed compilation failure;
+  partial geometry remains available with its report intact.
 - **The render seam.** `flatten()` produces a flat `RenderList` of
   (instance path, world placement, part reference, per-region index ranges
   with resolved material keys). Renderers and exporters consume this and
@@ -69,6 +71,12 @@ It owns none of:
 slot when exactly one slot is declared. Callers that deliberately wanted a
 one-slot recipe to resolve no material must instead declare that intent with
 a multi-slot recipe or clear the material at their consuming boundary.
+
+`compile_parts` now returns `CompileError::NoGeometry` when constructive
+evaluation emits an error diagnostic and no bodies. Successful recipe reports
+are available through `CompiledParts::report`; callers that previously
+pre-evaluated recipes only to collect diagnostics should use that retained
+report instead.
 
 ## Alternatives considered
 
