@@ -589,6 +589,20 @@ fn split_one_face(
         return; // Nothing actually cut.
     }
 
+    // Chain tracing can revisit a junction while consuming a residual cycle.
+    // Such a walk is not a simple polygon: `add_face` will reject its repeated
+    // vertex. Validate the whole batch before deleting the original face,
+    // because edit sessions are eager and cannot roll back a partially rebuilt
+    // partition when one later sub-loop is invalid.
+    if sub_loops.iter().any(|sub_loop| !is_simple_loop(sub_loop)) {
+        defer(
+            "face partition produced a non-simple sub-loop",
+            outcome,
+            diagnostics,
+        );
+        return;
+    }
+
     // Rebuilding the partition one face at a time must keep the OUTSIDE
     // boundary a set of simple loops after every addition. A geometrically
     // valid partition can otherwise panic the incremental stitcher when a
@@ -676,6 +690,20 @@ fn split_one_face(
     }
     outcome.stats.faces_split += 1;
     outcome.stats.faces_created += created;
+}
+
+/// Returns whether a generated face loop can be submitted to `add_face` as
+/// one simple polygon.
+///
+/// Length and vertex uniqueness cover the structural failures the splitter
+/// can introduce. All vertices came from the live source face or were created
+/// earlier in this function, so liveness does not need another pass here.
+fn is_simple_loop(vertices: &[VertexId]) -> bool {
+    vertices.len() >= 3
+        && vertices
+            .iter()
+            .enumerate()
+            .all(|(index, vertex)| !vertices[(index + 1)..].contains(vertex))
 }
 
 /// Orders polygonal sub-loops so every face addition attaches along an open
