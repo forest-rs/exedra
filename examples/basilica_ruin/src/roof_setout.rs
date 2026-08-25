@@ -958,7 +958,7 @@ fn build_binding_index(quantities: &RoofQuantities) -> BindingIndex {
             format!("common-rafter-{side}-02"),
             format!("purlin-{side}-eave"),
             format!("purlin-{side}-mid"),
-            format!("ridge-member-{side}"),
+            format!("purlin-{side}-upper"),
         ] {
             bindings.bind(
                 element,

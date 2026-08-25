@@ -10,14 +10,17 @@
 //!
 //! ## One authored interface
 //!
-//! Every rule derives its mating geometry from one carried-member section.
-//! Only receiving geometry uses [`FitClass::Clearance`]. Mortises and housings
-//! use [`exedra_constructive::profile::Profile2::offset`]; the keyed slot keeps
+//! Every rule derives one nominal mating interface from its participant
+//! extents. Only receiving geometry uses [`FitClass::Clearance`]. Mortises,
+//! housings, trenches, and seats use
+//! [`exedra_constructive::profile::Profile2::offset`]; the keyed slot keeps
 //! its load-bearing faces line-to-line and applies clearance only transverse
 //! to the key. The housed heel also shapes its carried rafter; a keyed
 //! king-post tie fit shapes the post, mortises the tie, and generates the key;
 //! full-section compression bearings cut only their carrier because the strut
-//! or rafter already terminates on the authored internal shoulder.
+//! or rafter already terminates on the authored internal shoulder. Secondary
+//! roof crossings likewise leave each full-section purlin intact and edit the
+//! principal or common rafter that receives it.
 //!
 //! ```text
 //! relation + extents
@@ -48,6 +51,7 @@ mod heel;
 mod king_post;
 mod length;
 mod participants;
+mod purlin;
 mod strut;
 mod tool;
 
@@ -55,6 +59,10 @@ pub use exedra_measurements::Length;
 pub use fit::FitClass;
 pub use heel::{HEEL_RULE_KEY, HeelParams, HeelRule};
 pub use king_post::{KING_POST_TIE_RULE_KEY, KingPostTieParams, KingPostTieRule};
+pub use purlin::{
+    COMMON_RAFTER_PURLIN_SEAT_RULE_KEY, CommonRafterPurlinSeatParams, CommonRafterToPurlinSeatRule,
+    PURLIN_PRINCIPAL_TRENCH_RULE_KEY, PurlinPrincipalTrenchParams, PurlinToPrincipalTrenchRule,
+};
 pub use strut::{
     HousedBearingParams, RAFTER_KING_POST_RULE_KEY, RafterToKingPostRule, STRUT_KING_POST_RULE_KEY,
     STRUT_RAFTER_RULE_KEY, StrutToKingPostRule, StrutToRafterRule,

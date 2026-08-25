@@ -61,9 +61,10 @@ The bounded Blender checkpoint renderer consumes those named OBJ layers:
   --render-dir target/basilica_structure_lab/renders
 ```
 
-Its ten views cover exposed framing, explicit transfer edges, a transparent
-roof, both wall-plate bearings, the ridge bearing, isolated heel and keyed-tie
-fits, and assembled/exploded views of one complete braced king-post truss.
+Its twelve views cover exposed framing, explicit transfer edges, a transparent
+roof, both wall-plate bearings, isolated heel and keyed-tie fits,
+assembled/exploded views of one complete braced king-post truss, and assembled
+plus exploded inspections of the secondary purlin/common-rafter system.
 These are semantic inspection images, not a photoreal acceptance replacement
 for the basilica. The joint views use the real rule-edited members and
 contrasting role materials; they do not exaggerate the production fit
@@ -96,12 +97,15 @@ The bright bearing cubes and frame axes are deliberately oversized,
 nonphysical diagnostic markers. `joiner_timber` now fits every primary joint
 in each braced king-post truss: housed heels, a keyed through-tenon suspending
 the tie, both ends of both compression struts, and both principal-rafter
-bearings in the king head. Every receiving cut is derived from the carried
-section, with the typed fit allowance applied only to receiving geometry; the
-key slot keeps its two load-bearing faces line-to-line. The upper strut bearing
-is a physical contact but not a directed transfer because it closes the
-truss's internal force triangle, while `joiner` intentionally validates an
-acyclic support explanation rather than solving statics. The separate
+bearings in the king head. It also fits all three longitudinal purlin lines:
+each passes through trenches in both principal rafters, and each common rafter
+has a shallow underside seat at every crossing. Every receiving cut is derived
+from one nominal interface, with the typed fit allowance applied only to
+receiving geometry; the key slot keeps its two load-bearing faces line-to-line.
+The upper strut bearing is a physical contact but not a directed transfer
+because it closes the truss's internal force triangle, while `joiner`
+intentionally validates an acyclic support explanation rather than solving
+statics. The separate
 principal-rafter/wall-plate `anchor-contact` and masonry relations remain
 explicit hypotheses. Masonry knowledge remains stage 3 of `bsl-6ihj` (see ADR
 0002).
@@ -138,6 +142,16 @@ one known Byzantine roof or as a capacity-checked design.
   Its surviving roof reflects later Venetian/medieval development and is used
   only as a regional construction analogy:
   <https://hdl.handle.net/11583/1956728>
+- The Vernacular Architecture Group's glossary distinguishes through,
+  trenched, tenoned, threaded, and other purlin forms, with an explicit
+  trenched-purlin example. It supports the rule's joint vocabulary, not its
+  attribution to this basilica:
+  <https://www.vernacularbuildingglossary.org.uk/a-z/purlin/>
+- The National Trust's Knole roof report records lower purlins trenched into
+  common rafters while upper connections use a different form. It is the
+  explicit analogy for the common-rafter seat and also the reason the code
+  does not present that seat as a universal purlin joint:
+  <https://heritagerecords.nationaltrust.org.uk/LibraryLinkWS/LLFiles/225169/original_225169.pdf>
 - The UNESCO/ICOMOS Church of the Nativity mission explicitly records
   uncertainty over which present roof fabric is sixth-century and which
   belongs to later rebuilding. That uncertainty is the reason the lab keeps
