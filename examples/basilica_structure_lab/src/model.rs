@@ -19,8 +19,9 @@ use joiner::{
     is_witnessed, measure_contact, trace_to_ground, validate,
 };
 use joiner_timber::{
-    HeelParams, HeelRule, HousedBearingParams, KingPostTieParams, KingPostTieRule, Length,
-    RafterToKingPostRule, StrutToKingPostRule, StrutToRafterRule,
+    CommonRafterPurlinSeatParams, CommonRafterToPurlinSeatRule, HeelParams, HeelRule,
+    HousedBearingParams, KingPostTieParams, KingPostTieRule, Length, PurlinPrincipalTrenchParams,
+    PurlinToPrincipalTrenchRule, RafterToKingPostRule, StrutToKingPostRule, StrutToRafterRule,
 };
 
 pub(crate) type Vec3 = [f64; 3];
@@ -29,9 +30,14 @@ pub(crate) type Vec3 = [f64; 3];
 pub(crate) const CONTACT_TOLERANCE: f64 = joiner::CONTACT_TOLERANCE;
 const TIE_END_RELISH: f64 = 0.18;
 const KING_POST_WIDTH: f64 = 0.36;
+const PURLIN_TRENCH_DEPTH: Length = length_millimeters(30);
+const COMMON_RAFTER_SEAT_DEPTH: Length = length_millimeters(20);
 
-fn length_millimeters(value: u64) -> Length {
-    Length::millimeters(value).expect("authored lab dimensions must be positive")
+const fn length_millimeters(value: u64) -> Length {
+    match Length::millimeters(value) {
+        Some(value) => value,
+        None => panic!("authored lab dimensions must be positive millimeters"),
+    }
 }
 
 /// What part an element plays in this roof.
@@ -44,7 +50,6 @@ pub(crate) enum ElementRole {
     Boarding,
     CommonRafter,
     Purlin,
-    Ridge,
     PrincipalRafter,
     TieBeam,
     KingPost,
@@ -54,12 +59,11 @@ pub(crate) enum ElementRole {
 }
 
 impl ElementRole {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::RoofCovering,
         Self::Boarding,
         Self::CommonRafter,
         Self::Purlin,
-        Self::Ridge,
         Self::PrincipalRafter,
         Self::TieBeam,
         Self::KingPost,
@@ -74,7 +78,6 @@ impl ElementRole {
             Self::Boarding => "boarding",
             Self::CommonRafter => "common-rafter",
             Self::Purlin => "purlin",
-            Self::Ridge => "ridge",
             Self::PrincipalRafter => "principal-rafter",
             Self::TieBeam => "tie-beam",
             Self::KingPost => "king-post",
@@ -102,7 +105,7 @@ impl ElementRole {
             Self::RoofCovering => "semantic-roof-covering",
             Self::Boarding => "semantic-boarding",
             Self::CommonRafter => "semantic-common-rafter",
-            Self::Purlin | Self::Ridge => "semantic-purlin",
+            Self::Purlin => "semantic-purlin",
             Self::PrincipalRafter => "semantic-principal-rafter",
             Self::TieBeam => "semantic-tie-beam",
             Self::KingPost => "semantic-king-post",
@@ -120,16 +123,20 @@ impl ElementRole {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum JointKind {
     BearingSeat,
+    CommonRafterSeat,
     HousedBearing,
     KeyedThroughTenon,
+    PurlinTrench,
 }
 
 impl JointKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::BearingSeat => "bearing-seat",
+            Self::CommonRafterSeat => "common-rafter-seat",
             Self::HousedBearing => "housed-bearing",
             Self::KeyedThroughTenon => "keyed-through-tenon",
+            Self::PurlinTrench => "purlin-trench",
         }
     }
 }
@@ -141,7 +148,6 @@ impl JointKind {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BearingKind {
     Surface,
-    CrossedSeat,
     AnchorContact,
     WallHead,
 }
@@ -150,7 +156,6 @@ impl BearingKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Surface => "surface",
-            Self::CrossedSeat => "crossed-seat",
             Self::AnchorContact => "anchor-contact",
             Self::WallHead => "wall-head",
         }
@@ -198,6 +203,18 @@ impl Author {
                 EvidenceClass::RegionalAnalogy,
                 "https://hdl.handle.net/11583/1956728",
                 "Later eastern-Mediterranean truss, secondary timber, boarding, and tile evidence",
+            ),
+            EvidenceSource::new(
+                "vernacular-trenched-purlin",
+                EvidenceClass::RegionalAnalogy,
+                "https://www.vernacularbuildingglossary.org.uk/a-z/purlin/",
+                "Typology and examples of purlins trenched into principal rafters; not Byzantine attribution",
+            ),
+            EvidenceSource::new(
+                "knole-common-rafter-purlin-joints",
+                EvidenceClass::RegionalAnalogy,
+                "https://heritagerecords.nationaltrust.org.uk/LibraryLinkWS/LLFiles/225169/original_225169.pdf",
+                "Recorded lower purlins trenched into common rafters; a joint-form analogy, not building attribution",
             ),
             EvidenceSource::new(
                 "tfec-modern-truss-detailing",
@@ -261,12 +278,23 @@ impl Author {
         kind: JointKind,
         class: EvidenceClass,
     ) {
+        self.joint_with_evidence(key, node, members, kind, evidence(class));
+    }
+
+    fn joint_with_evidence(
+        &mut self,
+        key: &str,
+        node: &str,
+        members: &[&str],
+        kind: JointKind,
+        joint_evidence: Evidence,
+    ) {
         self.construction
             .add_relation(Relation::new(
                 key,
                 RelationKind::member_member(node, members),
                 kind.label(),
-                evidence(class),
+                joint_evidence,
             ))
             .expect("joint references resolve");
     }
@@ -278,6 +306,17 @@ impl Author {
         rule: &R,
         params: &R::Params,
         class: EvidenceClass,
+    ) {
+        self.fit_with_evidence(application, relation, rule, params, evidence(class));
+    }
+
+    fn fit_with_evidence<R: Rule>(
+        &mut self,
+        application: &str,
+        relation: &str,
+        rule: &R,
+        params: &R::Params,
+        application_evidence: Evidence,
     ) {
         let output = {
             let context = RuleContext::new(&self.construction, relation)
@@ -297,7 +336,7 @@ impl Author {
                 application,
                 rule.key(),
                 relation,
-                evidence(class),
+                application_evidence,
                 output,
             ))
             .expect("assessed rule output merges atomically");
@@ -382,11 +421,18 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
     let common_depth = 0.16;
     let purlin_depth = 0.22;
     let principal_depth = roof.principal_rafter_depth.as_metres();
-    // Setout endpoints describe the principal-rafter centerline. Secondary
-    // layers therefore accumulate from its outer face, half a depth away,
-    // rather than silently treating that centerline as the timber's inner face.
+    let purlin_trench_depth = PURLIN_TRENCH_DEPTH.as_meters();
+    let common_rafter_seat_depth = COMMON_RAFTER_SEAT_DEPTH.as_meters();
+    // Setout endpoints describe the principal-rafter centerline. The visible
+    // roof stack is smaller than the sum of the uncut section depths because
+    // two deliberate overlaps become joints: purlins sink into the principals
+    // and common rafters sink into the purlins. The rules below remove those
+    // exact overlaps; no cutter is allowed to manufacture contact by moving a
+    // member or by changing this setout arithmetic.
     let stack_depth =
-        covering_depth + boarding_depth + common_depth + purlin_depth + principal_depth * 0.5;
+        covering_depth + boarding_depth + common_depth + purlin_depth + principal_depth * 0.5
+            - purlin_trench_depth
+            - common_rafter_seat_depth;
     let common_width = 0.12;
     let purlin_width = 0.18;
     let principal_width = roof.principal_rafter_width.as_metres();
@@ -561,32 +607,39 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
         for (position_name, t) in [
             ("eave", 0.42),
             ("mid", roof_length * 0.5),
-            ("ridge", roof_length - 0.42),
+            ("upper", roof_length - 0.42),
         ] {
-            let key = if position_name == "ridge" {
-                format!("ridge-member-{side_name}")
-            } else {
-                format!("purlin-{side_name}-{position_name}")
-            };
-            let role = if position_name == "ridge" {
-                ElementRole::Ridge
-            } else {
-                ElementRole::Purlin
-            };
+            // This upper longitudinal timber is 420 mm below the apex. It is
+            // an upper purlin, not a ridge beam; naming it as such keeps the
+            // still-unmodeled apex joint from hiding behind a misleading role.
+            let key = format!("purlin-{side_name}-{position_name}");
             let origin_at_t = add(outer_eave, scale(slope, t));
             let extent = OrientedBox {
                 origin: sub(
-                    sub(origin_at_t, scale(slope, purlin_width * 0.5)),
+                    add(
+                        [x0 - principal_width * 0.5, 0.0, 0.0],
+                        sub(origin_at_t, scale(slope, purlin_width * 0.5)),
+                    ),
                     scale(
                         normal,
-                        covering_depth + boarding_depth + common_depth + purlin_depth,
+                        covering_depth + boarding_depth + common_depth + purlin_depth
+                            - common_rafter_seat_depth,
                     ),
                 ),
                 axes: [x_axis, slope, normal],
-                size: [bay_length, purlin_width, purlin_depth],
+                // The solid passes across the complete width of each
+                // supporting principal. Its centreline still begins and ends
+                // at the truss stations, leaving the physical overhang that a
+                // true through trench requires instead of a half-width notch.
+                size: [bay_length + principal_width, purlin_width, purlin_depth],
             };
-            let element =
-                author.element(key.clone(), role, extent, EvidenceClass::RegionalAnalogy, 2);
+            let element = author.element(
+                key.clone(),
+                ElementRole::Purlin,
+                extent,
+                EvidenceClass::RegionalAnalogy,
+                2,
+            );
             let from = author.node(
                 format!("node-{key}-west"),
                 add(
@@ -595,7 +648,8 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
                         origin_at_t,
                         scale(
                             normal,
-                            covering_depth + boarding_depth + common_depth + purlin_depth * 0.5,
+                            covering_depth + boarding_depth + common_depth + purlin_depth * 0.5
+                                - common_rafter_seat_depth,
                         ),
                     ),
                 ),
@@ -606,21 +660,42 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             );
             author.member(key, &element, &from, &to, EvidenceClass::RegionalAnalogy);
             for (ordinal, (common, x)) in common_rafters.iter().enumerate() {
-                author.bearing(
-                    &format!("bearing-common-{side_name}-{ordinal:02}-on-{position_name}-purlin"),
-                    Anchor::new(common, [t, common_width * 0.5, 0.0]),
-                    Anchor::new(&element, [x - x0, purlin_width * 0.5, purlin_depth]),
-                    normal,
-                    [x_axis, slope],
-                    [common_width * 0.95, purlin_width * 0.95],
-                    BearingKind::CrossedSeat,
+                let relation =
+                    format!("joint-common-{side_name}-{ordinal:02}-on-{position_name}-purlin");
+                let node = author.node(
+                    format!("node-{relation}"),
+                    add(
+                        [*x, 0.0, 0.0],
+                        sub(
+                            origin_at_t,
+                            scale(
+                                normal,
+                                covering_depth + boarding_depth + common_depth
+                                    - common_rafter_seat_depth,
+                            ),
+                        ),
+                    ),
+                );
+                let joint_evidence = Evidence::new(
+                    "knole-common-rafter-purlin-joints",
                     EvidenceClass::RegionalAnalogy,
                 );
-                author.transfer(
-                    format!("load-common-{side_name}-{ordinal:02}-to-{position_name}-purlin"),
-                    common,
-                    TransferTarget::element(&element),
-                    TransferKind::Contact,
+                author.joint_with_evidence(
+                    &relation,
+                    &node,
+                    &[common, element.as_str()],
+                    JointKind::CommonRafterSeat,
+                    joint_evidence.clone(),
+                );
+                author.fit_with_evidence(
+                    &format!("fit-common-{side_name}-{ordinal:02}-on-{position_name}-purlin"),
+                    &relation,
+                    &CommonRafterToPurlinSeatRule,
+                    &CommonRafterPurlinSeatParams {
+                        seat_depth: COMMON_RAFTER_SEAT_DEPTH,
+                        ..CommonRafterPurlinSeatParams::default()
+                    },
+                    joint_evidence,
                 );
             }
             purlins.push((position_name, t, element));
@@ -781,22 +856,41 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
                 TransferTarget::element(wall_plate),
                 TransferKind::Contact,
             );
-            for (position_name, t, purlin) in &data.purlins {
-                author.bearing(
-                    &format!("bearing-{position_name}-purlin-{name}-on-principal-{station_name}"),
-                    Anchor::new(purlin, [station_x - x0, purlin_width * 0.5, 0.0]),
-                    Anchor::new(&principal, [*t, principal_width * 0.5, principal_depth]),
-                    normal,
-                    [x_axis, slope],
-                    [principal_width * 0.45, purlin_width * 0.90],
-                    BearingKind::CrossedSeat,
-                    EvidenceClass::ModernEngineeringInference,
+            for (position_name, _, purlin) in &data.purlins {
+                let relation =
+                    format!("joint-{position_name}-purlin-{name}-on-principal-{station_name}");
+                let purlin_extent = author
+                    .construction
+                    .element(purlin)
+                    .expect("purlin was authored before its supporting truss")
+                    .extent
+                    .clone();
+                let node = author.node(
+                    format!("node-{relation}"),
+                    purlin_extent.anchor([
+                        station_x - x0 + principal_width * 0.5,
+                        purlin_width * 0.5,
+                        0.0,
+                    ]),
                 );
-                author.transfer(
-                    format!("load-{position_name}-purlin-{name}-to-principal-{station_name}"),
-                    purlin,
-                    TransferTarget::element(&principal),
-                    TransferKind::Contact,
+                let joint_evidence =
+                    Evidence::new("vernacular-trenched-purlin", EvidenceClass::RegionalAnalogy);
+                author.joint_with_evidence(
+                    &relation,
+                    &node,
+                    &[purlin, principal.as_str()],
+                    JointKind::PurlinTrench,
+                    joint_evidence.clone(),
+                );
+                author.fit_with_evidence(
+                    &format!("fit-{position_name}-purlin-{name}-on-principal-{station_name}"),
+                    &relation,
+                    &PurlinToPrincipalTrenchRule,
+                    &PurlinPrincipalTrenchParams {
+                        trench_depth: PURLIN_TRENCH_DEPTH,
+                        ..PurlinPrincipalTrenchParams::default()
+                    },
+                    joint_evidence,
                 );
             }
             station_principals.push((name, key, head_node));
@@ -1380,7 +1474,7 @@ mod tests {
             "common-rafter-south-02",
             "purlin-south-eave",
             "purlin-south-mid",
-            "ridge-member-south",
+            "purlin-south-upper",
             "masonry-north",
             "wall-plate-north",
             "roof-covering-north",
@@ -1390,7 +1484,7 @@ mod tests {
             "common-rafter-north-02",
             "purlin-north-eave",
             "purlin-north-mid",
-            "ridge-member-north",
+            "purlin-north-upper",
             "tie-beam-west",
             "principal-rafter-south-west",
             "principal-rafter-north-west",
@@ -1422,18 +1516,20 @@ mod tests {
     }
 
     #[test]
-    fn concrete_timber_rules_fit_every_primary_truss_joint() {
-        // Each station must apply the same nine-rule set: two heels, the keyed
-        // tie connection, both ends of two struts, and both rafter heads.
-        // Per-member edit counts pin the actual joinery, not just rule labels.
+    fn concrete_timber_rules_fit_primary_trusses_and_secondary_roof_crossings() {
+        // The 18 primary-truss fits remain unchanged. Eighteen common-rafter
+        // seats and twelve purlin trenches then make every secondary crossing
+        // constructive geometry rather than an analytic contact label.
         let construction = model();
-        assert_eq!(construction.applications().len(), 18);
+        assert_eq!(construction.applications().len(), 48);
         for (rule, expected) in [
             (joiner_timber::HEEL_RULE_KEY, 4),
             (joiner_timber::KING_POST_TIE_RULE_KEY, 2),
             (joiner_timber::STRUT_KING_POST_RULE_KEY, 4),
             (joiner_timber::STRUT_RAFTER_RULE_KEY, 4),
             (joiner_timber::RAFTER_KING_POST_RULE_KEY, 4),
+            (joiner_timber::COMMON_RAFTER_PURLIN_SEAT_RULE_KEY, 18),
+            (joiner_timber::PURLIN_PRINCIPAL_TRENCH_RULE_KEY, 12),
         ] {
             assert_eq!(
                 construction
@@ -1465,8 +1561,8 @@ mod tests {
                     construction
                         .part_edits_for(&format!("principal-rafter-{side}-{station}"))
                         .count(),
-                    2,
-                    "one heel seat and one strut housing"
+                    5,
+                    "one heel seat, one strut housing, and three purlin trenches"
                 );
                 assert_eq!(
                     construction
@@ -1477,7 +1573,6 @@ mod tests {
                 );
             }
         }
-
         let strut_head = construction
             .contact("contact-joint-strut-to-principal-south-west")
             .expect("fitted strut-head contact exists");
@@ -1488,19 +1583,42 @@ mod tests {
                 != "load-principal-rafter-south-west-through-joint-strut-to-principal-south-west"),
             "the physical bearing closes a truss triangle, so it must not close a cycle in the acyclic support graph"
         );
+        for side in ["south", "north"] {
+            for ordinal in 0..3 {
+                assert_eq!(
+                    construction
+                        .part_edits_for(&format!("common-rafter-{side}-{ordinal:02}"))
+                        .count(),
+                    3,
+                    "each common rafter is seated over all three purlins"
+                );
+            }
+            for position in ["eave", "mid", "upper"] {
+                assert_eq!(
+                    construction
+                        .part_edits_for(&format!("purlin-{side}-{position}"))
+                        .count(),
+                    0,
+                    "full-section purlins are carried without being cut"
+                );
+            }
+        }
     }
 
     #[test]
     fn every_concrete_timber_recipe_evaluates_cleanly() {
-        // Assembly compilation reports only a part id. Evaluating each fitted
-        // timber by stable element key makes a failed joint name the member
-        // and retain the constructive diagnostics that explain it.
+        // Assembly compilation reports only a part id. Evaluating every
+        // primary and secondary fitted timber by stable element key makes a
+        // failed crossing name the member and retains the constructive
+        // diagnostics that explain it.
         let construction = model();
         for element in construction.elements().iter().filter(|element| {
             matches!(
                 ElementRole::from_label(&element.role),
                 Some(
                     ElementRole::PrincipalRafter
+                        | ElementRole::CommonRafter
+                        | ElementRole::Purlin
                         | ElementRole::TieBeam
                         | ElementRole::KingPost
                         | ElementRole::Strut
@@ -1648,7 +1766,7 @@ mod tests {
     #[test]
     fn duplicate_transfers_do_not_inflate_direct_support_multiplicity() {
         let mut construction = model();
-        for key in ["purlin-south-mid", "ridge-member-south"] {
+        for key in ["purlin-south-mid", "purlin-south-upper"] {
             construction
                 .set_element_present(key, false)
                 .expect("test element exists");

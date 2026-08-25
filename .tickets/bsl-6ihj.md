@@ -101,8 +101,9 @@ return for the IR and **stops for review before stage 2 begins**.
 ### Remaining stages
 
 - [x] `joiner_timber`: housed heels, keyed king-post-to-tie through-tenon,
-      housed strut ends, and paired rafter-head bearings; interfaces are
-      derived from participant sections and fit class is a typed parameter.
+      housed strut ends, paired rafter-head bearings, purlin-to-principal
+      trenches, and common-rafter seats; interfaces are derived from
+      participant extents and fit class is a typed parameter.
 - [ ] `joiner_masonry`: opening void plus sill/lintel/jambs and a minimal
       coursing rule.
 - [ ] Definition of Done (typos, fmt, taplo, clippy `-D warnings`, doc, and
@@ -163,6 +164,46 @@ all-feature workspace tests; workspace rustdoc without dependencies; and the
 `joiner_timber` tests with default features disabled. The structure lab
 exported a clean 34-element, 18-joint construction, and Blender regenerated all
 ten semantic checkpoints from those exported meshes.
+
+**2026-08-25 — Stage 2 secondary roof joinery**
+
+The timber slice now fits the longitudinal roof system without turning every
+crossing into one generic notch. A purlin-to-principal rule owns a through
+trench in the principal rafter; a common-rafter-to-purlin rule owns a shallow
+underside seat in the common rafter. In both cases setout authors an overlap
+equal to the requested cut depth, the rule removes exactly that overlap from
+the receiving timber, and the one surviving plane is both the constructive
+face and the recorded bearing contact.
+
+The lab's two `ridge-member` elements are 420 mm below the apex and perform the
+same longitudinal support role as its eave and mid purlins. This slice renames
+them as upper purlins and fits them consistently. It does not invent an apex
+joint, longitudinal purlin scarfing, roof capacity, or a claim that one joint
+form is universal: the trenched forms are an explicit regional analogy.
+
+Rule tests pin role-based participant ordering, edit ownership, authored-depth
+agreement, remaining depth and end relish, full-width through bearing, and a
+combined two-trench/two-seat Boolean evaluation. The lab now exports a clean
+34-element construction with 48 fitted relations, 58 part edits, and 68
+bearing contacts. Blender regenerated twelve checkpoints, including an
+isolated trench and assembled/exploded secondary roof views.
+
+Fresh review made three contracts explicit. `Rule::assess` checks only the
+authored roles and usable crossing geometry, so custom cut depths are not
+rejected by comparison with defaults; instantiation alone validates the exact
+depth. A common-rafter seat cutter now starts outside the lower face and ends
+at the bearing plane. Both crossing forms require clear timber beyond either
+receiver end, and the repeated-cut oracle compares forward and reverse
+application order geometrically rather than merely claiming independence.
+
+Reconstruction validation passed on 2026-08-31: `typos`; `cargo fmt --all
+--check`; `taplo fmt --check`; warnings-denied all-target/all-feature workspace
+clippy; all-feature workspace tests; workspace rustdoc without dependencies;
+and `cargo check -p joiner_timber --no-default-features`. The final rule crate
+has 23 passing tests. `basilica_structure_lab --check` reports the clean graph
+and counts above with signature `ca8568e71945d5e3`; Blender regenerated and
+reviewed all twelve semantic checkpoints after the exact-parameter migration
+and corrected seat direction.
 
 **2026-08-23T02:00:31Z**
 

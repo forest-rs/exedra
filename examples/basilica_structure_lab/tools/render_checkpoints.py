@@ -117,9 +117,6 @@ def focus_bearing_view(output: Path) -> None:
         "bearing_north_close.png": (
             "bearing-principal-north-east-on-wall-plate",
         ),
-        "bearing_ridge_close.png": (
-            "bearing-ridge-purlin-south-on-principal-east",
-        ),
     }.get(output.name)
     if focus is None:
         return
@@ -169,6 +166,29 @@ def focus_joint_view(output: Path) -> None:
                 "king-post-to-tie-east-key": Vector((0.62, 0.0, 0.0)),
                 "strut-south-east": Vector((-0.30, -0.24, 0.0)),
                 "strut-north-east": Vector((-0.30, 0.24, 0.0)),
+            }
+    elif output.name == "purlin_trench_exploded.png":
+        # One principal/purlin pair makes the trench bottom and the intact
+        # purlin section readable without unrelated roof members in front.
+        visible = ("principal-rafter-south-east", "purlin-south-mid")
+        offsets = {"purlin-south-mid": Vector((0.0, -0.34, 0.38))}
+    elif output.name in (
+        "secondary_roof_assembled.png",
+        "secondary_roof_exploded.png",
+    ):
+        visible = (
+            "principal-rafter-south-west",
+            "principal-rafter-south-east",
+            "purlin-south-",
+            "common-rafter-south-",
+        )
+        if output.name == "secondary_roof_exploded.png":
+            # Separate the three structural layers along the roof normal-ish
+            # view direction. The exported cut faces are untouched; only whole
+            # objects move for inspection.
+            offsets = {
+                "purlin-south-": Vector((0.0, -0.26, 0.34)),
+                "common-rafter-south-": Vector((0.0, -0.52, 0.72)),
             }
     else:
         return
@@ -241,10 +261,10 @@ def main() -> None:
             (4.0, 4.5, 11.0),
         ),
         (
-            "bearings.obj",
-            "bearing_ridge_close.png",
-            (6.7, -3.8, 15.0),
-            (4.0, 0.0, 13.6),
+            "structure.obj",
+            "purlin_trench_exploded.png",
+            (6.7, -7.2, 14.8),
+            (4.0, -2.5, 13.0),
         ),
         (
             "structure.obj",
@@ -269,6 +289,18 @@ def main() -> None:
             "truss_exploded.png",
             (8.8, -11.5, 13.8),
             (4.0, 0.0, 12.0),
+        ),
+        (
+            "structure.obj",
+            "secondary_roof_assembled.png",
+            (8.4, -12.8, 15.6),
+            (2.0, -2.8, 12.8),
+        ),
+        (
+            "structure.obj",
+            "secondary_roof_exploded.png",
+            (8.4, -13.2, 16.3),
+            (2.0, -2.8, 13.1),
         ),
     ]
     for obj_name, output_name, location, target in checkpoints:

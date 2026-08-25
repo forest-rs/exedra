@@ -184,6 +184,29 @@ downstream edge would create a cycle and misrepresent `joiner`'s acyclic
 support explanation as a statics model. The heel uses the same contact-only
 principle at the other edge of the truss triangle.
 
+The secondary-roof extension keeps that boundary and adds two deliberately
+different rules. Purlins remain full-section while a through trench edits the
+principal rafter; purlins again remain full-section while an underside seat
+edits each common rafter. Setout authors an overlap equal to the cut depth,
+and each rule validates that contract before removing it. The common crossing
+footprint is an internal geometry helper, not a public generic-notch rule:
+edit ownership, load direction, end-relish checks, and stable rule identity
+remain specific to the two structural roles. The lab's former `ridge-member`
+is renamed `purlin-*-upper` because it lies below the apex; no apex joint or
+longitudinal purlin scarf is implied by this slice.
+
+Cut depths, minimum bearing, remaining depth, and end relish enter each rule
+as exact `Length` values. A rule lowers that parameter family together when it
+meets the floating participant extents; the shared crossing helper remains
+private analytic geometry and does not become an authored-unit layer.
+
+Applicability is deliberately independent of a rule's default parameters. It
+checks whether the authored roles, crossing, and overlap can support that joint
+form; instantiation then checks the caller's cut depth against the authored
+overlap and enforces remaining depth, bearing size, and clear timber beyond
+both ends. This lets a valid custom-depth crossing be assessed without making
+the default dimensions part of the construction graph's semantics.
+
 The structure lab's `model.rs` seeded the mechanism crate. The stage-1 fixtures
 proved that both relation families fit the mechanism before the rule libraries
 existed; stage 2 replaces the timber fixture geometry with concrete rules.
