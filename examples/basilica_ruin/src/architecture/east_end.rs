@@ -77,7 +77,7 @@ mod tests {
     use super::{apse_conch_recipe, apse_shell_profile};
     use crate::geometry::extruded_profile_recipe;
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{BasilicaParams, instances_with_role, names, resolve_instance_path};
+    use crate::{BasilicaParams, instance_id_at, names, role_instances};
 
     const WALL_HEIGHT: f64 = 8.0;
     const CONCH_HEIGHT: f64 = 2.35;
@@ -116,7 +116,9 @@ mod tests {
             .render_list
             .items
             .iter()
-            .find(|item| item.path.to_string() == names::instances::EAST_APSE)
+            .find(|item| {
+                item.address.to_string().trim_start_matches('/') == names::instances::EAST_APSE
+            })
             .expect("existing apse render item");
         let body = &scenario
             .compiled
@@ -213,9 +215,9 @@ mod tests {
     #[test]
     fn existing_apse_names_roles_and_parts_still_resolve() {
         let scenario = build_scenario();
-        let apse = resolve_instance_path(&scenario.assembly, names::instances::EAST_APSE)
+        let apse = instance_id_at(&scenario.assembly, names::instances::EAST_APSE)
             .expect("existing apse path resolves");
-        let conch = resolve_instance_path(&scenario.assembly, "east-apse-roof")
+        let conch = instance_id_at(&scenario.assembly, "east-apse-roof")
             .expect("existing apse roof path resolves");
         let apse_part = scenario
             .assembly
@@ -231,11 +233,8 @@ mod tests {
             scenario.assembly.instance(conch).unwrap().part(),
             conch_part
         );
-        assert_eq!(instances_with_role(&scenario.assembly, "apse"), [apse]);
-        assert_eq!(
-            instances_with_role(&scenario.assembly, "apse_roof"),
-            [conch]
-        );
+        assert_eq!(role_instances(&scenario.assembly, "apse"), [apse]);
+        assert_eq!(role_instances(&scenario.assembly, "apse_roof"), [conch]);
     }
 
     fn assert_close(actual: [f64; 3], expected: [f64; 3]) {

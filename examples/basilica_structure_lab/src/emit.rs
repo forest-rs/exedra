@@ -5,12 +5,14 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use exedra_assembly::{Assembly, CompiledParts, PartCompiler, RenderList, flatten};
+use exedra_assembly::{
+    Assembly, CompiledParts, InstanceAddress, PartCompiler, RenderList, flatten,
+};
 use exedra_constructive::builders;
 use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::tessellate::EvalPolicy;
 use joiner::{
-    Construction, OrientedBox, TransferKind, TransferTarget, instance_path, lower_selected,
+    Construction, OrientedBox, TransferKind, TransferTarget, instance_address, lower_selected,
 };
 
 use crate::model::{ElementRole, Vec3};
@@ -19,6 +21,10 @@ use exedra_math::{add, cross, dot, normalize, scale, sub};
 const SELECTED_BEARING: &str = "bearing-principal-south-east-on-wall-plate";
 #[cfg(test)]
 const SELECTED_BEARING_DIAGNOSTICS: usize = 5;
+
+fn address_path(address: &InstanceAddress) -> String {
+    address.to_string().trim_start_matches('/').to_owned()
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Layer {
@@ -131,7 +137,10 @@ pub(crate) fn emit(construction: &Construction, layer: Layer) -> Result<EmittedS
         let Some(role) = ElementRole::from_label(&element.role) else {
             continue;
         };
-        let Some(instance) = assembly.resolve_path(&instance_path(&element.key)) else {
+        let Some(address) = instance_address(&element.key) else {
+            continue;
+        };
+        let Some(instance) = assembly.instance_by_address(&address) else {
             continue;
         };
         assembly
@@ -409,7 +418,7 @@ fn export_obj(
             .part(item.part)
             .expect("render item part is compiled")
             .bodies[item.body as usize];
-        let name = item.path.to_string().replace('/', "_");
+        let name = address_path(&item.address).replace('/', "_");
         let material = item
             .regions
             .first()
@@ -594,7 +603,7 @@ mod tests {
             .render_list
             .items
             .iter()
-            .map(|item| item.path.to_string())
+            .map(|item| address_path(&item.address))
             .collect();
         let expected: Vec<String> = element_keys(&model);
         assert_eq!(paths, expected);
@@ -608,7 +617,7 @@ mod tests {
             .render_list
             .items
             .iter()
-            .find(|item| item.path.to_string() == "roof-covering-north")
+            .find(|item| address_path(&item.address) == "roof-covering-north")
             .expect("north roof covering");
         assert!(
             linear_determinant(&reflected.world) < 0.0,
@@ -675,7 +684,7 @@ mod tests {
                 .render_list
                 .items
                 .iter()
-                .map(|item| item.path.to_string())
+                .map(|item| address_path(&item.address))
                 .collect::<Vec<_>>(),
             expected_load_paths
         );
@@ -709,7 +718,7 @@ mod tests {
                 .render_list
                 .items
                 .iter()
-                .map(|item| item.path.to_string())
+                .map(|item| address_path(&item.address))
                 .collect::<Vec<_>>(),
             expected_bearing_paths
         );

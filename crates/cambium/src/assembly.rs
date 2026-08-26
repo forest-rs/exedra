@@ -1012,7 +1012,12 @@ mod tests {
             .expect("part")
             .slot_index("surface")
             .expect("slot");
-        assert_eq!(assembly.resolved_material(ids[5], slot), Some("timber"));
+        assert_eq!(
+            last.binding(slot).or_else(|| assembly
+                .part(last.part())
+                .and_then(|part| part.default_material(slot))),
+            Some("timber")
+        );
         assert!(
             exedra_assembly::interchange::round_trips(&assembly),
             "expanded concrete instances must survive exedra-assembly-v1 rebuild"
@@ -1085,8 +1090,12 @@ mod tests {
         .expect("expands beneath parent");
         assert_eq!(assembly.instance(parent).expect("parent").children(), ids);
         assert_eq!(
-            assembly.path_of(ids[1]).expect("path").to_string(),
-            "structure/bay-01"
+            assembly
+                .instance(ids[1])
+                .expect("instance")
+                .address()
+                .to_string(),
+            "/structure/bay-01"
         );
     }
 
@@ -1419,10 +1428,12 @@ mod tests {
             ],
             PatternError::DuplicateInstanceKey("unit-01".into()),
         );
+        let rejected = exedra_assembly::InstanceAddress::parse("/unit-00").unwrap();
         assert!(
             assembly
-                .resolve_path(&exedra_assembly::InstancePath::from_segments(&["unit-00"]))
-                .is_none(),
+                .instances()
+                .iter()
+                .all(|instance| instance.address() != &rejected),
             "a later collision must prevent every earlier insertion"
         );
 
@@ -1508,12 +1519,12 @@ mod tests {
             &occurrences,
             PatternError::DuplicateInstanceKey("bay-01".into()),
         );
+        let rejected = exedra_assembly::InstanceAddress::parse("/parent/bay-00").unwrap();
         assert!(
             assembly
-                .resolve_path(&exedra_assembly::InstancePath::from_segments(&[
-                    "parent", "bay-00"
-                ]))
-                .is_none()
+                .instances()
+                .iter()
+                .all(|instance| instance.address() != &rejected)
         );
     }
 

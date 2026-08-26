@@ -46,7 +46,7 @@
 //!
 //! Element keys are the identity contract. They are frontend-supplied, stable
 //! across re-evaluations, and the seed of the
-//! [`exedra_assembly::InstancePath`] each element lowers to. Handles such as
+//! [`exedra_assembly::InstanceAddress`] each element lowers to. Handles such as
 //! [`ElementId`] are per-construction indices; they are never identity, and
 //! rule output never uses them — a rule names the parts it is about to
 //! generate, which have no handle yet.
@@ -178,7 +178,7 @@ pub use construction::{Construction, ConstructionError, ElementId, channel};
 pub use element::{DEFAULT_SLOT, Element, ElementOrigin, Member, Node, Part, Restraints, Support};
 pub use evidence::{Evidence, EvidenceClass, EvidenceSource};
 pub use geometry::{FRAME_TOLERANCE, OrientedBox, Vec3};
-pub use lower::{LowerError, compose, instance_path, lower, lower_selected, part_key};
+pub use lower::{LowerError, compose, instance_address, lower, lower_selected, part_key};
 pub use relation::{Relation, RelationKind};
 pub use rule::{
     Anchor, Applicability, AppliedRule, ContactMeaning, ContactPatch, Observation, PartEdit,

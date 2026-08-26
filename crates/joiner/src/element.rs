@@ -6,7 +6,7 @@
 //! An [`Element`] is the unit of construction and the unit of invalidation:
 //! a wall, a rafter, a voussoir, a sill. Its *key* is its identity — stable
 //! across re-evaluations, chosen by the frontend, and the seed of the
-//! [`exedra_assembly::InstancePath`] it lowers to. Handles like
+//! [`exedra_assembly::InstanceAddress`] it lowers to. Handles like
 //! [`crate::ElementId`] are per-construction indices and are never identity.
 //!
 //! Elements carry two geometric statements that must agree:

@@ -21,6 +21,8 @@ serde = ["dep:serde", "exedra_constructive/serde", "std"]
 std = ["exedra/std", "exedra_constructive/std"]
 
 [dependencies]
+addressable.workspace = true
+addressable_tree.workspace = true
 exedra = { features = ["libm"], workspace = true }
 exedra_constructive.workspace = true
 hashbrown.workspace = true

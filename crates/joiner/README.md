@@ -46,7 +46,7 @@ boundary.
 ## Identity, evidence, invalidation
 
 - **Keys are identity.** Element keys are frontend-supplied, stable across
-  re-evaluations, and the seed of the `InstancePath` each element lowers to.
+  re-evaluations, and the seed of the `InstanceAddress` each element lowers to.
   `ElementId` is a handle, never identity, and rule output never uses one — a
   rule names parts it is about to generate, which have no handle yet.
 - **Evidence travels with everything.** Elements, relations, contacts, part

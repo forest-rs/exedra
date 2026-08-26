@@ -8,7 +8,7 @@
 //! base64 buffer; GLB stores the same buffer in its binary chunk.
 //!
 //! - every render item becomes a glTF *node* carrying the item's world
-//!   matrix, with the instance path and part key in `extras`;
+//!   matrix, with the canonical instance address and part key in `extras`;
 //! - every per-region index range becomes a mesh *primitive*, so region
 //!   materials survive as real material bindings;
 //! - material keys become named PBR material stubs with a deterministic
@@ -271,7 +271,7 @@ fn build_export(
         };
 
         let mut node = Map::new();
-        node.insert("name".into(), Value::String(item.path.to_string()));
+        node.insert("name".into(), Value::String(item.address.to_string()));
         node.insert("mesh".into(), json!(mesh));
         if item.world.rows != exedra_constructive::ir::Placement3::IDENTITY.rows {
             node.insert(
@@ -286,7 +286,7 @@ fn build_export(
         node.insert(
             "extras".into(),
             json!({
-                "instancePath": item.path.to_string(),
+                "instanceAddress": item.address.to_string(),
                 "partKey": part_key,
                 "body": item.body,
             }),
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(doc["scene"], 0);
         let nodes = doc["nodes"].as_array().unwrap();
         assert_eq!(nodes.len(), 2, "one node per render item");
-        assert_eq!(nodes[0]["extras"]["instancePath"], "a");
+        assert_eq!(nodes[0]["extras"]["instanceAddress"], "/a");
         assert_eq!(nodes[1]["extras"]["partKey"], "panel");
         assert!(
             nodes[1]["matrix"].as_array().is_some(),
@@ -713,7 +713,7 @@ mod tests {
             ])
         );
         assert_eq!(export.stats.nodes, 3);
-        assert_eq!(nodes[0]["extras"]["instancePath"], "a");
+        assert_eq!(nodes[0]["extras"]["instanceAddress"], "/a");
     }
 
     #[test]

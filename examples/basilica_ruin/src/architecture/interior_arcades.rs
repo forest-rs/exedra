@@ -91,7 +91,7 @@ fn arcade_profile(length: f64, bays: u32) -> Profile2 {
 mod tests {
     use super::super::CLERESTORY_BASE;
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{BasilicaParams, instances_with_role, names, resolve_instance_path};
+    use crate::{BasilicaParams, instance_id_at, names, role_instances};
 
     use super::{EAST_BAYS, WEST_BAYS, arcade_profile};
 
@@ -108,7 +108,7 @@ mod tests {
         let crossing_east = p.crossing_x + p.drum_radius + 0.6;
         let scenario = build_scenario();
 
-        let arcades = instances_with_role(&scenario.assembly, names::roles::INTERIOR_ARCADE);
+        let arcades = role_instances(&scenario.assembly, names::roles::INTERIOR_ARCADE);
         assert_eq!(arcades.len(), 4);
 
         for path in [
@@ -126,7 +126,7 @@ mod tests {
             assert!((min[0] - crossing_east).abs() < 1.0e-5, "{path}: {min:?}");
         }
 
-        let north_west = resolve_instance_path(
+        let north_west = instance_id_at(
             &scenario.assembly,
             names::instances::INTERIOR_ARCADE_NORTH_WEST,
         )

@@ -25,7 +25,8 @@ Construction and extraction crates:
   fingerprinted constructive recipes with deterministic tessellation,
   provenance, fidelity reporting, interchange, and evaluation caching.
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
-  stable paths, material-slot binding, cached compilation, and deterministic
+  stable structured addresses, Addressable tree execution and material
+  explanations, material-slot binding, cached compilation, and deterministic
   flattening.
 - **[joiner](crates/joiner/)** - Construction layer: building elements, the
   three relation kinds that connect them, the typed rule seam and its uniform
@@ -61,8 +62,8 @@ Adapter, test, benchmark, and app crates:
   deterministic Cambium scenario execution.
 - **[apps/cambium_web_viewer](apps/cambium_web_viewer/)** - Three.js viewer for
   the wasm scenario snapshots.
-- **[examples/](examples/)** - Standalone constructive, basilica, and structural
-  integration scenarios kept outside the core crates.
+- **[examples/](examples/)** - Standalone constructive, Addressable assembly,
+  basilica, and structural integration scenarios kept outside the core crates.
 
 ## Architecture
 
@@ -90,6 +91,12 @@ Cambium owns workflow orchestration:
 Implicit and primitive crates stay outside the kernel. They produce or adapt
 geometry through explicit Exedra mesh/field boundaries rather than introducing a
 scene graph into the core.
+
+Addressable assembly workflows live with the assembly model that owns their
+identity and material semantics. `Assembly::into_addressable` binds a completed
+assembly to a runtime space id and revision without putting runtime identity
+into construction-only call sites. Later authoring passes through the wrapper's
+commit gateway so locations, pins, and handles share one revision clock.
 
 ## Example Flow
 

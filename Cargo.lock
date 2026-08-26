@@ -3,6 +3,28 @@
 version = 4
 
 [[package]]
+name = "addressable"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/addressable.git?rev=99b156c1653c86d56c5bfb8641cccc14ea26198e#99b156c1653c86d56c5bfb8641cccc14ea26198e"
+
+[[package]]
+name = "addressable_assembly"
+version = "0.0.0"
+dependencies = [
+ "addressable",
+ "basilica_ruin",
+ "exedra_assembly",
+]
+
+[[package]]
+name = "addressable_tree"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/addressable.git?rev=99b156c1653c86d56c5bfb8641cccc14ea26198e#99b156c1653c86d56c5bfb8641cccc14ea26198e"
+dependencies = [
+ "addressable",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27,6 +49,8 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 name = "basilica_ruin"
 version = "0.0.0"
 dependencies = [
+ "addressable",
+ "addressable_tree",
  "cambium",
  "exedra_assembly",
  "exedra_constructive",
@@ -252,6 +276,8 @@ dependencies = [
 name = "exedra_assembly"
 version = "0.0.0"
 dependencies = [
+ "addressable",
+ "addressable_tree",
  "exedra",
  "exedra_constructive",
  "hashbrown 0.16.1",

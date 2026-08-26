@@ -14,7 +14,7 @@
 //!
 //! Both fixtures also pin the parts of the IR that are easy to get wrong: a
 //! clearance-only contact carries nothing, a cut composes into the
-//! participant's own recipe rather than between instances, and instance paths
+//! participant's own recipe rather than between instances, and instance addresses
 //! are the element keys.
 
 use alloc::string::{String, ToString};
@@ -61,16 +61,13 @@ fn tool(key: &str, size: [f64; 3], at: [f64; 3]) -> ToolSolid {
     )
 }
 
-/// Every instance path, in lowering order. Instances are all roots, so a
-/// path is exactly its element key.
-fn instance_paths(assembly: &exedra_assembly::Assembly) -> Vec<String> {
-    (0..assembly.instances().len())
-        .filter_map(|index| {
-            u32::try_from(index)
-                .ok()
-                .and_then(|index| assembly.path_of(exedra_assembly::InstanceId(index)))
-        })
-        .map(|path| alloc::format!("{path}"))
+/// Every instance address, in lowering order. Instances are all roots, so an
+/// address has exactly one element-key segment.
+fn instance_addresses(assembly: &exedra_assembly::Assembly) -> Vec<String> {
+    assembly
+        .instances()
+        .iter()
+        .map(|instance| instance.address().to_string())
         .collect()
 }
 
@@ -624,9 +621,12 @@ fn omitting_the_host_breaks_every_claim_that_rested_on_it() {
 }
 
 #[test]
-fn both_seed_cases_lower_to_paths_derived_from_element_keys() {
+fn both_seed_cases_lower_to_addresses_derived_from_element_keys() {
     let heel = lower(&truss_heel()).expect("heel lowers");
-    assert_eq!(instance_paths(&heel), ["tie-beam", "principal-rafter"]);
+    assert_eq!(
+        instance_addresses(&heel),
+        ["/tie-beam", "/principal-rafter"]
+    );
     assert!(
         heel.roots().len() == heel.instances().len(),
         "structural connectivity is never parent-child placement"
@@ -635,22 +635,24 @@ fn both_seed_cases_lower_to_paths_derived_from_element_keys() {
 
     let window = lower(&window_opening()).expect("window lowers");
     assert_eq!(
-        instance_paths(&window),
+        instance_addresses(&window),
         [
-            "wall-north",
-            "sill-clerestory-01",
-            "jamb-west-clerestory-01",
-            "jamb-east-clerestory-01",
-            "lintel-clerestory-01",
+            "/wall-north",
+            "/sill-clerestory-01",
+            "/jamb-west-clerestory-01",
+            "/jamb-east-clerestory-01",
+            "/lintel-clerestory-01",
         ]
     );
+    let wall_address = crate::lower::instance_address("wall-north").expect("valid address");
     let wall = window
-        .resolve_path(&crate::lower::instance_path("wall-north"))
+        .instance_by_address(&wall_address)
         .expect("host instance");
     let metadata = window.instance(wall).expect("instance").metadata();
     assert!(metadata.contains(&("structural_role".to_string(), "wall".to_string())));
+    let sill_address = crate::lower::instance_address("sill-clerestory-01").expect("valid address");
     let sill = window
-        .resolve_path(&crate::lower::instance_path("sill-clerestory-01"))
+        .instance_by_address(&sill_address)
         .expect("generated instance");
     assert!(
         window

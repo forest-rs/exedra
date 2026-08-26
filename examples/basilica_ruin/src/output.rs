@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use exedra_assembly::{
-    Assembly, CompileCounters, CompiledParts, PartCompiler, PartSource, RenderList,
-    assembly_fingerprint, flatten,
+    Assembly, CompileCounters, CompiledParts, InstanceAddress, PartCompiler, PartSource,
+    RenderList, assembly_fingerprint, flatten,
 };
 use exedra_constructive::evaluate::evaluate;
 use exedra_constructive::ir::Placement3;
@@ -255,7 +255,7 @@ fn validate_warm_reconfiguration(reconfiguration: &WarmReconfiguration) -> WarmP
     let warm_paths = render_paths(&reconfiguration.warm.render_list);
     assert_eq!(
         warm_paths, baseline_paths,
-        "a dome-height edit must preserve every instance path and its order"
+        "a dome-height edit must preserve every instance address and its order"
     );
     assert_eq!(
         reconfiguration.warm.assembly.instances().len(),
@@ -265,9 +265,9 @@ fn validate_warm_reconfiguration(reconfiguration: &WarmReconfiguration) -> WarmP
     assert_eq!(
         warm_paths,
         assembly_paths(&reconfiguration.warm.assembly),
-        "render items must be a path-ordered bijection with assembly instances"
+        "render items must be an address-ordered bijection with assembly instances"
     );
-    assert_unique(&warm_paths, "render instance paths");
+    assert_unique(&warm_paths, "render instance addresses");
 
     let changed_render_paths = changed_render_paths(
         &reconfiguration.baseline,
@@ -352,22 +352,22 @@ fn validate_warm_reconfiguration(reconfiguration: &WarmReconfiguration) -> WarmP
     }
 }
 
+fn address_path(address: &InstanceAddress) -> String {
+    address.to_string().trim_start_matches('/').to_owned()
+}
+
 fn render_paths(list: &RenderList) -> Vec<String> {
     list.items
         .iter()
-        .map(|item| item.path.to_string())
+        .map(|item| address_path(&item.address))
         .collect()
 }
 
 fn assembly_paths(assembly: &Assembly) -> Vec<String> {
     assembly
-        .instances_with_ids()
-        .map(|(id, _)| {
-            assembly
-                .path_of(id)
-                .expect("every assembly instance has a path")
-                .to_string()
-        })
+        .instances()
+        .iter()
+        .map(|instance| address_path(instance.address()))
         .collect()
 }
 
@@ -401,8 +401,8 @@ fn changed_render_paths(
         .zip(&edited_list.items)
         .filter_map(|(baseline_item, edited_item)| {
             assert_eq!(
-                baseline_item.path, edited_item.path,
-                "render items must stay aligned by stable path"
+                baseline_item.address, edited_item.address,
+                "render items must stay aligned by stable address"
             );
             let baseline_part = baseline
                 .compiled
@@ -416,7 +416,7 @@ fn changed_render_paths(
                 || baseline_item.body != edited_item.body
                 || baseline_part.fingerprint != edited_part.fingerprint
                 || baseline_item.regions != edited_item.regions;
-            changed.then(|| baseline_item.path.to_string())
+            changed.then(|| address_path(&baseline_item.address))
         })
         .collect()
 }
@@ -479,7 +479,7 @@ pub(crate) fn export_obj(compiled: &CompiledParts, list: &RenderList) -> String 
             .part(item.part)
             .expect("render item part is compiled")
             .bodies[item.body as usize];
-        let name = item.path.to_string().replace('/', "_");
+        let name = address_path(&item.address).replace('/', "_");
         writeln!(out, "o {name}.body{}", item.body).expect("write to String");
         writeln!(out, "g {name}").expect("write to String");
         for &position in &body.tri.positions {
@@ -553,7 +553,7 @@ pub(crate) fn bounds_for_path(
     let item = list
         .items
         .iter()
-        .find(|item| item.path.to_string() == expected_path)
+        .find(|item| address_path(&item.address) == expected_path)
         .unwrap_or_else(|| panic!("missing render item {expected_path}"));
     let body = &compiled
         .part(item.part)
@@ -583,7 +583,7 @@ pub(crate) fn byte_signature(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_scenario, build_warm_reconfiguration, byte_signature, export_obj,
+        address_path, build_scenario, build_warm_reconfiguration, byte_signature, export_obj,
         validate_warm_reconfiguration,
     };
     use crate::names;
@@ -627,14 +627,9 @@ mod tests {
             .collect();
         let instance_paths: Vec<String> = scenario
             .assembly
-            .instances_with_ids()
-            .map(|(id, _)| {
-                scenario
-                    .assembly
-                    .path_of(id)
-                    .expect("existing instance has a path")
-                    .to_string()
-            })
+            .instances()
+            .iter()
+            .map(|instance| address_path(instance.address()))
             .collect();
         const ACCEPTED_PATHS: [&str; 76] = [
             "nave-wall-north-west",
@@ -803,7 +798,7 @@ mod tests {
             .render_list
             .items
             .iter_mut()
-            .find(|item| item.path.to_string() == names::instances::NAVE_WALL_NORTH_WEST)
+            .find(|item| address_path(&item.address) == names::instances::NAVE_WALL_NORTH_WEST)
             .expect("named non-dome render item");
         item.world.rows[0][3] += 0.5;
 
@@ -819,7 +814,7 @@ mod tests {
             .render_list
             .items
             .iter_mut()
-            .find(|item| item.path.to_string() == names::instances::NAVE_WALL_NORTH_WEST)
+            .find(|item| address_path(&item.address) == names::instances::NAVE_WALL_NORTH_WEST)
             .expect("named non-dome render item");
         item.regions
             .first_mut()

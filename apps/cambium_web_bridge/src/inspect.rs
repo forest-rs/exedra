@@ -133,8 +133,8 @@ pub struct InspectionBody {
 /// One placed instance of a body.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InspectionInstance {
-    /// Stable instance path (`root/child/leaf`), or the scenario name for
-    /// plain recipe scenarios.
+    /// Stable exact instance address (`/root/child/leaf`), or the scenario name
+    /// for plain recipe scenarios.
     pub path: String,
     /// Index into the response's `bodies`.
     pub body: u32,
@@ -379,7 +379,7 @@ fn inspect_panel_trio() -> Result<InspectionResponse, String> {
             }
         };
         response.instances.push(InspectionInstance {
-            path: item.path.to_string(),
+            path: item.address.to_string(),
             body,
             matrix: matrix16(&item.world),
         });
