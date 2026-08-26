@@ -266,6 +266,7 @@ version = "0.0.0"
 dependencies = [
  "exedra",
  "exedra_math",
+ "exedra_primitives",
  "exedra_testkit",
  "exedra_triangulate",
  "hashbrown 0.16.1",

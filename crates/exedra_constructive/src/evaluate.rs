@@ -17,7 +17,7 @@ use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
 use crate::ir::{NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
 use crate::tessellate::{
     EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
-    tessellate_revolve, tessellate_sweep,
+    tessellate_primitive, tessellate_revolve, tessellate_sweep,
 };
 
 /// How faithfully a node's output represents its constructive intent.
@@ -197,8 +197,9 @@ impl core::error::Error for EvalError {}
 
 /// Evaluates `recipe` under `policy`.
 ///
-/// Supported nodes include constructive bodies, groups, rigid transforms, and
-/// CSG operations handled by the mesh Boolean pipeline. A refused CSG
+/// Supported nodes include declared box/cylinder primitives, constructive
+/// bodies, groups, rigid transforms, and CSG operations handled by the mesh
+/// Boolean pipeline. A refused CSG
 /// operation reports [`Fidelity::EnvelopeOnly`] and structured diagnostics
 /// rather than returning invented geometry. Other unsupported nodes report
 /// `eval.unimplemented`. The walk starts at the recipe root and visits children
@@ -386,6 +387,18 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
+            }
+            NodeKind::Primitive { spec, placement } => {
+                let combined = compose(world, placement);
+                let spec = *spec;
+                let body = self.body_cached(node_id, world, |cx| {
+                    tessellate_primitive(spec, &combined, cx.policy).map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
+                })?;
+                let fidelity = self.body_fidelity(node_id, &[]);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Group { children } => {
@@ -932,7 +945,7 @@ fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
 mod tests {
     use super::*;
     use crate::builders;
-    use crate::ir::{CapMode, CsgOp, Plane3, RecipeBuilder};
+    use crate::ir::{CapMode, CsgOp, Plane3, PrimitiveSpec, RecipeBuilder};
     use alloc::vec;
 
     fn extrude_recipe() -> Recipe {
@@ -978,6 +991,145 @@ mod tests {
             result.report.fidelity_of(recipe.root()),
             None | Some(Fidelity::Exact)
         ));
+    }
+
+    #[test]
+    fn declared_box_primitive_evaluates_as_one_exact_body() {
+        // PrimitiveSpec::Box is already accepted by the public IR. This test
+        // pins the missing evaluator contract: its minimum corner is the
+        // local origin, its placement composes normally, and it must not fall
+        // through to `eval.unimplemented` after successful recipe validation.
+        let mut builder = RecipeBuilder::new();
+        let primitive = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [2.0, 3.0, 4.0],
+                },
+                placement: Placement3::translate(5.0, 7.0, 11.0),
+            })
+            .expect("the public IR accepts a positive finite box");
+        let recipe = builder.finish(primitive).expect("valid primitive recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("box evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(primitive), Some(Fidelity::Exact));
+        assert_eq!(result.report.counters.unimplemented, 0);
+        assert!(result.report.clean_at(Severity::Warning));
+        assert_eq!(
+            mesh_bounds(&result.bodies[0].body.mesh),
+            Aabb3 {
+                min: [5.0, 7.0, 11.0],
+                max: [7.0, 10.0, 15.0],
+            }
+        );
+    }
+
+    #[test]
+    fn declared_cylinder_primitive_uses_the_documented_z_axis() {
+        // The public cylinder contract places its base centre at the origin
+        // and grows along +Z. A direct primitive backend may use another
+        // native axis internally, but that convention must not leak through
+        // constructive evaluation.
+        let mut builder = RecipeBuilder::new();
+        let primitive = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: 2.0,
+                    height: 5.0,
+                    segments: 16,
+                },
+                placement: Placement3::translate(7.0, 11.0, 13.0),
+            })
+            .expect("the public IR accepts a positive finite cylinder");
+        let recipe = builder.finish(primitive).expect("valid primitive recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("cylinder evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(primitive), Some(Fidelity::Exact));
+        assert_eq!(result.report.counters.unimplemented, 0);
+        assert!(result.report.clean_at(Severity::Warning));
+        let bounds = mesh_bounds(&result.bodies[0].body.mesh);
+        for (actual, expected) in bounds.min.into_iter().zip([5.0, 9.0, 13.0]) {
+            assert!((actual - expected).abs() < 1.0e-5, "min bound {bounds:?}");
+        }
+        for (actual, expected) in bounds.max.into_iter().zip([9.0, 13.0, 18.0]) {
+            assert!((actual - expected).abs() < 1.0e-5, "max bound {bounds:?}");
+        }
+    }
+
+    #[test]
+    fn declared_primitives_participate_in_csg() {
+        // Standalone primitive output is insufficient for constructive IR:
+        // this through-cut proves primitive meshes reach the ordinary Boolean
+        // pipeline with valid closed topology and produce an exact body.
+        let mut builder = RecipeBuilder::new();
+        let host = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [4.0, 4.0, 4.0],
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .expect("valid host primitive");
+        let cutter = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [1.0, 1.0, 6.0],
+                },
+                placement: Placement3::translate(1.25, 1.5, -1.0),
+            })
+            .expect("valid cutter primitive");
+        let difference = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Difference,
+                operands: vec![host, cutter],
+            })
+            .expect("valid difference");
+        let recipe = builder.finish(difference).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("CSG evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(difference), Some(Fidelity::Exact));
+        assert!(result.report.clean_at(Severity::Warning));
+        let mesh = &result.bodies[0].body.mesh;
+        assert!(mesh.validate_deep().is_empty());
+        assert!(
+            mesh.attrs().dense(exedra::attr::FACE_REGION).is_some(),
+            "primitive regions must reach the Boolean result"
+        );
+    }
+
+    #[test]
+    fn declared_primitive_reuses_the_incremental_evaluation_cache() {
+        // Primitive nodes use the same content/world/policy cache contract as
+        // every other body node: a second identical evaluation must reuse the
+        // body without performing another tessellation.
+        let mut builder = RecipeBuilder::new();
+        let primitive = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: 2.0,
+                    height: 5.0,
+                    segments: 16,
+                },
+                placement: Placement3::translate(3.0, 4.0, 5.0),
+            })
+            .expect("valid primitive");
+        let recipe = builder.finish(primitive).expect("valid recipe");
+        let mut cache = EvalCache::new();
+
+        let cold = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache)
+            .expect("cold evaluation");
+        let warm = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache)
+            .expect("warm evaluation");
+        assert_eq!(cold.report.counters.tessellations, 1);
+        assert_eq!(cold.report.counters.cache_misses, 1);
+        assert_eq!(warm.report.counters.tessellations, 0);
+        assert_eq!(warm.report.counters.cache_hits, 1);
+        assert_eq!(
+            mesh_bounds(&cold.bodies[0].body.mesh),
+            mesh_bounds(&warm.bodies[0].body.mesh)
+        );
     }
 
     #[test]

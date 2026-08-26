@@ -6,10 +6,10 @@ deterministic tessellation into Exedra meshes.
 This crate is the fourth geometry head under Cambium's multi-domain
 architecture (Cambium ADR-0002): a *compiler target* for pre-mesh construction.
 External geometry frontends build recipes from kurbo-backed 2D profiles and
-constructive bodies (extrude, revolve, loft, sweep, CSG, transforms, and
-instances); evaluation tessellates them into `exedra::Mesh` values carrying a
-full provenance source map, semantic region and material slots, and an honest
-fidelity report.
+constructive bodies (declared boxes and cylinders, extrude, revolve, loft,
+sweep, CSG, transforms, and instances); evaluation tessellates them into
+`exedra::Mesh` values carrying a full provenance source map, semantic region
+and material slots, and an honest fidelity report.
 
 Design commitments (see `docs/adr-0001-constructive-domain-scope.md`):
 

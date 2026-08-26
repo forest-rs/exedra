@@ -88,6 +88,18 @@ together would break both.
   envelope-only) whose policy and issue identifiers are opaque
   frontend-supplied values — the mechanism for spec ambiguity lives here,
   the spec-specific tables live in the frontends' repositories.
+- **Primitive evaluation.** Declared boxes and cylinders evaluate through
+  `exedra_primitives`, explicitly selecting its `libm` backend (which takes
+  precedence if Cargo also unifies `std`). Constructive fixes centering, caps,
+  and axes to the public IR contract, copies backend semantic regions into
+  `FACE_REGION`, and records them as `Feature::PrimitiveRegion`. The additive
+  provenance and `TessellateError::PrimitiveSegmentLimit` variants are the
+  migration note for downstream users: both enums are non-exhaustive, and
+  primitive regions use each backend primitive's documented local namespace.
+  Explicit cylinder segmentation is bounded by
+  `EvalPolicy::discretize.max_segment_edges` before allocation.
+  Making these previously declared nodes evaluable changes output for an
+  unchanged recipe, so it advances `EVAL_SCHEMA_VERSION` from 3 to 4.
 
 ### Scalar policy
 
@@ -95,7 +107,10 @@ Construction and evaluation are f64 end to end (kurbo-native). Exact-decimal
 spec arithmetic is the frontends' job; i64 thousandths-of-millimeter
 values convert exactly into f64. The narrowing to `[f32; 3]` happens exactly
 once, at mesh emission, with round-to-nearest-even, and is recorded in the
-report. Exedra's ADR-0001 (`[f32; N]` public math) and `NumericPolicy` are
+report. For `exedra_primitives`, its f32 parameter conversion is that same
+mesh-emission boundary; values that cannot remain finite and positive in f32
+fail with `TessellateError::NonFiniteGeometry`. Exedra's ADR-0001 (`[f32; N]`
+public math) and `NumericPolicy` are
 untouched; the tessellator emits welded topology and does not lean on
 mesh-side merge tolerances.
 
