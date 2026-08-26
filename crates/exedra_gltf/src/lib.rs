@@ -283,14 +283,22 @@ fn build_export(
             .part(item.part)
             .map(|def| def.key().to_string())
             .unwrap_or_default();
-        node.insert(
-            "extras".into(),
-            json!({
-                "instancePath": item.path.to_string(),
-                "partKey": part_key,
-                "body": item.body,
-            }),
-        );
+        let mut extras = Map::new();
+        extras.insert("instancePath".into(), Value::String(item.path.to_string()));
+        extras.insert("partKey".into(), Value::String(part_key));
+        extras.insert("body".into(), json!(item.body));
+        if let Some(metadata) = assembly
+            .instance(item.instance)
+            .map(exedra_assembly::Instance::metadata)
+            .filter(|metadata| !metadata.is_empty())
+        {
+            let metadata = metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                .collect();
+            extras.insert("metadata".into(), Value::Object(metadata));
+        }
+        node.insert("extras".into(), Value::Object(extras));
         nodes.push(Value::Object(node));
         stats.nodes += 1;
     }
@@ -607,7 +615,8 @@ mod tests {
         let a = asm
             .add_instance(None, "a", part, Placement3::IDENTITY)
             .unwrap();
-        let _ = a;
+        asm.set_metadata(a, "source", "catalog").unwrap();
+        asm.set_metadata(a, "role", "door").unwrap();
         let b2 = asm
             .add_instance(None, "b", part, Placement3::translate(60.0, 0.0, 0.0))
             .unwrap();
@@ -632,6 +641,9 @@ mod tests {
         let nodes = doc["nodes"].as_array().unwrap();
         assert_eq!(nodes.len(), 2, "one node per render item");
         assert_eq!(nodes[0]["extras"]["instancePath"], "a");
+        assert_eq!(nodes[0]["extras"]["metadata"]["source"], "catalog");
+        assert_eq!(nodes[0]["extras"]["metadata"]["role"], "door");
+        assert!(nodes[1]["extras"].get("metadata").is_none());
         assert_eq!(nodes[1]["extras"]["partKey"], "panel");
         assert!(
             nodes[1]["matrix"].as_array().is_some(),
