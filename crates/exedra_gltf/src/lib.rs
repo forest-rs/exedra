@@ -3,9 +3,9 @@
 
 //! glTF 2.0 export for Exedra assembly render lists.
 //!
-//! [`export_gltf`] and [`export_gltf_with_options`] convert a flattened [`RenderList`] plus its
-//! [`CompiledParts`] into a single-file glTF 2.0 JSON document with an
-//! embedded base64 buffer:
+//! [`export_gltf`] and [`export_glb`] convert a flattened [`RenderList`] plus
+//! its [`CompiledParts`] into a single-file glTF 2.0 asset. JSON glTF embeds a
+//! base64 buffer; GLB stores the same buffer in its binary chunk.
 //!
 //! - every render item becomes a glTF *node* carrying the item's world
 //!   matrix, with the instance path and part key in `extras`;
@@ -30,6 +30,15 @@ use serde_json::{Map, Value, json};
 pub struct GltfExport {
     /// The glTF 2.0 document as pretty JSON.
     pub json: String,
+    /// Introspection counters for the export.
+    pub stats: GltfStats,
+}
+
+/// A finished binary glTF export.
+#[derive(Clone, Debug)]
+pub struct GlbExport {
+    /// Complete GLB 2.0 bytes.
+    pub bytes: Vec<u8>,
     /// Introspection counters for the export.
     pub stats: GltfStats,
 }
@@ -99,6 +108,8 @@ pub enum GltfError {
         /// The body index the item referenced.
         body: u32,
     },
+    /// The finished GLB would exceed its unsigned 32-bit container length.
+    GlbTooLarge,
 }
 
 impl std::fmt::Display for GltfError {
@@ -108,6 +119,7 @@ impl std::fmt::Display for GltfError {
             Self::MissingBody { part, body } => {
                 write!(f, "part {part} has no compiled body {body}")
             }
+            Self::GlbTooLarge => f.write_str("GLB output exceeds the 32-bit container limit"),
         }
     }
 }
@@ -146,6 +158,71 @@ pub fn export_gltf_with_options(
     list: &RenderList,
     options: GltfExportOptions,
 ) -> Result<GltfExport, GltfError> {
+    let built = build_export(assembly, compiled, list, options)?;
+    let mut document = built.document;
+    document.insert(
+        "buffers".into(),
+        json!([{
+            "byteLength": built.buffer.len(),
+            "uri": format!(
+                "data:application/octet-stream;base64,{}",
+                base64(&built.buffer)
+            ),
+        }]),
+    );
+    let json = serde_json::to_string_pretty(&Value::Object(document))
+        .expect("document is finite JSON by construction");
+    Ok(GltfExport {
+        json,
+        stats: built.stats,
+    })
+}
+
+/// Exports a render list as a binary glTF 2.0 container.
+///
+/// # Errors
+///
+/// Fails when the list references absent compiled geometry or when the
+/// finished GLB exceeds its 32-bit container length.
+pub fn export_glb(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    list: &RenderList,
+) -> Result<GlbExport, GltfError> {
+    export_glb_with_options(assembly, compiled, list, GltfExportOptions::default())
+}
+
+/// Exports a render list as GLB with explicit coordinate-system options.
+///
+/// # Errors
+///
+/// Fails when the list references absent compiled geometry or when the
+/// finished GLB exceeds its 32-bit container length.
+pub fn export_glb_with_options(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    list: &RenderList,
+    options: GltfExportOptions,
+) -> Result<GlbExport, GltfError> {
+    let built = build_export(assembly, compiled, list, options)?;
+    let stats = built.stats;
+    let bytes = pack_glb(built.document, built.buffer)?;
+    Ok(GlbExport { bytes, stats })
+}
+
+#[derive(Debug)]
+struct BuiltExport {
+    document: Map<String, Value>,
+    buffer: Vec<u8>,
+    stats: GltfStats,
+}
+
+fn build_export(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    list: &RenderList,
+    options: GltfExportOptions,
+) -> Result<BuiltExport, GltfError> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut buffer_views: Vec<Value> = Vec::new();
     let mut accessors: Vec<Value> = Vec::new();
@@ -252,17 +329,45 @@ pub fn export_gltf_with_options(
     }
     document.insert("accessors".into(), Value::Array(accessors));
     document.insert("bufferViews".into(), Value::Array(buffer_views));
-    document.insert(
-        "buffers".into(),
-        json!([{
-            "byteLength": buffer.len(),
-            "uri": format!("data:application/octet-stream;base64,{}", base64(&buffer)),
-        }]),
-    );
+    Ok(BuiltExport {
+        document,
+        buffer,
+        stats,
+    })
+}
 
-    let json = serde_json::to_string_pretty(&Value::Object(document))
+fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec<u8>, GltfError> {
+    document.insert("buffers".into(), json!([{ "byteLength": buffer.len() }]));
+    let mut json = serde_json::to_vec(&Value::Object(document))
         .expect("document is finite JSON by construction");
-    Ok(GltfExport { json, stats })
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    while !buffer.len().is_multiple_of(4) {
+        buffer.push(0);
+    }
+
+    let total_len = 12_usize
+        .checked_add(8)
+        .and_then(|length| length.checked_add(json.len()))
+        .and_then(|length| length.checked_add(8))
+        .and_then(|length| length.checked_add(buffer.len()))
+        .ok_or(GltfError::GlbTooLarge)?;
+    let total_len = u32::try_from(total_len).map_err(|_| GltfError::GlbTooLarge)?;
+    let json_len = u32::try_from(json.len()).map_err(|_| GltfError::GlbTooLarge)?;
+    let buffer_len = u32::try_from(buffer.len()).map_err(|_| GltfError::GlbTooLarge)?;
+
+    let mut glb = Vec::with_capacity(total_len as usize);
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2_u32.to_le_bytes());
+    glb.extend_from_slice(&total_len.to_le_bytes());
+    glb.extend_from_slice(&json_len.to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(&json);
+    glb.extend_from_slice(&buffer_len.to_le_bytes());
+    glb.extend_from_slice(b"BIN\0");
+    glb.extend_from_slice(&buffer);
+    Ok(glb)
 }
 
 /// Emits one glTF mesh (buffer data, views, accessors, primitives) for a
@@ -617,6 +722,46 @@ mod tests {
         let a = export_gltf(&asm, &compiled, &list).unwrap();
         let b = export_gltf(&asm, &compiled, &list).unwrap();
         assert_eq!(a.json, b.json);
+        assert_eq!(a.stats, b.stats);
+    }
+
+    #[test]
+    fn binary_export_has_valid_glb_chunks() {
+        let (asm, compiled, list) = example();
+        let export =
+            export_glb_with_options(&asm, &compiled, &list, GltfExportOptions::z_up_to_y_up())
+                .unwrap();
+        let bytes = &export.bytes;
+
+        assert_eq!(&bytes[0..4], b"glTF");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 2);
+        assert_eq!(
+            usize::try_from(u32::from_le_bytes(bytes[8..12].try_into().unwrap())).unwrap(),
+            bytes.len()
+        );
+        let json_len =
+            usize::try_from(u32::from_le_bytes(bytes[12..16].try_into().unwrap())).unwrap();
+        assert_eq!(&bytes[16..20], b"JSON");
+        let json_end = 20 + json_len;
+        let document: Value = serde_json::from_slice(&bytes[20..json_end]).unwrap();
+        assert_eq!(document["asset"]["version"], "2.0");
+        assert!(document["buffers"][0].get("uri").is_none());
+        assert_eq!(&bytes[json_end + 4..json_end + 8], b"BIN\0");
+        let bin_len = usize::try_from(u32::from_le_bytes(
+            bytes[json_end..json_end + 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(json_end + 8 + bin_len, bytes.len());
+        assert!(bin_len >= usize::try_from(export.stats.buffer_bytes).unwrap());
+        assert!(bin_len - usize::try_from(export.stats.buffer_bytes).unwrap() < 4);
+    }
+
+    #[test]
+    fn binary_output_is_deterministic() {
+        let (asm, compiled, list) = example();
+        let a = export_glb(&asm, &compiled, &list).unwrap();
+        let b = export_glb(&asm, &compiled, &list).unwrap();
+        assert_eq!(a.bytes, b.bytes);
         assert_eq!(a.stats, b.stats);
     }
 
