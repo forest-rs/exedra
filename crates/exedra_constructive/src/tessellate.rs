@@ -17,7 +17,7 @@ use exedra::{FaceBuildAttrs, MeshBuilder};
 use exedra_triangulate::{PolygonInput, TriParams, triangulate};
 
 use crate::discretize::{DiscretizePolicy, DiscretizedProfile, discretize_profile};
-use crate::ir::{CapMode, Placement3};
+use crate::ir::{CapMode, Placement3, PrimitiveSpec};
 use crate::len_u32;
 use crate::profile::Profile2;
 use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
@@ -70,6 +70,14 @@ pub enum Feature {
     },
     /// A face of an opaque imported mesh.
     Imported,
+    /// A face or vertex of a declared primitive. `region` is the stable
+    /// primitive-local region emitted by `exedra_primitives` (for example a
+    /// cylinder side or cap); different primitive kinds have independent
+    /// region namespaces.
+    PrimitiveRegion {
+        /// Primitive-local semantic region.
+        region: u32,
+    },
     /// A face of a boolean result, attributed to the operand that
     /// produced it. Finer attribution rides `FACE_REGION`, which the
     /// pipeline carries through from the operand faces.
@@ -158,9 +166,18 @@ pub enum TessellateError {
         /// Index of the offending path point.
         point: usize,
     },
-    /// Extreme parameters overflowed the f32 narrowing at mesh emission;
-    /// geometry would be infinite.
+    /// Geometry cannot be represented at the f32 mesh boundary (for example
+    /// an overflow to infinity or a positive primitive extent narrowing to
+    /// zero).
     NonFiniteGeometry,
+    /// A declared cylinder requests more angular edges than the evaluation
+    /// policy permits for one curved segment.
+    PrimitiveSegmentLimit {
+        /// Explicit segment count in the primitive specification.
+        requested: u32,
+        /// Maximum allowed by [`DiscretizePolicy::max_segment_edges`].
+        maximum: u32,
+    },
     /// A grid vertex has no usable normal (all adjacent patches are
     /// degenerate), so a thickness offset is undefined.
     DegenerateGrid {
@@ -189,8 +206,12 @@ impl core::fmt::Display for TessellateError {
                 write!(f, "sweep path reverses onto itself at point {point}")
             }
             Self::NonFiniteGeometry => {
-                write!(f, "parameters overflow the f32 mesh boundary")
+                write!(f, "geometry is not representable at the f32 mesh boundary")
             }
+            Self::PrimitiveSegmentLimit { requested, maximum } => write!(
+                f,
+                "primitive requests {requested} segments, exceeding the policy limit of {maximum}"
+            ),
             Self::DegenerateGrid { row, col } => {
                 write!(f, "grid vertex ({row}, {col}) has no usable normal")
             }
@@ -307,6 +328,239 @@ impl OrientedBuilder {
             return Err(TessellateError::NonFiniteGeometry);
         }
         self.inner.build().map_err(TessellateError::from)
+    }
+}
+
+/// Tessellates a declared primitive through the workspace's canonical
+/// primitive backend.
+///
+/// `PrimitiveSpec` deliberately exposes only the primitive parameters that
+/// belong in constructive IR. Backend conveniences such as centering and cap
+/// styles are fixed here to uphold that IR contract: boxes start at their
+/// minimum corner, and cylinders are capped, start at their base centre, and
+/// grow along local +Z. The primitive backend's cylinder grows along +Y, so
+/// its vertices are rotated `(x, y, z) -> (x, -z, y)` before placement. This
+/// is a proper rotation (not a reflection), which preserves winding.
+///
+/// Primitive-local face regions are copied into Exedra's `FACE_REGION`
+/// attribute. This is essential rather than decorative metadata: mesh CSG
+/// carries that attribute into its result for downstream attribution. Named
+/// backend selections do not cross this boundary because [`TessellatedBody`]
+/// represents provenance through its source map and mesh regions.
+///
+/// # Errors
+///
+/// Returns a typed error when an f64 parameter cannot cross the backend's f32
+/// mesh boundary, a placed vertex becomes non-finite, the explicit cylinder
+/// tessellation exceeds policy, or rebuilt topology fails validation.
+pub fn tessellate_primitive(
+    spec: PrimitiveSpec,
+    placement: &Placement3,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    let (primitive, coordinates) = match spec {
+        PrimitiveSpec::Box { size } => {
+            let backend_size = [
+                narrow_positive_parameter(size[0])?,
+                narrow_positive_parameter(size[1])?,
+                narrow_positive_parameter(size[2])?,
+            ];
+            (
+                exedra_primitives::box_primitive(&exedra_primitives::BoxParams {
+                    size: backend_size,
+                    centered: false,
+                    segments: [1, 1, 1],
+                }),
+                PrimitiveCoordinates::Box { size },
+            )
+        }
+        PrimitiveSpec::Cylinder {
+            radius,
+            height,
+            segments,
+        } => {
+            if segments > policy.discretize.max_segment_edges {
+                return Err(TessellateError::PrimitiveSegmentLimit {
+                    requested: segments,
+                    maximum: policy.discretize.max_segment_edges,
+                });
+            }
+            (
+                exedra_primitives::cylinder(&exedra_primitives::CylinderParams {
+                    radius: narrow_positive_parameter(radius)?,
+                    height: narrow_positive_parameter(height)?,
+                    segments,
+                    cap_fill: exedra_primitives::CapFill::Ngon,
+                    centered: false,
+                }),
+                PrimitiveCoordinates::Cylinder {
+                    radius,
+                    height,
+                    segments,
+                },
+            )
+        }
+    };
+
+    rebuild_placed_primitive(primitive, coordinates, placement)
+}
+
+fn narrow_positive_parameter(value: f64) -> Result<f32, TessellateError> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "declared primitive parameters cross the documented f32 mesh boundary here"
+    )]
+    let narrowed = value as f32;
+    if narrowed.is_finite() && narrowed > 0.0 {
+        Ok(narrowed)
+    } else {
+        Err(TessellateError::NonFiniteGeometry)
+    }
+}
+
+#[derive(Copy, Clone)]
+enum PrimitiveCoordinates {
+    Box {
+        size: [f64; 3],
+    },
+    Cylinder {
+        radius: f64,
+        height: f64,
+        segments: u32,
+    },
+}
+
+fn rebuild_placed_primitive(
+    primitive: exedra_primitives::Primitive,
+    coordinates: PrimitiveCoordinates,
+    placement: &Placement3,
+) -> Result<TessellatedBody, TessellateError> {
+    let source = &primitive.mesh;
+    let mut builder = OrientedBuilder::new(det3(placement) < 0.0);
+    let mut vertex_remap: Vec<Option<u32>> = Vec::new();
+    let mut local_vertex_features = Vec::new();
+
+    for (ordinal, vertex) in source.vertices().enumerate() {
+        let local = primitive_local_position(source, vertex, ordinal, coordinates);
+        let local_index = builder.push_vertex(narrow(apply_placement(placement, local)));
+        let index = vertex.index() as usize;
+        if vertex_remap.len() <= index {
+            vertex_remap.resize(index + 1, None);
+        }
+        vertex_remap[index] = Some(local_index);
+        local_vertex_features.push(None);
+    }
+
+    let mut local_face_features = Vec::new();
+    for face in source.faces() {
+        let region = primitive.face_region.get(face).0;
+        let feature = Feature::PrimitiveRegion { region };
+        let loop_edges: Vec<_> = source.face_loop(face).collect();
+        let corners: Vec<u32> = loop_edges
+            .iter()
+            .map(|&half_edge| {
+                let vertex = source
+                    .to_vertex(half_edge)
+                    .expect("primitive face loops end at live vertices");
+                let local_index = vertex_remap[vertex.index() as usize]
+                    .expect("every primitive vertex was remapped");
+                local_vertex_features[local_index as usize].get_or_insert(feature);
+                local_index
+            })
+            .collect();
+        let seams: Vec<bool> = loop_edges
+            .iter()
+            .map(|&half_edge| source.edge_seam(half_edge).unwrap_or(false))
+            .collect();
+        let sharpness: Vec<f32> = loop_edges
+            .iter()
+            .map(|&half_edge| source.edge_sharpness(half_edge).unwrap_or(0.0))
+            .collect();
+        builder.add_face_with_attrs(
+            &corners,
+            &FaceBuildAttrs {
+                region: Some(region),
+                edge_seams: Some(&seams),
+                edge_sharpness: Some(&sharpness),
+            },
+        )?;
+        local_face_features.push(feature);
+    }
+
+    let build = builder.build()?;
+    let default_feature = Feature::PrimitiveRegion {
+        region: primitive.face_region.default.0,
+    };
+    let mut face_features = alloc::vec![default_feature; build.mesh.faces().count()];
+    for (local_index, &face) in build.face_ids.iter().enumerate() {
+        face_features[face.index() as usize] = local_face_features[local_index];
+    }
+    let mut vertex_features = alloc::vec![default_feature; build.mesh.vertices().count()];
+    for (local_index, &vertex) in build.vertex_ids.iter().enumerate() {
+        vertex_features[vertex.index() as usize] =
+            local_vertex_features[local_index].unwrap_or(default_feature);
+    }
+    let source_map = crate::source_map::SourceMap::new(&build.mesh, face_features, vertex_features);
+    Ok(TessellatedBody {
+        mesh: build.mesh,
+        source_map,
+    })
+}
+
+fn primitive_local_position(
+    source: &exedra::Mesh,
+    vertex: exedra::VertexId,
+    ordinal: usize,
+    coordinates: PrimitiveCoordinates,
+) -> [f64; 3] {
+    match coordinates {
+        PrimitiveCoordinates::Box { size } => {
+            let backend = source
+                .vertex_position(vertex)
+                .expect("live primitive vertices have positions");
+            // The uncentered, one-segment backend box has only zero/max
+            // coordinates. Recover that corner classification but use the
+            // declared f64 extents, not their f32 backend copies, so placement
+            // still happens before the one final narrowing.
+            core::array::from_fn(|axis| {
+                if backend[axis] == 0.0 {
+                    0.0
+                } else {
+                    size[axis]
+                }
+            })
+        }
+        PrimitiveCoordinates::Cylinder {
+            radius,
+            height,
+            segments,
+        } => {
+            // Capped-ngon cylinders contain exactly two rings, emitted in
+            // increasing angular order. Re-realize that documented order in
+            // f64/libm: the backend owns topology and semantic metadata, while
+            // constructive owns its f64-until-emission numeric contract.
+            let segments_usize = segments as usize;
+            debug_assert!(
+                ordinal < segments_usize * 2,
+                "capped-ngon cylinder vertices are exactly two rings"
+            );
+            let ring_index = ordinal % segments_usize;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "u32 segment indices are intentionally sampled in the f64 construction domain"
+            )]
+            let theta = (ring_index as f64) * core::f64::consts::TAU / f64::from(segments);
+            let native_x = radius * libm::cos(theta);
+            let native_y = if ordinal < segments_usize {
+                0.0
+            } else {
+                height
+            };
+            let native_z = radius * libm::sin(theta);
+            // Rotate +90 degrees around X: backend +Y becomes constructive
+            // +Z without a handedness change.
+            [native_x, -native_z, native_y]
+        }
     }
 }
 
@@ -1648,6 +1902,131 @@ mod tests {
             body.mesh.faces().count(),
             "one origin per face"
         );
+    }
+
+    #[test]
+    fn primitive_regions_and_winding_survive_cylinder_axis_conversion_and_mirror() {
+        // Primitive evaluation rebuilds the backend mesh to rotate its native
+        // +Y cylinder onto constructive +Z. This pins all information that
+        // rebuild could accidentally damage: outward winding under a mirror,
+        // topology, sharp-edge metadata, FACE_REGION, and source-map agreement
+        // with those regions. Named primitive selections intentionally do not
+        // enter TessellatedBody; constructive provenance is region-based.
+        let spec = PrimitiveSpec::Cylinder {
+            radius: 2.0,
+            height: 3.0,
+            segments: 12,
+        };
+        let ordinary = tessellate_primitive(spec, &Placement3::IDENTITY, &EvalPolicy::default())
+            .expect("ordinary cylinder");
+        let reflected = tessellate_primitive(
+            spec,
+            &Placement3 {
+                rows: [
+                    [-1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
+            },
+            &EvalPolicy::default(),
+        )
+        .expect("reflected cylinder");
+
+        assert_clean(&ordinary);
+        assert_clean(&reflected);
+        let ordinary_volume = mesh_volume(&ordinary.mesh);
+        let reflected_volume = mesh_volume(&reflected.mesh);
+        assert!(ordinary_volume > 0.0, "ordinary volume {ordinary_volume}");
+        assert!(
+            reflected_volume > 0.0,
+            "reflected volume {reflected_volume}"
+        );
+        assert!(
+            (ordinary_volume - reflected_volume).abs() < 1.0e-5,
+            "mirror changed volume: {ordinary_volume} vs {reflected_volume}"
+        );
+
+        // The second bottom-ring vertex is off both principal axes, so its
+        // exact bits pin the libm coordinate path even when this test target
+        // also enables exedra_primitives/std through dev-dependencies.
+        let sampled = ordinary
+            .mesh
+            .vertices()
+            .nth(1)
+            .and_then(|vertex| ordinary.mesh.vertex_position(vertex))
+            .expect("second cylinder vertex");
+        assert_eq!(sampled.map(f32::to_bits), [0x3fdd_b3d7, 0xbf80_0000, 0]);
+
+        let regions = reflected
+            .mesh
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .expect("primitive regions were copied onto the mesh");
+        let mut seen = alloc::collections::BTreeSet::new();
+        for face in reflected.mesh.faces() {
+            let region = regions
+                .get(face.as_id())
+                .copied()
+                .expect("every primitive face has a region");
+            seen.insert(region);
+            assert_eq!(
+                reflected.source_map.face_feature(face),
+                Some(Feature::PrimitiveRegion { region })
+            );
+        }
+        assert_eq!(
+            seen,
+            [
+                exedra_primitives::REGION_SIDE.0,
+                exedra_primitives::REGION_CAP_TOP.0,
+                exedra_primitives::REGION_CAP_BOTTOM.0,
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(
+            reflected
+                .mesh
+                .faces()
+                .flat_map(|face| reflected.mesh.face_loop(face))
+                .any(|edge| reflected.mesh.edge_sharpness(edge).is_some_and(|v| v > 0.0)),
+            "cap-rim sharpness must survive rebuilding"
+        );
+    }
+
+    #[test]
+    fn primitive_evaluation_rejects_unrepresentable_parameters_and_segment_bombs() {
+        // Recipe validation accepts finite positive f64 values and explicit
+        // u32 segment counts. Evaluation must fail typed before an f32
+        // overflow or an attacker-sized cylinder reaches the backend.
+        assert!(matches!(
+            tessellate_primitive(
+                PrimitiveSpec::Box {
+                    size: [f64::MAX, 1.0, 1.0],
+                },
+                &Placement3::IDENTITY,
+                &EvalPolicy::default(),
+            ),
+            Err(TessellateError::NonFiniteGeometry)
+        ));
+
+        let mut policy = EvalPolicy::default();
+        policy.discretize.max_segment_edges = 8;
+        assert!(matches!(
+            tessellate_primitive(
+                PrimitiveSpec::Cylinder {
+                    radius: 1.0,
+                    height: 1.0,
+                    segments: 9,
+                },
+                &Placement3::IDENTITY,
+                &policy,
+            ),
+            Err(TessellateError::PrimitiveSegmentLimit {
+                requested: 9,
+                maximum: 8,
+            })
+        ));
     }
 
     #[test]

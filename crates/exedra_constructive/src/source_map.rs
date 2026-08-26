@@ -116,7 +116,8 @@ impl SourceMap {
     /// The feature whose surface a vertex lies on (O(1)).
     ///
     /// A vertex generally borders several features; the recorded one is the
-    /// wall feature of the profile edge that emitted it.
+    /// deterministic generating feature chosen by its tessellator. Consumers
+    /// must not interpret that choice as exclusive ownership at boundaries.
     #[must_use]
     pub fn vertex_feature(&self, vertex: VertexId) -> Option<Feature> {
         self.vertex_features.get(vertex.index() as usize).copied()
@@ -202,6 +203,7 @@ impl core::fmt::Display for FeatureLabel {
                 seg,
             } => write!(f, "loft_wall {band} {loop_index} {seg}"),
             Feature::Imported => write!(f, "imported"),
+            Feature::PrimitiveRegion { region } => write!(f, "primitive_region {region}"),
             Feature::BooleanFace { operand } => write!(f, "boolean_face {operand}"),
             Feature::SweepWall {
                 band,

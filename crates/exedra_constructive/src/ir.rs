@@ -234,6 +234,8 @@ pub enum PrimitiveSpec {
         /// Height along +Z; positive.
         height: f64,
         /// Number of side segments; at least 3.
+        /// Evaluation also requires this not to exceed
+        /// [`crate::discretize::DiscretizePolicy::max_segment_edges`].
         segments: u32,
     },
 }
@@ -1614,7 +1616,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xE2D8_73AD_69D1_87E0_4BAF_27BC_8E97_EAA1,
+            0x195F_C985_5F70_BC29_954E_1F22_F476_0946,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }
