@@ -24,11 +24,11 @@
 //! indices, never from trigonometric results.
 //!
 //! The default `std` feature uses the platform `f32` math implementation.
-//! `no_std` consumers disable default features and enable `libm`, which uses
-//! the optional `libm` backend. The crate does not maintain a custom polynomial
-//! approximation. Bit-identical coordinates across `std` and `libm` backends
-//! are not guaranteed; deterministic output is guaranteed for a fixed backend,
-//! fixed target, and fixed parameter set.
+//! Enabling `libm` selects the optional `libm` backend, including when Cargo
+//! feature unification also enables `std`. The crate does not maintain a
+//! custom polynomial approximation. Bit-identical coordinates across `std`
+//! and `libm` backends are not guaranteed; deterministic output is guaranteed
+//! for a fixed backend, fixed target, and fixed parameter set.
 //!
 //! Tests enforce a unit-circle sampled-angle absolute error budget of `2e-6`
 //! relative to an `f64` reference for the angles used by cylinder, cone, torus,

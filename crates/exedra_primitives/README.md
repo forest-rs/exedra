@@ -20,11 +20,12 @@ Rotational primitives use trig only for coordinate generation. Topology,
 regions, and canonical selections are derived from integer segment/ring indices,
 so small backend math differences cannot change mesh structure.
 
-The default `std` feature uses platform `f32` math. `no_std` callers disable
-default features and enable `libm`, which uses the optional `libm` backend. The
-crate does not maintain a custom polynomial approximation and does not promise
-bit-identical coordinates between `std` and `libm`; output is deterministic for
-a fixed backend, target, and parameter set.
+The default `std` feature uses platform `f32` math. Enabling `libm` selects the
+optional `libm` backend even if Cargo feature unification also enables `std`;
+`no_std` callers use it with default features disabled. The crate does not
+maintain a custom polynomial approximation and does not promise bit-identical
+coordinates between std-only and libm builds; output is deterministic for a
+fixed backend, target, and parameter set.
 
 Tests enforce a `2e-6` unit-circle sampled-angle absolute error budget relative
 to an `f64` reference. Coordinate error scales with primitive radius.

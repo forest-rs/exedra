@@ -17,7 +17,9 @@ or semantic selections.
 Use backend-provided `f32` math instead of a custom polynomial approximation.
 
 - With the default `std` feature, use platform `f32` math.
-- With `--no-default-features --features libm`, use the optional `libm` backend.
+- When `libm` is enabled, use the optional `libm` backend. It takes precedence
+  if Cargo feature unification also enables `std`; this lets a deterministic
+  downstream path opt in without controlling every other workspace consumer.
 - Require one of `std` or `libm`; there is no hidden fallback approximation.
 - Derive topology, face regions, and selections from integer segment/ring
   indices rather than trigonometric results.
@@ -35,3 +37,7 @@ The default build remains dependency-light and uses only `std` math. `no_std`
 users opt into one small math dependency through the existing `libm` feature.
 Primitive topology and selections remain stable even if backend coordinate bits
 differ slightly.
+
+Migration note: callers that deliberately enabled both `std` and `libm`
+previously received platform math and now receive libm coordinates. Callers
+that require platform math should enable `std` without `libm`.

@@ -60,24 +60,24 @@ pub(crate) fn face_region_layer(
 }
 
 pub(crate) fn sin_cos(theta: f32) -> (f32, f32) {
-    #[cfg(feature = "std")]
-    {
-        theta.sin_cos()
-    }
-    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    #[cfg(feature = "libm")]
     {
         (libm::sinf(theta), libm::cosf(theta))
+    }
+    #[cfg(all(not(feature = "libm"), feature = "std"))]
+    {
+        theta.sin_cos()
     }
 }
 
 pub(crate) fn sqrt(value: f32) -> f32 {
-    #[cfg(feature = "std")]
-    {
-        value.sqrt()
-    }
-    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    #[cfg(feature = "libm")]
     {
         libm::sqrtf(value)
+    }
+    #[cfg(all(not(feature = "libm"), feature = "std"))]
+    {
+        value.sqrt()
     }
 }
 
@@ -136,5 +136,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(all(feature = "std", feature = "libm"))]
+    #[test]
+    fn explicit_libm_feature_wins_when_cargo_unifies_both_backends() {
+        // Workspace consumers can independently enable std and libm on this
+        // crate. An explicit libm request must remain deterministic after
+        // Cargo unifies those features instead of silently falling back to
+        // platform math.
+        let theta = 1.234_567_f32;
+        let (sin_theta, cos_theta) = sin_cos(theta);
+        assert_eq!(sin_theta.to_bits(), libm::sinf(theta).to_bits());
+        assert_eq!(cos_theta.to_bits(), libm::cosf(theta).to_bits());
+        assert_eq!(super::sqrt(7.25).to_bits(), libm::sqrtf(7.25).to_bits());
     }
 }
