@@ -26,6 +26,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use addressable::SpaceId;
 use exedra_constructive::evaluate::{Evaluation, Fidelity, Severity, evaluate};
 use exedra_constructive::ir::{
     CapMode, CsgOp, NodeId, NodeKind, Placement3, Recipe, RecipeBuilder,
@@ -35,6 +36,80 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::{MeshBuffers, extract_mesh_buffers, matrix16, panel_trio_assembly};
+
+/// A live Addressable assembly behind the Cambium provenance inspector.
+///
+/// The first stateful scenario is `panel_trio`. Constructing a session assigns
+/// that assembly a caller-supplied runtime space identity; repeated snapshots
+/// then observe the same host and revision instead of rebuilding an unrelated
+/// assembly for every bridge call.
+///
+/// Recipe-only inspection scenarios remain available through
+/// [`run_inspection_scenario_json`].
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct InspectionSession {
+    space: exedra_assembly::AddressableAssembly,
+}
+
+#[wasm_bindgen]
+impl InspectionSession {
+    /// Starts a live inspection session for one named assembly scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when `name` is not a stateful assembly
+    /// scenario or its assembly cannot be constructed.
+    #[wasm_bindgen(constructor)]
+    pub fn new(name: &str, space: u64) -> Result<Self, JsValue> {
+        Self::build(name, space).map_err(|error| JsValue::from_str(&error))
+    }
+
+    /// Returns the caller-assigned runtime Addressable space identity.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn space(&self) -> u64 {
+        self.space.id().get()
+    }
+
+    /// Returns the current space-local Addressable revision.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.space.revision().get()
+    }
+
+    /// Projects the current assembly as a `cambium-inspect-v1` snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error when compilation, evaluation, or
+    /// serialization fails.
+    pub fn snapshot_json(&self) -> Result<String, JsValue> {
+        let response = self.snapshot().map_err(|error| JsValue::from_str(&error))?;
+        serde_json::to_string(&response).map_err(|error| {
+            JsValue::from_str(&format!("failed to serialize inspection response: {error}"))
+        })
+    }
+}
+
+impl InspectionSession {
+    fn build(name: &str, space: u64) -> Result<Self, String> {
+        if name != "panel_trio" {
+            return Err(format!(
+                "inspection scenario `{name}` does not own an Addressable assembly"
+            ));
+        }
+        let assembly = panel_trio_assembly()?;
+        Ok(Self {
+            space: assembly.into_addressable(SpaceId::new(space)),
+        })
+    }
+
+    fn snapshot(&self) -> Result<InspectionResponse, String> {
+        inspect_panel_trio_assembly(self.space.assembly())
+    }
+}
 
 /// The inspection payload format identifier.
 pub const INSPECT_FORMAT: &str = "cambium-inspect-v1";
@@ -333,14 +408,20 @@ fn inspect_recipe(name: &str, recipe: &Recipe) -> Result<InspectionResponse, Str
 /// the part recipe (full provenance), instances from the assembly's
 /// flattened render list.
 fn inspect_panel_trio() -> Result<InspectionResponse, String> {
+    let assembly = panel_trio_assembly()?;
+    inspect_panel_trio_assembly(&assembly)
+}
+
+fn inspect_panel_trio_assembly(
+    assembly: &exedra_assembly::Assembly,
+) -> Result<InspectionResponse, String> {
     use exedra_assembly::{PartCompiler, PartSource, flatten};
 
-    let asm = panel_trio_assembly()?;
     let mut compiler = PartCompiler::new();
     let compiled = compiler
-        .compile_parts(&asm, &EvalPolicy::default())
+        .compile_parts(assembly, &EvalPolicy::default())
         .map_err(|e| format!("{e}"))?;
-    let list = flatten(&asm, &compiled);
+    let list = flatten(assembly, &compiled);
 
     let mut response = empty_response("panel_trio");
     // Evaluate each distinct part's recipe once for provenance; the body
@@ -354,7 +435,7 @@ fn inspect_panel_trio() -> Result<InspectionResponse, String> {
         let body = match body_lookup.get(&key).copied() {
             Some(body) => body,
             None => {
-                let def = asm
+                let def = assembly
                     .part(item.part)
                     .ok_or_else(|| "flatten referenced an unknown part".to_string())?;
                 let part_key = def.key().to_string();
@@ -729,5 +810,27 @@ mod tests {
         for name in ["drilled_block", "policy_curve", "panel_trio"] {
             assert_eq!(json(name), json(name), "{name}: byte-identical reruns");
         }
+    }
+
+    #[test]
+    fn panel_trio_session_retains_space_revision_and_snapshot_identity() {
+        let session = InspectionSession::build("panel_trio", 41).expect("session starts");
+        assert_eq!(session.space(), 41);
+        assert_eq!(session.revision(), 0);
+
+        let first = serde_json::to_string(&session.snapshot().expect("first snapshot"))
+            .expect("first snapshot serializes");
+        let second = serde_json::to_string(&session.snapshot().expect("second snapshot"))
+            .expect("second snapshot serializes");
+        assert_eq!(first, second);
+        assert_eq!(session.space(), 41);
+        assert_eq!(session.revision(), 0);
+    }
+
+    #[test]
+    fn session_rejects_recipe_only_scenarios() {
+        let error = InspectionSession::build("drilled_block", 41)
+            .expect_err("recipe scenario has no live assembly");
+        assert!(error.contains("does not own an Addressable assembly"));
     }
 }

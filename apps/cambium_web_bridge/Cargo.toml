@@ -14,6 +14,7 @@ categories = ["graphics", "wasm"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+addressable.workspace = true
 cambium = { features = ["libm"], workspace = true }
 exedra = { features = ["libm"], workspace = true }
 exedra_assembly.workspace = true

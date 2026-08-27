@@ -140,6 +140,7 @@ dependencies = [
 name = "cambium_web_bridge"
 version = "0.1.0"
 dependencies = [
+ "addressable",
  "cambium",
  "exedra",
  "exedra_assembly",

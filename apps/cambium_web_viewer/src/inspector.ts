@@ -120,6 +120,14 @@ type InspectionResponse = {
 type WasmApi = {
   list_inspection_scenarios_json: () => string;
   run_inspection_scenario_json: (name: string) => string;
+  InspectionSession: new (name: string, space: bigint) => WasmInspectionSession;
+};
+
+type WasmInspectionSession = {
+  readonly space: bigint;
+  readonly revision: bigint;
+  snapshot_json: () => string;
+  free: () => void;
 };
 
 // --- DOM ---
@@ -549,6 +557,8 @@ async function loadWasmApi(): Promise<WasmApi> {
 
 async function bootstrap(): Promise<void> {
   const wasm = await loadWasmApi();
+  let currentSession: WasmInspectionSession | null = null;
+  let nextSpace = 1n;
   const scenarios = JSON.parse(wasm.list_inspection_scenarios_json()) as string[];
   for (const name of scenarios) {
     const option = document.createElement("option");
@@ -560,9 +570,17 @@ async function bootstrap(): Promise<void> {
   const runScenario = (): void => {
     const selectedName = scenarioSelect.value;
     try {
-      const response = JSON.parse(
-        wasm.run_inspection_scenario_json(selectedName),
-      ) as InspectionResponse;
+      currentSession?.free();
+      currentSession = null;
+      let responseJson: string;
+      if (selectedName === "panel_trio") {
+        currentSession = new wasm.InspectionSession(selectedName, nextSpace);
+        nextSpace += 1n;
+        responseJson = currentSession.snapshot_json();
+      } else {
+        responseJson = wasm.run_inspection_scenario_json(selectedName);
+      }
+      const response = JSON.parse(responseJson) as InspectionResponse;
       currentResponse = response;
       formatLabel.textContent = response.format;
       buildScene(response);
