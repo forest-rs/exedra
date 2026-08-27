@@ -50,6 +50,10 @@ a summary readout and the exact diagnostics ledger. The selected face
 highlights in the accent color. Reloading a scenario re-renders the
 byte-identical payload.
 
+The `panel_trio` inspector retains an `InspectionSession` backed by one
+Addressable assembly. Recipe-only scenarios continue to use immutable
+snapshots; reloading `panel_trio` intentionally starts a new runtime space.
+
 ## Viewer Controls
 
 - Scenario picker: choose and rerun a named flow.

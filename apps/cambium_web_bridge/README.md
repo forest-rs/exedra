@@ -31,6 +31,12 @@ Inspection scenarios (`list_inspection_scenarios_json()`):
 - `panel_trio`: the multi-instance assembly scene; three placements share
   one provenance-attributed body.
 
+`InspectionSession::new("panel_trio", space)` retains that assembly as one
+Addressable runtime across calls. Its `snapshot_json()` method projects the
+current host through the same `cambium-inspect-v1` payload, while `space` and
+`revision` expose the observation context. The one-shot function remains
+available for recipe-only scenarios and compatibility.
+
 Current scenarios:
 - `stepped_tower`
 - `pedestal`
