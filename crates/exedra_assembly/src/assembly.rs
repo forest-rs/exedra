@@ -562,12 +562,21 @@ impl Assembly {
                 part,
                 slot: slot.to_string(),
             })?;
-        let bindings = &mut self.instances[instance.0 as usize].bindings;
-        match bindings.binary_search_by_key(&index, |binding| binding.0) {
-            Ok(binding) => bindings[binding].1 = material.to_string(),
-            Err(binding) => bindings.insert(binding, (index, material.to_string())),
-        }
+        self.set_material_binding(instance, index, material.to_string());
         Ok(())
+    }
+
+    pub(crate) fn set_material_binding(
+        &mut self,
+        instance: InstanceId,
+        slot: SlotIndex,
+        material: String,
+    ) {
+        let bindings = &mut self.instances[instance.0 as usize].bindings;
+        match bindings.binary_search_by_key(&slot, |binding| binding.0) {
+            Ok(index) => bindings[index].1 = material,
+            Err(index) => bindings.insert(index, (slot, material)),
+        }
     }
 
     /// Sets an opaque metadata entry on an instance (last write wins).

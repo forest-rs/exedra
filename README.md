@@ -25,9 +25,9 @@ Construction and extraction crates:
   fingerprinted constructive recipes with deterministic tessellation,
   provenance, fidelity reporting, interchange, and evaluation caching.
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
-  stable structured addresses, Addressable tree execution and material
-  explanations, material-slot binding, cached compilation, and deterministic
-  flattening.
+  stable structured addresses, Addressable tree execution, material
+  explanations and guarded binding transactions, cached compilation, and
+  deterministic flattening.
 - **[joiner](crates/joiner/)** - Construction layer: building elements, the
   three relation kinds that connect them, the typed rule seam and its uniform
   output, evidence labelling, layered validation, and lowering to an assembly.
@@ -96,7 +96,7 @@ Addressable assembly workflows live with the assembly model that owns their
 identity and material semantics. `Assembly::into_addressable` binds a completed
 assembly to a runtime space id and revision without putting runtime identity
 into construction-only call sites. Later authoring passes through the wrapper's
-commit gateway so locations, pins, and handles share one revision clock.
+commit gateway so locations, pins, guards, and handles share one revision clock.
 
 ## Example Flow
 

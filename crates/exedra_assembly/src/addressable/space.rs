@@ -134,14 +134,14 @@ impl TreeHost for Assembly {
     }
 }
 
-/// Addressable assembly API with Exedra's read-side material vocabulary.
+/// Addressable assembly API with Exedra's domain-specific material operations.
 ///
 /// Construct this with [`Assembly::into_addressable`]. Locator resolution,
 /// pinned references, typed tree queries, traversal budgets, cardinality,
 /// deduplication, ordering, cycle handling, and revision-scoped handles come
 /// directly from [`TreeRuntime`] through this type's deref implementation.
-/// Exedra adds effective-material explanations through
-/// [`read_material`](Self::read_material).
+/// Exedra adds material explanations through [`Self::read_material`] and
+/// guarded binding transactions through [`Self::transact`].
 #[derive(Clone, Debug)]
 pub struct AddressableAssembly {
     pub(crate) runtime: TreeRuntime<Assembly>,
@@ -187,10 +187,11 @@ impl AddressableAssembly {
 
     /// Applies one host mutation and advances the Addressable revision once.
     ///
-    /// This gateway covers structural, metadata, part-content, and material
-    /// authoring after an assembly has entered its runtime space. The revision
-    /// advances conservatively even when the closure returns a value such as an
-    /// `Err`.
+    /// Prefer [`Self::transact`] for material bindings, where domain guards are
+    /// available. This lower-level gateway covers structural, metadata, and
+    /// part-content authoring after an assembly has entered its runtime space.
+    /// The revision advances conservatively even when the closure returns a
+    /// value such as an `Err`.
     pub fn commit<T>(
         &mut self,
         mutation: impl FnOnce(&mut Assembly) -> T,
