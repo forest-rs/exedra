@@ -806,6 +806,32 @@ mod tests {
     }
 
     #[test]
+    fn panel_trio_faces_supply_addressable_material_targets() {
+        let response = run("panel_trio");
+        for instance in &response.instances {
+            let body = &response.bodies[instance.body as usize];
+            let node = response
+                .nodes
+                .iter()
+                .find(|node| node.part == body.part && node.id == body.node)
+                .expect("body node exists");
+            assert!(
+                !body.faces.is_empty(),
+                "every placed body supplies pickable faces"
+            );
+            assert!(
+                instance.path.starts_with('/'),
+                "assembly occurrences carry canonical exact addresses"
+            );
+            assert_eq!(
+                node.material.as_deref(),
+                Some("front"),
+                "the producing node supplies the addressed material slot"
+            );
+        }
+    }
+
+    #[test]
     fn payloads_are_deterministic() {
         for name in ["drilled_block", "policy_curve", "panel_trio"] {
             assert_eq!(json(name), json(name), "{name}: byte-identical reruns");

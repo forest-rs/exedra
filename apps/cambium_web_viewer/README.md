@@ -53,6 +53,9 @@ byte-identical payload.
 The `panel_trio` inspector retains an `InspectionSession` backed by one
 Addressable assembly. Recipe-only scenarios continue to use immutable
 snapshots; reloading `panel_trio` intentionally starts a new runtime space.
+Picking a material-bearing assembly face retains its canonical instance
+address together with the constructive material slot, ready for a typed Exedra
+material read.
 
 ## Viewer Controls
 
