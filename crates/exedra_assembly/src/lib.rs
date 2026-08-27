@@ -28,8 +28,9 @@
 //!
 //! [`Assembly::into_addressable`] binds a completed assembly to a host-assigned
 //! runtime space id. The resulting [`AddressableAssembly`] resolves and queries
-//! stable instance addresses, explains effective materials, and commits later
-//! assembly authoring under one revision contract.
+//! stable instance addresses, explains effective materials, executes guarded
+//! material edits, and commits later assembly authoring under one revision
+//! contract.
 
 #![no_std]
 extern crate alloc;
@@ -45,9 +46,10 @@ pub mod interchange;
 pub use addressable::{
     AddressableAssembly, AssemblyAxis, AssemblyLocation, AssemblyLocator, AssemblyOccurrence,
     AssemblyPredicate, AssemblyQuery, AssemblyReferent, AssemblyReferentParseError,
-    AssemblyResolution, AssemblyView, AssemblyViewParseError, MaterialExplanation,
-    MaterialProvenance, MaterialReason, MaterialSlot, MaterialSubject, Measured, PartKey,
-    ReadError,
+    AssemblyResolution, AssemblyView, AssemblyViewParseError, BindMaterial, EditCapability,
+    MaterialChange, MaterialExplanation, MaterialProvenance, MaterialReason, MaterialSlot,
+    MaterialSubject, Measured, PartKey, ReadError, TransactionConflict, TransactionReport,
+    UndoMaterial,
 };
 pub use assembly::{
     Assembly, AssemblyError, AssemblySpace, Instance, InstanceAddress, InstanceId, PartDef, PartId,

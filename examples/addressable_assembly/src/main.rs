@@ -9,7 +9,7 @@ fn main() {
     let tour = run_tour();
     println!("selected {} ({})", tour.address, tour.part);
     println!(
-        "material {} ({:?}; {} authored opinions)",
-        tour.material, tour.reason, tour.material_opinions
+        "material {} -> {}; previewed {} change; revision {}",
+        tour.material_before, tour.material_after, tour.preview_changes, tour.revision_after
     );
 }
