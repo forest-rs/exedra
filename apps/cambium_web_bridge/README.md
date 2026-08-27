@@ -37,6 +37,11 @@ current host through the same `cambium-inspect-v1` payload, while `space` and
 `revision` expose the observation context. The one-shot function remains
 available for recipe-only scenarios and compatibility.
 
+For an assembly pick, the instance entry supplies the canonical exact address
+and its producing node supplies the material-slot name. The viewer retains
+that pair as the typed material-read target; the payload does not invent a
+second endpoint syntax.
+
 Current scenarios:
 - `stepped_tower`
 - `pedestal`

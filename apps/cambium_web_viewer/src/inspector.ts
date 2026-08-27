@@ -180,10 +180,21 @@ type PickTarget = {
   baseColors: Float32Array;
 };
 
+type AddressableMaterialTarget = {
+  instanceAddress: string;
+  materialSlot: string;
+};
+
+type SelectedFace = {
+  target: PickTarget;
+  faceOrdinal: number;
+  materialTarget: AddressableMaterialTarget | null;
+};
+
 let currentResponse: InspectionResponse | null = null;
 let currentRoot: Group | null = null;
 let pickTargets: PickTarget[] = [];
-let selected: { target: PickTarget; faceOrdinal: number } | null = null;
+let selected: SelectedFace | null = null;
 
 const ACCENT = new Color(0x4fd1c5);
 
@@ -410,20 +421,39 @@ function featureLabel(feature: InspectionFeature): string {
   return parts.join(" ");
 }
 
-function setSelection(target: PickTarget, faceOrdinal: number): void {
+function addressableMaterialTarget(
+  instance: InspectionInstance,
+  node: InspectionNode | undefined,
+): AddressableMaterialTarget | null {
+  if (!instance.path.startsWith("/") || !node?.material) {
+    return null;
+  }
+  return {
+    instanceAddress: instance.path,
+    materialSlot: node.material,
+  };
+}
+
+function setSelection(
+  target: PickTarget,
+  faceOrdinal: number,
+): AddressableMaterialTarget | null {
   const response = currentResponse;
   if (!response) {
-    return;
+    return null;
   }
   const body = response.bodies[target.bodyIndex];
   const instance = response.instances[target.instanceIndex];
   const face = body.faces[faceOrdinal];
   const node = response.nodes.find((n) => n.part === body.part && n.id === body.node);
   const fidelity = response.fidelity.find((f) => f.part === body.part && f.node === body.node);
+  const materialTarget = addressableMaterialTarget(instance, node);
 
   const chain = document.createElement("div");
   chain.className = "chain";
-  chain.append(chainRow("instance", instance.path));
+  chain.append(
+    chainRow(materialTarget ? "instance address" : "instance", instance.path),
+  );
   if (body.part !== null) {
     chain.append(chainRow("part", body.part));
   }
@@ -437,7 +467,7 @@ function setSelection(target: PickTarget, faceOrdinal: number): void {
     chain.append(chainRow("source", node.source));
   }
   if (node?.material) {
-    chain.append(chainRow("material", node.material));
+    chain.append(chainRow("material slot", node.material, materialTarget !== null));
   }
   if (node?.issue) {
     chain.append(chainRow("issue", node.issue));
@@ -456,6 +486,7 @@ function setSelection(target: PickTarget, faceOrdinal: number): void {
     chain.append(chainRow("fingerprint", node.fingerprint));
   }
   selectionDiv.replaceChildren(chain);
+  return materialTarget;
 }
 
 function clearSelectionPanel(): void {
@@ -529,9 +560,9 @@ function pick(event: MouseEvent): void {
   if (selected) {
     repaint(selected.target, null);
   }
-  selected = { target, faceOrdinal };
   repaint(target, faceOrdinal);
-  setSelection(target, faceOrdinal);
+  const materialTarget = setSelection(target, faceOrdinal);
+  selected = { target, faceOrdinal, materialTarget };
 }
 
 // --- bootstrap ---

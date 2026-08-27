@@ -1,6 +1,6 @@
 ---
 id: cwb-ddf7
-status: in_progress
+status: closed
 deps: []
 links: []
 type: feature
@@ -38,3 +38,18 @@ not extract a generic tooling schema.
 - Existing scenarios remain byte-deterministic.
 - Repeated session snapshots observe one explicit runtime space and revision.
 - A picked material-bearing face yields an instance-address/material-slot pair.
+
+## Notes
+
+**2026-08-27T06:04:39Z**
+
+Implemented as two stacked changes. The first retains `panel_trio` behind a Wasm
+`InspectionSession` with an explicit runtime space and revision while preserving
+one-shot recipe scenarios. The second joins each picked assembly face through
+its instance and producing node into the canonical instance-address/material-slot
+pair required by a later typed material read. The bridge keeps JSON presentation
+local and does not extract a generic tooling schema. Verified `cargo fmt`, Taplo,
+typos, `cambium_web_bridge` tests and strict Clippy, warning-denied rustdoc,
+`wasm32` check, `wasm-pack`/Vite production build, and dist smoke check. Direct
+`npx tsc` remains unusable because the existing viewer lacks Three.js declaration
+packages; the production Vite build passes.
