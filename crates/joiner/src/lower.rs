@@ -12,7 +12,8 @@
 //!
 //! - **Identity is derived.** Every geometry-bearing element becomes one root
 //!   instance keyed by the element key, so its
-//!   [`exedra_assembly::InstancePath`] is the element key and nothing else.
+//!   [`exedra_assembly::InstanceAddress`] is the element key beneath `/` and
+//!   nothing else.
 //!   Generated parts are elements, so they lower the same way.
 //! - **Part edits are composed before registration.** A cut is a constructive
 //!   [`NodeKind::Csg`] on the participant's own recipe, appended in
@@ -28,7 +29,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use exedra_assembly::{Assembly, AssemblyError, InstancePath};
+use exedra_assembly::{Assembly, AssemblyError, InstanceAddress};
 use exedra_constructive::ir::{
     CsgOp, ImportId, NodeId, NodeKind, Placement3, ProfileId, Recipe, RecipeBuilder, RecipeError,
     SlotId, SourceId,
@@ -101,12 +102,14 @@ impl From<RecipeError> for LowerError {
     }
 }
 
-/// The instance path an element lowers to.
+/// The instance address an element lowers to.
 ///
-/// Derived, deterministic, and flat: the element key is the whole path.
+/// Derived, deterministic, and flat: the element key is the only segment.
+/// Returns `None` when `element` is not a valid Addressable name segment; the
+/// same key would be rejected when the construction is lowered.
 #[must_use]
-pub fn instance_path(element: &str) -> InstancePath {
-    InstancePath::from_segments(&[element])
+pub fn instance_address(element: &str) -> Option<InstanceAddress> {
+    InstanceAddress::parse(&format!("/{element}")).ok()
 }
 
 /// The assembly part key an element lowers to.

@@ -3,7 +3,7 @@
 
 //! Executable integration scenario for the Byzantine basilica worked example.
 
-use exedra_assembly::{Assembly, InstanceId, InstancePath};
+use exedra_assembly::Assembly;
 
 mod architecture;
 mod geometry;
@@ -77,7 +77,7 @@ pub fn run_cli() {
 /// Stable vocabulary for addressing major parts, instances, and roles.
 ///
 /// The string values are part of this example's identity contract. OBJ group
-/// names and glTF node metadata retain the same instance paths and part keys.
+/// names and glTF node metadata retain the same instance addresses and part keys.
 pub mod names {
     /// Metadata key storing an instance's architectural role.
     pub const ARCHITECTURAL_ROLE: &str = "architectural_role";
@@ -120,7 +120,7 @@ pub mod names {
         pub const NAVE_TRUSS_DIAGONAL_BRACE: &str = "nave-truss-diagonal-brace";
     }
 
-    /// Stable root-instance paths for major architectural elements.
+    /// Stable root-instance names for major architectural elements.
     pub mod instances {
         /// Path of the north-west nave clerestory segment.
         pub const NAVE_WALL_NORTH_WEST: &str = "nave-wall-north-west";
@@ -187,11 +187,14 @@ pub mod names {
     }
 }
 
-/// Builds a mutable, name-addressable basilica assembly without compiling it.
+/// Builds a mutable, Addressable-ready basilica assembly without compiling it.
 ///
-/// Consumers may find parts through [`Assembly::part_by_key`], resolve stable
-/// instance paths with [`resolve_instance_path`], or select semantic groups
-/// through [`instances_with_role`]. Compile only after all edits are applied.
+/// Consumers may find construction-time parts through [`Assembly::part_by_key`].
+/// Once authoring is complete, bind the result with
+/// [`Assembly::into_addressable`] to resolve exact addresses, run typed
+/// metadata or part queries, inspect effective-material evidence, and commit
+/// later authoring under one revision clock. Compile after authoring is
+/// complete.
 ///
 /// # Panics
 ///
@@ -203,89 +206,136 @@ pub fn build_basilica_assembly(params: &BasilicaParams) -> Assembly {
     architecture::build_assembly(params).0
 }
 
-/// Resolves a slash-separated stable instance path.
-///
-/// Returns `None` for an empty path, empty path segments, or an unknown path.
-#[must_use]
-pub fn resolve_instance_path(assembly: &Assembly, path: &str) -> Option<InstanceId> {
-    if path.is_empty() || path.split('/').any(str::is_empty) {
-        return None;
-    }
-    let segments: Vec<&str> = path.split('/').collect();
-    assembly.resolve_path(&InstancePath::from_segments(&segments))
+#[cfg(test)]
+pub(crate) fn instance_id_at(
+    assembly: &Assembly,
+    name: &str,
+) -> Option<exedra_assembly::InstanceId> {
+    use exedra_assembly::InstanceAddress;
+
+    let address = InstanceAddress::parse(&format!("/{name}")).ok()?;
+    assembly.instance_by_address(&address)
 }
 
-/// Collects instance handles whose architectural role equals `role`.
-///
-/// Results preserve deterministic assembly insertion order.
-#[must_use]
-pub fn instances_with_role(assembly: &Assembly, role: &str) -> Vec<InstanceId> {
-    assembly
-        .instances_with_ids()
-        .filter_map(|(id, instance)| {
-            let matches = instance
-                .metadata()
-                .iter()
-                .any(|(key, value)| key == names::ARCHITECTURAL_ROLE && value == role);
-            matches.then_some(id)
+#[cfg(test)]
+pub(crate) fn role_instances(assembly: &Assembly, role: &str) -> Vec<exedra_assembly::InstanceId> {
+    use addressable::{Query, SpaceId};
+    use addressable_tree::TreeRuntime;
+    use exedra_assembly::{AssemblyAxis, AssemblyPredicate, AssemblySpace, AssemblyView};
+
+    let space = TreeRuntime::new(SpaceId::<AssemblySpace>::new(1), assembly);
+    space
+        .query_many(
+            &Query::many(space.root_locator(AssemblyView::Instances))
+                .traverse(AssemblyAxis::Descendants)
+                .filter(AssemblyPredicate::metadata_equals(
+                    names::ARCHITECTURAL_ROLE,
+                    role,
+                )),
+        )
+        .expect("Basilica role query succeeds")
+        .items()
+        .iter()
+        .map(|location| {
+            *space
+                .resolved_handle(location)
+                .expect("queried instances carry handles")
+                .handle()
         })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use exedra_assembly::assembly_fingerprint;
+    use addressable::{Query, Resolution, SpaceId};
+    use exedra_assembly::{
+        AssemblyAxis, AssemblyPredicate, AssemblySpace, InstanceAddress, assembly_fingerprint,
+    };
 
     use super::*;
     use crate::output::{bounds, build_scenario, byte_signature, export_obj, scene_stats};
 
     #[test]
-    fn public_names_resolve_parts_paths_and_roles() {
+    fn public_names_resolve_addresses_parts_and_roles() {
         let assembly = build_basilica_assembly(&BasilicaParams::default());
+        let space = assembly
+            .clone()
+            .into_addressable(SpaceId::<AssemblySpace>::new(1));
 
         let dome_part = assembly
             .part_by_key(names::parts::CROSSING_DOME)
             .expect("stable dome part key resolves");
-        let dome_instance = resolve_instance_path(&assembly, names::instances::CROSSING_DOME)
-            .expect("stable dome instance path resolves");
+        let dome_address =
+            InstanceAddress::parse(&format!("/{}", names::instances::CROSSING_DOME)).unwrap();
+        let Resolution::Resolved(dome) =
+            space.resolve(&space.locator(&dome_address).expect("current dome address"))
+        else {
+            panic!("stable dome address resolves");
+        };
+        let dome_instance = *space
+            .resolved_handle(&dome)
+            .expect("dome has a runtime handle")
+            .handle();
         assert_eq!(assembly.instance(dome_instance).unwrap().part(), dome_part);
         assert_eq!(
-            assembly.path_of(dome_instance).unwrap().to_string(),
-            names::instances::CROSSING_DOME
+            dome.address(),
+            &dome_address,
+            "resolved location retains the stored address"
         );
 
         let pendentive_part = assembly
             .part_by_key(names::parts::PENDENTIVE_WEB)
             .expect("stable pendentive part key resolves");
-        let pendentive_instance =
-            resolve_instance_path(&assembly, names::instances::PENDENTIVE_NORTH_EAST)
-                .expect("stable pendentive instance path resolves");
+        let pendentive_address =
+            InstanceAddress::parse(&format!("/{}", names::instances::PENDENTIVE_NORTH_EAST))
+                .unwrap();
+        let Resolution::Resolved(pendentive) = space.resolve(
+            &space
+                .locator(&pendentive_address)
+                .expect("current pendentive address"),
+        ) else {
+            panic!("stable pendentive address resolves");
+        };
+        let pendentive_instance = *space
+            .resolved_handle(&pendentive)
+            .expect("pendentive has a runtime handle")
+            .handle();
         assert_eq!(
             assembly.instance(pendentive_instance).unwrap().part(),
             pendentive_part
         );
 
-        let buttresses = instances_with_role(&assembly, names::roles::AISLE_BUTTRESS);
-        let windows = instances_with_role(&assembly, names::roles::DRUM_WINDOW);
-        let intact_nave_walls = instances_with_role(&assembly, names::roles::NAVE_CLERESTORY);
-        let ruined_nave_walls = instances_with_role(&assembly, names::roles::NAVE_CLERESTORY_RUIN);
-        let pendentives = instances_with_role(&assembly, names::roles::PENDENTIVE);
-        let truss_members = instances_with_role(&assembly, names::roles::NAVE_TRUSS_MEMBER);
-        assert_eq!(buttresses.len(), 16);
-        assert_eq!(windows.len(), 6);
-        assert_eq!(intact_nave_walls.len(), 3);
-        assert_eq!(ruined_nave_walls.len(), 1);
-        assert_eq!(pendentives.len(), 4);
-        assert_eq!(truss_members.len(), 36);
-        assert!(buttresses.iter().all(|&id| {
-            assembly.instance(id).unwrap().part()
-                == assembly.part_by_key(names::parts::AISLE_BUTTRESS).unwrap()
+        let select_role = |role| {
+            space
+                .query_many(
+                    &Query::many(space.root_locator())
+                        .traverse(AssemblyAxis::Descendants)
+                        .filter(AssemblyPredicate::metadata_equals(
+                            names::ARCHITECTURAL_ROLE,
+                            role,
+                        )),
+                )
+                .expect("role query succeeds")
+        };
+        let buttresses = select_role(names::roles::AISLE_BUTTRESS);
+        let windows = select_role(names::roles::DRUM_WINDOW);
+        let intact_nave_walls = select_role(names::roles::NAVE_CLERESTORY);
+        let ruined_nave_walls = select_role(names::roles::NAVE_CLERESTORY_RUIN);
+        let pendentives = select_role(names::roles::PENDENTIVE);
+        let truss_members = select_role(names::roles::NAVE_TRUSS_MEMBER);
+        assert_eq!(buttresses.items().len(), 16);
+        assert_eq!(windows.items().len(), 6);
+        assert_eq!(intact_nave_walls.items().len(), 3);
+        assert_eq!(ruined_nave_walls.items().len(), 1);
+        assert_eq!(pendentives.items().len(), 4);
+        assert_eq!(truss_members.items().len(), 36);
+        assert!(buttresses.items().iter().all(|location| {
+            location.referent().as_part().map(|key| key.as_str())
+                == Some(names::parts::AISLE_BUTTRESS)
         }));
-        assert!(windows.iter().all(|&id| {
-            assembly.instance(id).unwrap().part()
-                == assembly
-                    .part_by_key(names::parts::DRUM_WINDOW_PANEL)
-                    .unwrap()
+        assert!(windows.items().iter().all(|location| {
+            location.referent().as_part().map(|key| key.as_str())
+                == Some(names::parts::DRUM_WINDOW_PANEL)
         }));
     }
 
@@ -329,8 +379,6 @@ mod tests {
         assert_eq!(names::roles::DRUM_WINDOW, "drum_window");
         assert_eq!(names::roles::PENDENTIVE, "pendentive");
         assert_eq!(names::roles::NAVE_TRUSS_MEMBER, "nave_truss_member");
-        assert!(resolve_instance_path(&Assembly::new(), "").is_none());
-        assert!(resolve_instance_path(&Assembly::new(), "root//child").is_none());
     }
 
     #[test]

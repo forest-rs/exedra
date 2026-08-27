@@ -43,7 +43,7 @@ The scenario picker currently includes:
 instrument over the bridge's `cambium-inspect-v1` payloads: it renders
 inspection scenarios (`drilled_block`, `policy_curve`, `panel_trio`) with
 region coloring and topology edges on a dark instrument layout, and
-clicking any face surfaces its full provenance chain — instance path,
+clicking any face surfaces its full provenance chain — instance address,
 part, node (kind + fingerprint), feature attribution, region, source
 reference, material slot, issue citation, and fidelity verdict — beside
 a summary readout and the exact diagnostics ledger. The selected face

@@ -18,25 +18,40 @@
 //!
 //! ## Identity
 //!
-//! Every instance is addressed by an instance path: the sequence of
-//! frontend-supplied string keys from the assembly root down to the
-//! instance. Paths are the *stable identity contract*: the same path across
-//! re-evaluations denotes the same logical part, regardless of insertion
-//! order, sibling count, or geometry changes. Indices are never identity.
+//! Every instance stores a structured [`InstanceAddress`] assembled from its
+//! validated frontend keys. Addresses are the *stable identity contract*: the
+//! same address across re-evaluations denotes the same logical part, regardless
+//! of insertion order, sibling count, or geometry changes. Indices are never
+//! identity.
+//!
+//! ## Addressable workflows
+//!
+//! [`Assembly::into_addressable`] binds a completed assembly to a host-assigned
+//! runtime space id. The resulting [`AddressableAssembly`] resolves and queries
+//! stable instance addresses, explains effective materials, and commits later
+//! assembly authoring under one revision contract.
 
 #![no_std]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod addressable;
 pub mod assembly;
 pub mod compile;
 pub mod flatten;
 pub mod interchange;
 
+pub use addressable::{
+    AddressableAssembly, AssemblyAxis, AssemblyLocation, AssemblyLocator, AssemblyOccurrence,
+    AssemblyPredicate, AssemblyQuery, AssemblyReferent, AssemblyReferentParseError,
+    AssemblyResolution, AssemblyView, AssemblyViewParseError, MaterialExplanation,
+    MaterialProvenance, MaterialReason, MaterialSlot, MaterialSubject, Measured, PartKey,
+    ReadError,
+};
 pub use assembly::{
-    Assembly, AssemblyError, Instance, InstanceId, InstancePath, PartDef, PartId, PartSource,
-    SlotIndex,
+    Assembly, AssemblyError, AssemblySpace, Instance, InstanceAddress, InstanceId, PartDef, PartId,
+    PartSource, SlotIndex,
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{

@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use exedra_constructive::ir::Placement3;
 
-use crate::assembly::{Assembly, InstanceId, InstancePath, PartId};
+use crate::assembly::{Assembly, InstanceAddress, InstanceId, PartId};
 use crate::compile::CompiledParts;
 
 /// One region of a rendered body with its resolved material key.
@@ -35,7 +35,7 @@ pub struct ResolvedRegion {
 #[derive(Clone, Debug)]
 pub struct RenderItem {
     /// Stable identity of the owning instance.
-    pub path: InstancePath,
+    pub address: InstanceAddress,
     /// The owning instance handle (valid for the source assembly only).
     pub instance: InstanceId,
     /// World placement composed down the tree (f64).
@@ -94,9 +94,7 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
             continue;
         };
         if let (Some(def), Some(entry)) = (assembly.part(inst.part()), compiled.part(inst.part())) {
-            let path = assembly
-                .path_of(id)
-                .unwrap_or_else(|| InstancePath(Vec::new()));
+            let address = inst.address().clone();
             for (body_index, body) in entry.bodies.iter().enumerate() {
                 let regions = body
                     .regions
@@ -107,12 +105,12 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
                         count: range.count,
                         material: def
                             .region_slot(range.region)
-                            .and_then(|slot| assembly.resolved_material(id, slot))
+                            .and_then(|slot| assembly.effective_material(id, slot))
                             .map(ToString::to_string),
                     })
                     .collect();
                 items.push(RenderItem {
-                    path: path.clone(),
+                    address: address.clone(),
                     instance: id,
                     world,
                     part: inst.part(),
@@ -183,8 +181,8 @@ mod tests {
             assert_eq!(item.part, part);
             approx(item.world.rows[0][3], i as f64 * 50.0);
             assert_eq!(
-                item.path,
-                InstancePath::from_segments(&[&alloc::format!("p{i}")])
+                item.address,
+                InstanceAddress::parse(&alloc::format!("/p{i}")).unwrap()
             );
             // Every region range covers whole triangles and the union is
             // the full index buffer.
@@ -223,8 +221,8 @@ mod tests {
         assert_eq!(list.items.len(), 2);
         let child_item = &list.items[1];
         assert_eq!(
-            child_item.path,
-            InstancePath::from_segments(&["root", "child"])
+            child_item.address,
+            InstanceAddress::parse("/root/child").unwrap()
         );
         // Rz(90°) maps +X to +Y: child origin lands at (0, 10, 3).
         approx(child_item.world.rows[0][3], 0.0);

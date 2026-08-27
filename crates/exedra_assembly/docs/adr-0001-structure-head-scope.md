@@ -4,6 +4,10 @@
 
 Accepted (2026-08-19).
 
+The identity representation and render-seam wording below were superseded by
+ADR 0002 after the Addressable consumer integration supplied implementation
+evidence. The ownership boundary remains in force.
+
 ## Context
 
 The workspace's multi-domain architecture (cambium ADR-0002) gives each
@@ -29,16 +33,16 @@ deterministic, and cache-friendly.
   material slot makes that slot the part-wide default. Zero-slot and
   multi-slot recipes remain explicit. Deterministic instance traversal is
   available both as a value slice and as `(InstanceId, &Instance)` pairs.
-- **Identity.** An `InstancePath` — the key sequence from the root — is the
-  stable identity contract: the same path across re-evaluations denotes the
-  same logical part. Indices are never identity. Frontends choose keys;
-  this crate only guarantees their stability semantics.
+- **Identity.** An `InstanceAddress` — the structured key sequence from the
+  root — is the stable identity contract: the same address across
+  re-evaluations denotes the same logical part. Indices are never identity.
+  Frontends choose keys; this crate guarantees their stability semantics.
 - **Compilation and sharing.** Parts compile (tessellate) once per distinct
   (content fingerprint, policy fingerprint) pair; instances share compiled
   results. Dirty tracking runs through the `invalidation` crate so a changed
   part invalidates only its own entry.
 - **The render seam.** `flatten()` produces a flat `RenderList` of
-  (instance path, world placement, part reference, per-region index ranges
+  (instance address, world placement, part reference, per-region index ranges
   with resolved material keys). Renderers and exporters consume this and
   nothing deeper.
 

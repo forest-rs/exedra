@@ -29,6 +29,7 @@ members = [
     "crates/setout",
     "crates/setout_joiner",
     "crates/setout_reconstruction",
+    "examples/addressable_assembly",
     "examples/basilica_ruin",
     "examples/basilica_structure_lab",
     "examples/constructive_gallery",
@@ -95,6 +96,8 @@ clippy.allow_attributes = "warn"
 rust.unsafe_code = "deny"
 
 [workspace.dependencies]
+addressable = { default-features = false, git = "https://github.com/forest-rs/addressable.git", rev = "99b156c1653c86d56c5bfb8641cccc14ea26198e" }
+addressable_tree = { default-features = false, git = "https://github.com/forest-rs/addressable.git", rev = "99b156c1653c86d56c5bfb8641cccc14ea26198e" }
 cambium = { default-features = false, path = "crates/cambium" }
 cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }

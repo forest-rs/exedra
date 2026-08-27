@@ -210,7 +210,7 @@ mod tests {
             .render_list
             .items
             .iter()
-            .map(|item| item.path.to_string())
+            .map(|item| item.address.to_string().trim_start_matches('/').to_owned())
             .collect();
         for required in [
             "nave-wall-north-west",

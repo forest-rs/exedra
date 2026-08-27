@@ -332,7 +332,7 @@ mod tests {
 
     use super::*;
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{instances_with_role, resolve_instance_path};
+    use crate::{instance_id_at, role_instances};
 
     const FRAME_PREFIXES: [&str; 6] = [
         "nave-truss-west-00",
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn named_members_share_four_parts_and_one_role() {
         let scenario = build_scenario();
-        let members = instances_with_role(&scenario.assembly, names::roles::NAVE_TRUSS_MEMBER);
+        let members = role_instances(&scenario.assembly, names::roles::NAVE_TRUSS_MEMBER);
         assert_eq!(members.len(), 36);
 
         for (key, expected_count) in [
@@ -512,7 +512,9 @@ mod tests {
             let part = scenario.assembly.part(instance.part()).unwrap();
             let surface = part.slot_index("surface").expect("truss surface slot");
             assert_eq!(
-                scenario.assembly.resolved_material(id, surface),
+                instance
+                    .binding(surface)
+                    .or_else(|| part.default_material(surface)),
                 Some("aged-timber")
             );
         }
@@ -545,7 +547,7 @@ mod tests {
             assert!(evaluated.bodies[0].body.mesh.validate_deep().is_empty());
         }
 
-        for id in instances_with_role(&scenario.assembly, names::roles::NAVE_TRUSS_MEMBER) {
+        for id in role_instances(&scenario.assembly, names::roles::NAVE_TRUSS_MEMBER) {
             let placement = scenario.assembly.instance(id).unwrap().placement();
             assert!(
                 placement
@@ -661,9 +663,9 @@ mod tests {
         for prefix in FRAME_PREFIXES {
             let north_path = format!("{prefix}-principal-rafter-north");
             let south_path = format!("{prefix}-principal-rafter-south");
-            let north_id = resolve_instance_path(&scenario.assembly, &north_path)
+            let north_id = instance_id_at(&scenario.assembly, &north_path)
                 .unwrap_or_else(|| panic!("missing paired north rafter {north_path}"));
-            let south_id = resolve_instance_path(&scenario.assembly, &south_path)
+            let south_id = instance_id_at(&scenario.assembly, &south_path)
                 .unwrap_or_else(|| panic!("missing paired south rafter {south_path}"));
             assert_eq!(
                 scenario.assembly.instance(north_id).unwrap().part(),
@@ -710,7 +712,7 @@ mod tests {
         for suffix in MEMBER_SUFFIXES {
             let omitted_path = format!("nave-truss-west-02-{suffix}");
             assert!(
-                resolve_instance_path(&scenario.assembly, &omitted_path).is_none(),
+                instance_id_at(&scenario.assembly, &omitted_path).is_none(),
                 "only the authored west-02 frame may be omitted: {omitted_path}"
             );
         }
@@ -722,17 +724,17 @@ mod tests {
         let crossing_west = p.crossing_x - p.drum_radius - 0.6;
         let crossing_east = p.crossing_x + p.drum_radius + 0.6;
         let scenario = build_scenario();
-        assert!(resolve_instance_path(&scenario.assembly, "nave-truss-west-02-tie-beam").is_none());
+        assert!(instance_id_at(&scenario.assembly, "nave-truss-west-02-tie-beam").is_none());
 
         // Select by stable semantic path: unrelated assembly insertions must
         // not silently change which elements this ruin-boundary test covers.
-        for item in scenario
-            .render_list
-            .items
-            .iter()
-            .filter(|item| item.path.to_string().starts_with("nave-truss-"))
-        {
-            let path = item.path.to_string();
+        for item in scenario.render_list.items.iter().filter(|item| {
+            item.address
+                .to_string()
+                .trim_start_matches('/')
+                .starts_with("nave-truss-")
+        }) {
+            let path = item.address.to_string().trim_start_matches('/').to_owned();
             let (min, max) = bounds_for_path(&scenario.compiled, &scenario.render_list, &path);
             if path.starts_with("nave-truss-west") {
                 assert!(
@@ -755,7 +757,7 @@ mod tests {
             .render_list
             .items
             .iter()
-            .find(|item| item.path.to_string() == path)
+            .find(|item| item.address.to_string().trim_start_matches('/') == path)
             .unwrap_or_else(|| panic!("missing render item {path}"))
     }
 

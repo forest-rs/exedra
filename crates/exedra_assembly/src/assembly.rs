@@ -15,8 +15,20 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use addressable::{AbsoluteAddress, Name};
 use exedra_constructive::ir::{Placement3, Recipe};
 use hashbrown::HashMap;
+
+/// Type marker for one runtime Exedra assembly address space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AssemblySpace {}
+
+/// Stable structured identity of one placed instance.
+///
+/// [`Assembly::add_instance`] constructs this from validated frontend keys and
+/// stores it on the instance. Use it in an exact Addressable locator; runtime
+/// handles such as [`InstanceId`] are deliberately not durable identity.
+pub type InstanceAddress = AbsoluteAddress<AssemblySpace>;
 
 /// Index of a registered part within an [`Assembly`].
 ///
@@ -28,7 +40,7 @@ pub struct PartId(pub u32);
 /// Index of an instance within an [`Assembly`].
 ///
 /// Handles are only meaningful for the assembly that produced them; they
-/// are *not* identity across re-evaluations — instance paths are.
+/// are *not* identity across re-evaluations — instance addresses are.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstanceId(pub u32);
 
@@ -132,6 +144,7 @@ impl PartDef {
 #[derive(Clone, Debug)]
 pub struct Instance {
     key: String,
+    address: InstanceAddress,
     part: PartId,
     parent: Option<InstanceId>,
     placement: Placement3,
@@ -147,6 +160,12 @@ impl Instance {
     #[must_use]
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// Returns this instance's stable exact Addressable address.
+    #[must_use]
+    pub const fn address(&self) -> &InstanceAddress {
+        &self.address
     }
 
     /// The part this instance places.
@@ -195,46 +214,6 @@ impl Instance {
     }
 }
 
-/// The stable identity of an instance: its key path from the root.
-///
-/// # Identity contract
-///
-/// The path — not any index or handle — is the identity of a placed part.
-/// External runtimes must supply keys that are stable across
-/// re-evaluations of their specifications; in exchange, consumers may
-/// treat equal paths as "the same logical part" for diffing, selection
-/// persistence, and incremental updates, regardless of sibling order or
-/// geometry changes. Keys never contain `/`, so the `Display` form
-/// (`root/child/leaf`) is unambiguous.
-#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct InstancePath(pub Vec<String>);
-
-impl InstancePath {
-    /// Builds a path from key segments.
-    #[must_use]
-    pub fn from_segments(segments: &[&str]) -> Self {
-        Self(segments.iter().map(|s| (*s).to_string()).collect())
-    }
-
-    /// The key segments from root to instance.
-    #[must_use]
-    pub fn segments(&self) -> &[String] {
-        &self.0
-    }
-}
-
-impl core::fmt::Display for InstancePath {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for (i, seg) in self.0.iter().enumerate() {
-            if i > 0 {
-                f.write_str("/")?;
-            }
-            f.write_str(seg)?;
-        }
-        Ok(())
-    }
-}
-
 /// Typed assembly mutation/lookup failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -252,7 +231,7 @@ pub enum AssemblyError {
         /// The offending key.
         key: String,
     },
-    /// Keys must be non-empty and must not contain `/`.
+    /// Keys must be valid Addressable name segments.
     InvalidKey(String),
     /// The part does not declare a slot with this name.
     UnknownSlot {
@@ -277,7 +256,7 @@ impl core::fmt::Display for AssemblyError {
                 write!(f, "parent {parent:?} already has a child keyed {key:?}")
             }
             Self::InvalidKey(key) => {
-                write!(f, "key {key:?} is empty or contains the path separator")
+                write!(f, "key {key:?} is not a valid Addressable name segment")
             }
             Self::UnknownSlot { part, slot } => {
                 write!(f, "part {part:?} declares no slot named {slot:?}")
@@ -299,6 +278,7 @@ pub struct Assembly {
     parts: Vec<PartDef>,
     part_lookup: HashMap<String, PartId>,
     instances: Vec<Instance>,
+    instance_lookup: HashMap<InstanceAddress, InstanceId>,
     roots: Vec<InstanceId>,
     /// Monotonic content generation: bumped by every part-content change
     /// (not by binding or metadata edits).
@@ -511,9 +491,7 @@ impl Assembly {
         part: PartId,
         placement: Placement3,
     ) -> Result<InstanceId, AssemblyError> {
-        if key.is_empty() || key.contains('/') {
-            return Err(AssemblyError::InvalidKey(key.to_string()));
-        }
+        let name = Name::new(key).map_err(|_| AssemblyError::InvalidKey(key.to_string()))?;
         if self.parts.get(part.0 as usize).is_none() {
             return Err(AssemblyError::UnknownPart(part));
         }
@@ -524,20 +502,17 @@ impl Assembly {
         {
             return Err(AssemblyError::NonFinitePlacement);
         }
-        let siblings = match parent {
-            Some(p) => {
-                &self
+        let address = match parent {
+            Some(parent) => {
+                let parent = self
                     .instances
-                    .get(p.0 as usize)
-                    .ok_or(AssemblyError::UnknownInstance(p))?
-                    .children
+                    .get(parent.0 as usize)
+                    .ok_or(AssemblyError::UnknownInstance(parent))?;
+                AbsoluteAddress::from_names(parent.address.segments().iter().cloned().chain([name]))
             }
-            None => &self.roots,
+            None => AbsoluteAddress::from_names([name]),
         };
-        if siblings
-            .iter()
-            .any(|&c| self.instances[c.0 as usize].key == key)
-        {
+        if self.instance_lookup.contains_key(&address) {
             return Err(AssemblyError::DuplicateChildKey {
                 parent,
                 key: key.to_string(),
@@ -546,6 +521,7 @@ impl Assembly {
         let id = InstanceId(crate::len_u32(self.instances.len()));
         self.instances.push(Instance {
             key: key.to_string(),
+            address: address.clone(),
             part,
             parent,
             placement,
@@ -557,6 +533,7 @@ impl Assembly {
             Some(p) => self.instances[p.0 as usize].children.push(id),
             None => self.roots.push(id),
         }
+        self.instance_lookup.insert(address, id);
         Ok(id)
     }
 
@@ -586,9 +563,9 @@ impl Assembly {
                 slot: slot.to_string(),
             })?;
         let bindings = &mut self.instances[instance.0 as usize].bindings;
-        match bindings.binary_search_by_key(&index, |b| b.0) {
-            Ok(i) => bindings[i].1 = material.to_string(),
-            Err(i) => bindings.insert(i, (index, material.to_string())),
+        match bindings.binary_search_by_key(&index, |binding| binding.0) {
+            Ok(binding) => bindings[binding].1 = material.to_string(),
+            Err(binding) => bindings.insert(binding, (index, material.to_string())),
         }
         Ok(())
     }
@@ -647,42 +624,16 @@ impl Assembly {
         &self.roots
     }
 
-    /// The identity path of an instance (root key first).
+    /// Looks up a runtime instance handle by its stable exact address.
+    ///
+    /// This uses the assembly's address index rather than walking the tree or
+    /// scanning instances.
     #[must_use]
-    pub fn path_of(&self, id: InstanceId) -> Option<InstancePath> {
-        let mut segments = Vec::new();
-        let mut cursor = Some(id);
-        while let Some(c) = cursor {
-            let inst = self.instances.get(c.0 as usize)?;
-            segments.push(inst.key.clone());
-            cursor = inst.parent;
-        }
-        segments.reverse();
-        Some(InstancePath(segments))
+    pub fn instance_by_address(&self, address: &InstanceAddress) -> Option<InstanceId> {
+        self.instance_lookup.get(address).copied()
     }
 
-    /// Resolves an identity path back to an instance handle.
-    #[must_use]
-    pub fn resolve_path(&self, path: &InstancePath) -> Option<InstanceId> {
-        let mut segments = path.0.iter();
-        let first = segments.next()?;
-        let mut current = *self
-            .roots
-            .iter()
-            .find(|&&r| self.instances[r.0 as usize].key == *first)?;
-        for segment in segments {
-            current = *self.instances[current.0 as usize]
-                .children
-                .iter()
-                .find(|&&c| self.instances[c.0 as usize].key == *segment)?;
-        }
-        Some(current)
-    }
-
-    /// The material key a slot of an instance resolves to: the instance
-    /// binding when present, else the part default.
-    #[must_use]
-    pub fn resolved_material(&self, instance: InstanceId, slot: SlotIndex) -> Option<&str> {
+    pub(crate) fn effective_material(&self, instance: InstanceId, slot: SlotIndex) -> Option<&str> {
         let inst = self.instances.get(instance.0 as usize)?;
         if let Some(key) = inst.binding(slot) {
             return Some(key);
@@ -760,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn instance_tree_identity_round_trip() {
+    fn instance_addresses_are_stored_and_indexed() {
         let mut asm = Assembly::new();
         let part = asm.add_recipe_part("panel", test_recipe()).unwrap();
         let root = asm
@@ -774,10 +725,9 @@ mod tests {
                 Placement3::translate(0.0, 0.0, 5.0),
             )
             .unwrap();
-        let path = asm.path_of(crossbar).unwrap();
-        assert_eq!(path, InstancePath::from_segments(&["frame", "crossbar-1"]));
-        assert_eq!(alloc::format!("{path}"), "frame/crossbar-1");
-        assert_eq!(asm.resolve_path(&path), Some(crossbar));
+        let address = InstanceAddress::parse("/frame/crossbar-1").unwrap();
+        assert_eq!(asm.instance(crossbar).unwrap().address(), &address);
+        assert_eq!(asm.instance_by_address(&address), Some(crossbar));
         assert_eq!(
             asm.instances_with_ids()
                 .map(|(id, instance)| (id, instance.key()))
@@ -786,7 +736,7 @@ mod tests {
         );
         assert_eq!(asm.instances_with_ids().len(), asm.instances().len());
         assert_eq!(
-            asm.resolve_path(&InstancePath::from_segments(&["frame", "missing"])),
+            asm.instance_by_address(&InstanceAddress::parse("/frame/missing").unwrap()),
             None
         );
     }
@@ -819,6 +769,10 @@ mod tests {
         assert_eq!(
             asm.add_instance(None, "a/b", part, Placement3::IDENTITY),
             Err(AssemblyError::InvalidKey("a/b".into()))
+        );
+        assert_eq!(
+            asm.add_instance(None, "..", part, Placement3::IDENTITY),
+            Err(AssemblyError::InvalidKey("..".into()))
         );
     }
 
@@ -856,11 +810,11 @@ mod tests {
             .unwrap();
         asm.bind_material(b, "front", "walnut").unwrap();
         let front = asm.part(part).unwrap().slot_index("front").unwrap();
-        assert_eq!(asm.resolved_material(a, front), Some("oak"));
-        assert_eq!(asm.resolved_material(b, front), Some("walnut"));
+        assert_eq!(asm.effective_material(a, front), Some("oak"));
+        assert_eq!(asm.effective_material(b, front), Some("walnut"));
         // Rebinding replaces.
         asm.bind_material(b, "front", "ash").unwrap();
-        assert_eq!(asm.resolved_material(b, front), Some("ash"));
+        assert_eq!(asm.effective_material(b, front), Some("ash"));
         assert_eq!(
             asm.bind_material(b, "nope", "x"),
             Err(AssemblyError::UnknownSlot {

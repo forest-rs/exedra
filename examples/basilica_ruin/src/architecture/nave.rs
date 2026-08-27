@@ -333,8 +333,7 @@ mod tests {
 
     use crate::output::{bounds_for_path, build_scenario};
     use crate::{
-        BasilicaParams, BasilicaRoofSetout, RoofSide, instances_with_role, names,
-        resolve_instance_path,
+        BasilicaParams, BasilicaRoofSetout, RoofSide, instance_id_at, names, role_instances,
     };
 
     #[test]
@@ -365,9 +364,8 @@ mod tests {
             );
         }
 
-        let north_west =
-            resolve_instance_path(&scenario.assembly, names::instances::NAVE_WALL_NORTH_WEST)
-                .expect("named west clerestory resolves");
+        let north_west = instance_id_at(&scenario.assembly, names::instances::NAVE_WALL_NORTH_WEST)
+            .expect("named west clerestory resolves");
         assert_eq!(
             scenario.assembly.instance(north_west).unwrap().part(),
             scenario
@@ -384,7 +382,7 @@ mod tests {
         let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
         let roof = setout.section();
         let scenario = build_scenario();
-        let plates = instances_with_role(&scenario.assembly, names::roles::NAVE_WALL_PLATE);
+        let plates = role_instances(&scenario.assembly, names::roles::NAVE_WALL_PLATE);
         assert_eq!(plates.len(), 5);
 
         for (path, side) in [
@@ -432,7 +430,7 @@ mod tests {
                 .render_list
                 .items
                 .iter()
-                .find(|item| item.path.to_string() == path)
+                .find(|item| item.address.to_string().trim_start_matches('/') == path)
                 .unwrap_or_else(|| panic!("missing placed roof {path}"));
             assert_close(rotation_determinant(&item.world), 1.0);
             let body = &scenario.compiled.part(item.part).unwrap().bodies[item.body as usize];

@@ -1,0 +1,20 @@
+[package]
+name = "addressable_assembly"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Addressable resolution and query tour over the Exedra basilica assembly"
+readme = "README.md"
+keywords = ["geometry", "assembly", "example"]
+categories = ["graphics"]
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+addressable.workspace = true
+basilica_ruin = { path = "../basilica_ruin" }
+exedra_assembly = { features = ["std"], workspace = true }

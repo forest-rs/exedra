@@ -158,8 +158,8 @@ pub struct AssemblyDrawRange {
 /// materials.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AssemblyItem {
-    /// Stable instance path (`root/child/leaf`).
-    pub instance_path: String,
+    /// Stable exact instance address (`/root/child/leaf`).
+    pub instance_address: String,
     /// Part registration key.
     pub part_key: String,
     /// Index into the response's `bodies`.
@@ -304,7 +304,7 @@ fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
             u32::try_from(bodies.len() - 1).expect("body count fits u32")
         });
         items.push(AssemblyItem {
-            instance_path: item.path.to_string(),
+            instance_address: item.address.to_string(),
             part_key: asm
                 .part(item.part)
                 .map(|def| def.key().to_string())
@@ -2270,10 +2270,10 @@ mod tests {
         assert_eq!(response.items.len(), 3);
         assert_eq!(response.bodies.len(), 1);
         assert_eq!(response.stats.parts_compiled, 1);
-        // Paths are stable identity, matrices are 16-value column-major.
-        assert_eq!(response.items[0].instance_path, "unit");
-        assert_eq!(response.items[1].instance_path, "unit/lower");
-        assert_eq!(response.items[2].instance_path, "unit/upper");
+        // Addresses are stable identity, matrices are 16-value column-major.
+        assert_eq!(response.items[0].instance_address, "/unit");
+        assert_eq!(response.items[1].instance_address, "/unit/lower");
+        assert_eq!(response.items[2].instance_address, "/unit/upper");
         for item in &response.items {
             assert_eq!(item.part_key, "panel");
             assert_eq!(item.matrix.len(), 16);

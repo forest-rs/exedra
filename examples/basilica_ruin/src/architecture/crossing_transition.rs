@@ -92,9 +92,7 @@ mod tests {
     use super::super::crossing_platform_base;
     use super::{WEB_BOTTOM, WEB_OUTER, WEB_TOP_OVERLAP, faceted_pendentive_recipe};
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{
-        BasilicaParams, BasilicaRoofSetout, instances_with_role, names, resolve_instance_path,
-    };
+    use crate::{BasilicaParams, BasilicaRoofSetout, instance_id_at, names, role_instances};
 
     #[test]
     fn one_pendentive_is_a_clean_outward_oriented_solid() {
@@ -134,7 +132,7 @@ mod tests {
     #[test]
     fn four_named_webs_share_one_part_and_semantic_role() {
         let scenario = build_scenario();
-        let pendentives = instances_with_role(&scenario.assembly, names::roles::PENDENTIVE);
+        let pendentives = role_instances(&scenario.assembly, names::roles::PENDENTIVE);
         assert_eq!(pendentives.len(), 4);
         let shared_part = scenario
             .assembly
@@ -146,7 +144,7 @@ mod tests {
             names::instances::PENDENTIVE_SOUTH_WEST,
             names::instances::PENDENTIVE_SOUTH_EAST,
         ] {
-            let instance = resolve_instance_path(&scenario.assembly, path)
+            let instance = instance_id_at(&scenario.assembly, path)
                 .unwrap_or_else(|| panic!("missing named pendentive {path}"));
             assert_eq!(
                 scenario.assembly.instance(instance).unwrap().part(),
