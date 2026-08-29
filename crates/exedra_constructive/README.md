@@ -28,6 +28,10 @@ Design commitments (see `docs/adr-0001-constructive-domain-scope.md`):
   policy ids, and issue ids; this crate round-trips them through source maps
   and reports without ever parsing them. No source-domain vocabulary lives
   here.
+- **Structural mirrors.** `Recipe::mirrored` immutably wraps a frozen recipe
+  in a constructive mirror. Existing ids and provenance remain stable, while
+  assembly placements stay proper-rigid and mesh winding is repaired during
+  constructive evaluation.
 
 ## License
 

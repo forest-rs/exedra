@@ -60,6 +60,29 @@ Everything validates at insertion with typed errors — hostile input never
 panics (fuzz-enforced). Wrong winding is an error with `Loop2::reversed`
 as the deliberate fix; orientation is never changed implicitly.
 
+## Mirroring a recipe for assembly
+
+Use immutable recipe composition when an assembly needs a handed counterpart:
+
+```rust
+use exedra_constructive::ir::Plane3;
+
+let mirrored = recipe.mirrored(Plane3 {
+    normal: [1.0, 0.0, 0.0],
+    distance: 0.0,
+})?;
+# Ok::<(), alloc::boxed::Box<dyn core::error::Error>>(())
+```
+
+The returned recipe keeps every existing node and intern-table id, then wraps
+the old root in one unbound `Mirror` node. Its fingerprint is deterministic
+and distinct; the original recipe is unchanged. Register it as a distinct
+recipe-backed part and place both parts with proper-rigid assembly transforms.
+Do not encode the handedness as a negative-determinant instance placement or
+evaluate and bake the recipe into an opaque mesh first: those alternatives
+either require winding repair at the wrong layer or discard constructive
+identity, policy independence, and provenance.
+
 ## Identity: fingerprints vs source references
 
 | Identity | Assigned by | Changes when | Use for |
