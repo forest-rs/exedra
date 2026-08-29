@@ -81,6 +81,15 @@ together would break both.
   affine matrix, while `from_axes` accepts local basis vectors as matrix
   columns plus a translation. Common axis rotations use `libm` constructors;
   callers do not need to hand-author matrix layouts.
+- **Immutable mirror composition.** `Recipe::mirrored` clones a frozen recipe
+  and appends one unbound `Mirror` root over its prior root. Existing node and
+  table ids, fingerprints, source identity, and provenance bindings remain
+  stable; the original remains unchanged. Planes must admit finite,
+  non-degenerate normalization at construction. Winding correction remains a
+  constructive-evaluation concern, so assembly placements stay proper-rigid
+  and callers neither reflect instances nor evaluate and bake opaque meshes.
+  General recipe reopening, table merging, assembly naming, and part reuse are
+  deliberately outside this operation.
 - **Deterministic evaluation with honest reporting.** Evaluation is a pure
   function of recipe and policy. Output includes the mesh, a bidirectional
   source map down to profile-segment granularity, a region/material-slot

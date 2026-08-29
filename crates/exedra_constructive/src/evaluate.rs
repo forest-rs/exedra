@@ -857,10 +857,12 @@ impl EvalCx<'_> {
 
 /// Reflection across a plane `dot(n, p) = d` as a placement.
 fn reflection_placement(plane: &crate::ir::Plane3) -> Placement3 {
-    let n = plane.normal;
-    let len = libm::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-    let u = [n[0] / len, n[1] / len, n[2] / len];
-    let d = plane.distance / len;
+    // Every Plane3 enters a Recipe through validation. Keeping normalization
+    // there makes a bad plane a typed construction error rather than an
+    // evaluation-time NaN that contaminates mesh coordinates.
+    let (u, d) = plane
+        .normalized()
+        .expect("mirror planes are validated at recipe construction");
     let mut rows = [[0.0; 4]; 3];
     for (i, row) in rows.iter_mut().enumerate() {
         for (j, cell) in row.iter_mut().take(3).enumerate() {
@@ -1269,12 +1271,14 @@ mod tests {
     }
 
     #[test]
-    fn mirror_preserves_outward_orientation() {
-        // Mirror an L-prism across the yz plane: still a valid solid with
-        // positive volume and reflected coordinates.
+    fn composed_mirror_preserves_provenance_and_outward_orientation() {
+        // Recipe composition must reflect the L-prism without changing its
+        // producer identity/source map or turning its closed solid inside out.
         let mut b = RecipeBuilder::new();
+        let source = b.source_ref("test:rafter/body");
         let p = b.add_profile(builders::l_profile(1.0, 1.0, 0.5, 0.5).expect("L"));
         let body = b
+            .with_source(source)
             .add(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
@@ -1282,18 +1286,23 @@ mod tests {
                 caps: CapMode::Both,
             })
             .expect("valid");
-        let mirrored = b
-            .add(NodeKind::Mirror {
-                child: body,
-                plane: Plane3 {
-                    normal: [1.0, 0.0, 0.0],
-                    distance: 0.0,
-                },
+        let recipe = b.finish(body).expect("valid recipe");
+        let original = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        let mirrored = recipe
+            .mirrored(Plane3 {
+                // Non-unit form of x = 2 also pins normal/distance scaling.
+                normal: [2.0, 0.0, 0.0],
+                distance: 4.0,
             })
-            .expect("valid");
-        let recipe = b.finish(mirrored).expect("valid recipe");
-        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+            .expect("valid mirror plane");
+        let result = evaluate(&mirrored, &EvalPolicy::default()).expect("evaluates");
         assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.bodies[0].node, body);
+        assert_eq!(mirrored.source(source), Some("test:rafter/body"));
+        assert_eq!(
+            result.bodies[0].body.source_map.dump(),
+            original.bodies[0].body.source_map.dump()
+        );
         let mesh = &result.bodies[0].body.mesh;
         let errors = mesh.validate_deep();
         assert!(errors.is_empty(), "{errors:?}");
@@ -1314,15 +1323,20 @@ mod tests {
         }
         vol /= 6.0;
         assert!((vol - 1.5).abs() < 1e-4, "mirrored volume {vol}");
-        // All x coordinates are now non-positive.
+        // Original x=[0, 1] reflected across x=2 becomes x=[3, 4].
+        let min_x = mesh
+            .vertices()
+            .filter_map(|v| mesh.vertex_position(v))
+            .map(|p| p[0])
+            .fold(f32::INFINITY, f32::min);
         let max_x = mesh
             .vertices()
             .filter_map(|v| mesh.vertex_position(v))
             .map(|p| p[0])
             .fold(f32::NEG_INFINITY, f32::max);
         assert!(
-            max_x <= 1e-6,
-            "mirror reflected across x = 0, max_x {max_x}"
+            (min_x - 3.0).abs() <= 1e-6 && (max_x - 4.0).abs() <= 1e-6,
+            "mirror reflected across x = 2, x bounds [{min_x}, {max_x}]"
         );
     }
 

@@ -163,13 +163,39 @@ impl Placement3 {
     }
 }
 
-/// A plane in 3D: unit-ish normal plus signed distance from the origin.
+/// A plane in 3D: a normal plus signed distance from the origin.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Plane3 {
-    /// Plane normal (must be nonzero and finite; not required to be unit).
+    /// Plane normal. It need not be unit length, but must admit finite,
+    /// non-degenerate normalization.
     pub normal: [f64; 3],
-    /// Signed distance term: the plane is `dot(normal, p) = distance`.
+    /// Signed distance term: the plane is `dot(normal, p) = distance`, so it
+    /// must be scaled together with a non-unit normal.
     pub distance: f64,
+}
+
+impl Plane3 {
+    /// Returns a numerically representable unit-normal form of this plane.
+    ///
+    /// Merely checking for a nonzero component is insufficient: squaring a
+    /// very small normal can underflow to zero, while squaring a large one can
+    /// overflow to infinity. Either case would turn the reflection matrix into
+    /// non-finite geometry later. Recipe construction rejects those encodings
+    /// at the boundary instead.
+    pub(crate) fn normalized(&self) -> Option<([f64; 3], f64)> {
+        let length = exedra_math::norm(self.normal);
+        // `normalize` owns the workspace-wide degeneracy threshold. Compute
+        // the components with division afterwards to retain Mirror's existing
+        // canonical evaluation arithmetic for every previously valid plane.
+        exedra_math::normalize(self.normal)?;
+        let normal = [
+            self.normal[0] / length,
+            self.normal[1] / length,
+            self.normal[2] / length,
+        ];
+        let distance = self.distance / length;
+        distance.is_finite().then_some((normal, distance))
+    }
 }
 
 /// Which caps an extrusion or revolution closes.
@@ -527,6 +553,32 @@ impl Recipe {
         self.fingerprint(self.root)
             .expect("the root id is validated at finish")
     }
+
+    /// Returns a new recipe mirrored across `plane` in recipe coordinates.
+    ///
+    /// Composition is structural: the complete frozen recipe is cloned and
+    /// its existing root is wrapped in one [`NodeKind::Mirror`] node. Existing
+    /// node and table ids therefore keep their meaning, including source,
+    /// material, curve-policy, and imported-mesh references. The wrapper has
+    /// no bindings of its own, so evaluated bodies remain attributed to their
+    /// original producing nodes.
+    ///
+    /// This method does not evaluate or bake a mesh, and it does not encode a
+    /// reflection in an [`NodeKind::Instance`] placement. The original recipe
+    /// is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecipeError::InvalidParameter`] when the plane cannot be
+    /// normalized into a finite reflection matrix.
+    pub fn mirrored(&self, plane: Plane3) -> Result<Self, RecipeError> {
+        let mut builder = RecipeBuilder::from_recipe(self);
+        let root = builder.add(NodeKind::Mirror {
+            child: self.root,
+            plane,
+        })?;
+        builder.finish(root)
+    }
 }
 
 /// Typed recipe-construction failure.
@@ -627,6 +679,23 @@ impl RecipeBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Reopens a frozen recipe only for the crate's structural composition
+    /// helpers. Keeping this private avoids exposing a general mutation path
+    /// whose id-remapping and table-merging contract would be much broader.
+    fn from_recipe(recipe: &Recipe) -> Self {
+        Self {
+            profiles: recipe.profiles.clone(),
+            nodes: recipe.nodes.clone(),
+            sources: recipe.sources.clone(),
+            slots: recipe.slots.clone(),
+            policies: recipe.policies.clone(),
+            imports: recipe.imports.clone(),
+            pending_source: None,
+            pending_material: None,
+            pending_issue: None,
+        }
     }
 
     /// Adds a validated profile.
@@ -795,10 +864,7 @@ impl RecipeBuilder {
     }
 
     fn check_plane(&self, plane: &Plane3) -> Result<(), RecipeError> {
-        let n = plane.normal;
-        let finite = n.iter().all(|v| v.is_finite()) && plane.distance.is_finite();
-        let nonzero = n[0] != 0.0 || n[1] != 0.0 || n[2] != 0.0;
-        if finite && nonzero {
+        if plane.normalized().is_some() {
             Ok(())
         } else {
             Err(RecipeError::InvalidParameter { what: "plane" })
@@ -1501,6 +1567,130 @@ mod tests {
             build(2.0).recipe_fingerprint(),
             build(2.5).recipe_fingerprint()
         );
+    }
+
+    #[test]
+    fn mirrored_recipe_preserves_frozen_identity_tables() {
+        // Mirroring is composition, not a rebuild: every existing id and
+        // fingerprint must retain its meaning while one new root is appended.
+        use crate::profile::{Loop2, Profile2, Seg2, SegKind};
+
+        let mut builder = RecipeBuilder::new();
+        let source = builder.source_ref("test:rafter/body");
+        let issue = builder.source_ref("test:rafter/ambiguous-notch");
+        let material = builder.material_slot("oak");
+        let policy = builder.curve_policy("test:scribed-edge@1");
+        let profile = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((2.0, 0.0)),
+                Seg2::line((2.0, 1.0)),
+                Seg2::policy((0.0, 1.0), policy, SegKind::Line),
+                Seg2::line((0.0, 0.0)),
+            ])
+            .expect("valid loop"),
+        )
+        .expect("valid profile");
+        let profile = builder.add_profile(profile);
+        let imported = exedra::Mesh::from_polygons(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[&[0, 1, 2]],
+        )
+        .expect("valid imported triangle");
+        builder.add_import(imported).expect("valid import");
+        let body = builder
+            .with_source(source)
+            .with_material(material)
+            .with_issue(issue)
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 3.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid body");
+        let recipe = builder.finish(body).expect("valid recipe");
+        let original_root = recipe.root();
+        let original_fingerprint = recipe.recipe_fingerprint();
+        let original_nodes = recipe.nodes().to_vec();
+
+        let plane = Plane3 {
+            normal: [2.0, 0.0, 0.0],
+            distance: 4.0,
+        };
+        let mirrored = recipe.mirrored(plane).expect("representable plane");
+        let repeated = recipe.mirrored(plane).expect("representable plane");
+
+        assert_eq!(recipe.root(), original_root);
+        assert_eq!(recipe.recipe_fingerprint(), original_fingerprint);
+        assert_eq!(recipe.nodes(), original_nodes);
+        assert_eq!(mirrored.profiles(), recipe.profiles());
+        assert_eq!(mirrored.sources(), recipe.sources());
+        assert_eq!(mirrored.slots(), recipe.slots());
+        assert_eq!(mirrored.policies(), recipe.policies());
+        assert_eq!(&mirrored.nodes()[..recipe.nodes().len()], recipe.nodes());
+        for index in 0..recipe.nodes().len() {
+            let id = NodeId(len_u32(index + 1) - 1);
+            assert_eq!(mirrored.fingerprint(id), recipe.fingerprint(id));
+        }
+        let mut original_import = Vec::new();
+        let mut mirrored_import = Vec::new();
+        mesh_canon_bytes(&recipe.imports()[0], &mut original_import);
+        mesh_canon_bytes(&mirrored.imports()[0], &mut mirrored_import);
+        assert_eq!(mirrored_import, original_import);
+
+        let wrapper = mirrored.node(mirrored.root()).expect("new root exists");
+        assert_eq!(
+            wrapper.kind,
+            NodeKind::Mirror {
+                child: original_root,
+                plane,
+            }
+        );
+        assert_eq!(
+            (wrapper.source, wrapper.material, wrapper.issue),
+            (None, None, None)
+        );
+        assert_ne!(mirrored.recipe_fingerprint(), original_fingerprint);
+        assert_eq!(mirrored.recipe_fingerprint(), repeated.recipe_fingerprint());
+    }
+
+    #[test]
+    fn mirrored_recipe_rejects_planes_that_cannot_normalize() {
+        // Bad scale encodings must fail at composition, before they can turn
+        // reflection placement or emitted mesh coordinates into NaN/infinity.
+        let recipe = simple_recipe(3.0);
+        let original_fingerprint = recipe.recipe_fingerprint();
+        let invalid = [
+            Plane3 {
+                normal: [0.0, 0.0, 0.0],
+                distance: 0.0,
+            },
+            Plane3 {
+                normal: [f64::NAN, 0.0, 0.0],
+                distance: 0.0,
+            },
+            Plane3 {
+                normal: [f64::MIN_POSITIVE, 0.0, 0.0],
+                distance: 0.0,
+            },
+            Plane3 {
+                normal: [f64::MAX, f64::MAX, f64::MAX],
+                distance: 0.0,
+            },
+            Plane3 {
+                normal: [1.0e-100, 0.0, 0.0],
+                distance: f64::MAX,
+            },
+        ];
+
+        for plane in invalid {
+            assert!(matches!(
+                recipe.mirrored(plane),
+                Err(RecipeError::InvalidParameter { what: "plane" })
+            ));
+        }
+        assert_eq!(recipe.recipe_fingerprint(), original_fingerprint);
+        assert_eq!(recipe.nodes().len(), 1);
     }
 
     #[test]
