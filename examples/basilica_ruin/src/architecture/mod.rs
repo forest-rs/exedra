@@ -111,7 +111,7 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
     east_end::build(&mut context, plan, east_end, roof);
     crossing::build(&mut context, plan, levels, crossing);
     crossing_transition::build(&mut context, plan, levels, crossing);
-    buttresses::build(&mut context, plan);
+    buttresses::build(&mut context, plan, setout.buttress_stations());
     // Append interior timber detail after the accepted primary fabric. Stable
     // identities survive the new continuous wall plates even though the old
     // artifact's numeric instance prefix intentionally grows.
@@ -128,7 +128,9 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
         round_head_openings: arcade_bays * 2 + 12 + 12 + 1,
         interior_arcades: 4,
         interior_arcade_openings: 12,
-        buttresses: (arcade_bays + 1) * 2,
+        buttresses: u32::try_from(setout.buttress_stations().items().len())
+            .expect("bounded generated buttress count fits u32")
+            * 2,
         crossing_piers: 4,
         crossing_stages: 1,
         pendentives: 4,

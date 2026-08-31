@@ -1,0 +1,21 @@
+[package]
+name = "setout_generate"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic topology expansion from exact setout inputs"
+readme = "README.md"
+keywords = ["geometry", "parametric", "no-std"]
+categories = ["data-structures", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = ["setout/std"]
+
+[dependencies]
+setout.workspace = true

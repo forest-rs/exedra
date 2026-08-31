@@ -113,7 +113,7 @@ fn length_edit_reports_the_eastward_rebuild_frontier() {
         "aisle-roof-north",
         "east-chancel-gable",
         "east-apse",
-        "buttress-north-07",
+        "buttress-north-end",
         "nave-truss-east-00-tie-beam",
     ] {
         assert!(
@@ -266,6 +266,17 @@ fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
 
     assert!(change.topology_changed);
     assert_eq!(change.plan.arcade_bays, Count::new(8));
+    assert_eq!(
+        change.buttress_delta.added(),
+        &[setout_generate::ItemKey::new("basilica/aisle-buttresses/interior/000007").unwrap()]
+    );
+    assert!(
+        change
+            .buttress_delta
+            .retained()
+            .iter()
+            .any(|key| key.as_str() == "basilica/aisle-buttresses/end")
+    );
     assert!(
         change
             .dirty
@@ -294,7 +305,7 @@ fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
         length_change
             .dirty
             .iter()
-            .any(|item| item.element.as_ref() == "buttress-north-08"),
+            .any(|item| item.element.as_ref() == "buttress-north-end"),
         "non-default topology needs a complete existing-element inventory"
     );
 }

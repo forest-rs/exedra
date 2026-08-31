@@ -13,7 +13,8 @@ every dependent element instead of leaving each modeler to retype coordinates.
 The crate is `no_std` by default. It owns quantity propagation, conflicts,
 decisions, explain, fingerprints, and quantity-granular change reporting. It does
 not own building construction, historical-reconstruction policy, mesh geometry,
-or generative topology.
+or generative topology. The sibling `setout_generate` crate consumes resolved
+exact values when stable repeated topology is required.
 
 Physical values come from `exedra_measurements`: `Length` is a strictly
 positive size, while `Offset` carries zero and signed coordinates. `Point3`

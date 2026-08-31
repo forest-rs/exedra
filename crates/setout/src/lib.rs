@@ -69,7 +69,7 @@ pub use identity::{
 };
 pub use key::{
     ChoiceDomainKey, ChoiceOptionKey, DecisionKey, KeyError, MethodId, QuantityKey, RelationKey,
-    RootClaimKey, ScenarioKey,
+    RootClaimKey, ScenarioKey, validate_key,
 };
 pub use network::{
     AdjustLength, AnyQuantity, BuildError, ComposePoint, Equal, NetworkBuilder, NetworkDef,

@@ -24,5 +24,6 @@ joiner = { features = ["std"], workspace = true }
 joiner_timber = { features = ["std"], workspace = true }
 libm.workspace = true
 setout = { features = ["std"], workspace = true }
+setout_generate = { features = ["std"], workspace = true }
 setout_joiner = { features = ["std"], workspace = true }
 setout_reconstruction = { features = ["std"], workspace = true }

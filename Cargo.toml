@@ -29,6 +29,7 @@ members = [
     "crates/joiner",
     "crates/joiner_timber",
     "crates/setout",
+    "crates/setout_generate",
     "crates/setout_joiner",
     "crates/setout_reconstruction",
     "examples/basilica_ruin",
@@ -127,6 +128,7 @@ kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
 setout = { default-features = false, path = "crates/setout" }
+setout_generate = { default-features = false, path = "crates/setout_generate" }
 setout_joiner = { default-features = false, path = "crates/setout_joiner" }
 setout_reconstruction = { default-features = false, path = "crates/setout_reconstruction" }
 # float_roundtrip is required for correctness, not comfort: interchange

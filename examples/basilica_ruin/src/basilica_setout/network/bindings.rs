@@ -3,14 +3,16 @@
 
 //! Quantity-to-element invalidation for basilica consumers.
 
-use setout::{Count, QuantityKey};
+use setout::QuantityKey;
+use setout_generate::LinearFragment;
 use setout_joiner::{BindingIndex, DirtyChannel};
 
 use super::BasilicaQuantities;
+use crate::buttress_instance_key;
 
 pub(super) fn build_binding_index(
     quantities: &BasilicaQuantities,
-    arcade_bays: Count,
+    buttress_stations: &LinearFragment,
 ) -> BindingIndex {
     let mut bindings = BindingIndex::new();
 
@@ -47,18 +49,18 @@ pub(super) fn build_binding_index(
         ],
         &[DirtyChannel::Geometry, DirtyChannel::Contact],
     );
-    let arcade_bays = u32::try_from(arcade_bays.get())
-        .expect("validated basilica arcade count fits its topology domain");
     for side in ["north", "south"] {
-        // Buttresses occur at both ends of every arcade bay. Deriving this
-        // identity inventory from the accepted count keeps invalidation
-        // complete for non-default basilicas as well as the gallery fixture.
-        for bay in 0..=arcade_bays {
+        // The binding inventory consumes the same generated labels as assembly
+        // construction. It never recreates topology or assumes that a current
+        // ordinal is durable identity.
+        for station in buttress_stations.items() {
             bindings.bind(
-                format!("buttress-{side}-{bay:02}"),
+                buttress_instance_key(side, station.label()),
                 [
                     quantities.length.key().clone(),
                     quantities.arcade_bays.key().clone(),
+                    quantities.buttress_start.key().clone(),
+                    quantities.buttress_end.key().clone(),
                     quantities.half_total.key().clone(),
                 ],
                 [DirtyChannel::Geometry, DirtyChannel::Contact],

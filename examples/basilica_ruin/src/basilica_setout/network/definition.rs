@@ -72,6 +72,18 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         network.declare::<Length>("basilica/plan/east-nave-length", QuantityPolicy::positive())?;
     let arcade_bays =
         network.declare::<Count>("basilica/plan/arcade-bays", QuantityPolicy::positive())?;
+    let buttress_west_inset = network.declare::<Length>(
+        "basilica/plan/buttress-west-inset",
+        QuantityPolicy::positive(),
+    )?;
+    let buttress_east_inset = network.declare::<Length>(
+        "basilica/plan/buttress-east-inset",
+        QuantityPolicy::positive(),
+    )?;
+    let buttress_start =
+        network.declare::<Offset>("basilica/plan/buttress-start", QuantityPolicy::positive())?;
+    let buttress_end =
+        network.declare::<Offset>("basilica/plan/buttress-end", QuantityPolicy::positive())?;
     let nave_wall_height = network.declare::<Length>(
         "basilica/levels/nave-wall-height",
         QuantityPolicy::positive(),
@@ -405,6 +417,20 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         east_end.clone(),
         OffsetDirection::Positive,
     )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/plan/n-buttress-start",
+        origin.clone(),
+        buttress_west_inset.clone(),
+        buttress_start.clone(),
+        OffsetDirection::Positive,
+    )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/plan/o-buttress-end",
+        east_end.clone(),
+        buttress_east_inset.clone(),
+        buttress_end.clone(),
+        OffsetDirection::Negative,
+    )?)?;
     for (key, height, datum) in [
         (
             "basilica/levels/a-wall-head",
@@ -730,6 +756,10 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         west_nave_length,
         east_nave_length,
         arcade_bays,
+        buttress_west_inset,
+        buttress_east_inset,
+        buttress_start,
+        buttress_end,
         nave_wall_height,
         wall_head,
         aisle_wall_height,

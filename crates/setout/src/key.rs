@@ -31,7 +31,13 @@ impl fmt::Display for KeyError {
 
 impl core::error::Error for KeyError {}
 
-fn validate(value: &str) -> Result<(), KeyError> {
+/// Validates the canonical semantic-key grammar shared by setout siblings.
+///
+/// Keys are non-empty slash-separated paths over the conservative ASCII set
+/// `[A-Za-z0-9._:/-]`. Nominal key types remain responsible for owning a valid
+/// value; this helper lets adapters and sibling crates apply the identical
+/// grammar to their own semantic identity types.
+pub fn validate_key(value: &str) -> Result<(), KeyError> {
     if value.is_empty() {
         return Err(KeyError::Empty);
     }
@@ -59,7 +65,7 @@ macro_rules! semantic_key {
             /// Validates and owns a semantic key.
             pub fn new(value: impl Into<Box<str>>) -> Result<Self, KeyError> {
                 let value = value.into();
-                validate(&value)?;
+                validate_key(&value)?;
                 Ok(Self(value))
             }
 
@@ -112,3 +118,18 @@ semantic_key!(
     ChoiceOptionKey,
     "Stable identity of one discrete-choice option."
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_key_grammar_accepts_paths_and_rejects_ambiguous_segments() {
+        // Sibling identity types rely on this exact grammar, so separators and
+        // the conservative portable byte set are pinned at the owning layer.
+        assert_eq!(validate_key("basilica/buttress:end-01"), Ok(()));
+        assert_eq!(validate_key(""), Err(KeyError::Empty));
+        assert_eq!(validate_key("basilica//end"), Err(KeyError::EmptySegment));
+        assert_eq!(validate_key("basilica/end?"), Err(KeyError::InvalidByte));
+    }
+}

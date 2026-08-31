@@ -43,7 +43,8 @@ distance `crossing_station`, and `arcade_bays` is `setout::Count`.
 `BasilicaReconfiguration::topology_changed` distinguishes a bay-count edit
 that must add or remove repeated instances from an ordinary geometry update;
 the named dirty frontier alone can describe only identities that already
-exist.
+exist. `buttress_stations` carries the new exact generated fragment and
+`buttress_delta` reports retained, added, removed, and moved semantic items.
 
 The migration also corrects the south lean-to roof's old placement frame. Its
 baseline was mirrored, but its right-handed thickness axis pointed inward and
@@ -133,13 +134,20 @@ placement frames. `output` compiles the finished assembly and owns CLI/OBJ
 plumbing. This keeps future details as focused architectural modules rather
 than new capabilities on a general-purpose building DSL.
 
-The buttress elevations and nave-truss stations use
-`cambium::assembly` named linear patterns. Their authored ordinals remain the
-exported identities: the missing west truss at ordinal `02` stays a named gap,
-while later stations keep their existing paths and insertion order.
-The pattern topology is intentionally still an architecture concern; moving
-stable repeated expansion into `setout_generate` is the next layer, rather than
-mixing topology generation into this exact-massing change.
+The buttress elevations use one exact `setout_generate` fragment. Their setout
+network derives west and east anchors from explicit inset roots, generation
+assigns stable `start`, `end`, and interior-rank identities, and a small
+architecture adapter lowers each rational coordinate once. Invalidation reads
+the same fragment rather than recreating its count-to-name mapping. Buttress
+paths therefore use names such as `buttress-north-start`,
+`buttress-north-interior-000001`, and `buttress-north-end`; an arcade-count edit
+cannot rebind the old endpoint path to a new interior station.
+
+Nave-truss stations still use a `cambium::assembly` named linear pattern. Their
+authored ordinals remain the exported identities: the missing west truss at
+ordinal `02` stays a named gap while later stations retain their existing paths.
+That distinct topology has explicit omissions and multiple generated members;
+it is intentionally left for a later `setout_generate` slice.
 
 Each intact nave station is a complete `joiner_timber` braced king-post truss,
 composed once and then repeated as immutable assembly parts. Housed heels,

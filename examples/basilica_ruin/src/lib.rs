@@ -4,11 +4,19 @@
 //! Executable integration scenario for the Byzantine basilica worked example.
 
 use exedra_assembly::{Assembly, InstanceId, InstancePath};
+use setout_generate::ItemLabel;
 
 mod architecture;
 mod basilica_setout;
 mod geometry;
 mod output;
+
+fn buttress_instance_key(side: &str, label: &ItemLabel) -> String {
+    // Generated labels use `/` as a semantic path separator. Assembly root
+    // keys use `-`, so this is the one explicit identity adapter between the
+    // two systems rather than a second ordinal-labeling policy.
+    format!("buttress-{side}-{}", label.as_str().replace('/', "-"))
+}
 
 pub use basilica_setout::{
     AisleSection, BasilicaPremises, BasilicaReconfiguration, BasilicaSetout, BasilicaSetoutError,
@@ -360,7 +368,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0xf71b_72e3_d752_bfd5_e448_6bb5_905b_cbf0
+            0x3a0a_91c3_dadb_fc87_5d1c_9163_1f20_4c94
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);

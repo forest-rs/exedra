@@ -16,6 +16,8 @@ const ROOF_SKIN_DEPTH_MM: u64 = 280;
 const PRINCIPAL_RAFTER_WIDTH_MM: u64 = 260;
 const PRINCIPAL_RAFTER_DEPTH_MM: u64 = 240;
 const PRINCIPAL_RAFTER_REVEAL_MM: i64 = 120;
+const BUTTRESS_WEST_INSET_MM: u64 = 1_700;
+const BUTTRESS_EAST_INSET_MM: u64 = 2_300;
 
 pub(super) fn build_roots(
     definition: &NetworkDef,
@@ -53,6 +55,16 @@ pub(super) fn build_roots(
             "basilica/root/arcade-bays",
             &quantities.arcade_bays,
             Knowledge::exact(premises.arcade_bays),
+        )?
+        .author(
+            "basilica/root/buttress-west-inset",
+            &quantities.buttress_west_inset,
+            Knowledge::exact(exact_length_millimeters(BUTTRESS_WEST_INSET_MM)?),
+        )?
+        .author(
+            "basilica/root/buttress-east-inset",
+            &quantities.buttress_east_inset,
+            Knowledge::exact(exact_length_millimeters(BUTTRESS_EAST_INSET_MM)?),
         )?
         .author(
             "basilica/root/nave-wall-height",

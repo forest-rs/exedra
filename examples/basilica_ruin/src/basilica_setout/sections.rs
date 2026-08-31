@@ -62,6 +62,10 @@ pub struct PlanSection {
     pub east_nave_length: Length,
     /// Number of repeated longitudinal arcade bays.
     pub arcade_bays: Count,
+    /// Exact west anchor of the aisle-buttress station distribution.
+    pub buttress_start: Offset,
+    /// Exact east anchor of the aisle-buttress station distribution.
+    pub buttress_end: Offset,
 }
 
 /// Exact resolved vertical datums shared by masonry and roofs.
