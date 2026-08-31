@@ -1,0 +1,477 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The basilica's operative exact setting-out network.
+//!
+//! This module owns the building-specific premise set and stable quantity names.
+//! Generic propagation remains in `setout`, construction lowering in
+//! `setout_joiner`, and historical interpretation in `setout_reconstruction`.
+//! Architecture systems receive resolved sections from here rather than
+//! recomputing building datums independently.
+
+use std::fmt;
+
+use setout::{
+    ArithmeticError, BuildError, Count, Evaluation, EvaluationDelta, EvaluationError,
+    EvaluationScenario, EvaluationScenarioBuilder, IncrementalEvaluator, Length, NetworkDef,
+    Offset, PlanError, Point3, PropagationPlan, Quantity, Rational, RootBuildError, RootClaimSet,
+    ScenarioBuildError, WorkReport, compile_plan, evaluate,
+};
+use setout_joiner::{
+    BindingIndex, DirtyElement, ResolveError, ResolvedElementGeometry, SegmentMemberBinding,
+};
+use setout_reconstruction::{
+    CatalogueError, ReconstructionAssessment, ReconstructionCatalogue, assess,
+};
+
+use super::{
+    AisleSection, BasilicaPremises, CrossingSection, EastEndSection, LevelSection, PlanSection,
+    RoofSection, RoofSide,
+};
+
+mod bindings;
+mod catalogue;
+mod definition;
+mod resolve;
+mod roots;
+
+use bindings::build_binding_index;
+use catalogue::build_catalogue;
+use definition::build_definition;
+use resolve::{
+    resolve_aisle_section, resolve_crossing_section, resolve_east_end_section,
+    resolve_level_section, resolve_plan_section, resolve_roof_section,
+};
+use roots::build_roots;
+
+// The architecture inventory stores repeat counts in `u32` and derives a
+// two-sided opening count as `2 * arcade_bays + 25`. Reject a premise before
+// evaluation if that downstream topology arithmetic could overflow.
+const MAX_ARCADE_BAYS: Count = Count::new(u32::MAX.saturating_sub(25) as u64 / 2);
+
+#[derive(Clone, Debug)]
+struct BasilicaQuantities {
+    origin: Quantity<Offset>,
+    length: Quantity<Length>,
+    east_end: Quantity<Offset>,
+    span: Quantity<Length>,
+    half_span: Quantity<Length>,
+    total_width: Quantity<Length>,
+    half_total: Quantity<Length>,
+    aisle_run: Quantity<Length>,
+    wall_thickness: Quantity<Length>,
+    crossing_station: Quantity<Length>,
+    crossing_center: Quantity<Offset>,
+    crossing_clearance: Quantity<Length>,
+    crossing_half_width: Quantity<Length>,
+    crossing_span: Quantity<Length>,
+    crossing_west: Quantity<Offset>,
+    crossing_east: Quantity<Offset>,
+    west_nave_length: Quantity<Length>,
+    east_nave_length: Quantity<Length>,
+    arcade_bays: Quantity<Count>,
+    nave_wall_height: Quantity<Length>,
+    wall_head: Quantity<Offset>,
+    aisle_wall_height: Quantity<Length>,
+    aisle_wall_top: Quantity<Offset>,
+    clerestory_base_height: Quantity<Length>,
+    clerestory_base: Quantity<Offset>,
+    clerestory_sill_height_from_ground: Quantity<Length>,
+    clerestory_sill: Quantity<Offset>,
+    clerestory_spring_height_from_ground: Quantity<Length>,
+    clerestory_spring: Quantity<Offset>,
+    clerestory_height: Quantity<Length>,
+    clerestory_sill_height: Quantity<Length>,
+    clerestory_spring_height: Quantity<Length>,
+    crossing_spandrel_base_height: Quantity<Length>,
+    crossing_spandrel_base: Quantity<Offset>,
+    crossing_web_bottom_height: Quantity<Length>,
+    crossing_web_bottom: Quantity<Offset>,
+    crossing_web_middle_height: Quantity<Length>,
+    crossing_web_middle: Quantity<Offset>,
+    apse_wall_height: Quantity<Length>,
+    apse_wall_top: Quantity<Offset>,
+    aisle_roof_overhang: Quantity<Length>,
+    aisle_roof_run: Quantity<Length>,
+    aisle_roof_inner_lift: Quantity<Length>,
+    aisle_roof_inner_height: Quantity<Offset>,
+    aisle_roof_bearing_inset: Quantity<Length>,
+    aisle_roof_bearing_height: Quantity<Offset>,
+    aisle_roof_bearing_drop: Quantity<Length>,
+    aisle_roof_pitch: Quantity<Rational>,
+    aisle_roof_drop: Quantity<Length>,
+    aisle_roof_slope_length: Quantity<Length>,
+    aisle_roof_depth: Quantity<Length>,
+    wall_plate_height: Quantity<Length>,
+    wall_plate_top: Quantity<Offset>,
+    rise: Quantity<Length>,
+    ridge_height: Quantity<Offset>,
+    pitch: Quantity<Rational>,
+    rafter_length: Quantity<Length>,
+    overhang: Quantity<Length>,
+    overhang_drop: Quantity<Length>,
+    roof_run: Quantity<Length>,
+    roof_eave_height: Quantity<Offset>,
+    roof_slope_length: Quantity<Length>,
+    roof_skin_depth: Quantity<Length>,
+    wall_plate_width: Quantity<Length>,
+    principal_rafter_width: Quantity<Length>,
+    principal_rafter_depth: Quantity<Length>,
+    principal_rafter_reveal: Quantity<Offset>,
+    drum_radius: Quantity<Length>,
+    crossing_platform_inset: Quantity<Length>,
+    platform_inner_radius: Quantity<Length>,
+    cornice_overhang: Quantity<Length>,
+    cornice_radius: Quantity<Length>,
+    dome_overhang: Quantity<Length>,
+    dome_radius: Quantity<Length>,
+    drum_height: Quantity<Length>,
+    dome_height: Quantity<Length>,
+    drum_base_above_ridge: Quantity<Length>,
+    drum_base: Quantity<Offset>,
+    platform_height: Quantity<Length>,
+    platform_base: Quantity<Offset>,
+    drum_top: Quantity<Offset>,
+    dome_top: Quantity<Offset>,
+    apse_radius: Quantity<Length>,
+    apse_inner_radius: Quantity<Length>,
+    conch_overhang: Quantity<Length>,
+    conch_radius: Quantity<Length>,
+    conch_height: Quantity<Length>,
+    north_wall_seat: Quantity<Point3>,
+    south_wall_seat: Quantity<Point3>,
+    ridge_point: Quantity<Point3>,
+    north_roof_eave: Quantity<Point3>,
+    south_roof_eave: Quantity<Point3>,
+}
+
+/// Evaluated, explainable setting-out hypothesis for the whole basilica.
+#[derive(Clone, Debug)]
+pub struct BasilicaSetout {
+    definition: NetworkDef,
+    quantities: BasilicaQuantities,
+    roots: RootClaimSet,
+    scenario: EvaluationScenario,
+    plan: PropagationPlan,
+    evaluation: Evaluation,
+    plan_section: PlanSection,
+    level_section: LevelSection,
+    aisle_section: AisleSection,
+    crossing_section: CrossingSection,
+    east_end_section: EastEndSection,
+    roof_section: RoofSection,
+    catalogue: ReconstructionCatalogue,
+    assessment: ReconstructionAssessment,
+    bindings: BindingIndex,
+}
+
+impl BasilicaSetout {
+    /// Builds and evaluates the basilica's operative setting-out hypothesis.
+    pub fn new(premises: &BasilicaPremises) -> Result<Self, BasilicaSetoutError> {
+        validate_topology_domain(premises)?;
+        let (definition, quantities) = build_definition()?;
+        let roots = build_roots(&definition, &quantities, premises)?;
+        let scenario = EvaluationScenarioBuilder::new("basilica/operative")?
+            .activate_all(&roots)
+            .finish(&roots)?;
+        let plan = compile_plan(&definition, &roots, &scenario)?;
+        let evaluation = evaluate(&definition, &roots, &scenario, &plan)?;
+        let plan_section = resolve_plan_section(&evaluation, &quantities)?;
+        let level_section = resolve_level_section(&evaluation, &quantities)?;
+        let aisle_section = resolve_aisle_section(&evaluation, &quantities)?;
+        let crossing_section = resolve_crossing_section(&evaluation, &quantities)?;
+        let east_end_section = resolve_east_end_section(&evaluation, &quantities)?;
+        let roof_section = resolve_roof_section(&evaluation, &quantities)?;
+        let catalogue = build_catalogue(&roots, &plan)?;
+        let assessment = assess(
+            evaluation.provenance(),
+            evaluation.fingerprint(),
+            &catalogue,
+        );
+        let bindings = build_binding_index(&quantities, plan_section.arcade_bays);
+        Ok(Self {
+            definition,
+            quantities,
+            roots,
+            scenario,
+            plan,
+            evaluation,
+            plan_section,
+            level_section,
+            aisle_section,
+            crossing_section,
+            east_end_section,
+            roof_section,
+            catalogue,
+            assessment,
+            bindings,
+        })
+    }
+
+    /// Returns the exact resolved roof section.
+    #[must_use]
+    pub const fn roof(&self) -> &RoofSection {
+        &self.roof_section
+    }
+
+    /// Returns the exact resolved plan massing.
+    #[must_use]
+    pub const fn plan(&self) -> &PlanSection {
+        &self.plan_section
+    }
+
+    /// Returns the exact resolved vertical datums.
+    #[must_use]
+    pub const fn levels(&self) -> &LevelSection {
+        &self.level_section
+    }
+
+    /// Returns the exact resolved aisle-roof section.
+    #[must_use]
+    pub const fn aisle(&self) -> &AisleSection {
+        &self.aisle_section
+    }
+
+    /// Returns the exact resolved crossing massing.
+    #[must_use]
+    pub const fn crossing(&self) -> &CrossingSection {
+        &self.crossing_section
+    }
+
+    /// Returns the exact resolved east-end massing.
+    #[must_use]
+    pub const fn east_end(&self) -> &EastEndSection {
+        &self.east_end_section
+    }
+
+    /// Returns core structural provenance and exactness.
+    #[must_use]
+    pub const fn evaluation(&self) -> &Evaluation {
+        &self.evaluation
+    }
+
+    /// Returns the reconstruction-only sidecar assessment.
+    #[must_use]
+    pub const fn reconstruction(&self) -> &ReconstructionAssessment {
+        &self.assessment
+    }
+
+    /// Returns a structural explanation of the ridge point.
+    #[must_use]
+    pub fn explain_ridge(&self) -> String {
+        self.evaluation
+            .provenance()
+            .explain(self.quantities.ridge_point.key())
+            .expect("the accepted roof always resolves its ridge")
+    }
+
+    /// Resolves the exact structural principal-rafter extent on one side.
+    pub fn principal_rafter_geometry(
+        &self,
+        side: RoofSide,
+    ) -> Result<ResolvedElementGeometry, ResolveError> {
+        let (foot, width_reference) = match side {
+            RoofSide::North => (self.quantities.north_wall_seat.clone(), [1.0, 0.0, 0.0]),
+            RoofSide::South => (self.quantities.south_wall_seat.clone(), [-1.0, 0.0, 0.0]),
+        };
+        SegmentMemberBinding::new(
+            foot,
+            self.quantities.ridge_point.clone(),
+            self.quantities.rafter_length.clone(),
+            self.quantities.principal_rafter_width.clone(),
+            self.quantities.principal_rafter_depth.clone(),
+            width_reference,
+        )
+        .resolve(&self.evaluation)
+    }
+
+    /// Re-evaluates the same immutable definition and proves warm/fresh equivalence.
+    pub fn reconfigure(
+        &self,
+        premises: &BasilicaPremises,
+    ) -> Result<BasilicaReconfiguration, BasilicaSetoutError> {
+        validate_topology_domain(premises)?;
+        let roots = build_roots(&self.definition, &self.quantities, premises)?;
+        let scenario = EvaluationScenarioBuilder::new(self.scenario.key.as_str())?
+            .activate_all(&roots)
+            .finish(&roots)?;
+        let plan = compile_plan(&self.definition, &roots, &scenario)?;
+        let warm = IncrementalEvaluator::new().successor(
+            &self.definition,
+            &roots,
+            &scenario,
+            &plan,
+            &self.evaluation,
+        )?;
+        let fresh = evaluate(&self.definition, &roots, &scenario, &plan)?;
+        if warm.fingerprint() != fresh.fingerprint() {
+            return Err(BasilicaSetoutError::WarmFreshMismatch);
+        }
+        let plan_section = resolve_plan_section(&warm, &self.quantities)?;
+        let level_section = resolve_level_section(&warm, &self.quantities)?;
+        let aisle_section = resolve_aisle_section(&warm, &self.quantities)?;
+        let crossing_section = resolve_crossing_section(&warm, &self.quantities)?;
+        let east_end_section = resolve_east_end_section(&warm, &self.quantities)?;
+        let roof = resolve_roof_section(&warm, &self.quantities)?;
+        let delta = warm.delta_from(&self.evaluation);
+        let topology_changed = delta
+            .quantities_changed
+            .contains(self.quantities.arcade_bays.key());
+        let dirty = self.bindings.dirty(&delta);
+        Ok(BasilicaReconfiguration {
+            plan: plan_section,
+            levels: level_section,
+            aisle: aisle_section,
+            crossing: crossing_section,
+            east_end: east_end_section,
+            roof,
+            delta,
+            dirty,
+            topology_changed,
+            work: warm.work_report(),
+            fingerprint: warm.fingerprint(),
+        })
+    }
+
+    /// Returns the root-set fingerprint for diagnostics.
+    #[must_use]
+    pub const fn roots_fingerprint(&self) -> setout::Fingerprint {
+        self.roots.fingerprint()
+    }
+
+    /// Returns the plan fingerprint for diagnostics.
+    #[must_use]
+    pub const fn plan_fingerprint(&self) -> setout::Fingerprint {
+        self.plan.fingerprint()
+    }
+
+    /// Returns the sidecar catalogue fingerprint for diagnostics.
+    #[must_use]
+    pub const fn catalogue_fingerprint(&self) -> setout::Fingerprint {
+        self.catalogue.fingerprint()
+    }
+}
+
+/// Result of an incremental basilica-premise edit.
+#[derive(Clone, Debug)]
+pub struct BasilicaReconfiguration {
+    /// Newly resolved exact plan massing.
+    pub plan: PlanSection,
+    /// Newly resolved exact vertical datums.
+    pub levels: LevelSection,
+    /// Newly resolved exact aisle-roof section.
+    pub aisle: AisleSection,
+    /// Newly resolved exact crossing massing.
+    pub crossing: CrossingSection,
+    /// Newly resolved exact east-end massing.
+    pub east_end: EastEndSection,
+    /// Newly resolved exact roof section.
+    pub roof: RoofSection,
+    /// Exact core quantity and claim changes.
+    pub delta: EvaluationDelta,
+    /// Named construction/assembly elements and Joiner channels affected.
+    pub dirty: Box<[DirtyElement]>,
+    /// Whether repeated assembly topology must be rebuilt, not merely updated.
+    ///
+    /// [`BasilicaReconfiguration::dirty`] can name only elements that already
+    /// exist. When this flag is true, callers must also add or remove arcade
+    /// and buttress instances for the new repeat count.
+    pub topology_changed: bool,
+    /// Work reused versus recomputed.
+    pub work: WorkReport,
+    /// Warm evaluation fingerprint, already checked against fresh evaluation.
+    pub fingerprint: setout::Fingerprint,
+}
+
+/// Failure to build, resolve, or reconfigure the basilica setting-out hypothesis.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum BasilicaSetoutError {
+    /// Network definition is invalid.
+    Build(BuildError),
+    /// An exact authored constant is outside its measurement representation.
+    Arithmetic(ArithmeticError),
+    /// Root claims are invalid.
+    Roots(RootBuildError),
+    /// Scenario is invalid.
+    Scenario(ScenarioBuildError),
+    /// Plan compilation failed.
+    Plan(PlanError),
+    /// Evaluation failed.
+    Evaluation(EvaluationError),
+    /// Strict access failed.
+    Access(setout::AccessError),
+    /// Reconstruction catalogue contains duplicate identity.
+    Catalogue(CatalogueError),
+    /// Warm and fresh evaluations did not agree.
+    WarmFreshMismatch,
+    /// The arcade repeat count exceeds the architecture inventory's domain.
+    ArcadeBayCountTooLarge {
+        /// Authored repeat count.
+        actual: Count,
+        /// Largest count for which derived inventory arithmetic is defined.
+        maximum: Count,
+    },
+    /// A stable semantic key is invalid.
+    Key(setout::KeyError),
+}
+
+macro_rules! error_from {
+    ($source:ty, $variant:ident) => {
+        impl From<$source> for BasilicaSetoutError {
+            fn from(error: $source) -> Self {
+                Self::$variant(error)
+            }
+        }
+    };
+}
+
+error_from!(BuildError, Build);
+error_from!(ArithmeticError, Arithmetic);
+error_from!(RootBuildError, Roots);
+error_from!(ScenarioBuildError, Scenario);
+error_from!(PlanError, Plan);
+error_from!(EvaluationError, Evaluation);
+error_from!(setout::AccessError, Access);
+error_from!(CatalogueError, Catalogue);
+error_from!(setout::KeyError, Key);
+
+impl fmt::Display for BasilicaSetoutError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Build(error) => write!(formatter, "basilica definition failed: {error}"),
+            Self::Arithmetic(error) => write!(formatter, "basilica premise failed: {error}"),
+            Self::Roots(error) => write!(formatter, "basilica roots failed: {error}"),
+            Self::Scenario(error) => write!(formatter, "basilica scenario failed: {error}"),
+            Self::Plan(error) => write!(formatter, "basilica plan failed: {error}"),
+            Self::Evaluation(error) => write!(formatter, "basilica evaluation failed: {error}"),
+            Self::Access(error) => write!(formatter, "basilica access failed: {error}"),
+            Self::Catalogue(error) => write!(formatter, "basilica catalogue failed: {error}"),
+            Self::WarmFreshMismatch => {
+                formatter.write_str("warm basilica evaluation differs from fresh")
+            }
+            Self::ArcadeBayCountTooLarge { actual, maximum } => write!(
+                formatter,
+                "arcade bay count {} exceeds the architecture maximum {}",
+                actual.get(),
+                maximum.get()
+            ),
+            Self::Key(error) => write!(formatter, "basilica key failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for BasilicaSetoutError {}
+
+fn validate_topology_domain(premises: &BasilicaPremises) -> Result<(), BasilicaSetoutError> {
+    if premises.arcade_bays > MAX_ARCADE_BAYS {
+        return Err(BasilicaSetoutError::ArcadeBayCountTooLarge {
+            actual: premises.arcade_bays,
+            maximum: MAX_ARCADE_BAYS,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

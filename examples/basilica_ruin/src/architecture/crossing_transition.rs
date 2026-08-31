@@ -4,14 +4,11 @@
 use exedra_constructive::ir::{Placement3, Recipe};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
 
-use super::{BuildContext, crossing_platform_base};
+use super::BuildContext;
 use crate::geometry::ruled_loft_recipe;
-use crate::roof_setout::RoofSection;
-use crate::{BasilicaParams, names};
+use crate::{CrossingSection, LevelSection, PlanSection, names};
 
 const WEB_OUTER: f64 = 4.18;
-const WEB_BOTTOM: f64 = 11.4;
-const WEB_MIDDLE: f64 = 13.0;
 const WEB_TOP_OVERLAP: f64 = 0.02;
 
 /// Adds the four masonry webs that mediate between the square crossing and
@@ -22,10 +19,19 @@ const WEB_TOP_OVERLAP: f64 = 0.02;
 /// section stays over the corner pier/arch shoulders; successive sections
 /// broaden inward until their upper chords overlap the drum footprint. This
 /// preserves the legible load path without blocking the four crossing arches.
-pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, roof: &RoofSection) {
+pub(super) fn build(
+    context: &mut BuildContext,
+    plan: &PlanSection,
+    levels: &LevelSection,
+    crossing: &CrossingSection,
+) {
     let web = context.add_part(
         names::parts::PENDENTIVE_WEB,
-        faceted_pendentive_recipe(crossing_platform_base(roof)),
+        faceted_pendentive_recipe(
+            levels.crossing_web_bottom.as_meters(),
+            levels.crossing_web_middle.as_meters(),
+            crossing.platform_base.as_meters(),
+        ),
         "warm-stone",
     );
     for (key, angle) in [
@@ -46,21 +52,21 @@ pub(super) fn build(context: &mut BuildContext, p: &BasilicaParams, roof: &RoofS
         context.add_instance(
             key,
             web,
-            Placement3::rotate_z_then_translate(angle, p.crossing_x, 0.0, 0.0),
+            Placement3::rotate_z_then_translate(angle, plan.crossing_center.as_meters(), 0.0, 0.0),
             names::roles::PENDENTIVE,
         );
     }
 }
 
-fn faceted_pendentive_recipe(platform_base: f64) -> Recipe {
+fn faceted_pendentive_recipe(web_bottom: f64, web_middle: f64, platform_base: f64) -> Recipe {
     ruled_loft_recipe(
         vec![
             (
-                Placement3::translate(0.0, 0.0, WEB_BOTTOM),
+                Placement3::translate(0.0, 0.0, web_bottom),
                 triangular_section(3.42),
             ),
             (
-                Placement3::translate(0.0, 0.0, WEB_MIDDLE),
+                Placement3::translate(0.0, 0.0, web_middle),
                 triangular_section(2.38),
             ),
             (
@@ -89,22 +95,24 @@ mod tests {
     use exedra_constructive::evaluate::evaluate;
     use exedra_constructive::tessellate::EvalPolicy;
 
-    use super::super::crossing_platform_base;
-    use super::{WEB_BOTTOM, WEB_OUTER, WEB_TOP_OVERLAP, faceted_pendentive_recipe};
+    use super::{WEB_OUTER, WEB_TOP_OVERLAP, faceted_pendentive_recipe};
     use crate::output::{bounds_for_path, build_scenario};
     use crate::{
-        BasilicaParams, BasilicaRoofSetout, instances_with_role, names, resolve_instance_path,
+        BasilicaPremises, BasilicaSetout, instances_with_role, names, resolve_instance_path,
     };
 
     #[test]
     fn one_pendentive_is_a_clean_outward_oriented_solid() {
-        let p = BasilicaParams::default();
+        let p = BasilicaPremises::default();
         // The transition must meet the same roof-controlled bearing datum as
         // production geometry, rather than reconstructing it from parameters.
-        let roof = BasilicaRoofSetout::new(&p).expect("default roof resolves");
-        let platform_base = crossing_platform_base(roof.section());
+        let roof = BasilicaSetout::new(&p).expect("default roof resolves");
+        let levels = roof.levels();
+        let platform_base = roof.crossing().platform_base.as_meters();
+        let web_bottom = levels.crossing_web_bottom.as_meters();
+        let web_middle = levels.crossing_web_middle.as_meters();
         let evaluated = evaluate(
-            &faceted_pendentive_recipe(platform_base),
+            &faceted_pendentive_recipe(web_bottom, web_middle, platform_base),
             &EvalPolicy::default(),
         )
         .expect("fixed pendentive loft evaluates");
@@ -125,7 +133,7 @@ mod tests {
                 max[axis] = max[axis].max(position[axis]);
             }
         }
-        assert!((f64::from(min[2]) - WEB_BOTTOM).abs() < 1.0e-5);
+        assert!((f64::from(min[2]) - web_bottom).abs() < 1.0e-5);
         assert!((f64::from(max[2]) - platform_base - WEB_TOP_OVERLAP).abs() < 1.0e-5);
         assert!((f64::from(max[0]) - WEB_OUTER).abs() < 1.0e-5);
         assert!((f64::from(max[1]) - WEB_OUTER).abs() < 1.0e-5);
@@ -157,11 +165,13 @@ mod tests {
 
     #[test]
     fn webs_contact_the_bearing_datum_without_entering_the_crossing_floor() {
-        let p = BasilicaParams::default();
+        let p = BasilicaPremises::default();
         // This assertion guards the interface between setting-out and the
         // independently tessellated crossing platform.
-        let roof = BasilicaRoofSetout::new(&p).expect("default roof resolves");
-        let platform_base = crossing_platform_base(roof.section());
+        let roof = BasilicaSetout::new(&p).expect("default roof resolves");
+        let platform_base = roof.crossing().platform_base.as_meters();
+        let web_bottom = roof.levels().crossing_web_bottom.as_meters();
+        let crossing_center = roof.plan().crossing_center.as_meters();
         let scenario = build_scenario();
         let (platform_min, _) = bounds_for_path(
             &scenario.compiled,
@@ -178,7 +188,7 @@ mod tests {
         ] {
             let (min, max) = bounds_for_path(&scenario.compiled, &scenario.render_list, path);
             assert!(
-                (min[2] - WEB_BOTTOM).abs() < 1.0e-5,
+                (min[2] - web_bottom).abs() < 1.0e-5,
                 "{path} starts at its arch-shoulder section: {min:?}"
             );
             assert!(
@@ -193,7 +203,7 @@ mod tests {
             names::instances::PENDENTIVE_NORTH_EAST,
         );
         assert!(
-            north_east_min[0] > p.crossing_x && north_east_min[1] > 0.0,
+            north_east_min[0] > crossing_center && north_east_min[1] > 0.0,
             "north-east web must leave the crossing center clear: {north_east_min:?}"
         );
         let (_, south_west_max) = bounds_for_path(
@@ -202,7 +212,7 @@ mod tests {
             names::instances::PENDENTIVE_SOUTH_WEST,
         );
         assert!(
-            south_west_max[0] < p.crossing_x && south_west_max[1] < 0.0,
+            south_west_max[0] < crossing_center && south_west_max[1] < 0.0,
             "south-west web must leave the crossing center clear: {south_west_max:?}"
         );
     }

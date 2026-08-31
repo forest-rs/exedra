@@ -2,7 +2,7 @@
 id: set-qckq
 status: closed
 deps: []
-links: []
+links: [bsl-6ihj, set-mpbt]
 created: 2026-08-23T10:37:16Z
 type: epic
 priority: 1

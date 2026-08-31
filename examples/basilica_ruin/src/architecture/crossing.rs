@@ -3,38 +3,33 @@
 
 use exedra_constructive::ir::Placement3;
 
-use super::{
-    BuildContext, CROSSING_PLATFORM_HEIGHT, Layout, crossing_drum_base, crossing_platform_base,
-};
-use crate::BasilicaParams;
+use super::BuildContext;
 use crate::geometry::{
     arcaded_wall_profile, box_recipe, centered_vertical_wall_frame, cylinder_recipe, dome_recipe,
     drum_panel_profile, extruded_profile_recipe, square_polygon_ring_profile,
     transverse_wall_frame, vertical_wall_frame,
 };
 use crate::names;
-use crate::roof_setout::RoofSection;
+use crate::{CrossingSection, LevelSection, PlanSection};
 
 pub(super) fn build(
     context: &mut BuildContext,
-    p: &BasilicaParams,
-    layout: Layout,
-    roof: &RoofSection,
+    plan: &PlanSection,
+    levels: &LevelSection,
+    crossing: &CrossingSection,
 ) {
-    let Layout {
-        crossing_west,
-        crossing_east,
-        ..
-    } = layout;
+    let crossing_west = plan.crossing_west.as_meters();
+    let crossing_east = plan.crossing_east.as_meters();
+    let crossing_center = plan.crossing_center.as_meters();
 
     // The crossing stage is a visible load path: four ground-bearing piers
     // carry upper spandrel beams and an open square bearing ring, which in
     // turn bears the polygonal drum above the nave roof ridge. The separate
     // crossing-transition system fills the four corners below that ring.
-    let crossing_span = crossing_east - crossing_west;
-    let half_crossing = crossing_span * 0.5;
-    let drum_base = crossing_drum_base(roof);
-    let platform_base = crossing_platform_base(roof);
+    let crossing_span = plan.crossing_span.as_meters();
+    let half_crossing = plan.crossing_half_width.as_meters();
+    let drum_base = crossing.drum_base.as_meters();
+    let platform_base = crossing.platform_base.as_meters();
     let pier_size = 1.15;
     let crossing_pier = context.add_part(
         "crossing-pier",
@@ -69,7 +64,7 @@ pub(super) fn build(
             names::roles::CROSSING_PIER,
         );
     }
-    let spandrel_base = 9.6;
+    let spandrel_base = levels.crossing_spandrel_base.as_meters();
     let spandrel_height = platform_base - spandrel_base;
     let crossing_spandrel_long = context.add_part(
         "crossing-spandrel-long",
@@ -126,8 +121,12 @@ pub(super) fn build(
     let crossing_platform = context.add_part(
         "crossing-platform",
         extruded_profile_recipe(
-            square_polygon_ring_profile(half_crossing, p.drum_radius - 0.48, 12),
-            CROSSING_PLATFORM_HEIGHT,
+            square_polygon_ring_profile(
+                half_crossing,
+                crossing.platform_inner_radius.as_meters(),
+                12,
+            ),
+            crossing.platform_height.as_meters(),
             Placement3::IDENTITY,
             "basilica:crossing-platform",
         ),
@@ -136,19 +135,21 @@ pub(super) fn build(
     context.add_instance(
         names::instances::CROSSING_PLATFORM,
         crossing_platform,
-        Placement3::translate(p.crossing_x, 0.0, platform_base),
+        Placement3::translate(crossing_center, 0.0, platform_base),
         "crossing_platform",
     );
 
     let drum_faces = 12_u32;
     let half_angle = core::f64::consts::PI / f64::from(drum_faces);
-    let drum_chord = 2.0 * p.drum_radius * libm::sin(half_angle);
-    let drum_apothem = p.drum_radius * libm::cos(half_angle);
+    let drum_radius = crossing.drum_radius.as_meters();
+    let drum_height = crossing.drum_height.as_meters();
+    let drum_chord = 2.0 * drum_radius * libm::sin(half_angle);
+    let drum_apothem = drum_radius * libm::cos(half_angle);
     let drum_thickness = 0.36;
     let drum_window = context.add_part(
         names::parts::DRUM_WINDOW_PANEL,
         extruded_profile_recipe(
-            drum_panel_profile(drum_chord, p.drum_height, true),
+            drum_panel_profile(drum_chord, drum_height, true),
             drum_thickness,
             centered_vertical_wall_frame(drum_chord, drum_thickness),
             "basilica:crossing-drum-window-panel",
@@ -158,7 +159,7 @@ pub(super) fn build(
     let drum_solid = context.add_part(
         "crossing-drum-solid-panel",
         extruded_profile_recipe(
-            drum_panel_profile(drum_chord, p.drum_height, false),
+            drum_panel_profile(drum_chord, drum_height, false),
             drum_thickness,
             centered_vertical_wall_frame(drum_chord, drum_thickness),
             "basilica:crossing-drum-solid-panel",
@@ -177,7 +178,7 @@ pub(super) fn build(
             part,
             Placement3::rotate_z_then_translate(
                 angle + core::f64::consts::FRAC_PI_2,
-                p.crossing_x + drum_apothem * libm::cos(angle),
+                crossing_center + drum_apothem * libm::cos(angle),
                 drum_apothem * libm::sin(angle),
                 drum_base,
             ),
@@ -191,7 +192,7 @@ pub(super) fn build(
     let drum_cornice = context.add_part(
         "crossing-drum-cornice",
         cylinder_recipe(
-            p.drum_radius + 0.2,
+            crossing.cornice_radius.as_meters(),
             0.22,
             drum_faces,
             "basilica:crossing-drum-cornice",
@@ -201,25 +202,28 @@ pub(super) fn build(
     context.add_instance(
         "crossing-drum-cornice-base",
         drum_cornice,
-        Placement3::translate(p.crossing_x, 0.0, drum_base - 0.1),
+        Placement3::translate(crossing_center, 0.0, drum_base - 0.1),
         "drum_cornice",
     );
     context.add_instance(
         "crossing-drum-cornice-top",
         drum_cornice,
-        Placement3::translate(p.crossing_x, 0.0, drum_base + p.drum_height - 0.1),
+        Placement3::translate(crossing_center, 0.0, crossing.drum_top.as_meters() - 0.1),
         "drum_cornice",
     );
 
     let dome = context.add_part(
         names::parts::CROSSING_DOME,
-        dome_recipe(p.drum_radius + 0.18, p.dome_height),
+        dome_recipe(
+            crossing.dome_radius.as_meters(),
+            crossing.dome_height.as_meters(),
+        ),
         "oxidized-lead",
     );
     context.add_instance(
         names::instances::CROSSING_DOME,
         dome,
-        Placement3::translate(p.crossing_x, 0.0, drum_base + p.drum_height),
+        Placement3::translate(crossing_center, 0.0, crossing.drum_top.as_meters()),
         "dome",
     );
 }

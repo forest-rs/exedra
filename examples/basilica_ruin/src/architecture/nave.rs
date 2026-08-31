@@ -3,32 +3,30 @@
 
 use exedra_constructive::ir::Placement3;
 
-use super::{BuildContext, CLERESTORY_BASE, Layout};
+use super::BuildContext;
 use crate::geometry::{
     arcaded_wall_profile, box_recipe, extruded_profile_recipe, gable_profile, roof_panel_frame,
     transverse_wall_frame, vertical_wall_frame, west_facade_profile,
 };
-use crate::{BasilicaParams, RoofSection, names};
+use crate::{LevelSection, PlanSection, RoofSection, names};
 
 pub(super) fn build(
     context: &mut BuildContext,
-    p: &BasilicaParams,
-    layout: Layout,
+    plan: &PlanSection,
+    levels: &LevelSection,
     roof: &RoofSection,
 ) {
-    let Layout {
-        wall_thickness,
-        half_total,
-        crossing_west,
-        crossing_east,
-        ..
-    } = layout;
+    let wall_thickness = plan.wall_thickness.as_meters();
+    let half_total = plan.half_total.as_meters();
+    let crossing_west = plan.crossing_west.as_meters();
+    let crossing_east = plan.crossing_east.as_meters();
     let half_nave = roof.half_span.as_meters();
     let wall_head = roof.wall_head.as_meters();
-    let east_nave_length = p.length - crossing_east;
-    let clerestory_height = wall_head - CLERESTORY_BASE;
-    let clerestory_sill = 6.55 - CLERESTORY_BASE;
-    let clerestory_spring = 7.9 - CLERESTORY_BASE;
+    let east_nave_length = plan.east_nave_length.as_meters();
+    let clerestory_base = levels.clerestory_base.as_meters();
+    let clerestory_height = levels.clerestory_height.as_meters();
+    let clerestory_sill = levels.clerestory_sill_height.as_meters();
+    let clerestory_spring = levels.clerestory_spring_height.as_meters();
     // The nave walls terminate at the crossing rather than continuing behind
     // its pierced stage. This makes the crossing bay spatially open, not just
     // visually decorated with arch-shaped holes.
@@ -60,9 +58,9 @@ pub(super) fn build(
         None,
     );
     let outer_arcade = arcaded_wall_profile(
-        p.length,
-        p.aisle_wall_height,
-        p.arcade_bays,
+        plan.length.as_meters(),
+        levels.aisle_wall_top.as_meters(),
+        u32::try_from(plan.arcade_bays.get()).expect("arcade bay count fits profile topology"),
         2.2,
         0.65,
         3.0,
@@ -113,25 +111,25 @@ pub(super) fn build(
     context.add_instance(
         names::instances::NAVE_WALL_NORTH_WEST,
         west_nave_wall,
-        Placement3::translate(0.0, half_nave, CLERESTORY_BASE),
+        Placement3::translate(0.0, half_nave, clerestory_base),
         names::roles::NAVE_CLERESTORY,
     );
     context.add_instance(
         names::instances::NAVE_WALL_SOUTH_WEST_RUIN,
         ruined_west_nave_wall,
-        Placement3::translate(0.0, -half_nave + wall_thickness, CLERESTORY_BASE),
+        Placement3::translate(0.0, -half_nave + wall_thickness, clerestory_base),
         names::roles::NAVE_CLERESTORY_RUIN,
     );
     context.add_instance(
         names::instances::NAVE_WALL_NORTH_EAST,
         east_nave_wall,
-        Placement3::translate(crossing_east, half_nave, CLERESTORY_BASE),
+        Placement3::translate(crossing_east, half_nave, clerestory_base),
         names::roles::NAVE_CLERESTORY,
     );
     context.add_instance(
         "nave-wall-south-east",
         east_nave_wall,
-        Placement3::translate(crossing_east, -half_nave + wall_thickness, CLERESTORY_BASE),
+        Placement3::translate(crossing_east, -half_nave + wall_thickness, clerestory_base),
         names::roles::NAVE_CLERESTORY,
     );
 
@@ -218,7 +216,7 @@ pub(super) fn build(
         "aisle_outer_arcade",
     );
 
-    let facade_profile = west_facade_profile(p, roof);
+    let facade_profile = west_facade_profile(plan, levels, roof);
     let facade = context.add_part(
         "west-facade",
         extruded_profile_recipe(
@@ -286,7 +284,7 @@ pub(super) fn build(
     let roof_east = context.add_part(
         "nave-roof-east",
         box_recipe(
-            [p.length - crossing_east, roof_slope, roof_depth],
+            [east_nave_length, roof_slope, roof_depth],
             "basilica:nave-roof-east",
         ),
         "aged-roof-tile",
@@ -333,15 +331,17 @@ mod tests {
 
     use crate::output::{bounds_for_path, build_scenario};
     use crate::{
-        BasilicaParams, BasilicaRoofSetout, RoofSide, instances_with_role, names,
+        BasilicaPremises, BasilicaSetout, RoofSide, instances_with_role, names,
         resolve_instance_path,
     };
 
     #[test]
     fn crossing_bay_is_open_between_named_nave_wall_segments() {
-        let p = BasilicaParams::default();
-        let crossing_west = p.crossing_x - p.drum_radius - 0.6;
-        let crossing_east = p.crossing_x + p.drum_radius + 0.6;
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default basilica resolves");
+        let plan = setout.plan();
+        let crossing_west = plan.crossing_west.as_meters();
+        let crossing_east = plan.crossing_east.as_meters();
         let scenario = build_scenario();
 
         for west_path in [
@@ -375,14 +375,14 @@ mod tests {
                 .part_by_key(names::parts::NAVE_CLERESTORY_WEST)
                 .unwrap()
         );
-        assert!(crossing_east - crossing_west > p.nave_width);
+        assert!(crossing_east - crossing_west > plan.nave_width.as_meters());
     }
 
     #[test]
     fn wall_plates_materialize_the_roof_bearing_datum_and_preserve_the_ruin() {
-        let p = BasilicaParams::default();
-        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
-        let roof = setout.section();
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default roof resolves");
+        let roof = setout.roof();
         let scenario = build_scenario();
         let plates = instances_with_role(&scenario.assembly, names::roles::NAVE_WALL_PLATE);
         assert_eq!(plates.len(), 5);
@@ -417,9 +417,9 @@ mod tests {
 
     #[test]
     fn placed_nave_roof_slabs_are_mirrored_outward_from_the_same_baseline() {
-        let p = BasilicaParams::default();
-        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
-        let roof = setout.section();
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default roof resolves");
+        let roof = setout.roof();
         let roof_thickness = roof.roof_skin_depth.as_meters();
         let scenario = build_scenario();
         let mut placed_bounds = Vec::new();

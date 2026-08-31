@@ -22,18 +22,34 @@ from which construction is located. It is the connective tissue between “the
 nave has this span and rise” and “this wall plate, rafter seat, ridge, gable,
 and roof face belong at these exact points.”
 
-The basilica now has one exact roof setting-out hypothesis. It fixes the old
-visible mismatch in which the roof was pitched from its outer overhang and
-therefore passed above the wall line. The roof is now resolved through the top
-of a modeled continuous wall plate first, then extended beyond it at the same
-pitch. The same resolved section drives the ruin assembly, principal rafters,
-gables, crossing height, and the separate Joiner structure laboratory.
+The basilica now has one exact setting-out hypothesis for its primary massing.
+`BasilicaPremises` contains positive physical dimensions and a bay count;
+`BasilicaSetout` derives signed plan coordinates, vertical datums, the aisle
+roof, nave roof, crossing, and east-end sections. Architecture modules consume
+those resolved sections and lower exact values to floating point only where a
+constructive recipe or placement requires it. No module receives the raw
+premises or reconstructs an intermediate floating-point layout.
 
-Migration note: `BasilicaParams::nave_wall_height` now names the masonry wall
-head and `roof_rise` is measured from the top of the 180 mm wall plate. A caller
-that must retain an old absolute ridge height should subtract 0.18 m from its
-former `roof_rise`; the default intentionally accepts the taller, correctly
-seated roof.
+This extends the earlier roof correction: the nave roof still passes through
+the top of a modeled continuous wall plate before continuing through its eave,
+but its wall seats, ridge, gables, crossing height, aisles, apse, and the
+separate Joiner structure laboratory now share the same exact spine.
+
+Migration note: `BasilicaParams` is replaced by `BasilicaPremises`; its `f64`
+dimensions are now `setout::Length`, `crossing_x` is the positive station
+distance `crossing_station`, and `arcade_bays` is `setout::Count`.
+`BasilicaRoofSetout` is now `BasilicaSetout`, with the section accessors
+`plan()`, `levels()`, `aisle()`, `roof()`, `crossing()`, and `east_end()`.
+`BasilicaReconfiguration::topology_changed` distinguishes a bay-count edit
+that must add or remove repeated instances from an ordinary geometry update;
+the named dirty frontier alone can describe only identities that already
+exist.
+
+The migration also corrects the south lean-to roof's old placement frame. Its
+baseline was mirrored, but its right-handed thickness axis pointed inward and
+down, so that skin sat one roof depth below the north-side mirror. Both skins
+now use proper-rigid frames with outward/up thickness, pinned by a geometric
+symmetry test and the rendered review artifact.
 
 Run it from the workspace root:
 
@@ -45,15 +61,14 @@ This writes deterministic artifacts to:
 
 ```text
 target/basilica_ruin/basilica_ruin.obj
-target/basilica_ruin/basilica_ruin.gltf
+target/basilica_ruin/basilica_ruin.glb
 ```
 
-The grouped OBJ is the accepted Z-up visual artifact. The current glTF export
-is retained as an integration diagnostic: `exedra_gltf` does not yet convert
-Exedra's Z-up basis to glTF's Y-up basis, so standards-compliant importers show
-it on its side. Coordinate conversion remains deferred exporter work.
+The grouped OBJ is the accepted Z-up visual artifact. The GLB uses
+`exedra_gltf`'s explicit Z-up-to-Y-up conversion and preserves stable instance
+paths and part keys on its nodes.
 
-Choose a different OBJ path with `--obj`; the glTF file is written beside it:
+Choose a different OBJ path with `--obj`; the GLB is written beside it:
 
 ```sh
 cargo run -p basilica_ruin -- --obj target/my-basilica.obj
@@ -63,7 +78,7 @@ The summary printed to stdout includes assembly, triangle, diagnostic, and
 content-signature counters.
 
 To exercise incremental part compilation, rebuild the concrete assembly after
-changing only `BasilicaParams::dome_height`:
+changing only `BasilicaPremises::dome_height`:
 
 ```sh
 cargo run -p basilica_ruin -- --warm-reconfigure
@@ -76,16 +91,29 @@ group count, and the byte-identical warm/fresh signature. It is a cache-work
 proof rather than a wall-clock claim because the example separately evaluates
 every recipe to retain its diagnostics until `ea-8tpb` lands. The edited
 artifacts are written as `target/basilica_ruin/basilica_ruin_warm.obj` and
-`target/basilica_ruin/basilica_ruin_warm.gltf`.
+`target/basilica_ruin/basilica_ruin_warm.glb`.
+
+For a visible parametric comparison, extend the rectangular basilica by two
+exact meters while retaining the fixed west datum and crossing station:
+
+```sh
+cargo run -p basilica_ruin -- --parametric-length
+```
+
+This writes `basilica_ruin.glb` and `basilica_ruin_length_plus_2m.glb`. The
+artifact test proves that the apse moves east by exactly two meters while the
+west facade and crossing dome retain their world bounds; it also proves the two
+GLBs differ.
 
 ## Code map
 
 There is one normal path through the example:
 
 ```text
-BasilicaParams
-    -> exact BasilicaRoofSetout
-        -> resolved roof section + provenance + reconstruction assessment
+BasilicaPremises
+    -> exact BasilicaSetout
+        -> plan + levels + aisle + roof + crossing + east-end sections
+        -> provenance + reconstruction assessment + dirty frontier
     -> build_basilica_assembly
         -> architecture::{nave, aisles, interior_arcades, east_end, crossing,
                          crossing_transition, buttresses, nave_trusses}
@@ -95,7 +123,9 @@ BasilicaParams
                         -> compile, flatten, export
 ```
 
-The crate root owns the public parameters, name vocabulary, and query helpers.
+`basilica_setout` owns exact premises, the immutable network, resolved section
+DTOs, reconstruction evidence, and quantity-to-element invalidation.
+The crate root owns the public entry points, name vocabulary, and query helpers.
 `architecture` owns architectural meaning and deterministic insertion order;
 each submodule adds one building system through the narrow example-local build
 context. `geometry` owns only low-level constructive recipes, profiles, and
@@ -107,6 +137,9 @@ The buttress elevations and nave-truss stations use
 `cambium::assembly` named linear patterns. Their authored ordinals remain the
 exported identities: the missing west truss at ordinal `02` stays a named gap,
 while later stations keep their existing paths and insertion order.
+The pattern topology is intentionally still an architecture concern; moving
+stable repeated expansion into `setout_generate` is the next layer, rather than
+mixing topology generation into this exact-massing change.
 
 Each intact nave station is a complete `joiner_timber` braced king-post truss,
 composed once and then repeated as immutable assembly parts. Housed heels,
@@ -124,11 +157,11 @@ query it through stable names, apply edits, and only then compile it:
 
 ```rust
 use basilica_ruin::{
-    BasilicaParams, build_basilica_assembly, instances_with_role, names,
+    BasilicaPremises, build_basilica_assembly, instances_with_role, names,
     resolve_instance_path,
 };
 
-let mut basilica = build_basilica_assembly(&BasilicaParams::default());
+let mut basilica = build_basilica_assembly(&BasilicaPremises::default());
 
 let dome_part = basilica
     .part_by_key(names::parts::CROSSING_DOME)
@@ -164,7 +197,7 @@ meaning local while exercising the mechanisms now available:
 
 | Worked scenario step | Executable realization |
 | --- | --- |
-| `shape.floor_plan.basilica` | fixed, validated `BasilicaParams` massing |
+| `shape.floor_plan.basilica` | exact `BasilicaPremises` propagated into resolved plan and level sections |
 | `shape.extrude.walls` | public profile extrusion recipes |
 | `detail.openings.arcade` | clockwise round-headed profile holes; true openings |
 | nave/aisle spatial hierarchy | four named lower interior arcade segments carrying the raised clerestory |
@@ -188,8 +221,10 @@ meaning local while exercising the mechanisms now available:
   repeated curve topology deterministically.
 - The aisle roofs are explicit lean-to sections: their inner edges meet the
   nave in the solid spandrel band between interior arcade crowns and
-  clerestory sills, while their eaves bear on the outer arcade walls. They are
-  separate named masses rather than a single joined shell.
+  clerestory sills, while their eaves bear on the outer arcade walls. Their
+  paired proper-rigid frames use opposite baseline directions so both roof
+  thicknesses point outward/up. They are separate named masses rather than a
+  single joined shell.
 - The four nave-to-aisle arcade segments use genuine round-headed profile
   voids with a minimal two-centimetre profile boundary at floor level. This
   keeps tessellation watertight while reading as spatial passage, not a window

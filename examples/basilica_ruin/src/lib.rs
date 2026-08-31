@@ -6,66 +6,16 @@
 use exedra_assembly::{Assembly, InstanceId, InstancePath};
 
 mod architecture;
+mod basilica_setout;
 mod geometry;
 mod output;
-mod roof_setout;
 
-pub use roof_setout::{
-    BasilicaRoofSetout, RoofReconfiguration, RoofSection, RoofSetoutError, RoofSide,
+pub use basilica_setout::{
+    AisleSection, BasilicaPremises, BasilicaReconfiguration, BasilicaSetout, BasilicaSetoutError,
+    CrossingSection, EastEndSection, LevelSection, PlanSection, RoofSection, RoofSide,
 };
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-/// Parameters controlling the example's architectural massing.
-///
-/// Coordinates are meters in a Z-up frame: the nave runs along positive X,
-/// width spans Y, and height is positive Z.
-pub struct BasilicaParams {
-    /// Length of the rectangular nave before the apse springs.
-    pub length: f64,
-    /// Clear width of the high central nave.
-    pub nave_width: f64,
-    /// Overall width across both side aisles.
-    pub total_width: f64,
-    /// Height of the masonry nave wall head below the timber wall plate.
-    pub nave_wall_height: f64,
-    /// Height of the exterior aisle arcade walls.
-    pub aisle_wall_height: f64,
-    /// Rise from the wall-plate bearing datum to the roof ridge.
-    pub roof_rise: f64,
-    /// Longitudinal center of the crossing and dome.
-    pub crossing_x: f64,
-    /// Circumradius of the polygonal drum.
-    pub drum_radius: f64,
-    /// Height of the drum walls between cornices.
-    pub drum_height: f64,
-    /// Rise of the shallow dome above the drum.
-    pub dome_height: f64,
-    /// Radius of the semicircular eastern apse.
-    pub apse_radius: f64,
-    /// Number of repeated arcade bays along each longitudinal wall.
-    pub arcade_bays: u32,
-}
-
-impl Default for BasilicaParams {
-    fn default() -> Self {
-        Self {
-            length: 36.0,
-            nave_width: 9.0,
-            total_width: 18.0,
-            nave_wall_height: 11.0,
-            aisle_wall_height: 5.2,
-            roof_rise: 3.2,
-            crossing_x: 26.0,
-            drum_radius: 4.1,
-            drum_height: 2.6,
-            dome_height: 3.1,
-            apse_radius: 4.5,
-            arcade_bays: 7,
-        }
-    }
-}
-
-/// Runs the example CLI and writes its deterministic OBJ and diagnostic glTF.
+/// Runs the example CLI and writes its deterministic OBJ and binary glTF.
 ///
 /// This keeps compilation and export products internal: consumers that need
 /// to edit the building should call [`build_basilica_assembly`] and compile
@@ -202,11 +152,11 @@ pub mod names {
 /// # Panics
 ///
 /// Panics when parameters do not describe positive, nested building extents
-/// that can contain the authored openings. [`BasilicaParams::default`] is the
+/// that can contain the authored openings. [`BasilicaPremises::default`] is the
 /// validated reference configuration.
 #[must_use]
-pub fn build_basilica_assembly(params: &BasilicaParams) -> Assembly {
-    architecture::build_assembly(params).0
+pub fn build_basilica_assembly(premises: &BasilicaPremises) -> Assembly {
+    architecture::build_assembly(premises).0
 }
 
 /// Resolves a slash-separated stable instance path.
@@ -249,7 +199,7 @@ mod tests {
     fn public_names_resolve_parts_paths_and_roles() {
         // Stable selectors must still resolve after the fitted trusses add a
         // generated key and distinct handed member recipes behind one role.
-        let assembly = build_basilica_assembly(&BasilicaParams::default());
+        let assembly = build_basilica_assembly(&BasilicaPremises::default());
 
         let dome_part = assembly
             .part_by_key(names::parts::CROSSING_DOME)
@@ -410,7 +360,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0x1753_3223_4ae1_c211_886b_3b44_7c76_0f26
+            0xf71b_72e3_d752_bfd5_e448_6bb5_905b_cbf0
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);

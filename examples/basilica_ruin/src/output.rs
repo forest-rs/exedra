@@ -10,12 +10,20 @@ use exedra_assembly::{
 };
 use exedra_constructive::ir::Placement3;
 use exedra_constructive::tessellate::EvalPolicy;
+use setout::Length;
 
-use crate::BasilicaParams;
+use crate::BasilicaPremises;
 use crate::architecture::{Inventory, build_assembly};
 use crate::names;
 
-const WARM_DOME_HEIGHT_DELTA: f64 = 0.25;
+const WARM_DOME_HEIGHT_DELTA: Length = match Length::millimeters(250) {
+    Some(value) => value,
+    None => panic!("the warm-reconfiguration delta is a positive exact length"),
+};
+const PARAMETRIC_LENGTH_DELTA: Length = match Length::meters(2) {
+    Some(value) => value,
+    None => panic!("the parametric comparison delta is a positive exact length"),
+};
 
 #[derive(Debug)]
 pub(crate) struct Scenario {
@@ -54,35 +62,41 @@ struct WarmProof {
 enum CliMode {
     Export(PathBuf),
     WarmReconfigure,
+    ParametricLength,
 }
 
 pub(crate) fn run_cli() {
     match parse_cli_mode() {
         CliMode::Export(output) => run_export(&output),
         CliMode::WarmReconfigure => run_warm_reconfiguration(),
+        CliMode::ParametricLength => run_parametric_length_comparison(),
     }
 }
 
 fn run_export(output: &Path) {
     let scenario = build_scenario();
     let obj = export_obj(&scenario.compiled, &scenario.render_list);
-    let (gltf_path, gltf_meshes) = write_artifacts(output, &scenario, &obj);
+    let (glb_path, glb_meshes) = write_artifacts(output, &scenario, &obj);
 
-    print_scenario_summary(&scenario, &obj, gltf_meshes);
+    print_scenario_summary(&scenario, &obj, glb_meshes);
     println!("obj={}", output.display());
-    println!("gltf={}", gltf_path.display());
+    println!("glb={}", glb_path.display());
 }
 
 fn run_warm_reconfiguration() {
     let reconfiguration = build_warm_reconfiguration();
     let proof = validate_warm_reconfiguration(&reconfiguration);
     let output = default_reconfigured_output_path();
-    let (gltf_path, _) = write_artifacts(&output, &reconfiguration.warm, &proof.obj);
+    let (glb_path, _) = write_artifacts(&output, &reconfiguration.warm, &proof.obj);
 
     println!(
         "basilica warm_reconfigure parameter=dome_height from={:.3} to={:.3} parts_compiled={} cache_hits={} hits_per_miss={} groups={} changed_parts={} signature={:016x} warm_matches_fresh=true",
-        BasilicaParams::default().dome_height,
-        BasilicaParams::default().dome_height + WARM_DOME_HEIGHT_DELTA,
+        BasilicaPremises::default().dome_height.as_meters(),
+        BasilicaPremises::default()
+            .dome_height
+            .checked_add(WARM_DOME_HEIGHT_DELTA)
+            .expect("the edited dome height fits")
+            .as_meters(),
         reconfiguration.warm.compile_counters.parts_compiled,
         reconfiguration.warm.compile_counters.cache_hits,
         proof.hits_per_miss,
@@ -91,11 +105,30 @@ fn run_warm_reconfiguration() {
         byte_signature(proof.obj.as_bytes()),
     );
     println!("obj={}", output.display());
-    println!("gltf={}", gltf_path.display());
+    println!("glb={}", glb_path.display());
+}
+
+fn run_parametric_length_comparison() {
+    let (baseline, variant) = build_length_comparison();
+    let baseline_output = default_output_path();
+    let variant_output = default_length_variant_output_path();
+    let baseline_obj = export_obj(&baseline.compiled, &baseline.render_list);
+    let variant_obj = export_obj(&variant.compiled, &variant.render_list);
+    let (baseline_glb, _) = write_artifacts(&baseline_output, &baseline, &baseline_obj);
+    let (variant_glb, _) = write_artifacts(&variant_output, &variant, &variant_obj);
+    println!(
+        "basilica parametric_length from={:.3} to={:.3} baseline_signature={:016x} variant_signature={:016x}",
+        BasilicaPremises::default().length.as_meters(),
+        length_variant_premises().length.as_meters(),
+        byte_signature(baseline_obj.as_bytes()),
+        byte_signature(variant_obj.as_bytes()),
+    );
+    println!("baseline_glb={}", baseline_glb.display());
+    println!("variant_glb={}", variant_glb.display());
 }
 
 fn write_artifacts(output: &Path, scenario: &Scenario, obj: &str) -> (PathBuf, u64) {
-    let gltf = exedra_gltf::export_gltf_with_options(
+    let glb = exedra_gltf::export_glb_with_options(
         &scenario.assembly,
         &scenario.compiled,
         &scenario.render_list,
@@ -107,16 +140,16 @@ fn write_artifacts(output: &Path, scenario: &Scenario, obj: &str) -> (PathBuf, u
         std::fs::create_dir_all(parent).expect("create artifact directory");
     }
     std::fs::write(output, obj).expect("write OBJ artifact");
-    let gltf_path = output.with_extension("gltf");
-    std::fs::write(&gltf_path, &gltf.json).expect("write glTF artifact");
+    let glb_path = output.with_extension("glb");
+    std::fs::write(&glb_path, &glb.bytes).expect("write GLB artifact");
 
-    (gltf_path, gltf.stats.meshes)
+    (glb_path, glb.stats.meshes)
 }
 
 fn print_scenario_summary(scenario: &Scenario, obj: &str, gltf_meshes: u64) {
     let stats = scene_stats(scenario);
     println!(
-        "basilica instances={} items={} triangles={} vertices={} nave_walls={} nave_wall_plates={} aisles={} aisle_roofs={} arches={} interior_arcades={} interior_arcade_openings={} buttresses={} crossing_piers={} crossing_stages={} pendentives={} drum_windows={} cornice_bands={} chancel_openings={} apses={} drums={} domes={} ruined_bays={} nave_trusses={} nave_truss_members={} omitted_nave_trusses={} parts_compiled={} cache_hits={} gltf_meshes={} diagnostics={} fingerprint={:032x} signature={:016x}",
+        "basilica instances={} items={} triangles={} vertices={} nave_walls={} nave_wall_plates={} aisles={} aisle_roofs={} arches={} interior_arcades={} interior_arcade_openings={} buttresses={} crossing_piers={} crossing_stages={} pendentives={} drum_windows={} cornice_bands={} chancel_openings={} apses={} drums={} domes={} ruined_bays={} nave_trusses={} nave_truss_members={} omitted_nave_trusses={} parts_compiled={} cache_hits={} glb_meshes={} diagnostics={} fingerprint={:032x} signature={:016x}",
         stats.instances,
         stats.render_items,
         stats.triangles,
@@ -157,7 +190,10 @@ fn parse_cli_mode() -> CliMode {
         (None, None, None) => CliMode::Export(default_output_path()),
         (Some("--obj"), Some(path), None) => CliMode::Export(PathBuf::from(path)),
         (Some("--warm-reconfigure"), None, None) => CliMode::WarmReconfigure,
-        _ => panic!("usage: basilica_ruin [--obj <path> | --warm-reconfigure]"),
+        (Some("--parametric-length"), None, None) => CliMode::ParametricLength,
+        _ => {
+            panic!("usage: basilica_ruin [--obj <path> | --warm-reconfigure | --parametric-length]")
+        }
     }
 }
 
@@ -173,19 +209,28 @@ fn default_reconfigured_output_path() -> PathBuf {
         .join("target/basilica_ruin/basilica_ruin_warm.obj")
 }
 
+fn default_length_variant_output_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target/basilica_ruin/basilica_ruin_length_plus_2m.obj")
+}
+
 pub(crate) fn build_scenario() -> Scenario {
-    let params = BasilicaParams::default();
+    let params = BasilicaPremises::default();
     let mut compiler = PartCompiler::new();
     compile_scenario(&params, &mut compiler)
 }
 
 fn build_warm_reconfiguration() -> WarmReconfiguration {
     let mut compiler = PartCompiler::new();
-    let baseline_params = BasilicaParams::default();
+    let baseline_params = BasilicaPremises::default();
     let baseline = compile_scenario(&baseline_params, &mut compiler);
 
     let mut edited_params = baseline_params;
-    edited_params.dome_height += WARM_DOME_HEIGHT_DELTA;
+    edited_params.dome_height = edited_params
+        .dome_height
+        .checked_add(WARM_DOME_HEIGHT_DELTA)
+        .expect("the edited dome height fits");
     let warm = compile_scenario(&edited_params, &mut compiler);
     let fresh = compile_scenario(&edited_params, &mut PartCompiler::new());
 
@@ -196,7 +241,22 @@ fn build_warm_reconfiguration() -> WarmReconfiguration {
     }
 }
 
-fn compile_scenario(params: &BasilicaParams, compiler: &mut PartCompiler) -> Scenario {
+fn length_variant_premises() -> BasilicaPremises {
+    let mut premises = BasilicaPremises::default();
+    premises.length = premises
+        .length
+        .checked_add(PARAMETRIC_LENGTH_DELTA)
+        .expect("the edited basilica length fits");
+    premises
+}
+
+fn build_length_comparison() -> (Scenario, Scenario) {
+    let baseline = compile_scenario(&BasilicaPremises::default(), &mut PartCompiler::new());
+    let variant = compile_scenario(&length_variant_premises(), &mut PartCompiler::new());
+    (baseline, variant)
+}
+
+fn compile_scenario(params: &BasilicaPremises, compiler: &mut PartCompiler) -> Scenario {
     let (assembly, inventory) = build_assembly(params);
     let policy = EvalPolicy::default();
     let counters_before = compiler.counters();
@@ -579,8 +639,8 @@ pub(crate) fn byte_signature(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_scenario, build_warm_reconfiguration, byte_signature, export_obj,
-        validate_warm_reconfiguration,
+        bounds_for_path, build_length_comparison, build_scenario, build_warm_reconfiguration,
+        byte_signature, export_obj, validate_warm_reconfiguration,
     };
     use crate::names;
 
@@ -801,6 +861,60 @@ mod tests {
             byte_signature(proof.obj.as_bytes()),
             byte_signature(fresh_obj.as_bytes())
         );
+    }
+
+    #[test]
+    fn exact_length_edit_moves_the_east_end_and_preserves_fixed_datums() {
+        // This is the artifact-level parametricity oracle: adding two exact
+        // meters lengthens only the building east of its fixed crossing,
+        // produces a genuinely different GLB, and leaves the west facade and
+        // crossing dome byte-for-byte at their original world bounds.
+        let (baseline, variant) = build_length_comparison();
+        assert_eq!(
+            super::render_paths(&baseline.render_list),
+            super::render_paths(&variant.render_list)
+        );
+
+        for fixed in ["west-facade", names::instances::CROSSING_DOME] {
+            assert_eq!(
+                bounds_for_path(&baseline.compiled, &baseline.render_list, fixed),
+                bounds_for_path(&variant.compiled, &variant.render_list, fixed),
+                "{fixed} must not move when only the east length changes"
+            );
+        }
+
+        let (baseline_min, baseline_max) = bounds_for_path(
+            &baseline.compiled,
+            &baseline.render_list,
+            names::instances::EAST_APSE,
+        );
+        let (variant_min, variant_max) = bounds_for_path(
+            &variant.compiled,
+            &variant.render_list,
+            names::instances::EAST_APSE,
+        );
+        for axis in 0..3 {
+            let expected_delta = if axis == 0 { 2.0 } else { 0.0 };
+            assert!((variant_min[axis] - baseline_min[axis] - expected_delta).abs() < 1.0e-9);
+            assert!((variant_max[axis] - baseline_max[axis] - expected_delta).abs() < 1.0e-9);
+        }
+
+        let options = exedra_gltf::GltfExportOptions::z_up_to_y_up();
+        let baseline_glb = exedra_gltf::export_glb_with_options(
+            &baseline.assembly,
+            &baseline.compiled,
+            &baseline.render_list,
+            options,
+        )
+        .expect("baseline exports");
+        let variant_glb = exedra_gltf::export_glb_with_options(
+            &variant.assembly,
+            &variant.compiled,
+            &variant.render_list,
+            options,
+        )
+        .expect("variant exports");
+        assert_ne!(baseline_glb.bytes, variant_glb.bytes);
     }
 
     #[test]

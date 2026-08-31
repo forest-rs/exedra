@@ -537,7 +537,7 @@ fn linear_determinant(placement: &Placement3) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use basilica_ruin::BasilicaParams;
+    use basilica_ruin::BasilicaPremises;
 
     use super::*;
 
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn full_layer_preserves_one_group_per_present_element() {
-        let model = crate::model::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaPremises::default());
         let scene = emit(&model, Layer::Full).expect("clean graph emits");
         assert_eq!(scene.group_count(), present_elements(&model));
         let paths: Vec<String> = scene
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn reflected_roof_obj_winding_agrees_with_exported_normals() {
-        let model = crate::model::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaPremises::default());
         let scene = emit(&model, Layer::Full).expect("clean graph emits");
         let reflected = scene
             .render_list
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn diagnostic_layers_add_only_named_graph_diagnostics() {
-        let model = crate::model::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaPremises::default());
         let load_path = emit(&model, Layer::LoadPath).expect("load path emits");
         assert_eq!(
             load_path.group_count(),
@@ -717,8 +717,8 @@ mod tests {
 
     #[test]
     fn two_independent_builds_export_byte_identically() {
-        let first_model = crate::model::western_bay(&BasilicaParams::default());
-        let second_model = crate::model::western_bay(&BasilicaParams::default());
+        let first_model = crate::model::western_bay(&BasilicaPremises::default());
+        let second_model = crate::model::western_bay(&BasilicaPremises::default());
         assert_eq!(
             crate::model::deterministic_signature(&first_model),
             crate::model::deterministic_signature(&second_model)
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn every_layer_emits_deep_valid_geometry() {
-        let model = crate::model::western_bay(&BasilicaParams::default());
+        let model = crate::model::western_bay(&BasilicaPremises::default());
         for layer in Layer::ALL {
             let scene = emit(&model, layer).expect("layer emits");
             for part in scene.compiled.parts() {

@@ -17,8 +17,8 @@ use joiner_timber::{
 };
 use setout_joiner::ResolvedElementGeometry;
 
-use super::{BuildContext, Layout};
-use crate::{BasilicaParams, BasilicaRoofSetout, RoofSide, names};
+use super::BuildContext;
+use crate::{BasilicaSetout, PlanSection, RoofSide, names};
 
 const WEST_BAYS: u32 = 5;
 const OMITTED_WEST_SLOT: u32 = 2;
@@ -97,15 +97,12 @@ struct TrussGeometry {
 /// seat and ridge claims. The visible clearance is then applied once, normal to
 /// that resolved extent. The missing west slot repeats the authored south-west
 /// clerestory and roof loss rather than placing intact structure beneath it.
-pub(super) fn build(
-    context: &mut BuildContext,
-    p: &BasilicaParams,
-    layout: Layout,
-    setout: &BasilicaRoofSetout,
-) {
+pub(super) fn build(context: &mut BuildContext, plan: &PlanSection, setout: &BasilicaSetout) {
     let geometry = TrussGeometry::from_setout(setout);
     let parts = add_member_parts(context, &geometry);
-    let west_pitch = (layout.crossing_west - 4.0) / f64::from(WEST_BAYS);
+    // The exact crossing edge bounds the authored west-bay repeat. Repeat
+    // placement remains gallery topology until `setout_generate` owns it.
+    let west_pitch = (plan.crossing_west.as_meters() - 4.0) / f64::from(WEST_BAYS);
     let role = [MetadataEntry {
         key: names::ARCHITECTURAL_ROLE,
         value: names::roles::NAVE_TRUSS_MEMBER,
@@ -128,7 +125,7 @@ pub(super) fn build(
         &west_occurrences,
     );
 
-    let east_x = (layout.crossing_east + p.length) * 0.5;
+    let east_x = (plan.crossing_east.as_meters() + plan.length.as_meters()) * 0.5;
     let east_occurrences = repeat_linear(&LinearRepeat {
         count: 1,
         start: [east_x, 0.0, 0.0],
@@ -148,8 +145,8 @@ pub(super) fn build(
 }
 
 impl TrussGeometry {
-    fn from_setout(setout: &BasilicaRoofSetout) -> Self {
-        let roof = setout.section();
+    fn from_setout(setout: &BasilicaSetout) -> Self {
+        let roof = setout.roof();
         let north = setout
             .principal_rafter_geometry(RoofSide::North)
             .expect("accepted north rafter binding resolves");
@@ -838,7 +835,7 @@ mod tests {
 
     use super::*;
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{instances_with_role, resolve_instance_path};
+    use crate::{BasilicaPremises, instances_with_role, resolve_instance_path};
 
     const FRAME_PREFIXES: [&str; 6] = [
         "nave-truss-west-00",
@@ -854,17 +851,17 @@ mod tests {
         // Pattern lowering must preserve the old explicit station order,
         // placements, materials, and recipe identities bit-for-bit even now
         // that each occurrence contains seven fitted parts.
-        let p = BasilicaParams::default();
-        let layout = Layout::from_params(&p);
-        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default roof resolves");
+        let plan = setout.plan();
         let geometry = TrussGeometry::from_setout(&setout);
 
         let mut patterned = BuildContext::new();
-        build(&mut patterned, &p, layout, &setout);
+        build(&mut patterned, plan, &setout);
 
         let mut legacy = BuildContext::new();
         let parts = add_member_parts(&mut legacy, &geometry);
-        let west_pitch = (layout.crossing_west - 4.0) / f64::from(WEST_BAYS);
+        let west_pitch = (plan.crossing_west.as_meters() - 4.0) / f64::from(WEST_BAYS);
         for slot in 0..=WEST_BAYS {
             if slot != OMITTED_WEST_SLOT {
                 add_legacy_frame(
@@ -883,7 +880,7 @@ mod tests {
             &geometry,
             "east",
             0,
-            (layout.crossing_east + p.length) * 0.5,
+            (plan.crossing_east.as_meters() + plan.length.as_meters()) * 0.5,
         );
 
         let patterned = patterned.finish();
@@ -1099,7 +1096,7 @@ mod tests {
         // but every station placement remains proper rigid.
         let scenario = build_scenario();
         let geometry = TrussGeometry::from_setout(
-            &BasilicaRoofSetout::new(&BasilicaParams::default()).expect("default roof resolves"),
+            &BasilicaSetout::new(&BasilicaPremises::default()).expect("default roof resolves"),
         );
         for (canonical_key, mirrored_key, normal, distance) in [
             (
@@ -1196,10 +1193,10 @@ mod tests {
         // housings retain end relish, rafters retain roof reveal, the king
         // encloses both head pockets, and struts start above rather than in
         // the tie beam.
-        let p = BasilicaParams::default();
-        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default roof resolves");
         let geometry = TrussGeometry::from_setout(&setout);
-        let roof = setout.section();
+        let roof = setout.roof();
         let scenario = build_scenario();
 
         for prefix in FRAME_PREFIXES {
@@ -1295,8 +1292,8 @@ mod tests {
             "diagonal-brace-south",
         ];
 
-        let p = BasilicaParams::default();
-        let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default roof resolves");
         let geometry = TrussGeometry::from_setout(&setout);
         let scenario = build_scenario();
 
@@ -1360,9 +1357,10 @@ mod tests {
 
     #[test]
     fn truss_stations_preserve_the_ruin_and_crossing_voids() {
-        let p = BasilicaParams::default();
-        let crossing_west = p.crossing_x - p.drum_radius - 0.6;
-        let crossing_east = p.crossing_x + p.drum_radius + 0.6;
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default basilica resolves");
+        let crossing_west = setout.plan().crossing_west.as_meters();
+        let crossing_east = setout.plan().crossing_east.as_meters();
         let scenario = build_scenario();
         assert!(resolve_instance_path(&scenario.assembly, "nave-truss-west-02-tie-beam").is_none());
 

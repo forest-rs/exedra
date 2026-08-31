@@ -8,7 +8,7 @@ mod model;
 
 use std::path::{Path, PathBuf};
 
-use basilica_ruin::BasilicaParams;
+use basilica_ruin::BasilicaPremises;
 
 use joiner::Construction;
 
@@ -23,7 +23,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let command = parse_args()?;
-    let construction = model::western_bay(&BasilicaParams::default());
+    let construction = model::western_bay(&BasilicaPremises::default());
     let report = model::check(&construction);
     println!("{}", model::stats_line(&construction));
     println!("{report}");
