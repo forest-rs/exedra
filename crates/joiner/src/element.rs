@@ -213,7 +213,7 @@ impl Element {
 pub struct Node {
     /// Stable frontend-supplied identity, unique among nodes.
     pub key: String,
-    /// World-space position, in metres.
+    /// World-space position, in meters.
     pub point: Vec3,
 }
 

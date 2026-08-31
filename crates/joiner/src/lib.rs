@@ -70,6 +70,7 @@
 //! lowered:
 //!
 //! ```
+//! use exedra_measurements::Length;
 //! use joiner::{
 //!     Anchor, ContactMeaning, ContactPatch, Construction, Element, Evidence,
 //!     EvidenceClass, EvidenceSource, OrientedBox, Relation, RelationKind,
@@ -122,7 +123,10 @@
 //!             ContactMeaning::Bearing,
 //!             evidence.clone(),
 //!         )
-//!         .with_minimum_overlap([0.5, 0.5]),
+//!         .with_minimum_overlap([
+//!             Length::millimeters(500).expect("an exact positive overlap");
+//!             2
+//!         ]),
 //!     )
 //!     .transfer(TransferEdge::new(
 //!         "load-lintel-to-pier",

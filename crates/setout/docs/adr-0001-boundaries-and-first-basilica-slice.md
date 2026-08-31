@@ -2,10 +2,8 @@
 
 ## Status
 
-Accepted for implementation planning on 2026-08-23. Implementation has not
-started. Ticket `set-qckq` owns the first milestone. The `crates/setout`
-directory is not a workspace crate until that milestone supplies an earned,
-working slice.
+Accepted on 2026-08-23; the first milestone landed under ticket `set-qckq`.
+The exact measurement-domain amendment landed on 2026-08-31 under `em-u8k7`.
 
 This is the milestone's one owning ADR. Slice-level implementation rationale,
 API examples, and validation detail belong in crate rustdoc and commit messages;
@@ -57,7 +55,8 @@ or joiner validation.
 
 1. Stable semantic keys, never container indices or displayed ordinals, are
    durable identity.
-2. Persisted lengths and exact point components are integer iota values.
+2. Persisted positive `Length` values and signed `Offset` point components are
+   integer iota values owned by `exedra_measurements`.
 3. Definitions are immutable during planning and evaluation.
 4. Every determined claim has structural ancestry to roots and explicit
    decisions.
@@ -174,10 +173,11 @@ slices rather than one unreviewable commit. It must improve the accepted
 `basilica_ruin` as well as the structure lab: both consume one frontend-owned
 roof hypothesis, and neither independently recomputes its derived geometry.
 
-1. `setout`: typed quantities; exact iota `Length` and `Point3`; checked
+1. `setout`: typed quantities; exact iota `Length`, `Offset`, and `Point3`; checked
    `Rational`; stable claim, support, candidate, and decision identity;
-   multi-way `Sum`, `ScaleLength`, `OffsetLength`, `Equal`, `Pitch`, and integer
-   `Pythagorean`; plan compilation; evaluation; local conflicts;
+   multi-way `Sum`, `ScaleLength`, `AdjustLength`, `TranslateOffset`,
+   `OffsetByLength`, `Equal`, `Pitch`, and integer `Pythagorean`; plan
+   compilation; evaluation; local conflicts;
    counterfactuals; strict access; explain; fingerprints; from-scratch oracle.
 2. `setout_joiner`: segment-member and box bindings; one-time exact-to-float
    lowering; stable key mapping; delta-to-dirty mapping; the basilica roof
@@ -215,12 +215,21 @@ roof bearing or alignment are reviewed as improvements to the accepted artifact.
 
 ## Migration and dependency notes
 
-There is no existing setout public API to migrate. `joiner` requires no public API
-change for the initial adapter. If implementation reveals that a joiner API must
-change, the change stops for a migration note and explicit approval.
+The 2026-08-31 migration deliberately breaks the first-slice value API:
 
-The maintainer has pre-approved production dependencies on `joto_constants`,
-`joto_format`, and `joto_parse`. Parsing and formatting remain adapters or feature
-gates; exact iota representation belongs in the core. Any other new production
-dependency, including a fingerprint implementation, still requires the normal
-dependency decision.
+- the old signed `setout::Length` is replaced by the shared strictly-positive
+  `exedra_measurements::Length`;
+- signed values use `Offset`, and `Point3` components change from the old
+  `Length` to `Offset`;
+- `Length::quantize_metres` becomes `quantize_length_meters`, with
+  `quantize_offset_meters` for signed roots;
+- `OffsetLength` is replaced by semantically distinct `AdjustLength`,
+  `TranslateOffset`, and `OffsetByLength` relations;
+- canonical fingerprint schema version 2 changes domain tags, encodes lengths
+  as `u64`, and records imported selected iotas as `i128`. Persisted version-1
+  fingerprints and claim keys must be rebuilt from their semantic inputs; they
+  are not compatible identities.
+
+`setout` now depends on `exedra_measurements` for value domains, while retaining
+`joto_constants` and `joto_parse` for its explicit import policy. It no longer
+depends on `joto_format`; display formatting is not part of propagation.

@@ -535,8 +535,8 @@ fn format_finding(finding: &ReconstructionFinding) -> alloc::string::String {
 mod tests {
     use super::*;
     use setout::{
-        EvaluationScenarioBuilder, Knowledge, Length, NetworkBuilder, OffsetLength, QuantityPolicy,
-        RootClaimKey, RootClaimSetBuilder, Sum, compile_plan, evaluate,
+        AdjustLength, EvaluationScenarioBuilder, Knowledge, Length, NetworkBuilder, Offset,
+        QuantityPolicy, RootClaimKey, RootClaimSetBuilder, Sum, compile_plan, evaluate,
     };
 
     #[test]
@@ -556,22 +556,22 @@ mod tests {
             .unwrap();
         network
             .relate(
-                OffsetLength::new(
+                AdjustLength::new(
                     "roof/a-left",
                     base.clone(),
                     left.clone(),
-                    Length::millimetres(10).unwrap(),
+                    Offset::millimeters(10).unwrap(),
                 )
                 .unwrap(),
             )
             .unwrap();
         network
             .relate(
-                OffsetLength::new(
+                AdjustLength::new(
                     "roof/b-right",
                     base.clone(),
                     right.clone(),
-                    Length::millimetres(20).unwrap(),
+                    Offset::millimeters(20).unwrap(),
                 )
                 .unwrap(),
             )
@@ -585,7 +585,7 @@ mod tests {
             .author(
                 "root/base",
                 &base,
-                Knowledge::exact(Length::millimetres(100).unwrap()),
+                Knowledge::exact(Length::millimeters(100).unwrap()),
             )
             .unwrap();
         let roots = roots.finish().unwrap();

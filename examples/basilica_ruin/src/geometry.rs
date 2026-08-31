@@ -241,10 +241,10 @@ pub(super) fn drum_panel_profile(width: f64, height: f64, window: bool) -> Profi
 }
 
 pub(super) fn west_facade_profile(p: &BasilicaParams, roof: &RoofSection) -> Profile2 {
-    let half_nave = roof.half_span.as_metres();
+    let half_nave = roof.half_span.as_meters();
     let half_total = p.total_width * 0.5;
-    let wall_plate_top = roof.wall_plate_top.as_metres();
-    let peak = roof.ridge_height.as_metres();
+    let wall_plate_top = roof.wall_plate_top.as_meters();
+    let peak = roof.ridge_height.as_meters();
     let outer = Loop2::new(vec![
         Seg2::line((half_total, 0.0)).tagged(SegTag(0)),
         Seg2::line((half_total, p.aisle_wall_height)).tagged(SegTag(1)),
@@ -274,12 +274,12 @@ pub(super) fn gable_profile(width: f64, rise: f64) -> Profile2 {
 }
 
 pub(super) fn east_chancel_profile(roof: &RoofSection) -> Profile2 {
-    let width = roof.span.as_metres();
-    let wall_plate_top = roof.wall_plate_top.as_metres();
+    let width = roof.span.as_meters();
+    let wall_plate_top = roof.wall_plate_top.as_meters();
     let outer = Loop2::new(vec![
         Seg2::line((width, 0.0)).tagged(SegTag(0)),
         Seg2::line((width, wall_plate_top)).tagged(SegTag(1)),
-        Seg2::line((width * 0.5, roof.ridge_height.as_metres())).tagged(SegTag(2)),
+        Seg2::line((width * 0.5, roof.ridge_height.as_meters())).tagged(SegTag(2)),
         Seg2::line((0.0, wall_plate_top)).tagged(SegTag(3)),
         Seg2::line((0.0, 0.0)).tagged(SegTag(4)),
     ])
@@ -441,8 +441,8 @@ mod tests {
         let p = BasilicaParams::default();
         let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
         let roof = setout.section();
-        let slope = roof.roof_slope_length.as_metres();
-        let thickness = roof.roof_skin_depth.as_metres();
+        let slope = roof.roof_slope_length.as_meters();
+        let thickness = roof.roof_skin_depth.as_meters();
         let start_x = 10.75;
         let segment_length = 7.15;
         let north = roof_panel_frame(start_x, roof, true);
@@ -499,7 +499,7 @@ mod tests {
         let frame = roof_panel_frame(0.0, roof, true);
         // The structural rafter length is exactly the ridge-to-seat distance,
         // so this samples the skin at the actual load-transfer line.
-        let wall_line = transform_point(&frame, [0.0, roof.rafter_length.as_metres(), 0.0]);
+        let wall_line = transform_point(&frame, [0.0, roof.rafter_length.as_meters(), 0.0]);
 
         assert_point_close(wall_line, lower_point(roof.north_wall_seat));
     }

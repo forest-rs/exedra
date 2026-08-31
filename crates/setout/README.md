@@ -15,6 +15,13 @@ decisions, explain, fingerprints, and quantity-granular change reporting. It doe
 not own building construction, historical-reconstruction policy, mesh geometry,
 or generative topology.
 
+Physical values come from `exedra_measurements`: `Length` is a strictly
+positive size, while `Offset` carries zero and signed coordinates. `Point3`
+contains three offsets. Relations such as `OffsetByLength` make the transition
+explicit when a positive distance locates a datum on either side of an origin.
+Parsing and legacy floating-root quantization remain explicit setout import
+operations; exact values lower only in a consumer adapter.
+
 The first production consumer is the basilica roof: its wall plates, ridge,
 rafters, gables, and roof skin are resolved from one exact section rather than
 from repeated floating-point calculations.

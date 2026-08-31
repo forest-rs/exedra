@@ -722,6 +722,7 @@ dependencies = [
  "exedra_assembly",
  "exedra_constructive",
  "exedra_math",
+ "exedra_measurements",
  "hashbrown 0.16.1",
  "invalidation",
 ]
@@ -741,16 +742,6 @@ name = "joto_constants"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d34cd7ad25e6256500742e8b4ab81d659ea863342322381a7d72aa6c80661fe"
-
-[[package]]
-name = "joto_format"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8844dcdfa52a47190fb4430de0d8eec47ae49cdb8101f3fc50287c5096a48252"
-dependencies = [
- "joto_constants",
- "joto_parse",
-]
 
 [[package]]
 name = "joto_parse"
@@ -1142,8 +1133,8 @@ dependencies = [
 name = "setout"
 version = "0.0.0"
 dependencies = [
+ "exedra_measurements",
  "joto_constants",
- "joto_format",
  "joto_parse",
  "libm",
 ]

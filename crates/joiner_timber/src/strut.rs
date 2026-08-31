@@ -289,7 +289,7 @@ fn instantiate(
         ContactMeaning::Bearing,
         evidence,
     )
-    .with_minimum_overlap([full[0] * 0.8, full[1] * 0.8])
+    .with_minimum_overlap_meters([full[0] * 0.8, full[1] * 0.8])
     .with_detail(detail);
     let load_to_support =
         (!matches!(load_route, LoadRoute::CarrierIntoCarriedContactOnly)).then(|| {

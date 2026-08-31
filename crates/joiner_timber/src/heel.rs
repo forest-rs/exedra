@@ -245,7 +245,7 @@ impl Rule for HeelRule {
             ContactMeaning::Bearing,
             evidence,
         )
-        .with_minimum_overlap([interface.width * 0.8, interface.run * 0.8])
+        .with_minimum_overlap_meters([interface.width * 0.8, interface.run * 0.8])
         .with_detail("housed-heel-seat");
 
         let mut output = RuleOutput::new();

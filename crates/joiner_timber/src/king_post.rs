@@ -295,7 +295,7 @@ impl Rule for KingPostTieRule {
             ContactMeaning::Bearing,
             evidence.clone(),
         )
-        .with_minimum_overlap([full[0] * 0.8, params.key_width * 0.8])
+        .with_minimum_overlap_meters([full[0] * 0.8, params.key_width * 0.8])
         .with_detail("tie-underside-on-transverse-key");
         let key_on_tenon_point = key_bottom;
         let key_bears_on_tenon = ContactPatch::new(
@@ -310,7 +310,7 @@ impl Rule for KingPostTieRule {
             ContactMeaning::Shoulder,
             evidence,
         )
-        .with_minimum_overlap([params.tenon_width * 0.8, params.key_width * 0.8])
+        .with_minimum_overlap_meters([params.tenon_width * 0.8, params.key_width * 0.8])
         .with_detail("key-on-tenon-slot-bottom");
         let route_tie_load_to_key = TransferEdge::new(
             &alloc::format!("load-{}-through-{relation}-key", pair.carrier.key),

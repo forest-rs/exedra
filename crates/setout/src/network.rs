@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 use crate::fingerprint::{CanonicalEncoder, Fingerprint};
 use crate::key::{KeyError, MethodId, QuantityKey, RelationKey};
 use crate::value::{
-    ArithmeticError, Count, Domain, DomainTag, ExactnessTrace, Length, Point3, Rational,
+    ArithmeticError, Count, Domain, DomainTag, ExactnessTrace, Length, Offset, Point3, Rational,
     RootRounding, Round, Value,
 };
 
@@ -112,7 +112,10 @@ impl<T: Domain> QuantityPolicy<T> {
         }
     }
 
-    /// Requires a non-negative length or count.
+    /// Requires a non-negative displacement or count.
+    ///
+    /// [`Length`] already encodes the stronger strictly-positive invariant,
+    /// so callers normally use [`QuantityPolicy::unrestricted`] for lengths.
     #[must_use]
     pub const fn non_negative() -> Self {
         Self {
@@ -121,7 +124,10 @@ impl<T: Domain> QuantityPolicy<T> {
         }
     }
 
-    /// Requires a strictly positive length or count.
+    /// Requires a strictly positive displacement or count.
+    ///
+    /// [`Length`] values are always strictly positive, so the policy is
+    /// redundant but accepted when a uniform declaration helper needs it.
     #[must_use]
     pub const fn positive() -> Self {
         Self {
@@ -156,8 +162,9 @@ impl PolicyKind {
     pub(crate) fn accepts(self, value: &Value) -> bool {
         match (self, value) {
             (Self::Unrestricted, _) => true,
-            (Self::NonNegative, Value::Length(value)) => value.iota() >= 0,
-            (Self::Positive, Value::Length(value)) => value.iota() > 0,
+            (Self::NonNegative | Self::Positive, Value::Length(_)) => true,
+            (Self::NonNegative, Value::Offset(value)) => value.iota() >= 0,
+            (Self::Positive, Value::Offset(value)) => value.iota() > 0,
             (Self::NonNegative, Value::Count(_)) => true,
             (Self::Positive, Value::Count(value)) => value.get() > 0,
             // Sign policies have no coherent meaning for other domains; the
@@ -236,7 +243,10 @@ impl NetworkBuilder {
         policy: QuantityPolicy<T>,
     ) -> Result<Quantity<T>, BuildError> {
         if !matches!(policy.kind, PolicyKind::Unrestricted)
-            && !matches!(T::TAG, DomainTag::Length | DomainTag::Count)
+            && !matches!(
+                T::TAG,
+                DomainTag::Length | DomainTag::Offset | DomainTag::Count
+            )
         {
             return Err(BuildError::InvalidPolicy);
         }
@@ -394,7 +404,7 @@ pub struct Sum<T: Domain> {
 }
 
 impl<T: Domain> Sum<T> {
-    /// Creates an additive relation. Only `Length` and `Count` are currently supported.
+    /// Creates an additive relation. `Length`, `Offset`, and `Count` are supported.
     pub fn new(
         key: &str,
         left: Quantity<T>,
@@ -416,6 +426,7 @@ impl<T: Domain> RelationSpec for Sum<T> {
     fn build(self) -> Result<RelationDef, BuildError> {
         let family = match T::TAG {
             DomainTag::Length => AddFamily::Length,
+            DomainTag::Offset => AddFamily::Offset,
             DomainTag::Count => AddFamily::Count,
             _ => return Err(BuildError::InvalidRelation),
         };
@@ -475,7 +486,7 @@ impl ScaleLength {
         factor: Rational,
         round: Round,
     ) -> Result<Self, BuildError> {
-        if factor.numerator() == 0 {
+        if factor.numerator() <= 0 {
             return Err(BuildError::InvalidRelation);
         }
         Ok(Self {
@@ -522,35 +533,96 @@ impl RelationSpec for ScaleLength {
     }
 }
 
-/// Bidirectional fixed offset relation `output = input + offset`.
+/// Bidirectional adjustment `output = input + adjustment` for positive lengths.
+///
+/// The signed adjustment is an [`Offset`], while both quantities remain
+/// [`Length`] values. Evaluation fails explicitly if either direction would
+/// produce zero or a negative size.
 #[derive(Clone, Debug)]
-pub struct OffsetLength {
+pub struct AdjustLength {
     key: RelationKey,
     input: Quantity<Length>,
     output: Quantity<Length>,
-    offset: Length,
+    adjustment: Offset,
 }
 
-impl OffsetLength {
-    /// Creates a fixed exact offset.
+impl AdjustLength {
+    /// Creates a fixed signed adjustment between two positive lengths.
     pub fn new(
         key: &str,
         input: Quantity<Length>,
         output: Quantity<Length>,
-        offset: Length,
+        adjustment: Offset,
     ) -> Result<Self, BuildError> {
         Ok(Self {
             key: RelationKey::new(key)?,
             input,
             output,
-            offset,
+            adjustment,
         })
     }
 }
 
-impl relation_private::Sealed for OffsetLength {}
+impl relation_private::Sealed for AdjustLength {}
 
-impl RelationSpec for OffsetLength {
+impl RelationSpec for AdjustLength {
+    fn build(self) -> Result<RelationDef, BuildError> {
+        Ok(RelationDef {
+            key: self.key,
+            participants: vec![self.input.erase(), self.output.erase()],
+            methods: vec![
+                MethodDef::new(
+                    "input-plus-adjustment-to-output",
+                    self.output.slot,
+                    [self.input.slot],
+                    Operation::AdjustLength {
+                        adjustment: self.adjustment,
+                        subtract: false,
+                    },
+                )?,
+                MethodDef::new(
+                    "output-minus-adjustment-to-input",
+                    self.input.slot,
+                    [self.output.slot],
+                    Operation::AdjustLength {
+                        adjustment: self.adjustment,
+                        subtract: true,
+                    },
+                )?,
+            ],
+        })
+    }
+}
+
+/// Bidirectional fixed translation `output = input + translation`.
+#[derive(Clone, Debug)]
+pub struct TranslateOffset {
+    key: RelationKey,
+    input: Quantity<Offset>,
+    output: Quantity<Offset>,
+    translation: Offset,
+}
+
+impl TranslateOffset {
+    /// Creates a fixed exact translation between two displacement quantities.
+    pub fn new(
+        key: &str,
+        input: Quantity<Offset>,
+        output: Quantity<Offset>,
+        translation: Offset,
+    ) -> Result<Self, BuildError> {
+        Ok(Self {
+            key: RelationKey::new(key)?,
+            input,
+            output,
+            translation,
+        })
+    }
+}
+
+impl relation_private::Sealed for TranslateOffset {}
+
+impl RelationSpec for TranslateOffset {
     fn build(self) -> Result<RelationDef, BuildError> {
         Ok(RelationDef {
             key: self.key,
@@ -560,20 +632,124 @@ impl RelationSpec for OffsetLength {
                     "input-plus-offset-to-output",
                     self.output.slot,
                     [self.input.slot],
-                    Operation::OffsetLength(self.offset),
+                    Operation::TranslateOffset {
+                        translation: self.translation,
+                        subtract: false,
+                    },
                 )?,
                 MethodDef::new(
                     "output-minus-offset-to-input",
                     self.input.slot,
                     [self.output.slot],
-                    Operation::OffsetLength(
-                        self.offset
-                            .checked_neg()
-                            .map_err(|_| BuildError::InvalidRelation)?,
-                    ),
+                    Operation::TranslateOffset {
+                        translation: self.translation,
+                        subtract: true,
+                    },
                 )?,
             ],
         })
+    }
+}
+
+/// Direction in which a positive length locates one offset from another.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum OffsetDirection {
+    /// `target = origin + distance`.
+    Positive,
+    /// `target = origin - distance`.
+    Negative,
+}
+
+/// Multi-way relation locating an offset by a positive length.
+///
+/// Keeping the distance in the [`Length`] domain prevents a negative size
+/// from leaking into setting-out merely because one side of an origin lies in
+/// the negative coordinate direction.
+#[derive(Clone, Debug)]
+pub struct OffsetByLength {
+    key: RelationKey,
+    origin: Quantity<Offset>,
+    distance: Quantity<Length>,
+    target: Quantity<Offset>,
+    direction: OffsetDirection,
+}
+
+impl OffsetByLength {
+    /// Creates a relation between an origin, positive distance, and target.
+    pub fn new(
+        key: &str,
+        origin: Quantity<Offset>,
+        distance: Quantity<Length>,
+        target: Quantity<Offset>,
+        direction: OffsetDirection,
+    ) -> Result<Self, BuildError> {
+        Ok(Self {
+            key: RelationKey::new(key)?,
+            origin,
+            distance,
+            target,
+            direction,
+        })
+    }
+}
+
+impl relation_private::Sealed for OffsetByLength {}
+
+impl RelationSpec for OffsetByLength {
+    fn build(self) -> Result<RelationDef, BuildError> {
+        Ok(RelationDef {
+            key: self.key,
+            participants: vec![
+                self.origin.erase(),
+                self.distance.erase(),
+                self.target.erase(),
+            ],
+            methods: vec![
+                MethodDef::new(
+                    "origin-and-distance-to-target",
+                    self.target.slot,
+                    [self.origin.slot, self.distance.slot],
+                    Operation::LocateOffset {
+                        direction: self.direction,
+                        target: LocateTarget::Offset,
+                    },
+                )?,
+                MethodDef::new(
+                    "target-and-distance-to-origin",
+                    self.origin.slot,
+                    [self.target.slot, self.distance.slot],
+                    Operation::LocateOffset {
+                        direction: self.direction.reverse(),
+                        target: LocateTarget::Offset,
+                    },
+                )?,
+                MethodDef::new(
+                    "origin-and-target-to-distance",
+                    self.distance.slot,
+                    [self.origin.slot, self.target.slot],
+                    Operation::LocateOffset {
+                        direction: self.direction,
+                        target: LocateTarget::Length,
+                    },
+                )?,
+            ],
+        })
+    }
+}
+
+impl OffsetDirection {
+    const fn reverse(self) -> Self {
+        match self {
+            Self::Positive => Self::Negative,
+            Self::Negative => Self::Positive,
+        }
+    }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::Positive => 0,
+            Self::Negative => 1,
+        }
     }
 }
 
@@ -778,9 +954,9 @@ impl RelationSpec for Pythagorean {
 #[derive(Clone, Debug)]
 pub struct ComposePoint {
     key: RelationKey,
-    x: Quantity<Length>,
-    y: Quantity<Length>,
-    z: Quantity<Length>,
+    x: Quantity<Offset>,
+    y: Quantity<Offset>,
+    z: Quantity<Offset>,
     point: Quantity<Point3>,
 }
 
@@ -788,9 +964,9 @@ impl ComposePoint {
     /// Creates a point-composition relation.
     pub fn new(
         key: &str,
-        x: Quantity<Length>,
-        y: Quantity<Length>,
-        z: Quantity<Length>,
+        x: Quantity<Offset>,
+        y: Quantity<Offset>,
+        z: Quantity<Offset>,
         point: Quantity<Point3>,
     ) -> Result<Self, BuildError> {
         Ok(Self {
@@ -848,6 +1024,7 @@ impl RelationSpec for ComposePoint {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AddFamily {
     Length,
+    Offset,
     Count,
 }
 
@@ -855,29 +1032,58 @@ impl AddFamily {
     const fn code(self) -> u8 {
         match self {
             Self::Length => 0,
-            Self::Count => 1,
+            Self::Offset => 1,
+            Self::Count => 2,
         }
     }
 
     const fn domain(self) -> DomainTag {
         match self {
             Self::Length => DomainTag::Length,
+            Self::Offset => DomainTag::Offset,
             Self::Count => DomainTag::Count,
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum LocateTarget {
+    Offset,
+    Length,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum Operation {
     Add(AddFamily),
     Subtract(AddFamily),
-    ScaleLength { factor: Rational, round: Round },
-    OffsetLength(Length),
+    ScaleLength {
+        factor: Rational,
+        round: Round,
+    },
+    AdjustLength {
+        adjustment: Offset,
+        subtract: bool,
+    },
+    TranslateOffset {
+        translation: Offset,
+        subtract: bool,
+    },
+    LocateOffset {
+        direction: OffsetDirection,
+        target: LocateTarget,
+    },
     Identity(DomainTag),
-    PitchRise { round: Round },
-    PitchRun { round: Round },
+    PitchRise {
+        round: Round,
+    },
+    PitchRun {
+        round: Round,
+    },
     PitchRatio,
-    Pythagorean { subtract: bool, round: Round },
+    Pythagorean {
+        subtract: bool,
+        round: Round,
+    },
     ComposePoint,
     PointComponent(u8),
 }
@@ -887,11 +1093,20 @@ impl Operation {
         match self {
             Self::Add(family) | Self::Subtract(family) => family.domain(),
             Self::ScaleLength { .. }
-            | Self::OffsetLength(_)
+            | Self::AdjustLength { .. }
             | Self::PitchRise { .. }
             | Self::PitchRun { .. }
-            | Self::Pythagorean { .. }
-            | Self::PointComponent(_) => DomainTag::Length,
+            | Self::Pythagorean { .. } => DomainTag::Length,
+            Self::TranslateOffset { .. }
+            | Self::LocateOffset {
+                target: LocateTarget::Offset,
+                ..
+            }
+            | Self::PointComponent(_) => DomainTag::Offset,
+            Self::LocateOffset {
+                target: LocateTarget::Length,
+                ..
+            } => DomainTag::Length,
             Self::Identity(domain) => *domain,
             Self::PitchRatio => DomainTag::Rational,
             Self::ComposePoint => DomainTag::Point3,
@@ -904,14 +1119,34 @@ impl Operation {
                 let [Value::Length(left), Value::Length(right)] = inputs else {
                     unreachable!("plan compiler validated length addition domains")
                 };
-                Ok(SolveResult::exact(Value::Length(left.checked_add(*right)?)))
+                Ok(SolveResult::exact(Value::Length(
+                    left.checked_add(*right).ok_or(ArithmeticError::Overflow)?,
+                )))
             }
             Self::Subtract(AddFamily::Length) => {
                 let [Value::Length(total), Value::Length(known)] = inputs else {
                     unreachable!("plan compiler validated length subtraction domains")
                 };
                 Ok(SolveResult::exact(Value::Length(
-                    total.checked_sub(*known)?,
+                    total
+                        .checked_sub(*known)
+                        .ok_or(ArithmeticError::OutOfDomain)?,
+                )))
+            }
+            Self::Add(AddFamily::Offset) => {
+                let [Value::Offset(left), Value::Offset(right)] = inputs else {
+                    unreachable!("plan compiler validated offset addition domains")
+                };
+                Ok(SolveResult::exact(Value::Offset(
+                    left.checked_add(*right).ok_or(ArithmeticError::Overflow)?,
+                )))
+            }
+            Self::Subtract(AddFamily::Offset) => {
+                let [Value::Offset(total), Value::Offset(known)] = inputs else {
+                    unreachable!("plan compiler validated offset subtraction domains")
+                };
+                Ok(SolveResult::exact(Value::Offset(
+                    total.checked_sub(*known).ok_or(ArithmeticError::Overflow)?,
                 )))
             }
             Self::Add(AddFamily::Count) => {
@@ -938,20 +1173,71 @@ impl Operation {
                 let [Value::Length(input)] = inputs else {
                     unreachable!("plan compiler validated scale domains")
                 };
-                let (value, exactness) = input.checked_scale(*factor, *round)?;
+                let (value, exactness) = scale_length(*input, *factor, *round)?;
                 Ok(SolveResult {
                     value: Value::Length(value),
                     exactness,
                 })
             }
-            Self::OffsetLength(offset) => {
+            Self::AdjustLength {
+                adjustment,
+                subtract,
+            } => {
                 let [Value::Length(input)] = inputs else {
-                    unreachable!("plan compiler validated offset domains")
+                    unreachable!("plan compiler validated length-adjustment domains")
+                };
+                let value = if *subtract {
+                    input.checked_sub_offset(*adjustment)
+                } else {
+                    input.checked_add_offset(*adjustment)
                 };
                 Ok(SolveResult::exact(Value::Length(
-                    input.checked_add(*offset)?,
+                    value.ok_or(ArithmeticError::OutOfDomain)?,
                 )))
             }
+            Self::TranslateOffset {
+                translation,
+                subtract,
+            } => {
+                let [Value::Offset(input)] = inputs else {
+                    unreachable!("plan compiler validated translation domains")
+                };
+                let value = if *subtract {
+                    input.checked_sub(*translation)
+                } else {
+                    input.checked_add(*translation)
+                };
+                Ok(SolveResult::exact(Value::Offset(
+                    value.ok_or(ArithmeticError::Overflow)?,
+                )))
+            }
+            Self::LocateOffset { direction, target } => match target {
+                LocateTarget::Offset => {
+                    let [Value::Offset(origin), Value::Length(distance)] = inputs else {
+                        unreachable!("plan compiler validated offset-location domains")
+                    };
+                    let value = match direction {
+                        OffsetDirection::Positive => origin.checked_add_length(*distance),
+                        OffsetDirection::Negative => origin.checked_sub_length(*distance),
+                    }
+                    .ok_or(ArithmeticError::Overflow)?;
+                    Ok(SolveResult::exact(Value::Offset(value)))
+                }
+                LocateTarget::Length => {
+                    let [Value::Offset(origin), Value::Offset(target)] = inputs else {
+                        unreachable!("plan compiler validated offset-location domains")
+                    };
+                    // The distance belongs to the unsigned Length domain and
+                    // may span all of `i64::MIN..=i64::MAX`; signed subtraction
+                    // would reject valid coordinates at opposite extremes.
+                    let value = match direction {
+                        OffsetDirection::Positive => origin.checked_positive_distance_to(*target),
+                        OffsetDirection::Negative => target.checked_positive_distance_to(*origin),
+                    }
+                    .ok_or(ArithmeticError::OutOfDomain)?;
+                    Ok(SolveResult::exact(Value::Length(value)))
+                }
+            },
             Self::Identity(_) => {
                 let [input] = inputs else {
                     unreachable!("identity has one input")
@@ -962,7 +1248,7 @@ impl Operation {
                 let [Value::Length(run), Value::Rational(ratio)] = inputs else {
                     unreachable!("plan compiler validated pitch domains")
                 };
-                let (rise, exactness) = run.checked_scale(*ratio, *round)?;
+                let (rise, exactness) = scale_length(*run, *ratio, *round)?;
                 Ok(SolveResult {
                     value: Value::Length(rise),
                     exactness,
@@ -972,7 +1258,7 @@ impl Operation {
                 let [Value::Length(rise), Value::Rational(ratio)] = inputs else {
                     unreachable!("plan compiler validated pitch domains")
                 };
-                let (run, exactness) = rise.checked_scale(ratio.checked_reciprocal()?, *round)?;
+                let (run, exactness) = scale_length(*rise, ratio.checked_reciprocal()?, *round)?;
                 Ok(SolveResult {
                     value: Value::Length(run),
                     exactness,
@@ -982,15 +1268,8 @@ impl Operation {
                 let [Value::Length(run), Value::Length(rise)] = inputs else {
                     unreachable!("plan compiler validated pitch domains")
                 };
-                if run.iota() == 0 {
-                    return Err(ArithmeticError::DivisionByZero);
-                }
-                let denominator = run.iota().unsigned_abs().into();
-                let numerator = if run.iota().is_negative() {
-                    -i128::from(rise.iota())
-                } else {
-                    i128::from(rise.iota())
-                };
+                let denominator = u128::from(run.iota());
+                let numerator = i128::from(rise.iota());
                 Ok(SolveResult::exact(Value::Rational(Rational::new(
                     numerator,
                     denominator,
@@ -1000,8 +1279,8 @@ impl Operation {
                 let [Value::Length(first), Value::Length(second)] = inputs else {
                     unreachable!("plan compiler validated pythagorean domains")
                 };
-                let first = first.iota().unsigned_abs();
-                let second = second.iota().unsigned_abs();
+                let first = first.iota();
+                let second = second.iota();
                 let first_squared = u128::from(first)
                     .checked_mul(u128::from(first))
                     .ok_or(ArithmeticError::Overflow)?;
@@ -1053,8 +1332,8 @@ impl Operation {
                         }
                     }
                 };
-                let selected_i64 =
-                    i64::try_from(selected).map_err(|_| ArithmeticError::Overflow)?;
+                let selected_u64 =
+                    u64::try_from(selected).map_err(|_| ArithmeticError::Overflow)?;
                 let exactness = if remainder == 0 {
                     ExactnessTrace::Exact
                 } else {
@@ -1067,12 +1346,14 @@ impl Operation {
                     })
                 };
                 Ok(SolveResult {
-                    value: Value::Length(Length::from_iota(selected_i64)),
+                    value: Value::Length(
+                        Length::from_iota(selected_u64).ok_or(ArithmeticError::OutOfDomain)?,
+                    ),
                     exactness,
                 })
             }
             Self::ComposePoint => {
-                let [Value::Length(x), Value::Length(y), Value::Length(z)] = inputs else {
+                let [Value::Offset(x), Value::Offset(y), Value::Offset(z)] = inputs else {
                     unreachable!("plan compiler validated point domains")
                 };
                 Ok(SolveResult::exact(Value::Point3(Point3::new(*x, *y, *z))))
@@ -1087,7 +1368,7 @@ impl Operation {
                     2 => point.z,
                     _ => unreachable!("point component is constructed internally"),
                 };
-                Ok(SolveResult::exact(Value::Length(value)))
+                Ok(SolveResult::exact(Value::Offset(value)))
             }
         }
     }
@@ -1107,35 +1388,76 @@ impl Operation {
                 factor.encode(encoder);
                 encoder.u8(round.code());
             }
-            Self::OffsetLength(offset) => {
+            Self::AdjustLength {
+                adjustment,
+                subtract,
+            } => {
                 encoder.u8(3);
-                offset.encode(encoder);
+                adjustment.encode(encoder);
+                encoder.bool(*subtract);
+            }
+            Self::TranslateOffset {
+                translation,
+                subtract,
+            } => {
+                encoder.u8(4);
+                translation.encode(encoder);
+                encoder.bool(*subtract);
+            }
+            Self::LocateOffset { direction, target } => {
+                encoder.u8(5);
+                encoder.u8(direction.code());
+                encoder.u8(match target {
+                    LocateTarget::Offset => 0,
+                    LocateTarget::Length => 1,
+                });
             }
             Self::Identity(domain) => {
-                encoder.u8(4);
+                encoder.u8(6);
                 encoder.u8(domain.code());
             }
             Self::PitchRise { round } => {
-                encoder.u8(5);
+                encoder.u8(7);
                 encoder.u8(round.code());
             }
             Self::PitchRun { round } => {
-                encoder.u8(6);
+                encoder.u8(8);
                 encoder.u8(round.code());
             }
-            Self::PitchRatio => encoder.u8(7),
+            Self::PitchRatio => encoder.u8(9),
             Self::Pythagorean { subtract, round } => {
-                encoder.u8(8);
+                encoder.u8(10);
                 encoder.bool(*subtract);
                 encoder.u8(round.code());
             }
-            Self::ComposePoint => encoder.u8(9),
+            Self::ComposePoint => encoder.u8(11),
             Self::PointComponent(component) => {
-                encoder.u8(10);
+                encoder.u8(12);
                 encoder.u8(*component);
             }
         }
     }
+}
+
+fn scale_length(
+    input: Length,
+    factor: Rational,
+    round: Round,
+) -> Result<(Length, ExactnessTrace), ArithmeticError> {
+    // Rational arithmetic stays in setout because selection policy and its
+    // exactness trace are propagation concerns, not measurement-value concerns.
+    let input = i128::from(input.iota());
+    let exact = Rational::new(
+        input
+            .checked_mul(factor.numerator())
+            .ok_or(ArithmeticError::Overflow)?,
+        factor.denominator(),
+    )?;
+    let (selected, exactness) = exact.quantize_u64(round)?;
+    Ok((
+        Length::from_iota(selected).ok_or(ArithmeticError::OutOfDomain)?,
+        exactness,
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -1206,5 +1528,99 @@ impl RelationDef {
             .find(|quantity| quantity.slot() == slot)
             .expect("every method slot is a relation participant")
             .key()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offset_by_length_keeps_distance_positive_in_both_directions() {
+        // A point on the negative side of an origin is still located by a
+        // positive distance. Forward, reverse, and distance-solving methods
+        // must agree without manufacturing a negative Length.
+        let origin = Offset::millimeters(100).unwrap();
+        let distance = Length::millimeters(250).unwrap();
+        let target = Operation::LocateOffset {
+            direction: OffsetDirection::Negative,
+            target: LocateTarget::Offset,
+        }
+        .solve(&[Value::Offset(origin), Value::Length(distance)])
+        .unwrap();
+        assert_eq!(
+            target.value,
+            Value::Offset(Offset::millimeters(-150).unwrap())
+        );
+
+        let solved_distance = Operation::LocateOffset {
+            direction: OffsetDirection::Negative,
+            target: LocateTarget::Length,
+        }
+        .solve(&[
+            Value::Offset(origin),
+            Value::Offset(Offset::millimeters(-150).unwrap()),
+        ])
+        .unwrap();
+        assert_eq!(solved_distance.value, Value::Length(distance));
+
+        // Reverse solving must retain the one valid distance that exceeds the
+        // signed iota range instead of overflowing an intermediate Offset.
+        let widest_distance = Operation::LocateOffset {
+            direction: OffsetDirection::Positive,
+            target: LocateTarget::Length,
+        }
+        .solve(&[
+            Value::Offset(Offset::from_iota(i64::MIN)),
+            Value::Offset(Offset::from_iota(i64::MAX)),
+        ])
+        .unwrap();
+        assert_eq!(
+            widest_distance.value,
+            Value::Length(Length::from_iota(u64::MAX).unwrap())
+        );
+    }
+
+    #[test]
+    fn positive_length_methods_reject_zero_or_negative_results() {
+        // Reverse multi-way evaluation may subtract equal lengths, and a
+        // signed adjustment may cross zero. Both must fail at the domain seam
+        // instead of creating an invalid shared Length.
+        let ten = Length::millimeters(10).unwrap();
+        assert!(matches!(
+            Operation::Subtract(AddFamily::Length).solve(&[Value::Length(ten), Value::Length(ten)]),
+            Err(ArithmeticError::OutOfDomain)
+        ));
+        assert!(matches!(
+            Operation::AdjustLength {
+                adjustment: Offset::millimeters(-10).unwrap(),
+                subtract: false,
+            }
+            .solve(&[Value::Length(ten)]),
+            Err(ArithmeticError::OutOfDomain)
+        ));
+
+        // Reverse methods subtract the stored offset directly. They must not
+        // negate `i64::MIN`, whose unsigned magnitude is nevertheless a valid
+        // Length and can yield a representable result in either relation.
+        let minimum_offset = Offset::from_iota(i64::MIN);
+        let one_iota = Length::MIN;
+        let adjusted = Operation::AdjustLength {
+            adjustment: minimum_offset,
+            subtract: true,
+        }
+        .solve(&[Value::Length(one_iota)])
+        .unwrap();
+        assert_eq!(
+            adjusted.value,
+            Value::Length(Length::from_iota((1_u64 << 63) + 1).unwrap())
+        );
+        let translated = Operation::TranslateOffset {
+            translation: minimum_offset,
+            subtract: true,
+        }
+        .solve(&[Value::Offset(minimum_offset)])
+        .unwrap();
+        assert_eq!(translated.value, Value::Offset(Offset::ZERO));
     }
 }

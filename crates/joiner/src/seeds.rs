@@ -21,6 +21,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use exedra_constructive::ir::{CsgOp, NodeKind, Placement3};
+use exedra_measurements::Length;
 
 use crate::construction::{Construction, channel};
 use crate::element::{Element, ElementOrigin, Member, Node, Part, Support};
@@ -203,7 +204,7 @@ fn truss_heel() -> Construction {
                 ContactMeaning::Bearing,
                 evidence(),
             )
-            .with_minimum_overlap([0.15, 0.15])
+            .with_minimum_overlap([Length::millimeters(150).expect("an exact positive overlap"); 2])
             .with_detail("heel-seat"),
         )
         .transfer(TransferEdge::new(
@@ -293,7 +294,7 @@ fn window_opening() -> Construction {
             ContactMeaning::Bearing,
             evidence(),
         )
-        .with_minimum_overlap(minimum)
+        .with_minimum_overlap_meters(minimum)
         .with_detail(detail)
     };
 
@@ -708,9 +709,6 @@ fn both_seed_cases_compile_to_valid_geometry() {
         .iter()
         .map(|body| body.tri.indices.len() / 3)
         .sum();
-    for part in compiled.parts() {
-        std::eprintln!("part bodies={}", part.bodies.len());
-    }
     assert!(
         triangles > 12,
         "the opening removed material: {triangles} triangles"

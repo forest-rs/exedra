@@ -20,7 +20,7 @@ const CLERESTORY_BASE: f64 = 5.75;
 const CROSSING_PLATFORM_HEIGHT: f64 = 0.22;
 
 fn crossing_drum_base(roof: &RoofSection) -> f64 {
-    roof.ridge_height.as_metres() + 0.55
+    roof.ridge_height.as_meters() + 0.55
 }
 
 fn crossing_platform_base(roof: &RoofSection) -> f64 {

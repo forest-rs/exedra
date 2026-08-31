@@ -23,8 +23,8 @@ pub(super) fn build(
         crossing_east,
         ..
     } = layout;
-    let half_nave = roof.half_span.as_metres();
-    let wall_head = roof.wall_head.as_metres();
+    let half_nave = roof.half_span.as_meters();
+    let wall_head = roof.wall_head.as_meters();
     let east_nave_length = p.length - crossing_east;
     let clerestory_height = wall_head - CLERESTORY_BASE;
     let clerestory_sill = 6.55 - CLERESTORY_BASE;
@@ -138,8 +138,8 @@ pub(super) fn build(
     // The wall plate is the physical bearing datum that the setting-out
     // network resolves. It is continuous where the roof survives and repeats
     // the authored south-west ruin gap rather than bridging lost fabric.
-    let plate_width = roof.wall_plate_width.as_metres();
-    let plate_height = roof.wall_plate_height.as_metres();
+    let plate_width = roof.wall_plate_width.as_meters();
+    let plate_height = roof.wall_plate_height.as_meters();
     let plate_y = |north: bool| {
         let centerline = if north { half_nave } else { -half_nave };
         centerline - plate_width * 0.5
@@ -239,8 +239,8 @@ pub(super) fn build(
     // Thin roof planes keep the arcades legible. The crossing is open
     // beneath the drum, and the south-west slope omits one bay aligned
     // with the authored clerestory break.
-    let roof_slope = roof.roof_slope_length.as_metres();
-    let roof_depth = roof.roof_skin_depth.as_metres();
+    let roof_slope = roof.roof_slope_length.as_meters();
+    let roof_depth = roof.roof_skin_depth.as_meters();
     let roof_west = context.add_part(
         "nave-roof-west",
         box_recipe(
@@ -307,7 +307,7 @@ pub(super) fn build(
     let roof_shoulder = context.add_part(
         "crossing-roof-shoulder",
         extruded_profile_recipe(
-            gable_profile(roof.span.as_metres(), roof.rise.as_metres()),
+            gable_profile(roof.span.as_meters(), roof.rise.as_meters()),
             0.5,
             transverse_wall_frame(),
             "basilica:crossing-roof-shoulder",
@@ -321,7 +321,7 @@ pub(super) fn build(
         context.add_instance(
             key,
             roof_shoulder,
-            Placement3::translate(x, -half_nave, roof.wall_plate_top.as_metres()),
+            Placement3::translate(x, -half_nave, roof.wall_plate_top.as_meters()),
             "crossing_roof_shoulder",
         );
     }
@@ -397,8 +397,8 @@ mod tests {
             let (min, max) = bounds_for_path(&scenario.compiled, &scenario.render_list, path);
             // The timber is centered on the exact wall/rafter seat line and
             // its top is the datum through which the roof underside passes.
-            assert_close(max[2], roof.wall_plate_top.as_metres());
-            assert_close((min[1] + max[1]) * 0.5, side * roof.half_span.as_metres());
+            assert_close(max[2], roof.wall_plate_top.as_meters());
+            assert_close((min[1] + max[1]) * 0.5, side * roof.half_span.as_meters());
         }
 
         let (_, lost_west_end) = bounds_for_path(
@@ -420,7 +420,7 @@ mod tests {
         let p = BasilicaParams::default();
         let setout = BasilicaRoofSetout::new(&p).expect("default roof resolves");
         let roof = setout.section();
-        let roof_thickness = roof.roof_skin_depth.as_metres();
+        let roof_thickness = roof.roof_skin_depth.as_meters();
         let scenario = build_scenario();
         let mut placed_bounds = Vec::new();
 
@@ -473,8 +473,8 @@ mod tests {
         assert_close(north_max[2], south_max[2]);
         // The eaves extend below the wall-plate top only after passing exactly
         // through it; this is a true overhang, not a roof/wall mismatch.
-        assert!(north_min[2] <= roof.wall_head.as_metres() + 1.0e-5);
-        assert!(south_min[2] <= roof.wall_head.as_metres() + 1.0e-5);
+        assert!(north_min[2] <= roof.wall_head.as_meters() + 1.0e-5);
+        assert!(south_min[2] <= roof.wall_head.as_meters() + 1.0e-5);
     }
 
     fn transform_point(placement: &Placement3, point: [f32; 3]) -> [f64; 3] {

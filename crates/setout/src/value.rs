@@ -6,9 +6,9 @@
 use core::any::Any;
 use core::fmt;
 use core::num::NonZeroU128;
-use core::str::FromStr;
 
-use joto_constants::length::i64::{METER, MILLIMETER};
+pub use exedra_measurements::{Length, Offset};
+use joto_constants::length::{i64 as signed_iota, u64 as unsigned_iota};
 
 use crate::fingerprint::CanonicalEncoder;
 use crate::key::{ChoiceDomainKey, ChoiceOptionKey};
@@ -17,8 +17,10 @@ use crate::key::{ChoiceDomainKey, ChoiceOptionKey};
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[non_exhaustive]
 pub enum DomainTag {
-    /// Exact signed length in iota.
+    /// Exact strictly-positive length in iotas.
     Length,
+    /// Exact signed displacement in iota.
+    Offset,
     /// Exact unsigned count.
     Count,
     /// Reduced exact rational number.
@@ -35,11 +37,12 @@ impl DomainTag {
     pub(crate) const fn code(self) -> u8 {
         match self {
             Self::Length => 0,
-            Self::Count => 1,
-            Self::Rational => 2,
-            Self::Flag => 3,
-            Self::Choice => 4,
-            Self::Point3 => 5,
+            Self::Offset => 1,
+            Self::Count => 2,
+            Self::Rational => 3,
+            Self::Flag => 4,
+            Self::Choice => 5,
+            Self::Point3 => 6,
         }
     }
 }
@@ -59,150 +62,116 @@ pub trait Domain: private::Sealed + Clone + fmt::Debug + Eq + 'static {
     fn encode(&self, encoder: &mut CanonicalEncoder);
 }
 
-/// Exact signed length stored in iota (one ninth of a nanometre).
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Length(i64);
-
-impl Length {
-    /// Zero length.
-    pub const ZERO: Self = Self(0);
-
-    /// Creates a length directly from iota.
-    #[must_use]
-    pub const fn from_iota(value: i64) -> Self {
-        Self(value)
+/// Quantizes a finite positive meter value to the nearest exact [`Length`].
+///
+/// This is an import boundary for legacy floating-point parameters. The
+/// returned [`RootQuantization`] makes any discarded fraction explicit;
+/// exact setout propagation never repeats this conversion downstream.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the finite rounded value is explicitly bounded to the u64 domain before conversion"
+)]
+pub fn quantize_length_meters(value: f64) -> Result<(Length, RootQuantization), ArithmeticError> {
+    if !value.is_finite() {
+        return Err(ArithmeticError::NonFinite);
     }
-
-    /// Creates an exact whole-millimetre length.
-    pub fn millimetres(value: i64) -> Result<Self, ArithmeticError> {
-        value
-            .checked_mul(MILLIMETER)
-            .map(Self)
-            .ok_or(ArithmeticError::Overflow)
+    let scaled = value * unsigned_iota::METER as f64;
+    if scaled <= 0.0 {
+        return Err(ArithmeticError::OutOfDomain);
     }
-
-    /// Creates an exact whole-metre length.
-    pub fn metres(value: i64) -> Result<Self, ArithmeticError> {
-        value
-            .checked_mul(METER)
-            .map(Self)
-            .ok_or(ArithmeticError::Overflow)
+    if scaled >= u64::MAX as f64 {
+        return Err(ArithmeticError::Overflow);
     }
+    let rounded = libm::round(scaled);
+    if rounded >= u64::MAX as f64 {
+        return Err(ArithmeticError::Overflow);
+    }
+    let selected = rounded as u64;
+    let length = Length::from_iota(selected).ok_or(ArithmeticError::OutOfDomain)?;
+    Ok((
+        length,
+        RootQuantization {
+            source_bits: value.to_bits(),
+            selected_iota: i128::from(selected),
+            error_iota_bits: (scaled - rounded).to_bits(),
+        },
+    ))
+}
 
-    /// Quantizes a finite metre value to the nearest iota.
-    ///
-    /// This is an import boundary for legacy floating-point parameters. The
-    /// returned [`RootQuantization`] makes any discarded fraction explicit;
-    /// exact setout propagation never repeats this conversion downstream.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the finite rounded value is explicitly bounded to the i64 domain before conversion"
-    )]
-    pub fn quantize_metres(value: f64) -> Result<(Self, RootQuantization), ArithmeticError> {
-        if !value.is_finite() {
-            return Err(ArithmeticError::NonFinite);
+/// Quantizes a finite signed meter value to the nearest exact [`Offset`].
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the finite rounded value is explicitly bounded to the i64 domain before conversion"
+)]
+pub fn quantize_offset_meters(value: f64) -> Result<(Offset, RootQuantization), ArithmeticError> {
+    if !value.is_finite() {
+        return Err(ArithmeticError::NonFinite);
+    }
+    let scaled = value * signed_iota::METER as f64;
+    if scaled < i64::MIN as f64 || scaled >= i64::MAX as f64 {
+        return Err(ArithmeticError::Overflow);
+    }
+    let rounded = libm::round(scaled);
+    if rounded < i64::MIN as f64 || rounded >= i64::MAX as f64 {
+        return Err(ArithmeticError::Overflow);
+    }
+    let selected = rounded as i64;
+    Ok((
+        Offset::from_iota(selected),
+        RootQuantization {
+            source_bits: value.to_bits(),
+            selected_iota: i128::from(selected),
+            error_iota_bits: (scaled - rounded).to_bits(),
+        },
+    ))
+}
+
+/// Parses an exact positive dimension into the shared [`Length`] domain.
+pub fn parse_length(value: &str) -> Result<Length, ParseMeasurementError> {
+    let value = value.trim_start();
+    if value.starts_with('-') || value.starts_with('\u{2212}') {
+        return Err(ParseMeasurementError);
+    }
+    let iota =
+        joto_parse::length::u64::parse_dim_diagnostic(value).map_err(|_| ParseMeasurementError)?;
+    Length::from_iota(iota).ok_or(ParseMeasurementError)
+}
+
+/// Parses an exact signed dimension into the shared [`Offset`] domain.
+pub fn parse_offset(value: &str) -> Result<Offset, ParseMeasurementError> {
+    let value = value.trim_start();
+    let (negative, magnitude) = if let Some(value) = value.strip_prefix('-') {
+        (true, value)
+    } else if let Some(value) = value.strip_prefix('\u{2212}') {
+        (true, value)
+    } else {
+        (false, value)
+    };
+    let magnitude = joto_parse::length::u64::parse_dim_diagnostic(magnitude)
+        .map_err(|_| ParseMeasurementError)?;
+    let iota = if negative {
+        if magnitude == 1_u64 << 63 {
+            i64::MIN
+        } else {
+            -i64::try_from(magnitude).map_err(|_| ParseMeasurementError)?
         }
-        let scaled = value * METER as f64;
-        if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
-            return Err(ArithmeticError::Overflow);
-        }
-        let rounded = libm::round(scaled);
-        let selected = rounded as i64;
-        Ok((
-            Self(selected),
-            RootQuantization {
-                source_bits: value.to_bits(),
-                selected_iota: selected,
-                error_iota_bits: (scaled - rounded).to_bits(),
-            },
-        ))
-    }
-
-    /// Returns the underlying signed iota count.
-    #[must_use]
-    pub const fn iota(self) -> i64 {
-        self.0
-    }
-
-    /// Lowers the exact value to metres once at a geometry boundary.
-    #[must_use]
-    pub fn as_metres(self) -> f64 {
-        self.0 as f64 / METER as f64
-    }
-
-    /// Checked exact addition.
-    pub fn checked_add(self, other: Self) -> Result<Self, ArithmeticError> {
-        self.0
-            .checked_add(other.0)
-            .map(Self)
-            .ok_or(ArithmeticError::Overflow)
-    }
-
-    /// Checked exact subtraction.
-    pub fn checked_sub(self, other: Self) -> Result<Self, ArithmeticError> {
-        self.0
-            .checked_sub(other.0)
-            .map(Self)
-            .ok_or(ArithmeticError::Overflow)
-    }
-
-    /// Checked negation.
-    pub fn checked_neg(self) -> Result<Self, ArithmeticError> {
-        self.0
-            .checked_neg()
-            .map(Self)
-            .ok_or(ArithmeticError::Overflow)
-    }
-
-    /// Multiplies by a rational with the requested integral policy.
-    pub fn checked_scale(
-        self,
-        factor: Rational,
-        round: Round,
-    ) -> Result<(Self, ExactnessTrace), ArithmeticError> {
-        let exact = Rational::new(
-            i128::from(self.0)
-                .checked_mul(factor.numerator())
-                .ok_or(ArithmeticError::Overflow)?,
-            factor.denominator(),
-        )?;
-        let (selected, trace) = exact.quantize_i64(round)?;
-        Ok((Self(selected), trace))
-    }
+    } else {
+        i64::try_from(magnitude).map_err(|_| ParseMeasurementError)?
+    };
+    Ok(Offset::from_iota(iota))
 }
 
-impl fmt::Display for Length {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rendered = joto_format::length::i64::format_dim(
-            self.0,
-            joto_parse::length::Unit::Meter,
-            joto_format::length::LengthFormat::new(),
-        );
-        formatter.write_str(rendered.as_str())
-    }
-}
-
-impl FromStr for Length {
-    type Err = ParseLengthError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        joto_parse::length::i64::parse_dim_diagnostic(value)
-            .map(Self)
-            .map_err(|_| ParseLengthError)
-    }
-}
-
-/// A dimension string could not be parsed as an exact iota length.
+/// A dimension string could not be parsed into the requested measurement domain.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct ParseLengthError;
+pub struct ParseMeasurementError;
 
-impl fmt::Display for ParseLengthError {
+impl fmt::Display for ParseMeasurementError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("invalid or inexact length dimension")
+        formatter.write_str("invalid or inexact measurement dimension")
     }
 }
 
-impl core::error::Error for ParseLengthError {}
+impl core::error::Error for ParseMeasurementError {}
 
 /// Exact unsigned count.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -307,16 +276,20 @@ impl Rational {
         self.checked_mul(other.checked_reciprocal()?)
     }
 
-    fn quantize_i64(self, round: Round) -> Result<(i64, ExactnessTrace), ArithmeticError> {
+    pub(crate) fn quantize_u64(
+        self,
+        round: Round,
+    ) -> Result<(u64, ExactnessTrace), ArithmeticError> {
         let denominator =
             i128::try_from(self.denominator()).map_err(|_| ArithmeticError::Overflow)?;
         let quotient = self.numerator / denominator;
         let remainder = self.numerator % denominator;
         if remainder == 0 {
-            return Ok((
-                i64::try_from(quotient).map_err(|_| ArithmeticError::Overflow)?,
-                ExactnessTrace::Exact,
-            ));
+            if quotient <= 0 {
+                return Err(ArithmeticError::OutOfDomain);
+            }
+            let selected = u64::try_from(quotient).map_err(|_| ArithmeticError::Overflow)?;
+            return Ok((selected, ExactnessTrace::Exact));
         }
         let selected = match round {
             Round::Exact => return Err(ArithmeticError::NonIntegral { exact: self }),
@@ -338,7 +311,10 @@ impl Rational {
                 }
             }
         };
-        let selected = i64::try_from(selected).map_err(|_| ArithmeticError::Overflow)?;
+        if selected <= 0 {
+            return Err(ArithmeticError::OutOfDomain);
+        }
+        let selected = u64::try_from(selected).map_err(|_| ArithmeticError::Overflow)?;
         Ok((
             selected,
             ExactnessTrace::RationalQuantization {
@@ -386,21 +362,21 @@ pub struct ChoiceValue {
     pub option: ChoiceOptionKey,
 }
 
-/// An exact point in a Z-up, metre-based coordinate system.
+/// An exact point in a Z-up, meter-based coordinate system.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Point3 {
     /// X coordinate.
-    pub x: Length,
+    pub x: Offset,
     /// Y coordinate.
-    pub y: Length,
+    pub y: Offset,
     /// Z coordinate.
-    pub z: Length,
+    pub z: Offset,
 }
 
 impl Point3 {
     /// Creates a point from exact components.
     #[must_use]
-    pub const fn new(x: Length, y: Length, z: Length) -> Self {
+    pub const fn new(x: Offset, y: Offset, z: Offset) -> Self {
         Self { x, y, z }
     }
 }
@@ -471,7 +447,7 @@ pub struct RootQuantization {
     /// Original IEEE-754 bits.
     pub source_bits: u64,
     /// Selected exact iota count.
-    pub selected_iota: i64,
+    pub selected_iota: i128,
     /// IEEE-754 bits of the discarded iota fraction.
     pub error_iota_bits: u64,
 }
@@ -488,6 +464,8 @@ pub enum ArithmeticError {
     DivisionByZero,
     /// A floating import was NaN or infinite.
     NonFinite,
+    /// A value is representable numerically but not in the requested domain.
+    OutOfDomain,
     /// Exact integer output was requested for a non-integral rational.
     NonIntegral {
         /// The exact result that could not inhabit the target domain.
@@ -504,6 +482,7 @@ impl fmt::Display for ArithmeticError {
             Self::ZeroDenominator => formatter.write_str("rational denominator is zero"),
             Self::DivisionByZero => formatter.write_str("division by zero"),
             Self::NonFinite => formatter.write_str("floating root is not finite"),
+            Self::OutOfDomain => formatter.write_str("value is outside the requested domain"),
             Self::NonIntegral { .. } => formatter.write_str("result is not integral"),
             Self::NegativeRadicand => formatter.write_str("square-root radicand is negative"),
         }
@@ -515,6 +494,7 @@ impl core::error::Error for ArithmeticError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Value {
     Length(Length),
+    Offset(Offset),
     Count(Count),
     Rational(Rational),
     Flag(Flag),
@@ -530,6 +510,11 @@ impl Value {
                 *value
                     .downcast_ref::<Length>()
                     .expect("sealed Length domain matches its tag"),
+            ),
+            DomainTag::Offset => Self::Offset(
+                *value
+                    .downcast_ref::<Offset>()
+                    .expect("sealed Offset domain matches its tag"),
             ),
             DomainTag::Count => Self::Count(
                 *value
@@ -563,6 +548,7 @@ impl Value {
     pub(crate) fn downcast<T: Domain>(&self) -> Option<&T> {
         let value: &dyn Any = match self {
             Self::Length(value) => value,
+            Self::Offset(value) => value,
             Self::Count(value) => value,
             Self::Rational(value) => value,
             Self::Flag(value) => value,
@@ -575,6 +561,7 @@ impl Value {
     pub(crate) fn tag(&self) -> DomainTag {
         match self {
             Self::Length(_) => DomainTag::Length,
+            Self::Offset(_) => DomainTag::Offset,
             Self::Count(_) => DomainTag::Count,
             Self::Rational(_) => DomainTag::Rational,
             Self::Flag(_) => DomainTag::Flag,
@@ -586,7 +573,8 @@ impl Value {
     pub(crate) fn encode(&self, encoder: &mut CanonicalEncoder) {
         encoder.u8(self.tag().code());
         match self {
-            Self::Length(value) => encoder.i64(value.iota()),
+            Self::Length(value) => encoder.u64(value.iota()),
+            Self::Offset(value) => encoder.i64(value.iota()),
             Self::Count(value) => encoder.u64(value.get()),
             Self::Rational(value) => {
                 encoder.i128(value.numerator());
@@ -621,6 +609,7 @@ macro_rules! domain {
 }
 
 domain!(Length, DomainTag::Length, Length);
+domain!(Offset, DomainTag::Offset, Offset);
 domain!(Count, DomainTag::Count, Count);
 domain!(Rational, DomainTag::Rational, Rational);
 domain!(Flag, DomainTag::Flag, Flag);

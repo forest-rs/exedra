@@ -43,7 +43,7 @@ use crate::geometry::{FRAME_TOLERANCE, Vec3, interval_overlap};
 use crate::relation::RelationKind;
 use crate::rule::{ContactMeaning, ContactPatch, TransferEdge, TransferKind, TransferTarget};
 
-/// The documented contact tolerance, in metres.
+/// The documented contact tolerance, in meters.
 ///
 /// Signed gaps and penetrations within this distance are treated as
 /// coincident. It is a published number, not an implementation detail:
@@ -253,7 +253,7 @@ fn contact_is_valid_witness(construction: &Construction, contact: &ContactPatch)
             .extent
             .contains_local(contact.carrier.local, CONTACT_TOLERANCE)
         || contact
-            .minimum_overlap
+            .minimum_overlap_meters()
             .iter()
             .any(|minimum| !minimum.is_finite() || *minimum < 0.0)
     {
@@ -266,7 +266,7 @@ fn contact_is_valid_witness(construction: &Construction, contact: &ContactPatch)
         && measurement
             .overlap
             .iter()
-            .zip(contact.minimum_overlap.iter())
+            .zip(contact.minimum_overlap_meters().iter())
             .all(|(overlap, minimum)| overlap + CONTACT_TOLERANCE >= *minimum)
 }
 
@@ -653,7 +653,7 @@ fn validate_contacts(construction: &Construction, report: &mut ValidationReport)
             );
         }
         if contact
-            .minimum_overlap
+            .minimum_overlap_meters()
             .iter()
             .any(|minimum| !minimum.is_finite() || *minimum < 0.0)
         {
@@ -717,14 +717,15 @@ fn validate_contacts(construction: &Construction, report: &mut ValidationReport)
                 format!("signed penetration is {:.12} m", -measurement.gap),
             );
         }
+        let minimum_overlap = contact.minimum_overlap_meters();
         for (axis, overlap) in measurement.overlap.into_iter().enumerate() {
-            if overlap + CONTACT_TOLERANCE < contact.minimum_overlap[axis] {
+            if overlap + CONTACT_TOLERANCE < minimum_overlap[axis] {
                 report.push(
                     "insufficient-contact-overlap",
                     &contact.key,
                     format!(
                         "axis {axis} overlap {overlap:.6} m is below {:.6} m",
-                        contact.minimum_overlap[axis]
+                        minimum_overlap[axis]
                     ),
                 );
             }

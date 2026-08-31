@@ -140,6 +140,29 @@ assertion — it is validated for *non*-penetration rather than coincidence — 
 "these deliberately do not touch" is a statement the model can make and prove
 rather than an omission.
 
+### Authored measurements are exact; analytic measurements are floating
+
+The value domains are owned by
+[`exedra_measurements`](../../exedra_measurements/docs/adr-0001-exact-measurements.md).
+Authored linear and angular rejection limits use `Length` and `Angle`, and
+`ContactPatch::with_minimum_overlap` accepts exact positive lengths. Joiner's
+analytic extents, measured gaps and overlaps, and numerical tolerances remain
+`f64`: they are geometry results, not authored dimensions.
+
+A rule that calculates its overlap requirement from an already-floating
+participant extent uses the deliberately explicit
+`with_minimum_overlap_meters` method. This names the boundary at the call site
+without pretending that a geometry-derived value was exact or quantizing it
+back into an authored measurement.
+
+This is a deliberate public API break. Callers replace the unit-ambiguous
+`TooSmall` and `TooLarge` rejection variants with `LengthTooSmall`,
+`LengthTooLarge`, `AngleTooSmall`, or `AngleTooLarge`. Authored contact limits
+now call `with_minimum_overlap([Length; 2])`; geometry-derived limits call
+`with_minimum_overlap_meters([f64; 2])`. Direct access to the old public
+`minimum_overlap` field becomes `minimum_overlap_meters()`, keeping the stored
+floating representation behind the two semantically named construction paths.
+
 ### Part edits are composed into one n-ary node before registration
 
 `exedra_assembly` ADR-0001 puts cross-part geometry operations out of scope,

@@ -368,7 +368,7 @@ impl Author {
                     ContactMeaning::Bearing,
                     evidence(class),
                 )
-                .with_minimum_overlap(minimum_overlap)
+                .with_minimum_overlap_meters(minimum_overlap)
                 .with_detail(kind.label()),
             )
             .expect("bearing references resolve");
@@ -412,15 +412,15 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
     let x0 = 0.0;
     let x1 = 4.0;
     let bay_length = x1 - x0;
-    let half_nave = roof.half_span.as_metres();
-    let wall_top = roof.wall_head.as_metres();
-    let roof_length = roof.rafter_length.as_metres();
+    let half_nave = roof.half_span.as_meters();
+    let wall_top = roof.wall_head.as_meters();
+    let roof_length = roof.rafter_length.as_meters();
 
     let covering_depth = 0.08;
     let boarding_depth = 0.04;
     let common_depth = 0.16;
     let purlin_depth = 0.22;
-    let principal_depth = roof.principal_rafter_depth.as_metres();
+    let principal_depth = roof.principal_rafter_depth.as_meters();
     let purlin_trench_depth = PURLIN_TRENCH_DEPTH.as_meters();
     let common_rafter_seat_depth = COMMON_RAFTER_SEAT_DEPTH.as_meters();
     // Setout endpoints describe the principal-rafter centerline. The visible
@@ -435,9 +435,9 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             - common_rafter_seat_depth;
     let common_width = 0.12;
     let purlin_width = 0.18;
-    let principal_width = roof.principal_rafter_width.as_metres();
-    let wall_plate_width = roof.wall_plate_width.as_metres();
-    let wall_plate_height = roof.wall_plate_height.as_metres();
+    let principal_width = roof.principal_rafter_width.as_meters();
+    let wall_plate_width = roof.wall_plate_width.as_meters();
+    let wall_plate_height = roof.wall_plate_height.as_meters();
     let masonry_width = 0.45;
     let x_axis = [1.0, 0.0, 0.0];
     let z_axis = [0.0, 0.0, 1.0];
@@ -717,11 +717,11 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
     for (station_name, station_x) in [("west", x0), ("east", x1)] {
         let south_heel = author.node(
             format!("node-truss-{station_name}-heel-south"),
-            [station_x, -half_nave, roof.wall_plate_top.as_metres()],
+            [station_x, -half_nave, roof.wall_plate_top.as_meters()],
         );
         let north_heel = author.node(
             format!("node-truss-{station_name}-heel-north"),
-            [station_x, half_nave, roof.wall_plate_top.as_metres()],
+            [station_x, half_nave, roof.wall_plate_top.as_meters()],
         );
         let ridge_inner = add(
             side_data[0].outer_eave,
@@ -747,7 +747,7 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             OrientedBox {
                 origin: [station_x - 0.15, -half_nave - TIE_END_RELISH, wall_top],
                 axes: [[0.0, 1.0, 0.0], x_axis, z_axis],
-                size: [roof.span.as_metres() + 2.0 * TIE_END_RELISH, 0.30, 0.30],
+                size: [roof.span.as_meters() + 2.0 * TIE_END_RELISH, 0.30, 0.30],
             },
             EvidenceClass::ModernEngineeringInference,
             2,
@@ -765,7 +765,7 @@ pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
             let local_y = if side < 0.0 {
                 TIE_END_RELISH
             } else {
-                roof.span.as_metres() + TIE_END_RELISH
+                roof.span.as_meters() + TIE_END_RELISH
             };
             author.bearing(
                 &format!("bearing-tie-{station_name}-on-{name}-masonry"),
@@ -1201,7 +1201,7 @@ pub(crate) fn deterministic_signature(construction: &Construction) -> u64 {
             .chain(contact.carrier.local)
             .chain(contact.normal)
             .chain(contact.tangents.into_iter().flatten())
-            .chain(contact.minimum_overlap)
+            .chain(contact.minimum_overlap_meters())
         {
             fold(&value.to_bits().to_le_bytes());
         }
@@ -1335,7 +1335,7 @@ pub(crate) fn explain(
                 measurement.tangent_offsets,
                 CONTACT_TOLERANCE,
                 measurement.overlap,
-                contact.minimum_overlap
+                contact.minimum_overlap_meters()
             ))
         }),
         "support" => construction.support(key).map(|support| {

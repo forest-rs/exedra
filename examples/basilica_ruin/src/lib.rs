@@ -17,7 +17,7 @@ pub use roof_setout::{
 #[derive(Copy, Clone, Debug, PartialEq)]
 /// Parameters controlling the example's architectural massing.
 ///
-/// Coordinates are metres in a Z-up frame: the nave runs along positive X,
+/// Coordinates are meters in a Z-up frame: the nave runs along positive X,
 /// width spans Y, and height is positive Z.
 pub struct BasilicaParams {
     /// Length of the rectangular nave before the apse springs.

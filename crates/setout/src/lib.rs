@@ -36,9 +36,12 @@
 //! not silently become upstream inputs. Durable decisions name semantic producers
 //! and expected structural claim keys, never container positions.
 //!
-//! Lengths use joto iota (one ninth of a nanometre). Rational arithmetic and
-//! integer square roots remain exact until an explicitly recorded selection is
-//! required. Floating-point lowering happens once in an adapter.
+//! [`Length`] is a strictly positive size and [`Offset`] is a signed
+//! displacement; both use joto iotas (one ninth of a nanometer). [`Point3`]
+//! stores offsets because coordinates may be zero or negative. Rational
+//! arithmetic and integer square roots remain exact until an explicitly
+//! recorded selection is required. Floating-point lowering happens once in an
+//! adapter.
 
 #![no_std]
 extern crate alloc;
@@ -69,16 +72,18 @@ pub use key::{
     RootClaimKey, ScenarioKey,
 };
 pub use network::{
-    AnyQuantity, BuildError, ComposePoint, Equal, NetworkBuilder, NetworkDef, OffsetLength, Pitch,
-    Pythagorean, Quantity, QuantityPolicy, QuantitySlot, RelationSpec, ScaleLength, Sum,
+    AdjustLength, AnyQuantity, BuildError, ComposePoint, Equal, NetworkBuilder, NetworkDef,
+    OffsetByLength, OffsetDirection, Pitch, Pythagorean, Quantity, QuantityPolicy, QuantitySlot,
+    RelationSpec, ScaleLength, Sum, TranslateOffset,
 };
 #[doc(hidden)]
 pub use network::{RelationDef, relation_private};
 #[doc(hidden)]
 pub use value::private;
 pub use value::{
-    ArithmeticError, ChoiceValue, Count, Domain, DomainTag, ExactnessTrace, Flag, Length,
-    ParseLengthError, Point3, Rational, RootQuantization, RootRounding, Round,
+    ArithmeticError, ChoiceValue, Count, Domain, DomainTag, ExactnessTrace, Flag, Length, Offset,
+    ParseMeasurementError, Point3, Rational, RootQuantization, RootRounding, Round, parse_length,
+    parse_offset, quantize_length_meters, quantize_offset_meters,
 };
 
 #[cfg(test)]
