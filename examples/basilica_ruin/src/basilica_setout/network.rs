@@ -43,7 +43,7 @@ mod roots;
 use bindings::build_binding_index;
 use catalogue::build_catalogue;
 use definition::build_definition;
-use generation::generate_buttress_stations;
+use generation::{generate_buttress_stations, generate_west_truss_stations};
 use resolve::{
     resolve_aisle_section, resolve_crossing_section, resolve_east_end_section,
     resolve_level_section, resolve_plan_section, resolve_roof_section,
@@ -51,10 +51,10 @@ use resolve::{
 use roots::build_roots;
 
 // Exact generation deliberately bounds one fragment's work. Reject an arcade
-// count before setout evaluation if its endpoint-inclusive buttress expansion
-// would exceed that shared limit; the smaller bound also keeps every existing
-// `u32` architecture inventory calculation safe.
-const MAX_ARCADE_BAYS: Count = Count::new((MAX_LINEAR_STATIONS - 1) as u64);
+// or truss interval count before setout evaluation if its endpoint-inclusive
+// expansion would exceed that shared limit; the smaller bound also keeps every
+// existing `u32` architecture inventory calculation safe.
+const MAX_GENERATED_INTERVALS: Count = Count::new((MAX_LINEAR_STATIONS - 1) as u64);
 
 #[derive(Clone, Debug)]
 struct BasilicaQuantities {
@@ -77,10 +77,15 @@ struct BasilicaQuantities {
     west_nave_length: Quantity<Length>,
     east_nave_length: Quantity<Length>,
     arcade_bays: Quantity<Count>,
+    nave_truss_bays: Quantity<Count>,
     buttress_west_inset: Quantity<Length>,
     buttress_east_inset: Quantity<Length>,
     buttress_start: Quantity<Offset>,
     buttress_end: Quantity<Offset>,
+    nave_truss_end_clearance: Quantity<Length>,
+    nave_truss_west_start: Quantity<Offset>,
+    nave_truss_west_end: Quantity<Offset>,
+    nave_truss_east: Quantity<Offset>,
     nave_wall_height: Quantity<Length>,
     wall_head: Quantity<Offset>,
     aisle_wall_height: Quantity<Length>,
@@ -172,6 +177,7 @@ pub struct BasilicaSetout {
     east_end_section: EastEndSection,
     roof_section: RoofSection,
     buttress_stations: LinearFragment,
+    west_truss_stations: LinearFragment,
     catalogue: ReconstructionCatalogue,
     assessment: ReconstructionAssessment,
     bindings: BindingIndex,
@@ -195,13 +201,14 @@ impl BasilicaSetout {
         let east_end_section = resolve_east_end_section(&evaluation, &quantities)?;
         let roof_section = resolve_roof_section(&evaluation, &quantities)?;
         let buttress_stations = generate_buttress_stations(&plan_section)?;
+        let west_truss_stations = generate_west_truss_stations(&plan_section)?;
         let catalogue = build_catalogue(&roots, &plan)?;
         let assessment = assess(
             evaluation.provenance(),
             evaluation.fingerprint(),
             &catalogue,
         );
-        let bindings = build_binding_index(&quantities, &buttress_stations);
+        let bindings = build_binding_index(&quantities, &buttress_stations, &west_truss_stations);
         Ok(Self {
             definition,
             quantities,
@@ -216,6 +223,7 @@ impl BasilicaSetout {
             east_end_section,
             roof_section,
             buttress_stations,
+            west_truss_stations,
             catalogue,
             assessment,
             bindings,
@@ -238,6 +246,12 @@ impl BasilicaSetout {
     #[must_use]
     pub const fn buttress_stations(&self) -> &LinearFragment {
         &self.buttress_stations
+    }
+
+    /// Returns the exact west nave-truss stations after ruin omissions.
+    #[must_use]
+    pub const fn west_truss_stations(&self) -> &LinearFragment {
+        &self.west_truss_stations
     }
 
     /// Returns the exact resolved vertical datums.
@@ -335,10 +349,13 @@ impl BasilicaSetout {
         let roof = resolve_roof_section(&warm, &self.quantities)?;
         let buttress_stations = generate_buttress_stations(&plan_section)?;
         let buttress_delta = self.buttress_stations.delta_to(&buttress_stations)?;
+        let west_truss_stations = generate_west_truss_stations(&plan_section)?;
+        let west_truss_delta = self.west_truss_stations.delta_to(&west_truss_stations)?;
         let delta = warm.delta_from(&self.evaluation);
-        let topology_changed = delta
-            .quantities_changed
-            .contains(self.quantities.arcade_bays.key());
+        let topology_changed = delta.quantities_changed.iter().any(|quantity| {
+            quantity == self.quantities.arcade_bays.key()
+                || quantity == self.quantities.nave_truss_bays.key()
+        });
         let dirty = self.bindings.dirty(&delta);
         Ok(BasilicaReconfiguration {
             plan: plan_section,
@@ -349,6 +366,8 @@ impl BasilicaSetout {
             roof,
             buttress_stations,
             buttress_delta,
+            west_truss_stations,
+            west_truss_delta,
             delta,
             dirty,
             topology_changed,
@@ -395,6 +414,10 @@ pub struct BasilicaReconfiguration {
     pub buttress_stations: LinearFragment,
     /// Stable item-level change from the previous buttress expansion.
     pub buttress_delta: FragmentDelta,
+    /// Newly expanded exact west nave-truss stations.
+    pub west_truss_stations: LinearFragment,
+    /// Stable item-level change from the previous west truss expansion.
+    pub west_truss_delta: FragmentDelta,
     /// Exact core quantity and claim changes.
     pub delta: EvaluationDelta,
     /// Named construction/assembly elements and Joiner channels affected.
@@ -402,9 +425,9 @@ pub struct BasilicaReconfiguration {
     /// Whether repeated assembly topology must be rebuilt, not merely updated.
     ///
     /// [`BasilicaReconfiguration::dirty`] can name only elements that already
-    /// exist. [`BasilicaReconfiguration::buttress_delta`] supplies exact
-    /// add/remove information for buttresses; callers must still rebuild the
-    /// arcade topology when this broader flag is true.
+    /// exist. The two fragment deltas supply exact add/remove information for
+    /// buttresses and west nave trusses; callers must still rebuild the arcade
+    /// topology when this broader flag is true.
     pub topology_changed: bool,
     /// Work reused versus recomputed.
     pub work: WorkReport,
@@ -438,6 +461,8 @@ pub enum BasilicaSetoutError {
     GenerationDelta(GenerationDeltaError),
     /// The east buttress anchor does not lie east of the west anchor.
     InvalidButtressExtent,
+    /// The final west truss anchor does not lie east of its first anchor.
+    InvalidNaveTrussExtent,
     /// Warm and fresh evaluations did not agree.
     WarmFreshMismatch,
     /// The arcade repeat count exceeds one bounded generation fragment.
@@ -445,6 +470,13 @@ pub enum BasilicaSetoutError {
         /// Authored repeat count.
         actual: Count,
         /// Largest count for which derived inventory arithmetic is defined.
+        maximum: Count,
+    },
+    /// A west truss repeat count exceeds one bounded generation fragment.
+    NaveTrussBayCountTooLarge {
+        /// Authored repeat count.
+        actual: Count,
+        /// Largest count accepted by one linear fragment.
         maximum: Count,
     },
     /// A stable semantic key is invalid.
@@ -491,12 +523,21 @@ impl fmt::Display for BasilicaSetoutError {
             Self::InvalidButtressExtent => {
                 formatter.write_str("basilica buttress anchors do not define a positive extent")
             }
+            Self::InvalidNaveTrussExtent => {
+                formatter.write_str("basilica west truss anchors do not define a positive extent")
+            }
             Self::WarmFreshMismatch => {
                 formatter.write_str("warm basilica evaluation differs from fresh")
             }
             Self::ArcadeBayCountTooLarge { actual, maximum } => write!(
                 formatter,
                 "arcade bay count {} exceeds the architecture maximum {}",
+                actual.get(),
+                maximum.get()
+            ),
+            Self::NaveTrussBayCountTooLarge { actual, maximum } => write!(
+                formatter,
+                "nave truss bay count {} exceeds the architecture maximum {}",
                 actual.get(),
                 maximum.get()
             ),
@@ -508,10 +549,16 @@ impl fmt::Display for BasilicaSetoutError {
 impl std::error::Error for BasilicaSetoutError {}
 
 fn validate_topology_domain(premises: &BasilicaPremises) -> Result<(), BasilicaSetoutError> {
-    if premises.arcade_bays > MAX_ARCADE_BAYS {
+    if premises.arcade_bays > MAX_GENERATED_INTERVALS {
         return Err(BasilicaSetoutError::ArcadeBayCountTooLarge {
             actual: premises.arcade_bays,
-            maximum: MAX_ARCADE_BAYS,
+            maximum: MAX_GENERATED_INTERVALS,
+        });
+    }
+    if premises.nave_truss_bays > MAX_GENERATED_INTERVALS {
+        return Err(BasilicaSetoutError::NaveTrussBayCountTooLarge {
+            actual: premises.nave_truss_bays,
+            maximum: MAX_GENERATED_INTERVALS,
         });
     }
     Ok(())

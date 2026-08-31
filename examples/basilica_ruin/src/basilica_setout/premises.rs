@@ -34,6 +34,8 @@ pub struct BasilicaPremises {
     pub apse_radius: Length,
     /// Number of repeated arcade bays along each longitudinal wall.
     pub arcade_bays: Count,
+    /// Number of spaces in the repeated west nave-truss run.
+    pub nave_truss_bays: Count,
 }
 
 impl Default for BasilicaPremises {
@@ -51,6 +53,7 @@ impl Default for BasilicaPremises {
             dome_height: millimeters(3_100),
             apse_radius: millimeters(4_500),
             arcade_bays: Count::new(7),
+            nave_truss_bays: Count::new(5),
         }
     }
 }
@@ -71,5 +74,6 @@ mod tests {
         assert_eq!(premises.length, Length::meters(36).unwrap());
         assert_eq!(premises.drum_radius, Length::millimeters(4_100).unwrap());
         assert_eq!(premises.arcade_bays.get(), 7);
+        assert_eq!(premises.nave_truss_bays.get(), 5);
     }
 }

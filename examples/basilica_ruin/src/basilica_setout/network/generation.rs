@@ -3,7 +3,9 @@
 
 //! Exact topology invocations fed by the resolved basilica network.
 
-use setout_generate::{InvocationKey, LinearDistribution, LinearFragment, distribute_linear};
+use setout_generate::{
+    InvocationKey, ItemOverride, LinearDistribution, LinearFragment, distribute_linear,
+};
 
 use crate::PlanSection;
 
@@ -29,5 +31,31 @@ pub(super) fn generate_buttress_stations(
         end: plan.buttress_end,
         intervals: plan.arcade_bays,
         overrides: &[],
+    })?)
+}
+
+pub(super) fn generate_west_truss_stations(
+    plan: &PlanSection,
+) -> Result<LinearFragment, BasilicaSetoutError> {
+    // The missing third station is evidence about this ruin, not a hole in an
+    // ordinal loop. Targeting its semantic interior label keeps the absence
+    // attached to that identity when the interval count changes; if a smaller
+    // run no longer contains it, the generator reports an orphan instead of
+    // suppressing an endpoint or a neighboring truss.
+    if plan
+        .nave_truss_west_start
+        .checked_positive_distance_to(plan.nave_truss_west_end)
+        .is_none()
+    {
+        return Err(BasilicaSetoutError::InvalidNaveTrussExtent);
+    }
+    let invocation = InvocationKey::new("basilica/nave-trusses/west")?;
+    let omitted_ruin = ItemOverride::omit("interior/000002")?;
+    Ok(distribute_linear(&LinearDistribution {
+        invocation: &invocation,
+        start: plan.nave_truss_west_start,
+        end: plan.nave_truss_west_end,
+        intervals: plan.nave_truss_bays,
+        overrides: &[omitted_ruin],
     })?)
 }

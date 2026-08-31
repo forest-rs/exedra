@@ -20,4 +20,5 @@ std = ["exedra_math/std", "joiner/std", "setout/std"]
 [dependencies]
 exedra_math = { features = ["libm"], workspace = true }
 joiner.workspace = true
+joto_constants.workspace = true
 setout.workspace = true

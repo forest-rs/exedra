@@ -15,7 +15,6 @@ publish = false
 workspace = true
 
 [dependencies]
-cambium = { features = ["std"], workspace = true }
 exedra_assembly = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_gltf = { workspace = true }

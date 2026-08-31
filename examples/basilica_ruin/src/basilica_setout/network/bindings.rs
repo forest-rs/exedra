@@ -8,11 +8,15 @@ use setout_generate::LinearFragment;
 use setout_joiner::{BindingIndex, DirtyChannel};
 
 use super::BasilicaQuantities;
-use crate::buttress_instance_key;
+use crate::{
+    NAVE_TRUSS_EAST_STATION_KEY, NAVE_TRUSS_MEMBER_SUFFIXES, buttress_instance_key,
+    truss_member_instance_key, west_truss_station_key,
+};
 
 pub(super) fn build_binding_index(
     quantities: &BasilicaQuantities,
     buttress_stations: &LinearFragment,
+    west_truss_stations: &LinearFragment,
 ) -> BindingIndex {
     let mut bindings = BindingIndex::new();
 
@@ -67,43 +71,28 @@ pub(super) fn build_binding_index(
             );
         }
     }
-    for member in [
-        "tie-beam",
-        "principal-rafter-north",
-        "principal-rafter-south",
-        "king-post",
-        "king-post-key",
-        "diagonal-brace-north",
-        "diagonal-brace-south",
-    ] {
+    for member in NAVE_TRUSS_MEMBER_SUFFIXES {
         bindings.bind(
-            format!("nave-truss-east-00-{member}"),
+            truss_member_instance_key(NAVE_TRUSS_EAST_STATION_KEY, member),
             [
                 quantities.length.key().clone(),
                 quantities.crossing_east.key().clone(),
+                quantities.nave_truss_east.key().clone(),
             ],
             [DirtyChannel::Geometry, DirtyChannel::Contact],
         );
     }
-    for station in [
-        "nave-truss-west-00",
-        "nave-truss-west-01",
-        "nave-truss-west-03",
-        "nave-truss-west-04",
-        "nave-truss-west-05",
-    ] {
-        for member in [
-            "tie-beam",
-            "principal-rafter-north",
-            "principal-rafter-south",
-            "king-post",
-            "king-post-key",
-            "diagonal-brace-north",
-            "diagonal-brace-south",
-        ] {
+    for station in west_truss_stations.items() {
+        let station = west_truss_station_key(station.label());
+        for member in NAVE_TRUSS_MEMBER_SUFFIXES {
             bindings.bind(
-                format!("{station}-{member}"),
-                [quantities.crossing_west.key().clone()],
+                truss_member_instance_key(&station, member),
+                [
+                    quantities.crossing_west.key().clone(),
+                    quantities.nave_truss_bays.key().clone(),
+                    quantities.nave_truss_west_start.key().clone(),
+                    quantities.nave_truss_west_end.key().clone(),
+                ],
                 [DirtyChannel::Geometry, DirtyChannel::Contact],
             );
         }
@@ -282,25 +271,15 @@ pub(super) fn build_binding_index(
         quantities.principal_rafter_depth.key().clone(),
         quantities.principal_rafter_reveal.key().clone(),
     ];
-    for station in [
-        "nave-truss-west-00",
-        "nave-truss-west-01",
-        "nave-truss-west-03",
-        "nave-truss-west-04",
-        "nave-truss-west-05",
-        "nave-truss-east-00",
-    ] {
-        for member in [
-            "tie-beam",
-            "principal-rafter-north",
-            "principal-rafter-south",
-            "king-post",
-            "king-post-key",
-            "diagonal-brace-north",
-            "diagonal-brace-south",
-        ] {
+    for station in west_truss_stations
+        .items()
+        .iter()
+        .map(|station| west_truss_station_key(station.label()))
+        .chain([NAVE_TRUSS_EAST_STATION_KEY.to_owned()])
+    {
+        for member in NAVE_TRUSS_MEMBER_SUFFIXES {
             bindings.bind(
-                format!("{station}-{member}"),
+                truss_member_instance_key(&station, member),
                 truss_section_quantities.iter().cloned(),
                 [
                     DirtyChannel::Geometry,

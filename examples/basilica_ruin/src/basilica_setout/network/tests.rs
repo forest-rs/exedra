@@ -114,7 +114,7 @@ fn length_edit_reports_the_eastward_rebuild_frontier() {
         "east-chancel-gable",
         "east-apse",
         "buttress-north-end",
-        "nave-truss-east-00-tie-beam",
+        "nave-truss-east-tie-beam",
     ] {
         assert!(
             dirty.contains(&expected),
@@ -163,7 +163,7 @@ fn nave_wall_height_edit_moves_the_shared_upper_datum() {
         "nave-wall-north-west",
         "nave-roof-north-west",
         "crossing-dome",
-        "nave-truss-west-00-king-post",
+        "nave-truss-west-start-king-post",
     ] {
         assert!(
             dirty.contains(&expected),
@@ -186,23 +186,23 @@ fn crossing_station_edit_invalidates_complete_truss_frames() {
         .checked_add(Length::meters(1).unwrap())
         .unwrap();
     let change = baseline.reconfigure(&edited).unwrap();
+    assert!(
+        change
+            .west_truss_delta
+            .changed()
+            .iter()
+            .any(|key| key.as_str() == "basilica/nave-trusses/west/end"),
+        "moving the crossing must report the exact generated endpoint payload"
+    );
     let dirty: Vec<_> = change
         .dirty
         .iter()
         .map(|item| item.element.as_ref())
         .collect();
 
-    for member in [
-        "tie-beam",
-        "principal-rafter-north",
-        "principal-rafter-south",
-        "king-post",
-        "king-post-key",
-        "diagonal-brace-north",
-        "diagonal-brace-south",
-    ] {
-        let west = format!("nave-truss-west-00-{member}");
-        let east = format!("nave-truss-east-00-{member}");
+    for member in crate::NAVE_TRUSS_MEMBER_SUFFIXES {
+        let west = format!("nave-truss-west-start-{member}");
+        let east = format!("nave-truss-east-{member}");
         assert!(dirty.contains(&west.as_str()), "missing {west}");
         assert!(dirty.contains(&east.as_str()), "missing {east}");
     }
@@ -308,4 +308,112 @@ fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
             .any(|item| item.element.as_ref() == "buttress-north-end"),
         "non-default topology needs a complete existing-element inventory"
     );
+}
+
+#[test]
+fn truss_count_edit_preserves_endpoints_and_keeps_the_ruin_omission_semantic() {
+    // The west truss run is the first generated station that expands into
+    // several assembly members. Growing it must add one station identity,
+    // retain both endpoints, move only redistributed interiors, and keep the
+    // authored ruin attached to `interior/000002` rather than an ordinal slot.
+    let baseline = BasilicaSetout::new(&BasilicaPremises::default()).unwrap();
+    assert_eq!(
+        baseline.plan().nave_truss_west_start,
+        Offset::meters(2).unwrap()
+    );
+    assert_eq!(
+        baseline.plan().nave_truss_west_end,
+        Offset::millimeters(19_300).unwrap()
+    );
+    assert_eq!(
+        baseline.plan().nave_truss_east,
+        Offset::millimeters(33_350).unwrap()
+    );
+    assert!(
+        baseline
+            .west_truss_stations()
+            .orphaned_overrides()
+            .is_empty()
+    );
+    assert!(
+        baseline
+            .west_truss_stations()
+            .items()
+            .iter()
+            .all(|station| station.label().as_str() != "interior/000002")
+    );
+
+    let edited = BasilicaPremises {
+        nave_truss_bays: Count::new(6),
+        ..BasilicaPremises::default()
+    };
+    let change = baseline.reconfigure(&edited).unwrap();
+    assert!(change.topology_changed);
+    assert_eq!(change.west_truss_stations.items().len(), 6);
+    assert_eq!(
+        change.west_truss_delta.added(),
+        &[setout_generate::ItemKey::new("basilica/nave-trusses/west/interior/000005").unwrap()]
+    );
+    assert!(change.west_truss_delta.removed().is_empty());
+    assert!(change.west_truss_delta.orphaned_overrides().is_empty());
+    for retained in [
+        "basilica/nave-trusses/west/start",
+        "basilica/nave-trusses/west/end",
+    ] {
+        assert!(
+            change
+                .west_truss_delta
+                .retained()
+                .iter()
+                .any(|key| key.as_str() == retained),
+            "missing retained truss endpoint {retained}"
+        );
+    }
+    assert!(
+        change
+            .dirty
+            .iter()
+            .any(|item| item.element.as_ref() == "nave-truss-west-start-tie-beam")
+    );
+
+    let six_bay = BasilicaSetout::new(&edited).unwrap();
+    let seven_bay = BasilicaPremises {
+        nave_truss_bays: Count::new(7),
+        ..BasilicaPremises::default()
+    };
+    let second_change = six_bay.reconfigure(&seven_bay).unwrap();
+    assert_eq!(
+        second_change.west_truss_delta.added(),
+        &[setout_generate::ItemKey::new("basilica/nave-trusses/west/interior/000006").unwrap()]
+    );
+    assert!(
+        second_change
+            .dirty
+            .iter()
+            .any(|item| item.element.as_ref() == "nave-truss-west-interior-000005-tie-beam"),
+        "a non-default baseline must bind every retained generated member"
+    );
+
+    let smaller = BasilicaPremises {
+        nave_truss_bays: Count::new(2),
+        ..BasilicaPremises::default()
+    };
+    let smaller = BasilicaSetout::new(&smaller).unwrap();
+    assert_eq!(smaller.west_truss_stations().items().len(), 3);
+    assert_eq!(smaller.west_truss_stations().orphaned_overrides().len(), 1);
+    assert_eq!(
+        smaller.west_truss_stations().orphaned_overrides()[0]
+            .target()
+            .as_str(),
+        "interior/000002"
+    );
+
+    let too_many = BasilicaPremises {
+        nave_truss_bays: Count::new(u64::from(u32::MAX)),
+        ..BasilicaPremises::default()
+    };
+    assert!(matches!(
+        BasilicaSetout::new(&too_many),
+        Err(BasilicaSetoutError::NaveTrussBayCountTooLarge { .. })
+    ));
 }

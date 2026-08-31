@@ -72,6 +72,8 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         network.declare::<Length>("basilica/plan/east-nave-length", QuantityPolicy::positive())?;
     let arcade_bays =
         network.declare::<Count>("basilica/plan/arcade-bays", QuantityPolicy::positive())?;
+    let nave_truss_bays =
+        network.declare::<Count>("basilica/plan/nave-truss-bays", QuantityPolicy::positive())?;
     let buttress_west_inset = network.declare::<Length>(
         "basilica/plan/buttress-west-inset",
         QuantityPolicy::positive(),
@@ -84,6 +86,24 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         network.declare::<Offset>("basilica/plan/buttress-start", QuantityPolicy::positive())?;
     let buttress_end =
         network.declare::<Offset>("basilica/plan/buttress-end", QuantityPolicy::positive())?;
+    let nave_truss_end_clearance = network.declare::<Length>(
+        "basilica/plan/nave-truss-end-clearance",
+        QuantityPolicy::positive(),
+    )?;
+    let nave_truss_west_start = network.declare::<Offset>(
+        "basilica/plan/nave-truss-west-start",
+        QuantityPolicy::positive(),
+    )?;
+    let nave_truss_west_end = network.declare::<Offset>(
+        "basilica/plan/nave-truss-west-end",
+        QuantityPolicy::positive(),
+    )?;
+    let nave_truss_east_half_length = network.declare::<Length>(
+        "basilica/plan/nave-truss-east-half-length",
+        QuantityPolicy::positive(),
+    )?;
+    let nave_truss_east =
+        network.declare::<Offset>("basilica/plan/nave-truss-east", QuantityPolicy::positive())?;
     let nave_wall_height = network.declare::<Length>(
         "basilica/levels/nave-wall-height",
         QuantityPolicy::positive(),
@@ -431,6 +451,33 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         buttress_end.clone(),
         OffsetDirection::Negative,
     )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/plan/p-nave-truss-west-start",
+        origin.clone(),
+        nave_truss_end_clearance.clone(),
+        nave_truss_west_start.clone(),
+        OffsetDirection::Positive,
+    )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/plan/q-nave-truss-west-end",
+        crossing_west.clone(),
+        nave_truss_end_clearance.clone(),
+        nave_truss_west_end.clone(),
+        OffsetDirection::Negative,
+    )?)?;
+    network.relate(ScaleLength::new(
+        "basilica/plan/r-nave-truss-east-half-length",
+        east_nave_length.clone(),
+        nave_truss_east_half_length.clone(),
+        Rational::new(1, 2).map_err(|_| BuildError::InvalidRelation)?,
+    )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/plan/s-nave-truss-east",
+        crossing_east.clone(),
+        nave_truss_east_half_length.clone(),
+        nave_truss_east.clone(),
+        OffsetDirection::Positive,
+    )?)?;
     for (key, height, datum) in [
         (
             "basilica/levels/a-wall-head",
@@ -756,10 +803,15 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         west_nave_length,
         east_nave_length,
         arcade_bays,
+        nave_truss_bays,
         buttress_west_inset,
         buttress_east_inset,
         buttress_start,
         buttress_end,
+        nave_truss_end_clearance,
+        nave_truss_west_start,
+        nave_truss_west_end,
+        nave_truss_east,
         nave_wall_height,
         wall_head,
         aisle_wall_height,

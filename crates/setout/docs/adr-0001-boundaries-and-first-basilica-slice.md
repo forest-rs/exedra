@@ -283,6 +283,32 @@ fingerprints are re-baselined even though the generated placements agree with
 the accepted floating repeat within `1e-12` meter. Keeping the old endpoint
 ordinal would have preserved bytes by retaining the identity-rebinding defect.
 
+The next earned consumer is the west nave-truss inventory. The setout network
+derives its two anchors from one exact two-meter end-clearance root and derives
+the single east truss as the exact midpoint of the east nave segment.
+`BasilicaPremises::nave_truss_bays` is the authored west interval count. The
+ruined third station targets `interior/000002` by semantic label: with a smaller
+run it becomes a visible orphan rather than suppressing an endpoint, and with a
+larger run it remains attached to the same identity.
+
+The generated fragment still contains stations, not timber. A Basilica-local
+adapter lowers each rational coordinate through
+`setout_joiner::lower_rational_iotas` and expands it into the seven existing
+`joiner_timber` recipes. The east singleton bypasses generation because a
+one-point linear distribution would misstate its topology. This removes the
+Basilica's `cambium` dependency without moving pattern or assembly knowledge
+into `setout_generate`, `joiner`, or `joiner_timber`.
+
+This migration adds the public `BasilicaPremises::nave_truss_bays` root, exact
+truss datums on `PlanSection`, and `west_truss_stations`/`west_truss_delta` on
+`BasilicaReconfiguration`, together with the matching
+`BasilicaSetout::west_truss_stations` accessor. It also deliberately renames
+identity-bearing truss paths: ordinal names such as
+`nave-truss-west-00-tie-beam` and `nave-truss-east-00-tie-beam` become
+`nave-truss-west-start-tie-beam` and `nave-truss-east-tie-beam`. Assembly, OBJ,
+and glTF fingerprints therefore change while the accepted geometry remains
+within `1e-12` meter of the previous floating repeat.
+
 ## Extension points
 
 - Bounded measurement knowledge extends method capability and planning; it is not

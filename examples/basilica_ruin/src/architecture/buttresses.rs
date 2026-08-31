@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use exedra_constructive::ir::Placement3;
-use setout::Offset;
 use setout_generate::{LinearFragment, LinearStation};
+use setout_joiner::lower_rational_iotas;
 
 use super::BuildContext;
 use crate::PlanSection;
@@ -34,15 +34,12 @@ fn lower_x(station: &LinearStation) -> f64 {
     // Generation keeps non-integral iota positions rational. Convert that
     // exact payload once at the concrete assembly boundary; neither topology
     // nor the architecture module owns a second floating repeat calculation.
-    let position = station.position();
-    let iotas_per_meter = Offset::meters(1)
-        .expect("one meter is representable")
-        .iota();
-    position.numerator() as f64 / position.denominator() as f64 / iotas_per_meter as f64
+    lower_rational_iotas(station.position())
 }
 
 #[cfg(test)]
 mod tests {
+    use setout::Offset;
     use setout_generate::{InvocationKey, LinearDistribution, distribute_linear};
 
     use super::*;
