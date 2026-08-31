@@ -18,6 +18,7 @@ const PRINCIPAL_RAFTER_DEPTH_MM: u64 = 240;
 const PRINCIPAL_RAFTER_REVEAL_MM: i64 = 120;
 const BUTTRESS_WEST_INSET_MM: u64 = 1_700;
 const BUTTRESS_EAST_INSET_MM: u64 = 2_300;
+const NAVE_TRUSS_END_CLEARANCE_MM: u64 = 2_000;
 
 pub(super) fn build_roots(
     definition: &NetworkDef,
@@ -57,6 +58,11 @@ pub(super) fn build_roots(
             Knowledge::exact(premises.arcade_bays),
         )?
         .author(
+            "basilica/root/nave-truss-bays",
+            &quantities.nave_truss_bays,
+            Knowledge::exact(premises.nave_truss_bays),
+        )?
+        .author(
             "basilica/root/buttress-west-inset",
             &quantities.buttress_west_inset,
             Knowledge::exact(exact_length_millimeters(BUTTRESS_WEST_INSET_MM)?),
@@ -65,6 +71,11 @@ pub(super) fn build_roots(
             "basilica/root/buttress-east-inset",
             &quantities.buttress_east_inset,
             Knowledge::exact(exact_length_millimeters(BUTTRESS_EAST_INSET_MM)?),
+        )?
+        .author(
+            "basilica/root/nave-truss-end-clearance",
+            &quantities.nave_truss_end_clearance,
+            Knowledge::exact(exact_length_millimeters(NAVE_TRUSS_END_CLEARANCE_MM)?),
         )?
         .author(
             "basilica/root/nave-wall-height",

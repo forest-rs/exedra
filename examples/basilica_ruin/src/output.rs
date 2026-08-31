@@ -676,10 +676,10 @@ mod tests {
     }
 
     #[test]
-    fn obj_group_order_preserves_every_existing_instance_identity() {
-        // Export order is a stable review contract: the fitted truss groups
-        // append their key between king post and braces without disturbing
-        // any pre-existing architecture path.
+    fn obj_group_order_uses_semantic_generated_truss_identities() {
+        // Export order is a stable review contract: generated truss groups
+        // append after the pre-existing architecture paths and expose their
+        // stable endpoint/interior identity directly.
         let scenario = build_scenario();
         let obj = export_obj(&scenario.compiled, &scenario.render_list);
         let groups: Vec<&str> = obj
@@ -777,48 +777,48 @@ mod tests {
         ];
 
         const TRUSS_PATHS: [&str; 42] = [
-            "nave-truss-west-00-tie-beam",
-            "nave-truss-west-00-principal-rafter-north",
-            "nave-truss-west-00-principal-rafter-south",
-            "nave-truss-west-00-king-post",
-            "nave-truss-west-00-king-post-key",
-            "nave-truss-west-00-diagonal-brace-north",
-            "nave-truss-west-00-diagonal-brace-south",
-            "nave-truss-west-01-tie-beam",
-            "nave-truss-west-01-principal-rafter-north",
-            "nave-truss-west-01-principal-rafter-south",
-            "nave-truss-west-01-king-post",
-            "nave-truss-west-01-king-post-key",
-            "nave-truss-west-01-diagonal-brace-north",
-            "nave-truss-west-01-diagonal-brace-south",
-            "nave-truss-west-03-tie-beam",
-            "nave-truss-west-03-principal-rafter-north",
-            "nave-truss-west-03-principal-rafter-south",
-            "nave-truss-west-03-king-post",
-            "nave-truss-west-03-king-post-key",
-            "nave-truss-west-03-diagonal-brace-north",
-            "nave-truss-west-03-diagonal-brace-south",
-            "nave-truss-west-04-tie-beam",
-            "nave-truss-west-04-principal-rafter-north",
-            "nave-truss-west-04-principal-rafter-south",
-            "nave-truss-west-04-king-post",
-            "nave-truss-west-04-king-post-key",
-            "nave-truss-west-04-diagonal-brace-north",
-            "nave-truss-west-04-diagonal-brace-south",
-            "nave-truss-west-05-tie-beam",
-            "nave-truss-west-05-principal-rafter-north",
-            "nave-truss-west-05-principal-rafter-south",
-            "nave-truss-west-05-king-post",
-            "nave-truss-west-05-king-post-key",
-            "nave-truss-west-05-diagonal-brace-north",
-            "nave-truss-west-05-diagonal-brace-south",
-            "nave-truss-east-00-tie-beam",
-            "nave-truss-east-00-principal-rafter-north",
-            "nave-truss-east-00-principal-rafter-south",
-            "nave-truss-east-00-king-post",
-            "nave-truss-east-00-king-post-key",
-            "nave-truss-east-00-diagonal-brace-north",
-            "nave-truss-east-00-diagonal-brace-south",
+            "nave-truss-west-start-tie-beam",
+            "nave-truss-west-start-principal-rafter-north",
+            "nave-truss-west-start-principal-rafter-south",
+            "nave-truss-west-start-king-post",
+            "nave-truss-west-start-king-post-key",
+            "nave-truss-west-start-diagonal-brace-north",
+            "nave-truss-west-start-diagonal-brace-south",
+            "nave-truss-west-interior-000001-tie-beam",
+            "nave-truss-west-interior-000001-principal-rafter-north",
+            "nave-truss-west-interior-000001-principal-rafter-south",
+            "nave-truss-west-interior-000001-king-post",
+            "nave-truss-west-interior-000001-king-post-key",
+            "nave-truss-west-interior-000001-diagonal-brace-north",
+            "nave-truss-west-interior-000001-diagonal-brace-south",
+            "nave-truss-west-interior-000003-tie-beam",
+            "nave-truss-west-interior-000003-principal-rafter-north",
+            "nave-truss-west-interior-000003-principal-rafter-south",
+            "nave-truss-west-interior-000003-king-post",
+            "nave-truss-west-interior-000003-king-post-key",
+            "nave-truss-west-interior-000003-diagonal-brace-north",
+            "nave-truss-west-interior-000003-diagonal-brace-south",
+            "nave-truss-west-interior-000004-tie-beam",
+            "nave-truss-west-interior-000004-principal-rafter-north",
+            "nave-truss-west-interior-000004-principal-rafter-south",
+            "nave-truss-west-interior-000004-king-post",
+            "nave-truss-west-interior-000004-king-post-key",
+            "nave-truss-west-interior-000004-diagonal-brace-north",
+            "nave-truss-west-interior-000004-diagonal-brace-south",
+            "nave-truss-west-end-tie-beam",
+            "nave-truss-west-end-principal-rafter-north",
+            "nave-truss-west-end-principal-rafter-south",
+            "nave-truss-west-end-king-post",
+            "nave-truss-west-end-king-post-key",
+            "nave-truss-west-end-diagonal-brace-north",
+            "nave-truss-west-end-diagonal-brace-south",
+            "nave-truss-east-tie-beam",
+            "nave-truss-east-principal-rafter-north",
+            "nave-truss-east-principal-rafter-south",
+            "nave-truss-east-king-post",
+            "nave-truss-east-king-post-key",
+            "nave-truss-east-diagonal-brace-north",
+            "nave-truss-east-diagonal-brace-south",
         ];
 
         assert_eq!(instance_paths.len(), 118);

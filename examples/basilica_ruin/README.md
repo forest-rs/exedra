@@ -143,11 +143,17 @@ paths therefore use names such as `buttress-north-start`,
 `buttress-north-interior-000001`, and `buttress-north-end`; an arcade-count edit
 cannot rebind the old endpoint path to a new interior station.
 
-Nave-truss stations still use a `cambium::assembly` named linear pattern. Their
-authored ordinals remain the exported identities: the missing west truss at
-ordinal `02` stays a named gap while later stations retain their existing paths.
-That distinct topology has explicit omissions and multiple generated members;
-it is intentionally left for a later `setout_generate` slice.
+The west nave-truss run is a second exact `setout_generate` fragment. Its
+endpoint datums come from the setout network, `BasilicaPremises::nave_truss_bays`
+controls its interval count, and the missing roof frame is an explicit omission
+of `interior/000002`. Each surviving station expands through a Basilica-local
+adapter into the seven fitted timber members; neither the generator nor
+`joiner_timber` knows about assembly repetition. The single east truss uses a
+named exact midpoint datum instead of pretending to be a degenerate repeat.
+Paths now expose semantic station identity, for example
+`nave-truss-west-start-tie-beam`,
+`nave-truss-west-interior-000003-king-post`, and
+`nave-truss-east-principal-rafter-north`.
 
 Each intact nave station is a complete `joiner_timber` braced king-post truss,
 composed once and then repeated as immutable assembly parts. Housed heels,

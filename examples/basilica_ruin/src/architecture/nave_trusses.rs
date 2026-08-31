@@ -1,10 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use cambium::assembly::{
-    InstanceTemplate, LinearRepeat, MetadataEntry, NamedAssemblyPattern, repeat_linear,
-};
-use exedra_assembly::PartId;
+use exedra_assembly::{PartId, compose as compose_placement};
 use exedra_constructive::ir::{Placement3, Plane3, Recipe};
 use exedra_math::{add, cross, norm, normalize, scale, sub};
 use joiner::{
@@ -15,13 +12,14 @@ use joiner_timber::{
     HeelParams, HeelRule, HousedBearingParams, KingPostTieParams, KingPostTieRule, Length,
     RafterToKingPostRule, StrutToKingPostRule, StrutToRafterRule,
 };
-use setout_joiner::ResolvedElementGeometry;
+use setout_joiner::{ResolvedElementGeometry, lower_offset, lower_rational_iotas};
 
 use super::BuildContext;
-use crate::{BasilicaSetout, PlanSection, RoofSide, names};
+use crate::{
+    BasilicaSetout, NAVE_TRUSS_EAST_STATION_KEY, PlanSection, RoofSide, names,
+    truss_member_instance_key, west_truss_station_key,
+};
 
-const WEST_BAYS: u32 = 5;
-const OMITTED_WEST_SLOT: u32 = 2;
 const TIE_WIDTH: f64 = 0.30;
 const TIE_DEPTH: f64 = 0.34;
 const TIE_END_RELISH: f64 = 0.18;
@@ -51,6 +49,13 @@ struct MemberParts {
     brace_south: PartId,
     key: PartId,
     key_frame: Placement3,
+}
+
+#[derive(Copy, Clone)]
+struct TrussMemberTemplate {
+    key_suffix: &'static str,
+    part: PartId,
+    placement: Placement3,
 }
 
 struct FittedMemberRecipes {
@@ -100,48 +105,46 @@ struct TrussGeometry {
 pub(super) fn build(context: &mut BuildContext, plan: &PlanSection, setout: &BasilicaSetout) {
     let geometry = TrussGeometry::from_setout(setout);
     let parts = add_member_parts(context, &geometry);
-    // The exact crossing edge bounds the authored west-bay repeat. Repeat
-    // placement remains gallery topology until `setout_generate` owns it.
-    let west_pitch = (plan.crossing_west.as_meters() - 4.0) / f64::from(WEST_BAYS);
-    let role = [MetadataEntry {
-        key: names::ARCHITECTURAL_ROLE,
-        value: names::roles::NAVE_TRUSS_MEMBER,
-    }];
-    let members = member_templates(&parts, &geometry, &role);
-    let west_occurrences = repeat_linear(&LinearRepeat {
-        count: WEST_BAYS + 1,
-        start: [2.0, 0.0, 0.0],
-        step: [west_pitch, 0.0, 0.0],
-        omitted: &[OMITTED_WEST_SLOT],
-    })
-    .expect("accepted west truss repeat must be finite");
-    context.instantiate_pattern(
-        &NamedAssemblyPattern {
-            parent: None,
-            key_prefix: "nave-truss-west",
-            ordinal_width: 2,
-            members: &members,
-        },
-        &west_occurrences,
-    );
+    let members = member_templates(&parts, &geometry);
 
-    let east_x = (plan.crossing_east.as_meters() + plan.length.as_meters()) * 0.5;
-    let east_occurrences = repeat_linear(&LinearRepeat {
-        count: 1,
-        start: [east_x, 0.0, 0.0],
-        step: [0.0, 0.0, 0.0],
-        omitted: &[],
-    })
-    .expect("accepted east truss occurrence must be finite");
-    context.instantiate_pattern(
-        &NamedAssemblyPattern {
-            parent: None,
-            key_prefix: "nave-truss-east",
-            ordinal_width: 2,
-            members: &members,
-        },
-        &east_occurrences,
+    // `setout_generate` owns the repeated station identities and exact
+    // coordinates; this adapter owns the one-to-seven assembly expansion. A
+    // station remains a topology item rather than becoming a procedural
+    // assembly node, so every timber member stays independently addressable.
+    for station in setout.west_truss_stations().items() {
+        instantiate_station(
+            context,
+            &west_truss_station_key(station.label()),
+            lower_rational_iotas(station.position()),
+            &members,
+        );
+    }
+    // The east segment has one authored survivor, not a repeat. Giving it an
+    // exact named datum avoids misrepresenting a singleton as a degenerate
+    // linear invocation merely to reuse the generator API.
+    instantiate_station(
+        context,
+        NAVE_TRUSS_EAST_STATION_KEY,
+        lower_offset(plan.nave_truss_east),
+        &members,
     );
+}
+
+fn instantiate_station(
+    context: &mut BuildContext,
+    station_key: &str,
+    x: f64,
+    members: &[TrussMemberTemplate],
+) {
+    let station_placement = Placement3::translate(x, 0.0, 0.0);
+    for member in members {
+        context.add_instance(
+            &truss_member_instance_key(station_key, member.key_suffix),
+            member.part,
+            compose_placement(&station_placement, &member.placement),
+            names::roles::NAVE_TRUSS_MEMBER,
+        );
+    }
 }
 
 impl TrussGeometry {
@@ -723,60 +726,42 @@ fn extent_from_placement(placement: Placement3, size: [f64; 3]) -> OrientedBox {
     }
 }
 
-fn member_templates<'metadata>(
-    parts: &MemberParts,
-    geometry: &TrussGeometry,
-    metadata: &'metadata [MetadataEntry<'metadata>],
-) -> [InstanceTemplate<'metadata>; 7] {
+fn member_templates(parts: &MemberParts, geometry: &TrussGeometry) -> [TrussMemberTemplate; 7] {
     [
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "tie-beam",
             part: parts.tie,
             placement: tie_frame(geometry),
-            bindings: &[],
-            metadata,
         },
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "principal-rafter-north",
             part: parts.rafter_north,
             placement: rafter_frame(geometry, true),
-            bindings: &[],
-            metadata,
         },
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "principal-rafter-south",
             part: parts.rafter_south,
             placement: rafter_frame(geometry, false),
-            bindings: &[],
-            metadata,
         },
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "king-post",
             part: parts.king_post,
             placement: king_post_frame(geometry),
-            bindings: &[],
-            metadata,
         },
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "king-post-key",
             part: parts.key,
             placement: parts.key_frame,
-            bindings: &[],
-            metadata,
         },
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "diagonal-brace-north",
             part: parts.brace_north,
             placement: brace_frame(geometry, true),
-            bindings: &[],
-            metadata,
         },
-        InstanceTemplate {
+        TrussMemberTemplate {
             key_suffix: "diagonal-brace-south",
             part: parts.brace_south,
             placement: brace_frame(geometry, false),
-            bindings: &[],
-            metadata,
         },
     ]
 }
@@ -832,25 +817,26 @@ mod tests {
     use exedra_constructive::evaluate::evaluate;
     use exedra_constructive::ir::NodeKind;
     use exedra_constructive::tessellate::EvalPolicy;
+    use setout::Count;
 
     use super::*;
     use crate::output::{bounds_for_path, build_scenario};
     use crate::{BasilicaPremises, instances_with_role, resolve_instance_path};
 
     const FRAME_PREFIXES: [&str; 6] = [
-        "nave-truss-west-00",
-        "nave-truss-west-01",
-        "nave-truss-west-03",
-        "nave-truss-west-04",
-        "nave-truss-west-05",
-        "nave-truss-east-00",
+        "nave-truss-west-start",
+        "nave-truss-west-interior-000001",
+        "nave-truss-west-interior-000003",
+        "nave-truss-west-interior-000004",
+        "nave-truss-west-end",
+        "nave-truss-east",
     ];
 
     #[test]
-    fn named_patterns_match_the_accepted_station_loops() {
-        // Pattern lowering must preserve the old explicit station order,
-        // placements, materials, and recipe identities bit-for-bit even now
-        // that each occurrence contains seven fitted parts.
+    fn generated_stations_match_the_accepted_floating_geometry() {
+        // Exact generated stations deliberately replace ordinal instance
+        // names, but their order, materials, fitted recipes, and geometry must
+        // remain equal to the accepted gallery (within the lowering epsilon).
         let p = BasilicaPremises::default();
         let setout = BasilicaSetout::new(&p).expect("default roof resolves");
         let plan = setout.plan();
@@ -861,9 +847,10 @@ mod tests {
 
         let mut legacy = BuildContext::new();
         let parts = add_member_parts(&mut legacy, &geometry);
-        let west_pitch = (plan.crossing_west.as_meters() - 4.0) / f64::from(WEST_BAYS);
-        for slot in 0..=WEST_BAYS {
-            if slot != OMITTED_WEST_SLOT {
+        let west_bays = u32::try_from(plan.nave_truss_bays.get()).unwrap();
+        let west_pitch = (plan.crossing_west.as_meters() - 4.0) / f64::from(west_bays);
+        for slot in 0..=west_bays {
+            if slot != 2 {
                 add_legacy_frame(
                     &mut legacy,
                     &parts,
@@ -908,20 +895,20 @@ mod tests {
             .instances_with_ids()
             .zip(legacy.instances_with_ids())
         {
-            assert_eq!(patterned.key(), legacy.key());
             assert_eq!(patterned.part(), legacy.part());
-            assert_eq!(
-                patterned.placement(),
-                legacy.placement(),
-                "{}",
-                patterned.key()
-            );
-            assert_eq!(
-                patterned.placement().rows.map(|row| row.map(f64::to_bits)),
-                legacy.placement().rows.map(|row| row.map(f64::to_bits)),
-                "{} placement bits",
-                patterned.key()
-            );
+            for (generated, accepted) in patterned
+                .placement()
+                .rows
+                .into_iter()
+                .flatten()
+                .zip(legacy.placement().rows.into_iter().flatten())
+            {
+                assert!(
+                    (generated - accepted).abs() <= 1.0e-12,
+                    "{} placement moved: {generated} != {accepted}",
+                    patterned.key()
+                );
+            }
             assert_eq!(
                 patterned.metadata(),
                 legacy.metadata(),
@@ -929,7 +916,7 @@ mod tests {
                 patterned.key()
             );
         }
-        assert_eq!(
+        assert_ne!(
             assembly_fingerprint(&patterned),
             assembly_fingerprint(&legacy)
         );
@@ -1033,6 +1020,39 @@ mod tests {
             assert_eq!(
                 scenario.assembly.resolved_material(id, surface),
                 Some("aged-timber")
+            );
+        }
+    }
+
+    #[test]
+    fn every_generated_station_expands_to_one_complete_fitted_truss() {
+        // Changing the station topology must scale the existing seven-member
+        // construction atomically; a new station may not produce only the
+        // easy box members or lose the generated king-post key.
+        let premises = BasilicaPremises {
+            nave_truss_bays: Count::new(6),
+            ..BasilicaPremises::default()
+        };
+        let setout = BasilicaSetout::new(&premises).unwrap();
+        let assembly = crate::build_basilica_assembly(&premises);
+        let members = instances_with_role(&assembly, names::roles::NAVE_TRUSS_MEMBER);
+        assert_eq!(members.len(), 49);
+
+        for station in setout.west_truss_stations().items() {
+            let station = west_truss_station_key(station.label());
+            for suffix in crate::NAVE_TRUSS_MEMBER_SUFFIXES {
+                let path = truss_member_instance_key(&station, suffix);
+                assert!(
+                    resolve_instance_path(&assembly, &path).is_some(),
+                    "generated station is missing fitted member {path}"
+                );
+            }
+        }
+        for suffix in crate::NAVE_TRUSS_MEMBER_SUFFIXES {
+            let path = truss_member_instance_key(NAVE_TRUSS_EAST_STATION_KEY, suffix);
+            assert!(
+                resolve_instance_path(&assembly, &path).is_some(),
+                "exact east station is missing fitted member {path}"
             );
         }
     }
@@ -1347,7 +1367,7 @@ mod tests {
         }
 
         for suffix in MEMBER_SUFFIXES {
-            let omitted_path = format!("nave-truss-west-02-{suffix}");
+            let omitted_path = format!("nave-truss-west-interior-000002-{suffix}");
             assert!(
                 resolve_instance_path(&scenario.assembly, &omitted_path).is_none(),
                 "only the authored west-02 frame may be omitted: {omitted_path}"
@@ -1362,7 +1382,13 @@ mod tests {
         let crossing_west = setout.plan().crossing_west.as_meters();
         let crossing_east = setout.plan().crossing_east.as_meters();
         let scenario = build_scenario();
-        assert!(resolve_instance_path(&scenario.assembly, "nave-truss-west-02-tie-beam").is_none());
+        assert!(
+            resolve_instance_path(
+                &scenario.assembly,
+                "nave-truss-west-interior-000002-tie-beam"
+            )
+            .is_none()
+        );
 
         // Select by stable semantic path: unrelated assembly insertions must
         // not silently change which elements this ruin-boundary test covers.
@@ -1381,7 +1407,7 @@ mod tests {
                 );
                 assert!(max[0] < crossing_west, "{path} enters the crossing");
             } else {
-                assert!(path.starts_with("nave-truss-east-00"));
+                assert!(path.starts_with("nave-truss-east-"));
                 assert!(min[0] > crossing_east, "{path} enters the crossing");
             }
         }

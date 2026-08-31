@@ -1,7 +1,6 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use cambium::assembly::{LinearOccurrence, NamedAssemblyPattern, instantiate_named};
 use exedra_assembly::{Assembly, PartId};
 use exedra_constructive::ir::{Placement3, Recipe};
 
@@ -78,15 +77,6 @@ impl BuildContext {
             .expect("fresh instance exists");
     }
 
-    fn instantiate_pattern(
-        &mut self,
-        pattern: &NamedAssemblyPattern<'_>,
-        occurrences: &[LinearOccurrence],
-    ) {
-        instantiate_named(&mut self.assembly, pattern, occurrences)
-            .expect("scenario pattern must satisfy the accepted assembly contract");
-    }
-
     fn finish(self) -> Assembly {
         self.assembly
     }
@@ -119,6 +109,11 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
 
     let arcade_bays = u32::try_from(plan.arcade_bays.get())
         .expect("the basilica arcade bay count fits the assembly inventory");
+    let west_trusses = u32::try_from(setout.west_truss_stations().items().len())
+        .expect("bounded generated truss count fits u32");
+    let nave_trusses = west_trusses + 1;
+    let members_per_truss = u32::try_from(crate::NAVE_TRUSS_MEMBER_SUFFIXES.len())
+        .expect("the fixed member inventory fits u32");
 
     let inventory = Inventory {
         nave_walls: 4,
@@ -141,9 +136,9 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
         drums: 1,
         domes: 1,
         ruined_bays: 1,
-        nave_trusses: 6,
-        nave_truss_members: 42,
-        omitted_nave_trusses: 1,
+        nave_trusses,
+        nave_truss_members: nave_trusses * members_per_truss,
+        omitted_nave_trusses: setout.west_truss_stations().intervals() + 1 - west_trusses,
     };
     (context.finish(), inventory)
 }
@@ -213,9 +208,9 @@ mod tests {
             "crossing-drum-panel-00",
             "crossing-drum-cornice-base",
             "crossing-dome",
-            "nave-truss-west-00-tie-beam",
-            "nave-truss-west-05-king-post",
-            "nave-truss-east-00-diagonal-brace-south",
+            "nave-truss-west-start-tie-beam",
+            "nave-truss-west-end-king-post",
+            "nave-truss-east-diagonal-brace-south",
         ] {
             assert!(
                 paths.iter().any(|path| path == required),

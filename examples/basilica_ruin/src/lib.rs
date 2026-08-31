@@ -11,11 +11,34 @@ mod basilica_setout;
 mod geometry;
 mod output;
 
-fn buttress_instance_key(side: &str, label: &ItemLabel) -> String {
+const NAVE_TRUSS_EAST_STATION_KEY: &str = "nave-truss-east";
+const NAVE_TRUSS_MEMBER_SUFFIXES: [&str; 7] = [
+    "tie-beam",
+    "principal-rafter-north",
+    "principal-rafter-south",
+    "king-post",
+    "king-post-key",
+    "diagonal-brace-north",
+    "diagonal-brace-south",
+];
+
+fn generated_instance_key(prefix: &str, label: &ItemLabel) -> String {
     // Generated labels use `/` as a semantic path separator. Assembly root
     // keys use `-`, so this is the one explicit identity adapter between the
     // two systems rather than a second ordinal-labeling policy.
-    format!("buttress-{side}-{}", label.as_str().replace('/', "-"))
+    format!("{prefix}-{}", label.as_str().replace('/', "-"))
+}
+
+fn buttress_instance_key(side: &str, label: &ItemLabel) -> String {
+    generated_instance_key(&format!("buttress-{side}"), label)
+}
+
+fn west_truss_station_key(label: &ItemLabel) -> String {
+    generated_instance_key("nave-truss-west", label)
+}
+
+fn truss_member_instance_key(station: &str, member: &str) -> String {
+    format!("{station}-{member}")
 }
 
 pub use basilica_setout::{
@@ -368,7 +391,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0x3a0a_91c3_dadb_fc87_5d1c_9163_1f20_4c94
+            0x79f6_2c3d_1e8a_baa2_f2b2_b1ae_87b0_c638
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);

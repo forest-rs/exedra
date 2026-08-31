@@ -2,7 +2,7 @@
 id: bsl-6ihj
 status: in_progress
 deps: [ec-uoij, exe-zqct]
-links: [set-qckq, set-mpbt]
+links: [set-qckq, set-mpbt, set-mnga, sg-ty1b]
 created: 2026-08-21T13:40:52Z
 type: epic
 priority: 1

@@ -29,9 +29,10 @@ use core::fmt;
 
 use exedra_math::{cross, dot, normalize, scale, sub};
 use joiner::{Construction, ConstructionError, Element, Evidence, OrientedBox};
+use joto_constants::length::i128 as signed_iota;
 use setout::{
     AccessError, AnyQuantity, CanonicalEncoder, ClaimKey, Evaluation, EvaluationDelta, Fingerprint,
-    Length, Offset, Point3, Quantity, QuantityKey, SupportRef,
+    Length, Offset, Point3, Quantity, QuantityKey, Rational, SupportRef,
 };
 
 /// One quantity-to-claim link retained beside materialized construction data.
@@ -222,6 +223,17 @@ pub fn lower_length(value: Length) -> f64 {
 #[must_use]
 pub fn lower_offset(value: Offset) -> f64 {
     value.as_meters()
+}
+
+/// Lowers an exact rational count of joto iotas to meters.
+///
+/// Generated stations need rational coordinates because equal subdivision of
+/// two integral-iota anchors need not land on an integral iota. Keeping this
+/// conversion beside the other setout-to-geometry lowerings prevents each
+/// architecture adapter from inventing its own unit scale or rounding order.
+#[must_use]
+pub fn lower_rational_iotas(value: Rational) -> f64 {
+    value.numerator() as f64 / value.denominator() as f64 / signed_iota::METER as f64
 }
 
 /// Strictly lowers one exact point to meters.
@@ -551,6 +563,14 @@ mod tests {
         );
         assert_eq!(first.lowered_fingerprint, second.lowered_fingerprint);
         assert_eq!(first.extent, second.extent);
+    }
+
+    #[test]
+    fn rational_iota_lowering_preserves_fractional_generated_stations() {
+        // An equal subdivision may place a station between integral iotas;
+        // lowering must retain that fraction rather than round to a neighbor.
+        let one_third_meter = Rational::new(signed_iota::METER, 3).unwrap();
+        assert_eq!(lower_rational_iotas(one_third_meter), 1.0 / 3.0);
     }
 
     fn assert_point_close(actual: [f64; 3], expected: [f64; 3]) {
