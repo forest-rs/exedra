@@ -21,5 +21,6 @@ std = ["exedra_assembly/std", "exedra_constructive/std", "exedra_math/std"]
 exedra_assembly.workspace = true
 exedra_constructive.workspace = true
 exedra_math = { features = ["libm"], workspace = true }
+exedra_measurements.workspace = true
 hashbrown.workspace = true
 invalidation.workspace = true

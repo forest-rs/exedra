@@ -15,9 +15,10 @@ use exedra_math::{cross, normalize, sub};
 use setout::{
     ArithmeticError, BuildError, ComposePoint, Evaluation, EvaluationDelta, EvaluationError,
     EvaluationScenario, EvaluationScenarioBuilder, IncrementalEvaluator, Knowledge, Length,
-    NetworkBuilder, NetworkDef, Pitch, PlanError, Point3, PropagationPlan, Pythagorean, Quantity,
-    QuantityPolicy, Rational, RootBuildError, RootClaimSet, RootClaimSetBuilder, ScaleLength,
-    ScenarioBuildError, Sum, WorkReport, compile_plan, evaluate,
+    NetworkBuilder, NetworkDef, Offset, OffsetByLength, OffsetDirection, Pitch, PlanError, Point3,
+    PropagationPlan, Pythagorean, Quantity, QuantityPolicy, Rational, RootBuildError, RootClaimSet,
+    RootClaimSetBuilder, ScaleLength, ScenarioBuildError, Sum, WorkReport, compile_plan, evaluate,
+    quantize_length_meters, quantize_offset_meters,
 };
 use setout_joiner::{
     BindingIndex, DirtyChannel, DirtyElement, ResolveError, ResolvedElementGeometry,
@@ -30,12 +31,12 @@ use setout_reconstruction::{
 
 use crate::BasilicaParams;
 
-const WALL_PLATE_HEIGHT_MM: i64 = 180;
-const WALL_PLATE_WIDTH_MM: i64 = 300;
-const ROOF_OVERHANG_MM: i64 = 350;
-const ROOF_SKIN_DEPTH_MM: i64 = 280;
-const PRINCIPAL_RAFTER_WIDTH_MM: i64 = 260;
-const PRINCIPAL_RAFTER_DEPTH_MM: i64 = 240;
+const WALL_PLATE_HEIGHT_MM: u64 = 180;
+const WALL_PLATE_WIDTH_MM: u64 = 300;
+const ROOF_OVERHANG_MM: u64 = 350;
+const ROOF_SKIN_DEPTH_MM: u64 = 280;
+const PRINCIPAL_RAFTER_WIDTH_MM: u64 = 260;
+const PRINCIPAL_RAFTER_DEPTH_MM: u64 = 240;
 const PRINCIPAL_RAFTER_REVEAL_MM: i64 = 120;
 
 /// Side of the symmetrical nave roof.
@@ -66,15 +67,15 @@ pub struct RoofSection {
     /// Half of [`RoofSection::span`].
     pub half_span: Length,
     /// Masonry wall head before the timber wall plate.
-    pub wall_head: Length,
+    pub wall_head: Offset,
     /// Continuous wall-plate height.
     pub wall_plate_height: Length,
     /// Top bearing datum of the wall plate.
-    pub wall_plate_top: Length,
+    pub wall_plate_top: Offset,
     /// Rise from the wall-plate bearing datum to the ridge.
     pub rise: Length,
     /// Exact ridge datum.
-    pub ridge_height: Length,
+    pub ridge_height: Offset,
     /// Exact rise/run ratio.
     pub pitch: Rational,
     /// Principal-rafter length selected to the nearest iota with a root certificate.
@@ -86,7 +87,7 @@ pub struct RoofSection {
     /// Full horizontal run from ridge to outer eave.
     pub roof_run: Length,
     /// Underside datum at the outer eave.
-    pub roof_eave_height: Length,
+    pub roof_eave_height: Offset,
     /// Full sloping roof-skin length from ridge to outer eave.
     pub roof_slope_length: Length,
     /// Modeled roof-skin thickness.
@@ -98,7 +99,7 @@ pub struct RoofSection {
     /// Principal-rafter depth normal to the slope.
     pub principal_rafter_depth: Length,
     /// Deliberate visual reveal between principal rafters and roof skin.
-    pub principal_rafter_reveal: Length,
+    pub principal_rafter_reveal: Offset,
     /// North wall-plate seat point at X=0.
     pub north_wall_seat: Point3,
     /// South wall-plate seat point at X=0.
@@ -153,26 +154,26 @@ impl RoofSection {
 
 #[derive(Clone, Debug)]
 struct RoofQuantities {
-    zero: Quantity<Length>,
+    origin: Quantity<Offset>,
     span: Quantity<Length>,
     half_span: Quantity<Length>,
-    wall_head: Quantity<Length>,
+    wall_head: Quantity<Offset>,
     wall_plate_height: Quantity<Length>,
-    wall_plate_top: Quantity<Length>,
+    wall_plate_top: Quantity<Offset>,
     rise: Quantity<Length>,
-    ridge_height: Quantity<Length>,
+    ridge_height: Quantity<Offset>,
     pitch: Quantity<Rational>,
     rafter_length: Quantity<Length>,
     overhang: Quantity<Length>,
     overhang_drop: Quantity<Length>,
     roof_run: Quantity<Length>,
-    roof_eave_height: Quantity<Length>,
+    roof_eave_height: Quantity<Offset>,
     roof_slope_length: Quantity<Length>,
     roof_skin_depth: Quantity<Length>,
     wall_plate_width: Quantity<Length>,
     principal_rafter_width: Quantity<Length>,
     principal_rafter_depth: Quantity<Length>,
-    principal_rafter_reveal: Quantity<Length>,
+    principal_rafter_reveal: Quantity<Offset>,
     north_wall_seat: Quantity<Point3>,
     south_wall_seat: Quantity<Point3>,
     ridge_point: Quantity<Point3>,
@@ -343,25 +344,30 @@ pub struct RoofReconfiguration {
 
 fn build_definition() -> Result<(NetworkDef, RoofQuantities), BuildError> {
     let mut network = NetworkBuilder::new();
-    let zero = network.declare::<Length>("basilica/roof/zero", QuantityPolicy::non_negative())?;
+    let origin =
+        network.declare::<Offset>("basilica/roof/origin", QuantityPolicy::unrestricted())?;
     let span = network.declare::<Length>("basilica/roof/span", QuantityPolicy::positive())?;
     let half_span =
         network.declare::<Length>("basilica/roof/half-span", QuantityPolicy::positive())?;
-    let south_half_span = network.declare::<Length>(
+    let north_half_span = network.declare::<Offset>(
+        "basilica/roof/north-half-span",
+        QuantityPolicy::unrestricted(),
+    )?;
+    let south_half_span = network.declare::<Offset>(
         "basilica/roof/south-half-span",
         QuantityPolicy::unrestricted(),
     )?;
     let wall_head =
-        network.declare::<Length>("basilica/roof/wall-head", QuantityPolicy::positive())?;
+        network.declare::<Offset>("basilica/roof/wall-head", QuantityPolicy::positive())?;
     let wall_plate_height = network.declare::<Length>(
         "basilica/roof/wall-plate-height",
         QuantityPolicy::positive(),
     )?;
     let wall_plate_top =
-        network.declare::<Length>("basilica/roof/wall-plate-top", QuantityPolicy::positive())?;
+        network.declare::<Offset>("basilica/roof/wall-plate-top", QuantityPolicy::positive())?;
     let rise = network.declare::<Length>("basilica/roof/rise", QuantityPolicy::positive())?;
     let ridge_height =
-        network.declare::<Length>("basilica/roof/ridge-height", QuantityPolicy::positive())?;
+        network.declare::<Offset>("basilica/roof/ridge-height", QuantityPolicy::positive())?;
     let pitch =
         network.declare::<Rational>("basilica/roof/pitch", QuantityPolicy::unrestricted())?;
     let rafter_length = network.declare::<Length>(
@@ -374,14 +380,18 @@ fn build_definition() -> Result<(NetworkDef, RoofQuantities), BuildError> {
         network.declare::<Length>("basilica/roof/overhang-drop", QuantityPolicy::positive())?;
     let roof_run =
         network.declare::<Length>("basilica/roof/full-run", QuantityPolicy::positive())?;
-    let south_roof_run = network.declare::<Length>(
+    let north_roof_run = network.declare::<Offset>(
+        "basilica/roof/north-full-run",
+        QuantityPolicy::unrestricted(),
+    )?;
+    let south_roof_run = network.declare::<Offset>(
         "basilica/roof/south-full-run",
         QuantityPolicy::unrestricted(),
     )?;
     let roof_total_rise =
         network.declare::<Length>("basilica/roof/full-rise", QuantityPolicy::positive())?;
     let roof_eave_height =
-        network.declare::<Length>("basilica/roof/eave-height", QuantityPolicy::positive())?;
+        network.declare::<Offset>("basilica/roof/eave-height", QuantityPolicy::positive())?;
     let roof_slope_length = network.declare::<Length>(
         "basilica/roof/skin-slope-length",
         QuantityPolicy::positive(),
@@ -398,7 +408,7 @@ fn build_definition() -> Result<(NetworkDef, RoofQuantities), BuildError> {
         "basilica/roof/principal-rafter-depth",
         QuantityPolicy::positive(),
     )?;
-    let principal_rafter_reveal = network.declare::<Length>(
+    let principal_rafter_reveal = network.declare::<Offset>(
         "basilica/roof/principal-rafter-reveal",
         QuantityPolicy::non_negative(),
     )?;
@@ -430,110 +440,129 @@ fn build_definition() -> Result<(NetworkDef, RoofQuantities), BuildError> {
         half_span.clone(),
         Rational::new(1, 2).map_err(|_| BuildError::InvalidRelation)?,
     )?)?;
-    network.relate(ScaleLength::new(
-        "basilica/roof/b-south-half-span",
+    network.relate(OffsetByLength::new(
+        "basilica/roof/b-north-half-span",
+        origin.clone(),
+        half_span.clone(),
+        north_half_span.clone(),
+        OffsetDirection::Positive,
+    )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/roof/c-south-half-span",
+        origin.clone(),
         half_span.clone(),
         south_half_span.clone(),
-        Rational::new(-1, 1).map_err(|_| BuildError::InvalidRelation)?,
+        OffsetDirection::Negative,
     )?)?;
-    network.relate(Sum::new(
-        "basilica/roof/c-wall-plate-top",
+    network.relate(OffsetByLength::new(
+        "basilica/roof/d-wall-plate-top",
         wall_head.clone(),
         wall_plate_height.clone(),
         wall_plate_top.clone(),
+        OffsetDirection::Positive,
     )?)?;
-    network.relate(Sum::new(
-        "basilica/roof/d-ridge-height",
+    network.relate(OffsetByLength::new(
+        "basilica/roof/e-ridge-height",
         wall_plate_top.clone(),
         rise.clone(),
         ridge_height.clone(),
+        OffsetDirection::Positive,
     )?)?;
     network.relate(Pitch::new(
-        "basilica/roof/e-pitch",
+        "basilica/roof/f-pitch",
         half_span.clone(),
         rise.clone(),
         pitch.clone(),
     )?)?;
     network.relate(Pythagorean::new(
-        "basilica/roof/f-principal-rafter",
+        "basilica/roof/g-principal-rafter",
         half_span.clone(),
         rise.clone(),
         rafter_length.clone(),
     )?)?;
     network.relate(Pitch::new(
-        "basilica/roof/g-overhang-drop",
+        "basilica/roof/h-overhang-drop",
         overhang.clone(),
         overhang_drop.clone(),
         pitch.clone(),
     )?)?;
     network.relate(Sum::new(
-        "basilica/roof/h-full-run",
+        "basilica/roof/i-full-run",
         half_span.clone(),
         overhang.clone(),
         roof_run.clone(),
     )?)?;
-    network.relate(ScaleLength::new(
-        "basilica/roof/i-south-full-run",
+    network.relate(OffsetByLength::new(
+        "basilica/roof/j-north-full-run",
+        origin.clone(),
+        roof_run.clone(),
+        north_roof_run.clone(),
+        OffsetDirection::Positive,
+    )?)?;
+    network.relate(OffsetByLength::new(
+        "basilica/roof/k-south-full-run",
+        origin.clone(),
         roof_run.clone(),
         south_roof_run.clone(),
-        Rational::new(-1, 1).map_err(|_| BuildError::InvalidRelation)?,
+        OffsetDirection::Negative,
     )?)?;
-    network.relate(Sum::new(
-        "basilica/roof/j-eave-height",
-        roof_eave_height.clone(),
-        overhang_drop.clone(),
+    network.relate(OffsetByLength::new(
+        "basilica/roof/l-eave-height",
         wall_plate_top.clone(),
+        overhang_drop.clone(),
+        roof_eave_height.clone(),
+        OffsetDirection::Negative,
     )?)?;
     network.relate(Sum::new(
-        "basilica/roof/k-full-rise",
+        "basilica/roof/m-full-rise",
         rise.clone(),
         overhang_drop.clone(),
         roof_total_rise.clone(),
     )?)?;
     network.relate(Pythagorean::new(
-        "basilica/roof/l-skin-slope",
+        "basilica/roof/n-skin-slope",
         roof_run.clone(),
         roof_total_rise.clone(),
         roof_slope_length.clone(),
     )?)?;
     network.relate(ComposePoint::new(
-        "basilica/roof/m-north-wall-seat",
-        zero.clone(),
-        half_span.clone(),
+        "basilica/roof/o-north-wall-seat",
+        origin.clone(),
+        north_half_span.clone(),
         wall_plate_top.clone(),
         north_wall_seat.clone(),
     )?)?;
     network.relate(ComposePoint::new(
-        "basilica/roof/n-south-wall-seat",
-        zero.clone(),
+        "basilica/roof/p-south-wall-seat",
+        origin.clone(),
         south_half_span.clone(),
         wall_plate_top.clone(),
         south_wall_seat.clone(),
     )?)?;
     network.relate(ComposePoint::new(
-        "basilica/roof/o-ridge-point",
-        zero.clone(),
-        zero.clone(),
+        "basilica/roof/q-ridge-point",
+        origin.clone(),
+        origin.clone(),
         ridge_height.clone(),
         ridge_point.clone(),
     )?)?;
     network.relate(ComposePoint::new(
-        "basilica/roof/p-north-eave",
-        zero.clone(),
-        roof_run.clone(),
+        "basilica/roof/r-north-eave",
+        origin.clone(),
+        north_roof_run.clone(),
         roof_eave_height.clone(),
         north_roof_eave.clone(),
     )?)?;
     network.relate(ComposePoint::new(
-        "basilica/roof/q-south-eave",
-        zero.clone(),
+        "basilica/roof/s-south-eave",
+        origin.clone(),
         south_roof_run.clone(),
         roof_eave_height.clone(),
         south_roof_eave.clone(),
     )?)?;
 
     let quantities = RoofQuantities {
-        zero,
+        origin,
         span,
         half_span,
         wall_head,
@@ -568,14 +597,14 @@ fn build_roots(
     params: &BasilicaParams,
 ) -> Result<RootClaimSet, RoofSetoutError> {
     let mut roots = RootClaimSetBuilder::new(definition);
-    let (span, span_quantization) = Length::quantize_metres(params.nave_width)?;
-    let (wall_head, wall_quantization) = Length::quantize_metres(params.nave_wall_height)?;
-    let (rise, rise_quantization) = Length::quantize_metres(params.roof_rise)?;
+    let (span, span_quantization) = quantize_length_meters(params.nave_width)?;
+    let (wall_head, wall_quantization) = quantize_offset_meters(params.nave_wall_height)?;
+    let (rise, rise_quantization) = quantize_length_meters(params.roof_rise)?;
     roots
         .author(
             "basilica/root/roof-zero",
-            &quantities.zero,
-            Knowledge::exact(Length::ZERO),
+            &quantities.origin,
+            Knowledge::exact(Offset::ZERO),
         )?
         .author_quantized(
             "basilica/root/nave-span",
@@ -598,39 +627,47 @@ fn build_roots(
         .author(
             "basilica/root/wall-plate-height",
             &quantities.wall_plate_height,
-            Knowledge::exact(Length::millimetres(WALL_PLATE_HEIGHT_MM)?),
+            Knowledge::exact(exact_length_millimeters(WALL_PLATE_HEIGHT_MM)?),
         )?
         .author(
             "basilica/root/wall-plate-width",
             &quantities.wall_plate_width,
-            Knowledge::exact(Length::millimetres(WALL_PLATE_WIDTH_MM)?),
+            Knowledge::exact(exact_length_millimeters(WALL_PLATE_WIDTH_MM)?),
         )?
         .author(
             "basilica/root/roof-overhang",
             &quantities.overhang,
-            Knowledge::exact(Length::millimetres(ROOF_OVERHANG_MM)?),
+            Knowledge::exact(exact_length_millimeters(ROOF_OVERHANG_MM)?),
         )?
         .author(
             "basilica/root/roof-skin-depth",
             &quantities.roof_skin_depth,
-            Knowledge::exact(Length::millimetres(ROOF_SKIN_DEPTH_MM)?),
+            Knowledge::exact(exact_length_millimeters(ROOF_SKIN_DEPTH_MM)?),
         )?
         .author(
             "basilica/root/principal-rafter-width",
             &quantities.principal_rafter_width,
-            Knowledge::exact(Length::millimetres(PRINCIPAL_RAFTER_WIDTH_MM)?),
+            Knowledge::exact(exact_length_millimeters(PRINCIPAL_RAFTER_WIDTH_MM)?),
         )?
         .author(
             "basilica/root/principal-rafter-depth",
             &quantities.principal_rafter_depth,
-            Knowledge::exact(Length::millimetres(PRINCIPAL_RAFTER_DEPTH_MM)?),
+            Knowledge::exact(exact_length_millimeters(PRINCIPAL_RAFTER_DEPTH_MM)?),
         )?
         .author(
             "basilica/root/principal-rafter-reveal",
             &quantities.principal_rafter_reveal,
-            Knowledge::exact(Length::millimetres(PRINCIPAL_RAFTER_REVEAL_MM)?),
+            Knowledge::exact(exact_offset_millimeters(PRINCIPAL_RAFTER_REVEAL_MM)?),
         )?;
     Ok(roots.finish()?)
+}
+
+fn exact_length_millimeters(value: u64) -> Result<Length, ArithmeticError> {
+    Length::millimeters(value).ok_or(ArithmeticError::Overflow)
+}
+
+fn exact_offset_millimeters(value: i64) -> Result<Offset, ArithmeticError> {
+    Offset::millimeters(value).ok_or(ArithmeticError::Overflow)
 }
 
 fn resolve_section(
@@ -1083,13 +1120,16 @@ mod tests {
         // down by the same rational pitch.
         let setout = BasilicaRoofSetout::new(&BasilicaParams::default()).unwrap();
         let roof = setout.section();
-        assert_eq!(roof.wall_plate_top, Length::millimetres(11_180).unwrap());
-        assert_eq!(roof.ridge_height, Length::millimetres(14_380).unwrap());
+        assert_eq!(roof.wall_plate_top, Offset::millimeters(11_180).unwrap());
+        assert_eq!(roof.ridge_height, Offset::millimeters(14_380).unwrap());
         assert_eq!(roof.pitch, Rational::new(32, 45).unwrap());
-        assert_eq!(roof.overhang_drop, Length::from_iota(2_240_000_000));
+        assert_eq!(
+            roof.overhang_drop,
+            Length::from_iota(2_240_000_000).unwrap()
+        );
         assert_eq!(
             roof.roof_eave_height
-                .checked_add(roof.overhang_drop)
+                .checked_add_length(roof.overhang_drop)
                 .unwrap(),
             roof.wall_plate_top
         );
@@ -1112,7 +1152,7 @@ mod tests {
             assert_eq!(geometry.bindings.len(), 5);
             assert_eq!(
                 geometry.extent.size[0],
-                setout.section().rafter_length.as_metres()
+                setout.section().rafter_length.as_meters()
             );
         }
     }
@@ -1127,7 +1167,7 @@ mod tests {
         let mut edited = BasilicaParams::default();
         edited.roof_rise += 0.25;
         let change = baseline.reconfigure(&edited).unwrap();
-        assert_eq!(change.section.rise, Length::millimetres(3_450).unwrap());
+        assert_eq!(change.section.rise, Length::millimeters(3_450).unwrap());
         assert!(change.work.steps_reused > 0);
         assert!(change.work.steps_evaluated > 0);
         let dirty: Vec<_> = change

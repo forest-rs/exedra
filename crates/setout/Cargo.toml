@@ -18,7 +18,7 @@ default = []
 std = []
 
 [dependencies]
+exedra_measurements.workspace = true
 joto_constants.workspace = true
-joto_format.workspace = true
 joto_parse.workspace = true
 libm.workspace = true

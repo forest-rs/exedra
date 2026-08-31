@@ -29,6 +29,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use exedra_constructive::ir::{Placement3, Recipe, RecipeError};
+use exedra_measurements::{Angle, Length};
 
 use crate::construction::Construction;
 use crate::element::{Element, Member, Node};
@@ -158,23 +159,41 @@ pub enum RejectionReason {
         /// The largest workable count, when bounded.
         maximum: Option<usize>,
     },
-    /// A measurement is below what the rule can cut safely.
-    TooSmall {
+    /// A measured linear extent is below an exact authored minimum.
+    LengthTooSmall {
         /// What was measured, as a stable diagnostic name.
         what: &'static str,
-        /// The measurement, in metres or radians.
-        measured: f64,
-        /// The smallest workable value.
-        minimum: f64,
+        /// The geometry-derived measurement, in meters.
+        measured_meters: f64,
+        /// The smallest workable exact length.
+        minimum: Length,
     },
-    /// A measurement is above what the rule can cut safely.
-    TooLarge {
+    /// A measured linear extent is above an exact authored maximum.
+    LengthTooLarge {
         /// What was measured, as a stable diagnostic name.
         what: &'static str,
-        /// The measurement, in metres or radians.
-        measured: f64,
-        /// The largest workable value.
-        maximum: f64,
+        /// The geometry-derived measurement, in meters.
+        measured_meters: f64,
+        /// The largest workable exact length.
+        maximum: Length,
+    },
+    /// A measured angle is below an exact authored minimum.
+    AngleTooSmall {
+        /// What was measured, as a stable diagnostic name.
+        what: &'static str,
+        /// The geometry-derived measurement, in radians.
+        measured_radians: f64,
+        /// The smallest workable exact angle.
+        minimum: Angle,
+    },
+    /// A measured angle is above an exact authored maximum.
+    AngleTooLarge {
+        /// What was measured, as a stable diagnostic name.
+        what: &'static str,
+        /// The geometry-derived measurement, in radians.
+        measured_radians: f64,
+        /// The largest workable exact angle.
+        maximum: Angle,
     },
     /// The participants' materials cannot be fitted this way.
     IncompatibleMaterial {
@@ -221,16 +240,42 @@ impl core::fmt::Display for RejectionReason {
                 Some(maximum) => write!(f, "{found} {what} outside {minimum}..={maximum}"),
                 None => write!(f, "{found} {what} is below the minimum of {minimum}"),
             },
-            Self::TooSmall {
+            Self::LengthTooSmall {
                 what,
-                measured,
+                measured_meters,
                 minimum,
-            } => write!(f, "{what} {measured} is below {minimum}"),
-            Self::TooLarge {
+            } => write!(
+                f,
+                "{what} {measured_meters} m is below {} m",
+                minimum.as_meters()
+            ),
+            Self::LengthTooLarge {
                 what,
-                measured,
+                measured_meters,
                 maximum,
-            } => write!(f, "{what} {measured} is above {maximum}"),
+            } => write!(
+                f,
+                "{what} {measured_meters} m is above {} m",
+                maximum.as_meters()
+            ),
+            Self::AngleTooSmall {
+                what,
+                measured_radians,
+                minimum,
+            } => write!(
+                f,
+                "{what} {measured_radians} rad is below {} rad",
+                minimum.as_radians()
+            ),
+            Self::AngleTooLarge {
+                what,
+                measured_radians,
+                maximum,
+            } => write!(
+                f,
+                "{what} {measured_radians} rad is above {} rad",
+                maximum.as_radians()
+            ),
             Self::IncompatibleMaterial { found, expected } => {
                 write!(f, "material {found:?} is not {expected}")
             }
@@ -559,7 +604,7 @@ impl ContactMeaning {
 /// The patch is an assertion with measurable content: the two anchors must
 /// coincide in the complete frame within [`crate::CONTACT_TOLERANCE`], and
 /// the elements must overlap across both tangents by at least
-/// [`ContactPatch::minimum_overlap`]. A patch that does not measure up is
+/// [`ContactPatch::minimum_overlap_meters`]. A patch that does not measure up is
 /// reported and stops witnessing transfers.
 #[derive(Clone, Debug)]
 pub struct ContactPatch {
@@ -573,8 +618,7 @@ pub struct ContactPatch {
     pub normal: Vec3,
     /// Two unit tangents completing an orthonormal frame with `normal`.
     pub tangents: [Vec3; 2],
-    /// The least acceptable overlap along each tangent, in metres.
-    pub minimum_overlap: [f64; 2],
+    minimum_overlap: [f64; 2],
     /// What the contact means structurally.
     pub meaning: ContactMeaning,
     /// Opaque frontend label for the specific fit (`"crossed-seat"`,
@@ -610,11 +654,29 @@ impl ContactPatch {
         }
     }
 
-    /// Requires at least `minimum` metres of overlap along each tangent.
+    /// Requires at least the exact `minimum` overlap along each tangent.
     #[must_use]
-    pub fn with_minimum_overlap(mut self, minimum: [f64; 2]) -> Self {
+    pub fn with_minimum_overlap(mut self, minimum: [Length; 2]) -> Self {
+        self.minimum_overlap = minimum.map(Length::as_meters);
+        self
+    }
+
+    /// Requires a geometry-derived minimum overlap, expressed in meters.
+    ///
+    /// Prefer [`ContactPatch::with_minimum_overlap`] for authored dimensions.
+    /// This explicit floating-point seam exists for rule libraries whose
+    /// threshold is calculated from participant extents already represented in
+    /// Joiner's analytic geometry domain.
+    #[must_use]
+    pub fn with_minimum_overlap_meters(mut self, minimum: [f64; 2]) -> Self {
         self.minimum_overlap = minimum;
         self
+    }
+
+    /// Returns the minimum overlap lowered to analytic meters.
+    #[must_use]
+    pub const fn minimum_overlap_meters(&self) -> [f64; 2] {
+        self.minimum_overlap
     }
 
     /// Attaches an opaque frontend label for the specific fit.
@@ -837,6 +899,9 @@ mod tests {
 
     #[test]
     fn applicability_never_mixes_observations_with_refusals() {
+        // Suitability and refusal are disjoint states, and a linear refusal
+        // must retain the exact authored limit while formatting the derived
+        // geometry measurement with its unit.
         let suitable = Applicability::Suitable(alloc::vec![Observation::new(
             "shallow-seat",
             "rafter",
@@ -848,17 +913,17 @@ mod tests {
 
         let unsuitable = Applicability::unsuitable(
             "rafter",
-            RejectionReason::TooSmall {
+            RejectionReason::LengthTooSmall {
                 what: "member depth",
-                measured: 0.04,
-                minimum: 0.10,
+                measured_meters: 0.04,
+                minimum: Length::millimeters(100).unwrap(),
             },
         );
         assert!(!unsuitable.is_suitable());
         assert!(unsuitable.observations().is_empty());
         assert_eq!(
             format!("{}", unsuitable.rejections()[0]),
-            "rafter: member depth 0.04 is below 0.1"
+            "rafter: member depth 0.04 m is below 0.1 m"
         );
     }
 
@@ -872,6 +937,34 @@ mod tests {
         assert_eq!(
             TransferKind::Contact.unwitnessed_code(),
             "unwitnessed-contact-transfer"
+        );
+    }
+
+    #[test]
+    fn contact_overlap_distinguishes_authored_and_geometry_derived_inputs() {
+        // Exact authored overlap lowers once, while an already-derived
+        // analytic threshold must enter through the explicitly named meters
+        // seam. Both produce the same validation representation.
+        let make_contact = || {
+            ContactPatch::new(
+                "bearing",
+                Anchor::new("carried", [0.0; 3]),
+                Anchor::new("carrier", [0.0; 3]),
+                [0.0, 0.0, 1.0],
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                ContactMeaning::Bearing,
+                Evidence::new("fixture", EvidenceClass::ModernEngineeringInference),
+            )
+        };
+        let exact = make_contact().with_minimum_overlap([
+            Length::millimeters(150).unwrap(),
+            Length::millimeters(200).unwrap(),
+        ]);
+        let derived = make_contact().with_minimum_overlap_meters([0.15, 0.20]);
+
+        assert_eq!(
+            exact.minimum_overlap_meters(),
+            derived.minimum_overlap_meters()
         );
     }
 

@@ -11,7 +11,7 @@ use core::fmt;
 /// This is a public compatibility boundary. Any change to field order, integer
 /// encoding, or the hash construction must increment this value and provide a
 /// migration note for persisted keys.
-pub const FINGERPRINT_SCHEMA_VERSION: u32 = 1;
+pub const FINGERPRINT_SCHEMA_VERSION: u32 = 2;
 
 /// A deterministic fixed-width content fingerprint.
 ///

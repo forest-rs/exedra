@@ -153,7 +153,7 @@ impl Rule for PurlinToPrincipalTrenchRule {
             "trenched-purlin-bearing",
             evidence,
         )
-        .with_minimum_overlap([footprint.size[0] * 0.8, footprint.size[1] * 0.8]);
+        .with_minimum_overlap_meters([footprint.size[0] * 0.8, footprint.size[1] * 0.8]);
         let route_purlin_load_to_principal = TransferEdge::new(
             &alloc::format!("load-{}-through-{relation}", pair.carried.key),
             &pair.carried.key,

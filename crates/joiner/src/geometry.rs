@@ -13,7 +13,7 @@
 use exedra_constructive::ir::Placement3;
 use exedra_math::{add, dot, finite, is_orthogonal_frame, is_unit, scale, sub};
 
-/// A point or direction in world space, in metres.
+/// A point or direction in world space, in meters.
 pub type Vec3 = [f64; 3];
 
 /// How far a declared frame may stray from unit length and orthogonality

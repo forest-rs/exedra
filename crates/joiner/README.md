@@ -27,6 +27,11 @@ generated parts, contact patches, load-path edges — so validation and lowering
 consume rule output without knowing which rule produced it, or whether a rule
 produced it at all.
 
+Authored linear and angular limits use `exedra_measurements` values. Analytic
+extents, measured contact gaps and overlaps, and numerical tolerances remain
+floating-point geometry. When a rule derives an overlap threshold from those
+extents, the `with_minimum_overlap_meters` call makes that boundary visible.
+
 A member/member relation is also the load-path witness for a joint transfer:
 the relation *is* the joint. There is no separate joint record to keep
 consistent with it.

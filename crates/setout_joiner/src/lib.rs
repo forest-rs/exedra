@@ -31,7 +31,7 @@ use exedra_math::{cross, dot, normalize, scale, sub};
 use joiner::{Construction, ConstructionError, Element, Evidence, OrientedBox};
 use setout::{
     AccessError, AnyQuantity, CanonicalEncoder, ClaimKey, Evaluation, EvaluationDelta, Fingerprint,
-    Length, Point3, Quantity, QuantityKey, SupportRef,
+    Length, Offset, Point3, Quantity, QuantityKey, SupportRef,
 };
 
 /// One quantity-to-claim link retained beside materialized construction data.
@@ -103,10 +103,6 @@ impl SegmentMemberBinding {
         let length = evaluation.exact(&self.length)?;
         let width = evaluation.exact(&self.width)?;
         let depth = evaluation.exact(&self.depth)?;
-        if length.iota() <= 0 || width.iota() <= 0 || depth.iota() <= 0 {
-            return Err(ResolveError::NonPositiveExtent);
-        }
-
         let foot_f64 = lower_point(foot);
         let head_f64 = lower_point(head);
         let tangent =
@@ -126,7 +122,7 @@ impl SegmentMemberBinding {
         // Exact integer Pythagorean may select a neighbouring iota for an
         // irrational root. Anything larger than two iota indicates that the
         // bound length and endpoints did not come from the same hypothesis.
-        if endpoint_error > 2.0 * lower_length(Length::from_iota(1)) {
+        if endpoint_error > 2.0 * lower_length(Length::MIN) {
             return Err(ResolveError::LengthEndpointMismatch {
                 declared: length_f64,
                 endpoints: endpoint_length,
@@ -198,9 +194,6 @@ impl AxisAlignedBoxBinding {
             evaluation.exact(&self.size_y)?,
             evaluation.exact(&self.size_z)?,
         ];
-        if size.iter().any(|value| value.iota() <= 0) {
-            return Err(ResolveError::NonPositiveExtent);
-        }
         let extent = OrientedBox::axis_aligned(lower_point(origin), size.map(lower_length));
         let bindings = resolve_bindings(
             evaluation,
@@ -219,19 +212,25 @@ impl AxisAlignedBoxBinding {
     }
 }
 
-/// Strictly lowers an exact length to metres.
+/// Strictly lowers an exact length to meters.
 #[must_use]
 pub fn lower_length(value: Length) -> f64 {
-    value.as_metres()
+    value.as_meters()
 }
 
-/// Strictly lowers one exact point to metres.
+/// Strictly lowers an exact signed offset to meters.
+#[must_use]
+pub fn lower_offset(value: Offset) -> f64 {
+    value.as_meters()
+}
+
+/// Strictly lowers one exact point to meters.
 #[must_use]
 pub fn lower_point(value: Point3) -> [f64; 3] {
     [
-        lower_length(value.x),
-        lower_length(value.y),
-        lower_length(value.z),
+        lower_offset(value.x),
+        lower_offset(value.y),
+        lower_offset(value.z),
     ]
 }
 
@@ -386,8 +385,6 @@ impl BindingIndex {
 pub enum ResolveError {
     /// Strict quantity access failed.
     Access(AccessError),
-    /// A width, depth, or length is not positive.
-    NonPositiveExtent,
     /// Exact segment endpoints coincide.
     CoincidentEndpoints,
     /// The roll-reference vector is parallel to the segment.
@@ -413,7 +410,6 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Access(error) => write!(formatter, "setout access failed: {error}"),
-            Self::NonPositiveExtent => formatter.write_str("resolved extent is not positive"),
             Self::CoincidentEndpoints => formatter.write_str("segment endpoints coincide"),
             Self::ParallelWidthReference => {
                 formatter.write_str("segment width reference is parallel to its endpoints")
@@ -438,7 +434,7 @@ impl core::error::Error for ResolveError {}
 mod tests {
     use super::*;
     use setout::{
-        EvaluationScenarioBuilder, Knowledge, Length, NetworkBuilder, Point3, Quantity,
+        EvaluationScenarioBuilder, Knowledge, Length, NetworkBuilder, Offset, Point3, Quantity,
         QuantityPolicy, RootClaimSetBuilder, compile_plan, evaluate,
     };
 
@@ -451,7 +447,7 @@ mod tests {
         depth: Quantity<Length>,
     }
 
-    fn fixture(declared_length_mm: i64) -> SegmentFixture {
+    fn fixture(declared_length_mm: u64) -> SegmentFixture {
         let mut network = NetworkBuilder::new();
         let foot = network
             .declare::<Point3>("frame/foot", QuantityPolicy::unrestricted())
@@ -474,35 +470,35 @@ mod tests {
             .author(
                 "root/foot",
                 &foot,
-                Knowledge::exact(Point3::new(Length::ZERO, Length::ZERO, Length::ZERO)),
+                Knowledge::exact(Point3::new(Offset::ZERO, Offset::ZERO, Offset::ZERO)),
             )
             .unwrap()
             .author(
                 "root/head",
                 &head,
                 Knowledge::exact(Point3::new(
-                    Length::ZERO,
-                    Length::metres(3).unwrap(),
-                    Length::metres(4).unwrap(),
+                    Offset::ZERO,
+                    Offset::meters(3).unwrap(),
+                    Offset::meters(4).unwrap(),
                 )),
             )
             .unwrap()
             .author(
                 "root/length",
                 &length,
-                Knowledge::exact(Length::millimetres(declared_length_mm).unwrap()),
+                Knowledge::exact(Length::millimeters(declared_length_mm).unwrap()),
             )
             .unwrap()
             .author(
                 "root/width",
                 &width,
-                Knowledge::exact(Length::millimetres(200).unwrap()),
+                Knowledge::exact(Length::millimeters(200).unwrap()),
             )
             .unwrap()
             .author(
                 "root/depth",
                 &depth,
-                Knowledge::exact(Length::millimetres(300).unwrap()),
+                Knowledge::exact(Length::millimeters(300).unwrap()),
             )
             .unwrap();
         let roots = roots.finish().unwrap();

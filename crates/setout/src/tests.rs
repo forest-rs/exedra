@@ -1,7 +1,6 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use super::*;
@@ -32,13 +31,13 @@ fn sum_direction_follows_roots_and_ignores_root_insertion_order() {
         .author(
             "root/total",
             &total,
-            Knowledge::exact(Length::millimetres(224).unwrap()),
+            Knowledge::exact(Length::millimeters(224).unwrap()),
         )
         .unwrap()
         .author(
             "root/right",
             &right,
-            Knowledge::exact(Length::millimetres(7).unwrap()),
+            Knowledge::exact(Length::millimeters(7).unwrap()),
         )
         .unwrap();
     let roots_a = roots_a.finish().unwrap();
@@ -47,13 +46,13 @@ fn sum_direction_follows_roots_and_ignores_root_insertion_order() {
         .author(
             "root/right",
             &right,
-            Knowledge::exact(Length::millimetres(7).unwrap()),
+            Knowledge::exact(Length::millimeters(7).unwrap()),
         )
         .unwrap()
         .author(
             "root/total",
             &total,
-            Knowledge::exact(Length::millimetres(224).unwrap()),
+            Knowledge::exact(Length::millimeters(224).unwrap()),
         )
         .unwrap();
     let roots_b = roots_b.finish().unwrap();
@@ -77,7 +76,7 @@ fn sum_direction_follows_roots_and_ignores_root_insertion_order() {
     let result = evaluate(&definition, &roots_a, &scenario_a, &plan_a).unwrap();
     assert_eq!(
         result.exact(&left).unwrap(),
-        Length::millimetres(217).unwrap()
+        Length::millimeters(217).unwrap()
     );
 }
 
@@ -85,13 +84,13 @@ fn sum_direction_follows_roots_and_ignores_root_insertion_order() {
 fn point_root_decomposes_every_component_and_declared_unknowns_remain_visible() {
     let mut builder = NetworkBuilder::new();
     let x = builder
-        .declare::<Length>("survey/x", QuantityPolicy::unrestricted())
+        .declare::<Offset>("survey/x", QuantityPolicy::unrestricted())
         .unwrap();
     let y = builder
-        .declare::<Length>("survey/y", QuantityPolicy::unrestricted())
+        .declare::<Offset>("survey/y", QuantityPolicy::unrestricted())
         .unwrap();
     let z = builder
-        .declare::<Length>("survey/z", QuantityPolicy::unrestricted())
+        .declare::<Offset>("survey/z", QuantityPolicy::unrestricted())
         .unwrap();
     let point = builder
         .declare::<Point3>("survey/point", QuantityPolicy::unrestricted())
@@ -113,9 +112,9 @@ fn point_root_decomposes_every_component_and_declared_unknowns_remain_visible() 
         .unwrap();
     let definition = builder.finish().unwrap();
     let observed = Point3::new(
-        Length::millimetres(100).unwrap(),
-        Length::millimetres(200).unwrap(),
-        Length::millimetres(300).unwrap(),
+        Offset::millimeters(100).unwrap(),
+        Offset::millimeters(-200).unwrap(),
+        Offset::millimeters(300).unwrap(),
     );
     let mut roots = RootClaimSetBuilder::new(&definition);
     roots
@@ -160,13 +159,13 @@ fn inactive_root_selection_is_orphaned_without_panicking() {
         .author(
             "root/active",
             &length,
-            Knowledge::exact(Length::millimetres(100).unwrap()),
+            Knowledge::exact(Length::millimeters(100).unwrap()),
         )
         .unwrap()
         .author(
             "root/inactive",
             &length,
-            Knowledge::exact(Length::millimetres(101).unwrap()),
+            Knowledge::exact(Length::millimeters(101).unwrap()),
         )
         .unwrap();
     let roots = roots.finish().unwrap();
@@ -230,13 +229,13 @@ fn relation_selection_cannot_be_forced_onto_another_quantity() {
         .author(
             "root/left",
             &left,
-            Knowledge::exact(Length::millimetres(40).unwrap()),
+            Knowledge::exact(Length::millimeters(40).unwrap()),
         )
         .unwrap()
         .author(
             "root/right",
             &right,
-            Knowledge::exact(Length::millimetres(60).unwrap()),
+            Knowledge::exact(Length::millimeters(60).unwrap()),
         )
         .unwrap();
     let roots = roots.finish().unwrap();
@@ -292,8 +291,8 @@ fn relation_selection_cannot_be_forced_onto_another_quantity() {
 #[test]
 fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
     let mut builder = NetworkBuilder::new();
-    let zero = builder
-        .declare::<Length>("roof/zero", QuantityPolicy::non_negative())
+    let origin = builder
+        .declare::<Offset>("roof/origin", QuantityPolicy::unrestricted())
         .unwrap();
     let span = builder
         .declare::<Length>("roof/span", QuantityPolicy::positive())
@@ -302,19 +301,19 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
         .declare::<Length>("roof/half-span", QuantityPolicy::positive())
         .unwrap();
     let wall_head = builder
-        .declare::<Length>("roof/wall-head", QuantityPolicy::positive())
+        .declare::<Offset>("roof/wall-head", QuantityPolicy::positive())
         .unwrap();
     let plate_height = builder
         .declare::<Length>("roof/wall-plate-height", QuantityPolicy::positive())
         .unwrap();
     let plate_top = builder
-        .declare::<Length>("roof/wall-plate-top", QuantityPolicy::positive())
+        .declare::<Offset>("roof/wall-plate-top", QuantityPolicy::positive())
         .unwrap();
     let rise = builder
         .declare::<Length>("roof/rise", QuantityPolicy::positive())
         .unwrap();
     let ridge = builder
-        .declare::<Length>("roof/ridge", QuantityPolicy::positive())
+        .declare::<Offset>("roof/ridge", QuantityPolicy::positive())
         .unwrap();
     let pitch = builder
         .declare::<Rational>("roof/pitch", QuantityPolicy::unrestricted())
@@ -322,8 +321,11 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
     let slope = builder
         .declare::<Length>("roof/slope", QuantityPolicy::positive())
         .unwrap();
+    let north_y = builder
+        .declare::<Offset>("roof/north-y", QuantityPolicy::unrestricted())
+        .unwrap();
     let south_y = builder
-        .declare::<Length>("roof/south-y", QuantityPolicy::unrestricted())
+        .declare::<Offset>("roof/south-y", QuantityPolicy::unrestricted())
         .unwrap();
     let north_foot = builder
         .declare::<Point3>("roof/north-foot", QuantityPolicy::unrestricted())
@@ -348,22 +350,24 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
         .unwrap();
     builder
         .relate(
-            Sum::new(
+            OffsetByLength::new(
                 "roof/b-plate-top",
                 wall_head.clone(),
                 plate_height.clone(),
                 plate_top.clone(),
+                OffsetDirection::Positive,
             )
             .unwrap(),
         )
         .unwrap();
     builder
         .relate(
-            Sum::new(
+            OffsetByLength::new(
                 "roof/c-ridge",
                 plate_top.clone(),
                 rise.clone(),
                 ridge.clone(),
+                OffsetDirection::Positive,
             )
             .unwrap(),
         )
@@ -392,11 +396,24 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
         .unwrap();
     builder
         .relate(
-            ScaleLength::new(
-                "roof/f-south-y",
+            OffsetByLength::new(
+                "roof/f-north-y",
+                origin.clone(),
+                half_span.clone(),
+                north_y.clone(),
+                OffsetDirection::Positive,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    builder
+        .relate(
+            OffsetByLength::new(
+                "roof/g-south-y",
+                origin.clone(),
                 half_span.clone(),
                 south_y.clone(),
-                Rational::new(-1, 1).unwrap(),
+                OffsetDirection::Negative,
             )
             .unwrap(),
         )
@@ -404,9 +421,9 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
     builder
         .relate(
             ComposePoint::new(
-                "roof/g-north-foot",
-                zero.clone(),
-                half_span.clone(),
+                "roof/h-north-foot",
+                origin.clone(),
+                north_y.clone(),
                 plate_top.clone(),
                 north_foot.clone(),
             )
@@ -416,8 +433,8 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
     builder
         .relate(
             ComposePoint::new(
-                "roof/h-south-foot",
-                zero.clone(),
+                "roof/i-south-foot",
+                origin.clone(),
                 south_y.clone(),
                 plate_top.clone(),
                 south_foot.clone(),
@@ -428,9 +445,9 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
     builder
         .relate(
             ComposePoint::new(
-                "roof/i-ridge-point",
-                zero.clone(),
-                zero.clone(),
+                "roof/j-ridge-point",
+                origin.clone(),
+                origin.clone(),
                 ridge.clone(),
                 ridge_point.clone(),
             )
@@ -441,30 +458,30 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
 
     let mut roots = RootClaimSetBuilder::new(&definition);
     roots
-        .author("root/zero", &zero, Knowledge::exact(Length::ZERO))
+        .author("root/origin", &origin, Knowledge::exact(Offset::ZERO))
         .unwrap()
         .author(
             "root/span",
             &span,
-            Knowledge::exact(Length::millimetres(9_000).unwrap()),
+            Knowledge::exact(Length::millimeters(9_000).unwrap()),
         )
         .unwrap()
         .author(
             "root/wall-head",
             &wall_head,
-            Knowledge::exact(Length::millimetres(11_000).unwrap()),
+            Knowledge::exact(Offset::millimeters(11_000).unwrap()),
         )
         .unwrap()
         .author(
             "root/plate-height",
             &plate_height,
-            Knowledge::exact(Length::millimetres(180).unwrap()),
+            Knowledge::exact(Length::millimeters(180).unwrap()),
         )
         .unwrap()
         .author(
             "root/rise",
             &rise,
-            Knowledge::exact(Length::millimetres(3_200).unwrap()),
+            Knowledge::exact(Length::millimeters(3_200).unwrap()),
         )
         .unwrap();
     let roots = roots.finish().unwrap();
@@ -478,11 +495,11 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
 
     assert_eq!(
         result.exact(&plate_top).unwrap(),
-        Length::millimetres(11_180).unwrap()
+        Offset::millimeters(11_180).unwrap()
     );
     assert_eq!(
         result.exact(&ridge).unwrap(),
-        Length::millimetres(14_380).unwrap()
+        Offset::millimeters(14_380).unwrap()
     );
     assert_eq!(
         result.exact(&pitch).unwrap(),
@@ -491,9 +508,9 @@ fn roof_spine_derives_pitch_points_and_integer_root_with_complete_explain() {
     assert_eq!(
         result.exact(&north_foot).unwrap(),
         Point3::new(
-            Length::ZERO,
-            Length::millimetres(4_500).unwrap(),
-            Length::millimetres(11_180).unwrap(),
+            Offset::ZERO,
+            Offset::millimeters(4_500).unwrap(),
+            Offset::millimeters(11_180).unwrap(),
         )
     );
 
@@ -536,11 +553,11 @@ fn challenger_stays_local_until_a_structural_decision_selects_it() {
         .unwrap();
     builder
         .relate(
-            OffsetLength::new(
+            AdjustLength::new(
                 "gauge/b-offset",
                 total.clone(),
                 downstream.clone(),
-                Length::millimetres(1).unwrap(),
+                Offset::millimeters(1).unwrap(),
             )
             .unwrap(),
         )
@@ -551,19 +568,19 @@ fn challenger_stays_local_until_a_structural_decision_selects_it() {
         .author(
             "root/left",
             &left,
-            Knowledge::exact(Length::millimetres(40).unwrap()),
+            Knowledge::exact(Length::millimeters(40).unwrap()),
         )
         .unwrap()
         .author(
             "root/right",
             &right,
-            Knowledge::exact(Length::millimetres(60).unwrap()),
+            Knowledge::exact(Length::millimeters(60).unwrap()),
         )
         .unwrap()
         .author(
             "root/total",
             &total,
-            Knowledge::exact(Length::millimetres(101).unwrap()),
+            Knowledge::exact(Length::millimeters(101).unwrap()),
         )
         .unwrap();
     let roots = roots.finish().unwrap();
@@ -580,7 +597,7 @@ fn challenger_stays_local_until_a_structural_decision_selects_it() {
     ));
     assert_eq!(
         base.exact(&downstream).unwrap(),
-        Length::millimetres(102).unwrap(),
+        Length::millimeters(102).unwrap(),
         "the independent total remains provisional; its challenger does not leak downstream"
     );
 
@@ -621,7 +638,7 @@ fn challenger_stays_local_until_a_structural_decision_selects_it() {
     let selected = evaluate(&definition, &roots, &selected_scenario, &selected_plan).unwrap();
     assert_eq!(
         selected.exact(&downstream).unwrap(),
-        Length::millimetres(101).unwrap(),
+        Length::millimeters(101).unwrap(),
         "the explicit counterfactual now propagates through the downstream relation"
     );
 }
@@ -655,7 +672,7 @@ fn incremental_successor_reuses_the_unaffected_branch_and_matches_fresh() {
         .unwrap();
     let definition = builder.finish().unwrap();
 
-    let build_roots = |b_value: i64| {
+    let build_roots = |b_value: u64| {
         let mut roots = RootClaimSetBuilder::new(&definition);
         for (key, quantity, value) in [
             ("root/a", &a, 10),
@@ -667,7 +684,7 @@ fn incremental_successor_reuses_the_unaffected_branch_and_matches_fresh() {
                 .author(
                     key,
                     quantity,
-                    Knowledge::exact(Length::millimetres(value).unwrap()),
+                    Knowledge::exact(Length::millimeters(value).unwrap()),
                 )
                 .unwrap();
         }
@@ -724,11 +741,19 @@ fn incremental_successor_reuses_the_unaffected_branch_and_matches_fresh() {
 }
 
 #[test]
-fn dimension_parse_and_format_round_trip_iota_exactly() {
-    // Joto parsing/formatting is part of the calm boundary, but setout stores
-    // only the resulting iota. This guards the useful SI/US-customary bridge
-    // without allowing unit text into propagation fingerprints.
-    let length: Length = "9.18m".parse().unwrap();
-    assert_eq!(length, Length::millimetres(9_180).unwrap());
-    assert_eq!(length.to_string(), "9.18m");
+fn dimension_parse_selects_the_requested_measurement_domain() {
+    // Parsing remains a setout import concern, but its result must obey the
+    // same positive-size versus signed-coordinate split as authored values.
+    let length = parse_length("9.18m").unwrap();
+    let offset = parse_offset("-9.18m").unwrap();
+    assert_eq!(length, Length::millimeters(9_180).unwrap());
+    assert_eq!(offset, Offset::millimeters(-9_180).unwrap());
+    assert!(parse_length("0m").is_err());
+    assert!(parse_length("-9.18m").is_err());
+    assert!(quantize_length_meters(0.0).is_err());
+    assert!(quantize_length_meters(-1.0).is_err());
+    assert_eq!(
+        quantize_offset_meters(-1.0).unwrap().0,
+        Offset::meters(-1).unwrap()
+    );
 }

@@ -156,12 +156,12 @@ impl TrussGeometry {
         let south = setout
             .principal_rafter_geometry(RoofSide::South)
             .expect("accepted south rafter binding resolves");
-        let roof_clearance = roof.principal_rafter_reveal.as_metres();
+        let roof_clearance = roof.principal_rafter_reveal.as_meters();
         let north_rafter_frame = recessed_member_frame(&north, roof_clearance);
         let south_rafter_frame = recessed_member_frame(&south, roof_clearance);
         let rafter_width = north.extent.size[1];
         let rafter_depth = north.extent.size[2];
-        let tie_base = roof.wall_plate_top.as_metres() - TIE_DEPTH;
+        let tie_base = roof.wall_plate_top.as_meters() - TIE_DEPTH;
         let tie_top = tie_base + TIE_DEPTH;
         let king_tenon_length = KingPostTieParams::default().tenon_length.as_meters();
         let rafter_head_housing_depth = RAFTER_HEAD_HOUSING_DEPTH.as_meters();
@@ -246,13 +246,13 @@ impl TrussGeometry {
         );
 
         Self {
-            half_nave: roof.half_span.as_metres(),
+            half_nave: roof.half_span.as_meters(),
             #[cfg(test)]
             roof_sin: north.extent.axes[0][2],
             #[cfg(test)]
             roof_cos: -north.extent.axes[0][1],
             #[cfg(test)]
-            roof_peak: roof.ridge_height.as_metres(),
+            roof_peak: roof.ridge_height.as_meters(),
             rafter_length,
             rafter_width,
             rafter_depth,
@@ -1209,8 +1209,8 @@ mod tests {
             assert_close(tie_min[1], -geometry.half_nave - TIE_END_RELISH);
             assert_close(tie_max[1], geometry.half_nave + TIE_END_RELISH);
             assert!(
-                tie_min[2] < roof.wall_head.as_metres()
-                    && tie_max[2] >= roof.wall_plate_top.as_metres() - 1.0e-5
+                tie_min[2] < roof.wall_head.as_meters()
+                    && tie_max[2] >= roof.wall_plate_top.as_meters() - 1.0e-5
             );
 
             for side in ["north", "south"] {

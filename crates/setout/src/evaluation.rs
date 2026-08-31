@@ -2072,7 +2072,7 @@ fn encode_exactness(exactness: &ExactnessTrace, encoder: &mut CanonicalEncoder) 
         ExactnessTrace::ImportedFloat(quantization) => {
             encoder.u8(3);
             encoder.u64(quantization.source_bits);
-            encoder.i64(quantization.selected_iota);
+            encoder.i128(quantization.selected_iota);
             encoder.u64(quantization.error_iota_bits);
         }
     }

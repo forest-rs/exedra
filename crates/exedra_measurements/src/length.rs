@@ -15,6 +15,9 @@ use joto_constants::length::{i64 as signed_iota, u64 as unsigned_iota};
 pub struct Length(NonZeroU64);
 
 impl Length {
+    /// The smallest representable positive length: one joto iota.
+    pub const MIN: Self = Self(NonZeroU64::MIN);
+
     /// Creates a length from an exact iota count.
     ///
     /// Returns `None` when `value` is zero.
@@ -80,6 +83,18 @@ impl Length {
         }
     }
 
+    /// Subtracts a length while preserving the strictly positive domain.
+    ///
+    /// Returns `None` when `other` is greater than or equal to `self`, or when
+    /// the subtraction otherwise cannot be represented.
+    #[must_use]
+    pub const fn checked_sub(self, other: Self) -> Option<Self> {
+        match self.iota().checked_sub(other.iota()) {
+            Some(value) => Self::from_iota(value),
+            None => None,
+        }
+    }
+
     /// Scales a length by a positive integer without overflowing.
     ///
     /// Returns `None` when `factor` is zero because zero is not a [`Length`].
@@ -98,6 +113,38 @@ impl Length {
             Some(Offset::from_iota(self.iota().cast_signed()))
         } else {
             None
+        }
+    }
+
+    /// Applies a signed displacement while preserving a positive result.
+    #[must_use]
+    pub const fn checked_add_offset(self, offset: Offset) -> Option<Self> {
+        let value = if offset.iota() >= 0 {
+            self.iota().checked_add(offset.iota().unsigned_abs())
+        } else {
+            self.iota().checked_sub(offset.iota().unsigned_abs())
+        };
+        match value {
+            Some(value) => Self::from_iota(value),
+            None => None,
+        }
+    }
+
+    /// Subtracts a signed displacement while preserving a positive result.
+    ///
+    /// This operation is distinct from negating `offset` and adding it: the
+    /// most-negative [`Offset`] has no signed positive counterpart, while its
+    /// magnitude is representable by the unsigned [`Length`] domain.
+    #[must_use]
+    pub const fn checked_sub_offset(self, offset: Offset) -> Option<Self> {
+        let value = if offset.iota() >= 0 {
+            self.iota().checked_sub(offset.iota().unsigned_abs())
+        } else {
+            self.iota().checked_add(offset.iota().unsigned_abs())
+        };
+        match value {
+            Some(value) => Self::from_iota(value),
+            None => None,
         }
     }
 }
@@ -182,6 +229,61 @@ impl Offset {
         }
     }
 
+    /// Measures the strictly positive distance from this offset to `target`.
+    ///
+    /// Returns `None` when `target` is not greater than `self`. The result uses
+    /// the unsigned [`Length`] domain, so it can represent the full distance
+    /// from [`i64::MIN`] to [`i64::MAX`] without overflowing signed arithmetic.
+    #[must_use]
+    pub const fn checked_positive_distance_to(self, target: Self) -> Option<Length> {
+        if target.iota() <= self.iota() {
+            return None;
+        }
+        Length::from_iota(self.iota().abs_diff(target.iota()))
+    }
+
+    /// Translates this displacement by a positive length.
+    #[must_use]
+    pub const fn checked_add_length(self, length: Length) -> Option<Self> {
+        if length.iota() <= i64::MAX.cast_unsigned() {
+            return match self.iota().checked_add(length.iota().cast_signed()) {
+                Some(value) => Some(Self(value)),
+                None => None,
+            };
+        }
+        if self.iota() >= 0 {
+            return None;
+        }
+        let value = length.iota() - self.iota().unsigned_abs();
+        if value <= i64::MAX.cast_unsigned() {
+            Some(Self(value.cast_signed()))
+        } else {
+            None
+        }
+    }
+
+    /// Translates this displacement by a negative length.
+    #[must_use]
+    pub const fn checked_sub_length(self, length: Length) -> Option<Self> {
+        if length.iota() <= i64::MAX.cast_unsigned() {
+            return match self.iota().checked_sub(length.iota().cast_signed()) {
+                Some(value) => Some(Self(value)),
+                None => None,
+            };
+        }
+        if self.iota() < 0 {
+            return None;
+        }
+        let magnitude = length.iota() - self.iota().cast_unsigned();
+        if magnitude == 1_u64 << 63 {
+            Some(Self(i64::MIN))
+        } else if magnitude < 1_u64 << 63 {
+            Some(Self(-magnitude.cast_signed()))
+        } else {
+            None
+        }
+    }
+
     /// Negates this offset without overflowing the exact representation.
     #[must_use]
     pub const fn checked_neg(self) -> Option<Self> {
@@ -218,6 +320,7 @@ mod tests {
     fn length_excludes_non_positive_and_overflowed_sizes() {
         // A physical size cannot carry the invalid states that formerly
         // required finite-and-positive checks at each geometry call site.
+        assert_eq!(Length::MIN.iota(), 1);
         assert_eq!(Length::from_iota(0), None);
         assert_eq!(Length::millimeters(0), None);
         assert_eq!(
@@ -274,11 +377,40 @@ mod tests {
     fn checked_arithmetic_rejects_values_outside_the_target_domain() {
         // Overflow and multiplication by zero cannot manufacture an invalid
         // Length, and the most-negative Offset cannot be negated in i64.
-        let one = Length::from_iota(1).unwrap();
+        let one = Length::MIN;
         let largest = Length::from_iota(u64::MAX).unwrap();
 
         assert_eq!(largest.checked_add(one), None);
+        assert_eq!(one.checked_sub(one), None);
         assert_eq!(one.checked_mul(0), None);
+        assert_eq!(one.checked_add_offset(Offset::from_iota(-1)), None);
+        assert_eq!(
+            one.checked_sub_offset(Offset::from_iota(i64::MIN)),
+            Length::from_iota((1_u64 << 63) + 1)
+        );
+        assert_eq!(
+            Offset::ZERO.checked_add_length(one),
+            Some(Offset::from_iota(1))
+        );
+        assert_eq!(
+            Offset::ZERO.checked_sub_length(one),
+            Some(Offset::from_iota(-1))
+        );
+        let unsigned_sign_bit = Length::from_iota(1_u64 << 63).unwrap();
+        assert_eq!(
+            Offset::from_iota(i64::MIN).checked_add_length(unsigned_sign_bit),
+            Some(Offset::ZERO)
+        );
+        assert_eq!(
+            Offset::ZERO.checked_sub_length(unsigned_sign_bit),
+            Some(Offset::from_iota(i64::MIN))
+        );
+        // The widest pair of signed coordinates has a valid unsigned
+        // distance, so measuring it must not route through signed subtraction.
+        assert_eq!(
+            Offset::from_iota(i64::MIN).checked_positive_distance_to(Offset::from_iota(i64::MAX)),
+            Length::from_iota(u64::MAX)
+        );
         assert_eq!(Offset::from_iota(i64::MIN).checked_neg(), None);
     }
 }

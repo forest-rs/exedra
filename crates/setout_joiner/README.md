@@ -5,5 +5,10 @@ construction graph. It resolves exact points and dimensions once, constructs
 deterministic analytic extents with `exedra_math`, retains claim/support links,
 and maps quantity deltas to Joiner's geometry, contact, and load-path channels.
 
+Positive dimensions arrive as `exedra_measurements::Length`; point coordinates
+arrive as signed `Offset`. This crate lowers both to meters together when it
+constructs a Joiner extent, keeping that conversion out of setout propagation
+and construction rules.
+
 Neither side depends on the other through this crate: `setout` remains consumer
 neutral, and `joiner` remains independently usable.
