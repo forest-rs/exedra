@@ -31,6 +31,8 @@ pub(super) fn resolve_plan_section(
         west_nave_length: evaluation.exact(&quantities.west_nave_length)?,
         east_nave_length: evaluation.exact(&quantities.east_nave_length)?,
         arcade_bays: evaluation.exact(&quantities.arcade_bays)?,
+        buttress_start: evaluation.exact(&quantities.buttress_start)?,
+        buttress_end: evaluation.exact(&quantities.buttress_end)?,
     })
 }
 

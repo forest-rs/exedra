@@ -17,6 +17,10 @@ use setout::{
     Offset, PlanError, Point3, PropagationPlan, Quantity, Rational, RootBuildError, RootClaimSet,
     ScenarioBuildError, WorkReport, compile_plan, evaluate,
 };
+use setout_generate::{
+    DeltaError as GenerationDeltaError, FragmentDelta, GenerationError, LinearFragment,
+    MAX_LINEAR_STATIONS,
+};
 use setout_joiner::{
     BindingIndex, DirtyElement, ResolveError, ResolvedElementGeometry, SegmentMemberBinding,
 };
@@ -32,22 +36,25 @@ use super::{
 mod bindings;
 mod catalogue;
 mod definition;
+mod generation;
 mod resolve;
 mod roots;
 
 use bindings::build_binding_index;
 use catalogue::build_catalogue;
 use definition::build_definition;
+use generation::generate_buttress_stations;
 use resolve::{
     resolve_aisle_section, resolve_crossing_section, resolve_east_end_section,
     resolve_level_section, resolve_plan_section, resolve_roof_section,
 };
 use roots::build_roots;
 
-// The architecture inventory stores repeat counts in `u32` and derives a
-// two-sided opening count as `2 * arcade_bays + 25`. Reject a premise before
-// evaluation if that downstream topology arithmetic could overflow.
-const MAX_ARCADE_BAYS: Count = Count::new(u32::MAX.saturating_sub(25) as u64 / 2);
+// Exact generation deliberately bounds one fragment's work. Reject an arcade
+// count before setout evaluation if its endpoint-inclusive buttress expansion
+// would exceed that shared limit; the smaller bound also keeps every existing
+// `u32` architecture inventory calculation safe.
+const MAX_ARCADE_BAYS: Count = Count::new((MAX_LINEAR_STATIONS - 1) as u64);
 
 #[derive(Clone, Debug)]
 struct BasilicaQuantities {
@@ -70,6 +77,10 @@ struct BasilicaQuantities {
     west_nave_length: Quantity<Length>,
     east_nave_length: Quantity<Length>,
     arcade_bays: Quantity<Count>,
+    buttress_west_inset: Quantity<Length>,
+    buttress_east_inset: Quantity<Length>,
+    buttress_start: Quantity<Offset>,
+    buttress_end: Quantity<Offset>,
     nave_wall_height: Quantity<Length>,
     wall_head: Quantity<Offset>,
     aisle_wall_height: Quantity<Length>,
@@ -160,6 +171,7 @@ pub struct BasilicaSetout {
     crossing_section: CrossingSection,
     east_end_section: EastEndSection,
     roof_section: RoofSection,
+    buttress_stations: LinearFragment,
     catalogue: ReconstructionCatalogue,
     assessment: ReconstructionAssessment,
     bindings: BindingIndex,
@@ -182,13 +194,14 @@ impl BasilicaSetout {
         let crossing_section = resolve_crossing_section(&evaluation, &quantities)?;
         let east_end_section = resolve_east_end_section(&evaluation, &quantities)?;
         let roof_section = resolve_roof_section(&evaluation, &quantities)?;
+        let buttress_stations = generate_buttress_stations(&plan_section)?;
         let catalogue = build_catalogue(&roots, &plan)?;
         let assessment = assess(
             evaluation.provenance(),
             evaluation.fingerprint(),
             &catalogue,
         );
-        let bindings = build_binding_index(&quantities, plan_section.arcade_bays);
+        let bindings = build_binding_index(&quantities, &buttress_stations);
         Ok(Self {
             definition,
             quantities,
@@ -202,6 +215,7 @@ impl BasilicaSetout {
             crossing_section,
             east_end_section,
             roof_section,
+            buttress_stations,
             catalogue,
             assessment,
             bindings,
@@ -218,6 +232,12 @@ impl BasilicaSetout {
     #[must_use]
     pub const fn plan(&self) -> &PlanSection {
         &self.plan_section
+    }
+
+    /// Returns the exact, semantically labeled aisle-buttress stations.
+    #[must_use]
+    pub const fn buttress_stations(&self) -> &LinearFragment {
+        &self.buttress_stations
     }
 
     /// Returns the exact resolved vertical datums.
@@ -313,6 +333,8 @@ impl BasilicaSetout {
         let crossing_section = resolve_crossing_section(&warm, &self.quantities)?;
         let east_end_section = resolve_east_end_section(&warm, &self.quantities)?;
         let roof = resolve_roof_section(&warm, &self.quantities)?;
+        let buttress_stations = generate_buttress_stations(&plan_section)?;
+        let buttress_delta = self.buttress_stations.delta_to(&buttress_stations)?;
         let delta = warm.delta_from(&self.evaluation);
         let topology_changed = delta
             .quantities_changed
@@ -325,6 +347,8 @@ impl BasilicaSetout {
             crossing: crossing_section,
             east_end: east_end_section,
             roof,
+            buttress_stations,
+            buttress_delta,
             delta,
             dirty,
             topology_changed,
@@ -367,6 +391,10 @@ pub struct BasilicaReconfiguration {
     pub east_end: EastEndSection,
     /// Newly resolved exact roof section.
     pub roof: RoofSection,
+    /// Newly expanded exact aisle-buttress stations.
+    pub buttress_stations: LinearFragment,
+    /// Stable item-level change from the previous buttress expansion.
+    pub buttress_delta: FragmentDelta,
     /// Exact core quantity and claim changes.
     pub delta: EvaluationDelta,
     /// Named construction/assembly elements and Joiner channels affected.
@@ -374,8 +402,9 @@ pub struct BasilicaReconfiguration {
     /// Whether repeated assembly topology must be rebuilt, not merely updated.
     ///
     /// [`BasilicaReconfiguration::dirty`] can name only elements that already
-    /// exist. When this flag is true, callers must also add or remove arcade
-    /// and buttress instances for the new repeat count.
+    /// exist. [`BasilicaReconfiguration::buttress_delta`] supplies exact
+    /// add/remove information for buttresses; callers must still rebuild the
+    /// arcade topology when this broader flag is true.
     pub topology_changed: bool,
     /// Work reused versus recomputed.
     pub work: WorkReport,
@@ -403,9 +432,15 @@ pub enum BasilicaSetoutError {
     Access(setout::AccessError),
     /// Reconstruction catalogue contains duplicate identity.
     Catalogue(CatalogueError),
+    /// Exact topology generation failed.
+    Generation(GenerationError),
+    /// Generated fragments did not share the expected invocation identity.
+    GenerationDelta(GenerationDeltaError),
+    /// The east buttress anchor does not lie east of the west anchor.
+    InvalidButtressExtent,
     /// Warm and fresh evaluations did not agree.
     WarmFreshMismatch,
-    /// The arcade repeat count exceeds the architecture inventory's domain.
+    /// The arcade repeat count exceeds one bounded generation fragment.
     ArcadeBayCountTooLarge {
         /// Authored repeat count.
         actual: Count,
@@ -435,6 +470,8 @@ error_from!(EvaluationError, Evaluation);
 error_from!(setout::AccessError, Access);
 error_from!(CatalogueError, Catalogue);
 error_from!(setout::KeyError, Key);
+error_from!(GenerationError, Generation);
+error_from!(GenerationDeltaError, GenerationDelta);
 
 impl fmt::Display for BasilicaSetoutError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -447,6 +484,13 @@ impl fmt::Display for BasilicaSetoutError {
             Self::Evaluation(error) => write!(formatter, "basilica evaluation failed: {error}"),
             Self::Access(error) => write!(formatter, "basilica access failed: {error}"),
             Self::Catalogue(error) => write!(formatter, "basilica catalogue failed: {error}"),
+            Self::Generation(error) => write!(formatter, "basilica generation failed: {error}"),
+            Self::GenerationDelta(error) => {
+                write!(formatter, "basilica generation delta failed: {error}")
+            }
+            Self::InvalidButtressExtent => {
+                formatter.write_str("basilica buttress anchors do not define a positive extent")
+            }
             Self::WarmFreshMismatch => {
                 formatter.write_str("warm basilica evaluation differs from fresh")
             }

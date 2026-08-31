@@ -36,6 +36,7 @@ dependencies = [
  "joiner_timber",
  "libm",
  "setout",
+ "setout_generate",
  "setout_joiner",
  "setout_reconstruction",
 ]
@@ -1137,6 +1138,13 @@ dependencies = [
  "joto_constants",
  "joto_parse",
  "libm",
+]
+
+[[package]]
+name = "setout_generate"
+version = "0.0.0"
+dependencies = [
+ "setout",
 ]
 
 [[package]]

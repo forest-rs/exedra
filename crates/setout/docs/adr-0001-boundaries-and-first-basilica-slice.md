@@ -4,7 +4,8 @@
 
 Accepted on 2026-08-23; the first milestone landed under ticket `set-qckq`.
 The exact measurement-domain amendment landed on 2026-08-31 under `em-u8k7`.
-The whole-basilica massing amendment is implemented under `set-mpbt`.
+The whole-basilica massing amendment landed under `set-mpbt`.
+The first deterministic-generation amendment is implemented under `set-mnga`.
 
 This is the milestone's one owning ADR. Slice-level implementation rationale,
 API examples, and validation detail belong in crate rustdoc and commit messages;
@@ -79,6 +80,12 @@ or joiner validation.
 13. Dirty mappings are expressed in stable quantity and element keys; a value
     change that lowers to identical floating bits does not dirty geometry.
 14. No crate lands without an independent fixture proving its responsibility.
+15. Generated items use semantic invocation-local labels. Sequence ordinals are
+    current presentation order and never durable identity.
+16. A generated coordinate that lies between integral iotas remains an exact
+    rational number of iotas until one consumer adapter lowers it.
+17. Missing override targets remain visible orphans; they never fall through to
+    an item occupying the same ordinal.
 
 ## Options considered
 
@@ -189,9 +196,10 @@ roof hypothesis, and neither independently recomputes its derived geometry.
    assessment; explicit proposals; analysis-only invalidation; annotated roof
    explain. It does not automatically replace joiner evidence.
 
-`setout_generate` follows with stable invocations, labeled choices, strict staged
-expansion, orphaned overrides, and incremental equivalence. It does not land as a
-placeholder in the first milestone.
+`setout_generate` begins after the first milestone with stable invocations,
+labeled items, orphaned overrides, and key-based re-expansion deltas. Recursive
+stages and richer choices remain extension points that need a real consumer; they
+do not land as placeholders.
 
 The milestone also proves a roof-rise or pitch edit end to end. The evaluation
 names the changed quantities, the adapter maps them to the affected joiner dirty
@@ -231,10 +239,49 @@ placements such as `30.700000000000003`; both intentional changes are therefore
 re-baselined rather than treated as artifact regressions.
 
 Changing `arcade_bays` changes repeated topology. A quantity-to-element dirty
-mapping can name only existing identities, so `BasilicaReconfiguration` reports
-`topology_changed` separately. Consumers must rebuild repeated expansion when
-it is true; `setout_generate` remains the future owner of stable add/remove
-semantics.
+mapping can name only existing identities, so the whole-basilica amendment made
+`BasilicaReconfiguration` report `topology_changed` separately. The
+deterministic-generation amendment below adds stable item-level buttress deltas;
+the broader flag remains necessary for the arcade topology that has not yet
+migrated.
+
+## Deterministic-generation amendment
+
+`set-mnga` adds `setout_generate` as a `no_std` + `alloc` sibling of the
+propagation kernel. The first earned generator is deliberately narrow: an
+endpoint-inclusive linear station distribution expands an invocation key, two
+exact `Offset` anchors, an interval `Count`, and labeled omissions into one
+immutable `LinearFragment`. It does not add procedural assembly nodes or a
+generic recursive generation language. Its nominal invocation and item keys use
+the canonical grammar exposed by `setout::validate_key`, avoiding a second
+definition of durable identity syntax.
+
+Uniform subdivision cannot generally produce integral iota coordinates. For
+example, the basilica's 32-meter buttress extent has seven intervals. Each
+`LinearStation` therefore carries a reduced `Rational` number of iotas computed
+directly from both anchors; no rounded step is accumulated. Fingerprints encode
+the normalized invocation, overrides, exact payloads, and orphan state.
+
+The endpoint labels are always `start` and `end`; interior labels are stable
+one-based ranks such as `interior/000001`. Re-expansion compares full item keys,
+reports retained, added, removed, and exact-payload-changed items, and keeps
+unknown omission targets visible. A stateful convenience wrapper retains only
+the previous immutable result and is tested against fresh expansion as its
+oracle.
+
+The basilica proves the consumer boundary. Its setout network now derives the
+two exact buttress anchors from explicit inset roots, then the application feeds
+those anchors and `arcade_bays` to `setout_generate`. A small architecture
+adapter lowers each rational X coordinate once and maps its semantic label to a
+root assembly key. Quantity invalidation consumes the same fragment rather than
+recreating the repeat.
+
+This deliberately migrates public buttress paths from ordinal names such as
+`buttress-north-07` to semantic names such as `buttress-north-end` and
+`buttress-north-interior-000006`. Consequently assembly, OBJ, and glTF content
+fingerprints are re-baselined even though the generated placements agree with
+the accepted floating repeat within `1e-12` meter. Keeping the old endpoint
+ordinal would have preserved bytes by retaining the identity-rebinding defect.
 
 ## Extension points
 
