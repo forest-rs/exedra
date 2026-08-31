@@ -4,6 +4,7 @@
 
 Accepted on 2026-08-23; the first milestone landed under ticket `set-qckq`.
 The exact measurement-domain amendment landed on 2026-08-31 under `em-u8k7`.
+The whole-basilica massing amendment is implemented under `set-mpbt`.
 
 This is the milestone's one owning ADR. Slice-level implementation rationale,
 API examples, and validation detail belong in crate rustdoc and commit messages;
@@ -195,9 +196,45 @@ placeholder in the first milestone.
 The milestone also proves a roof-rise or pitch edit end to end. The evaluation
 names the changed quantities, the adapter maps them to the affected joiner dirty
 channels and accepted ruin assembly parts, warm and fresh outputs agree, and
-unrelated systems such as the crossing and apse remain clean. The goal is not to
-preserve an accidentally inconsistent visual golden: intentional corrections to
-roof bearing or alignment are reviewed as improvements to the accepted artifact.
+unrelated systems such as the apse remain clean. The crossing is intentionally
+dirty because its platform datum follows the ridge. The goal is not to preserve
+an accidentally inconsistent visual golden: intentional corrections to roof
+bearing or alignment are reviewed as improvements to the accepted artifact.
+
+## Whole-basilica massing amendment
+
+The roof spine proved the boundary, but the accepted ruin still recomputed its
+plan, aisle, crossing, and east-end datums from a public floating-point parameter
+bag. `set-mpbt` extends the same network rather than adding a second building
+layout abstraction:
+
+- `BasilicaPremises` contains only exact positive `Length` values and `Count`;
+- `BasilicaSetout` resolves plan, level, aisle, roof, crossing, and east-end
+  sections, together with provenance and quantity-to-element invalidation;
+- architecture modules consume those sections, never raw premises, and lower to
+  floating point only at constructive recipe and placement boundaries;
+- reconstruction evidence covers every active root and directed method;
+- repeated topology, constructive profiles, and masonry join rules remain owned
+  by `setout_generate`, the basilica architecture layer, and `joiner_masonry`
+  respectively.
+
+The public migration replaces `BasilicaParams` and `BasilicaRoofSetout`; keeping
+compatibility shims would preserve the duplicate floating authoring path that
+this amendment removes. The migration intentionally changes one piece of the
+default grouped OBJ: the south aisle-roof frame now parameterizes its baseline
+from eave to inner bearing, keeping the placement right-handed while making its
+thickness axis point outward/up like the north-side mirror. The old baseline
+points were correct but its thickness pointed inward/down. A frame-level mirror
+test and matched render review pin that correction. The assembly semantic
+fingerprint also changes because exact lowering removes arithmetic residue in
+placements such as `30.700000000000003`; both intentional changes are therefore
+re-baselined rather than treated as artifact regressions.
+
+Changing `arcade_bays` changes repeated topology. A quantity-to-element dirty
+mapping can name only existing identities, so `BasilicaReconfiguration` reports
+`topology_changed` separately. Consumers must rebuild repeated expansion when
+it is true; `setout_generate` remains the future owner of stable add/remove
+semantics.
 
 ## Extension points
 

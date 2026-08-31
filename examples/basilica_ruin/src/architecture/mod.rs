@@ -5,7 +5,7 @@ use cambium::assembly::{LinearOccurrence, NamedAssemblyPattern, instantiate_name
 use exedra_assembly::{Assembly, PartId};
 use exedra_constructive::ir::{Placement3, Recipe};
 
-use crate::{BasilicaParams, BasilicaRoofSetout, RoofSection, names};
+use crate::{BasilicaPremises, BasilicaSetout, names};
 
 mod aisles;
 mod buttresses;
@@ -15,38 +15,6 @@ mod east_end;
 mod interior_arcades;
 mod nave;
 mod nave_trusses;
-
-const CLERESTORY_BASE: f64 = 5.75;
-const CROSSING_PLATFORM_HEIGHT: f64 = 0.22;
-
-fn crossing_drum_base(roof: &RoofSection) -> f64 {
-    roof.ridge_height.as_meters() + 0.55
-}
-
-fn crossing_platform_base(roof: &RoofSection) -> f64 {
-    crossing_drum_base(roof) - CROSSING_PLATFORM_HEIGHT
-}
-
-#[derive(Copy, Clone)]
-struct Layout {
-    wall_thickness: f64,
-    half_nave: f64,
-    half_total: f64,
-    crossing_west: f64,
-    crossing_east: f64,
-}
-
-impl Layout {
-    fn from_params(p: &BasilicaParams) -> Self {
-        Self {
-            wall_thickness: 0.45,
-            half_nave: p.nave_width * 0.5,
-            half_total: p.total_width * 0.5,
-            crossing_west: p.crossing_x - p.drum_radius - 0.6,
-            crossing_east: p.crossing_x + p.drum_radius + 0.6,
-        }
-    }
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Inventory {
@@ -124,36 +92,43 @@ impl BuildContext {
     }
 }
 
-pub(crate) fn build_assembly(p: &BasilicaParams) -> (Assembly, Inventory) {
+pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventory) {
     let mut context = BuildContext::new();
-    let layout = Layout::from_params(p);
-    let roof_setout = BasilicaRoofSetout::new(p).expect("basilica roof parameters must set out");
-    let roof = roof_setout.section();
+    let setout = BasilicaSetout::new(premises).expect("basilica premises must set out");
+    let plan = setout.plan();
+    let levels = setout.levels();
+    let aisle = setout.aisle();
+    let roof = setout.roof();
+    let crossing = setout.crossing();
+    let east_end = setout.east_end();
 
     // Architectural systems join the scenario here in deterministic assembly
     // order. A new detail system should be one focused module and one call in
     // the architectural sequence, not another capability on `BuildContext`.
-    nave::build(&mut context, p, layout, roof);
-    aisles::build(&mut context, p, layout);
-    interior_arcades::build(&mut context, p, layout);
-    east_end::build(&mut context, p, layout, roof);
-    crossing::build(&mut context, p, layout, roof);
-    crossing_transition::build(&mut context, p, roof);
-    buttresses::build(&mut context, p, layout);
+    nave::build(&mut context, plan, levels, roof);
+    aisles::build(&mut context, plan, levels, aisle);
+    interior_arcades::build(&mut context, plan, levels);
+    east_end::build(&mut context, plan, east_end, roof);
+    crossing::build(&mut context, plan, levels, crossing);
+    crossing_transition::build(&mut context, plan, levels, crossing);
+    buttresses::build(&mut context, plan);
     // Append interior timber detail after the accepted primary fabric. Stable
     // identities survive the new continuous wall plates even though the old
     // artifact's numeric instance prefix intentionally grows.
-    nave_trusses::build(&mut context, p, layout, &roof_setout);
+    nave_trusses::build(&mut context, plan, &setout);
+
+    let arcade_bays = u32::try_from(plan.arcade_bays.get())
+        .expect("the basilica arcade bay count fits the assembly inventory");
 
     let inventory = Inventory {
         nave_walls: 4,
         nave_wall_plates: 5,
         aisles: 2,
         aisle_roofs: 2,
-        round_head_openings: p.arcade_bays * 2 + 12 + 12 + 1,
+        round_head_openings: arcade_bays * 2 + 12 + 12 + 1,
         interior_arcades: 4,
         interior_arcade_openings: 12,
-        buttresses: (p.arcade_bays + 1) * 2,
+        buttresses: (arcade_bays + 1) * 2,
         crossing_piers: 4,
         crossing_stages: 1,
         pendentives: 4,

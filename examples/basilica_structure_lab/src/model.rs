@@ -10,7 +10,7 @@
 
 use std::fmt::Write as _;
 
-use basilica_ruin::{BasilicaParams, BasilicaRoofSetout, RoofSide};
+use basilica_ruin::{BasilicaPremises, BasilicaSetout, RoofSide};
 use exedra_math::{add, cross, norm, normalize, scale, sub};
 use joiner::{
     Anchor, Construction, ContactMeaning, ContactPatch, Element, Evidence, EvidenceClass,
@@ -404,10 +404,10 @@ struct SideData {
     clippy::too_many_lines,
     reason = "the bay is one hypothesis; splitting it would hide the geometry that ties it together"
 )]
-pub(crate) fn western_bay(params: &BasilicaParams) -> Construction {
+pub(crate) fn western_bay(params: &BasilicaPremises) -> Construction {
     let mut author = Author::new();
-    let roof_setout = BasilicaRoofSetout::new(params).expect("basilica roof must set out");
-    let roof = roof_setout.section();
+    let roof_setout = BasilicaSetout::new(params).expect("basilica roof must set out");
+    let roof = roof_setout.roof();
 
     let x0 = 0.0;
     let x1 = 4.0;
@@ -1423,7 +1423,7 @@ mod tests {
     use super::*;
 
     fn model() -> Construction {
-        western_bay(&BasilicaParams::default())
+        western_bay(&BasilicaPremises::default())
     }
 
     fn contact_normal(construction: &Construction, key: &str) -> Vec3 {

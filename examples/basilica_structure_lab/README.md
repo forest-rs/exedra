@@ -11,7 +11,7 @@ live in the [`joiner`](../../crates/joiner/) construction crate; this lab
 authors a hypothesis into it and draws the result.
 
 ```text
-BasilicaParams + evidence-labelled hypothesis    (this lab)
+BasilicaPremises + evidence-labelled hypothesis  (this lab)
     -> joiner::Construction
     -> joiner::validate      schema/contact/load-path
     -> joiner::lower         one Assembly instance per geometry-bearing element

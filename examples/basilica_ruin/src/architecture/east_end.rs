@@ -3,22 +3,22 @@
 
 use exedra_constructive::ir::Placement3;
 
-use super::{BuildContext, Layout};
-use crate::BasilicaParams;
+use super::BuildContext;
 use crate::geometry::{
     apse_conch_recipe, apse_shell_profile, east_chancel_profile, extruded_profile_recipe,
     transverse_wall_frame,
 };
 use crate::names;
-use crate::roof_setout::RoofSection;
+use crate::{EastEndSection, PlanSection, RoofSection};
 
 pub(super) fn build(
     context: &mut BuildContext,
-    p: &BasilicaParams,
-    layout: Layout,
+    plan: &PlanSection,
+    east_end: &EastEndSection,
     roof: &RoofSection,
 ) {
-    let half_nave = layout.half_nave;
+    let half_nave = plan.half_nave.as_meters();
+    let east_x = plan.east_end.as_meters();
     // A transverse chancel wall closes the nave roof end while a broad
     // round-headed opening keeps the apse spatially continuous.
     let east_chancel = context.add_part(
@@ -34,15 +34,19 @@ pub(super) fn build(
     context.add_instance(
         names::instances::EAST_CHANCEL_GABLE,
         east_chancel,
-        Placement3::translate(p.length - 0.25, -half_nave, 0.0),
+        Placement3::translate(east_x - 0.25, -half_nave, 0.0),
         "chancel_gable",
     );
 
     let apse = context.add_part(
         "apse",
         extruded_profile_recipe(
-            apse_shell_profile(p.apse_radius, p.apse_radius - 0.45, 16),
-            8.0,
+            apse_shell_profile(
+                east_end.apse_radius.as_meters(),
+                east_end.apse_inner_radius.as_meters(),
+                16,
+            ),
+            east_end.apse_wall_height.as_meters(),
             Placement3::IDENTITY,
             "basilica:east-apse",
         ),
@@ -51,18 +55,21 @@ pub(super) fn build(
     context.add_instance(
         names::instances::EAST_APSE,
         apse,
-        Placement3::translate(p.length, 0.0, 0.0),
+        Placement3::translate(east_x, 0.0, 0.0),
         "apse",
     );
     let apse_roof = context.add_part(
         "apse-roof",
-        apse_conch_recipe(p.apse_radius + 0.18, 2.35),
+        apse_conch_recipe(
+            east_end.conch_radius.as_meters(),
+            east_end.conch_height.as_meters(),
+        ),
         "aged-roof-tile",
     );
     context.add_instance(
         "east-apse-roof",
         apse_roof,
-        Placement3::translate(p.length, 0.0, 8.0),
+        Placement3::translate(east_x, 0.0, east_end.apse_wall_height.as_meters()),
         "apse_roof",
     );
 }
@@ -77,18 +84,20 @@ mod tests {
     use super::{apse_conch_recipe, apse_shell_profile};
     use crate::geometry::extruded_profile_recipe;
     use crate::output::{bounds_for_path, build_scenario};
-    use crate::{BasilicaParams, instances_with_role, names, resolve_instance_path};
+    use crate::{
+        BasilicaPremises, BasilicaSetout, instances_with_role, names, resolve_instance_path,
+    };
 
     const WALL_HEIGHT: f64 = 8.0;
-    const CONCH_HEIGHT: f64 = 2.35;
-    const WALL_THICKNESS: f64 = 0.45;
-    const CONCH_OVERHANG: f64 = 0.18;
 
     #[test]
     fn apse_profile_has_only_the_expected_inner_and_outer_axis_crossings() {
-        let p = BasilicaParams::default();
-        let inner_radius = p.apse_radius - WALL_THICKNESS;
-        let profile = apse_shell_profile(p.apse_radius, inner_radius, 16);
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default basilica resolves");
+        let east_end = setout.east_end();
+        let outer_radius = east_end.apse_radius.as_meters();
+        let inner_radius = east_end.apse_inner_radius.as_meters();
+        let profile = apse_shell_profile(outer_radius, inner_radius, 16);
         let mut axis_vertices: Vec<f64> = profile
             .outer()
             .segs()
@@ -100,7 +109,7 @@ mod tests {
 
         assert_eq!(axis_vertices.len(), 2);
         assert!((axis_vertices[0] - inner_radius).abs() < 1.0e-12);
-        assert!((axis_vertices[1] - p.apse_radius).abs() < 1.0e-12);
+        assert!((axis_vertices[1] - outer_radius).abs() < 1.0e-12);
         assert!(
             inner_radius > 5.2 * 0.5,
             "the 5.2m chancel opening must see into the sanctuary before meeting the curved inner wall"
@@ -110,7 +119,10 @@ mod tests {
 
     #[test]
     fn chancel_axis_reaches_the_curved_inner_sanctuary_wall() {
-        let p = BasilicaParams::default();
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default basilica resolves");
+        let plan = setout.plan();
+        let east_end = setout.east_end();
         let scenario = build_scenario();
         let item = scenario
             .render_list
@@ -123,7 +135,7 @@ mod tests {
             .part(item.part)
             .expect("apse part is compiled")
             .bodies[item.body as usize];
-        let origin = [p.length - 0.5, 0.0, WALL_HEIGHT * 0.5];
+        let origin = [plan.east_end.as_meters() - 0.5, 0.0, WALL_HEIGHT * 0.5];
         let direction = [1.0, 0.0, 0.0];
         let first_hit = body
             .tri
@@ -140,7 +152,7 @@ mod tests {
             })
             .min_by(f64::total_cmp)
             .expect("the axial ray eventually meets the curved apse wall");
-        let expected = 0.5 + p.apse_radius - WALL_THICKNESS;
+        let expected = 0.5 + east_end.apse_inner_radius.as_meters();
 
         assert!(
             (first_hit - expected).abs() < 1.0e-4,
@@ -154,15 +166,24 @@ mod tests {
 
     #[test]
     fn apse_wall_and_conch_are_clean_outward_oriented_solids() {
-        let p = BasilicaParams::default();
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default basilica resolves");
+        let east_end = setout.east_end();
         let recipes = [
             extruded_profile_recipe(
-                apse_shell_profile(p.apse_radius, p.apse_radius - WALL_THICKNESS, 16),
-                WALL_HEIGHT,
+                apse_shell_profile(
+                    east_end.apse_radius.as_meters(),
+                    east_end.apse_inner_radius.as_meters(),
+                    16,
+                ),
+                east_end.apse_wall_height.as_meters(),
                 Placement3::IDENTITY,
                 "test:basilica:east-apse",
             ),
-            apse_conch_recipe(p.apse_radius + CONCH_OVERHANG, CONCH_HEIGHT),
+            apse_conch_recipe(
+                east_end.conch_radius.as_meters(),
+                east_end.conch_height.as_meters(),
+            ),
         ];
 
         for recipe in recipes {
@@ -178,7 +199,13 @@ mod tests {
 
     #[test]
     fn apse_shells_preserve_the_exterior_and_meet_at_the_wall_head() {
-        let p = BasilicaParams::default();
+        let p = BasilicaPremises::default();
+        let setout = BasilicaSetout::new(&p).expect("default basilica resolves");
+        let plan = setout.plan();
+        let east_end = setout.east_end();
+        let east_x = plan.east_end.as_meters();
+        let apse_radius = east_end.apse_radius.as_meters();
+        let wall_height = east_end.apse_wall_height.as_meters();
         let scenario = build_scenario();
         let (wall_min, wall_max) = bounds_for_path(
             &scenario.compiled,
@@ -188,24 +215,21 @@ mod tests {
         let (conch_min, conch_max) =
             bounds_for_path(&scenario.compiled, &scenario.render_list, "east-apse-roof");
 
-        assert_close(wall_min, [p.length, -p.apse_radius, 0.0]);
-        assert_close(
-            wall_max,
-            [p.length + p.apse_radius, p.apse_radius, WALL_HEIGHT],
-        );
-        let conch_radius = p.apse_radius + CONCH_OVERHANG;
-        assert_close(conch_min, [p.length, -conch_radius, WALL_HEIGHT]);
+        assert_close(wall_min, [east_x, -apse_radius, 0.0]);
+        assert_close(wall_max, [east_x + apse_radius, apse_radius, wall_height]);
+        let conch_radius = east_end.conch_radius.as_meters();
+        assert_close(conch_min, [east_x, -conch_radius, wall_height]);
         assert_close(
             conch_max,
             [
-                p.length + conch_radius,
+                east_x + conch_radius,
                 conch_radius,
-                WALL_HEIGHT + CONCH_HEIGHT,
+                wall_height + east_end.conch_height.as_meters(),
             ],
         );
         assert!((wall_max[2] - conch_min[2]).abs() < 1.0e-5);
         assert!(
-            p.apse_radius > conch_radius - 0.38,
+            apse_radius > conch_radius - 0.38,
             "the wall and conch shells need radial bearing overlap"
         );
     }
