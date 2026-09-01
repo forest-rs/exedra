@@ -12,7 +12,8 @@ use setout::{ArithmeticError, CanonicalEncoder, Fingerprint, Offset, Rational};
 use crate::key::{ItemKey, ItemLabel};
 
 use super::error::GenerationError;
-use super::types::{ItemOverride, LinearDistribution, LinearFragment, LinearStation};
+use super::item_override::ItemOverride;
+use super::types::{LinearDistribution, LinearFragment, LinearStation};
 use super::{GENERATION_SCHEMA_VERSION, MAX_LINEAR_STATIONS};
 
 /// Expands endpoint-inclusive stations using exact rational coordinates.

@@ -3,13 +3,12 @@
 
 use exedra_constructive::ir::Placement3;
 use exedra_constructive::profile::Profile2;
+use setout_generate::LinearBayFragment;
 
 use super::BuildContext;
+use super::arcade_profiles::local_bay_centers;
 use crate::geometry::{arcaded_wall_profile, extruded_profile_recipe, vertical_wall_frame};
 use crate::{LevelSection, PlanSection, names};
-
-const WEST_BAYS: u32 = 5;
-const EAST_BAYS: u32 = 1;
 
 /// Adds the lower pierced walls that carry the clerestory and connect the
 /// central nave spatially to both side aisles.
@@ -17,7 +16,13 @@ const EAST_BAYS: u32 = 1;
 /// These are masonry arcade segments with genuine round-headed voids, not a
 /// decorative row of columns masking a solid nave wall. Their west/east split
 /// repeats the upper-wall split so the full crossing bay stays open.
-pub(super) fn build(context: &mut BuildContext, plan: &PlanSection, levels: &LevelSection) {
+pub(super) fn build(
+    context: &mut BuildContext,
+    plan: &PlanSection,
+    levels: &LevelSection,
+    west_bays: &LinearBayFragment,
+    east_bays: &LinearBayFragment,
+) {
     let wall_thickness = plan.wall_thickness.as_meters();
     let half_nave = plan.half_nave.as_meters();
     let crossing_west = plan.crossing_west.as_meters();
@@ -28,7 +33,7 @@ pub(super) fn build(context: &mut BuildContext, plan: &PlanSection, levels: &Lev
     let west = context.add_part(
         names::parts::INTERIOR_ARCADE_WEST,
         extruded_profile_recipe(
-            arcade_profile(crossing_west, clerestory_base, WEST_BAYS),
+            arcade_profile(crossing_west, clerestory_base, west_bays),
             wall_thickness,
             vertical_wall_frame(),
             "basilica:interior-arcade-west",
@@ -38,7 +43,7 @@ pub(super) fn build(context: &mut BuildContext, plan: &PlanSection, levels: &Lev
     let east = context.add_part(
         names::parts::INTERIOR_ARCADE_EAST,
         extruded_profile_recipe(
-            arcade_profile(east_length, clerestory_base, EAST_BAYS),
+            arcade_profile(east_length, clerestory_base, east_bays),
             wall_thickness,
             vertical_wall_frame(),
             "basilica:interior-arcade-east",
@@ -81,8 +86,16 @@ pub(super) fn build(context: &mut BuildContext, plan: &PlanSection, levels: &Lev
     }
 }
 
-fn arcade_profile(length: f64, height: f64, bays: u32) -> Profile2 {
-    arcaded_wall_profile(length, height, bays, 2.9, 0.02, 3.65, None)
+fn arcade_profile(length: f64, height: f64, bays: &LinearBayFragment) -> Profile2 {
+    arcaded_wall_profile(
+        length,
+        height,
+        local_bay_centers(bays),
+        2.9,
+        0.02,
+        3.65,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -92,14 +105,25 @@ mod tests {
         BasilicaPremises, BasilicaSetout, instances_with_role, names, resolve_instance_path,
     };
 
-    use super::{EAST_BAYS, WEST_BAYS, arcade_profile};
+    use super::arcade_profile;
 
     #[test]
     fn profiles_have_real_round_head_voids() {
         // Profile topology must remain independent of the exact dimension
         // source supplied by the setout layer.
-        assert_eq!(arcade_profile(21.3, 5.75, WEST_BAYS).holes().len(), 5);
-        assert_eq!(arcade_profile(5.3, 5.75, EAST_BAYS).holes().len(), 1);
+        let setout = BasilicaSetout::new(&BasilicaPremises::default()).unwrap();
+        assert_eq!(
+            arcade_profile(21.3, 5.75, setout.west_arcade_bays())
+                .holes()
+                .len(),
+            5
+        );
+        assert_eq!(
+            arcade_profile(5.3, 5.75, setout.east_arcade_bays())
+                .holes()
+                .len(),
+            1
+        );
     }
 
     #[test]

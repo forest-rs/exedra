@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Linear invocation and immutable result types.
+//! Linear-bay invocation and immutable result types.
 
 use alloc::boxed::Box;
 
@@ -10,35 +10,37 @@ use setout::{Count, Fingerprint, Offset, Rational};
 use crate::delta::{DeltaError, FragmentDelta};
 use crate::key::{InvocationKey, ItemKey, ItemLabel};
 
-use super::error::GenerationError;
-use super::generate::distribute_linear;
-use super::item_override::ItemOverride;
+use super::super::error::GenerationError;
+use super::super::item_override::ItemOverride;
+use super::generate::distribute_linear_bays;
 
-/// Exact inputs for an endpoint-inclusive linear station invocation.
+/// Exact inputs for a linear sequence of edge-to-edge bays.
 #[derive(Copy, Clone, Debug)]
-pub struct LinearDistribution<'a> {
+pub struct LinearBayDistribution<'a> {
     /// Stable identity shared by all re-expansions of this invocation.
     pub invocation: &'a InvocationKey,
-    /// Exact first station coordinate.
+    /// Exact outer edge of the first bay.
     pub start: Offset,
-    /// Exact final station coordinate.
+    /// Exact outer edge of the final bay.
     pub end: Offset,
-    /// Number of spaces between the endpoint stations.
-    pub intervals: Count,
-    /// Explicit item omissions, in any order.
+    /// Number of equal bays between the two outer edges.
+    pub bays: Count,
+    /// Explicit bay omissions, in any order.
     pub overrides: &'a [ItemOverride],
 }
 
-/// One generated station with stable semantic identity.
+/// One generated bay with exact edges, center, and stable rank identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinearStation {
+pub struct LinearBay {
     pub(super) key: ItemKey,
     pub(super) label: ItemLabel,
     pub(super) ordinal: u32,
-    pub(super) position: Rational,
+    pub(super) start: Rational,
+    pub(super) end: Rational,
+    pub(super) center: Rational,
 }
 
-impl LinearStation {
+impl LinearBay {
     /// Returns the globally unique semantic item key.
     #[must_use]
     pub const fn key(&self) -> &ItemKey {
@@ -51,62 +53,74 @@ impl LinearStation {
         &self.label
     }
 
-    /// Returns the spatial sequence position.
+    /// Returns the zero-based spatial sequence position.
     ///
-    /// This ordinal is convenient for lowering and presentation, but is not
-    /// the station's durable identity.
+    /// This ordinal is convenient for presentation, but is not the bay's
+    /// durable identity.
     #[must_use]
     pub const fn ordinal(&self) -> u32 {
         self.ordinal
     }
 
-    /// Returns the exact rational coordinate measured in joto iotas.
+    /// Returns the exact first edge measured in rational joto iotas.
     #[must_use]
-    pub const fn position(&self) -> Rational {
-        self.position
+    pub const fn start(&self) -> Rational {
+        self.start
+    }
+
+    /// Returns the exact final edge measured in rational joto iotas.
+    #[must_use]
+    pub const fn end(&self) -> Rational {
+        self.end
+    }
+
+    /// Returns the exact midpoint measured in rational joto iotas.
+    #[must_use]
+    pub const fn center(&self) -> Rational {
+        self.center
     }
 }
 
-/// Immutable result of one exact linear invocation.
+/// Immutable result of one exact linear-bay invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinearFragment {
+pub struct LinearBayFragment {
     pub(super) invocation: InvocationKey,
     pub(super) start: Offset,
     pub(super) end: Offset,
-    pub(super) intervals: u32,
-    pub(super) items: Box<[LinearStation]>,
+    pub(super) bays: u32,
+    pub(super) items: Box<[LinearBay]>,
     pub(super) orphaned_overrides: Box<[ItemOverride]>,
     pub(super) fingerprint: Fingerprint,
 }
 
-impl LinearFragment {
+impl LinearBayFragment {
     /// Returns the invocation identity.
     #[must_use]
     pub const fn invocation(&self) -> &InvocationKey {
         &self.invocation
     }
 
-    /// Returns the exact first anchor.
+    /// Returns the exact first outer edge.
     #[must_use]
     pub const fn start(&self) -> Offset {
         self.start
     }
 
-    /// Returns the exact final anchor.
+    /// Returns the exact final outer edge.
     #[must_use]
     pub const fn end(&self) -> Offset {
         self.end
     }
 
-    /// Returns the number of spaces between endpoint stations.
+    /// Returns the number of equal bays in the unedited invocation.
     #[must_use]
-    pub const fn intervals(&self) -> u32 {
-        self.intervals
+    pub const fn bays(&self) -> u32 {
+        self.bays
     }
 
-    /// Returns generated, non-omitted items in spatial order.
+    /// Returns generated, non-omitted bays in spatial order.
     #[must_use]
-    pub const fn items(&self) -> &[LinearStation] {
+    pub const fn items(&self) -> &[LinearBay] {
         &self.items
     }
 
@@ -128,35 +142,31 @@ impl LinearFragment {
     ///
     /// Returns [`DeltaError`] if `next` belongs to another invocation.
     pub fn delta_to(&self, next: &Self) -> Result<FragmentDelta, DeltaError> {
-        FragmentDelta::between(self, next)
+        FragmentDelta::between_bays(self, next)
     }
 }
 
-/// Stateful convenience wrapper for warm re-expansion.
-///
-/// Generation itself remains a pure function. This wrapper only retains the
-/// previous immutable fragment so callers receive a key-based delta and the
-/// same fresh result without maintaining two sources of truth.
+/// Stateful convenience wrapper for warm linear-bay re-expansion.
 #[derive(Clone, Debug)]
-pub struct LinearGenerator {
-    fragment: LinearFragment,
+pub struct LinearBayGenerator {
+    fragment: LinearBayFragment,
 }
 
-impl LinearGenerator {
+impl LinearBayGenerator {
     /// Evaluates the initial fragment.
     ///
     /// # Errors
     ///
     /// Returns [`GenerationError`] when the distribution is invalid.
-    pub fn new(spec: &LinearDistribution<'_>) -> Result<Self, GenerationError> {
+    pub fn new(spec: &LinearBayDistribution<'_>) -> Result<Self, GenerationError> {
         Ok(Self {
-            fragment: distribute_linear(spec)?,
+            fragment: distribute_linear_bays(spec)?,
         })
     }
 
     /// Returns the current immutable fragment.
     #[must_use]
-    pub const fn fragment(&self) -> &LinearFragment {
+    pub const fn fragment(&self) -> &LinearBayFragment {
         &self.fragment
     }
 
@@ -171,9 +181,9 @@ impl LinearGenerator {
     /// invocation identity.
     pub fn reexpand(
         &mut self,
-        spec: &LinearDistribution<'_>,
+        spec: &LinearBayDistribution<'_>,
     ) -> Result<FragmentDelta, GenerationError> {
-        let next = distribute_linear(spec)?;
+        let next = distribute_linear_bays(spec)?;
         let delta = self
             .fragment
             .delta_to(&next)

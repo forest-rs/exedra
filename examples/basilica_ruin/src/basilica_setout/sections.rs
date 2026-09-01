@@ -60,8 +60,14 @@ pub struct PlanSection {
     pub west_nave_length: Length,
     /// Length of the nave segment east of the crossing.
     pub east_nave_length: Length,
-    /// Number of repeated longitudinal arcade bays.
+    /// Number of repeated bays in either exterior aisle arcade wall.
     pub arcade_bays: Count,
+    /// Number of pierced bays west of the open crossing bay.
+    pub west_arcade_bays: Count,
+    /// Number of pierced bays east of the open crossing bay.
+    pub east_arcade_bays: Count,
+    /// Clear masonry margin at both ends of each pierced arcade run.
+    pub arcade_end_clearance: Length,
     /// Number of spaces in the repeated west nave-truss run.
     pub nave_truss_bays: Count,
     /// Exact west anchor of the aisle-buttress station distribution.

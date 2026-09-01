@@ -7,6 +7,7 @@ use exedra_constructive::ir::{Placement3, Recipe};
 use crate::{BasilicaPremises, BasilicaSetout, names};
 
 mod aisles;
+mod arcade_profiles;
 mod buttresses;
 mod crossing;
 mod crossing_transition;
@@ -95,9 +96,23 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
     // Architectural systems join the scenario here in deterministic assembly
     // order. A new detail system should be one focused module and one call in
     // the architectural sequence, not another capability on `BuildContext`.
-    nave::build(&mut context, plan, levels, roof);
+    nave::build(
+        &mut context,
+        plan,
+        levels,
+        roof,
+        setout.outer_arcade_bays(),
+        setout.west_arcade_bays(),
+        setout.east_arcade_bays(),
+    );
     aisles::build(&mut context, plan, levels, aisle);
-    interior_arcades::build(&mut context, plan, levels);
+    interior_arcades::build(
+        &mut context,
+        plan,
+        levels,
+        setout.west_arcade_bays(),
+        setout.east_arcade_bays(),
+    );
     east_end::build(&mut context, plan, east_end, roof);
     crossing::build(&mut context, plan, levels, crossing);
     crossing_transition::build(&mut context, plan, levels, crossing);
@@ -107,8 +122,12 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
     // artifact's numeric instance prefix intentionally grows.
     nave_trusses::build(&mut context, plan, &setout);
 
-    let arcade_bays = u32::try_from(plan.arcade_bays.get())
-        .expect("the basilica arcade bay count fits the assembly inventory");
+    let outer_arcade_bays = u32::try_from(setout.outer_arcade_bays().items().len())
+        .expect("the bounded outer arcade inventory fits u32");
+    let nave_arcade_bays = u32::try_from(
+        setout.west_arcade_bays().items().len() + setout.east_arcade_bays().items().len(),
+    )
+    .expect("the bounded nave arcade inventory fits u32");
     let west_trusses = u32::try_from(setout.west_truss_stations().items().len())
         .expect("bounded generated truss count fits u32");
     let nave_trusses = west_trusses + 1;
@@ -120,9 +139,9 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
         nave_wall_plates: 5,
         aisles: 2,
         aisle_roofs: 2,
-        round_head_openings: arcade_bays * 2 + 12 + 12 + 1,
+        round_head_openings: outer_arcade_bays * 2 + nave_arcade_bays * 4 + 1,
         interior_arcades: 4,
-        interior_arcade_openings: 12,
+        interior_arcade_openings: nave_arcade_bays * 2,
         buttresses: u32::try_from(setout.buttress_stations().items().len())
             .expect("bounded generated buttress count fits u32")
             * 2,
@@ -145,9 +164,12 @@ pub(crate) fn build_assembly(premises: &BasilicaPremises) -> (Assembly, Inventor
 
 #[cfg(test)]
 mod tests {
+    use setout::Count;
+
+    use crate::BasilicaPremises;
     use crate::output::build_scenario;
 
-    use super::Inventory;
+    use super::{Inventory, build_assembly};
 
     #[test]
     fn architectural_inventory_is_explicit_and_restrained() {
@@ -217,5 +239,21 @@ mod tests {
                 "missing {required}"
             );
         }
+    }
+
+    #[test]
+    fn arcade_inventory_follows_generated_outer_and_split_nave_bays() {
+        // Adding one exterior module creates one opening in each aisle wall.
+        // The independent five-west/one-east clerestory and interior arcades
+        // keep their accepted pitch and the crossing stays open.
+        let premises = BasilicaPremises {
+            arcade_bays: Count::new(8),
+            ..BasilicaPremises::default()
+        };
+        let (_, inventory) = build_assembly(&premises);
+
+        assert_eq!(inventory.round_head_openings, 41);
+        assert_eq!(inventory.interior_arcade_openings, 12);
+        assert_eq!(inventory.interior_arcades, 4);
     }
 }

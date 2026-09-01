@@ -242,8 +242,9 @@ Changing `arcade_bays` changes repeated topology. A quantity-to-element dirty
 mapping can name only existing identities, so the whole-basilica amendment made
 `BasilicaReconfiguration` report `topology_changed` separately. The
 deterministic-generation amendment below adds stable item-level buttress deltas;
-the broader flag remains necessary for the arcade topology that has not yet
-migrated.
+the later arcade amendment adds exact bay deltas. The flag is now derived from
+actual additions and removals across generated fragments rather than from a
+special-cased quantity name.
 
 ## Deterministic-generation amendment
 
@@ -308,6 +309,33 @@ identity-bearing truss paths: ordinal names such as
 `nave-truss-west-start-tie-beam` and `nave-truss-east-tie-beam`. Assembly, OBJ,
 and glTF fingerprints therefore change while the accepted geometry remains
 within `1e-12` meter of the previous floating repeat.
+
+The next earned generator shape is an edge-to-edge linear bay sequence.
+`LinearBayDistribution` accepts exact outer edges, a bay `Count`, and semantic
+omissions; each `LinearBay` carries exact rational start, end, and center
+coordinates under a stable one-based rank key. It returns a distinct
+`LinearBayFragment` because calling cells “stations” would obscure their extent
+and encourage consumers to reconstruct midpoints. It reuses `FragmentDelta`
+and the same bounded-work, canonical-fingerprint, orphan, and warm/fresh
+contracts. This is a public additive API; existing station consumers require no
+migration.
+
+The Basilica invokes the bay generator separately for exterior aisle walls,
+the west nave, and the east nave. Their common two-meter end clearance is an
+exact setout root, but their counts are intentionally independent: the accepted
+exterior repeat is seven while the split nave has five west openings, an open
+crossing gap, and one east opening. Treating those as one modular equation was
+rejected because the eight-bay exterior review variant then compressed 2.9 m
+interior arches into overlapping holes. Architecture lowers each wall-local
+rational center once, and the profile helper now accepts only explicit centers;
+it no longer owns count, pitch, or margin arithmetic.
+
+`BasilicaSetout` and `BasilicaReconfiguration` add outer, west, and east arcade
+fragment accessors and item-level deltas. `PlanSection::arcade_bays` is clarified
+as the exterior aisle-wall count; `west_arcade_bays`, `east_arcade_bays`, and
+`arcade_end_clearance` expose the fixed exact nave topology. The accepted
+default OBJ remains byte-identical; the assembly fingerprint changes only
+because profile construction now consumes the exact generated centers.
 
 ## Extension points
 

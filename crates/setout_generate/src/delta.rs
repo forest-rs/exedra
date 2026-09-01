@@ -8,7 +8,10 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::{InvocationKey, ItemKey, ItemLabel, LinearFragment, LinearStation};
+use crate::{
+    InvocationKey, ItemKey, ItemLabel, ItemOverride, LinearBay, LinearBayFragment, LinearFragment,
+    LinearStation,
+};
 
 /// Semantic changes between two expansions of one invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,50 +28,78 @@ impl FragmentDelta {
         previous: &LinearFragment,
         next: &LinearFragment,
     ) -> Result<Self, DeltaError> {
-        if previous.invocation() != next.invocation() {
+        Self::between_items(
+            previous.invocation(),
+            previous.items(),
+            next.invocation(),
+            next.items(),
+            next.orphaned_overrides(),
+            LinearStation::key,
+            station_payload_changed,
+        )
+    }
+
+    pub(crate) fn between_bays(
+        previous: &LinearBayFragment,
+        next: &LinearBayFragment,
+    ) -> Result<Self, DeltaError> {
+        Self::between_items(
+            previous.invocation(),
+            previous.items(),
+            next.invocation(),
+            next.items(),
+            next.orphaned_overrides(),
+            LinearBay::key,
+            bay_payload_changed,
+        )
+    }
+
+    fn between_items<T>(
+        previous_invocation: &InvocationKey,
+        previous_items: &[T],
+        next_invocation: &InvocationKey,
+        next_items: &[T],
+        next_orphaned_overrides: &[ItemOverride],
+        key: fn(&T) -> &ItemKey,
+        payload_changed: fn(&T, &T) -> bool,
+    ) -> Result<Self, DeltaError> {
+        if previous_invocation != next_invocation {
             return Err(DeltaError::InvocationMismatch {
-                previous: previous.invocation().clone(),
-                next: next.invocation().clone(),
+                previous: previous_invocation.clone(),
+                next: next_invocation.clone(),
             });
         }
-        let previous_by_key: BTreeMap<_, _> = previous
-            .items()
+        let previous_by_key: BTreeMap<_, _> = previous_items
             .iter()
-            .map(|item| (item.key(), item))
+            .map(|item| (key(item), item))
             .collect();
-        let next_by_key: BTreeMap<_, _> =
-            next.items().iter().map(|item| (item.key(), item)).collect();
+        let next_by_key: BTreeMap<_, _> = next_items.iter().map(|item| (key(item), item)).collect();
 
-        let retained: Vec<_> = next
-            .items()
+        let retained: Vec<_> = next_items
             .iter()
-            .filter(|item| previous_by_key.contains_key(item.key()))
-            .map(|item| item.key().clone())
+            .filter(|item| previous_by_key.contains_key(key(item)))
+            .map(|item| key(item).clone())
             .collect();
-        let added: Vec<_> = next
-            .items()
+        let added: Vec<_> = next_items
             .iter()
-            .filter(|item| !previous_by_key.contains_key(item.key()))
-            .map(|item| item.key().clone())
+            .filter(|item| !previous_by_key.contains_key(key(item)))
+            .map(|item| key(item).clone())
             .collect();
-        let removed: Vec<_> = previous
-            .items()
+        let removed: Vec<_> = previous_items
             .iter()
-            .filter(|item| !next_by_key.contains_key(item.key()))
-            .map(|item| item.key().clone())
+            .filter(|item| !next_by_key.contains_key(key(item)))
+            .map(|item| key(item).clone())
             .collect();
-        let changed: Vec<_> = next
-            .items()
+        let changed: Vec<_> = next_items
             .iter()
             .filter(|item| {
                 previous_by_key
-                    .get(item.key())
+                    .get(key(item))
                     .is_some_and(|previous| payload_changed(previous, item))
             })
-            .map(|item| item.key().clone())
+            .map(|item| key(item).clone())
             .collect();
-        let orphaned_overrides = next
-            .orphaned_overrides()
+        let orphaned_overrides = next_orphaned_overrides
             .iter()
             .map(|item_override| item_override.target().clone())
             .collect::<Vec<_>>();
@@ -126,11 +157,17 @@ impl FragmentDelta {
     }
 }
 
-fn payload_changed(previous: &LinearStation, next: &LinearStation) -> bool {
+fn station_payload_changed(previous: &LinearStation, next: &LinearStation) -> bool {
     // Ordinal is current presentation order, not durable payload. In
     // particular, an endpoint can move from ordinal 7 to 8 while retaining
     // both its semantic identity and exact coordinate.
     previous.position() != next.position()
+}
+
+fn bay_payload_changed(previous: &LinearBay, next: &LinearBay) -> bool {
+    previous.start() != next.start()
+        || previous.end() != next.end()
+        || previous.center() != next.center()
 }
 
 /// Failure to compare fragments that do not share an invocation identity.

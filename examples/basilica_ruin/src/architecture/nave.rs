@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use exedra_constructive::ir::Placement3;
+use setout_generate::LinearBayFragment;
 
 use super::BuildContext;
+use super::arcade_profiles::local_bay_centers;
 use crate::geometry::{
     arcaded_wall_profile, box_recipe, extruded_profile_recipe, gable_profile, roof_panel_frame,
     transverse_wall_frame, vertical_wall_frame, west_facade_profile,
@@ -15,6 +17,9 @@ pub(super) fn build(
     plan: &PlanSection,
     levels: &LevelSection,
     roof: &RoofSection,
+    outer_arcade_bays: &LinearBayFragment,
+    west_arcade_bays: &LinearBayFragment,
+    east_arcade_bays: &LinearBayFragment,
 ) {
     let wall_thickness = plan.wall_thickness.as_meters();
     let half_total = plan.half_total.as_meters();
@@ -33,7 +38,7 @@ pub(super) fn build(
     let west_clerestory = arcaded_wall_profile(
         crossing_west,
         clerestory_height,
-        5,
+        local_bay_centers(west_arcade_bays),
         1.8,
         clerestory_sill,
         clerestory_spring,
@@ -42,7 +47,7 @@ pub(super) fn build(
     let ruined_west_clerestory = arcaded_wall_profile(
         crossing_west,
         clerestory_height,
-        5,
+        local_bay_centers(west_arcade_bays),
         1.8,
         clerestory_sill,
         clerestory_spring,
@@ -51,7 +56,7 @@ pub(super) fn build(
     let east_clerestory = arcaded_wall_profile(
         east_nave_length,
         clerestory_height,
-        1,
+        local_bay_centers(east_arcade_bays),
         1.8,
         clerestory_sill,
         clerestory_spring,
@@ -60,7 +65,7 @@ pub(super) fn build(
     let outer_arcade = arcaded_wall_profile(
         plan.length.as_meters(),
         levels.aisle_wall_top.as_meters(),
-        u32::try_from(plan.arcade_bays.get()).expect("arcade bay count fits profile topology"),
+        local_bay_centers(outer_arcade_bays),
         2.2,
         0.65,
         3.0,

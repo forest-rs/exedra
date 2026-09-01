@@ -32,7 +32,7 @@ pub struct BasilicaPremises {
     pub dome_height: Length,
     /// Radius of the semicircular eastern apse.
     pub apse_radius: Length,
-    /// Number of repeated arcade bays along each longitudinal wall.
+    /// Number of repeated bays along each exterior aisle arcade wall.
     pub arcade_bays: Count,
     /// Number of spaces in the repeated west nave-truss run.
     pub nave_truss_bays: Count,

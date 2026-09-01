@@ -10,7 +10,7 @@ use exedra_assembly::{
 };
 use exedra_constructive::ir::Placement3;
 use exedra_constructive::tessellate::EvalPolicy;
-use setout::Length;
+use setout::{Count, Length};
 
 use crate::BasilicaPremises;
 use crate::architecture::{Inventory, build_assembly};
@@ -63,6 +63,7 @@ enum CliMode {
     Export(PathBuf),
     WarmReconfigure,
     ParametricLength,
+    ParametricArcades,
 }
 
 pub(crate) fn run_cli() {
@@ -70,6 +71,7 @@ pub(crate) fn run_cli() {
         CliMode::Export(output) => run_export(&output),
         CliMode::WarmReconfigure => run_warm_reconfiguration(),
         CliMode::ParametricLength => run_parametric_length_comparison(),
+        CliMode::ParametricArcades => run_parametric_arcade_comparison(),
     }
 }
 
@@ -120,6 +122,28 @@ fn run_parametric_length_comparison() {
         "basilica parametric_length from={:.3} to={:.3} baseline_signature={:016x} variant_signature={:016x}",
         BasilicaPremises::default().length.as_meters(),
         length_variant_premises().length.as_meters(),
+        byte_signature(baseline_obj.as_bytes()),
+        byte_signature(variant_obj.as_bytes()),
+    );
+    println!("baseline_glb={}", baseline_glb.display());
+    println!("variant_glb={}", variant_glb.display());
+}
+
+fn run_parametric_arcade_comparison() {
+    let (baseline, variant) = build_arcade_comparison();
+    let variant_premises = arcade_variant_premises();
+    let baseline_output = default_output_path();
+    let variant_output = default_arcade_variant_output_path();
+    let baseline_obj = export_obj(&baseline.compiled, &baseline.render_list);
+    let variant_obj = export_obj(&variant.compiled, &variant.render_list);
+    let (baseline_glb, _) = write_artifacts(&baseline_output, &baseline, &baseline_obj);
+    let (variant_glb, _) = write_artifacts(&variant_output, &variant, &variant_obj);
+    println!(
+        "basilica parametric_arcades from={} to={} baseline_openings={} variant_openings={} baseline_signature={:016x} variant_signature={:016x}",
+        BasilicaPremises::default().arcade_bays.get(),
+        variant_premises.arcade_bays.get(),
+        baseline.inventory.round_head_openings,
+        variant.inventory.round_head_openings,
         byte_signature(baseline_obj.as_bytes()),
         byte_signature(variant_obj.as_bytes()),
     );
@@ -191,8 +215,11 @@ fn parse_cli_mode() -> CliMode {
         (Some("--obj"), Some(path), None) => CliMode::Export(PathBuf::from(path)),
         (Some("--warm-reconfigure"), None, None) => CliMode::WarmReconfigure,
         (Some("--parametric-length"), None, None) => CliMode::ParametricLength,
+        (Some("--parametric-arcades"), None, None) => CliMode::ParametricArcades,
         _ => {
-            panic!("usage: basilica_ruin [--obj <path> | --warm-reconfigure | --parametric-length]")
+            panic!(
+                "usage: basilica_ruin [--obj <path> | --warm-reconfigure | --parametric-length | --parametric-arcades]"
+            )
         }
     }
 }
@@ -213,6 +240,12 @@ fn default_length_variant_output_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target/basilica_ruin/basilica_ruin_length_plus_2m.obj")
+}
+
+fn default_arcade_variant_output_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target/basilica_ruin/basilica_ruin_arcades_8.obj")
 }
 
 pub(crate) fn build_scenario() -> Scenario {
@@ -250,9 +283,22 @@ fn length_variant_premises() -> BasilicaPremises {
     premises
 }
 
+fn arcade_variant_premises() -> BasilicaPremises {
+    BasilicaPremises {
+        arcade_bays: Count::new(8),
+        ..BasilicaPremises::default()
+    }
+}
+
 fn build_length_comparison() -> (Scenario, Scenario) {
     let baseline = compile_scenario(&BasilicaPremises::default(), &mut PartCompiler::new());
     let variant = compile_scenario(&length_variant_premises(), &mut PartCompiler::new());
+    (baseline, variant)
+}
+
+fn build_arcade_comparison() -> (Scenario, Scenario) {
+    let baseline = compile_scenario(&BasilicaPremises::default(), &mut PartCompiler::new());
+    let variant = compile_scenario(&arcade_variant_premises(), &mut PartCompiler::new());
     (baseline, variant)
 }
 
@@ -639,8 +685,9 @@ pub(crate) fn byte_signature(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounds_for_path, build_length_comparison, build_scenario, build_warm_reconfiguration,
-        byte_signature, export_obj, validate_warm_reconfiguration,
+        assembly_fingerprint, bounds_for_path, build_arcade_comparison, build_length_comparison,
+        build_scenario, build_warm_reconfiguration, byte_signature, export_obj,
+        validate_warm_reconfiguration,
     };
     use crate::names;
 
@@ -673,6 +720,30 @@ mod tests {
             }
         }
         assert_eq!(max_index, vertices);
+    }
+
+    #[test]
+    fn exterior_arcade_variant_compiles_cleanly_and_changes_only_its_inventory_shape() {
+        // The review variant must exercise actual constructive profiles, not
+        // stop at setout deltas. Eight exterior bays add two exterior openings
+        // while the independently generated split nave inventory stays fixed.
+        let (baseline, variant) = build_arcade_comparison();
+        let baseline_obj = export_obj(&baseline.compiled, &baseline.render_list);
+        let variant_obj = export_obj(&variant.compiled, &variant.render_list);
+
+        assert_eq!(baseline.diagnostics, 0);
+        assert_eq!(variant.diagnostics, 0);
+        assert_eq!(baseline.inventory.round_head_openings, 39);
+        assert_eq!(variant.inventory.round_head_openings, 41);
+        assert_eq!(
+            variant.inventory.interior_arcade_openings,
+            baseline.inventory.interior_arcade_openings
+        );
+        assert_ne!(
+            assembly_fingerprint(&variant.assembly),
+            assembly_fingerprint(&baseline.assembly)
+        );
+        assert_ne!(variant_obj, baseline_obj);
     }
 
     #[test]

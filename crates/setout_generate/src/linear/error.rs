@@ -15,6 +15,8 @@ use crate::ItemLabel;
 pub enum GenerationError {
     /// At least one interval is required to distinguish the two endpoints.
     NoIntervals,
+    /// At least one bay is required between the two outer edges.
+    NoBays,
     /// The requested station count exceeds [`crate::MAX_LINEAR_STATIONS`].
     TooManyStations {
         /// Requested endpoint-inclusive station count.
@@ -43,6 +45,7 @@ impl fmt::Display for GenerationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoIntervals => formatter.write_str("linear distribution needs one interval"),
+            Self::NoBays => formatter.write_str("linear bay distribution needs one bay"),
             Self::TooManyStations { requested, limit } => {
                 write!(
                     formatter,

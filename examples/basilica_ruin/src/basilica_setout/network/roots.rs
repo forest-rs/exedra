@@ -4,7 +4,8 @@
 //! Exact authored roots for the basilica network.
 
 use setout::{
-    ArithmeticError, Knowledge, Length, NetworkDef, Offset, RootClaimSet, RootClaimSetBuilder,
+    ArithmeticError, Count, Knowledge, Length, NetworkDef, Offset, RootClaimSet,
+    RootClaimSetBuilder,
 };
 
 use super::{BasilicaPremises, BasilicaQuantities, BasilicaSetoutError};
@@ -19,6 +20,9 @@ const PRINCIPAL_RAFTER_REVEAL_MM: i64 = 120;
 const BUTTRESS_WEST_INSET_MM: u64 = 1_700;
 const BUTTRESS_EAST_INSET_MM: u64 = 2_300;
 const NAVE_TRUSS_END_CLEARANCE_MM: u64 = 2_000;
+const ARCADE_END_CLEARANCE_MM: u64 = 2_000;
+const WEST_ARCADE_BAYS: Count = Count::new(5);
+const EAST_ARCADE_BAYS: Count = Count::new(1);
 
 pub(super) fn build_roots(
     definition: &NetworkDef,
@@ -56,6 +60,21 @@ pub(super) fn build_roots(
             "basilica/root/arcade-bays",
             &quantities.arcade_bays,
             Knowledge::exact(premises.arcade_bays),
+        )?
+        .author(
+            "basilica/root/west-arcade-bays",
+            &quantities.west_arcade_bays,
+            Knowledge::exact(WEST_ARCADE_BAYS),
+        )?
+        .author(
+            "basilica/root/east-arcade-bays",
+            &quantities.east_arcade_bays,
+            Knowledge::exact(EAST_ARCADE_BAYS),
+        )?
+        .author(
+            "basilica/root/arcade-end-clearance",
+            &quantities.arcade_end_clearance,
+            Knowledge::exact(exact_length_millimeters(ARCADE_END_CLEARANCE_MM)?),
         )?
         .author(
             "basilica/root/nave-truss-bays",

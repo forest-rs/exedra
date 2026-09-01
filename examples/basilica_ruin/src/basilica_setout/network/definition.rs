@@ -72,6 +72,14 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         network.declare::<Length>("basilica/plan/east-nave-length", QuantityPolicy::positive())?;
     let arcade_bays =
         network.declare::<Count>("basilica/plan/arcade-bays", QuantityPolicy::positive())?;
+    let west_arcade_bays =
+        network.declare::<Count>("basilica/plan/west-arcade-bays", QuantityPolicy::positive())?;
+    let east_arcade_bays =
+        network.declare::<Count>("basilica/plan/east-arcade-bays", QuantityPolicy::positive())?;
+    let arcade_end_clearance = network.declare::<Length>(
+        "basilica/plan/arcade-end-clearance",
+        QuantityPolicy::positive(),
+    )?;
     let nave_truss_bays =
         network.declare::<Count>("basilica/plan/nave-truss-bays", QuantityPolicy::positive())?;
     let buttress_west_inset = network.declare::<Length>(
@@ -803,6 +811,9 @@ pub(super) fn build_definition() -> Result<(NetworkDef, BasilicaQuantities), Bui
         west_nave_length,
         east_nave_length,
         arcade_bays,
+        west_arcade_bays,
+        east_arcade_bays,
+        arcade_end_clearance,
         nave_truss_bays,
         buttress_west_inset,
         buttress_east_inset,

@@ -18,8 +18,8 @@ use setout::{
     ScenarioBuildError, WorkReport, compile_plan, evaluate,
 };
 use setout_generate::{
-    DeltaError as GenerationDeltaError, FragmentDelta, GenerationError, LinearFragment,
-    MAX_LINEAR_STATIONS,
+    DeltaError as GenerationDeltaError, FragmentDelta, GenerationError, LinearBayFragment,
+    LinearFragment, MAX_LINEAR_STATIONS,
 };
 use setout_joiner::{
     BindingIndex, DirtyElement, ResolveError, ResolvedElementGeometry, SegmentMemberBinding,
@@ -43,7 +43,7 @@ mod roots;
 use bindings::build_binding_index;
 use catalogue::build_catalogue;
 use definition::build_definition;
-use generation::{generate_buttress_stations, generate_west_truss_stations};
+use generation::{generate_arcade_bays, generate_buttress_stations, generate_west_truss_stations};
 use resolve::{
     resolve_aisle_section, resolve_crossing_section, resolve_east_end_section,
     resolve_level_section, resolve_plan_section, resolve_roof_section,
@@ -77,6 +77,9 @@ struct BasilicaQuantities {
     west_nave_length: Quantity<Length>,
     east_nave_length: Quantity<Length>,
     arcade_bays: Quantity<Count>,
+    west_arcade_bays: Quantity<Count>,
+    east_arcade_bays: Quantity<Count>,
+    arcade_end_clearance: Quantity<Length>,
     nave_truss_bays: Quantity<Count>,
     buttress_west_inset: Quantity<Length>,
     buttress_east_inset: Quantity<Length>,
@@ -176,6 +179,9 @@ pub struct BasilicaSetout {
     crossing_section: CrossingSection,
     east_end_section: EastEndSection,
     roof_section: RoofSection,
+    outer_arcade_bays: LinearBayFragment,
+    west_arcade_bays: LinearBayFragment,
+    east_arcade_bays: LinearBayFragment,
     buttress_stations: LinearFragment,
     west_truss_stations: LinearFragment,
     catalogue: ReconstructionCatalogue,
@@ -200,6 +206,7 @@ impl BasilicaSetout {
         let crossing_section = resolve_crossing_section(&evaluation, &quantities)?;
         let east_end_section = resolve_east_end_section(&evaluation, &quantities)?;
         let roof_section = resolve_roof_section(&evaluation, &quantities)?;
+        let arcade_bays = generate_arcade_bays(&plan_section)?;
         let buttress_stations = generate_buttress_stations(&plan_section)?;
         let west_truss_stations = generate_west_truss_stations(&plan_section)?;
         let catalogue = build_catalogue(&roots, &plan)?;
@@ -222,6 +229,9 @@ impl BasilicaSetout {
             crossing_section,
             east_end_section,
             roof_section,
+            outer_arcade_bays: arcade_bays.outer,
+            west_arcade_bays: arcade_bays.west,
+            east_arcade_bays: arcade_bays.east,
             buttress_stations,
             west_truss_stations,
             catalogue,
@@ -240,6 +250,24 @@ impl BasilicaSetout {
     #[must_use]
     pub const fn plan(&self) -> &PlanSection {
         &self.plan_section
+    }
+
+    /// Returns exact bays spanning each exterior longitudinal arcade wall.
+    #[must_use]
+    pub const fn outer_arcade_bays(&self) -> &LinearBayFragment {
+        &self.outer_arcade_bays
+    }
+
+    /// Returns exact pierced bays west of the physically open crossing.
+    #[must_use]
+    pub const fn west_arcade_bays(&self) -> &LinearBayFragment {
+        &self.west_arcade_bays
+    }
+
+    /// Returns exact pierced bays east of the physically open crossing.
+    #[must_use]
+    pub const fn east_arcade_bays(&self) -> &LinearBayFragment {
+        &self.east_arcade_bays
     }
 
     /// Returns the exact, semantically labeled aisle-buttress stations.
@@ -347,15 +375,24 @@ impl BasilicaSetout {
         let crossing_section = resolve_crossing_section(&warm, &self.quantities)?;
         let east_end_section = resolve_east_end_section(&warm, &self.quantities)?;
         let roof = resolve_roof_section(&warm, &self.quantities)?;
+        let arcade_bays = generate_arcade_bays(&plan_section)?;
+        let outer_arcade_delta = self.outer_arcade_bays.delta_to(&arcade_bays.outer)?;
+        let west_arcade_delta = self.west_arcade_bays.delta_to(&arcade_bays.west)?;
+        let east_arcade_delta = self.east_arcade_bays.delta_to(&arcade_bays.east)?;
         let buttress_stations = generate_buttress_stations(&plan_section)?;
         let buttress_delta = self.buttress_stations.delta_to(&buttress_stations)?;
         let west_truss_stations = generate_west_truss_stations(&plan_section)?;
         let west_truss_delta = self.west_truss_stations.delta_to(&west_truss_stations)?;
         let delta = warm.delta_from(&self.evaluation);
-        let topology_changed = delta.quantities_changed.iter().any(|quantity| {
-            quantity == self.quantities.arcade_bays.key()
-                || quantity == self.quantities.nave_truss_bays.key()
-        });
+        let topology_changed = [
+            &outer_arcade_delta,
+            &west_arcade_delta,
+            &east_arcade_delta,
+            &buttress_delta,
+            &west_truss_delta,
+        ]
+        .into_iter()
+        .any(|fragment| !fragment.added().is_empty() || !fragment.removed().is_empty());
         let dirty = self.bindings.dirty(&delta);
         Ok(BasilicaReconfiguration {
             plan: plan_section,
@@ -364,6 +401,12 @@ impl BasilicaSetout {
             crossing: crossing_section,
             east_end: east_end_section,
             roof,
+            outer_arcade_bays: arcade_bays.outer,
+            outer_arcade_delta,
+            west_arcade_bays: arcade_bays.west,
+            west_arcade_delta,
+            east_arcade_bays: arcade_bays.east,
+            east_arcade_delta,
             buttress_stations,
             buttress_delta,
             west_truss_stations,
@@ -410,6 +453,18 @@ pub struct BasilicaReconfiguration {
     pub east_end: EastEndSection,
     /// Newly resolved exact roof section.
     pub roof: RoofSection,
+    /// Newly expanded exact exterior longitudinal arcade bays.
+    pub outer_arcade_bays: LinearBayFragment,
+    /// Stable item-level change from the previous exterior bay expansion.
+    pub outer_arcade_delta: FragmentDelta,
+    /// Newly expanded exact pierced bays west of the crossing.
+    pub west_arcade_bays: LinearBayFragment,
+    /// Stable item-level change from the previous west arcade expansion.
+    pub west_arcade_delta: FragmentDelta,
+    /// Newly expanded exact pierced bays east of the crossing.
+    pub east_arcade_bays: LinearBayFragment,
+    /// Stable item-level change from the previous east arcade expansion.
+    pub east_arcade_delta: FragmentDelta,
     /// Newly expanded exact aisle-buttress stations.
     pub buttress_stations: LinearFragment,
     /// Stable item-level change from the previous buttress expansion.
@@ -425,9 +480,8 @@ pub struct BasilicaReconfiguration {
     /// Whether repeated assembly topology must be rebuilt, not merely updated.
     ///
     /// [`BasilicaReconfiguration::dirty`] can name only elements that already
-    /// exist. The two fragment deltas supply exact add/remove information for
-    /// buttresses and west nave trusses; callers must still rebuild the arcade
-    /// topology when this broader flag is true.
+    /// exist. The generated fragment deltas identify the exact bay, buttress,
+    /// and west-truss additions and removals that require a topology rebuild.
     pub topology_changed: bool,
     /// Work reused versus recomputed.
     pub work: WorkReport,
@@ -463,6 +517,8 @@ pub enum BasilicaSetoutError {
     InvalidButtressExtent,
     /// The final west truss anchor does not lie east of its first anchor.
     InvalidNaveTrussExtent,
+    /// Arcade end clearances leave no positive run for one wall segment.
+    InvalidArcadeExtent,
     /// Warm and fresh evaluations did not agree.
     WarmFreshMismatch,
     /// The arcade repeat count exceeds one bounded generation fragment.
@@ -525,6 +581,9 @@ impl fmt::Display for BasilicaSetoutError {
             }
             Self::InvalidNaveTrussExtent => {
                 formatter.write_str("basilica west truss anchors do not define a positive extent")
+            }
+            Self::InvalidArcadeExtent => {
+                formatter.write_str("basilica arcade clearances do not define a positive extent")
             }
             Self::WarmFreshMismatch => {
                 formatter.write_str("warm basilica evaluation differs from fresh")

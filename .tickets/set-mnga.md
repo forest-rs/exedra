@@ -2,7 +2,7 @@
 id: set-mnga
 status: closed
 deps: []
-links: [set-qckq, set-mpbt, bsl-6ihj, sg-ty1b]
+links: [set-qckq, set-mpbt, bsl-6ihj, sg-ty1b, sg-mr3j]
 created: 2026-08-31T16:11:32Z
 type: feature
 priority: 1

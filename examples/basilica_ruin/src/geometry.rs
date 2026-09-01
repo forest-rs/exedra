@@ -183,7 +183,7 @@ pub(super) fn square_polygon_ring_profile(
 pub(super) fn arcaded_wall_profile(
     length: f64,
     height: f64,
-    bays: u32,
+    opening_centers: impl IntoIterator<Item = f64>,
     opening_width: f64,
     sill: f64,
     spring: f64,
@@ -209,12 +209,9 @@ pub(super) fn arcaded_wall_profile(
         ])
         .expect("valid wall perimeter"),
     };
-    let pitch = (length - 4.0) / f64::from(bays);
-    let holes = (0..bays)
-        .map(|bay| {
-            let center = 2.0 + (f64::from(bay) + 0.5) * pitch;
-            round_head_hole(center, opening_width, sill, spring)
-        })
+    let holes = opening_centers
+        .into_iter()
+        .map(|center| round_head_hole(center, opening_width, sill, spring))
         .collect();
     Profile2::new(outer, holes).expect("arcade holes stay inside the wall")
 }
