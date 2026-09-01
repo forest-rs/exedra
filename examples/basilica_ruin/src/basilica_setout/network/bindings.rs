@@ -147,11 +147,40 @@ pub(super) fn build_binding_index(
     );
     bind_elements(
         &mut bindings,
+        &[
+            "nave-wall-north-west",
+            "nave-wall-south-west-broken",
+            "interior-arcade-north-west",
+            "interior-arcade-south-west",
+        ],
+        &[
+            quantities.west_arcade_bays.key().clone(),
+            quantities.arcade_end_clearance.key().clone(),
+        ],
+        &[DirtyChannel::Geometry],
+    );
+    bind_elements(
+        &mut bindings,
+        &[
+            "nave-wall-north-east",
+            "nave-wall-south-east",
+            "interior-arcade-north-east",
+            "interior-arcade-south-east",
+        ],
+        &[
+            quantities.east_arcade_bays.key().clone(),
+            quantities.arcade_end_clearance.key().clone(),
+        ],
+        &[DirtyChannel::Geometry],
+    );
+    bind_elements(
+        &mut bindings,
         &["aisle-wall-north", "aisle-wall-south"],
         &[
             quantities.length.key().clone(),
             quantities.aisle_wall_top.key().clone(),
             quantities.arcade_bays.key().clone(),
+            quantities.arcade_end_clearance.key().clone(),
         ],
         &[DirtyChannel::Geometry, DirtyChannel::Contact],
     );

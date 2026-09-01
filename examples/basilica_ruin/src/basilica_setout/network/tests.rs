@@ -254,10 +254,21 @@ fn contradictory_positive_premises_fail_before_geometry_lowering() {
 
 #[test]
 fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
-    // Dirty bindings can update only stable identities that already exist.
-    // Changing the repeat count therefore needs an explicit topology signal;
-    // an unrepresentable count must fail before architecture uses `u32` math.
+    // The exterior repeat and the split nave runs share exact margins but not
+    // a false modular relationship: changing exterior bays must leave the
+    // accepted five-west/one-east nave topology and crossing gap untouched.
     let baseline = BasilicaSetout::new(&BasilicaPremises::default()).unwrap();
+    assert_eq!(baseline.outer_arcade_bays().items().len(), 7);
+    assert_eq!(baseline.west_arcade_bays().items().len(), 5);
+    assert_eq!(baseline.east_arcade_bays().items().len(), 1);
+    assert_eq!(
+        baseline.west_arcade_bays().items()[0].center(),
+        Rational::new(i128::from(Offset::millimeters(3_730).unwrap().iota()), 1).unwrap()
+    );
+    assert_eq!(
+        baseline.east_arcade_bays().items()[0].center(),
+        Rational::new(i128::from(Offset::millimeters(2_650).unwrap().iota()), 1).unwrap()
+    );
     let edited = BasilicaPremises {
         arcade_bays: Count::new(8),
         ..BasilicaPremises::default()
@@ -266,6 +277,13 @@ fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
 
     assert!(change.topology_changed);
     assert_eq!(change.plan.arcade_bays, Count::new(8));
+    assert_eq!(change.plan.west_arcade_bays, Count::new(5));
+    assert_eq!(
+        change.outer_arcade_delta.added(),
+        &[setout_generate::ItemKey::new("basilica/arcades/outer/bay/000008").unwrap()]
+    );
+    assert!(change.west_arcade_delta.is_empty());
+    assert!(change.east_arcade_delta.is_empty());
     assert_eq!(
         change.buttress_delta.added(),
         &[setout_generate::ItemKey::new("basilica/aisle-buttresses/interior/000007").unwrap()]
@@ -292,7 +310,6 @@ fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
         BasilicaSetout::new(&too_many),
         Err(BasilicaSetoutError::ArcadeBayCountTooLarge { .. })
     ));
-
     let eight_bay = BasilicaSetout::new(&edited).unwrap();
     let mut length_edit = edited;
     length_edit.length = length_edit
@@ -301,6 +318,11 @@ fn arcade_count_edit_reports_topology_rebuild_and_rejects_inventory_overflow() {
         .unwrap();
     let length_change = eight_bay.reconfigure(&length_edit).unwrap();
     assert!(!length_change.topology_changed);
+    assert!(length_change.outer_arcade_delta.added().is_empty());
+    assert!(length_change.outer_arcade_delta.removed().is_empty());
+    assert_eq!(length_change.outer_arcade_delta.changed().len(), 8);
+    assert!(length_change.west_arcade_delta.is_empty());
+    assert_eq!(length_change.east_arcade_delta.changed().len(), 1);
     assert!(
         length_change
             .dirty

@@ -4,12 +4,72 @@
 //! Exact topology invocations fed by the resolved basilica network.
 
 use setout_generate::{
-    InvocationKey, ItemOverride, LinearDistribution, LinearFragment, distribute_linear,
+    InvocationKey, ItemOverride, LinearBayDistribution, LinearBayFragment, LinearDistribution,
+    LinearFragment, distribute_linear, distribute_linear_bays,
 };
 
 use crate::PlanSection;
 
 use super::BasilicaSetoutError;
+
+pub(super) struct GeneratedArcades {
+    pub(super) outer: LinearBayFragment,
+    pub(super) west: LinearBayFragment,
+    pub(super) east: LinearBayFragment,
+}
+
+pub(super) fn generate_arcade_bays(
+    plan: &PlanSection,
+) -> Result<GeneratedArcades, BasilicaSetoutError> {
+    // Each fragment is local to the wall segment that consumes it. Keeping
+    // east centers relative to the east segment avoids subtracting two large
+    // lowered world coordinates merely to recover a small profile coordinate.
+    let outer = generate_arcade_run(
+        "basilica/arcades/outer",
+        plan.length,
+        plan.arcade_bays,
+        plan.arcade_end_clearance,
+    )?;
+    let west = generate_arcade_run(
+        "basilica/arcades/west-nave",
+        plan.west_nave_length,
+        plan.west_arcade_bays,
+        plan.arcade_end_clearance,
+    )?;
+    let east = generate_arcade_run(
+        "basilica/arcades/east-nave",
+        plan.east_nave_length,
+        plan.east_arcade_bays,
+        plan.arcade_end_clearance,
+    )?;
+    Ok(GeneratedArcades { outer, west, east })
+}
+
+fn generate_arcade_run(
+    invocation: &str,
+    length: setout::Length,
+    bays: setout::Count,
+    end_clearance: setout::Length,
+) -> Result<LinearBayFragment, BasilicaSetoutError> {
+    let start = setout::Offset::ZERO
+        .checked_add_length(end_clearance)
+        .ok_or(BasilicaSetoutError::InvalidArcadeExtent)?;
+    let end = setout::Offset::ZERO
+        .checked_add_length(length)
+        .and_then(|end| end.checked_sub_length(end_clearance))
+        .ok_or(BasilicaSetoutError::InvalidArcadeExtent)?;
+    if start.checked_positive_distance_to(end).is_none() {
+        return Err(BasilicaSetoutError::InvalidArcadeExtent);
+    }
+    let invocation = InvocationKey::new(invocation)?;
+    Ok(distribute_linear_bays(&LinearBayDistribution {
+        invocation: &invocation,
+        start,
+        end,
+        bays,
+        overrides: &[],
+    })?)
+}
 
 pub(super) fn generate_buttress_stations(
     plan: &PlanSection,

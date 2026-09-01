@@ -3,13 +3,19 @@
 
 //! Exact labeled station generation.
 
+mod bay;
 mod error;
 mod generate;
+mod item_override;
 mod types;
 
+pub use bay::{
+    LinearBay, LinearBayDistribution, LinearBayFragment, LinearBayGenerator, distribute_linear_bays,
+};
 pub use error::GenerationError;
 pub use generate::distribute_linear;
-pub use types::{ItemOverride, LinearDistribution, LinearFragment, LinearGenerator, LinearStation};
+pub use item_override::ItemOverride;
+pub use types::{LinearDistribution, LinearFragment, LinearGenerator, LinearStation};
 
 /// Canonical schema version for generated fragment fingerprints.
 pub const GENERATION_SCHEMA_VERSION: u32 = 1;

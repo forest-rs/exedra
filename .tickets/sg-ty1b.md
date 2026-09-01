@@ -2,7 +2,7 @@
 id: sg-ty1b
 status: closed
 deps: []
-links: [bsl-6ihj, set-mnga, set-mpbt]
+links: [bsl-6ihj, set-mnga, set-mpbt, sg-mr3j]
 created: 2026-08-31T17:46:35Z
 type: feature
 priority: 1

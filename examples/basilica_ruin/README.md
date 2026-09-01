@@ -40,11 +40,11 @@ dimensions are now `setout::Length`, `crossing_x` is the positive station
 distance `crossing_station`, and `arcade_bays` is `setout::Count`.
 `BasilicaRoofSetout` is now `BasilicaSetout`, with the section accessors
 `plan()`, `levels()`, `aisle()`, `roof()`, `crossing()`, and `east_end()`.
-`BasilicaReconfiguration::topology_changed` distinguishes a bay-count edit
-that must add or remove repeated instances from an ordinary geometry update;
-the named dirty frontier alone can describe only identities that already
-exist. `buttress_stations` carries the new exact generated fragment and
-`buttress_delta` reports retained, added, removed, and moved semantic items.
+`BasilicaReconfiguration::topology_changed` distinguishes edits that add or
+remove generated items from ordinary geometry updates. Exact fragments and
+deltas expose exterior arcade bays, split west/east nave bays, buttresses, and
+west trusses; the named dirty frontier complements them by identifying
+existing construction elements whose geometry must be rebuilt.
 
 The migration also corrects the south lean-to roof's old placement frame. Its
 baseline was mirrored, but its right-handed thickness axis pointed inward and
@@ -77,6 +77,17 @@ cargo run -p basilica_ruin -- --obj target/my-basilica.obj
 
 The summary printed to stdout includes assembly, triangle, diagnostic, and
 content-signature counters.
+
+To render-review arcade parametricity, generate the accepted seven-bay model
+and an eight-bay exterior variant together:
+
+```sh
+cargo run -p basilica_ruin -- --parametric-arcades
+```
+
+The variant deliberately changes the two exterior aisle walls and their
+buttresses while retaining the independently authored five-west/one-east nave
+arcades and the open crossing gap.
 
 To exercise incremental part compilation, rebuild the concrete assembly after
 changing only `BasilicaPremises::dome_height`:
@@ -142,6 +153,13 @@ the same fragment rather than recreating its count-to-name mapping. Buttress
 paths therefore use names such as `buttress-north-start`,
 `buttress-north-interior-000001`, and `buttress-north-end`; an arcade-count edit
 cannot rebind the old endpoint path to a new interior station.
+
+Three exact `LinearBayFragment` values own the opening centers for the exterior
+aisle walls, west nave, and east nave. The exterior `arcade_bays` premise is
+independent of the accepted five-west/one-east nave topology: forcing one count
+relationship compresses the wider interior arches until they overlap. A
+Basilica-local adapter lowers each exact rational center once; profile geometry
+receives explicit centers and cannot recalculate a floating pitch or margin.
 
 The west nave-truss run is a second exact `setout_generate` fragment. Its
 endpoint datums come from the setout network, `BasilicaPremises::nave_truss_bays`

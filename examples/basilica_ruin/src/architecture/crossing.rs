@@ -69,7 +69,15 @@ pub(super) fn build(
     let crossing_spandrel_long = context.add_part(
         "crossing-spandrel-long",
         extruded_profile_recipe(
-            arcaded_wall_profile(crossing_span, spandrel_height, 1, 5.4, 0.12, 1.88, None),
+            arcaded_wall_profile(
+                crossing_span,
+                spandrel_height,
+                [crossing_span * 0.5],
+                5.4,
+                0.12,
+                1.88,
+                None,
+            ),
             0.65,
             vertical_wall_frame(),
             "basilica:crossing-spandrel-long",
@@ -94,7 +102,7 @@ pub(super) fn build(
             arcaded_wall_profile(
                 crossing_span - 1.3,
                 spandrel_height,
-                1,
+                [(crossing_span - 1.3) * 0.5],
                 4.4,
                 0.12,
                 1.78,
