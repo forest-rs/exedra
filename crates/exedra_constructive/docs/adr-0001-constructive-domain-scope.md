@@ -65,8 +65,9 @@ together would break both.
 - **The constructive node set**: extrude, revolve (partial sweeps, cap
   flags, open shells), loft, sweep along polyline or planar paths, planar
   faces, grid surfaces, primitives (via `exedra_primitives` specs), imported
-  mesh leaves, n-ary CSG, transform/mirror/instance/group, and a reserved
-  stretch node. All public enums are `#[non_exhaustive]`. There is **no 3D
+  mesh leaves, n-ary CSG, transform/mirror/instance/group, and constructive
+  stretch (orientation and composition are fixed by ADR-0005). All public
+  enums are `#[non_exhaustive]`. There is **no 3D
   curve type**: planar profiles plus placements plus polyline paths cover
   the parametric-spec domain; a spatial path variant can arrive additively if ever
   earned. Loft evaluation rejects sections whose placed geometry remains

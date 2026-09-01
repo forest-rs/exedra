@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 
 use crate::builders;
 use crate::evaluate::{Evaluation, evaluate};
-use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
+use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
 use crate::tessellate::EvalPolicy;
 
 struct Fixture {
@@ -170,6 +170,37 @@ fn fixtures() -> Vec<Fixture> {
         });
     }
 
+    // 7. A rounded panel stretched through its straight middle band. The
+    // golden pins both preserved corner arcs and the inserted profile seams.
+    {
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::rounded_rect(400.0, 300.0, 50.0).expect("rounded"));
+        let src = b.source_ref("gallery:stretched_panel");
+        let child = b
+            .with_source(src)
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 100.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let stretch = b
+            .add(NodeKind::Stretch {
+                child,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 200.0,
+                },
+                length: 100.0,
+            })
+            .expect("valid");
+        out.push(Fixture {
+            name: "stretched_panel",
+            recipe: b.finish(stretch).expect("valid"),
+        });
+    }
+
     out
 }
 
@@ -304,6 +335,7 @@ golden_test!(golden_l_prism, "l_prism", 1);
 golden_test!(golden_rounded_prism, "rounded_prism", 2);
 golden_test!(golden_ring_prism, "ring_prism", 3);
 golden_test!(golden_quarter_sweep, "quarter_sweep", 4);
+golden_test!(golden_stretched_panel, "stretched_panel", 6);
 
 #[test]
 fn golden_csg_report() {

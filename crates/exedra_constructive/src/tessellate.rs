@@ -102,6 +102,13 @@ pub enum Feature {
         /// Patch column index.
         col: u16,
     },
+    /// A vertex on a stretch section rim. Face ownership remains the source
+    /// feature of the surface being extended; this additive vertex feature
+    /// makes the deformation boundary addressable without replacing it.
+    StretchSeam {
+        /// `0` is the stationary rim and `1` is its translated counterpart.
+        rim: u8,
+    },
 }
 
 /// A tessellated body: the mesh plus its element provenance.
@@ -123,6 +130,13 @@ pub const REGION_CAP_START: u32 = 0;
 pub const REGION_CAP_END: u32 = 1;
 /// First side-wall region value; segment `k` maps to `REGION_WALL_BASE + k`.
 pub const REGION_WALL_BASE: u32 = 2;
+
+/// Original wall identity retained by an internal profile rewrite.
+#[derive(Copy, Clone)]
+pub(crate) struct ExtrudeWallSource {
+    pub(crate) region: u32,
+    pub(crate) segment: u32,
+}
 
 /// Region values for grid-surface bodies (their own documented namespace,
 /// like caps/walls for extrusions): the front surface (the given points).
@@ -583,6 +597,21 @@ pub fn tessellate_extrude(
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
+    tessellate_extrude_with_wall_sources(profile, placement, height, caps, policy, None)
+}
+
+/// Tessellates an extrusion while retaining wall identities through an
+/// internal profile rewrite. Public callers use the profile's segment order;
+/// constructive operators can provide the source region and segment for each
+/// rewritten segment instead.
+pub(crate) fn tessellate_extrude_with_wall_sources(
+    profile: &Profile2,
+    placement: &Placement3,
+    height: f64,
+    caps: CapMode,
+    policy: &EvalPolicy,
+    wall_sources: Option<&[Vec<ExtrudeWallSource>]>,
+) -> Result<TessellatedBody, TessellateError> {
     let d = discretize_profile(profile, &policy.discretize)?;
     let flip = det3(placement) < 0.0;
 
@@ -630,6 +659,16 @@ pub fn tessellate_extrude(
             let t_i = top_offset + base + i;
             let t_j = top_offset + base + j;
             let seg = ring.edge_seg[i as usize];
+            // The exact stretch path can split one source segment into
+            // several analytic segments. All pieces must keep the source
+            // wall's material region and feature identity; ordinary
+            // tessellation has the documented positional mapping.
+            let wall_source = wall_sources
+                .map(|loops| loops[ring_index][seg as usize])
+                .unwrap_or(ExtrudeWallSource {
+                    region: REGION_WALL_BASE + seg_offsets[ring_index] + seg,
+                    segment: seg,
+                });
 
             // Lateral sharpness at ring points i and j: only original
             // endpoints (segment boundaries) are candidates — a point where
@@ -655,12 +694,15 @@ pub fn tessellate_extrude(
             builder.add_face_with_attrs(
                 &[b_i, b_j, t_j, t_i],
                 &FaceBuildAttrs {
-                    region: Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg),
+                    region: Some(wall_source.region),
                     edge_seams: None,
                     edge_sharpness: Some(&sharp),
                 },
             )?;
-            face_origins.push(Feature::Wall { loop_index, seg });
+            face_origins.push(Feature::Wall {
+                loop_index,
+                seg: wall_source.segment,
+            });
         }
     }
 

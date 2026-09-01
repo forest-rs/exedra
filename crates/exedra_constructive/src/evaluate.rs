@@ -32,8 +32,8 @@ pub enum Fidelity {
     /// The node's specification is contradictory; the payload cites the
     /// opaque issue reference chosen by the frontend.
     Conflicted(SourceId),
-    /// Only a bounding envelope is available — the operation is not yet
-    /// evaluable (for example CSG before the boolean pipeline lands).
+    /// Only a bounding envelope is available because an operation refused
+    /// unsupported or ambiguous topology.
     EnvelopeOnly,
 }
 
@@ -95,7 +95,11 @@ impl Aabb3 {
 
 /// Counters exposed for introspection (tenet: if we cannot measure it, we
 /// cannot improve it).
+///
+/// New work counters may be added as evaluators grow. Construct this
+/// non-exhaustive ledger through [`Default`] rather than a struct literal.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EvalCounters {
     /// Bodies emitted into the evaluation output.
     pub bodies: u32,
@@ -109,6 +113,18 @@ pub struct EvalCounters {
     pub envelope_only: u32,
     /// Nodes skipped as not yet implemented.
     pub unimplemented: u32,
+    /// Stretch nodes evaluated through a constructive rewrite.
+    pub stretch_exact: u32,
+    /// Stretch nodes evaluated through the general closed-mesh path.
+    pub stretch_mesh: u32,
+    /// Input mesh faces partitioned by stretch section planes.
+    pub stretch_faces_split: u64,
+    /// Prismatic band faces emitted by mesh-backed expansion.
+    pub stretch_band_faces: u64,
+    /// Mapped source faces whose stretched UV extension was underdetermined.
+    pub stretch_uv_unmapped_faces: u64,
+    /// Stretch nodes refused because their topology was not safely evaluable.
+    pub stretch_refusals: u32,
     /// Total source-map bytes retained across emitted bodies.
     pub source_map_bytes: u64,
     /// Bodies reused from the evaluation cache (always zero for the pure
@@ -198,12 +214,12 @@ impl core::error::Error for EvalError {}
 /// Evaluates `recipe` under `policy`.
 ///
 /// Supported nodes include declared box/cylinder primitives, constructive
-/// bodies, groups, rigid transforms, and CSG operations handled by the mesh
-/// Boolean pipeline. A refused CSG
-/// operation reports [`Fidelity::EnvelopeOnly`] and structured diagnostics
-/// rather than returning invented geometry. Other unsupported nodes report
-/// `eval.unimplemented`. The walk starts at the recipe root and visits children
-/// depth-first in operand order.
+/// bodies, groups, transforms, stretch, and CSG operations handled by the mesh
+/// Boolean pipeline. Refused CSG and stretch operations report
+/// [`Fidelity::EnvelopeOnly`] with structured diagnostics rather than returning
+/// invented geometry. Other unsupported nodes report `eval.unimplemented`.
+/// The walk starts at the recipe root and visits children depth-first in
+/// operand order.
 ///
 /// # Errors
 ///
@@ -216,13 +232,13 @@ pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, Eval
 /// Evaluates `recipe` under `policy`, reusing bodies from `cache`.
 ///
 /// Bit-identical to [`evaluate`] by contract: bodies, source maps, and the
-/// report agree exactly, except the work counters
-/// ([`EvalCounters::tessellations`], [`EvalCounters::cache_hits`],
-/// [`EvalCounters::cache_misses`]), which honestly describe how much work
-/// each run actually did. The cache is caller-owned and survives across
-/// evaluations; entries key on content fingerprints, so edited recipes
-/// re-tessellate exactly their changed nodes. See [`crate::cache`] for the
-/// key design.
+/// report agree exactly, except work counters such as
+/// [`EvalCounters::tessellations`], [`EvalCounters::stretch_faces_split`],
+/// [`EvalCounters::cache_hits`], and [`EvalCounters::cache_misses`], which
+/// honestly describe how much work each run actually did. The cache is
+/// caller-owned and survives across evaluations; entries key on content
+/// fingerprints, so edited recipes re-tessellate exactly their changed nodes.
+/// See [`crate::cache`] for the key design.
 ///
 /// # Errors
 ///
@@ -474,6 +490,11 @@ impl EvalCx<'_> {
                 })?;
                 Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
             }
+            NodeKind::Stretch {
+                child,
+                plane,
+                length,
+            } => self.evaluate_stretch(node_id, *child, plane, *length, world, emit),
             NodeKind::Mirror { child, plane } => {
                 let reflection = reflection_placement(plane);
                 let combined = compose(world, &reflection);
@@ -542,6 +563,222 @@ impl EvalCx<'_> {
                 Ok(Aabb3::EMPTY)
             }
         }
+    }
+
+    fn evaluate_stretch(
+        &mut self,
+        node_id: NodeId,
+        child: NodeId,
+        plane: &crate::ir::Plane3,
+        length: f64,
+        world: &Placement3,
+        emit: bool,
+    ) -> Result<Aabb3, EvalError> {
+        match crate::stretch::exact_plan(self.recipe, child, plane, length, world) {
+            Ok(Some(plan)) => {
+                let profiles = self.record_exact_stretch_child(child);
+                let body = self.body_cached(node_id, world, |cx| {
+                    plan.tessellate(cx.policy).map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
+                })?;
+                self.report.counters.stretch_exact += plan.stretch_nodes();
+                let fidelity = self.body_fidelity(node_id, &profiles);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
+            }
+            Err(refusal) => self.finish_stretch_refusal(
+                node_id,
+                child,
+                world,
+                refusal.code(),
+                refusal.message(),
+            ),
+            Ok(None) => {
+                // General stretch consumes child bodies just like CSG does:
+                // their evaluation work and fidelity stay visible, but their
+                // pre-deformation meshes are not emitted alongside the result.
+                let taken = core::mem::take(&mut self.bodies);
+                let emitted_before = (
+                    self.report.counters.bodies,
+                    self.report.counters.faces,
+                    self.report.counters.vertices,
+                    self.report.counters.source_map_bytes,
+                );
+                self.walk(child, world, true)?;
+                let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
+                (
+                    self.report.counters.bodies,
+                    self.report.counters.faces,
+                    self.report.counters.vertices,
+                    self.report.counters.source_map_bytes,
+                ) = emitted_before;
+                let mut bounds = Aabb3::EMPTY;
+                for placed in &collected {
+                    bounds.union(&mesh_bounds(&placed.body.mesh));
+                }
+                if collected.is_empty() {
+                    return Ok(self.record_stretch_refusal(
+                        node_id,
+                        bounds,
+                        "eval.stretch.empty_child",
+                        "the stretch child produced no body",
+                    ));
+                }
+
+                // UV-extension diagnostics are part of the report while the
+                // cache stores only bodies. Keep mapped mesh stretches out of
+                // that cache until its value can carry deterministic stats;
+                // otherwise a warm run would hide an unmapped-face note.
+                let cacheable = collected.len() == 1
+                    && collected[0]
+                        .body
+                        .mesh
+                        .attrs()
+                        .sparse(exedra::attr::CORNER_UV)
+                        .is_none();
+                let key = cacheable.then(|| self.cache_key(node_id, world)).flatten();
+                let cached =
+                    if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
+                        let hit = cache.get(key);
+                        if hit.is_some() {
+                            self.report.counters.cache_hits += 1;
+                        } else {
+                            self.report.counters.cache_misses += 1;
+                        }
+                        hit
+                    } else {
+                        None
+                    };
+
+                let mut stretched = Vec::with_capacity(collected.len());
+                let mut stats = crate::stretch::MeshStretchStats::default();
+                if let Some(body) = cached {
+                    stretched.push(body);
+                } else {
+                    for placed in collected {
+                        match crate::stretch::stretch_mesh(
+                            &placed.body,
+                            plane,
+                            length,
+                            world,
+                            self.policy,
+                        ) {
+                            Ok((body, body_stats)) => {
+                                stats.split_faces += body_stats.split_faces;
+                                stats.band_faces += body_stats.band_faces;
+                                stats.uv_unmapped_faces += body_stats.uv_unmapped_faces;
+                                stretched.push(Rc::new(body));
+                                self.report.counters.tessellations += 1;
+                            }
+                            Err(refusal) => {
+                                return Ok(self.record_stretch_refusal(
+                                    node_id,
+                                    bounds,
+                                    refusal.code(),
+                                    refusal.message(),
+                                ));
+                            }
+                        }
+                    }
+                    if let (Some(cache), Some(key), [body]) =
+                        (self.cache.as_deref_mut(), key, stretched.as_slice())
+                    {
+                        cache.insert(key, Rc::clone(body));
+                    }
+                }
+                self.report.counters.stretch_mesh += 1;
+                self.report.counters.stretch_faces_split += stats.split_faces;
+                self.report.counters.stretch_band_faces += stats.band_faces;
+                self.report.counters.stretch_uv_unmapped_faces += stats.uv_unmapped_faces;
+                if stats.uv_unmapped_faces > 0 {
+                    self.report.diagnostics.push(Diagnostic {
+                        severity: Severity::Note,
+                        code: "eval.stretch.uv_unmapped",
+                        message: alloc::format!(
+                            "{} stretched face(s) had no determinate planar UV extension",
+                            stats.uv_unmapped_faces
+                        ),
+                        node: Some(node_id),
+                    });
+                }
+                let mut result_bounds = Aabb3::EMPTY;
+                for body in stretched {
+                    let fidelity = self.body_fidelity(node_id, &[]);
+                    result_bounds.union(&self.finish_body(node_id, body, emit, fidelity));
+                }
+                Ok(result_bounds)
+            }
+        }
+    }
+
+    /// Replays the fidelity footprint that an exact stretch rewrite bypasses.
+    /// Transform nodes do not record their own fidelity in the ordinary walk;
+    /// the underlying body does, including any profile policy attribution.
+    fn record_exact_stretch_child(&mut self, child: NodeId) -> Vec<ProfileId> {
+        let kind = self
+            .recipe
+            .node(child)
+            .expect("stretch child is validated")
+            .kind
+            .clone();
+        match kind {
+            NodeKind::Transform { child, .. } => self.record_exact_stretch_child(child),
+            NodeKind::Stretch {
+                child: nested_child,
+                ..
+            } => {
+                let profiles = self.record_exact_stretch_child(nested_child);
+                let fidelity = self.body_fidelity(child, &profiles);
+                self.report.fidelity.push((child, fidelity));
+                profiles
+            }
+            NodeKind::Extrude { profile, .. } => {
+                let profiles = alloc::vec![profile];
+                let fidelity = self.body_fidelity(child, &profiles);
+                self.report.fidelity.push((child, fidelity));
+                profiles
+            }
+            _ => {
+                let fidelity = self.body_fidelity(child, &[]);
+                self.report.fidelity.push((child, fidelity));
+                Vec::new()
+            }
+        }
+    }
+
+    fn finish_stretch_refusal(
+        &mut self,
+        node_id: NodeId,
+        child: NodeId,
+        world: &Placement3,
+        code: &'static str,
+        message: &'static str,
+    ) -> Result<Aabb3, EvalError> {
+        let bounds = self.walk(child, world, false)?;
+        Ok(self.record_stretch_refusal(node_id, bounds, code, message))
+    }
+
+    fn record_stretch_refusal(
+        &mut self,
+        node_id: NodeId,
+        bounds: Aabb3,
+        code: &'static str,
+        message: &'static str,
+    ) -> Aabb3 {
+        self.report.counters.envelope_only += 1;
+        self.report.counters.stretch_refusals += 1;
+        self.report.fidelity.push((node_id, Fidelity::EnvelopeOnly));
+        if !bounds.is_empty() {
+            self.report.envelopes.push((node_id, bounds));
+        }
+        self.report.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code,
+            message: String::from(message),
+            node: Some(node_id),
+        });
+        bounds
     }
 
     /// Evaluates one operand subtree into its bodies (world-placed),
@@ -875,7 +1112,7 @@ fn reflection_placement(plane: &crate::ir::Plane3) -> Placement3 {
 }
 
 /// World-space bounds of a mesh (f32 positions promoted).
-fn mesh_bounds(mesh: &exedra::Mesh) -> Aabb3 {
+pub(crate) fn mesh_bounds(mesh: &exedra::Mesh) -> Aabb3 {
     let mut bounds = Aabb3::EMPTY;
     for vertex in mesh.vertices() {
         if let Some(p) = mesh.vertex_position(vertex) {
