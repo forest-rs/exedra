@@ -12,7 +12,7 @@
 //! The crate owns:
 //! - kurbo-backed 2D profiles closed by construction,
 //! - the constructive node set (primitives, extrude, revolve, loft, sweep,
-//!   CSG, transforms, instances) and its content-addressed identity,
+//!   stretch, CSG, transforms, instances) and its content-addressed identity,
 //! - deterministic evaluation and tessellation with source maps and reports.
 //!
 //! It intentionally does not own: mesh topology (that is [`exedra`]),
@@ -84,6 +84,7 @@ pub mod ir;
 pub mod offset;
 pub mod profile;
 pub mod source_map;
+mod stretch;
 pub mod tessellate;
 pub mod text;
 
@@ -107,4 +108,4 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// recipe: a kurbo upgrade, a discretization-rule change, a canonical
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
-pub const EVAL_SCHEMA_VERSION: u32 = 4;
+pub const EVAL_SCHEMA_VERSION: u32 = 5;

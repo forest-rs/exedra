@@ -21,12 +21,21 @@ constructive evaluation, direct Boolean, sharp-edge rounding, and render
 extraction; deep-validates and signature-checks every result before timing;
 then reports best and average phase times with Boolean/rounding work counters.
 
+**CT-4** compares constructive stretch's algebraic box and extrusion paths
+against its closed imported-mesh fallback. It validates and signature-checks
+each output before reporting the paths separately, so tessellation-policy or
+topology regressions cannot hide inside an aggregate number. The stress
+profile uses a five-digit-vertex closed prism to expose work that scales with
+the whole source mesh per output corner.
+
 ```sh
 cargo run --release -p constructive_wind_tunnel -- --quick
 cargo run --release -p constructive_wind_tunnel -- --ct1-stress
 cargo run --release -p constructive_wind_tunnel -- --gallery
 cargo run --release -p constructive_wind_tunnel -- --gallery-stress
 cargo run --release -p constructive_wind_tunnel -- --gallery-sample
+cargo run --release -p constructive_wind_tunnel -- --stretch
+cargo run --release -p constructive_wind_tunnel -- --stretch-stress
 ```
 
 `--gallery-sample` repeats the unchanged CT-3 workload long enough for an

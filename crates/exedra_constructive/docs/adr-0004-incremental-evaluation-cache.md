@@ -40,7 +40,10 @@ propagation step to get wrong and no way to observe a stale entry.
 
 Body-producing nodes: `Extrude`, `Revolve`, `Loft`, `Sweep`,
 `GridSurface`, `MeshImport`, and the **successful result of a `Csg`
-node** (the expensive boolean pipeline). Cached values are
+node** (the expensive boolean pipeline). `Stretch` caches exact rewrites and
+single-body unmapped-mesh results; a mesh stretch carrying corner UVs is not
+cached yet because UV-extension counters/diagnostics are part of the report
+while the cache value currently stores only the body. Cached values are
 `Rc<TessellatedBody>`; `PlacedBody::body` became `Rc<TessellatedBody>` so
 hits are zero-copy (a deliberate public-shape break: long-term core
 shape over caller compatibility; consumers read through `Deref`).

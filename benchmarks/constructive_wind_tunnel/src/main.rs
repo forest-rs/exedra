@@ -5,7 +5,8 @@
 //! CT-1 (evaluation + source-map lookups at scale), CT-2 (incremental
 //! regeneration: a one-parameter edit re-tessellates exactly one body,
 //! bit-identical to a full rebuild), and CT-3 (the gallery's direct
-//! Boolean-plus-rounding card, timed by phase).
+//! Boolean-plus-rounding card, timed by phase), and CT-4 (constructive
+//! stretch exact rewrites versus the general imported-mesh path).
 //!
 //! Run the quick profile (the default):
 //! `cargo run --release -p constructive_wind_tunnel -- --quick`
@@ -18,6 +19,9 @@
 //!
 //! Keep the gallery fixture alive for an external sampling profiler:
 //! `cargo run --release -p constructive_wind_tunnel -- --gallery-sample`
+//!
+//! Isolate constructive stretch:
+//! `cargo run --release -p constructive_wind_tunnel -- --stretch`
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -28,18 +32,23 @@ use exedra::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder};
 use exedra_constructive::builders;
 use exedra_constructive::cache::EvalCache;
 use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
-use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{
+    CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
+};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_testkit::trimesh_signature;
 
 fn main() {
     let config = Config::from_args(std::env::args().skip(1));
-    if config.gallery_only {
+    if config.stretch_only {
+        run_ct4(config.profile);
+    } else if config.gallery_only {
         run_ct3(config.profile);
     } else {
         run_ct1(config.profile);
         run_ct2(config.profile);
         run_ct3(config.profile);
+        run_ct4(config.profile);
     }
 }
 
@@ -47,6 +56,7 @@ fn main() {
 struct Config {
     profile: Profile,
     gallery_only: bool,
+    stretch_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -101,6 +111,25 @@ impl Profile {
             Self::Sample => 4096,
         }
     }
+
+    /// Cross-section resolution for the CT-4 general mesh case. The stress
+    /// fixture intentionally reaches five-digit vertex counts so provenance
+    /// lookup costs cannot hide behind the eight-vertex correctness fixture.
+    const fn ct4_import_sides(self) -> u32 {
+        match self {
+            Self::Quick => 127,
+            Self::Stress | Self::Sample => 8_191,
+        }
+    }
+
+    /// The large stress mesh needs fewer repetitions than the exact cases to
+    /// keep the wind tunnel practical under debug profilers.
+    const fn ct4_mesh_iterations(self) -> u32 {
+        match self {
+            Self::Quick => 64,
+            Self::Stress | Self::Sample => 4,
+        }
+    }
 }
 
 impl Config {
@@ -108,6 +137,7 @@ impl Config {
         let mut config = Self {
             profile: Profile::Quick,
             gallery_only: false,
+            stretch_only: false,
         };
         for arg in args {
             match arg.as_str() {
@@ -121,6 +151,11 @@ impl Config {
                 "--gallery-sample" => {
                     config.profile = Profile::Sample;
                     config.gallery_only = true;
+                }
+                "--stretch" => config.stretch_only = true,
+                "--stretch-stress" => {
+                    config.profile = Profile::Stress;
+                    config.stretch_only = true;
                 }
                 "--help" | "-h" => {
                     print_help();
@@ -139,7 +174,7 @@ impl Config {
 
 fn print_help() {
     eprintln!(
-        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample]"
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress]"
     );
 }
 
@@ -626,9 +661,203 @@ fn fold_mesh_signature(mesh: &Mesh) -> u64 {
     trimesh_signature(&triangles)
 }
 
+fn build_ct4_exact_box() -> Recipe {
+    let mut builder = RecipeBuilder::new();
+    let child = builder
+        .add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [800.0, 450.0, 18.0],
+            },
+            placement: Placement3::IDENTITY,
+        })
+        .expect("CT-4 box is valid");
+    let stretch = builder
+        .add(NodeKind::Stretch {
+            child,
+            plane: Plane3 {
+                normal: [1.0, 0.0, 0.0],
+                distance: 350.0,
+            },
+            length: 125.0,
+        })
+        .expect("CT-4 stretch is valid");
+    builder.finish(stretch).expect("CT-4 recipe is valid")
+}
+
+fn build_ct4_exact_extrude() -> Recipe {
+    let mut builder = RecipeBuilder::new();
+    let profile = builder
+        .add_profile(builders::rounded_rect(800.0, 450.0, 25.0).expect("CT-4 profile is valid"));
+    let child = builder
+        .add(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height: 18.0,
+            caps: CapMode::Both,
+        })
+        .expect("CT-4 extrude is valid");
+    let stretch = builder
+        .add(NodeKind::Stretch {
+            child,
+            plane: Plane3 {
+                normal: [1.0, 0.0, 0.0],
+                distance: 350.0,
+            },
+            length: 125.0,
+        })
+        .expect("CT-4 stretch is valid");
+    builder.finish(stretch).expect("CT-4 recipe is valid")
+}
+
+fn build_ct4_import(sides: u32) -> Recipe {
+    // A closed high-sided prism supplies a controllable vertex count while
+    // keeping the stretch section topologically simple: two cap crossings
+    // joined by two split wall faces. Odd side counts keep vertices off the
+    // section plane without a tolerance-dependent offset.
+    let mut mesh = MeshBuilder::new();
+    for z in [0.0_f64, 18.0] {
+        for side in 0..sides {
+            let angle = core::f64::consts::TAU * f64::from(side) / f64::from(sides);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the finite CT-4 fixture intentionally crosses the f32 mesh boundary"
+            )]
+            let point = [
+                (400.0 + 300.0 * angle.cos()) as f32,
+                (225.0 + 150.0 * angle.sin()) as f32,
+                z as f32,
+            ];
+            mesh.push_vertex(point);
+        }
+    }
+    let bottom = (0..sides).rev().collect::<Vec<_>>();
+    mesh.add_face(&bottom).expect("CT-4 bottom cap is valid");
+    let top = (sides..2 * sides).collect::<Vec<_>>();
+    mesh.add_face(&top).expect("CT-4 top cap is valid");
+    for side in 0..sides {
+        let next = (side + 1) % sides;
+        mesh.add_face(&[side, next, sides + next, sides + side])
+            .expect("CT-4 wall is valid");
+    }
+    let mesh = mesh.build().expect("CT-4 prism is manifold").mesh;
+    let mut builder = RecipeBuilder::new();
+    let import = builder.add_import(mesh).expect("CT-4 import is valid");
+    let child = builder
+        .add(NodeKind::MeshImport {
+            import,
+            placement: Placement3::IDENTITY,
+        })
+        .expect("CT-4 import node is valid");
+    let stretch = builder
+        .add(NodeKind::Stretch {
+            child,
+            plane: Plane3 {
+                normal: [1.0, 0.0, 0.0],
+                distance: 400.0,
+            },
+            length: 125.0,
+        })
+        .expect("CT-4 stretch is valid");
+    builder.finish(stretch).expect("CT-4 recipe is valid")
+}
+
+/// CT-4 times the two algebraic shapes separately from the imported-mesh
+/// fallback. Signatures and deep validity are established before timing so
+/// later optimization cannot quietly exchange modeling fidelity for speed.
+fn run_ct4(profile: Profile) {
+    let policy = EvalPolicy::default();
+    let box_recipe = build_ct4_exact_box();
+    let extrude_recipe = build_ct4_exact_extrude();
+    let import_sides = profile.ct4_import_sides();
+    let import_recipe = build_ct4_import(import_sides);
+    let recipes = [&box_recipe, &extrude_recipe, &import_recipe];
+    let mut signatures = [0_u64; 3];
+    let mut exact_nodes = [0_u32; 3];
+    let mut mesh_nodes = [0_u32; 3];
+    let mut split_faces = [0_u64; 3];
+    let mut band_faces = [0_u64; 3];
+    for (index, recipe) in recipes.into_iter().enumerate() {
+        let first = evaluate(recipe, &policy).expect("CT-4 stretch evaluates");
+        let second = evaluate(recipe, &policy).expect("CT-4 stretch evaluates");
+        assert_eq!(first.bodies.len(), 1, "CT-4 stretch emits one body");
+        assert!(
+            first.bodies[0].body.mesh.validate_deep().is_empty(),
+            "CT-4 stretch output remains deeply valid"
+        );
+        signatures[index] = fold_signature(&first);
+        exact_nodes[index] = first.report.counters.stretch_exact;
+        mesh_nodes[index] = first.report.counters.stretch_mesh;
+        split_faces[index] = first.report.counters.stretch_faces_split;
+        band_faces[index] = first.report.counters.stretch_band_faces;
+        assert_eq!(
+            signatures[index],
+            fold_signature(&second),
+            "CT-4 stretch output is deterministic"
+        );
+    }
+
+    let exact_iterations = profile.recipe_count();
+    let mesh_iterations = profile.ct4_mesh_iterations();
+    let (box_best, box_avg) = time_phase(exact_iterations, || {
+        black_box(evaluate(black_box(&box_recipe), black_box(&policy)).expect("box stretches"));
+    });
+    let (extrude_best, extrude_avg) = time_phase(exact_iterations, || {
+        black_box(
+            evaluate(black_box(&extrude_recipe), black_box(&policy)).expect("extrude stretches"),
+        );
+    });
+    let (mesh_best, mesh_avg) = time_phase(mesh_iterations, || {
+        black_box(evaluate(black_box(&import_recipe), black_box(&policy)).expect("mesh stretches"));
+    });
+
+    println!(
+        "scenario=CT-4 profile={} exact_iterations={} mesh_iterations={} \
+         import_vertices={} box_best_ns={} box_avg_ns={} \
+         extrude_best_ns={} extrude_avg_ns={} mesh_best_ns={} mesh_avg_ns={} \
+         box_exact={} extrude_exact={} mesh_general={} mesh_split_faces={} mesh_band_faces={} \
+         box_signature={:016x} extrude_signature={:016x} mesh_signature={:016x}",
+        profile.label(),
+        exact_iterations,
+        mesh_iterations,
+        import_sides * 2,
+        box_best.as_nanos(),
+        box_avg.as_nanos(),
+        extrude_best.as_nanos(),
+        extrude_avg.as_nanos(),
+        mesh_best.as_nanos(),
+        mesh_avg.as_nanos(),
+        exact_nodes[0],
+        exact_nodes[1],
+        mesh_nodes[2],
+        split_faces[2],
+        band_faces[2],
+        signatures[0],
+        signatures[1],
+        signatures[2],
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ct4_stretch_contract_is_deterministic_and_valid() {
+        // CT-4 must keep both exact rewrite shapes and the imported-mesh
+        // fallback alive; each path emits one deterministic, valid body.
+        let policy = EvalPolicy::default();
+        for recipe in [
+            build_ct4_exact_box(),
+            build_ct4_exact_extrude(),
+            build_ct4_import(Profile::Quick.ct4_import_sides()),
+        ] {
+            let first = evaluate(&recipe, &policy).expect("stretch evaluates");
+            let second = evaluate(&recipe, &policy).expect("stretch evaluates");
+            assert_eq!(first.bodies.len(), 1);
+            assert!(first.bodies[0].body.mesh.validate_deep().is_empty());
+            assert_eq!(fold_signature(&first), fold_signature(&second));
+        }
+    }
 
     #[test]
     fn ct3_gallery_contract_is_deterministic_and_valid() {

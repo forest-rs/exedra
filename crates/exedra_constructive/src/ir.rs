@@ -378,25 +378,32 @@ pub enum NodeKind {
     },
     /// An opaque imported mesh leaf under a placement.
     ///
-    /// Imports participate in transforms, instancing, and (once the
-    /// boolean pipeline lands) CSG and stretch; their internal provenance
-    /// is a single imported feature.
+    /// Imports participate in transforms, instancing, CSG, and mesh-backed
+    /// stretch; their internal provenance is a single imported feature.
     MeshImport {
         /// The imported mesh.
         import: ImportId,
         /// Placement of the mesh's local frame.
         placement: Placement3,
     },
-    /// Reserved: plane-split stretch (cut by plane, translate one half,
-    /// stitch). Present in the schema from day one so frontends can encode
-    /// intent; evaluation reports it unimplemented until the boolean
-    /// pipeline's split/stitch stages land.
+    /// Inserts or removes a prismatic band without affinely scaling detail.
+    ///
+    /// Evaluation normalizes `plane`. Its negative half-space stays rigid;
+    /// the positive half-space moves by `length` along the normalized normal.
+    /// Positive length fills the resulting gap from the cut section. Negative
+    /// length removes the slab from the plane to its positive offset by
+    /// `-length`, then re-stitches only when the two sections match.
+    ///
+    /// The plane is expressed in this node's input coordinate space: after
+    /// the child (including any inner stretch) has evaluated and before this
+    /// deformation. Nested stretches therefore compose sequentially. See
+    /// `docs/adr-0005-stretch-semantics.md`.
     Stretch {
         /// The stretched child.
         child: NodeId,
         /// The cutting plane.
         plane: Plane3,
-        /// Signed stretch distance along the plane normal.
+        /// Signed insert/remove distance along the normalized plane normal.
         length: f64,
     },
     /// A point-grid surface body: a row-major grid of 3D points
@@ -1726,7 +1733,7 @@ mod tests {
     }
 
     #[test]
-    fn stretch_is_reserved_but_buildable() {
+    fn stretch_orientation_is_buildable_in_the_ir() {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
         let body = b
@@ -1748,6 +1755,37 @@ mod tests {
             })
             .expect("stretch encodes");
         assert!(b.finish(stretch).is_ok());
+    }
+
+    #[test]
+    fn stretch_rejects_zero_and_non_finite_lengths_at_construction() {
+        // A zero displacement has no insert/remove meaning and would create
+        // degenerate band faces on the mesh path. Reject it, along with
+        // non-finite lengths, before either evaluation lane can observe it.
+        let mut b = RecipeBuilder::new();
+        let body = b
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [2.0, 1.0, 1.0],
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .unwrap();
+        for length in [0.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                b.add(NodeKind::Stretch {
+                    child: body,
+                    plane: Plane3 {
+                        normal: [1.0, 0.0, 0.0],
+                        distance: 1.0,
+                    },
+                    length,
+                }),
+                Err(RecipeError::InvalidParameter {
+                    what: "stretch length"
+                })
+            );
+        }
     }
 
     #[test]
@@ -1806,7 +1844,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x195F_C985_5F70_BC29_954E_1F22_F476_0946,
+            0xA29F_C351_A013_CC6D_5739_C80D_B688_6FD3,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

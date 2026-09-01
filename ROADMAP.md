@@ -44,9 +44,9 @@ The workspace currently provides:
    reports, timings, bounded artifacts, diagnostics, selections, UV projection,
    face and normal edits, and Boolean orchestration.
 5. Constructive profiles and recipes for extrusion, revolution, lofting,
-   polyline sweeps, grid surfaces, primitive and import leaves, transforms,
-   mirrors, instances, groups, source maps, regions, fidelity reports,
-   interchange, and fingerprint-keyed caching.
+   polyline sweeps, grid surfaces, primitive and import leaves, exact and
+   mesh-backed stretch, transforms, mirrors, instances, groups, source maps,
+   regions, fidelity reports, interchange, and fingerprint-keyed caching.
 6. Assembly parts and named instances with stable paths, material binding,
    cached part compilation, deterministic flattening, interchange, inspection
    payloads, and glTF export.
@@ -135,7 +135,6 @@ chain:
   minimum-angle meshing after the incircle predicate;
 - subdivision operators;
 - curved planar sweeps and recipe-level profile fillets;
-- the constructive `Stretch` operator;
 - broad edit-lineage, feature-diff, and derived-normal patching facilities;
 - automatic glTF basis conversion;
 - additional semi-analytic primitives and exact feature intersections.
