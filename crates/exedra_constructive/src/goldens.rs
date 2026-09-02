@@ -201,6 +201,25 @@ fn fixtures() -> Vec<Fixture> {
         });
     }
 
+    // 8. A curved, holed planar face. The golden pins single-sided triangle
+    // winding, the open outer/hole boundaries, and planar-face provenance.
+    {
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::ring(2.0, 1.0).expect("ring"));
+        let src = b.source_ref("gallery:planar_face");
+        let n = b
+            .with_source(src)
+            .add(NodeKind::PlanarFace {
+                profile: p,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("valid");
+        out.push(Fixture {
+            name: "planar_face",
+            recipe: b.finish(n).expect("valid"),
+        });
+    }
+
     out
 }
 
@@ -336,6 +355,7 @@ golden_test!(golden_rounded_prism, "rounded_prism", 2);
 golden_test!(golden_ring_prism, "ring_prism", 3);
 golden_test!(golden_quarter_sweep, "quarter_sweep", 4);
 golden_test!(golden_stretched_panel, "stretched_panel", 6);
+golden_test!(golden_planar_face, "planar_face", 7);
 
 #[test]
 fn golden_csg_report() {

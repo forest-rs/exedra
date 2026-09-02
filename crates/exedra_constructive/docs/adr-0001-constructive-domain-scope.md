@@ -110,6 +110,16 @@ together would break both.
   `EvalPolicy::discretize.max_segment_edges` before allocation.
   Making these previously declared nodes evaluable changes output for an
   unchanged recipe, so it advances `EVAL_SCHEMA_VERSION` from 3 to 4.
+- **Planar-face evaluation.** A `PlanarFace` discretizes its profile under the
+  evaluation policy and triangulates the outer loop and holes as one
+  single-sided open body facing the placement's local +Z direction. It does
+  not synthesize a back face or thickness. Every triangle uses face region
+  zero and `Feature::PlanarFace`; boundary vertices retain their generating
+  loop and profile-segment identity through `Feature::Wall`. Reflecting
+  placements reverse triangle loops after transforming positions, matching
+  the winding policy of the other constructive bodies. Making this previously
+  declared node evaluable changes output for an unchanged recipe, so it
+  advances `EVAL_SCHEMA_VERSION` from 5 to 6.
 
 ### Scalar policy
 
