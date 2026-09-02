@@ -544,7 +544,7 @@ mod tests {
     use super::*;
     use crate::assembly::{Assembly, InstanceId};
     use exedra_constructive::builders;
-    use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
+    use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
 
     fn prism_recipe(width: f64) -> Recipe {
         let mut b = RecipeBuilder::new();
@@ -560,16 +560,26 @@ mod tests {
         b.finish(node).unwrap()
     }
 
-    fn unsupported_planar_face_recipe() -> Recipe {
+    fn refused_open_shell_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
-        let node = b
+        let face = b
             .add(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
             .unwrap();
-        b.finish(node).unwrap()
+        let stretch = b
+            .add(NodeKind::Stretch {
+                child: face,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 20.0,
+                },
+                length: 10.0,
+            })
+            .unwrap();
+        b.finish(stretch).unwrap()
     }
 
     fn partially_supported_recipe() -> Recipe {
@@ -583,15 +593,25 @@ mod tests {
                 caps: CapMode::Both,
             })
             .unwrap();
-        let unsupported = b
+        let open_face = b
             .add(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::translate(0.0, 0.0, 20.0),
             })
             .unwrap();
+        let refused = b
+            .add(NodeKind::Stretch {
+                child: open_face,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 20.0,
+                },
+                length: 10.0,
+            })
+            .unwrap();
         let root = b
             .add(NodeKind::Group {
-                children: alloc::vec![solid, unsupported],
+                children: alloc::vec![solid, refused],
             })
             .unwrap();
         b.finish(root).unwrap()
@@ -636,13 +656,13 @@ mod tests {
 
     #[test]
     fn error_diagnostic_cannot_compile_as_an_empty_part() {
-        // A currently unsupported constructive node evaluates without a hard
-        // `EvalError`, but it emits an Error diagnostic and no bodies. Assembly
+        // Stretching a crossing open shell is a supported, deterministic
+        // refusal: evaluation emits an Error diagnostic and no body. Assembly
         // compilation must not turn that explicit refusal into a successful,
         // silently omitted instance.
         let mut asm = Assembly::new();
         let part = asm
-            .add_recipe_part("unsupported", unsupported_planar_face_recipe())
+            .add_recipe_part("refused", refused_open_shell_recipe())
             .unwrap();
         asm.add_instance(None, "omitted", part, Placement3::IDENTITY)
             .unwrap();
@@ -662,7 +682,7 @@ mod tests {
             report
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "eval.unimplemented")
+                .any(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
         );
     }
 
@@ -689,7 +709,7 @@ mod tests {
             first_report
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "eval.unimplemented")
+                .any(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
         );
 
         let again = compiler

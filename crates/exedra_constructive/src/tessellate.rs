@@ -47,12 +47,15 @@ impl Default for EvalPolicy {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Feature {
+    /// The surface of a single-sided planar-face body.
+    PlanarFace,
     /// The start cap (profile plane, facing local -Z for extrusions).
     CapStart,
     /// The end cap.
     CapEnd,
-    /// A side-wall face. `loop_index` 0 is the outer loop, `1 + i` is hole
-    /// `i`; `seg` is the source segment index within that loop.
+    /// A profile boundary segment or a side-wall face generated from it.
+    /// `loop_index` 0 is the outer loop, `1 + i` is hole `i`; `seg` is the
+    /// source segment index within that loop.
     Wall {
         /// Which profile loop: 0 = outer, `1 + i` = hole `i`.
         loop_index: u16,
@@ -126,6 +129,8 @@ pub struct TessellatedBody {
 /// side wall of global segment `k` (outer loop segments first, then each
 /// hole's segments in order).
 pub const REGION_CAP_START: u32 = 0;
+/// Region value for the surface of a single-sided planar-face body.
+pub const REGION_PLANAR_FACE: u32 = 0;
 /// End-cap region value.
 pub const REGION_CAP_END: u32 = 1;
 /// First side-wall region value; segment `k` maps to `REGION_WALL_BASE + k`.
@@ -153,7 +158,7 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 pub enum TessellateError {
     /// Discretization failed (invalid policy).
     Discretize(crate::discretize::DiscretizeError),
-    /// Cap triangulation failed; the profile was not simple after
+    /// Profile-area triangulation failed; the profile was not simple after
     /// discretization.
     Triangulate(exedra_triangulate::TriError),
     /// Mesh construction failed (an internal invariant violation).
@@ -206,7 +211,7 @@ impl core::fmt::Display for TessellateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Discretize(e) => write!(f, "discretization failed: {e}"),
-            Self::Triangulate(e) => write!(f, "cap triangulation failed: {e}"),
+            Self::Triangulate(e) => write!(f, "profile triangulation failed: {e}"),
             Self::Build(e) => write!(f, "mesh construction failed: {e:?}"),
             Self::AxisContact { min_radius } => write!(
                 f,
@@ -576,6 +581,73 @@ fn primitive_local_position(
             [native_x, -native_z, native_y]
         }
     }
+}
+
+/// Tessellates a profile as one single-sided open surface in local XY,
+/// facing local +Z and placed by `placement`.
+///
+/// The outer loop and holes are always triangulated, so the resulting mesh
+/// represents the profile interior without adding a back face or thickness.
+/// Every triangle carries [`REGION_PLANAR_FACE`] and [`Feature::PlanarFace`].
+/// Boundary vertices retain the loop and source-segment identity of the
+/// discretized edge they generate through [`Feature::Wall`].
+///
+/// # Errors
+///
+/// Returns a typed [`TessellateError`] when curve discretization, polygon
+/// triangulation, coordinate narrowing, or mesh construction fails.
+pub fn tessellate_planar_face(
+    profile: &Profile2,
+    placement: &Placement3,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    let discretized = discretize_profile(profile, &policy.discretize)?;
+    let holes: Vec<&[[f64; 2]]> = discretized
+        .holes
+        .iter()
+        .map(|hole| hole.points.as_slice())
+        .collect();
+    let triangles = triangulate(
+        &PolygonInput {
+            outer: &discretized.outer.points,
+            holes: &holes,
+        },
+        &TriParams::default(),
+    )?;
+
+    // Triangulation indices address outer ++ holes in exactly the same order
+    // used here and by profile_vertex_features. A reflecting placement flips
+    // complete triangle loops after transforming points, keeping the visible
+    // surface oriented toward the transformed local +Z direction.
+    let mut builder = OrientedBuilder::new(det3(placement) < 0.0);
+    for ring in discretized.rings() {
+        for point in &ring.points {
+            builder.push_vertex(narrow(apply_placement(
+                placement,
+                [point[0], point[1], 0.0],
+            )));
+        }
+    }
+    let mut face_features = Vec::with_capacity(triangles.triangles.len());
+    for triangle in triangles.triangles {
+        builder.add_face_with_attrs(
+            &triangle,
+            &FaceBuildAttrs {
+                region: Some(REGION_PLANAR_FACE),
+                ..FaceBuildAttrs::default()
+            },
+        )?;
+        face_features.push(Feature::PlanarFace);
+    }
+
+    let result = builder.build()?;
+    let vertex_features = profile_vertex_features(&discretized, 1);
+    let source_map =
+        crate::source_map::SourceMap::new(&result.mesh, face_features, vertex_features);
+    Ok(TessellatedBody {
+        mesh: result.mesh,
+        source_map,
+    })
 }
 
 /// Tessellates an extrusion: the profile's local XY plane extruded along
@@ -1943,6 +2015,69 @@ mod tests {
             body.source_map.face_count(),
             body.mesh.faces().count(),
             "one origin per face"
+        );
+    }
+
+    #[test]
+    fn planar_face_preserves_curved_hole_boundaries_regions_and_provenance() {
+        // A holed curved profile exercises the path that a hand-built ngon
+        // cannot represent: both rings must follow DiscretizePolicy, survive
+        // triangulation as mesh boundaries, and retain their source segments.
+        let profile = builders::ring(2.0, 1.0).expect("annular profile");
+        let mut coarse_policy = EvalPolicy::default();
+        coarse_policy.discretize.chord_tolerance = 0.25;
+        coarse_policy.discretize.min_arc_edges = 1;
+        let mut fine_policy = coarse_policy;
+        fine_policy.discretize.chord_tolerance = 0.01;
+
+        let coarse = tessellate_planar_face(&profile, &Placement3::IDENTITY, &coarse_policy)
+            .expect("coarse face tessellates");
+        let fine = tessellate_planar_face(&profile, &Placement3::IDENTITY, &fine_policy)
+            .expect("fine face tessellates");
+
+        assert_clean(&coarse);
+        assert_clean(&fine);
+        assert_eq!(
+            fine.mesh
+                .boundary_loops()
+                .expect("boundaries enumerate")
+                .len(),
+            2,
+            "the outer boundary and profile hole both remain open rims"
+        );
+        assert!(
+            fine.mesh.vertices().count() > coarse.mesh.vertices().count(),
+            "a tighter curve tolerance must refine the arc-bounded face"
+        );
+
+        let regions = fine
+            .mesh
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .expect("planar-face region layer");
+        for face in fine.mesh.faces() {
+            assert_eq!(regions.get(face.as_id()).copied(), Some(REGION_PLANAR_FACE));
+            assert_eq!(
+                fine.source_map.face_feature(face),
+                Some(Feature::PlanarFace)
+            );
+        }
+        let vertex_features: alloc::collections::BTreeSet<_> = fine
+            .mesh
+            .vertices()
+            .filter_map(|vertex| fine.source_map.vertex_feature(vertex))
+            .collect();
+        assert!(
+            vertex_features
+                .iter()
+                .any(|feature| matches!(feature, Feature::Wall { loop_index: 0, .. })),
+            "outer boundary vertices retain their generating segments"
+        );
+        assert!(
+            vertex_features
+                .iter()
+                .any(|feature| matches!(feature, Feature::Wall { loop_index: 1, .. })),
+            "hole boundary vertices retain their generating segments"
         );
     }
 

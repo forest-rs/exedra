@@ -17,7 +17,7 @@ use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
 use crate::ir::{NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
 use crate::tessellate::{
     EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
-    tessellate_primitive, tessellate_revolve, tessellate_sweep,
+    tessellate_planar_face, tessellate_primitive, tessellate_revolve, tessellate_sweep,
 };
 
 /// How faithfully a node's output represents its constructive intent.
@@ -214,17 +214,17 @@ impl core::error::Error for EvalError {}
 /// Evaluates `recipe` under `policy`.
 ///
 /// Supported nodes include declared box/cylinder primitives, constructive
-/// bodies, groups, transforms, stretch, and CSG operations handled by the mesh
-/// Boolean pipeline. Refused CSG and stretch operations report
-/// [`Fidelity::EnvelopeOnly`] with structured diagnostics rather than returning
-/// invented geometry. Other unsupported nodes report `eval.unimplemented`.
+/// bodies, planar faces, groups, transforms, stretch, and CSG operations
+/// handled by the mesh Boolean pipeline. Refused CSG and stretch operations
+/// report [`Fidelity::EnvelopeOnly`] with structured diagnostics rather than
+/// returning invented geometry.
 /// The walk starts at the recipe root and visits children depth-first in
 /// operand order.
 ///
 /// # Errors
 ///
 /// Fails when a supported body cannot be tessellated. Bounded CSG refusals and
-/// unsupported nodes are recorded in the evaluation report.
+/// refused operations are recorded in the evaluation report.
 pub fn evaluate(recipe: &Recipe, policy: &EvalPolicy) -> Result<Evaluation, EvalError> {
     evaluate_inner(recipe, policy, None)
 }
@@ -405,6 +405,23 @@ impl EvalCx<'_> {
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
             }
+            NodeKind::PlanarFace { profile, placement } => {
+                let combined = compose(world, placement);
+                let profile = *profile;
+                let body = self.body_cached(node_id, world, |cx| {
+                    tessellate_planar_face(
+                        cx.recipe.profile(profile).expect("validated profile id"),
+                        &combined,
+                        cx.policy,
+                    )
+                    .map_err(|error| EvalError {
+                        node: node_id,
+                        error,
+                    })
+                })?;
+                let fidelity = self.body_fidelity(node_id, &[profile]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
+            }
             NodeKind::Primitive { spec, placement } => {
                 let combined = compose(world, placement);
                 let spec = *spec;
@@ -551,16 +568,6 @@ impl EvalCx<'_> {
                     }
                 }
                 Ok(bounds)
-            }
-            _ => {
-                self.report.counters.unimplemented += 1;
-                self.report.diagnostics.push(Diagnostic {
-                    severity: Severity::Error,
-                    code: "eval.unimplemented",
-                    message: String::from("node kind is not evaluable in this version"),
-                    node: Some(node_id),
-                });
-                Ok(Aabb3::EMPTY)
             }
         }
     }
@@ -1207,6 +1214,24 @@ mod tests {
         b.finish(t).expect("valid recipe")
     }
 
+    fn face_cross_z(mesh: &exedra::Mesh, face: exedra::FaceId) -> f32 {
+        let positions: Vec<[f32; 3]> = mesh
+            .face_loop(face)
+            .filter_map(|half_edge| mesh.to_vertex(half_edge))
+            .filter_map(|vertex| mesh.vertex_position(vertex).copied())
+            .collect();
+        assert_eq!(positions.len(), 3, "planar faces are triangulated");
+        let ab = [
+            positions[1][0] - positions[0][0],
+            positions[1][1] - positions[0][1],
+        ];
+        let ac = [
+            positions[2][0] - positions[0][0],
+            positions[2][1] - positions[0][1],
+        ];
+        ab[0] * ac[1] - ab[1] * ac[0]
+    }
+
     #[test]
     fn evaluates_transformed_extrude() {
         let recipe = extrude_recipe();
@@ -1230,6 +1255,145 @@ mod tests {
             result.report.fidelity_of(recipe.root()),
             None | Some(Fidelity::Exact)
         ));
+    }
+
+    #[test]
+    fn planar_face_evaluates_as_two_positive_normal_triangles() {
+        // PlanarFace is an existing validated recipe node. This trap pins the
+        // missing evaluator contract: a square becomes one single-sided open
+        // surface, triangulated with winding toward the placement's local +Z.
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
+        let face = builder
+            .add(NodeKind::PlanarFace {
+                profile,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("the public IR accepts a planar face");
+        let recipe = builder.finish(face).expect("valid planar-face recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("face evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(face), Some(Fidelity::Exact));
+        assert_eq!(result.report.counters.unimplemented, 0);
+
+        let body = &result.bodies[0].body;
+        assert_eq!(body.mesh.faces().count(), 2, "a square has two triangles");
+        assert_eq!(
+            body.mesh.boundary_loops().expect("boundary is valid").len(),
+            1,
+            "the surface remains single-sided and open"
+        );
+        for mesh_face in body.mesh.faces() {
+            assert!(
+                face_cross_z(&body.mesh, mesh_face) > 0.0,
+                "triangle winding faces local +Z"
+            );
+        }
+    }
+
+    #[test]
+    fn planar_face_composes_through_transform_mirror_and_instance() {
+        // This chain traps all placement-bearing parents at once. The proper
+        // instance placement must reuse the reflected definition, while the
+        // inner mirror repairs winding and the transform moves the face before
+        // reflection; none of those steps may turn it into opaque geometry.
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
+        let face = builder
+            .add(NodeKind::PlanarFace {
+                profile,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("planar face");
+        let transformed = builder
+            .add(NodeKind::Transform {
+                child: face,
+                xf: Placement3::rotate_z_then_translate(
+                    core::f64::consts::FRAC_PI_2,
+                    3.0,
+                    0.0,
+                    0.0,
+                ),
+            })
+            .expect("transformed face");
+        let mirrored = builder
+            .add(NodeKind::Mirror {
+                child: transformed,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.0,
+                },
+            })
+            .expect("mirrored face");
+        let instance = builder
+            .add(NodeKind::Instance {
+                of: mirrored,
+                placement: Placement3::translate(10.0, 0.0, 0.0),
+            })
+            .expect("instance");
+        let recipe = builder.finish(instance).expect("valid composition");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("composition evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        let body = &result.bodies[0].body;
+        assert_eq!(
+            mesh_bounds(&body.mesh),
+            Aabb3 {
+                min: [7.0, 0.0, 0.0],
+                max: [8.0, 2.0, 0.0],
+            }
+        );
+        for mesh_face in body.mesh.faces() {
+            assert!(
+                face_cross_z(&body.mesh, mesh_face) > 0.0,
+                "mirror repairs the reflected triangle winding"
+            );
+            assert_eq!(
+                body.source_map.face_feature(mesh_face),
+                Some(crate::tessellate::Feature::PlanarFace)
+            );
+        }
+    }
+
+    #[test]
+    fn stretch_refuses_a_planar_face_crossing_as_an_open_shell() {
+        // A surface that crosses the stretch plane has no closed section loop
+        // from which to construct a band. PlanarFace must reach the ordinary
+        // mesh stretch refusal rather than being mistaken for a solid recipe.
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
+        let face = builder
+            .add(NodeKind::PlanarFace {
+                profile,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("planar face");
+        let stretch = builder
+            .add(NodeKind::Stretch {
+                child: face,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 1.0,
+                },
+                length: 1.0,
+            })
+            .expect("stretch node");
+        let recipe = builder.finish(stretch).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("refusal is reported");
+        assert!(result.bodies.is_empty());
+        assert_eq!(
+            result.report.fidelity_of(stretch),
+            Some(Fidelity::EnvelopeOnly)
+        );
+        assert!(
+            result
+                .report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
+        );
     }
 
     #[test]
@@ -1439,29 +1603,6 @@ mod tests {
         assert_eq!(result.bodies.len(), 2);
         assert_eq!(result.bodies[0].node, e1);
         assert_eq!(result.bodies[1].node, e2);
-    }
-
-    #[test]
-    fn unimplemented_kinds_report_not_panic() {
-        let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
-        let face = b
-            .add(NodeKind::PlanarFace {
-                profile: p,
-                placement: Placement3::IDENTITY,
-            })
-            .expect("valid");
-        let recipe = b.finish(face).expect("valid recipe");
-        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
-        assert!(result.bodies.is_empty());
-        assert_eq!(result.report.counters.unimplemented, 1);
-        assert!(
-            result
-                .report
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "eval.unimplemented")
-        );
     }
 
     #[test]

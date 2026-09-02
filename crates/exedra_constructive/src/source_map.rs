@@ -194,6 +194,7 @@ struct FeatureLabel(Feature);
 impl core::fmt::Display for FeatureLabel {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.0 {
+            Feature::PlanarFace => write!(f, "planar_face"),
             Feature::CapStart => write!(f, "cap_start"),
             Feature::CapEnd => write!(f, "cap_end"),
             Feature::Wall { loop_index, seg } => write!(f, "wall {loop_index} {seg}"),
