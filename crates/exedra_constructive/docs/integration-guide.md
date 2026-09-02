@@ -114,6 +114,12 @@ configuration reports `Fidelity::EnvelopeOnly`, an `eval.csg.unsupported`
 diagnostic, the pipeline diagnostics, and operand-union bounds instead of
 invented geometry.
 
+Every emitted diagnostic resolves its node's optional source binding into
+`Diagnostic::source`. That owned string is available from the
+`GeometryReport` alone, so reporting code does not need to retain or recover
+the recipe merely to name a refusal. `Recipe::source_of` remains available for
+queries about nodes that did not emit diagnostics.
+
 ## Regions and materials
 
 - `FACE_REGION` (u32, on the mesh) uses a stable documented mapping:

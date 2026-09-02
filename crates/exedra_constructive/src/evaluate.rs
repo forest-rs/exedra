@@ -50,6 +50,7 @@ pub enum Severity {
 
 /// One structured diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Diagnostic {
     /// Severity class.
     pub severity: Severity,
@@ -59,6 +60,12 @@ pub struct Diagnostic {
     pub message: String,
     /// The node this concerns, when there is one.
     pub node: Option<NodeId>,
+    /// Resolved opaque source reference owned by this diagnostic.
+    ///
+    /// This is the source bound to [`Self::node`] when the diagnostic was
+    /// emitted. Owning the string keeps a detached [`GeometryReport`]
+    /// self-describing without retaining its [`Recipe`].
+    pub source: Option<String>,
 }
 
 /// Simple axis-aligned bounds in construction space.
@@ -530,15 +537,15 @@ impl EvalCx<'_> {
                     // cloned mesh; route reflections through Mirror inside
                     // the definition instead.
                     self.report.counters.unimplemented += 1;
-                    self.report.diagnostics.push(Diagnostic {
-                        severity: Severity::Error,
-                        code: "eval.instance.reflecting",
-                        message: String::from(
+                    self.push_diagnostic(
+                        node_id,
+                        Severity::Error,
+                        "eval.instance.reflecting",
+                        String::from(
                             "instance placements must not reflect; put a Mirror \
                              node inside the instanced definition",
                         ),
-                        node: Some(node_id),
-                    });
+                    );
                     return Ok(Aabb3::EMPTY);
                 }
                 let local = if let Some(cached) = self.instance_cache.get(&of) {
@@ -700,15 +707,15 @@ impl EvalCx<'_> {
                 self.report.counters.stretch_band_faces += stats.band_faces;
                 self.report.counters.stretch_uv_unmapped_faces += stats.uv_unmapped_faces;
                 if stats.uv_unmapped_faces > 0 {
-                    self.report.diagnostics.push(Diagnostic {
-                        severity: Severity::Note,
-                        code: "eval.stretch.uv_unmapped",
-                        message: alloc::format!(
+                    self.push_diagnostic(
+                        node_id,
+                        Severity::Note,
+                        "eval.stretch.uv_unmapped",
+                        alloc::format!(
                             "{} stretched face(s) had no determinate planar UV extension",
                             stats.uv_unmapped_faces
                         ),
-                        node: Some(node_id),
-                    });
+                    );
                 }
                 let mut result_bounds = Aabb3::EMPTY;
                 for body in stretched {
@@ -780,12 +787,7 @@ impl EvalCx<'_> {
         if !bounds.is_empty() {
             self.report.envelopes.push((node_id, bounds));
         }
-        self.report.diagnostics.push(Diagnostic {
-            severity: Severity::Error,
-            code,
-            message: String::from(message),
-            node: Some(node_id),
-        });
+        self.push_diagnostic(node_id, Severity::Error, code, String::from(message));
         bounds
     }
 
@@ -970,25 +972,42 @@ impl EvalCx<'_> {
                     self.report.envelopes.push((node_id, bounds));
                 }
                 for entry in diagnostics.entries() {
-                    self.report.diagnostics.push(Diagnostic {
-                        severity: Severity::Warning,
-                        code: "eval.csg.pipeline",
-                        message: alloc::format!("{entry}"),
-                        node: Some(node_id),
-                    });
+                    self.push_diagnostic(
+                        node_id,
+                        Severity::Warning,
+                        "eval.csg.pipeline",
+                        alloc::format!("{entry}"),
+                    );
                 }
-                self.report.diagnostics.push(Diagnostic {
-                    severity: Severity::Error,
-                    code: "eval.csg.unsupported",
-                    message: String::from(
+                self.push_diagnostic(
+                    node_id,
+                    Severity::Error,
+                    "eval.csg.unsupported",
+                    String::from(
                         "CSG evaluation fell back to the operand envelope; \
                          see the pipeline diagnostics",
                     ),
-                    node: Some(node_id),
-                });
+                );
                 Ok(bounds)
             }
         }
+    }
+
+    fn push_diagnostic(
+        &mut self,
+        node: NodeId,
+        severity: Severity,
+        code: &'static str,
+        message: String,
+    ) {
+        let source = self.recipe.source_of(node).map(String::from);
+        self.report.diagnostics.push(Diagnostic {
+            severity,
+            code,
+            message,
+            node: Some(node),
+            source,
+        });
     }
 
     /// Fidelity of a body node: frontend-declared conflicts win, then
@@ -1459,7 +1478,9 @@ mod tests {
         // A surface that crosses the stretch plane has no closed section loop
         // from which to construct a band. PlanarFace must reach the ordinary
         // mesh stretch refusal rather than being mistaken for a solid recipe.
+        // Its resolved source must remain available after the recipe is gone.
         let mut builder = RecipeBuilder::new();
+        let source = builder.source_ref("o1.o2");
         let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
         let face = builder
             .add(NodeKind::PlanarFace {
@@ -1468,6 +1489,7 @@ mod tests {
             })
             .expect("planar face");
         let stretch = builder
+            .with_source(source)
             .add(NodeKind::Stretch {
                 child: face,
                 plane: Plane3 {
@@ -1480,18 +1502,20 @@ mod tests {
         let recipe = builder.finish(stretch).expect("valid recipe");
 
         let result = evaluate(&recipe, &EvalPolicy::default()).expect("refusal is reported");
+        drop(recipe);
         assert!(result.bodies.is_empty());
         assert_eq!(
             result.report.fidelity_of(stretch),
             Some(Fidelity::EnvelopeOnly)
         );
-        assert!(
-            result
-                .report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
-        );
+        let diagnostic = result
+            .report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
+            .expect("typed open-shell refusal");
+        assert_eq!(diagnostic.node, Some(stretch));
+        assert_eq!(diagnostic.source.as_deref(), Some("o1.o2"));
     }
 
     #[test]

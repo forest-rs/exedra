@@ -572,10 +572,11 @@ impl Recipe {
 
     /// Returns the opaque source string bound to `node`.
     ///
-    /// This is the direct lookup for turning a diagnostic's [`NodeId`] into a
-    /// user-facing source reference. It follows the node's interned
-    /// [`SourceId`] without exposing that two-step table traversal to callers.
-    /// Returns `None` when the node is unknown or has no source binding.
+    /// This direct recipe query follows the node's interned [`SourceId`]
+    /// without exposing that two-step table traversal to callers. Emitted
+    /// diagnostics already own the same resolved string so their report can
+    /// travel without the recipe. Returns `None` when the node is unknown or
+    /// has no source binding.
     ///
     /// # Example
     ///
@@ -2091,7 +2092,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x4C68_D97E_AEC9_216E_C355_11C2_E71B_0E4B,
+            0xB726_BB81_4F7C_2361_93BF_76ED_4F8D_EF3D,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }
