@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use exedra::{ExtractParams, FaceTriangulation, TriMesh};
 use exedra_constructive::EVAL_SCHEMA_VERSION;
-use exedra_constructive::evaluate::{EvalError, GeometryReport, Severity, evaluate};
+use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
@@ -88,6 +88,38 @@ pub struct CompiledBody {
     pub regions: Vec<RegionRange>,
 }
 
+impl CompiledBody {
+    /// Axis-aligned bounds of the emitted render positions in part-local space.
+    ///
+    /// Bounds are derived on demand from [`TriMesh::positions`], after
+    /// constructive evaluation and its `f64`-to-`f32` emission boundary. They
+    /// therefore describe exactly the geometry a renderer receives. Assembly
+    /// instance placement has not been applied. Returns `None` for an empty
+    /// body.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use exedra::TriMesh;
+    /// use exedra_assembly::CompiledBody;
+    ///
+    /// let body = CompiledBody {
+    ///     tri: TriMesh {
+    ///         positions: vec![[-2.0, 1.0, 4.0], [3.0, 5.0, -1.0]],
+    ///         ..TriMesh::default()
+    ///     },
+    ///     regions: vec![],
+    /// };
+    /// let bounds = body.bounds().expect("two emitted positions");
+    /// assert_eq!(bounds.min, [-2.0, 1.0, -1.0]);
+    /// assert_eq!(bounds.max, [3.0, 5.0, 4.0]);
+    /// ```
+    #[must_use]
+    pub fn bounds(&self) -> Option<Aabb3> {
+        bounds_of_positions(&self.tri.positions)
+    }
+}
+
 /// A compiled part: identity plus its tessellated bodies.
 #[derive(Clone, Debug)]
 pub struct CompiledPart {
@@ -106,6 +138,40 @@ impl CompiledPart {
             .map(|b| (b.tri.indices.len() / 3) as u64)
             .sum()
     }
+
+    /// Axis-aligned union of every body bound in part-local space.
+    ///
+    /// Like [`CompiledBody::bounds`], this is derived on demand from emitted
+    /// render positions and excludes assembly instance placement. Empty bodies
+    /// do not affect the union; a part with no render positions returns `None`.
+    #[must_use]
+    pub fn bounds(&self) -> Option<Aabb3> {
+        let mut bodies = self.bodies.iter().filter_map(CompiledBody::bounds);
+        let mut bounds = bodies.next()?;
+        for body in bodies {
+            for axis in 0..3 {
+                bounds.min[axis] = bounds.min[axis].min(body.min[axis]);
+                bounds.max[axis] = bounds.max[axis].max(body.max[axis]);
+            }
+        }
+        Some(bounds)
+    }
+}
+
+fn bounds_of_positions(positions: &[[f32; 3]]) -> Option<Aabb3> {
+    let mut positions = positions.iter();
+    let first = positions.next()?.map(f64::from);
+    let mut bounds = Aabb3 {
+        min: first,
+        max: first,
+    };
+    for position in positions {
+        for (axis, component) in position.iter().copied().map(f64::from).enumerate() {
+            bounds.min[axis] = bounds.min[axis].min(component);
+            bounds.max[axis] = bounds.max[axis].max(component);
+        }
+    }
+    Some(bounds)
 }
 
 /// Introspection counters accumulated across a compiler's lifetime.
@@ -560,6 +626,33 @@ mod tests {
         b.finish(node).unwrap()
     }
 
+    fn two_body_recipe() -> Recipe {
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let first = builder
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 10.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let second = builder
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::translate(-5.0, 30.0, -2.0),
+                height: 10.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let root = builder
+            .add(NodeKind::Group {
+                children: alloc::vec![first, second],
+            })
+            .unwrap();
+        builder.finish(root).unwrap()
+    }
+
     fn refused_open_shell_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
@@ -652,6 +745,49 @@ mod tests {
             compiled.part(PartId(0)).unwrap(),
             again.part(PartId(0)).unwrap()
         ));
+    }
+
+    #[test]
+    fn compiled_bounds_cover_each_body_and_the_whole_part() {
+        // Bounds describe the emitted render positions in part-local space.
+        // The part query must union every body, including negative minima,
+        // while an empty render body has no geometric bounds.
+        let mut assembly = Assembly::new();
+        let part = assembly
+            .add_recipe_part("two-bodies", two_body_recipe())
+            .unwrap();
+        let compiled = PartCompiler::new()
+            .compile_parts(&assembly, &EvalPolicy::default())
+            .unwrap();
+        let compiled = compiled.part(part).unwrap();
+
+        assert_eq!(
+            compiled.bodies[0].bounds(),
+            Some(Aabb3 {
+                min: [0.0, 0.0, 0.0],
+                max: [40.0, 20.0, 10.0],
+            })
+        );
+        assert_eq!(
+            compiled.bodies[1].bounds(),
+            Some(Aabb3 {
+                min: [-5.0, 30.0, -2.0],
+                max: [35.0, 50.0, 8.0],
+            })
+        );
+        assert_eq!(
+            compiled.bounds(),
+            Some(Aabb3 {
+                min: [-5.0, 0.0, -2.0],
+                max: [40.0, 50.0, 10.0],
+            })
+        );
+
+        let empty = CompiledBody {
+            tri: TriMesh::default(),
+            regions: Vec::new(),
+        };
+        assert_eq!(empty.bounds(), None);
     }
 
     #[test]
