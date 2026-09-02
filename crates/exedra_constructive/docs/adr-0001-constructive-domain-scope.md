@@ -91,6 +91,19 @@ together would break both.
   and callers neither reflect instances nor evaluate and bake opaque meshes.
   General recipe reopening, table merging, assembly naming, and part reuse are
   deliberately outside this operation.
+- **Imported-mesh reflection.** A negative composed placement on a
+  `MeshImport` is the same sanctioned constructive reflection as `Mirror` on
+  any other body. Evaluation transforms positions, reverses every face loop,
+  and remaps built-in regions, seams, edge and vertex sharpness, corner UVs,
+  and inverse-transpose normal overrides according to their semantic owners.
+  The import table and its opaque `Feature::Imported` provenance remain
+  unchanged, so mirrored and unmirrored recipes share one source mesh while
+  differing by the mirror node and its world-space cache key. Arbitrary
+  private attribute layers are outside the constructive import contract.
+  Reflecting `Instance` placements remain refused: reusable assembly
+  placements are still proper-rigid, and reflection belongs inside the
+  constructive definition. Making formerly refused imported reflections
+  evaluable advances `EVAL_SCHEMA_VERSION` from 7 to 8.
 - **Deterministic evaluation with honest reporting.** Evaluation is a pure
   function of recipe and policy. Output includes the mesh, a bidirectional
   source map down to profile-segment granularity, a region/material-slot
