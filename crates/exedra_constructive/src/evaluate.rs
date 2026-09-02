@@ -480,23 +480,24 @@ impl EvalCx<'_> {
             }
             NodeKind::MeshImport { import, placement } => {
                 let placement = compose(world, placement);
-                if crate::tessellate::det3(&placement) < 0.0 {
-                    self.report.counters.unimplemented += 1;
-                    self.report.diagnostics.push(Diagnostic {
-                        severity: Severity::Error,
-                        code: "eval.import.reflecting",
-                        message: String::from(
-                            "imported-mesh placements must not reflect; \
-                             mirror the source mesh in the frontend instead",
-                        ),
-                        node: Some(node_id),
-                    });
-                    return Ok(Aabb3::EMPTY);
-                }
+                let reflects = crate::tessellate::det3(&placement) < 0.0;
                 let import = *import;
                 let body = self.body_cached(node_id, world, |cx| {
                     let source = cx.recipe.import(import).expect("validated import id");
-                    let mesh = transform_mesh(source, &placement);
+                    // A reflection reverses orientation, so transforming only
+                    // positions would leave an outward source inside out. The
+                    // rebuild reverses loops and remaps every built-in semantic
+                    // attribute; proper placements retain the cheaper clone.
+                    let mesh = if reflects {
+                        crate::import_mesh::transform_reflecting(source, &placement).map_err(
+                            |error| EvalError {
+                                node: node_id,
+                                error,
+                            },
+                        )?
+                    } else {
+                        transform_mesh(source, &placement)
+                    };
                     let face_features =
                         alloc::vec![crate::tessellate::Feature::Imported; mesh.faces().count()];
                     let vertex_features =
@@ -1194,6 +1195,103 @@ mod tests {
     use crate::ir::{CapMode, CsgOp, Plane3, PrimitiveSpec, RecipeBuilder};
     use alloc::vec;
 
+    fn imported_unit_box() -> exedra::Mesh {
+        let mut builder = exedra::MeshBuilder::new();
+        for point in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
+            builder.push_vertex(point);
+        }
+        for face in [
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ] {
+            builder.add_face(&face).expect("box face is valid");
+        }
+        builder.build().expect("box mesh is valid").mesh
+    }
+
+    fn attributed_imported_unit_box() -> exedra::Mesh {
+        let mut mesh = imported_unit_box();
+        let face = mesh.faces().next().expect("box has a face");
+        let corner = mesh
+            .face_loop(face)
+            .nth(1)
+            .expect("box face has a second corner");
+        let vertex = mesh
+            .to_vertex(corner)
+            .expect("box corner has a destination");
+        {
+            let mut edit = mesh.edit();
+            exedra::op::set_face_region(&mut edit, face, 23).expect("live face");
+            exedra::op::set_edge_seam(&mut edit, corner, true).expect("live edge");
+            exedra::op::set_edge_sharpness(&mut edit, corner, 1.75).expect("live edge");
+            exedra::op::set_vertex_sharpness(&mut edit, vertex, 2.5).expect("live vertex");
+            exedra::op::set_corner_uv(&mut edit, corner, [0.25, 0.75]).expect("live corner");
+            exedra::op::set_corner_normal_override(
+                &mut edit,
+                corner,
+                Some([
+                    core::f32::consts::FRAC_1_SQRT_2,
+                    core::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                ]),
+            )
+            .expect("live corner");
+            #[expect(unused_must_use, reason = "discard sink output")]
+            {
+                edit.finish();
+            }
+        }
+        mesh
+    }
+
+    fn signed_mesh_volume(mesh: &exedra::Mesh) -> f64 {
+        let mut six_volume = 0.0;
+        for face in mesh.faces() {
+            for corners in mesh.face_triangles(face, exedra::FaceTriangulation::Fan) {
+                let points = corners.map(|corner| {
+                    let vertex = mesh.to_vertex(corner).expect("corner has a vertex");
+                    mesh.vertex_position(vertex)
+                        .expect("vertex has a position")
+                        .map(f64::from)
+                });
+                six_volume += exedra_math::dot(points[0], exedra_math::cross(points[1], points[2]));
+            }
+        }
+        six_volume / 6.0
+    }
+
+    fn mirrored_import_recipe(mesh: exedra::Mesh) -> Recipe {
+        let mut builder = RecipeBuilder::new();
+        let import = builder.add_import(mesh).expect("deep-valid import");
+        let imported = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("import node");
+        builder
+            .finish(imported)
+            .expect("valid recipe")
+            .mirrored(Plane3 {
+                normal: [1.0, 0.0, 0.0],
+                distance: 0.0,
+            })
+            .expect("valid mirror")
+    }
+
     fn extrude_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
@@ -1428,6 +1526,235 @@ mod tests {
                 max: [6.0, 8.0, 12.0],
             }
         );
+    }
+
+    #[test]
+    fn mirror_over_import_repairs_winding_and_preserves_provenance() {
+        // Mirror is the sanctioned recipe-space reflection. Imported geometry
+        // must follow the same contract as constructive bodies: positions
+        // reflect, loops reverse, and the opaque imported feature survives.
+        let mirrored = mirrored_import_recipe(imported_unit_box());
+
+        let result = evaluate(&mirrored, &EvalPolicy::default()).expect("mirror evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert!(result.report.clean_at(Severity::Warning));
+        let body = &result.bodies[0].body;
+        assert!(body.mesh.validate_deep().is_empty());
+        assert_eq!(
+            mesh_bounds(&body.mesh),
+            Aabb3 {
+                min: [-1.0, 0.0, 0.0],
+                max: [0.0, 1.0, 1.0],
+            }
+        );
+        assert_eq!(signed_mesh_volume(&body.mesh), 1.0, "winding stays outward");
+        assert!(
+            body.source_map
+                .face_features()
+                .iter()
+                .all(|feature| *feature == crate::tessellate::Feature::Imported)
+        );
+        assert!(body.mesh.vertices().all(|vertex| {
+            body.source_map.vertex_feature(vertex) == Some(crate::tessellate::Feature::Imported)
+        }));
+        body.source_map
+            .check(&body.mesh)
+            .expect("rebuilt provenance is pinned to the output revision");
+        assert!(
+            body.mesh.attrs().sparse(exedra::attr::CORNER_UV).is_none(),
+            "reflection must not invent an unauthored sparse layer"
+        );
+    }
+
+    #[test]
+    fn mirror_over_open_import_preserves_its_boundary() {
+        // Reflection repairs orientation without changing dimensionality: an
+        // authored single-sided import remains one open face with one boundary
+        // loop, rather than being rejected or implicitly solidified.
+        let triangle = exedra::Mesh::from_polygons(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[&[0, 1, 2]],
+        )
+        .expect("open triangle is valid");
+        let recipe = mirrored_import_recipe(triangle);
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("mirror evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        let mesh = &result.bodies[0].body.mesh;
+        assert!(mesh.validate_deep().is_empty());
+        assert_eq!(mesh.faces().count(), 1);
+        assert_eq!(mesh.boundary_loops().expect("valid boundary").len(), 1);
+        let face = mesh.faces().next().expect("one output face");
+        assert!(
+            face_cross_z(mesh, face) > 0.0,
+            "reversed loop retains the source face's +Z orientation"
+        );
+    }
+
+    #[test]
+    fn reflecting_non_uniform_import_preserves_built_in_attributes() {
+        // This traps the full remapping contract rather than only geometry:
+        // attributes must follow their face, undirected edge, vertex, or
+        // face-corner owner, while normals use inverse-transpose transport.
+        let mut builder = RecipeBuilder::new();
+        let import = builder
+            .add_import(attributed_imported_unit_box())
+            .expect("deep-valid attributed import");
+        let imported = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::from_axes(
+                    [-2.0, 0.0, 0.0],
+                    [0.0, 3.0, 0.0],
+                    [0.0, 0.0, 4.0],
+                    [0.0, 0.0, 0.0],
+                ),
+            })
+            .expect("reflecting scaled import");
+        let recipe = builder.finish(imported).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("import evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert!(result.report.clean_at(Severity::Warning));
+        let mesh = &result.bodies[0].body.mesh;
+        assert!(mesh.validate_deep().is_empty());
+        assert_eq!(
+            mesh_bounds(mesh),
+            Aabb3 {
+                min: [-2.0, 0.0, 0.0],
+                max: [0.0, 3.0, 4.0],
+            }
+        );
+        assert_eq!(signed_mesh_volume(mesh), 24.0, "winding stays outward");
+
+        let regions = mesh
+            .attrs()
+            .dense(exedra::attr::FACE_REGION)
+            .expect("built-in regions");
+        let tagged_face = mesh
+            .faces()
+            .find(|face| regions.get((*face).into()) == Some(&23))
+            .expect("face region follows its face");
+        let uvs = mesh
+            .attrs()
+            .sparse(exedra::attr::CORNER_UV)
+            .expect("authored UV layer survives");
+        let tagged_corner = mesh
+            .face_loop(tagged_face)
+            .find(|corner| uvs.get((*corner).into()) == Some(&[0.25, 0.75]))
+            .expect("UV follows its geometric face corner");
+        let tagged_vertex = mesh
+            .to_vertex(tagged_corner)
+            .expect("tagged corner has a destination");
+        assert_eq!(
+            mesh.vertex_position(tagged_vertex),
+            Some(&[-2.0, 3.0, 0.0]),
+            "corner value remains attached to the transformed source vertex"
+        );
+        assert_eq!(mesh.vertex_sharpness(tagged_vertex), Some(2.5));
+
+        let tagged_edge = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .find(|edge| mesh.edge_seam(*edge) == Some(true))
+            .expect("seam follows its undirected geometric edge");
+        assert_eq!(mesh.edge_sharpness(tagged_edge), Some(1.75));
+        let from = mesh
+            .from_vertex(tagged_edge)
+            .and_then(|vertex| mesh.vertex_position(vertex))
+            .copied()
+            .expect("tagged edge has an origin");
+        let to = mesh
+            .to_vertex(tagged_edge)
+            .and_then(|vertex| mesh.vertex_position(vertex))
+            .copied()
+            .expect("tagged edge has a destination");
+        assert!(
+            [from, to].contains(&[-2.0, 3.0, 0.0]) && [from, to].contains(&[0.0, 3.0, 0.0]),
+            "edge values remain attached to the transformed source edge"
+        );
+
+        let normals = mesh
+            .attrs()
+            .sparse(exedra::attr::CORNER_NORMAL_OVERRIDE)
+            .expect("authored normal layer survives");
+        let normal = normals
+            .get(tagged_corner.into())
+            .expect("normal follows its geometric face corner");
+        let expected = [-3.0 / 13.0_f32.sqrt(), 2.0 / 13.0_f32.sqrt(), 0.0];
+        for axis in 0..3 {
+            assert!(
+                (normal[axis] - expected[axis]).abs() <= 2.0 * f32::EPSILON,
+                "axis {axis}: {normal:?} != {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proper_non_uniform_import_transform_remains_supported() {
+        // Supporting sanctioned reflections must not narrow the existing
+        // affine-import path: positive-determinant non-uniform transforms
+        // still transform the body directly and retain exact fidelity.
+        let mut builder = RecipeBuilder::new();
+        let import = builder
+            .add_import(imported_unit_box())
+            .expect("deep-valid import");
+        let imported = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::from_axes(
+                    [2.0, 0.0, 0.0],
+                    [0.0, 3.0, 0.0],
+                    [0.0, 0.0, 4.0],
+                    [1.0, -2.0, 5.0],
+                ),
+            })
+            .expect("scaled import");
+        let recipe = builder.finish(imported).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("import evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(imported), Some(Fidelity::Exact));
+        assert_eq!(
+            mesh_bounds(&result.bodies[0].body.mesh),
+            Aabb3 {
+                min: [1.0, -2.0, 5.0],
+                max: [3.0, 1.0, 9.0],
+            }
+        );
+    }
+
+    #[test]
+    fn mirrored_import_is_bit_identical_across_cache_reuse() {
+        // A reflected rebuild is cached under the same content/world/policy
+        // contract as other bodies; warm reuse must return identical topology,
+        // attributes, and provenance without rebuilding it.
+        let recipe = mirrored_import_recipe(attributed_imported_unit_box());
+        let policy = EvalPolicy::default();
+        let pure = evaluate(&recipe, &policy).expect("pure evaluation");
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&recipe, &policy, &mut cache).expect("cold evaluation");
+        let warm = evaluate_with_cache(&recipe, &policy, &mut cache).expect("warm evaluation");
+
+        let pure_body = &pure.bodies[0].body;
+        let cold_body = &cold.bodies[0].body;
+        let warm_body = &warm.bodies[0].body;
+        assert_eq!(
+            exedra_testkit::dump_mesh_topology(&pure_body.mesh),
+            exedra_testkit::dump_mesh_topology(&cold_body.mesh)
+        );
+        assert_eq!(
+            exedra_testkit::dump_mesh_topology(&cold_body.mesh),
+            exedra_testkit::dump_mesh_topology(&warm_body.mesh)
+        );
+        assert_eq!(
+            exedra_testkit::dump_attributes(&pure_body.mesh),
+            exedra_testkit::dump_attributes(&warm_body.mesh)
+        );
+        assert_eq!(pure_body.source_map, warm_body.source_map);
+        assert_eq!(cold.report.counters.cache_misses, 1);
+        assert_eq!(warm.report.counters.cache_hits, 1);
+        assert_eq!(warm.report.counters.tessellations, 0);
     }
 
     #[test]

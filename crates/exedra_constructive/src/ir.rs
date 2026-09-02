@@ -380,8 +380,11 @@ pub enum NodeKind {
     },
     /// An opaque imported mesh leaf under a placement.
     ///
-    /// Imports participate in transforms, instancing, CSG, and mesh-backed
-    /// stretch; their internal provenance is a single imported feature.
+    /// Imports participate in transforms, sanctioned [`Self::Mirror`] nodes,
+    /// proper-placement instancing, CSG, and mesh-backed stretch. A reflection
+    /// rebuilds face loops to retain outward orientation and preserves the
+    /// built-in region, seam, sharpness, UV, and normal-override channels;
+    /// internal provenance remains one imported feature.
     MeshImport {
         /// The imported mesh.
         import: ImportId,
@@ -1846,7 +1849,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xEDF5_DBBF_696E_7EEA_7CFB_E0AE_3A57_9B04,
+            0x4C68_D97E_AEC9_216E_C355_11C2_E71B_0E4B,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }
