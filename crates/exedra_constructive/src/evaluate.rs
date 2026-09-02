@@ -78,7 +78,8 @@ pub struct Aabb3 {
 }
 
 impl Aabb3 {
-    const EMPTY: Self = Self {
+    /// The canonical empty bounds used to begin a union fold.
+    pub const EMPTY: Self = Self {
         min: [f64::INFINITY; 3],
         max: [f64::NEG_INFINITY; 3],
     };
@@ -90,13 +91,22 @@ impl Aabb3 {
         }
     }
 
-    fn union(&mut self, other: &Self) {
+    /// Expands these bounds to include `other`.
+    ///
+    /// An empty `other` is the identity element, so callers can fold optional
+    /// bounds into [`Self::EMPTY`] without special-casing empty inputs.
+    pub fn union(&mut self, other: &Self) {
+        if other.is_empty() {
+            return;
+        }
         self.include(other.min);
         self.include(other.max);
     }
 
-    fn is_empty(&self) -> bool {
-        self.min[0] > self.max[0]
+    /// Returns `true` when at least one axis has no covered interval.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.min.iter().zip(self.max).any(|(&min, max)| min > max)
     }
 }
 
@@ -1213,6 +1223,30 @@ mod tests {
     use crate::builders;
     use crate::ir::{CapMode, CsgOp, Plane3, PrimitiveSpec, RecipeBuilder};
     use alloc::vec;
+
+    #[test]
+    fn public_bounds_fold_treats_empty_as_the_identity() {
+        // Consumers start a bounds fold at EMPTY. Union must ignore an empty
+        // operand in either order and report an inverted interval on any axis
+        // as empty rather than relying on the sentinel's X axis alone.
+        let occupied = Aabb3 {
+            min: [-2.0, 1.0, 4.0],
+            max: [3.0, 5.0, 9.0],
+        };
+        let mut folded = Aabb3::EMPTY;
+        assert!(folded.is_empty());
+        folded.union(&occupied);
+        folded.union(&Aabb3::EMPTY);
+        assert_eq!(folded, occupied);
+        assert!(!folded.is_empty());
+        assert!(
+            Aabb3 {
+                min: [0.0, 2.0, 0.0],
+                max: [1.0, 1.0, 1.0],
+            }
+            .is_empty()
+        );
+    }
 
     fn imported_unit_box() -> exedra::Mesh {
         let mut builder = exedra::MeshBuilder::new();
