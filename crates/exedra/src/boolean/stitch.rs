@@ -1084,6 +1084,284 @@ mod tests {
         builder.build().expect("valid cube").mesh
     }
 
+    fn translated_sphere(x: f32, lat_segments: usize, lon_segments: usize) -> Mesh {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([x, 1.0, 0.0]);
+        for lat in 1..=lat_segments {
+            let phi = (lat as f32) * core::f32::consts::PI / ((lat_segments + 1) as f32);
+            let (sin_phi, cos_phi) = fixture_sin_cos(phi);
+            for lon in 0..lon_segments {
+                let theta = (lon as f32) * core::f32::consts::TAU / (lon_segments as f32);
+                let (sin_theta, cos_theta) = fixture_sin_cos(theta);
+                builder.push_vertex([x + sin_phi * cos_theta, cos_phi, sin_phi * sin_theta]);
+            }
+        }
+        let bottom = 1 + lat_segments * lon_segments;
+        builder.push_vertex([x, -1.0, 0.0]);
+
+        let index = |value: usize| u32::try_from(value).expect("small sphere fixture");
+        let ring_start = |ring: usize| 1 + ring * lon_segments;
+        for lon in 0..lon_segments {
+            let current = ring_start(0) + lon;
+            let next = ring_start(0) + ((lon + 1) % lon_segments);
+            builder
+                .add_face(&[0, index(next), index(current)])
+                .expect("valid top fan triangle");
+        }
+        for band in 0..lat_segments - 1 {
+            let upper = ring_start(band);
+            let lower = ring_start(band + 1);
+            for lon in 0..lon_segments {
+                let next = (lon + 1) % lon_segments;
+                builder
+                    .add_face(&[
+                        index(upper + lon),
+                        index(upper + next),
+                        index(lower + next),
+                        index(lower + lon),
+                    ])
+                    .expect("valid sphere band quad");
+            }
+        }
+        let last_ring = ring_start(lat_segments - 1);
+        for lon in 0..lon_segments {
+            let current = last_ring + lon;
+            let next = last_ring + ((lon + 1) % lon_segments);
+            builder
+                .add_face(&[index(bottom), index(current), index(next)])
+                .expect("valid bottom fan triangle");
+        }
+        builder.build().expect("valid sphere fixture").mesh
+    }
+
+    fn fixture_sin_cos(angle: f32) -> (f32, f32) {
+        // `--all-features` enables both math backends. Match the primitive
+        // generators' explicit `libm` precedence so this input mesh has the
+        // same coordinates on every CI host instead of inheriting libc drift.
+        #[cfg(feature = "libm")]
+        {
+            (libm::sinf(angle), libm::cosf(angle))
+        }
+        #[cfg(not(feature = "libm"))]
+        {
+            angle.sin_cos()
+        }
+    }
+
+    fn sphere_boolean(
+        offset: f32,
+        lat_segments: usize,
+        lon_segments: usize,
+        op: BooleanOp,
+        strategy: FaceTriangulation,
+        reverse: bool,
+    ) -> BooleanOutput {
+        let sphere_a = translated_sphere(-offset, lat_segments, lon_segments);
+        let sphere_b = translated_sphere(offset, lat_segments, lon_segments);
+        let (left, right) = if reverse {
+            (&sphere_b, &sphere_a)
+        } else {
+            (&sphere_a, &sphere_b)
+        };
+        let mut scratch = BooleanScratch::new();
+        let mut diagnostics = BooleanDiagnostics::default();
+        let result = boolean_mesh(left, right, op, strategy, &mut scratch, &mut diagnostics);
+        assert!(
+            result.is_ok(),
+            "offset={offset} lat={lat_segments} lon={lon_segments} op={op:?} strategy={strategy:?} reverse={reverse}: {result:?}; diagnostics: {:#?}",
+            diagnostics.entries()
+        );
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let output = result.expect("checked above");
+        let errors = output.mesh.validate_deep();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_closed(&output.mesh);
+        assert_eq!(output.face_provenance.len(), output.mesh.faces().count());
+        output
+    }
+
+    fn mesh_bounds(mesh: &Mesh) -> super::super::Aabb {
+        let points: Vec<_> = mesh
+            .vertices()
+            .filter_map(|vertex| mesh.vertex_position(vertex).copied())
+            .collect();
+        super::super::Aabb::from_points(&points)
+    }
+
+    fn mesh_snapshot(mesh: &Mesh) -> (Vec<Vec<u32>>, Vec<[u32; 3]>) {
+        let faces = mesh
+            .faces()
+            .map(|face| {
+                mesh.face_loop(face)
+                    .filter_map(|half_edge| mesh.to_vertex(half_edge))
+                    .map(VertexId::index)
+                    .collect()
+            })
+            .collect();
+        let positions = mesh
+            .vertices()
+            .filter_map(|vertex| mesh.vertex_position(vertex))
+            .map(|position| position.map(f32::to_bits))
+            .collect();
+        (faces, positions)
+    }
+
+    #[test]
+    fn intersecting_curved_closed_meshes_produce_a_closed_lens() {
+        // Two overlapping faceted spheres exercise a closed intersection
+        // curve spread across many non-coplanar faces. Every per-face chain
+        // must connect back to that face's boundary before it can be split.
+        // The faceted volume and bounds pin the resulting lens within the
+        // input's f32 rounding band, while the analytic sphere lens supplies
+        // an independent upper bound.
+        let output = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            false,
+        );
+        let bounds = mesh_bounds(&output.mesh);
+        let expected = super::super::Aabb {
+            min: [-0.184_807_78, -0.578_686, -0.541_262_45],
+            max: [0.184_807_78, 0.578_686, 0.541_262_45],
+        };
+        for (actual, expected) in bounds
+            .min
+            .into_iter()
+            .chain(bounds.max)
+            .zip(expected.min.into_iter().chain(expected.max))
+        {
+            assert!((actual - expected).abs() < 1.0e-6, "bounds: {bounds:?}");
+        }
+        let volume = signed_volume(&output.mesh);
+        assert!(
+            (volume - 0.184_362_121_654_038_54).abs() < 1.0e-8,
+            "faceted lens volume: {volume}"
+        );
+        let center_distance = 1.6_f64;
+        let analytic_lens =
+            core::f64::consts::PI * (4.0 + center_distance) * (2.0 - center_distance).powi(2)
+                / 12.0;
+        assert!(volume > 0.0 && volume < analytic_lens);
+        assert_eq!(euler_characteristic(&output.mesh), 2);
+    }
+
+    #[test]
+    fn curved_intersections_cover_offsets_resolutions_and_triangulations() {
+        // The incidence repair is not tied to one tessellation: coarse and
+        // denser surfaces, deeper and near-tangent overlaps, and both public
+        // face-triangulation strategies must all produce closed lenses.
+        for (lat_segments, lon_segments) in [(4, 8), (6, 12), (8, 16)] {
+            for offset in [0.6, 0.8, 0.9] {
+                for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+                    let output = sphere_boolean(
+                        offset,
+                        lat_segments,
+                        lon_segments,
+                        BooleanOp::Intersection,
+                        strategy,
+                        false,
+                    );
+                    assert!(signed_volume(&output.mesh) > 0.0);
+                    assert_eq!(euler_characteristic(&output.mesh), 2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn curved_intersection_is_deterministic_and_order_symmetric() {
+        // Repeating identical input must be bit-identical. Swapping operands
+        // may change face order and provenance ownership, but not the lens's
+        // bounds, volume, or topology.
+        let first = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            false,
+        );
+        let repeated = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            false,
+        );
+        let reversed = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            true,
+        );
+
+        assert_eq!(mesh_snapshot(&first.mesh), mesh_snapshot(&repeated.mesh));
+        assert_eq!(first.face_provenance, repeated.face_provenance);
+        assert_eq!(first.stats, repeated.stats);
+        assert_eq!(mesh_bounds(&first.mesh), mesh_bounds(&reversed.mesh));
+        assert!((signed_volume(&first.mesh) - signed_volume(&reversed.mesh)).abs() < 1.0e-12);
+        assert_eq!(euler_characteristic(&reversed.mesh), 2);
+    }
+
+    #[test]
+    fn curved_boolean_volumes_obey_set_identities() {
+        // Union, intersection, and both differences exercise the same seam
+        // graph with different patch selections. Their volumes must satisfy
+        // inclusion-exclusion for the two source polyhedra.
+        let sphere_a = translated_sphere(-0.8, 8, 16);
+        let sphere_b = translated_sphere(0.8, 8, 16);
+        let intersection = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Intersection,
+            FaceTriangulation::Robust,
+            false,
+        );
+        let union = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Union,
+            FaceTriangulation::Robust,
+            false,
+        );
+        let difference_a = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Difference,
+            FaceTriangulation::Robust,
+            false,
+        );
+        let difference_b = sphere_boolean(
+            0.8,
+            8,
+            16,
+            BooleanOp::Difference,
+            FaceTriangulation::Robust,
+            true,
+        );
+        let (volume_a, volume_b) = (signed_volume(&sphere_a), signed_volume(&sphere_b));
+        let intersection_volume = signed_volume(&intersection.mesh);
+
+        assert!(
+            (signed_volume(&union.mesh) + intersection_volume - volume_a - volume_b).abs() < 1.0e-6
+        );
+        assert!(
+            (signed_volume(&difference_a.mesh) + intersection_volume - volume_a).abs() < 1.0e-6
+        );
+        assert!(
+            (signed_volume(&difference_b.mesh) + intersection_volume - volume_b).abs() < 1.0e-6
+        );
+    }
+
     fn signed_volume(mesh: &Mesh) -> f64 {
         let mut volume = 0.0;
         for face in mesh.faces() {

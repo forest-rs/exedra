@@ -1993,6 +1993,49 @@ mod tests {
     }
 
     #[test]
+    fn csg_intersects_overlapping_curved_imports() {
+        // Reusing one tessellated sphere import at two placements exercises
+        // the constructive path that previously surfaced a dangling-cut
+        // refusal. The closed result and clean report pin both the mesh
+        // Boolean repair and its diagnostic contract at this layer.
+        let mut builder = RecipeBuilder::new();
+        let sphere = exedra_primitives::uv_sphere(&exedra_primitives::UvSphereParams::default());
+        let import = builder
+            .add_import(sphere.mesh)
+            .expect("sphere import is deep-valid");
+        let left = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::translate(-0.8, 0.0, 0.0),
+            })
+            .expect("left sphere import");
+        let right = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::translate(0.8, 0.0, 0.0),
+            })
+            .expect("right sphere import");
+        let intersection = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Intersection,
+                operands: vec![left, right],
+            })
+            .expect("valid intersection");
+        let recipe = builder.finish(intersection).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluation is total");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(
+            result.report.fidelity_of(intersection),
+            Some(Fidelity::Exact)
+        );
+        assert!(result.report.clean_at(Severity::Warning));
+        let mesh = &result.bodies[0].body.mesh;
+        assert!(mesh.validate_deep().is_empty());
+        assert!(signed_mesh_volume(mesh) > 0.0);
+    }
+
+    #[test]
     fn groups_emit_all_children() {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));

@@ -20,6 +20,15 @@ Deep sweep:
 cargo run --release -p boolean_oracle -- --seed 1 --cases 400 --points 2000
 ```
 
+Target the curved-on-curved intersection family, which varies sphere
+tessellation density, overlap depth, operand order, and independent mesh
+orientation while comparing the result with both exact faceted half-spaces
+and analytic sphere fields:
+
+```sh
+cargo run --release -p boolean_oracle -- --class curved_surface --seed 1 --cases 200 --points 2000
+```
+
 Reproduce one reported case without reapplying the batch-seed expansion:
 
 ```sh

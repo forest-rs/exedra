@@ -10,6 +10,8 @@
 //!   under random rigid placements, left-fold trees.
 //! - `curved_wall`: cylindrical prisms up to 96 segments — collinear cut
 //!   runs and sliver cascades along curved walls by construction.
+//! - `curved_surface`: pairs of faceted spheres at varied resolutions,
+//!   overlap depths, and independent tessellation orientations.
 //! - `nonconvex`: L/U-shaped prisms (single watertight meshes, referees as
 //!   unions of convex boxes) against convex counterparts.
 //! - `chained`: balanced trees `(a op b) op (c op d)` — intermediate
@@ -28,7 +30,7 @@ use exedra::boolean::BooleanOp;
 
 use crate::operands::{
     Operand, Rigid, box_operand, random_curved_operand, random_nonconvex_operand, random_operand,
-    random_operand_scaled,
+    random_operand_scaled, random_rigid, sphere_operand,
 };
 use crate::rng::SplitMix64;
 
@@ -39,6 +41,8 @@ pub(crate) enum ScenarioClass {
     ConvexMixed,
     /// Cylindrical prisms at 8..96 segments.
     CurvedWall,
+    /// Intersections between independently oriented faceted spheres.
+    CurvedSurface,
     /// L/U prisms with union-of-boxes referees.
     NonConvex,
     /// Balanced boolean-of-boolean trees.
@@ -53,7 +57,7 @@ pub(crate) enum ScenarioClass {
 
 impl ScenarioClass {
     /// Every class, in reporting order.
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::ConvexMixed,
         Self::CurvedWall,
         Self::NonConvex,
@@ -61,6 +65,9 @@ impl ScenarioClass {
         Self::Adversarial,
         Self::Scale,
         Self::EmptyTotal,
+        // Appended so adding this class does not re-key the deterministic
+        // batch seeds of the established scenario families.
+        Self::CurvedSurface,
     ];
 
     /// Stable report/CLI key.
@@ -69,6 +76,7 @@ impl ScenarioClass {
         match self {
             Self::ConvexMixed => "convex_mixed",
             Self::CurvedWall => "curved_wall",
+            Self::CurvedSurface => "curved_surface",
             Self::NonConvex => "nonconvex",
             Self::Chained => "chained",
             Self::Adversarial => "adversarial",
@@ -151,6 +159,7 @@ pub(crate) fn build_case(class: ScenarioClass, case_seed: u64) -> Case {
             let tree = fold_tree(&mut rng, count);
             finish(class, operands, tree, 1.0, "-")
         }
+        ScenarioClass::CurvedSurface => curved_surface_case(&mut rng, class),
         ScenarioClass::NonConvex => {
             let count = 2 + rng.index(2);
             let operands: Vec<Operand> = (0..count)
@@ -193,6 +202,37 @@ pub(crate) fn build_case(class: ScenarioClass, case_seed: u64) -> Case {
         }
         ScenarioClass::EmptyTotal => empty_total_case(&mut rng, class),
     }
+}
+
+/// Overlapping faceted spheres exercise closed, curved-on-curved seam loops.
+/// Independent rotations change the triangulation relationship without
+/// changing the analytic field, while fixed overlap bands keep every case a
+/// non-empty lens rather than spending the sweep on containment or misses.
+fn curved_surface_case(rng: &mut SplitMix64, class: ScenarioClass) -> Case {
+    let (lat_segments, lon_segments, submode) = [
+        (4, 8, "coarse"),
+        (6, 12, "medium"),
+        (8, 16, "standard"),
+        (12, 24, "dense"),
+    ][rng.index(4)];
+    let offset = [0.6, 0.7, 0.8, 0.9][rng.index(4)];
+    let mut left = random_rigid(rng);
+    let mut right = random_rigid(rng);
+    left.t = [-offset, 0.0, 0.0];
+    right.t = [offset, 0.0, 0.0];
+    let mut operands = vec![
+        sphere_operand(1.0, lat_segments, lon_segments, &left),
+        sphere_operand(1.0, lat_segments, lon_segments, &right),
+    ];
+    if rng.index(2) == 1 {
+        operands.reverse();
+    }
+    let tree = Node::Op(
+        BooleanOp::Intersection,
+        Box::new(Node::Leaf(0)),
+        Box::new(Node::Leaf(1)),
+    );
+    finish(class, operands, tree, 1.0, submode)
 }
 
 /// Dyadic lattice value: `k / 64` with `k` in `[lo64, hi64)` — exactly
