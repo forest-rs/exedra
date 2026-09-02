@@ -119,7 +119,12 @@ together would break both.
   table, and a fidelity report (`Exact`, policy-defined, conflicted,
   envelope-only) whose policy and issue identifiers are opaque
   frontend-supplied values — the mechanism for spec ambiguity lives here,
-  the spec-specific tables live in the frontends' repositories.
+  the spec-specific tables live in the frontends' repositories. Each emitted
+  `Diagnostic` owns the opaque source string resolved from its node at emission
+  time. A `GeometryReport` can therefore be logged, queued, or retained after
+  its recipe and assembly are gone without losing user-facing identity. This
+  additive report output advances `EVAL_SCHEMA_VERSION` from 8 to 9 so cached
+  reports and all content-addressed identities invalidate explicitly.
 - **Primitive evaluation.** Declared boxes and cylinders evaluate through
   `exedra_primitives`, explicitly selecting its `libm` backend (which takes
   precedence if Cargo also unifies `std`). Constructive fixes centering, caps,
@@ -210,3 +215,12 @@ mesh-side merge tolerances.
   conversion seam (its own ADR when that lands).
 - One more workspace crate with a heavier dependency (kurbo) — accepted and
   recorded against the dependency-creep tenet in `ec-c3ii`'s audit.
+
+### Diagnostic migration note
+
+`Diagnostic` gains `source: Option<String>` and is now non-exhaustive. The
+evaluator remains its intended constructor; callers destructuring diagnostics
+must use `..`, and callers that previously built diagnostic literals should
+use their own presentation type. Because diagnostic output changes for an
+unchanged sourced recipe, every recipe fingerprint changes with evaluation
+schema version 9.
