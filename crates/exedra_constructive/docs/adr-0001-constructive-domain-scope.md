@@ -81,7 +81,16 @@ together would break both.
 - **Explicit placement construction.** `Placement3` stores a row-major 3x4
   affine matrix, while `from_axes` accepts local basis vectors as matrix
   columns plus a translation. Common axis rotations use `libm` constructors;
-  callers do not need to hand-author matrix layouts.
+  callers do not need to hand-author matrix layouts. Euler constructors name
+  their axis space: `euler_extrinsic_xyz_then_translate` applies fixed-axis X,
+  Y, Z rotations as `Rz * Ry * Rx`, while
+  `euler_intrinsic_xyz_then_translate` applies body-axis X, Y', Z'' rotations
+  as `Rx * Ry * Rz`; both operate on column vectors before translation. The
+  formerly ambiguous `euler_xyz_then_translate` remains a deprecated alias for
+  the extrinsic matrix, so existing geometry is unchanged. Callers migrate by
+  selecting the constructor that names their source convention. This API-only
+  clarification does not change recipe evaluation or
+  `EVAL_SCHEMA_VERSION`.
 - **Immutable mirror composition.** `Recipe::mirrored` clones a frozen recipe
   and appends one unbound `Mirror` root over its prior root. Existing node and
   table ids, fingerprints, source identity, and provenance bindings remain

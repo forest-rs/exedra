@@ -61,6 +61,11 @@ pub struct Fingerprint(pub u128);
 /// A rigid-or-affine placement as a 3x4 row-major matrix (rotation/scale
 /// columns plus translation).
 ///
+/// The matrix acts on column vectors: a point `p` maps to `linear * p + t`.
+/// Consequently, `outer * inner` applies `inner` first. Rotation constructor
+/// documentation names both the axis space and the order in which rotations
+/// are applied to avoid relying on ambiguous Euler shorthand.
+///
 /// Constructors cover the common cases; matrices are validated finite at
 /// node insertion. Mirroring belongs in [`NodeKind::Mirror`], scaling in
 /// [`NodeKind::Transform`] — placements attached to bodies are expected to
@@ -130,14 +135,46 @@ impl Placement3 {
         }
     }
 
-    /// Euler rotation applied in x, then y', then z'' order (the spec-database
-    /// convention), followed by translation.
+    /// Compatibility spelling for
+    /// [`Self::euler_extrinsic_xyz_then_translate`].
+    ///
+    /// This rotates column vectors about the fixed +X, +Y, and +Z axes, in
+    /// that order, before applying `t`. The rotation matrix is
+    /// `Rz(rz) * Ry(ry) * Rx(rx)`. Equivalently, it is an intrinsic Z, Y', X''
+    /// rotation. Prefer the explicitly named constructor in new code.
     #[must_use]
+    #[deprecated(note = "use `euler_extrinsic_xyz_then_translate` or \
+                `euler_intrinsic_xyz_then_translate`")]
     pub fn euler_xyz_then_translate(rx: f64, ry: f64, rz: f64, t: [f64; 3]) -> Self {
+        Self::euler_extrinsic_xyz_then_translate(rx, ry, rz, t)
+    }
+
+    /// Rotates about fixed +X, +Y, and +Z axes, then translates by `t`.
+    ///
+    /// The rotations are applied to column vectors in X, Y, Z order, so the
+    /// composed matrix is `Rz(rz) * Ry(ry) * Rx(rx)`. This is also describable
+    /// as an intrinsic Z, Y', X'' rotation.
+    ///
+    /// # Example
+    ///
+    /// Fixed-axis quarter turns about X and then Y send +Y to +X:
+    ///
+    /// ```
+    /// use exedra_constructive::ir::Placement3;
+    ///
+    /// let q = core::f64::consts::FRAC_PI_2;
+    /// let placement =
+    ///     Placement3::euler_extrinsic_xyz_then_translate(q, q, 0.0, [0.0; 3]);
+    /// let transformed_y = placement.rows.map(|row| row[1]);
+    /// for (actual, expected) in transformed_y.into_iter().zip([1.0, 0.0, 0.0]) {
+    ///     assert!((actual - expected).abs() < 1e-12);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn euler_extrinsic_xyz_then_translate(rx: f64, ry: f64, rz: f64, t: [f64; 3]) -> Self {
         let (sx, cx) = (libm::sin(rx), libm::cos(rx));
         let (sy, cy) = (libm::sin(ry), libm::cos(ry));
         let (sz, cz) = (libm::sin(rz), libm::cos(rz));
-        // R = Rz * Ry * Rx (intrinsic x, y', z'' == extrinsic z, y, x).
         let rows = [
             [
                 cz * cy,
@@ -152,6 +189,50 @@ impl Placement3 {
                 t[1],
             ],
             [-sy, cy * sx, cy * cx, t[2]],
+        ];
+        Self { rows }
+    }
+
+    /// Rotates about body +X, +Y', and +Z'' axes, then translates by `t`.
+    ///
+    /// These intrinsic rotations are applied in X, Y', Z'' order. For column
+    /// vectors, the composed matrix is `Rx(rx) * Ry(ry) * Rz(rz)`. This is
+    /// also describable as an extrinsic Z, Y, X rotation.
+    ///
+    /// # Example
+    ///
+    /// Body-axis quarter turns about X and then Y' send +Y to +Z:
+    ///
+    /// ```
+    /// use exedra_constructive::ir::Placement3;
+    ///
+    /// let q = core::f64::consts::FRAC_PI_2;
+    /// let placement =
+    ///     Placement3::euler_intrinsic_xyz_then_translate(q, q, 0.0, [0.0; 3]);
+    /// let transformed_y = placement.rows.map(|row| row[1]);
+    /// for (actual, expected) in transformed_y.into_iter().zip([0.0, 0.0, 1.0]) {
+    ///     assert!((actual - expected).abs() < 1e-12);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn euler_intrinsic_xyz_then_translate(rx: f64, ry: f64, rz: f64, t: [f64; 3]) -> Self {
+        let (sx, cx) = (libm::sin(rx), libm::cos(rx));
+        let (sy, cy) = (libm::sin(ry), libm::cos(ry));
+        let (sz, cz) = (libm::sin(rz), libm::cos(rz));
+        let rows = [
+            [cy * cz, -cy * sz, sy, t[0]],
+            [
+                cx * sz + sx * sy * cz,
+                cx * cz - sx * sy * sz,
+                -sx * cy,
+                t[1],
+            ],
+            [
+                sx * sz - cx * sy * cz,
+                sx * cz + cx * sy * sz,
+                cx * cy,
+                t[2],
+            ],
         ];
         Self { rows }
     }
@@ -1794,6 +1875,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(deprecated, reason = "pins the compatibility constructor")]
     fn placement_constructors() {
         let x = Placement3::rotate_x_then_translate(core::f64::consts::FRAC_PI_2, 1.0, 2.0, 3.0);
         // Rotating +Y by 90 degrees about X gives +Z.
@@ -1840,6 +1922,113 @@ mod tests {
             }),
             Err(RecipeError::InvalidParameter { what: "placement" })
         );
+    }
+
+    #[test]
+    fn explicit_euler_constructors_distinguish_fixed_and_moving_axes() {
+        // Mixed-axis rotations do not commute. This basis-vector trap makes
+        // the documented axis space observable: fixed X then fixed Y sends
+        // +Y to +X, while body X then body Y' sends it to +Z.
+        let quarter_turn = core::f64::consts::FRAC_PI_2;
+        let translation = [4.0, 5.0, 6.0];
+        let extrinsic = Placement3::euler_extrinsic_xyz_then_translate(
+            quarter_turn,
+            quarter_turn,
+            0.0,
+            translation,
+        );
+        let intrinsic = Placement3::euler_intrinsic_xyz_then_translate(
+            quarter_turn,
+            quarter_turn,
+            0.0,
+            translation,
+        );
+        let transform_direction = |placement: Placement3, direction: [f64; 3]| {
+            placement
+                .rows
+                .map(|row| row[0] * direction[0] + row[1] * direction[1] + row[2] * direction[2])
+        };
+
+        let fixed_axes = transform_direction(extrinsic, [0.0, 1.0, 0.0]);
+        let moving_axes = transform_direction(intrinsic, [0.0, 1.0, 0.0]);
+        for (actual, expected) in fixed_axes.into_iter().zip([1.0, 0.0, 0.0]) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+        for (actual, expected) in moving_axes.into_iter().zip([0.0, 0.0, 1.0]) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+        assert_eq!(
+            extrinsic.rows.map(|row| row[3]),
+            translation,
+            "translation follows the completed rotation"
+        );
+        assert_eq!(intrinsic.rows.map(|row| row[3]), translation);
+    }
+
+    #[test]
+    #[expect(deprecated, reason = "pins the compatibility constructor")]
+    fn unqualified_euler_constructor_retains_its_extrinsic_matrix() {
+        // Existing recipes must not change while callers migrate to the
+        // explicit name: the compatibility entry point remains bit-identical.
+        let angles = [0.37, -0.61, 0.83];
+        let translation = [4.0, 5.0, 6.0];
+        assert_eq!(
+            Placement3::euler_xyz_then_translate(angles[0], angles[1], angles[2], translation,),
+            Placement3::euler_extrinsic_xyz_then_translate(
+                angles[0],
+                angles[1],
+                angles[2],
+                translation,
+            )
+        );
+    }
+
+    #[test]
+    fn explicit_euler_matrices_match_sequential_axis_rotations() {
+        // An all-nonzero oracle catches sign, axis, and multiplication-order
+        // mistakes that a single-axis example or symmetric quarter turn can
+        // hide. The oracle applies each elementary rotation independently.
+        let angles = [0.37, -0.61, 0.83];
+        let direction = [0.2, -0.4, 0.7];
+        let rotate_x = |v: [f64; 3], angle: f64| {
+            let (s, c) = libm::sincos(angle);
+            [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
+        };
+        let rotate_y = |v: [f64; 3], angle: f64| {
+            let (s, c) = libm::sincos(angle);
+            [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]]
+        };
+        let rotate_z = |v: [f64; 3], angle: f64| {
+            let (s, c) = libm::sincos(angle);
+            [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+        };
+        let apply = |placement: Placement3| {
+            placement
+                .rows
+                .map(|row| row[0] * direction[0] + row[1] * direction[1] + row[2] * direction[2])
+        };
+
+        let extrinsic = apply(Placement3::euler_extrinsic_xyz_then_translate(
+            angles[0], angles[1], angles[2], [0.0; 3],
+        ));
+        let expected_extrinsic = rotate_z(
+            rotate_y(rotate_x(direction, angles[0]), angles[1]),
+            angles[2],
+        );
+        let intrinsic = apply(Placement3::euler_intrinsic_xyz_then_translate(
+            angles[0], angles[1], angles[2], [0.0; 3],
+        ));
+        let expected_intrinsic = rotate_x(
+            rotate_y(rotate_z(direction, angles[2]), angles[1]),
+            angles[0],
+        );
+
+        for (actual, expected) in extrinsic.into_iter().zip(expected_extrinsic) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+        for (actual, expected) in intrinsic.into_iter().zip(expected_intrinsic) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
     }
 
     #[test]
