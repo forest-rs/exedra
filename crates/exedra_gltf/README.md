@@ -16,3 +16,10 @@ Use `export_glb` or `export_glb_with_options` for deployable binary glTF. The
 GLB JSON and BIN chunks are padded and length-checked according to glTF 2.0;
 the JSON document references the BIN chunk directly rather than embedding a
 data URI.
+
+Tests can parse that output with `GlbDocument::parse` and ask semantic
+questions through `node_names`, `node_extras`, `material_names`,
+`position_bounds`, and `triangle_count`. This avoids copying GLB byte-offset
+parsers or asserting against JSON whitespace and key order. Instance metadata
+is emitted directly in node `extras`; the exporter-reserved `instancePath`,
+`partKey`, and `body` keys remain authoritative on collisions.

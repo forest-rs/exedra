@@ -8,7 +8,8 @@
 //! base64 buffer; GLB stores the same buffer in its binary chunk.
 //!
 //! - every render item becomes a glTF *node* carrying the item's world
-//!   matrix, with the instance path and part key in `extras`;
+//!   matrix, with the instance path, part key, and opaque instance metadata
+//!   in `extras`;
 //! - every per-region index range becomes a mesh *primitive*, so region
 //!   materials survive as real material bindings;
 //! - material keys become named PBR material stubs with a deterministic
@@ -18,6 +19,10 @@
 //!
 //! The output is deterministic: identical inputs produce byte-identical
 //! JSON. No external glTF or base64 dependency is used.
+
+mod inspect;
+
+pub use inspect::GlbDocument;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -110,6 +115,16 @@ pub enum GltfError {
     },
     /// The finished GLB would exceed its unsigned 32-bit container length.
     GlbTooLarge,
+    /// A GLB container header or chunk layout is invalid.
+    InvalidGlb {
+        /// Stable explanation of the rejected container invariant.
+        reason: &'static str,
+    },
+    /// The GLB JSON chunk is not valid JSON.
+    InvalidGlbJson {
+        /// Parser detail suitable for diagnostics and test failures.
+        message: String,
+    },
 }
 
 impl std::fmt::Display for GltfError {
@@ -120,6 +135,8 @@ impl std::fmt::Display for GltfError {
                 write!(f, "part {part} has no compiled body {body}")
             }
             Self::GlbTooLarge => f.write_str("GLB output exceeds the 32-bit container limit"),
+            Self::InvalidGlb { reason } => write!(f, "invalid GLB container: {reason}"),
+            Self::InvalidGlbJson { message } => write!(f, "invalid GLB JSON chunk: {message}"),
         }
     }
 }
@@ -283,14 +300,18 @@ fn build_export(
             .part(item.part)
             .map(|def| def.key().to_string())
             .unwrap_or_default();
-        node.insert(
-            "extras".into(),
-            json!({
-                "instancePath": item.path.to_string(),
-                "partKey": part_key,
-                "body": item.body,
-            }),
-        );
+        let mut extras = Map::new();
+        if let Some(instance) = assembly.instance(item.instance) {
+            for (key, value) in instance.metadata() {
+                extras.insert(key.clone(), Value::String(value.clone()));
+            }
+        }
+        // Export identity is authoritative when opaque metadata reuses one
+        // of these reserved keys.
+        extras.insert("instancePath".into(), Value::String(item.path.to_string()));
+        extras.insert("partKey".into(), Value::String(part_key));
+        extras.insert("body".into(), json!(item.body));
+        node.insert("extras".into(), Value::Object(extras));
         nodes.push(Value::Object(node));
         stats.nodes += 1;
     }
@@ -607,7 +628,9 @@ mod tests {
         let a = asm
             .add_instance(None, "a", part, Placement3::IDENTITY)
             .unwrap();
-        let _ = a;
+        asm.set_metadata(a, "review.state", "ready").unwrap();
+        asm.set_metadata(a, "instancePath", "opaque collision")
+            .unwrap();
         let b2 = asm
             .add_instance(None, "b", part, Placement3::translate(60.0, 0.0, 0.0))
             .unwrap();
@@ -763,6 +786,36 @@ mod tests {
         let b = export_glb(&asm, &compiled, &list).unwrap();
         assert_eq!(a.bytes, b.bytes);
         assert_eq!(a.stats, b.stats);
+    }
+
+    #[test]
+    fn binary_export_has_semantic_inspection_queries() {
+        // Integration tests should ask about exporter semantics instead of
+        // slicing GLB offsets or depending on serialized JSON whitespace and
+        // key order. The coordinate-conversion root leaves mesh accessors in
+        // the authored local frame by design.
+        let (asm, compiled, list) = example();
+        let export =
+            export_glb_with_options(&asm, &compiled, &list, GltfExportOptions::z_up_to_y_up())
+                .unwrap();
+        let document = GlbDocument::parse(&export.bytes).expect("exporter emits valid GLB");
+
+        assert_eq!(
+            document.node_names(),
+            vec!["a", "b", "Exedra Z-up to glTF Y-up"]
+        );
+        let extras = document.node_extras("a").expect("named node extras");
+        assert_eq!(extras["instancePath"], "a");
+        assert_eq!(extras["partKey"], "panel");
+        assert_eq!(extras["review.state"], "ready");
+        assert_eq!(document.material_names(), vec!["oak", "walnut"]);
+        assert_eq!(
+            document.position_bounds(),
+            Some(([0.0, 0.0, 0.0], [40.0, 20.0, 10.0]))
+        );
+        assert_eq!(document.triangle_count(), 24);
+        assert_eq!(document.json()["asset"]["version"], "2.0");
+        assert!(!document.bin().is_empty());
     }
 
     #[test]
