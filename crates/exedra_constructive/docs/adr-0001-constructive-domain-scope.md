@@ -120,6 +120,19 @@ together would break both.
   the winding policy of the other constructive bodies. Making this previously
   declared node evaluable changes output for an unchanged recipe, so it
   advances `EVAL_SCHEMA_VERSION` from 5 to 6.
+- **Revolution-axis topology.** A revolve profile occupies the nonnegative
+  radius half-plane. Exact axis points collapse across angular rings into one
+  vertex apiece; incident profile edges emit triangle fans instead of
+  degenerate quads. A final segment lying on the axis is the half-profile's
+  authored closure and emits no wall. Any other axis segment, or any negative
+  radius, is a typed refusal because revolving it would overlap topology.
+  Full sweeps use a multiple of four angular steps so all cardinal meridians
+  are present and symmetric bounds retain exact extrema. This replaces the
+  public `TessellateError::AxisContact` refusal with the more precise
+  `NegativeRadius`, `NonClosingAxisSegment`, and `RevolveSegmentLimit`
+  variants; the error enum is non-exhaustive. Changing evaluation of existing
+  axis-contact recipes and full-sweep discretization advances
+  `EVAL_SCHEMA_VERSION` from 6 to 7.
 
 ### Scalar policy
 

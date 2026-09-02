@@ -1397,6 +1397,40 @@ mod tests {
     }
 
     #[test]
+    fn axis_contact_revolve_evaluates_as_one_exact_body() {
+        // This evaluator-level trap complements the topology tests: the
+        // supported axis contact must remain an ordinary exact constructive
+        // body with placed bounds, not a tessellator-only special case.
+        use crate::profile::{Loop2, Profile2, Seg2};
+
+        let outer = Loop2::new(vec![Seg2::arc((0.0, 1.0), 1.0), Seg2::line((0.0, -1.0))])
+            .expect("semicircle loop");
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(Profile2::simple(outer).expect("half-disc profile"));
+        let revolve = builder
+            .add(NodeKind::Revolve {
+                profile,
+                placement: Placement3::translate(5.0, 7.0, 11.0),
+                sweep: core::f64::consts::TAU,
+                caps: CapMode::Both,
+            })
+            .expect("valid axis-contact revolve");
+        let recipe = builder.finish(revolve).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("revolve evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.report.fidelity_of(revolve), Some(Fidelity::Exact));
+        assert!(result.report.clean_at(Severity::Warning));
+        assert_eq!(
+            mesh_bounds(&result.bodies[0].body.mesh),
+            Aabb3 {
+                min: [4.0, 6.0, 10.0],
+                max: [6.0, 8.0, 12.0],
+            }
+        );
+    }
+
+    #[test]
     fn declared_box_primitive_evaluates_as_one_exact_body() {
         // PrimitiveSpec::Box is already accepted by the public IR. This test
         // pins the missing evaluator contract: its minimum corner is the

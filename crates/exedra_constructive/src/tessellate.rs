@@ -163,12 +163,26 @@ pub enum TessellateError {
     Triangulate(exedra_triangulate::TriError),
     /// Mesh construction failed (an internal invariant violation).
     Build(exedra::BuildError),
-    /// A revolved profile touches or crosses the revolution axis; axis
-    /// contact is out of scope for v1 (use primitives for solid cylinders
-    /// and spheres).
-    AxisContact {
+    /// A revolved profile crosses into negative radius.
+    NegativeRadius {
         /// The smallest radius found in the discretized profile.
         min_radius: f64,
+    },
+    /// A profile segment lies on the revolution axis but is not the final,
+    /// closing segment of its loop.
+    NonClosingAxisSegment {
+        /// Which profile loop: 0 = outer, `1 + i` = hole `i`.
+        loop_index: u16,
+        /// Source segment index within the loop.
+        segment: u32,
+    },
+    /// The angular edge budget cannot meet the minimum topology required by
+    /// a revolution.
+    RevolveSegmentLimit {
+        /// Minimum number of angular steps required.
+        required: u32,
+        /// Maximum number allowed by the discretization policy.
+        maximum: u32,
     },
     /// Loft sections are incompatible: correspondence requires the same
     /// hole count and identical per-loop point counts after
@@ -213,9 +227,20 @@ impl core::fmt::Display for TessellateError {
             Self::Discretize(e) => write!(f, "discretization failed: {e}"),
             Self::Triangulate(e) => write!(f, "profile triangulation failed: {e}"),
             Self::Build(e) => write!(f, "mesh construction failed: {e:?}"),
-            Self::AxisContact { min_radius } => write!(
+            Self::NegativeRadius { min_radius } => write!(
                 f,
-                "revolved profile touches the axis (min radius {min_radius})"
+                "revolved profile crosses into negative radius (minimum {min_radius})"
+            ),
+            Self::NonClosingAxisSegment {
+                loop_index,
+                segment,
+            } => write!(
+                f,
+                "revolved profile loop {loop_index} segment {segment} lies on the axis but is not its closing segment"
+            ),
+            Self::RevolveSegmentLimit { required, maximum } => write!(
+                f,
+                "revolution needs at least {required} angular steps but the policy allows {maximum}"
             ),
             Self::SectionMismatch { section } => {
                 write!(f, "loft section {section} does not correspond to section 0")
@@ -850,8 +875,9 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
 }
 
 /// Vertex features: each ring point's wall feature, repeated for each of
-/// the body's vertex rings (2 for extrusions, one per angular step for
-/// revolutions).
+/// the body's vertex rings (two for extrusions, one per path frame for
+/// sweeps). Revolutions build this table while emitting vertices because
+/// axis-contact points collapse across angular rings.
 fn profile_vertex_features(d: &DiscretizedProfile, vertex_rings: u32) -> Vec<Feature> {
     let mut per_ring: Vec<Feature> = Vec::with_capacity(d.points_len());
     for (ring_index, ring) in d.rings().enumerate() {
@@ -992,16 +1018,64 @@ fn is_convex_ring(ring: &crate::discretize::DiscretizedLoop) -> bool {
     true
 }
 
+/// Whether an authored segment follows the revolution axis exactly.
+///
+/// Endpoints alone are insufficient for cubics: a bowed cubic may leave and
+/// return to the axis. Arcs with distinct endpoints and nonzero bulge cannot
+/// lie on a line, so they are never axis segments.
+fn segment_lies_on_revolve_axis(start: kurbo::Point, seg: &crate::profile::Seg2) -> bool {
+    if start.x != 0.0 || seg.to.x != 0.0 {
+        return false;
+    }
+    kind_lies_on_revolve_axis(&seg.kind)
+}
+
+fn kind_lies_on_revolve_axis(kind: &crate::profile::SegKind) -> bool {
+    match kind {
+        crate::profile::SegKind::Line => true,
+        crate::profile::SegKind::Arc { .. } => false,
+        crate::profile::SegKind::Cubic { c1, c2 } => c1.x == 0.0 && c2.x == 0.0,
+        crate::profile::SegKind::PolicyTo {
+            policy: _,
+            realized,
+        } => kind_lies_on_revolve_axis(realized),
+    }
+}
+
+/// Provenance for one emitted revolve vertex.
+///
+/// Ordinary vertices keep the outgoing profile edge, matching the historic
+/// ring-major mapping. A pole whose outgoing edge is the skipped axis closure
+/// instead inherits the incoming wall segment, so every pole remains tied to
+/// geometry that actually emitted faces.
+fn revolve_vertex_feature(
+    ring: &crate::discretize::DiscretizedLoop,
+    loop_index: u16,
+    point_index: usize,
+) -> Feature {
+    let next = (point_index + 1) % ring.points.len();
+    let previous = (point_index + ring.points.len() - 1) % ring.points.len();
+    let seg = if ring.points[point_index][0] == 0.0 && ring.points[next][0] == 0.0 {
+        ring.edge_seg[previous]
+    } else {
+        ring.edge_seg[point_index]
+    };
+    Feature::Wall { loop_index, seg }
+}
+
 /// Tessellates a revolution: the profile's local `(x, y)` plane revolved
 /// about the local Y axis, `x` as radius and `y` as height, swept through
 /// `sweep` radians (counter-clockwise viewed from +Y), placed by
 /// `placement`.
 ///
 /// A full sweep (`sweep == tau`, compared exactly) closes on itself with a
-/// seam meridian tagged via edge seams; partial sweeps close their
-/// boundary planes according to `caps` (start cap at angle zero). The
-/// profile must lie at strictly positive radius — bodies touching the axis
-/// are rejected rather than emitted with degenerate walls.
+/// seam meridian tagged via edge seams; partial sweeps close their boundary
+/// planes according to `caps` (start cap at angle zero). The profile may
+/// touch, but never cross, the axis. Each on-axis profile point becomes one
+/// shared pole vertex, adjacent wall bands become triangle fans, and a final
+/// profile segment along the axis closes the section without producing a
+/// wall. Other segments along the axis are refused because revolving them
+/// would overlap topology.
 ///
 /// # Errors
 ///
@@ -1017,7 +1091,9 @@ pub fn tessellate_revolve(
     let flip = det3(placement) < 0.0;
     let full = sweep == core::f64::consts::TAU;
 
-    // Strictly positive radius: no axis contact (documented v1 scope).
+    // Radius is a half-plane coordinate, not a signed distance. Negative
+    // values would fold the parameterization across the axis and overlap
+    // geometry, so reject them before allocating any mesh topology.
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
     for ring in d.rings() {
@@ -1026,12 +1102,32 @@ pub fn tessellate_revolve(
             max_x = max_x.max(p[0]);
         }
     }
-    if min_x <= 0.0 || min_x.is_nan() {
-        return Err(TessellateError::AxisContact { min_radius: min_x });
+    if min_x < 0.0 || min_x.is_nan() {
+        return Err(TessellateError::NegativeRadius { min_radius: min_x });
+    }
+
+    // A profile is cyclic, but its segment order still identifies the final
+    // segment as the authored closure. One such axis run is useful: it closes
+    // a half-profile without generating a surface. An earlier axis run would
+    // generate the same geometric locus at every angle and is therefore an
+    // explicit topology error rather than a degenerate wall to repair later.
+    for (ring_index, source) in core::iter::once(profile.outer())
+        .chain(profile.holes().iter())
+        .enumerate()
+    {
+        let closing = source.segs().len() - 1;
+        for (segment, (start, seg)) in source.iter_with_starts().enumerate() {
+            if segment_lies_on_revolve_axis(start, seg) && segment != closing {
+                return Err(TessellateError::NonClosingAxisSegment {
+                    loop_index: u16::try_from(ring_index).unwrap_or(u16::MAX),
+                    segment: len_u32(segment),
+                });
+            }
+        }
     }
 
     // Angular step count from the chord tolerance at the outermost radius.
-    let steps = {
+    let mut steps = {
         let tol = policy.discretize.chord_tolerance;
         let per_edge = if tol >= 2.0 * max_x {
             sweep
@@ -1051,11 +1147,37 @@ pub fn tessellate_revolve(
                 needed as u32
             }
         };
-        capped.clamp(
-            policy.discretize.min_arc_edges.max(3),
-            policy.discretize.max_segment_edges,
-        )
+        let minimum = policy
+            .discretize
+            .min_arc_edges
+            .max(if full { 4 } else { 3 });
+        if minimum > policy.discretize.max_segment_edges {
+            return Err(TessellateError::RevolveSegmentLimit {
+                required: minimum,
+                maximum: policy.discretize.max_segment_edges,
+            });
+        }
+        capped.clamp(minimum, policy.discretize.max_segment_edges)
     };
+    if full {
+        // Cardinal meridians make symmetric full-sweep bounds exact, which is
+        // observable at the constructive boundary. Prefer rounding up; at a
+        // hard policy cap, round down only when that still honors the minimum.
+        let rounded_up = steps.saturating_add(3) / 4 * 4;
+        steps = if rounded_up <= policy.discretize.max_segment_edges {
+            rounded_up
+        } else {
+            let rounded_down = policy.discretize.max_segment_edges / 4 * 4;
+            let minimum = policy.discretize.min_arc_edges.max(4);
+            if rounded_down < minimum {
+                return Err(TessellateError::RevolveSegmentLimit {
+                    required: rounded_up,
+                    maximum: policy.discretize.max_segment_edges,
+                });
+            }
+            rounded_down
+        };
+    }
     // Vertex rings: `steps` for a full sweep (wrapping), `steps + 1`
     // otherwise.
     let vertex_rings = if full { steps } else { steps + 1 };
@@ -1063,21 +1185,44 @@ pub fn tessellate_revolve(
     let ring_starts = ring_starts(&d);
     let total = len_u32(d.points_len());
     let mut builder = OrientedBuilder::new(flip);
+    let mut vertex_indices = Vec::with_capacity((vertex_rings * total) as usize);
+    let mut vertex_features = Vec::with_capacity((vertex_rings * total) as usize);
+    let mut axis_vertices = alloc::vec![None; total as usize];
 
-    // Vertices: angular-step major, profile point minor. Angles evaluated
-    // independently per step (no accumulation drift), libm trig only.
+    // Vertices remain angular-step major and profile-point minor in the lookup
+    // table, but axis points reuse their first emitted vertex at every angle.
+    // This prevents both coincident vertex rings and zero-area pole quads.
+    // Angles are evaluated independently per step (no accumulation drift),
+    // with libm trig only.
     let step_angle = sweep / f64::from(steps);
     for k in 0..vertex_rings {
         let angle = step_angle * f64::from(k);
         let (s, c) = (libm::sin(angle), libm::cos(angle));
-        for ring in d.rings() {
-            for p in &ring.points {
+        let mut flat = 0_u32;
+        for (ring_index, ring) in d.rings().enumerate() {
+            let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
+            for (point_index, p) in ring.points.iter().enumerate() {
                 let v = [p[0] * c, p[1], p[0] * s];
-                builder.push_vertex(narrow(apply_placement(placement, v)));
+                let existing_axis = (p[0] == 0.0)
+                    .then(|| axis_vertices[flat as usize])
+                    .flatten();
+                let vertex = if let Some(vertex) = existing_axis {
+                    vertex
+                } else {
+                    let vertex = builder.push_vertex(narrow(apply_placement(placement, v)));
+                    if p[0] == 0.0 {
+                        axis_vertices[flat as usize] = Some(vertex);
+                    }
+                    vertex_features.push(revolve_vertex_feature(ring, loop_index, point_index));
+                    vertex
+                };
+                vertex_indices.push(vertex);
+                flat += 1;
             }
         }
     }
-    let vertex_at = |k: u32, flat: u32| (k % vertex_rings) * total + flat;
+    let vertex_at =
+        |k: u32, flat: u32| vertex_indices[((k % vertex_rings) * total + flat) as usize];
 
     let mut face_origins: Vec<Feature> = Vec::new();
     let seg_offsets = seg_offsets(profile);
@@ -1089,7 +1234,9 @@ pub fn tessellate_revolve(
     let start_cap = !full && matches!(caps, CapMode::Both | CapMode::Start);
     let end_cap = !full && matches!(caps, CapMode::Both | CapMode::End);
 
-    // Walls: one quad per profile edge per angular step.
+    // Walls: off-axis edges produce quad strips. An edge incident to an axis
+    // point produces a triangle fan, while the allowed closing axis segment
+    // produces no surface at all.
     for (ring_index, ring) in d.rings().enumerate() {
         let base = ring_starts[ring_index];
         let n = len_u32(ring.points.len());
@@ -1103,6 +1250,11 @@ pub fn tessellate_revolve(
             };
             let ring_sharp_i = sharp_at(i);
             let ring_sharp_j = sharp_at(j);
+            let i_on_axis = ring.points[i as usize][0] == 0.0;
+            let j_on_axis = ring.points[j as usize][0] == 0.0;
+            if i_on_axis && j_on_axis {
+                continue;
+            }
             for k in 0..steps {
                 let a = vertex_at(k, base + i);
                 let d_v = vertex_at(k, base + j);
@@ -1123,16 +1275,43 @@ pub fn tessellate_revolve(
                 // Seams only on the seam-bearing face: writing `false`
                 // entries from the wrapping neighbor would clobber the
                 // shared canonical edge's `true`.
-                let seams = [true, false, false, false];
-                let edge_seams = (meridian_start && full).then_some(&seams[..]);
-                builder.add_face_with_attrs(
-                    &[a, d_v, c_v, b],
-                    &FaceBuildAttrs {
-                        region: Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg),
-                        edge_seams,
-                        edge_sharpness: Some(&sharp),
-                    },
-                )?;
+                let region = Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg);
+                if i_on_axis {
+                    let triangle_sharp = [sharp[0], sharp[1], sharp[2]];
+                    let seams = [true, false, false];
+                    let edge_seams = (meridian_start && full).then_some(&seams[..]);
+                    builder.add_face_with_attrs(
+                        &[a, d_v, c_v],
+                        &FaceBuildAttrs {
+                            region,
+                            edge_seams,
+                            edge_sharpness: Some(&triangle_sharp),
+                        },
+                    )?;
+                } else if j_on_axis {
+                    let triangle_sharp = [sharp[0], sharp[2], sharp[3]];
+                    let seams = [true, false, false];
+                    let edge_seams = (meridian_start && full).then_some(&seams[..]);
+                    builder.add_face_with_attrs(
+                        &[a, d_v, b],
+                        &FaceBuildAttrs {
+                            region,
+                            edge_seams,
+                            edge_sharpness: Some(&triangle_sharp),
+                        },
+                    )?;
+                } else {
+                    let seams = [true, false, false, false];
+                    let edge_seams = (meridian_start && full).then_some(&seams[..]);
+                    builder.add_face_with_attrs(
+                        &[a, d_v, c_v, b],
+                        &FaceBuildAttrs {
+                            region,
+                            edge_seams,
+                            edge_sharpness: Some(&sharp),
+                        },
+                    )?;
+                }
                 face_origins.push(Feature::Wall { loop_index, seg });
             }
         }
@@ -1207,7 +1386,6 @@ pub fn tessellate_revolve(
     }
 
     let result = builder.build()?;
-    let vertex_features = profile_vertex_features(&d, vertex_rings);
     let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
     Ok(TessellatedBody {
         mesh: result.mesh,
@@ -2422,6 +2600,207 @@ mod tests {
         Profile2::simple(outer).expect("valid profile")
     }
 
+    /// A right half-disc whose final line closes the profile along x = 0.
+    fn axis_closed_semicircle(radius: f64) -> Profile2 {
+        use crate::profile::{Loop2, Seg2, SegTag};
+
+        let outer = Loop2::new(alloc::vec![
+            Seg2::arc((0.0, radius), 1.0).tagged(SegTag(7)),
+            Seg2::line((0.0, -radius)).tagged(SegTag(8)),
+        ])
+        .expect("valid semicircle loop");
+        Profile2::simple(outer).expect("valid half-disc profile")
+    }
+
+    #[test]
+    fn full_revolve_semicircle_collapses_axis_to_manifold_poles() {
+        // Revolving a half-disc is the smallest axis-contact solid. Its two
+        // axis endpoints must become shared poles; duplicate angular-ring
+        // vertices or degenerate quads would make the sphere non-manifold.
+        let policy = EvalPolicy {
+            discretize: DiscretizePolicy {
+                chord_tolerance: 1.0e-3,
+                ..DiscretizePolicy::default()
+            },
+            ..EvalPolicy::default()
+        };
+        let body = tessellate_revolve(
+            &axis_closed_semicircle(1.0),
+            &Placement3::IDENTITY,
+            core::f64::consts::TAU,
+            CapMode::Both,
+            &policy,
+        )
+        .expect("axis-contact revolution tessellates");
+
+        assert_clean(&body);
+        assert!(
+            body.mesh
+                .boundary_loops()
+                .expect("valid boundaries")
+                .is_empty(),
+            "a full half-disc revolution is closed"
+        );
+        let volume = mesh_volume(&body.mesh);
+        let expected_volume = 4.0 / 3.0 * core::f64::consts::PI;
+        assert!(volume > 0.0, "sphere winding is outward");
+        assert!(
+            (volume - expected_volume).abs() / expected_volume < 0.005,
+            "discretized sphere volume {volume} vs analytic {expected_volume}"
+        );
+
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        let mut poles = 0;
+        for vertex in body.mesh.vertices() {
+            let point = *body.mesh.vertex_position(vertex).expect("position");
+            for axis in 0..3 {
+                min[axis] = min[axis].min(point[axis]);
+                max[axis] = max[axis].max(point[axis]);
+            }
+            if point[0] == 0.0 && point[2] == 0.0 && point[1].abs() == 1.0 {
+                poles += 1;
+                assert_eq!(
+                    body.source_map.vertex_feature(vertex),
+                    Some(Feature::Wall {
+                        loop_index: 0,
+                        seg: 0,
+                    }),
+                    "a pole inherits the adjacent curved wall"
+                );
+            }
+        }
+        assert_eq!(min, [-1.0; 3], "cardinal meridians pin exact minima");
+        assert_eq!(max, [1.0; 3], "cardinal meridians pin exact maxima");
+        assert_eq!(poles, 2, "each axis endpoint is emitted exactly once");
+        assert_eq!(
+            body.source_map.stats().vertex_entries,
+            body.mesh.vertices().count(),
+            "collapsed poles keep the dense vertex source map aligned"
+        );
+        assert!(
+            body.source_map.face_features().iter().all(|feature| {
+                *feature
+                    == Feature::Wall {
+                        loop_index: 0,
+                        seg: 0,
+                    }
+            }),
+            "the skipped axis closure does not claim wall faces"
+        );
+    }
+
+    #[test]
+    fn half_revolve_semicircle_closes_with_two_profile_caps() {
+        // A partial axis-contact revolution has both ordinary sweep rims and
+        // the shared axis edge. The two requested caps must close that volume
+        // without duplicating the poles or inventing a wall on the axis.
+        let body = tessellate_revolve(
+            &axis_closed_semicircle(1.0),
+            &Placement3::IDENTITY,
+            core::f64::consts::PI,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("capped half revolution tessellates");
+
+        assert_clean(&body);
+        assert!(
+            body.mesh
+                .boundary_loops()
+                .expect("valid boundaries")
+                .is_empty(),
+            "both profile caps close the partial sweep"
+        );
+        assert!(
+            mesh_volume(&body.mesh) > 0.0,
+            "half sphere winding is outward"
+        );
+        let caps = body
+            .source_map
+            .face_features()
+            .iter()
+            .filter(|feature| matches!(feature, Feature::CapStart | Feature::CapEnd))
+            .count();
+        assert_eq!(caps, 2, "the convex half-profile emits one face per cap");
+    }
+
+    #[test]
+    fn concave_axis_closed_profile_uses_triangulated_partial_caps() {
+        // Turned profiles are commonly concave rather than spherical. This
+        // shape forces the cap triangulator while its final axis edge is shared
+        // by both caps, trapping the interaction between those two paths.
+        use crate::profile::{Loop2, Seg2};
+
+        let outer = Loop2::new(alloc::vec![
+            Seg2::line((1.0, -1.0)),
+            Seg2::line((0.6, 0.0)),
+            Seg2::line((1.0, 1.0)),
+            Seg2::line((0.0, 1.0)),
+            Seg2::line((0.0, -1.0)),
+        ])
+        .expect("valid concave half-profile");
+        let profile = Profile2::simple(outer).expect("valid profile");
+        let body = tessellate_revolve(
+            &profile,
+            &Placement3::IDENTITY,
+            core::f64::consts::PI,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("concave partial revolution tessellates");
+
+        assert_clean(&body);
+        assert!(
+            body.mesh
+                .boundary_loops()
+                .expect("valid boundaries")
+                .is_empty(),
+            "triangulated caps close the concave partial revolution"
+        );
+        assert!(mesh_volume(&body.mesh) > 0.0, "winding remains outward");
+        let caps = body
+            .source_map
+            .face_features()
+            .iter()
+            .filter(|feature| matches!(feature, Feature::CapStart | Feature::CapEnd))
+            .count();
+        assert!(caps > 2, "a concave profile uses triangulated caps");
+    }
+
+    #[test]
+    fn non_closing_axis_segment_is_rejected_before_tessellation() {
+        // Segment order gives the otherwise-valid half-disc an axis segment
+        // before the final closure. Accepting it would make an authored axis
+        // run indistinguishable from accidental overlapping topology.
+        use crate::profile::{Loop2, Seg2};
+
+        let outer = Loop2::new(alloc::vec![
+            Seg2::line((0.0, -1.0)),
+            Seg2::arc((0.0, 1.0), 1.0),
+        ])
+        .expect("valid rotated half-disc loop");
+        let profile = Profile2::simple(outer).expect("valid half-disc profile");
+        let result = tessellate_revolve(
+            &profile,
+            &Placement3::IDENTITY,
+            core::f64::consts::TAU,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(TessellateError::NonClosingAxisSegment {
+                    loop_index: 0,
+                    segment: 0,
+                })
+            ),
+            "non-closing axis run must be a typed refusal: {result:?}"
+        );
+    }
+
     #[test]
     fn full_revolve_square_torus_volume_matches_pappus() {
         // Fine tolerance so the discretized ring area is close to ideal.
@@ -2520,8 +2899,10 @@ mod tests {
     }
 
     #[test]
-    fn axis_contact_is_rejected() {
-        let profile = builders::rect(1.0, 1.0).expect("rect touches x = 0");
+    fn negative_radius_is_rejected() {
+        // Crossing the axis would make positive and negative radii describe
+        // overlapping geometry, so it remains an explicit typed refusal.
+        let profile = annulus_square(0.0, 1.0);
         let result = tessellate_revolve(
             &profile,
             &Placement3::IDENTITY,
@@ -2530,8 +2911,35 @@ mod tests {
             &EvalPolicy::default(),
         );
         assert!(
-            matches!(result, Err(TessellateError::AxisContact { .. })),
-            "axis-touching profiles are rejected, got {result:?}"
+            matches!(result, Err(TessellateError::NegativeRadius { .. })),
+            "negative-radius profiles are rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn full_revolve_refuses_a_policy_too_small_for_cardinal_meridians() {
+        // A full sweep needs four angular intervals to include every cardinal
+        // meridian. Refuse an incompatible hard cap instead of panicking or
+        // silently losing the exact symmetric-bounds contract.
+        let mut policy = EvalPolicy::default();
+        policy.discretize.min_arc_edges = 3;
+        policy.discretize.max_segment_edges = 3;
+        let result = tessellate_revolve(
+            &annulus_square(2.0, 0.5),
+            &Placement3::IDENTITY,
+            core::f64::consts::TAU,
+            CapMode::Both,
+            &policy,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(TessellateError::RevolveSegmentLimit {
+                    required: 4,
+                    maximum: 3,
+                })
+            ),
+            "insufficient full-sweep budget must fail typed: {result:?}"
         );
     }
 
