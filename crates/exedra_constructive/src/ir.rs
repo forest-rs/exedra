@@ -296,7 +296,9 @@ pub enum NodeKind {
     /// Revolve a profile about its local Y axis.
     ///
     /// The profile lives in its local XZ half-plane (profile x maps to
-    /// radius, profile y to height along the axis).
+    /// radius, profile y to height along the axis). It may touch but must not
+    /// cross the axis. A segment that lies on the axis is allowed only as the
+    /// profile's final closing segment; evaluation emits no wall for it.
     Revolve {
         /// The profile to revolve; must lie at nonnegative radius.
         profile: ProfileId,
@@ -1844,7 +1846,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x3212_0F5F_38D0_5CB5_564F_4F21_3401_E66C,
+            0xEDF5_DBBF_696E_7EEA_7CFB_E0AE_3A57_9B04,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

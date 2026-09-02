@@ -109,4 +109,4 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// recipe: a kurbo upgrade, a discretization-rule change, a canonical
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
-pub const EVAL_SCHEMA_VERSION: u32 = 6;
+pub const EVAL_SCHEMA_VERSION: u32 = 7;

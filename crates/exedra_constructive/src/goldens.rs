@@ -220,6 +220,28 @@ fn fixtures() -> Vec<Fixture> {
         });
     }
 
+    // 9. A half-disc revolved through a full turn. The small radius keeps the
+    // golden compact while pinning shared poles, triangle fans, the skipped
+    // axis closure, cardinal extrema, and wall provenance.
+    {
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(axis_closed_semicircle(0.02));
+        let src = b.source_ref("gallery:axis_revolve");
+        let n = b
+            .with_source(src)
+            .add(NodeKind::Revolve {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                sweep: core::f64::consts::TAU,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        out.push(Fixture {
+            name: "axis_revolve",
+            recipe: b.finish(n).expect("valid"),
+        });
+    }
+
     out
 }
 
@@ -234,6 +256,17 @@ fn annulus_square(r0: f64, a: f64) -> crate::profile::Profile2 {
     ])
     .expect("valid square section");
     Profile2::simple(outer).expect("valid profile")
+}
+
+fn axis_closed_semicircle(radius: f64) -> crate::profile::Profile2 {
+    use crate::profile::{Loop2, Profile2, Seg2};
+
+    let outer = Loop2::new(vec![
+        Seg2::arc((0.0, radius), 1.0),
+        Seg2::line((0.0, -radius)),
+    ])
+    .expect("valid semicircle");
+    Profile2::simple(outer).expect("valid half-disc profile")
 }
 
 /// The CSG fixture: a transformed difference expecting the Unsupported
@@ -356,6 +389,7 @@ golden_test!(golden_ring_prism, "ring_prism", 3);
 golden_test!(golden_quarter_sweep, "quarter_sweep", 4);
 golden_test!(golden_stretched_panel, "stretched_panel", 6);
 golden_test!(golden_planar_face, "planar_face", 7);
+golden_test!(golden_axis_revolve, "axis_revolve", 8);
 
 #[test]
 fn golden_csg_report() {
