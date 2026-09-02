@@ -570,6 +570,40 @@ impl Recipe {
         self.nodes.get(id.0 as usize)
     }
 
+    /// Returns the opaque source string bound to `node`.
+    ///
+    /// This is the direct lookup for turning a diagnostic's [`NodeId`] into a
+    /// user-facing source reference. It follows the node's interned
+    /// [`SourceId`] without exposing that two-step table traversal to callers.
+    /// Returns `None` when the node is unknown or has no source binding.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use exedra_constructive::ir::{
+    ///     NodeKind, Placement3, PrimitiveSpec, RecipeBuilder, RecipeError,
+    /// };
+    ///
+    /// # fn main() -> Result<(), RecipeError> {
+    /// let mut builder = RecipeBuilder::new();
+    /// let source = builder.source_ref("panel/left");
+    /// let node = builder.with_source(source).add(NodeKind::Primitive {
+    ///     spec: PrimitiveSpec::Box {
+    ///         size: [1.0, 2.0, 3.0],
+    ///     },
+    ///     placement: Placement3::IDENTITY,
+    /// })?;
+    /// let recipe = builder.finish(node)?;
+    /// assert_eq!(recipe.source_of(node), Some("panel/left"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn source_of(&self, node: NodeId) -> Option<&str> {
+        let source = self.node(node)?.source?;
+        self.source(source)
+    }
+
     /// Looks up a profile; `None` for out-of-range ids.
     #[must_use]
     pub fn profile(&self, id: ProfileId) -> Option<&Profile2> {
@@ -1627,6 +1661,25 @@ mod tests {
         assert_eq!(a.recipe_fingerprint(), b.recipe_fingerprint());
         let c = simple_recipe(4.0);
         assert_ne!(a.recipe_fingerprint(), c.recipe_fingerprint());
+    }
+
+    #[test]
+    fn source_of_resolves_a_node_binding_without_exposing_interning() {
+        // Diagnostics carry NodeId, while user-facing reports need the opaque
+        // source string. The direct query must handle bound, unbound, and
+        // hostile node ids without making callers traverse both IR tables.
+        let recipe = simple_recipe(3.0);
+        assert_eq!(recipe.source_of(recipe.root()), Some("test:panel"));
+
+        let mirrored = recipe
+            .mirrored(Plane3 {
+                normal: [1.0, 0.0, 0.0],
+                distance: 0.0,
+            })
+            .expect("valid mirror");
+        assert_eq!(mirrored.source_of(recipe.root()), Some("test:panel"));
+        assert_eq!(mirrored.source_of(mirrored.root()), None);
+        assert_eq!(mirrored.source_of(NodeId(u32::MAX)), None);
     }
 
     #[test]
