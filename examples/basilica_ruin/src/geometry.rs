@@ -351,7 +351,7 @@ pub(super) fn apse_shell_profile(
 }
 
 pub(super) fn vertical_wall_frame() -> Placement3 {
-    Placement3::euler_xyz_then_translate(HALF_PI, 0.0, 0.0, [0.0, 0.0, 0.0])
+    Placement3::euler_extrinsic_xyz_then_translate(HALF_PI, 0.0, 0.0, [0.0, 0.0, 0.0])
 }
 
 pub(super) fn transverse_wall_frame() -> Placement3 {
