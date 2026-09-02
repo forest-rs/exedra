@@ -69,6 +69,31 @@ Scope: triangle faces only. Sliver quads do not arise from the current
 pipeline (walls stay rectangular; caps re-face to triangles); extending
 candidate selection to polygons is future work if a producer appears.
 
+## Amendment (2026-09-02): incidence-canonical graph vertices
+
+The intersection graph defines endpoint identity from source topology before
+seam cleanup sees a mesh. Exact anchor identity remains primary. Equal stored
+`f32` positions may merge only when their anchor closures share a carrier on
+both operands. A third case is now explicit: adjacent triangle pairs can
+describe one crossing as edge/edge and edge/face while independent plane
+solves disagree in a dependent coordinate. A shared source edge plus a unique
+crossing with the opposite source edge proves those descriptions equivalent.
+
+These proofs accumulate in equivalence classes and are compacted after the
+complete deterministic segment stream. Late evidence can therefore reconcile
+earlier reports at the same eventual stored position without making graph
+identity depend on traversal order. An endpoint that first matches an existing
+class by provenance or stored position still contributes all incidence proofs
+carried by that observation before welding returns. At a different stored
+position, it may absorb a class with no sharper anchors, or a sharper class
+whose reconstructed finite edge/edge point agrees with the representative. It
+does not replace a less-specific matched position with a different established
+edge/edge point; that could erase a legitimate branch at an exact multi-cut
+vertex. Cross-position incidence is not propagated later through a synthesized
+representative for the same reason. There is still no distance epsilon:
+parallel edge overlap does not prove a unique point and remains distinct,
+allowing the downstream typed refusal to stand instead of guessing.
+
 ## Consequences
 
 - The drill fixture's worst squared triangle quality improves from

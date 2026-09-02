@@ -17,10 +17,12 @@
 use exedra::{FaceTriangulation, Mesh, op::set_vertex_position};
 use exedra_isosurface::{
     ScalarField,
-    analytic::{BoxField, CylinderField, Union},
+    analytic::{BoxField, CylinderField, SphereField, Union},
     transform::{RigidTransform3, Transform3},
 };
-use exedra_primitives::{BoxParams, CylinderParams, box_primitive, cylinder};
+use exedra_primitives::{
+    BoxParams, CylinderParams, UvSphereParams, box_primitive, cylinder, uv_sphere,
+};
 
 use crate::rng::SplitMix64;
 
@@ -243,6 +245,55 @@ pub(crate) fn prism_operand(radius: f64, height: f64, segments: u32, rigid: &Rig
     Operand {
         describe: format!(
             "prism r={radius:.3} h={height:.3} n={segments} t=({:.3},{:.3},{:.3})",
+            rigid.t[0], rigid.t[1], rigid.t[2]
+        ),
+        mesh,
+        pieces,
+        field: Box::new(place_field(field, rigid)),
+        field_deviation: sagitta + 1.0e-4,
+    }
+}
+
+/// Faceted sphere operand with both an exact polyhedral referee and an
+/// independent analytic sphere field.
+///
+/// The UV mesh is convex, so its face planes describe precisely the solid
+/// consumed by the Boolean pipeline. The field deviation covers the largest
+/// spherical patch represented by one latitude/longitude cell; the diagonal
+/// angular bound is deliberately conservative near the poles.
+pub(crate) fn sphere_operand(
+    radius: f64,
+    lat_segments: u32,
+    lon_segments: u32,
+    rigid: &Rigid,
+) -> Operand {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "operand parameters narrow once at construction"
+    )]
+    let radius_f32 = radius as f32;
+    let primitive = uv_sphere(&UvSphereParams {
+        radius: radius_f32,
+        lat_segments,
+        lon_segments,
+        centered: true,
+    });
+    let mesh = transform_mesh(&primitive.mesh, rigid);
+    let pieces = vec![convex_planes(&mesh)];
+    let field = SphereField {
+        center: [0.0; 3],
+        radius: radius_f32,
+    };
+    let latitude_step = core::f64::consts::PI / f64::from(lat_segments + 1);
+    let longitude_step = core::f64::consts::TAU / f64::from(lon_segments);
+    let angular_diameter = latitude_step.hypot(longitude_step);
+    // Using the full cell diameter (rather than assuming its center is the
+    // spherical circumcenter of every pole triangle and band quad) keeps the
+    // field band conservative for every UV cell shape.
+    let sagitta = radius * (1.0 - angular_diameter.cos());
+    Operand {
+        describe: format!(
+            "sphere r={radius:.3} lat={lat_segments} lon={lon_segments} t=({:.3},{:.3},{:.3})",
             rigid.t[0], rigid.t[1], rigid.t[2]
         ),
         mesh,

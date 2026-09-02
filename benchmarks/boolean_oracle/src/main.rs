@@ -19,8 +19,8 @@
 //! Run the quick profile (the default, all classes):
 //! `cargo run --release -p boolean_oracle`
 //!
-//! Deep sweep of one class:
-//! `cargo run --release -p boolean_oracle -- --seed 1 --cases 200 --points 2000 --class curved_wall`
+//! Deep sweep of curved-on-curved intersections:
+//! `cargo run --release -p boolean_oracle -- --seed 1 --cases 200 --points 2000 --class curved_surface`
 
 mod cases;
 mod feature;

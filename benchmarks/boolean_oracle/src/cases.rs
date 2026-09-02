@@ -494,6 +494,24 @@ mod tests {
     }
 
     #[test]
+    fn curved_surface_seed_has_three_clean_witnesses() {
+        // A curved-on-curved case is checked independently against the exact
+        // half-spaces of both faceted operands and their analytic sphere
+        // fields. It must neither defer nor hide a topology or membership
+        // disagreement behind the field comparison band.
+        let outcome = run_case(ScenarioClass::CurvedSurface, 1, 800);
+
+        assert_eq!(outcome.skip, None);
+        assert!(!outcome.empty_result);
+        assert_eq!(outcome.mesh_validation_errors, 0);
+        assert_eq!(outcome.mesh_bookkeeping_errors, 0);
+        assert_eq!(outcome.seam_identity_conflicts, 0);
+        assert!(outcome.mesh_points > 0);
+        assert!(outcome.field_points > 0);
+        assert!(outcome.findings.is_empty());
+    }
+
+    #[test]
     fn chained_face_partition_keeps_boundary_continuation_unambiguous() {
         // A deep chained sweep found this partition order adding a sub-face
         // while two distinct OUTSIDE continuations met at vertex 16. The
