@@ -40,15 +40,20 @@ deterministic, and cache-friendly.
   error-level evaluation that emits no bodies is a typed compilation failure;
   partial geometry remains available with its report intact.
 - **The render seam.** `flatten()` produces a flat `RenderList` of
-  (instance path, world placement, part reference, per-region index ranges
-  with resolved material keys). Renderers and exporters consume this and
-  nothing deeper.
+  (instance path, world placement, part reference, exact placed bounds,
+  per-region index ranges with resolved material keys). Renderers and
+  exporters consume this and nothing deeper. `CompiledPart` accounting is
+  once-per-part and part-local; `RenderList` accounting includes instance
+  multiplicity and is world-space. Placed bounds are derived from transformed
+  emitted positions, not transformed local AABB corners, so they stay exact
+  under rotation and general affine placement.
 
 It owns none of:
 
 - **Geometry math.** Tessellation, booleans, discretization live in
-  `exedra` / `exedra_constructive`. This crate never inspects coordinates
-  beyond composing placements.
+  `exedra` / `exedra_constructive`. This crate inspects emitted positions only
+  to account for the exact world-space bounds at its render seam; it does not
+  alter geometry.
 - **Parameter models, conditional logic, pricing.** External runtimes
   evaluate their specification languages and hand this crate finished
   recipes, placements, and bindings.
@@ -77,6 +82,13 @@ evaluation emits an error diagnostic and no bodies. Successful recipe reports
 are available through `CompiledParts::report`; callers that previously
 pre-evaluated recipes only to collect diagnostics should use that retained
 report instead.
+
+`RenderItem` now carries `world_bounds`, computed by `flatten` from the
+emitted positions and composed world placement. Callers that construct
+`RenderItem` literals must provide the corresponding bound; callers using
+`flatten` require no migration. Prefer `RenderList::triangle_count` and
+`RenderList::bounds` over rebuilding placed accounting from region ranges and
+placements.
 
 ## Alternatives considered
 

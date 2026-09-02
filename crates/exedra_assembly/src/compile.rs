@@ -130,7 +130,11 @@ pub struct CompiledPart {
 }
 
 impl CompiledPart {
-    /// Total triangle count across all bodies.
+    /// Total compiled triangle count across all bodies in this part.
+    ///
+    /// Each triangle is counted once, regardless of how many assembly
+    /// instances place the part. Use [`crate::RenderList::triangle_count`] for
+    /// the placed count with instance multiplicity.
     #[must_use]
     pub fn triangle_count(&self) -> u64 {
         self.bodies
@@ -146,15 +150,11 @@ impl CompiledPart {
     /// do not affect the union; a part with no render positions returns `None`.
     #[must_use]
     pub fn bounds(&self) -> Option<Aabb3> {
-        let mut bodies = self.bodies.iter().filter_map(CompiledBody::bounds);
-        let mut bounds = bodies.next()?;
-        for body in bodies {
-            for axis in 0..3 {
-                bounds.min[axis] = bounds.min[axis].min(body.min[axis]);
-                bounds.max[axis] = bounds.max[axis].max(body.max[axis]);
-            }
+        let mut bounds = Aabb3::EMPTY;
+        for body in self.bodies.iter().filter_map(CompiledBody::bounds) {
+            bounds.union(&body);
         }
-        Some(bounds)
+        (!bounds.is_empty()).then_some(bounds)
     }
 }
 
