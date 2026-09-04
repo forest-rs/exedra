@@ -34,9 +34,9 @@ struct FaceAttrs {
 /// follow their semantic owners: region values follow faces, seam/sharpness
 /// values follow undirected edges, and UV/normal values follow face corners.
 pub(crate) fn transform_reflecting(
-    source: &exedra::Mesh,
+    source: &exedra_mesh::Mesh,
     placement: &Placement3,
-) -> Result<exedra::Mesh, TessellateError> {
+) -> Result<exedra_mesh::Mesh, TessellateError> {
     debug_assert!(
         crate::tessellate::det3(placement) < 0.0,
         "orientation repair is only needed for reflecting placements"
@@ -48,15 +48,17 @@ pub(crate) fn transform_reflecting(
     let inverse = inverse_linear(placement);
     let regions = source
         .attrs()
-        .dense(exedra::attr::FACE_REGION)
+        .dense(exedra_mesh::attr::FACE_REGION)
         .expect("every mesh has the built-in face-region layer");
-    let seams = source.attrs().sparse(exedra::attr::EDGE_SEAM);
-    let edge_sharpness = source.attrs().sparse(exedra::attr::EDGE_SHARPNESS);
-    let uvs = source.attrs().sparse(exedra::attr::CORNER_UV);
-    let normals = source.attrs().sparse(exedra::attr::CORNER_NORMAL_OVERRIDE);
+    let seams = source.attrs().sparse(exedra_mesh::attr::EDGE_SEAM);
+    let edge_sharpness = source.attrs().sparse(exedra_mesh::attr::EDGE_SHARPNESS);
+    let uvs = source.attrs().sparse(exedra_mesh::attr::CORNER_UV);
+    let normals = source
+        .attrs()
+        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE);
 
     let source_edges = collect_edge_attrs(source, seams, edge_sharpness);
-    let mut builder = exedra::MeshBuilder::new();
+    let mut builder = exedra_mesh::MeshBuilder::new();
     let mut vertex_indices = BTreeMap::<u32, u32>::new();
     let mut vertex_sharpness = Vec::with_capacity(source.vertices().count());
     for vertex in source.vertices() {
@@ -117,7 +119,7 @@ pub(crate) fn transform_reflecting(
 
         builder.add_face_with_attrs(
             &output_loop,
-            &exedra::FaceBuildAttrs {
+            &exedra_mesh::FaceBuildAttrs {
                 region: regions.get(face.into()).copied(),
                 edge_seams: None,
                 edge_sharpness: None,
@@ -144,7 +146,7 @@ pub(crate) fn transform_reflecting(
         let mut edit = built.mesh.edit();
         for (vertex, sharpness) in built.vertex_ids.iter().zip(vertex_sharpness) {
             if let Some(sharpness) = sharpness {
-                exedra::op::set_vertex_sharpness(&mut edit, *vertex, sharpness)
+                exedra_mesh::op::set_vertex_sharpness(&mut edit, *vertex, sharpness)
                     .expect("builder provenance names one live vertex");
             }
         }
@@ -153,19 +155,19 @@ pub(crate) fn transform_reflecting(
                 output_edges.iter().zip(&attrs.edges).zip(&attrs.corners)
             {
                 if let Some(seam) = edge_attrs.seam {
-                    exedra::op::set_edge_seam(&mut edit, *edge, seam)
+                    exedra_mesh::op::set_edge_seam(&mut edit, *edge, seam)
                         .expect("builder provenance names one live edge");
                 }
                 if let Some(sharpness) = edge_attrs.sharpness {
-                    exedra::op::set_edge_sharpness(&mut edit, *edge, sharpness)
+                    exedra_mesh::op::set_edge_sharpness(&mut edit, *edge, sharpness)
                         .expect("builder provenance names one live edge");
                 }
                 if let Some(uv) = corner_attrs.uv {
-                    exedra::op::set_corner_uv(&mut edit, *edge, uv)
+                    exedra_mesh::op::set_corner_uv(&mut edit, *edge, uv)
                         .expect("builder provenance names one live corner");
                 }
                 if let Some(normal) = corner_attrs.normal {
-                    exedra::op::set_corner_normal_override(&mut edit, *edge, Some(normal))
+                    exedra_mesh::op::set_corner_normal_override(&mut edit, *edge, Some(normal))
                         .expect("builder provenance names one live corner");
                 }
             }
@@ -180,9 +182,9 @@ pub(crate) fn transform_reflecting(
 }
 
 fn collect_edge_attrs(
-    source: &exedra::Mesh,
-    seams: Option<&exedra::attributes::SparseLayer<bool>>,
-    sharpness: Option<&exedra::attributes::SparseLayer<f32>>,
+    source: &exedra_mesh::Mesh,
+    seams: Option<&exedra_mesh::attributes::SparseLayer<bool>>,
+    sharpness: Option<&exedra_mesh::attributes::SparseLayer<f32>>,
 ) -> BTreeMap<(u32, u32), EdgeAttrs> {
     let mut attributes = BTreeMap::new();
     for face in source.faces() {
@@ -210,10 +212,10 @@ fn collect_edge_attrs(
 }
 
 fn collect_corner_attrs(
-    source: &exedra::Mesh,
-    face_loop: &[exedra::HalfEdgeId],
-    uvs: Option<&exedra::attributes::SparseLayer<[f32; 2]>>,
-    normals: Option<&exedra::attributes::SparseLayer<[f32; 3]>>,
+    source: &exedra_mesh::Mesh,
+    face_loop: &[exedra_mesh::HalfEdgeId],
+    uvs: Option<&exedra_mesh::attributes::SparseLayer<[f32; 2]>>,
+    normals: Option<&exedra_mesh::attributes::SparseLayer<[f32; 3]>>,
     inverse: Option<[[f64; 3]; 3]>,
 ) -> Result<BTreeMap<u32, CornerAttrs>, TessellateError> {
     let mut attributes = BTreeMap::new();

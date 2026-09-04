@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra_mesh::MeshBuilder;
 
 use crate::{CapFill, Primitive, RegionId, SelectionName, common};
 
@@ -216,7 +216,7 @@ fn push_ring(builder: &mut MeshBuilder, radius: f32, y: f32, segments: usize) {
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::{ExtractParams, FaceId, HalfEdgeId};
+    use exedra_mesh::{ExtractParams, FaceId, HalfEdgeId};
 
     use super::{
         CapFill, CylinderParams, REGION_CAP_BOTTOM, REGION_CAP_TOP, REGION_SIDE, cylinder,

@@ -663,7 +663,7 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
         builder.curve_policy(policy);
     }
     for import in &dto.imports {
-        let mut mesh_builder = exedra::MeshBuilder::new();
+        let mut mesh_builder = exedra_mesh::MeshBuilder::new();
         for position in &import.positions {
             mesh_builder.push_vertex(*position);
         }

@@ -3,8 +3,8 @@
 
 //! Mesh edit-operator trait boundary for Exedra Ops.
 
-use exedra::EditSession;
-use exedra::Mesh;
+use exedra_mesh::EditSession;
+use exedra_mesh::Mesh;
 
 use crate::plan::{PlanFingerprint, PlanHasher};
 use crate::{OpContext, OpError, OpReport};
@@ -24,7 +24,7 @@ use crate::{OpContext, OpError, OpReport};
 /// This trait is intentionally not object-safe in v0.1 because `Params` is an
 /// associated type. Exedra Ops currently favors static dispatch.
 ///
-/// Every operator consumes and edits an [`exedra::Mesh`]. Cross-domain
+/// Every operator consumes and edits an [`exedra_mesh::Mesh`]. Cross-domain
 /// composition belongs to typed adapters and future graph ports, rather than
 /// metadata on this mesh-specific trait.
 pub trait EditOperator {
@@ -47,7 +47,7 @@ pub trait EditOperator {
     ) -> Result<Self::Plan, OpError>;
 
     /// Applies an already-compiled plan.
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
         txn: &mut EditSession<'_, S>,
         plan: &Self::Plan,
@@ -68,7 +68,7 @@ pub trait EditOperator {
     ///
     /// Default behavior uses the explicit lifecycle:
     /// `compile(txn.mesh(), params, ctx)` then `apply_plan(txn, plan, ctx)`.
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
         txn: &mut EditSession<'_, S>,
         params: &Self::Params,
@@ -83,7 +83,7 @@ pub trait EditOperator {
 mod tests {
     use super::EditOperator;
     use crate::{Artifacts, OpContext, OpError, OpReport};
-    use exedra::{EditSession, Mesh};
+    use exedra_mesh::{EditSession, Mesh};
 
     struct NoopOperator;
 
@@ -105,7 +105,7 @@ mod tests {
             Ok(())
         }
 
-        fn apply_plan<S: exedra::ChangeSink>(
+        fn apply_plan<S: exedra_mesh::ChangeSink>(
             &self,
             _txn: &mut EditSession<'_, S>,
             _plan: &Self::Plan,

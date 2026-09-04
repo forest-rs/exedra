@@ -19,11 +19,11 @@ default = ["std"]
 # interchange is a host-side format, and the workspace serde dependency is
 # std-flavored. Core evaluation stays serde-free.
 serde = ["dep:serde", "std"]
-std = ["exedra/std", "exedra_math/std"]
+std = ["exedra_mesh/std", "exedra_math/std"]
 
 [dependencies]
-exedra = { features = ["libm"], workspace = true }
 exedra_math = { features = ["libm"], workspace = true }
+exedra_mesh = { features = ["libm"], workspace = true }
 # Explicit libm opts primitive coordinates into the deterministic backend even
 # when another workspace consumer enables exedra_primitives/std.
 exedra_primitives = { features = ["libm"], workspace = true }

@@ -19,7 +19,7 @@ full CAD scope.
 - shell/loop/coedge topology,
 - explicit planar opening loops,
 - narrow face-level mutation for regions and XY rectangular openings,
-- deterministic tessellation into `exedra::Mesh`.
+- deterministic tessellation into `exedra_mesh::Mesh`.
 
 The first slice explicitly does not support:
 
@@ -33,7 +33,7 @@ The first slice explicitly does not support:
 
 Positive:
 - proves the second canonical domain with a bounded implementation,
-- preserves `exedra` as the polygon head,
+- preserves `exedra_mesh` as the polygon head,
 - supplies the bounded analytic-to-mesh conversion seam that Exedra Ops stages
   through an explicit adapter.
 

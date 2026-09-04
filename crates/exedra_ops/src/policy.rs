@@ -3,7 +3,7 @@
 
 //! Exedra Ops policy set and sub-policies.
 
-pub use exedra::PropagatePolicy;
+pub use exedra_mesh::PropagatePolicy;
 
 /// Operator quality mode.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

@@ -6,7 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use exedra::{CornerId, FaceId, HalfEdgeId, VertexId};
+use exedra_mesh::{CornerId, FaceId, HalfEdgeId, VertexId};
 
 /// Diagnostic severity level.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

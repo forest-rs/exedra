@@ -1,16 +1,19 @@
 # Exedra roadmap
 
-Exedra is an independent mesh kernel and geometry toolkit for constructing
-inspectable assets for virtual worlds. The roadmap is deliberately smaller
-than the implementation history: completed work remains in commits and ADRs;
-only current decisions and unresolved outcomes belong here.
+Exedra is a geometry toolkit for constructing inspectable assets for virtual
+worlds. The roadmap is deliberately smaller than the implementation history:
+completed work remains in commits and ADRs; only current decisions and
+unresolved outcomes belong here.
 
 ## Architecture and scope
 
-Exedra owns editable polygon topology, attributes, validation, deterministic
-extraction, and mesh-mutation invariants. Exedra Ops owns deterministic
-mesh-operator planning, execution, diagnostics, selections, and explicit
-feature-gated adapters. Sibling heads own their native representations:
+The `exedra` crate is a leaf-only facade: it owns feature selection, curated
+namespaces, and entry documentation, but no geometry state or algorithms.
+`exedra_mesh` owns editable polygon topology, attributes, validation,
+deterministic extraction, and mesh-mutation invariants. Exedra Ops owns
+deterministic mesh-operator planning, execution, diagnostics, selections, and
+explicit feature-gated adapters. Sibling heads own their native
+representations:
 
 - `exedra_constructive`: immutable fingerprinted recipes and deterministic
   tessellation;
@@ -59,20 +62,23 @@ configurations must remain typed failures or explicitly counted fallbacks.
 
 ## Cross-domain convergence
 
-1. `exedra_ops` is the current direct-operation SDK: its deterministic runner
+1. Implementation crates depend directly on the native heads they use and
+   never upward on the `exedra` facade. Applications may use the facade for a
+   coherent namespace and common feature bundle without changing ownership.
+2. `exedra_ops` is the current direct-operation SDK: its deterministic runner
    plans and applies mesh operations, while focused adapters expose explicit
    crossings into or out of sibling native heads.
-2. A future Exedra procedural-network layer is earned only by a real pipeline
+3. A future Exedra procedural-network layer is earned only by a real pipeline
    that requires at least two native value kinds joined by an explicit
    conversion. It owns the typed geometry vocabulary, native artifacts,
    conversion reports, and compilation adapters. The shared `execution_graph`
    runtime owns incremental scheduling and execution causality;
    `understory_node_graph` owns editor documents and projections. None owns a
    universal geometry value.
-3. Native heads keep their algorithms, identities, and provenance. CSG remains
+4. Native heads keep their algorithms, identities, and provenance. CSG remains
    domain-native: recipes combine construction intent, meshes use polygonal
    operations, and fields compose before extraction.
-4. Persistent implicit identity and a general surface/B-rep head are separate
+5. Persistent implicit identity and a general surface/B-rep head are separate
    earned capabilities. The current field and planar-shell crates do not yet
    provide either one.
 

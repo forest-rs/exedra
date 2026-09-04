@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra_mesh::MeshBuilder;
 
 use crate::{CapFill, Primitive, RegionId, SelectionName, common};
 
@@ -150,7 +150,7 @@ pub fn cone(params: &ConeParams) -> Primitive {
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::{ExtractParams, FaceId};
+    use exedra_mesh::{ExtractParams, FaceId};
 
     use super::{CapFill, ConeParams, REGION_CAP_BOTTOM, REGION_SIDE, cone};
 

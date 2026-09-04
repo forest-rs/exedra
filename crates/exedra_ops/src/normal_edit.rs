@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use exedra::{CornerId, FaceId, NormalParams, op};
+use exedra_mesh::{CornerId, FaceId, NormalParams, op};
 
 use crate::op_common::op_error;
 use crate::plan::PlanHasher;
@@ -74,7 +74,7 @@ impl EditOperator for ClearCornerNormals {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -92,9 +92,9 @@ impl EditOperator for ClearCornerNormals {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -140,7 +140,7 @@ impl EditOperator for BakeFaceNormals {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -181,9 +181,9 @@ impl EditOperator for BakeFaceNormals {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -231,7 +231,7 @@ impl EditOperator for BakeDerivedNormals {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -260,9 +260,9 @@ impl EditOperator for BakeDerivedNormals {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -310,7 +310,7 @@ impl EditOperator for SmoothFaceNormals {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -350,9 +350,9 @@ impl EditOperator for SmoothFaceNormals {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -377,7 +377,7 @@ impl EditOperator for SmoothFaceNormals {
 }
 
 fn validate_faces(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     faces: &[FaceId],
     op_name: &str,
     ctx: &OpContext,
@@ -407,10 +407,10 @@ fn validate_faces(
 }
 
 fn derive_normals_with_selection_boundary_hardened(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     faces: &[FaceId],
     params: &NormalParams,
-) -> Result<exedra::DerivedCornerNormals, op::SetEdgeSharpnessError> {
+) -> Result<exedra_mesh::DerivedCornerNormals, op::SetEdgeSharpnessError> {
     let mut working = mesh.clone();
     let mut boundary_edges = Vec::new();
     for &face in faces {
@@ -434,12 +434,12 @@ fn derive_normals_with_selection_boundary_hardened(
     Ok(working.derive_corner_normals(params))
 }
 
-fn apply_normal_writes<S: exedra::ChangeSink>(
+fn apply_normal_writes<S: exedra_mesh::ChangeSink>(
     op_name: &'static str,
     faces: &[FaceId],
     writes: &[(CornerId, Option<[f32; 3]>)],
     selections_canonicalized: bool,
-    txn: &mut exedra::EditSession<'_, S>,
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     ctx: &mut OpContext,
 ) -> Result<(OpReport, NormalFacesOutput), OpError> {
     for &(corner, normal) in writes {
@@ -512,7 +512,7 @@ mod tests {
         ClearCornerNormals, ClearCornerNormalsParams, ExtractParams, NormalsSource, OpErrorKind,
         OperatorRunner, SmoothFaceNormals, SmoothFaceNormalsParams,
     };
-    use exedra::{BuildParams, FaceId, Mesh, NormalParams, attr, op};
+    use exedra_mesh::{BuildParams, FaceId, Mesh, NormalParams, attr, op};
 
     fn usize_to_u32(value: usize) -> u32 {
         u32::try_from(value).expect("test mesh index should fit u32")
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn clear_corner_normals_compile_rejects_stale_face() {
         let mesh = Mesh::new();
-        let stale = FaceId::from(exedra::Id::new(
+        let stale = FaceId::from(exedra_mesh::Id::new(
             42,
             core::num::NonZeroU32::new(1).expect("1 is non-zero"),
         ));

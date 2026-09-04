@@ -30,8 +30,8 @@
 use alloc::vec::Vec;
 
 use crate::math::FloatExt as _;
-use exedra::{HalfEdgeId, Mesh, VertexId};
 use exedra_constructive::profile::{Loop2, Profile2, ProfileError, Seg2, SegTag};
+use exedra_mesh::{HalfEdgeId, Mesh, VertexId};
 
 /// Parameters for mesh-loop conversion.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -339,7 +339,11 @@ mod tests {
         {
             let mut session = mesh.edit();
             let p = *session.mesh().vertex_position(victim).expect("position");
-            let _ = exedra::op::set_vertex_position(&mut session, victim, [p[0], p[1], p[2] + 0.5]);
+            let _ = exedra_mesh::op::set_vertex_position(
+                &mut session,
+                victim,
+                [p[0], p[1], p[2] + 0.5],
+            );
             #[expect(unused_must_use, reason = "sink output unused")]
             {
                 session.finish();

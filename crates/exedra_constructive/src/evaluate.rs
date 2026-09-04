@@ -660,7 +660,7 @@ impl EvalCx<'_> {
                         .body
                         .mesh
                         .attrs()
-                        .sparse(exedra::attr::CORNER_UV)
+                        .sparse(exedra_mesh::attr::CORNER_UV)
                         .is_none();
                 let key = cacheable.then(|| self.cache_key(node_id, world)).flatten();
                 let cached =
@@ -807,9 +807,9 @@ impl EvalCx<'_> {
         &mut self,
         operand: NodeId,
         world: &Placement3,
-        scratch: &mut exedra::boolean::BooleanScratch,
-        diagnostics: &mut exedra::boolean::BooleanDiagnostics,
-    ) -> Result<Option<exedra::Mesh>, EvalError> {
+        scratch: &mut exedra_mesh::boolean::BooleanScratch,
+        diagnostics: &mut exedra_mesh::boolean::BooleanDiagnostics,
+    ) -> Result<Option<exedra_mesh::Mesh>, EvalError> {
         let taken = core::mem::take(&mut self.bodies);
         let emitted_before = self.report.counters.bodies;
         self.walk(operand, world, true)?;
@@ -828,11 +828,11 @@ impl EvalCx<'_> {
             return Ok(None);
         };
         for next in meshes {
-            match exedra::boolean::boolean_mesh(
+            match exedra_mesh::boolean::boolean_mesh(
                 &folded,
                 &next,
-                exedra::boolean::BooleanOp::Union,
-                exedra::FaceTriangulation::Fan,
+                exedra_mesh::boolean::BooleanOp::Union,
+                exedra_mesh::FaceTriangulation::Fan,
                 scratch,
                 diagnostics,
             ) {
@@ -856,13 +856,13 @@ impl EvalCx<'_> {
         world: &Placement3,
         emit: bool,
     ) -> Result<Aabb3, EvalError> {
-        use exedra::boolean::{BooleanOp, BooleanScratch};
+        use exedra_mesh::boolean::{BooleanOp, BooleanScratch};
 
         let mut scratch = BooleanScratch::default();
-        let mut diagnostics = exedra::boolean::BooleanDiagnostics::default();
+        let mut diagnostics = exedra_mesh::boolean::BooleanDiagnostics::default();
 
         // The catalog-free difference convention: A op (union of the rest).
-        let mut meshes: Vec<exedra::Mesh> = Vec::with_capacity(operands.len());
+        let mut meshes: Vec<exedra_mesh::Mesh> = Vec::with_capacity(operands.len());
         let mut all_present = true;
         for operand in operands {
             match self.collect_operand_mesh(*operand, world, &mut scratch, &mut diagnostics)? {
@@ -907,11 +907,11 @@ impl EvalCx<'_> {
             let mut tail = iter.next().expect("IR validation requires >= 2 operands");
             let mut tail_ok = true;
             for next in iter {
-                match exedra::boolean::boolean_mesh(
+                match exedra_mesh::boolean::boolean_mesh(
                     &tail,
                     &next,
                     BooleanOp::Union,
-                    exedra::FaceTriangulation::Fan,
+                    exedra_mesh::FaceTriangulation::Fan,
                     &mut scratch,
                     &mut diagnostics,
                 ) {
@@ -923,11 +923,11 @@ impl EvalCx<'_> {
                 }
             }
             let output = if tail_ok {
-                exedra::boolean::boolean_mesh(
+                exedra_mesh::boolean::boolean_mesh(
                     &first,
                     &tail,
                     boolean_op,
-                    exedra::FaceTriangulation::Fan,
+                    exedra_mesh::FaceTriangulation::Fan,
                     &mut scratch,
                     &mut diagnostics,
                 )
@@ -944,8 +944,8 @@ impl EvalCx<'_> {
                     .iter()
                     .map(|(_, side, _)| crate::tessellate::Feature::BooleanFace {
                         operand: match side {
-                            exedra::boolean::MeshSide::A => 0,
-                            exedra::boolean::MeshSide::B => 1,
+                            exedra_mesh::boolean::MeshSide::A => 0,
+                            exedra_mesh::boolean::MeshSide::B => 1,
                         },
                     })
                     .collect();
@@ -1149,7 +1149,7 @@ fn reflection_placement(plane: &crate::ir::Plane3) -> Placement3 {
 }
 
 /// World-space bounds of a mesh (f32 positions promoted).
-pub(crate) fn mesh_bounds(mesh: &exedra::Mesh) -> Aabb3 {
+pub(crate) fn mesh_bounds(mesh: &exedra_mesh::Mesh) -> Aabb3 {
     let mut bounds = Aabb3::EMPTY;
     for vertex in mesh.vertices() {
         if let Some(p) = mesh.vertex_position(vertex) {
@@ -1169,9 +1169,9 @@ fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedB
 }
 
 /// Clones a mesh with vertices rigid-transformed (f64 math, one narrowing).
-fn transform_mesh(source: &exedra::Mesh, placement: &Placement3) -> exedra::Mesh {
+fn transform_mesh(source: &exedra_mesh::Mesh, placement: &Placement3) -> exedra_mesh::Mesh {
     let mut mesh = source.clone();
-    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
+    let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
     {
         let mut session = mesh.edit();
         for vertex in vertices {
@@ -1183,7 +1183,7 @@ fn transform_mesh(source: &exedra::Mesh, placement: &Placement3) -> exedra::Mesh
                     reason = "instance placement narrowing mirrors the tessellation boundary"
                 )]
                 let narrowed = [world[0] as f32, world[1] as f32, world[2] as f32];
-                let _ = exedra::op::set_vertex_position(&mut session, vertex, narrowed);
+                let _ = exedra_mesh::op::set_vertex_position(&mut session, vertex, narrowed);
             }
         }
         #[expect(unused_must_use, reason = "discard sink output")]
@@ -1248,8 +1248,8 @@ mod tests {
         );
     }
 
-    fn imported_unit_box() -> exedra::Mesh {
-        let mut builder = exedra::MeshBuilder::new();
+    fn imported_unit_box() -> exedra_mesh::Mesh {
+        let mut builder = exedra_mesh::MeshBuilder::new();
         for point in [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -1275,7 +1275,7 @@ mod tests {
         builder.build().expect("box mesh is valid").mesh
     }
 
-    fn attributed_imported_unit_box() -> exedra::Mesh {
+    fn attributed_imported_unit_box() -> exedra_mesh::Mesh {
         let mut mesh = imported_unit_box();
         let face = mesh.faces().next().expect("box has a face");
         let corner = mesh
@@ -1287,12 +1287,12 @@ mod tests {
             .expect("box corner has a destination");
         {
             let mut edit = mesh.edit();
-            exedra::op::set_face_region(&mut edit, face, 23).expect("live face");
-            exedra::op::set_edge_seam(&mut edit, corner, true).expect("live edge");
-            exedra::op::set_edge_sharpness(&mut edit, corner, 1.75).expect("live edge");
-            exedra::op::set_vertex_sharpness(&mut edit, vertex, 2.5).expect("live vertex");
-            exedra::op::set_corner_uv(&mut edit, corner, [0.25, 0.75]).expect("live corner");
-            exedra::op::set_corner_normal_override(
+            exedra_mesh::op::set_face_region(&mut edit, face, 23).expect("live face");
+            exedra_mesh::op::set_edge_seam(&mut edit, corner, true).expect("live edge");
+            exedra_mesh::op::set_edge_sharpness(&mut edit, corner, 1.75).expect("live edge");
+            exedra_mesh::op::set_vertex_sharpness(&mut edit, vertex, 2.5).expect("live vertex");
+            exedra_mesh::op::set_corner_uv(&mut edit, corner, [0.25, 0.75]).expect("live corner");
+            exedra_mesh::op::set_corner_normal_override(
                 &mut edit,
                 corner,
                 Some([
@@ -1310,10 +1310,10 @@ mod tests {
         mesh
     }
 
-    fn signed_mesh_volume(mesh: &exedra::Mesh) -> f64 {
+    fn signed_mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
         let mut six_volume = 0.0;
         for face in mesh.faces() {
-            for corners in mesh.face_triangles(face, exedra::FaceTriangulation::Fan) {
+            for corners in mesh.face_triangles(face, exedra_mesh::FaceTriangulation::Fan) {
                 let points = corners.map(|corner| {
                     let vertex = mesh.to_vertex(corner).expect("corner has a vertex");
                     mesh.vertex_position(vertex)
@@ -1326,7 +1326,7 @@ mod tests {
         six_volume / 6.0
     }
 
-    fn mirrored_import_recipe(mesh: exedra::Mesh) -> Recipe {
+    fn mirrored_import_recipe(mesh: exedra_mesh::Mesh) -> Recipe {
         let mut builder = RecipeBuilder::new();
         let import = builder.add_import(mesh).expect("deep-valid import");
         let imported = builder
@@ -1365,7 +1365,7 @@ mod tests {
         b.finish(t).expect("valid recipe")
     }
 
-    fn face_cross_z(mesh: &exedra::Mesh, face: exedra::FaceId) -> f32 {
+    fn face_cross_z(mesh: &exedra_mesh::Mesh, face: exedra_mesh::FaceId) -> f32 {
         let positions: Vec<[f32; 3]> = mesh
             .face_loop(face)
             .filter_map(|half_edge| mesh.to_vertex(half_edge))
@@ -1619,7 +1619,10 @@ mod tests {
             .check(&body.mesh)
             .expect("rebuilt provenance is pinned to the output revision");
         assert!(
-            body.mesh.attrs().sparse(exedra::attr::CORNER_UV).is_none(),
+            body.mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_UV)
+                .is_none(),
             "reflection must not invent an unauthored sparse layer"
         );
     }
@@ -1629,7 +1632,7 @@ mod tests {
         // Reflection repairs orientation without changing dimensionality: an
         // authored single-sided import remains one open face with one boundary
         // loop, rather than being rejected or implicitly solidified.
-        let triangle = exedra::Mesh::from_polygons(
+        let triangle = exedra_mesh::Mesh::from_polygons(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[&[0, 1, 2]],
         )
@@ -1687,7 +1690,7 @@ mod tests {
 
         let regions = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("built-in regions");
         let tagged_face = mesh
             .faces()
@@ -1695,7 +1698,7 @@ mod tests {
             .expect("face region follows its face");
         let uvs = mesh
             .attrs()
-            .sparse(exedra::attr::CORNER_UV)
+            .sparse(exedra_mesh::attr::CORNER_UV)
             .expect("authored UV layer survives");
         let tagged_corner = mesh
             .face_loop(tagged_face)
@@ -1734,7 +1737,7 @@ mod tests {
 
         let normals = mesh
             .attrs()
-            .sparse(exedra::attr::CORNER_NORMAL_OVERRIDE)
+            .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
             .expect("authored normal layer survives");
         let normal = normals
             .get(tagged_corner.into())
@@ -1916,7 +1919,7 @@ mod tests {
         let mesh = &result.bodies[0].body.mesh;
         assert!(mesh.validate_deep().is_empty());
         assert!(
-            mesh.attrs().dense(exedra::attr::FACE_REGION).is_some(),
+            mesh.attrs().dense(exedra_mesh::attr::FACE_REGION).is_some(),
             "primitive regions must reach the Boolean result"
         );
     }
@@ -2539,7 +2542,7 @@ mod multi_cutter_regression {
     }
 
     /// Signed volume via the divergence theorem over each planar face fan.
-    fn mesh_volume(mesh: &exedra::Mesh) -> f64 {
+    fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
         let mut volume = 0.0;
         for face in mesh.faces() {
             let points: Vec<[f64; 3]> = mesh
@@ -2997,7 +3000,7 @@ mod cache_regression {
                 let (tri, _) = placed
                     .body
                     .mesh
-                    .to_trimesh(&exedra::ExtractParams::default());
+                    .to_trimesh(&exedra_mesh::ExtractParams::default());
                 (
                     placed.node,
                     exedra_testkit::golden::trimesh_signature(&tri),

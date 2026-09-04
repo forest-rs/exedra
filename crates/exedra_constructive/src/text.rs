@@ -133,9 +133,9 @@ fn dump_loop(out: &mut String, source: &Loop2) {
     }
 }
 
-fn dump_import(out: &mut String, index: usize, mesh: &exedra::Mesh) {
-    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
-    let faces: Vec<exedra::FaceId> = mesh.faces().collect();
+fn dump_import(out: &mut String, index: usize, mesh: &exedra_mesh::Mesh) {
+    let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
+    let faces: Vec<exedra_mesh::FaceId> = mesh.faces().collect();
     let _ = writeln!(
         out,
         "  import {index} vertices {} faces {}",
@@ -520,7 +520,7 @@ pub fn parse_recipe(text: &str) -> Result<Recipe, TextError> {
         let vertex_count = next_u32(&mut tokens, line)? as usize;
         expect(&mut tokens, "faces", line)?;
         let face_count = next_u32(&mut tokens, line)? as usize;
-        let mut mesh_builder = exedra::MeshBuilder::new();
+        let mut mesh_builder = exedra_mesh::MeshBuilder::new();
         for _ in 0..vertex_count {
             let (line, entry) = lines.next()?;
             let rest = entry
@@ -969,8 +969,8 @@ pub(crate) mod tests_support {
 
     /// A tiny valid mesh for import fixtures: one triangle... actually a
     /// closed tetrahedron so deep validation passes.
-    pub(crate) fn tetrahedron() -> exedra::Mesh {
-        let mut mb = exedra::MeshBuilder::new();
+    pub(crate) fn tetrahedron() -> exedra_mesh::Mesh {
+        let mut mb = exedra_mesh::MeshBuilder::new();
         mb.push_vertex([0.0, 0.0, 0.0]);
         mb.push_vertex([1.0, 0.0, 0.0]);
         mb.push_vertex([0.0, 1.0, 0.0]);

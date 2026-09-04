@@ -12,7 +12,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use exedra::{ExtractParams, Mesh, op};
+use exedra_mesh::{ExtractParams, Mesh, op};
 use exedra_primitives::{GridParams, grid};
 use exedra_testkit::trimesh_signature;
 

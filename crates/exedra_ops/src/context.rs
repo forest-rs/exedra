@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use exedra::{CornerId, FaceId, HalfEdgeId, Id, NumericPolicy, VertexId};
+use exedra_mesh::{CornerId, FaceId, HalfEdgeId, Id, NumericPolicy, VertexId};
 #[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -142,7 +142,7 @@ impl Drop for ClockBucket<'_> {
 pub struct OpContext {
     /// Higher-level policy.
     pub policy: PolicySet,
-    /// Numeric policy from Exedra.
+    /// Numeric policy from Exedra Mesh.
     pub numeric: NumericPolicy,
     /// Reusable scratch buffers.
     pub scratch: Scratch,
@@ -159,7 +159,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::Id;
+    use exedra_mesh::Id;
 
     use super::{Clock, OpContext, Scratch};
 

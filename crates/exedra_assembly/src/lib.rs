@@ -11,7 +11,7 @@
 //! list. It compiles parts once per distinct content and shares the result
 //! across instances.
 //!
-//! It intentionally does not own: geometry math (that is [`exedra`] and
+//! It intentionally does not own: geometry math (that is [`exedra_mesh`] and
 //! [`exedra_constructive`]), parameter models, conditional logic, or
 //! pricing — those belong to the external runtimes that drive this crate —
 //! nor rendering itself, which consumes the flattened output.

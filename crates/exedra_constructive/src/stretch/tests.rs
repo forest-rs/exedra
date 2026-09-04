@@ -6,7 +6,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::{FaceBuildAttrs, Mesh, MeshBuilder};
+    use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder};
 
     use super::exact::ExactStretchPlan;
     use super::mesh::{cross3, dot3};
@@ -47,7 +47,7 @@ mod tests {
     fn mesh_volume(mesh: &Mesh) -> f64 {
         let mut six_volume = 0.0;
         for face in mesh.faces() {
-            for corners in mesh.face_triangles(face, exedra::FaceTriangulation::Fan) {
+            for corners in mesh.face_triangles(face, exedra_mesh::FaceTriangulation::Fan) {
                 let points = corners.map(|corner| {
                     let vertex = mesh.to_vertex(corner).expect("corner has a vertex");
                     mesh.vertex_position(vertex)
@@ -220,7 +220,7 @@ mod tests {
         {
             let mut edit = mesh.edit();
             for (corner, uv) in assignments {
-                exedra::op::set_corner_uv(&mut edit, corner, uv).expect("corner is live");
+                exedra_mesh::op::set_corner_uv(&mut edit, corner, uv).expect("corner is live");
             }
             #[expect(unused_must_use, reason = "discard sink output")]
             {
@@ -245,11 +245,11 @@ mod tests {
         let vertex = mesh.from_vertex(edge).expect("edge has an origin");
         {
             let mut edit = mesh.edit();
-            exedra::op::set_edge_seam(&mut edit, edge, true).expect("edge is live");
-            exedra::op::set_edge_sharpness(&mut edit, edge, 2.5).expect("edge is live");
-            exedra::op::set_vertex_sharpness(&mut edit, vertex, 3.25)
+            exedra_mesh::op::set_edge_seam(&mut edit, edge, true).expect("edge is live");
+            exedra_mesh::op::set_edge_sharpness(&mut edit, edge, 2.5).expect("edge is live");
+            exedra_mesh::op::set_vertex_sharpness(&mut edit, vertex, 3.25)
                 .expect("vertex is live");
-            exedra::op::set_corner_normal_override(
+            exedra_mesh::op::set_corner_normal_override(
                 &mut edit,
                 edge,
                 Some([0.0, 0.6, 0.8]),
@@ -485,7 +485,7 @@ mod tests {
         let regions = body
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("extrusion walls have regions");
         let mut seen_regions = Vec::new();
         let mut seen_segments = Vec::new();
@@ -540,7 +540,7 @@ mod tests {
         let regions = body
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("extrusion walls have regions");
         let mut seen = body
             .mesh
@@ -586,7 +586,7 @@ mod tests {
         let regions = body
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("stretch keeps face regions");
         for region in 10..=15 {
             assert!(
@@ -623,7 +623,7 @@ mod tests {
         let mesh = &result.bodies[0].body.mesh;
         let uvs = mesh
             .attrs()
-            .sparse(exedra::attr::CORNER_UV)
+            .sparse(exedra_mesh::attr::CORNER_UV)
             .expect("mapped input retains corner UVs");
         let mut found_extended_band = false;
         for face in mesh.faces() {
@@ -682,7 +682,7 @@ mod tests {
             .body
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("contraction retains regions");
         for expected in [100, 101, 102, 103, 200, 201, 202, 203] {
             assert!(
@@ -888,7 +888,7 @@ mod tests {
             let (triangles, _) = evaluation.bodies[0]
                 .body
                 .mesh
-                .to_trimesh(&exedra::ExtractParams::default());
+                .to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&triangles)
         };
         let first = evaluate(&recipe, &policy).unwrap();
@@ -989,7 +989,7 @@ mod tests {
         );
         let normals = mesh
             .attrs()
-            .sparse(exedra::attr::CORNER_NORMAL_OVERRIDE)
+            .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
             .expect("normal override layer survives");
         assert!(mesh.faces().flat_map(|face| mesh.face_loop(face)).any(
             |corner| normals.get(corner.into()).copied() == Some([0.0, 0.6, 0.8])

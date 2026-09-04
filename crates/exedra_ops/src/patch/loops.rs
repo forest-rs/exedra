@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::VertexId;
+use exedra_mesh::VertexId;
 
 use crate::patch::region::{FaceEdgeRef, SelectedFaceRegion};
 
@@ -27,7 +27,7 @@ pub(crate) enum BoundaryLoopError {
 }
 
 pub(crate) fn extract_boundary_loops(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     region: &SelectedFaceRegion,
 ) -> Result<Vec<BoundaryLoop>, BoundaryLoopError> {
     let selected_faces = region
@@ -58,17 +58,17 @@ pub(crate) fn extract_boundary_loops(
         .collect()
 }
 
-fn map_boundary_error(error: exedra::SelectedFaceBoundaryError) -> BoundaryLoopError {
+fn map_boundary_error(error: exedra_mesh::SelectedFaceBoundaryError) -> BoundaryLoopError {
     match error {
-        exedra::SelectedFaceBoundaryError::AmbiguousBoundaryVertex { vertex, candidates } => {
+        exedra_mesh::SelectedFaceBoundaryError::AmbiguousBoundaryVertex { vertex, candidates } => {
             BoundaryLoopError::AmbiguousBoundaryVertex { vertex, candidates }
         }
-        exedra::SelectedFaceBoundaryError::OpenBoundaryChain { start, end } => {
+        exedra_mesh::SelectedFaceBoundaryError::OpenBoundaryChain { start, end } => {
             BoundaryLoopError::OpenBoundaryChain { start, end }
         }
-        exedra::SelectedFaceBoundaryError::OutsideFaceInSelection
-        | exedra::SelectedFaceBoundaryError::StaleFace { .. }
-        | exedra::SelectedFaceBoundaryError::InvalidFaceLoop { .. } => {
+        exedra_mesh::SelectedFaceBoundaryError::OutsideFaceInSelection
+        | exedra_mesh::SelectedFaceBoundaryError::StaleFace { .. }
+        | exedra_mesh::SelectedFaceBoundaryError::InvalidFaceLoop { .. } => {
             BoundaryLoopError::InvalidSelectedPatch
         }
     }
@@ -78,7 +78,7 @@ fn map_boundary_error(error: exedra::SelectedFaceBoundaryError) -> BoundaryLoopE
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::{BuildParams, Mesh};
+    use exedra_mesh::{BuildParams, Mesh};
 
     use super::extract_boundary_loops;
     use crate::OpContext;

@@ -8,7 +8,7 @@
 //! API tiers:
 //! - `exedra_ops` (SDK tier): operator reference, selection/query ergonomics,
 //!   deterministic plan lifecycle, reporting, and workflow-first examples.
-//! - `exedra` (engine tier): topology/attribute storage, invariants, and
+//! - `exedra_mesh` (engine tier): topology/attribute storage, invariants, and
 //!   deterministic kernel edits.
 //!
 //! # Where To Add New API

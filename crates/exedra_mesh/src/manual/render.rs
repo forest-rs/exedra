@@ -26,7 +26,7 @@
 //! # Example
 //!
 //! ```rust
-//! use exedra::{ExtractParams, Mesh};
+//! use exedra_mesh::{ExtractParams, Mesh};
 //!
 //! let mesh = Mesh::from_indexed_triangles(
 //!     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -36,5 +36,5 @@
 //! let (tri, stats) = mesh.to_trimesh(&ExtractParams::default());
 //! assert_eq!(tri.indices, vec![0, 1, 2]);
 //! assert_eq!(stats.triangle_count, 1);
-//! # Ok::<(), exedra::BuildError>(())
+//! # Ok::<(), exedra_mesh::BuildError>(())
 //! ```

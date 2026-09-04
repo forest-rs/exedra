@@ -10,15 +10,15 @@ keywords = ["geometry", "analytic", "tessellation", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
-exedra = { default-features = false, path = "../exedra" }
 exedra_math.workspace = true
+exedra_mesh = { default-features = false, path = "../exedra_mesh" }
 exedra_triangulate.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]
 default = ["std"]
-libm = ["dep:libm", "exedra/libm", "exedra_math/libm"]
-std = ["exedra/std", "exedra_math/std"]
+libm = ["dep:libm", "exedra_mesh/libm", "exedra_math/libm"]
+std = ["exedra_mesh/std", "exedra_math/std"]
 
 [lints]
 workspace = true

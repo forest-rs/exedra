@@ -16,7 +16,7 @@ libm = ["exedra_ops/libm"]
 std = ["exedra_ops/std"]
 
 [dev-dependencies]
-exedra.workspace = true
+exedra_mesh.workspace = true
 exedra_ops.workspace = true
 exedra_primitives = { features = ["std"], workspace = true }
 

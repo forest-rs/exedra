@@ -16,7 +16,7 @@ so rounding can be a deterministic mesh pass above them.
 
 ## Decision
 
-`exedra::round::round_sharp_edges` plans read-only and applies to a staged
+`exedra_mesh::round::round_sharp_edges` plans read-only and applies to a staged
 mesh clone in one edit session:
 
 - **Selection and chains.** Canonical edges with sharpness at or above a

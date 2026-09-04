@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::CornerId;
+use exedra_mesh::CornerId;
 
 use crate::{
     Artifact, Artifacts, EditOperator, OpContext, OpError, OpReport, UvScope,
@@ -72,9 +72,9 @@ impl EditOperator for UvCylinder {
         "uv.cylinder"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -130,7 +130,7 @@ impl EditOperator for UvCylinder {
         {
             let _bucket = ctx.clock.bucket("attrs");
             for (corner, uv) in pending {
-                if exedra::op::set_corner_uv(txn, corner, uv).is_ok() {
+                if exedra_mesh::op::set_corner_uv(txn, corner, uv).is_ok() {
                     report.stats.counters.corners_written =
                         report.stats.counters.corners_written.saturating_add(1);
                 }
@@ -141,16 +141,16 @@ impl EditOperator for UvCylinder {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -159,7 +159,7 @@ impl EditOperator for UvCylinder {
 }
 
 fn project_corner_cylinder(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     corner: CornerId,
     params: &UvCylinderParams,
 ) -> [f32; 2] {
@@ -186,12 +186,12 @@ fn project_corner_cylinder(
 
 #[cfg(test)]
 mod tests {
-    use exedra::MeshBuilder;
+    use exedra_mesh::MeshBuilder;
 
     use super::{CylinderAxis, UvCylinder, UvCylinderParams};
     use crate::{OperatorRunner, UvScope, test_support::commit};
 
-    fn side_strip_mesh() -> exedra::Mesh {
+    fn side_strip_mesh() -> exedra_mesh::Mesh {
         let mut builder = MeshBuilder::new();
         builder.push_vertex([1.0, 0.0, 0.0]);
         builder.push_vertex([1.0, 1.0, 0.0]);
@@ -245,8 +245,8 @@ mod tests {
         let _ =
             commit(&mut runner_b, &mut mesh_b, &UvCylinder, &params).expect("run should succeed");
 
-        let (tri_a, _) = mesh_a.to_trimesh(&exedra::ExtractParams::default());
-        let (tri_b, _) = mesh_b.to_trimesh(&exedra::ExtractParams::default());
+        let (tri_a, _) = mesh_a.to_trimesh(&exedra_mesh::ExtractParams::default());
+        let (tri_b, _) = mesh_b.to_trimesh(&exedra_mesh::ExtractParams::default());
         assert_eq!(tri_a.uvs, tri_b.uvs);
         assert!(tri_a.uvs.iter().all(|uv| uv[0] >= 0.0 && uv[0] < 1.0));
     }

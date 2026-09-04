@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use exedra::FaceId;
+use exedra_mesh::FaceId;
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
@@ -66,7 +66,7 @@ pub struct BoundsOutput {
 /// # Example
 /// ```rust
 /// use exedra_ops::{BoundsParams, InspectBounds, OperatorRunner};
-/// use exedra::{BuildParams, Mesh};
+/// use exedra_mesh::{BuildParams, Mesh};
 ///
 /// let mut mesh = Mesh::from_indexed_triangles(
 ///     &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
@@ -97,9 +97,9 @@ impl EditOperator for InspectBounds {
         "inspect.bounds"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -130,7 +130,7 @@ impl EditOperator for InspectBounds {
                 if canonicalize_face_set(&mut faces) {
                     report.stats.counters.selections_canonicalized = 1;
                 }
-                let mut vertices = Vec::<exedra::VertexId>::new();
+                let mut vertices = Vec::<exedra_mesh::VertexId>::new();
                 for face in faces {
                     if face == FaceId::OUTSIDE {
                         return Err(op_error(
@@ -190,16 +190,16 @@ impl EditOperator for InspectBounds {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -256,7 +256,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, FaceId, Id, Mesh};
+    use exedra_mesh::{BuildParams, FaceId, Id, Mesh};
 
     use super::{BoundsParams, BoundsScope, InspectBounds};
     use crate::{OpErrorKind, OperatorRunner, test_support::commit};

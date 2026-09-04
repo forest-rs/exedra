@@ -20,7 +20,7 @@
 //! # Example
 //!
 //! ```rust
-//! use exedra::Mesh;
+//! use exedra_mesh::Mesh;
 //!
 //! let mesh = Mesh::new();
 //! assert!(mesh.validate_fast().is_empty());

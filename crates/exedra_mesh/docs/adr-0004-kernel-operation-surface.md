@@ -1,4 +1,4 @@
-# ADR-0004: Exedra Kernel Operations Live in `exedra::op`
+# ADR-0004: Exedra Kernel Operations Live in `exedra_mesh::op`
 
 **Status:** Accepted  
 **Date:** 2026-03-08
@@ -11,15 +11,15 @@ Exedra's topology-editing surface currently lives mostly on
 1. edit host,
 2. bookkeeping/change-set owner,
 3. low-level topology helper namespace,
-4. public catalog of kernel edits.
+4. public surface of kernel edits.
 
 This has become hard to navigate and obscures the architectural boundary
 between Exedra kernel edits and Exedra Ops workflow operators.
 
 ## Decision
 
-Add a first-class `exedra::op` module that owns the public kernel operation
-catalog.
+Add a first-class `exedra_mesh::op` module that owns the public kernel mutation
+surface.
 
 The boundary is:
 
@@ -36,7 +36,7 @@ hierarchy, runner layer, or command-object representation in Exedra.
 ## Rationale
 
 - Makes kernel edits explicit and discoverable without turning `EditSession`
-  into the public operation catalog.
+  into the public operation namespace.
 - Keeps bookkeeping and mutation plumbing where it belongs: on the session.
 - Gives Exedra Ops a cleaner composition seam for future modeling operators.
 - Avoids the allocation/verbosity cost of struct-wrapped command values for
@@ -44,10 +44,10 @@ hierarchy, runner layer, or command-object representation in Exedra.
 
 ## Consequences
 
-- Public mutation entry points live in `exedra::op::*`.
+- Public mutation entry points live in `exedra_mesh::op::*`.
 - `MeshBuilder` remains the construction API; `Mesh` is no longer a mutation
   convenience surface for topology edits.
 - `EditSession` is the eager edit host and internal plumbing seam, not a
-  second public mutation catalog.
+  second public mutation surface.
 - Topology operation bodies live in `op/*`; `session/*` retains bookkeeping,
   cache invalidation, propagation helpers, and other mutation plumbing.

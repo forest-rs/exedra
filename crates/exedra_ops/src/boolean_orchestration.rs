@@ -8,7 +8,7 @@
 //!   sane?" cheaply: AABB overlap gate, broad-phase candidate discovery,
 //!   and the intersection curves as exportable polyline artifacts — no
 //!   splitting, no stitching.
-//! - **Commit** runs the full robust pipeline (`exedra::boolean::boolean_mesh`)
+//! - **Commit** runs the full robust pipeline (`exedra_mesh::boolean::boolean_mesh`)
 //!   and applies workflow policy: typed failure on suspect patches
 //!   (surfaced as Exedra Ops diagnostics), and policy-driven tiny-component
 //!   cleanup with every removal reported, never silent.
@@ -17,11 +17,11 @@
 
 use alloc::vec::Vec;
 
-use exedra::boolean::{
+use exedra_mesh::boolean::{
     BooleanBvh, BooleanDiagnostics, BooleanError, BooleanOp, BooleanOutput, BooleanScratch,
     SeamCleanupPolicy, SeamCleanupStats, build_intersection_graph, cleanup_seams, narrow_phase,
 };
-use exedra::{FaceTriangulation, Mesh};
+use exedra_mesh::{FaceTriangulation, Mesh};
 
 use crate::context::Clock;
 use crate::diag::{DiagCode, DiagLevel, Diagnostic};
@@ -205,7 +205,7 @@ pub fn commit_boolean(
 
     let mut output = {
         let _bucket = clock.bucket("boolean.commit");
-        exedra::boolean::boolean_mesh(
+        exedra_mesh::boolean::boolean_mesh(
             mesh_a,
             mesh_b,
             op,
@@ -272,7 +272,7 @@ pub fn commit_boolean(
     })
 }
 
-fn output_face_alive(mesh: &Mesh, face: exedra::FaceId) -> bool {
+fn output_face_alive(mesh: &Mesh, face: exedra_mesh::FaceId) -> bool {
     mesh.faces().any(|f| f == face)
 }
 
@@ -280,7 +280,7 @@ fn output_face_alive(mesh: &Mesh, face: exedra::FaceId) -> bool {
 /// number of faces removed. Deterministic: components discovered in face
 /// slot order.
 fn remove_tiny_components(mesh: &mut Mesh, min_faces: u32) -> u32 {
-    use exedra::FaceId;
+    use exedra_mesh::FaceId;
     let faces: Vec<FaceId> = mesh.faces().collect();
     // BTreeSet: deterministic and no extra dependency.
     let mut assigned: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
@@ -319,7 +319,11 @@ fn remove_tiny_components(mesh: &mut Mesh, min_faces: u32) -> u32 {
     doomed.sort_unstable();
     let count = u32::try_from(doomed.len()).unwrap_or(u32::MAX);
     let mut session = mesh.edit();
-    let _ = exedra::op::delete_faces(&mut session, &doomed, exedra::DeletePolicy::CleanupIsolated);
+    let _ = exedra_mesh::op::delete_faces(
+        &mut session,
+        &doomed,
+        exedra_mesh::DeletePolicy::CleanupIsolated,
+    );
     #[expect(unused_must_use, reason = "sink output unused")]
     {
         session.finish();

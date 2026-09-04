@@ -5,12 +5,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use exedra::{FaceBuildAttrs, Mesh, MeshBuilder, attr, op};
 use exedra_isosurface::{
     DualContourParams, DualContourStats, HermiteIntersection, ScalarField,
     SemiAnalyticContourStats, SemiAnalyticFeature, SemiAnalyticField,
     SemiAnalyticProjectionOutcome, locate_edge_intersection,
 };
+use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder, attr, op};
 use exedra_qef::{PlaneConstraint, QefBounds, QefSolver, SharpnessClass};
 use exedra_spatial::Aabb;
 
@@ -757,7 +757,7 @@ fn populate_region_boundary_seams(mesh: &mut Mesh) {
             let Some(other) = mesh.face(twin) else {
                 continue;
             };
-            if other != exedra::FaceId::OUTSIDE
+            if other != exedra_mesh::FaceId::OUTSIDE
                 && regions
                     .get(other.as_id())
                     .copied()
@@ -774,7 +774,7 @@ fn populate_region_boundary_seams(mesh: &mut Mesh) {
     let _: () = session.finish();
 }
 
-fn face_centroid(mesh: &Mesh, corners: &[exedra::CornerId]) -> [f32; 3] {
+fn face_centroid(mesh: &Mesh, corners: &[exedra_mesh::CornerId]) -> [f32; 3] {
     let mut sum = [0.0; 3];
     for &corner in corners {
         let vertex = mesh.to_vertex(corner).expect("corner vertex");

@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra_mesh::MeshBuilder;
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -123,7 +123,7 @@ pub fn torus(params: &TorusParams) -> Primitive {
 
 #[cfg(test)]
 mod tests {
-    use exedra::ExtractParams;
+    use exedra_mesh::ExtractParams;
 
     use super::{REGION_BODY, TorusParams, torus};
 

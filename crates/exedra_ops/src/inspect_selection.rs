@@ -82,9 +82,9 @@ impl EditOperator for InspectSelectionSummary {
         "inspect.select.summary"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -113,7 +113,7 @@ impl EditOperator for InspectSelectionSummary {
                 report.stats.elements_touched.faces = output.item_count;
                 report.stats.counters.faces_processed = output.item_count;
                 for &face in faces {
-                    if face == exedra::FaceId::OUTSIDE {
+                    if face == exedra_mesh::FaceId::OUTSIDE {
                         output.outside_count = output.outside_count.saturating_add(1);
                         continue;
                     }
@@ -172,16 +172,16 @@ impl EditOperator for InspectSelectionSummary {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -193,7 +193,7 @@ impl EditOperator for InspectSelectionSummary {
 mod tests {
     use alloc::vec;
 
-    use exedra::{BuildParams, FaceId, HalfEdgeId, Id, Mesh, VertexId};
+    use exedra_mesh::{BuildParams, FaceId, HalfEdgeId, Id, Mesh, VertexId};
 
     use super::{
         InspectSelectionSummary, SelectionSummaryDetail, SelectionSummaryOutput,

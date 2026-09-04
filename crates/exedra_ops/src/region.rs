@@ -5,7 +5,7 @@
 
 use alloc::vec;
 
-use exedra::{FaceId, HalfEdgeId};
+use exedra_mesh::{FaceId, HalfEdgeId};
 
 use crate::op_common::op_error;
 use crate::selection::{EdgeSet, FaceSet, canonicalize_edge_set, canonicalize_face_set};
@@ -39,9 +39,9 @@ impl EditOperator for TagFaceRegion {
         "tag.face.region"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -60,7 +60,7 @@ impl EditOperator for TagFaceRegion {
         if txn
             .mesh()
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .is_none()
         {
             return Err(op_error(
@@ -76,7 +76,7 @@ impl EditOperator for TagFaceRegion {
             if face == FaceId::OUTSIDE {
                 continue;
             }
-            if exedra::op::set_face_region(txn, face, params.region_id).is_err() {
+            if exedra_mesh::op::set_face_region(txn, face, params.region_id).is_err() {
                 return Err(op_error(
                     ctx,
                     OpErrorKind::PreconditionFailed,
@@ -94,16 +94,16 @@ impl EditOperator for TagFaceRegion {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -131,9 +131,9 @@ impl EditOperator for SelectBoundaryEdgeLoop {
         "select.edgeloop.boundary"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -158,16 +158,16 @@ impl EditOperator for SelectBoundaryEdgeLoop {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -206,12 +206,12 @@ pub struct RegionFloodSelection {
 
 /// Returns all non-OUTSIDE faces tagged with `region_id`.
 pub fn select_faces_by_region(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     region_id: u32,
 ) -> Result<RegionSelection, OpError> {
     let layer = mesh
         .attrs()
-        .dense(exedra::attr::FACE_REGION)
+        .dense(exedra_mesh::attr::FACE_REGION)
         .ok_or_else(|| {
             OpError::new(
                 OpErrorKind::MissingAttribute,
@@ -248,7 +248,7 @@ pub fn select_faces_by_region(
 /// v0.1 scope supports boundary loops only. Passing an interior edge returns
 /// [`OpErrorKind::PreconditionFailed`].
 pub fn select_boundary_edge_loop(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     seed_edge: HalfEdgeId,
 ) -> Result<EdgeLoopSelection, OpError> {
     let mut result = EdgeLoopSelection::default();
@@ -274,7 +274,7 @@ pub fn select_boundary_edge_loop(
 
 /// Flood-fills connected faces that share the seed face's region ID.
 pub fn flood_fill_faces_by_region(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     seed_face: FaceId,
 ) -> Result<RegionFloodSelection, OpError> {
     let faces = mesh
@@ -282,7 +282,7 @@ pub fn flood_fill_faces_by_region(
         .map_err(map_connected_face_region_error)?;
     let layer = mesh
         .attrs()
-        .dense(exedra::attr::FACE_REGION)
+        .dense(exedra_mesh::attr::FACE_REGION)
         .ok_or_else(|| {
             query_error(
                 OpErrorKind::MissingAttribute,
@@ -319,21 +319,21 @@ fn query_error(kind: OpErrorKind, code: DiagCode, message: &'static str) -> OpEr
     )
 }
 
-fn map_boundary_loop_error(error: exedra::BoundaryLoopError) -> OpError {
+fn map_boundary_loop_error(error: exedra_mesh::BoundaryLoopError) -> OpError {
     match error {
-        exedra::BoundaryLoopError::StaleHalfEdge => query_error(
+        exedra_mesh::BoundaryLoopError::StaleHalfEdge => query_error(
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
             "edge loop seed is stale or missing twin",
         ),
-        exedra::BoundaryLoopError::NotBoundaryEdge => query_error(
+        exedra_mesh::BoundaryLoopError::NotBoundaryEdge => query_error(
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
             "edge loop selection currently supports boundary edges only",
         ),
-        exedra::BoundaryLoopError::NonBoundaryHalfEdge { .. }
-        | exedra::BoundaryLoopError::MissingNext { .. }
-        | exedra::BoundaryLoopError::RevisitedHalfEdge { .. } => query_error(
+        exedra_mesh::BoundaryLoopError::NonBoundaryHalfEdge { .. }
+        | exedra_mesh::BoundaryLoopError::MissingNext { .. }
+        | exedra_mesh::BoundaryLoopError::RevisitedHalfEdge { .. } => query_error(
             OpErrorKind::InternalInvariantViolation,
             DiagCode::InternalInvariantViolation,
             "boundary loop traversal encountered invalid mesh boundary state",
@@ -341,25 +341,25 @@ fn map_boundary_loop_error(error: exedra::BoundaryLoopError) -> OpError {
     }
 }
 
-fn map_connected_face_region_error(error: exedra::ConnectedFaceRegionError) -> OpError {
+fn map_connected_face_region_error(error: exedra_mesh::ConnectedFaceRegionError) -> OpError {
     match error {
-        exedra::ConnectedFaceRegionError::OutsideSeedFace => query_error(
+        exedra_mesh::ConnectedFaceRegionError::OutsideSeedFace => query_error(
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
             "region flood fill seed cannot be FaceId::OUTSIDE",
         ),
-        exedra::ConnectedFaceRegionError::StaleSeedFace { .. } => query_error(
+        exedra_mesh::ConnectedFaceRegionError::StaleSeedFace { .. } => query_error(
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
             "region flood fill seed face is stale",
         ),
-        exedra::ConnectedFaceRegionError::MissingFaceRegionAttribute => query_error(
+        exedra_mesh::ConnectedFaceRegionError::MissingFaceRegionAttribute => query_error(
             OpErrorKind::MissingAttribute,
             DiagCode::MissingRequiredAttribute,
             "missing required dense face.region layer",
         ),
-        exedra::ConnectedFaceRegionError::MissingFaceRegionValue { .. }
-        | exedra::ConnectedFaceRegionError::BrokenAdjacency { .. } => query_error(
+        exedra_mesh::ConnectedFaceRegionError::MissingFaceRegionValue { .. }
+        | exedra_mesh::ConnectedFaceRegionError::BrokenAdjacency { .. } => query_error(
             OpErrorKind::InternalInvariantViolation,
             DiagCode::InternalInvariantViolation,
             "region flood fill encountered invalid mesh region state",
@@ -373,7 +373,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, FaceId, HalfEdgeId, Id, Mesh, MeshBuilder};
+    use exedra_mesh::{BuildParams, FaceId, HalfEdgeId, Id, Mesh, MeshBuilder};
 
     use super::{
         EdgeLoopSelection, REGION_UNTAGGED, RegionFloodSelection, SelectBoundaryEdgeLoop,
@@ -411,7 +411,7 @@ mod tests {
 
         let region = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("face region layer must exist")
             .get(face.as_id())
             .copied();
@@ -445,7 +445,7 @@ mod tests {
 
         let region = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("face region layer must exist")
             .get(face.as_id())
             .copied();
@@ -463,7 +463,7 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         let region = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("face region layer must exist")
             .get(face.as_id())
             .copied();
@@ -523,7 +523,7 @@ mod tests {
         let face = mesh.faces().next().expect("face should exist");
         assert!(
             mesh.attrs()
-                .dense(exedra::attr::FACE_REGION)
+                .dense(exedra_mesh::attr::FACE_REGION)
                 .expect("face region layer should exist")
                 .get(face.as_id())
                 .is_some_and(|v| *v == 0)

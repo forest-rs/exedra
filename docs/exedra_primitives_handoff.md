@@ -23,7 +23,7 @@ This is **not** Exedra core. `exedra_primitives` is tooling/support code designe
      - **Selections** (canonical FaceSets/EdgeSets) for common parts (caps, side walls, seams, rims).
 
 4. **Validation baseline**
-   - Every primitive is expected to pass `exedra::Mesh::validate_deep()` (where available) with no errors.
+   - Every primitive is expected to pass `exedra_mesh::Mesh::validate_deep()` (where available) with no errors.
    - If a primitive fails validation, treat as a kernel/primitive bug.
 
 5. **Minimal dependencies**
@@ -72,7 +72,7 @@ Recommended companion crates already exist:
 
 ```rust
 pub struct Primitive {
-    pub mesh: exedra::Mesh,
+    pub mesh: exedra_mesh::Mesh,
 
     /// Face-domain semantic tag layer (demo/tooling level).
     /// This is not required to be a built-in Exedra layer.
@@ -108,8 +108,8 @@ Notes:
 Selections are canonical and deterministic.
 
 ```rust
-pub struct FaceSet(pub alloc::vec::Vec<exedra::FaceId>);
-pub struct EdgeSet(pub alloc::vec::Vec<exedra::HalfEdgeId>);
+pub struct FaceSet(pub alloc::vec::Vec<exedra_mesh::FaceId>);
+pub struct EdgeSet(pub alloc::vec::Vec<exedra_mesh::HalfEdgeId>);
 
 pub struct Selections {
     /// Named face sets (e.g. "cap_top", "walls", "sides").
@@ -137,9 +137,9 @@ Examples:
 
 Primitives must write required Exedra built-ins:
 
-- `exedra::attr::VERTEX_POSITION` (required, dense)
+- `exedra_mesh::attr::VERTEX_POSITION` (required, dense)
 - **Do not** require UVs by default. Many primitives should leave:
-  - `exedra::attr::CORNER_UV` absent/missing, so Exedra Ops UV operators can be validated.
+  - `exedra_mesh::attr::CORNER_UV` absent/missing, so Exedra Ops UV operators can be validated.
 
 Optional:
 - some primitives may emit a convenient initial UV set (behind a flag), but keep that separate from the default.
@@ -296,7 +296,7 @@ Build primitives using the Exedra ingestion path, then convert to polygonal half
 - Start from an indexed triangle mesh generator (deterministic):
   - positions: `Vec<[f32;3]>`
   - indices: `Vec<[u32;3]>`
-- Use `exedra::Mesh::from_indexed_triangles(...)` to ingest.
+- Use `exedra_mesh::Mesh::from_indexed_triangles(...)` to ingest.
 - Optionally, as Exedra gains polygon-soup/ngon construction APIs, migrate `quad` to build as an ngon face directly.
 
 Rationale:

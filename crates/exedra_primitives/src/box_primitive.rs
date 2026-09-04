@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{FaceBuildAttrs, FaceId, MeshBuilder};
+use exedra_mesh::{FaceBuildAttrs, FaceId, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -296,14 +296,14 @@ fn extent(size: f32, centered: bool) -> (f32, f32) {
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::ExtractParams;
+    use exedra_mesh::ExtractParams;
 
     use super::{
         BoxParams, REGION_SIDE_X_NEG, REGION_SIDE_X_POS, REGION_SIDE_Y_NEG, REGION_SIDE_Y_POS,
         REGION_SIDE_Z_NEG, REGION_SIDE_Z_POS, box_primitive,
     };
 
-    fn face_normal(mesh: &exedra::Mesh, face: exedra::FaceId) -> [f32; 3] {
+    fn face_normal(mesh: &exedra_mesh::Mesh, face: exedra_mesh::FaceId) -> [f32; 3] {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         let mut sum = [0.0_f32, 0.0_f32, 0.0_f32];
         for i in 0..corners.len() {

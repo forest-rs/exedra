@@ -5,7 +5,7 @@
 //! element.
 //!
 //! A [`SourceMap`] is built alongside tessellation and pinned to the mesh's
-//! [`exedra::MeshRevision`]: editing the mesh afterwards invalidates the map
+//! [`exedra_mesh::MeshRevision`]: editing the mesh afterwards invalidates the map
 //! *explicitly* — lookups fail with [`StaleSourceMap`] instead of silently
 //! describing geometry that no longer exists.
 //!
@@ -15,7 +15,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{FaceId, Mesh, MeshRevision, VertexId};
+use exedra_mesh::{FaceId, Mesh, MeshRevision, VertexId};
 
 use crate::tessellate::Feature;
 

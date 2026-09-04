@@ -51,7 +51,7 @@ compile_error!("exedra_primitives requires either the `std` or `libm` feature");
 
 use alloc::vec::Vec;
 
-use exedra::{FaceId, HalfEdgeId, Mesh};
+use exedra_mesh::{FaceId, HalfEdgeId, Mesh};
 
 mod box_primitive;
 mod common;
@@ -297,7 +297,7 @@ mod tests {
     use alloc::vec;
     use core::num::NonZeroU32;
 
-    use exedra::{FaceId, HalfEdgeId};
+    use exedra_mesh::{FaceId, HalfEdgeId};
 
     use crate::{
         EdgeSet, FaceRegionLayer, FaceSet, RegionId, sort_and_dedup_edges, sort_and_dedup_faces,

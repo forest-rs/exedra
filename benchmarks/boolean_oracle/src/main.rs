@@ -4,7 +4,7 @@
 //! Dual-witness cross-validation oracle for mesh booleans and field CSG.
 //!
 //! Seeded scenario classes (see [`scenario`]) are evaluated three
-//! independent ways — the exedra mesh boolean pipeline, the
+//! independent ways — the `exedra_mesh` boolean pipeline, the
 //! `exedra_isosurface` field combinators, and a closed-form union-of-convex
 //! half-space referee — and every sampled point's membership is
 //! cross-checked. The referee is exact for the polyhedral solid the mesh

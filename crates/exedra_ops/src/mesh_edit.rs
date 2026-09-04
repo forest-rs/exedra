@@ -10,7 +10,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{DeletePolicy, FaceId, HalfEdgeId, Mesh, NormalParams};
+use exedra_mesh::{DeletePolicy, FaceId, HalfEdgeId, Mesh, NormalParams};
 
 use crate::plan::{EditPlan, PlanFingerprint, PlanHasher};
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
@@ -210,9 +210,9 @@ pub struct MeshEditPreview {
 ///
 /// ```rust
 /// use exedra_ops::{MeshEdit, OperatorRunner, Selection};
-/// use exedra::DeletePolicy;
+/// use exedra_mesh::DeletePolicy;
 ///
-/// let mesh = exedra::Mesh::from_polygons(
+/// let mesh = exedra_mesh::Mesh::from_polygons(
 ///     &[
 ///         [0.0, 0.0, 0.0],
 ///         [1.0, 0.0, 0.0],
@@ -245,7 +245,7 @@ pub struct MeshEditPreview {
 /// ```rust
 /// use exedra_ops::{MeshEdit, OperatorRunner};
 ///
-/// let mut mesh = exedra::Mesh::from_polygons(
+/// let mut mesh = exedra_mesh::Mesh::from_polygons(
 ///     &[
 ///         [0.0, 0.0, 0.0],
 ///         [1.0, 0.0, 0.0],
@@ -276,7 +276,7 @@ pub struct MeshEditPreview {
 /// ```rust
 /// use exedra_ops::{MeshEdit, OperatorRunner};
 ///
-/// let mut mesh = exedra::Mesh::from_polygons(
+/// let mut mesh = exedra_mesh::Mesh::from_polygons(
 ///     &[
 ///         [0.0, 0.0, 0.0],
 ///         [1.0, 0.0, 0.0],
@@ -303,7 +303,7 @@ pub struct MeshEditPreview {
 /// ```rust
 /// use exedra_ops::{DeletePolicy, MeshEdit, OperatorRunner};
 ///
-/// let mut mesh = exedra::Mesh::from_polygons(
+/// let mut mesh = exedra_mesh::Mesh::from_polygons(
 ///     &[
 ///         [0.0, 0.0, 0.0],
 ///         [4.0, 0.0, 0.0],
@@ -1477,7 +1477,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::{DeletePolicy, MeshBuilder, NormalParams};
+    use exedra_mesh::{DeletePolicy, MeshBuilder, NormalParams};
 
     use super::MeshEdit;
     use crate::{
@@ -1490,7 +1490,7 @@ mod tests {
         TagFaceRegionParams, mesh_signature, test_support::shared_edge_mesh,
     };
 
-    fn one_quad_mesh() -> (exedra::Mesh, exedra::FaceId) {
+    fn one_quad_mesh() -> (exedra_mesh::Mesh, exedra_mesh::FaceId) {
         let mut builder = MeshBuilder::new();
         let _ = builder.push_vertex([0.0, 0.0, 0.0]);
         let _ = builder.push_vertex([1.0, 0.0, 0.0]);
@@ -1568,7 +1568,7 @@ mod tests {
         assert!(matches!(result.selection, Selection::Faces(_)));
 
         let flow = MeshEdit::new()
-            .select(Selection::from(vec![exedra::VertexId::new(
+            .select(Selection::from(vec![exedra_mesh::VertexId::new(
                 0,
                 core::num::NonZeroU32::MIN,
             )]))
@@ -1622,9 +1622,12 @@ mod tests {
         let inserted = {
             let mut working = mesh.clone();
             let mut edit = working.edit();
-            let inserted =
-                exedra::op::split_edge(&mut edit, edge, &exedra::PropagatePolicy::default())
-                    .expect("split should succeed");
+            let inserted = exedra_mesh::op::split_edge(
+                &mut edit,
+                edge,
+                &exedra_mesh::PropagatePolicy::default(),
+            )
+            .expect("split should succeed");
             let _: () = edit.finish();
             (working, inserted)
         };
@@ -1974,7 +1977,7 @@ mod tests {
 
     #[test]
     fn mesh_edit_can_seed_selection_from_region_flood() {
-        let mesh = exedra::Mesh::from_polygons(
+        let mesh = exedra_mesh::Mesh::from_polygons(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -2017,7 +2020,7 @@ mod tests {
 
     #[test]
     fn mesh_edit_bridge_matches_direct_operator() {
-        let mesh = exedra::Mesh::from_polygons(
+        let mesh = exedra_mesh::Mesh::from_polygons(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -2117,10 +2120,10 @@ mod tests {
 
     #[test]
     fn mesh_edit_delete_vertices_accepts_vertex_selection() {
-        let mut mesh = exedra::Mesh::new();
+        let mut mesh = exedra_mesh::Mesh::new();
         let v0 = {
             let mut txn = mesh.edit();
-            let v0 = exedra::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
+            let v0 = exedra_mesh::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
             let _: () = txn.finish();
             v0
         };

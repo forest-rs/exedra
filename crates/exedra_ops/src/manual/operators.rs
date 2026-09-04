@@ -4,7 +4,7 @@
 //! Operator Authoring Guide
 //!
 //! Operators implement [`EditOperator`](crate::EditOperator) and mutate mesh
-//! state through an in-flight [`exedra::EditSession`]. The runner owns
+//! state through an in-flight [`exedra_mesh::EditSession`]. The runner owns
 //! apply/preview orchestration.
 //!
 //! Lifecycle:
@@ -87,7 +87,7 @@
 //!   [`MarkEdgeSharpParams`](crate::MarkEdgeSharpParams).
 //!
 //! Transaction propagation behavior for split kernels is controlled by
-//! [`exedra::EdgeAttrPropagation`]:
+//! [`exedra_mesh::EdgeAttrPropagation`]:
 //! - `Inherit` preserves sharpness,
 //! - `DecayOnSplit` applies subdivision-style decay,
 //! - `Clear` resets to `0.0`.
@@ -137,9 +137,9 @@
 //!         "example.op"
 //!     }
 //!
-//!     fn apply<S: exedra::ChangeSink>(
+//!     fn apply<S: exedra_mesh::ChangeSink>(
 //!         &self,
-//!         txn: &mut exedra::EditSession<'_, S>,
+//!         txn: &mut exedra_mesh::EditSession<'_, S>,
 //!         _params: &Self::Params,
 //!         ctx: &mut OpContext,
 //!     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -164,8 +164,8 @@
 //!
 //!         {
 //!             let _bucket = ctx.clock.bucket("attrs");
-//!             // Write through Exedra kernel ops.
-//!             let _ = exedra::op::add_vertex(txn, [0.0, 0.0, 0.0]);
+//!             // Write through Exedra Mesh kernel ops.
+//!             let _ = exedra_mesh::op::add_vertex(txn, [0.0, 0.0, 0.0]);
 //!         }
 //!
 //!         Ok((report, ()))
@@ -173,16 +173,16 @@
 //!
 //!     fn compile(
 //!         &self,
-//!         _mesh: &exedra::Mesh,
+//!         _mesh: &exedra_mesh::Mesh,
 //!         params: &Self::Params,
 //!         _ctx: &mut OpContext,
 //!     ) -> Result<Self::Plan, OpError> {
 //!         Ok(*params)
 //!     }
 //!
-//!     fn apply_plan<S: exedra::ChangeSink>(
+//!     fn apply_plan<S: exedra_mesh::ChangeSink>(
 //!         &self,
-//!         txn: &mut exedra::EditSession<'_, S>,
+//!         txn: &mut exedra_mesh::EditSession<'_, S>,
 //!         plan: &Self::Plan,
 //!         ctx: &mut OpContext,
 //!     ) -> Result<(OpReport, Self::Output), OpError> {

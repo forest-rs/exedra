@@ -6,7 +6,7 @@
 //!
 //! This crate is a *compiler target*: external geometry frontends build 2D
 //! profiles and constructive bodies into recipes, and evaluation tessellates
-//! them into [`exedra::Mesh`] values with full provenance, semantic regions,
+//! them into [`exedra_mesh::Mesh`] values with full provenance, semantic regions,
 //! and fidelity reporting.
 //!
 //! The crate owns:
@@ -16,7 +16,7 @@
 //!   content-addressed identity,
 //! - deterministic evaluation and tessellation with source maps and reports.
 //!
-//! It intentionally does not own: mesh topology (that is [`exedra`]),
+//! It intentionally does not own: mesh topology (that is [`exedra_mesh`]),
 //! polygon triangulation (that is `exedra_triangulate`), any source vocabulary
 //! (frontends attach opaque source identities), scene assembly across parts,
 //! or serialization formats beyond its own canonical encoding.

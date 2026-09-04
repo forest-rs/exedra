@@ -5,24 +5,58 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Structural half-edge mesh kernel"
-keywords = ["mesh", "half-edge", "topology", "no_std"]
-categories = ["data-structures", "algorithms"]
-
-[dependencies]
-exedra_math.workspace = true
-exedra_triangulate.workspace = true
-hashbrown.workspace = true
-invalidation.workspace = true
-libm = { optional = true, workspace = true }
+description = "Application-facing facade for the Exedra modeling suite"
+readme = "README.md"
+keywords = ["geometry", "modeling", "mesh", "no_std"]
+categories = ["graphics", "data-structures"]
 
 [features]
-default = ["std"]
-libm = ["dep:libm", "exedra_math/libm"]
-std = ["exedra_math/std"]
+# The common application surface: native backend, structure, and its workflow
+# layer. `assembly` selects `constructive` because its public API admits recipes.
+default = ["std", "assembly", "ops"]
 
-[dev-dependencies]
-exedra_testkit = { features = ["std"], workspace = true }
+# Numeric backends. At least one must be selected.
+std = [
+    "exedra_mesh/std",
+    "exedra_analytic?/std",
+    "exedra_assembly?/std",
+    "exedra_constructive?/std",
+    "exedra_isosurface?/std",
+    "exedra_ops?/std",
+    "exedra_primitives?/std",
+]
+libm = [
+    "exedra_mesh/libm",
+    "exedra_analytic?/libm",
+    "exedra_isosurface?/libm",
+    "exedra_ops?/libm",
+    "exedra_primitives?/libm",
+]
+
+# Application-facing domain namespaces.
+analytic = ["dep:exedra_analytic", "exedra_ops?/analytic"]
+assembly = ["dep:exedra_assembly", "constructive", "exedra_ops?/assembly"]
+constructive = ["dep:exedra_constructive", "exedra_ops?/constructive"]
+gltf = ["dep:exedra_gltf", "assembly", "std"]
+isosurface = ["dep:exedra_isosurface"]
+ops = ["dep:exedra_ops"]
+primitives = ["dep:exedra_primitives"]
+serde = [
+    "assembly",
+    "exedra_assembly/serde",
+    "exedra_constructive/serde",
+    "std",
+]
+
+[dependencies]
+exedra_analytic = { optional = true, workspace = true }
+exedra_assembly = { optional = true, workspace = true }
+exedra_constructive = { optional = true, workspace = true }
+exedra_gltf = { optional = true, workspace = true }
+exedra_isosurface = { optional = true, workspace = true }
+exedra_mesh.workspace = true
+exedra_ops = { optional = true, workspace = true }
+exedra_primitives = { optional = true, workspace = true }
 
 [lints]
 workspace = true

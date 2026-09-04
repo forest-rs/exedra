@@ -239,7 +239,7 @@ mod tests {
             let region = converted
                 .mesh
                 .attrs()
-                .dense(exedra::attr::FACE_REGION)
+                .dense(exedra_mesh::attr::FACE_REGION)
                 .and_then(|layer| layer.get(mapping.mesh_face.as_id()).copied());
             assert_eq!(region, Some(12));
         }
@@ -302,7 +302,7 @@ mod tests {
             let region = converted
                 .mesh
                 .attrs()
-                .dense(exedra::attr::FACE_REGION)
+                .dense(exedra_mesh::attr::FACE_REGION)
                 .and_then(|layer| layer.get(mapping.mesh_face.as_id()).copied());
             assert_eq!(region, Some(4));
         }
@@ -355,7 +355,7 @@ mod tests {
         let region = converted
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .and_then(|layer| layer.get(mesh_faces[0].as_id()).copied());
         assert_eq!(region, Some(9));
     }

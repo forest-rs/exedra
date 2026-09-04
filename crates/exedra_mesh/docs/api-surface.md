@@ -1,10 +1,10 @@
-# Exedra API Surface Audit
+# Exedra Mesh API Surface Audit
 
 Status: current as of `exe-1wdr`.
 
 ## Goal
 
-This document records the intended public API surface for the `exedra` kernel.
+This document records the intended public API surface for the `exedra_mesh` kernel.
 It is an audit artifact, not a new architecture decision: it describes the
 surface that already exists and names which parts are stable entry points,
 low-level extension points, or diagnostic/debugging aids.

@@ -42,7 +42,7 @@ pub enum PartSource {
     /// A constructive recipe, tessellated on demand.
     Recipe(Recipe),
     /// A baked mesh, used as-is.
-    Baked(exedra::Mesh),
+    Baked(exedra_mesh::Mesh),
 }
 
 /// A part definition: geometry source plus declared material slots.
@@ -332,7 +332,7 @@ impl Assembly {
     pub fn add_baked_part(
         &mut self,
         key: &str,
-        mesh: exedra::Mesh,
+        mesh: exedra_mesh::Mesh,
         slots: &[&str],
     ) -> Result<PartId, AssemblyError> {
         let mut seen = Vec::new();

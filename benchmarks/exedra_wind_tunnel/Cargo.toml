@@ -14,6 +14,6 @@ categories = ["algorithms"]
 workspace = true
 
 [dependencies]
-exedra = { features = ["std"], workspace = true }
+exedra_mesh = { features = ["std"], workspace = true }
 exedra_primitives = { features = ["std"], workspace = true }
 exedra_testkit = { features = ["std"], workspace = true }

@@ -3,7 +3,7 @@
 
 //! Shared test fixtures for Exedra Ops operator modules.
 
-use exedra::{BuildParams, HalfEdgeId, Mesh};
+use exedra_mesh::{BuildParams, HalfEdgeId, Mesh};
 
 use crate::{EditOperator, OpError, OpResult, OperatorRunner};
 

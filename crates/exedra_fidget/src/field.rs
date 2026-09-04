@@ -443,7 +443,7 @@ mod tests {
                 let twin = result.mesh.twin(corner).expect("fidget union edge twin");
                 assert_ne!(
                     result.mesh.face(twin),
-                    Some(exedra::FaceId::OUTSIDE),
+                    Some(exedra_mesh::FaceId::OUTSIDE),
                     "fidget union must have two incident faces per edge"
                 );
             }

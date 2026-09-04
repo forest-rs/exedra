@@ -9,10 +9,10 @@ This crate is a narrow spike, not a full CAD kernel. The current scope is:
 - shell/loop/coedge topology,
 - explicit planar opening loops,
 - face-level mutation for regions and opening add/remove lifecycle,
-- deterministic tessellation into `exedra::Mesh`.
+- deterministic tessellation into `exedra_mesh::Mesh`.
 
 The goal is to prove the multi-domain architecture with one honest second
-canonical domain, while keeping `exedra` as the polygon head.
+canonical domain, while keeping `exedra_mesh` as the polygon head.
 
 ## Current limitations
 

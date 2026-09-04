@@ -8,10 +8,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use exedra::op::{
+use exedra_mesh::op::{
     DeleteFacesError, DeleteVerticesError, DissolveEdgesError, DissolveVerticesError,
 };
-use exedra::{DeletePolicy, FaceId, HalfEdgeId, op};
+use exedra_mesh::{DeletePolicy, FaceId, HalfEdgeId, op};
 
 use crate::op_common::op_error;
 use crate::plan::PlanHasher;
@@ -135,7 +135,7 @@ pub struct DissolveVerticesOutput {
 /// # Example
 /// ```rust
 /// use exedra_ops::{DeleteEdges, DeleteEdgesParams, OperatorRunner};
-/// use exedra::{BuildParams, DeletePolicy, Mesh};
+/// use exedra_mesh::{BuildParams, DeletePolicy, Mesh};
 ///
 /// let mut mesh = Mesh::from_indexed_triangles(
 ///     &[
@@ -156,8 +156,8 @@ pub struct DissolveVerticesOutput {
 ///             return false;
 ///         };
 ///         core::cmp::min(half_edge, twin) == half_edge
-///             && mesh.face(half_edge) != Some(exedra::FaceId::OUTSIDE)
-///             && mesh.face(twin) != Some(exedra::FaceId::OUTSIDE)
+///             && mesh.face(half_edge) != Some(exedra_mesh::FaceId::OUTSIDE)
+///             && mesh.face(twin) != Some(exedra_mesh::FaceId::OUTSIDE)
 ///     })
 ///     .expect("interior edge should exist");
 ///
@@ -189,9 +189,9 @@ impl EditOperator for DeleteEdges {
         "edit.delete.edges"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -230,16 +230,16 @@ impl EditOperator for DeleteEdges {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -252,7 +252,7 @@ impl EditOperator for DeleteEdges {
 /// # Example
 /// ```rust
 /// use exedra_ops::{DissolveEdges, DissolveEdgesParams, OperatorRunner};
-/// use exedra::{BuildParams, FaceId, Mesh};
+/// use exedra_mesh::{BuildParams, FaceId, Mesh};
 ///
 /// let mut mesh = Mesh::from_indexed_triangles(
 ///     &[
@@ -300,9 +300,9 @@ impl EditOperator for DissolveEdges {
         "edit.dissolve.edges"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -335,7 +335,7 @@ impl EditOperator for DissolveEdges {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -346,9 +346,9 @@ impl EditOperator for DissolveEdges {
         Ok(DissolveEdgesParams { edges })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -361,7 +361,7 @@ impl EditOperator for DissolveEdges {
 /// # Example
 /// ```rust
 /// use exedra_ops::{DeleteFaces, DeleteFacesParams, OperatorRunner};
-/// use exedra::{BuildParams, DeletePolicy, Mesh};
+/// use exedra_mesh::{BuildParams, DeletePolicy, Mesh};
 ///
 /// let mut mesh = Mesh::from_indexed_triangles(
 ///     &[
@@ -406,7 +406,7 @@ impl EditOperator for DeleteFaces {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -437,9 +437,9 @@ impl EditOperator for DeleteFaces {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -486,7 +486,7 @@ impl EditOperator for DeleteFaces {
 /// # Example
 /// ```rust
 /// use exedra_ops::{DeleteVertices, DeleteVerticesParams, OperatorRunner};
-/// use exedra::{op, Mesh};
+/// use exedra_mesh::{op, Mesh};
 ///
 /// let mut mesh = Mesh::new();
 /// let v0 = {
@@ -524,9 +524,9 @@ impl EditOperator for DeleteVertices {
         "edit.delete.vertices"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -552,16 +552,16 @@ impl EditOperator for DeleteVertices {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -574,7 +574,7 @@ impl EditOperator for DeleteVertices {
 /// # Example
 /// ```rust
 /// use exedra_ops::{DissolveVertices, DissolveVerticesParams, OperatorRunner};
-/// use exedra::{BuildParams, Mesh, PropagatePolicy, op};
+/// use exedra_mesh::{BuildParams, Mesh, PropagatePolicy, op};
 ///
 /// let mut mesh = Mesh::from_indexed_triangles(
 ///     &[
@@ -595,8 +595,8 @@ impl EditOperator for DeleteVertices {
 ///             return false;
 ///         };
 ///         core::cmp::min(half_edge, twin) == half_edge
-///             && mesh.face(half_edge) != Some(exedra::FaceId::OUTSIDE)
-///             && mesh.face(twin) != Some(exedra::FaceId::OUTSIDE)
+///             && mesh.face(half_edge) != Some(exedra_mesh::FaceId::OUTSIDE)
+///             && mesh.face(twin) != Some(exedra_mesh::FaceId::OUTSIDE)
 ///     })
 ///     .expect("interior edge should exist");
 /// let inserted = {
@@ -635,9 +635,9 @@ impl EditOperator for DissolveVertices {
         "edit.dissolve.vertices"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -674,7 +674,7 @@ impl EditOperator for DissolveVertices {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -685,9 +685,9 @@ impl EditOperator for DissolveVertices {
         Ok(DissolveVerticesParams { vertices })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -695,7 +695,10 @@ impl EditOperator for DissolveVertices {
     }
 }
 
-fn incident_faces_for_edges(mesh: &exedra::Mesh, edges: &[HalfEdgeId]) -> Result<FaceSet, String> {
+fn incident_faces_for_edges(
+    mesh: &exedra_mesh::Mesh,
+    edges: &[HalfEdgeId],
+) -> Result<FaceSet, String> {
     let mut faces = FaceSet::new();
     for &edge in edges {
         let twin = mesh.twin(edge).ok_or_else(|| {
@@ -833,8 +836,8 @@ fn map_dissolve_vertices_error(ctx: &OpContext, err: DissolveVerticesError) -> O
 }
 
 fn validate_dissolve_vertices_selection(
-    mesh: &exedra::Mesh,
-    vertices: &[exedra::VertexId],
+    mesh: &exedra_mesh::Mesh,
+    vertices: &[exedra_mesh::VertexId],
 ) -> Result<(), DissolveVerticesError> {
     let mut touched_faces = BTreeSet::<FaceId>::new();
     for &vertex in vertices {
@@ -890,8 +893,8 @@ fn validate_dissolve_vertices_selection(
 }
 
 #[cfg(test)]
-fn two_disjoint_strip_mesh() -> exedra::Mesh {
-    exedra::Mesh::from_indexed_triangles(
+fn two_disjoint_strip_mesh() -> exedra_mesh::Mesh {
+    exedra_mesh::Mesh::from_indexed_triangles(
         &[
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -903,13 +906,13 @@ fn two_disjoint_strip_mesh() -> exedra::Mesh {
             [3.0, 1.0, 0.0],
         ],
         &[[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
-        &exedra::BuildParams::default(),
+        &exedra_mesh::BuildParams::default(),
     )
     .expect("two disjoint strips should build")
 }
 
 #[cfg(test)]
-fn split_disjoint_strip_vertices() -> (exedra::Mesh, VertexSet) {
+fn split_disjoint_strip_vertices() -> (exedra_mesh::Mesh, VertexSet) {
     let mut mesh = two_disjoint_strip_mesh();
     let mut edges = mesh
         .faces()
@@ -936,7 +939,7 @@ fn split_disjoint_strip_vertices() -> (exedra::Mesh, VertexSet) {
         let mut inserted = edges
             .into_iter()
             .map(|edge| {
-                op::split_edge(&mut edit, edge, &exedra::PropagatePolicy::default())
+                op::split_edge(&mut edit, edge, &exedra_mesh::PropagatePolicy::default())
                     .expect("split should succeed")
             })
             .collect::<Vec<_>>();
@@ -988,7 +991,7 @@ fn map_dissolve_edges_error(ctx: &OpContext, err: DissolveEdgesError) -> OpError
 }
 
 fn validate_dissolve_edges_selection(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     edges: &[HalfEdgeId],
 ) -> Result<(), DissolveEdgesError> {
     let mut touched_faces = BTreeSet::<FaceId>::new();
@@ -1023,7 +1026,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, FaceId, HalfEdgeId, Id, PropagatePolicy, VertexId};
+    use exedra_mesh::{BuildParams, FaceId, HalfEdgeId, Id, PropagatePolicy, VertexId};
 
     use super::{
         DeleteEdges, DeleteEdgesOutput, DeleteEdgesParams, DeleteFaces, DeleteFacesOutput,
@@ -1033,8 +1036,8 @@ mod tests {
     };
     use crate::{OpErrorKind, OperatorRunner, mesh_signature, test_support::commit};
 
-    fn two_tri_strip_mesh() -> exedra::Mesh {
-        exedra::Mesh::from_indexed_triangles(
+    fn two_tri_strip_mesh() -> exedra_mesh::Mesh {
+        exedra_mesh::Mesh::from_indexed_triangles(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -1047,7 +1050,7 @@ mod tests {
         .expect("strip build should succeed")
     }
 
-    fn canonical_interior_edge(mesh: &exedra::Mesh) -> HalfEdgeId {
+    fn canonical_interior_edge(mesh: &exedra_mesh::Mesh) -> HalfEdgeId {
         mesh.faces()
             .flat_map(|face| mesh.face_loop(face))
             .find(|&half_edge| {
@@ -1068,13 +1071,14 @@ mod tests {
             .expect("strip should have one canonical interior edge")
     }
 
-    fn split_strip_vertex() -> (exedra::Mesh, VertexId) {
+    fn split_strip_vertex() -> (exedra_mesh::Mesh, VertexId) {
         let mut mesh = two_tri_strip_mesh();
         let edge = canonical_interior_edge(&mesh);
         let inserted = {
             let mut edit = mesh.edit();
-            let inserted = exedra::op::split_edge(&mut edit, edge, &PropagatePolicy::default())
-                .expect("split should succeed");
+            let inserted =
+                exedra_mesh::op::split_edge(&mut edit, edge, &PropagatePolicy::default())
+                    .expect("split should succeed");
             let _: () = edit.finish();
             inserted
         };
@@ -1092,7 +1096,7 @@ mod tests {
             &DeleteEdges,
             &DeleteEdgesParams {
                 edges: vec![edge],
-                policy: exedra::DeletePolicy::CleanupIsolated,
+                policy: exedra_mesh::DeletePolicy::CleanupIsolated,
             },
         )
         .expect("delete edges should succeed");
@@ -1123,7 +1127,7 @@ mod tests {
             &DeleteEdges,
             &DeleteEdgesParams {
                 edges: vec![stale],
-                policy: exedra::DeletePolicy::CleanupIsolated,
+                policy: exedra_mesh::DeletePolicy::CleanupIsolated,
             },
         )
         .expect_err("stale edge should fail");
@@ -1234,7 +1238,7 @@ mod tests {
 
     #[test]
     fn dissolve_vertices_compile_rejects_boundary_vertex() {
-        let mesh = exedra::Mesh::from_polygons(
+        let mesh = exedra_mesh::Mesh::from_polygons(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -1317,7 +1321,7 @@ mod tests {
 
     #[test]
     fn delete_faces_applies_and_returns_typed_output() {
-        let mut mesh = exedra::Mesh::from_indexed_triangles(
+        let mut mesh = exedra_mesh::Mesh::from_indexed_triangles(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -1336,7 +1340,7 @@ mod tests {
             &DeleteFaces,
             &DeleteFacesParams {
                 faces: vec![faces[1], faces[0]],
-                policy: exedra::DeletePolicy::KeepIsolated,
+                policy: exedra_mesh::DeletePolicy::KeepIsolated,
             },
         )
         .expect("delete faces should succeed");
@@ -1356,7 +1360,7 @@ mod tests {
 
     #[test]
     fn delete_faces_rejects_outside_face() {
-        let mut mesh = exedra::Mesh::new();
+        let mut mesh = exedra_mesh::Mesh::new();
         let mut runner = OperatorRunner::new();
         let err = commit(
             &mut runner,
@@ -1364,7 +1368,7 @@ mod tests {
             &DeleteFaces,
             &DeleteFacesParams {
                 faces: vec![FaceId::OUTSIDE],
-                policy: exedra::DeletePolicy::CleanupIsolated,
+                policy: exedra_mesh::DeletePolicy::CleanupIsolated,
             },
         )
         .expect_err("outside face should fail");
@@ -1373,7 +1377,7 @@ mod tests {
 
     #[test]
     fn delete_faces_compile_is_deterministic_for_identical_mesh_state() {
-        let mesh = exedra::Mesh::from_indexed_triangles(
+        let mesh = exedra_mesh::Mesh::from_indexed_triangles(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -1387,7 +1391,7 @@ mod tests {
         let faces = mesh.faces().collect::<Vec<_>>();
         let params = DeleteFacesParams {
             faces: vec![faces[1], faces[0], faces[1]],
-            policy: exedra::DeletePolicy::KeepIsolated,
+            policy: exedra_mesh::DeletePolicy::KeepIsolated,
         };
         let signature = mesh_signature(&mesh);
 
@@ -1406,11 +1410,11 @@ mod tests {
 
     #[test]
     fn delete_vertices_applies_and_returns_typed_output() {
-        let mut mesh = exedra::Mesh::new();
+        let mut mesh = exedra_mesh::Mesh::new();
         let v0 = {
             let mut txn = mesh.edit();
-            let v0 = exedra::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
-            let _v1 = exedra::op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
+            let v0 = exedra_mesh::op::add_vertex(&mut txn, [0.0, 0.0, 0.0]);
+            let _v1 = exedra_mesh::op::add_vertex(&mut txn, [1.0, 0.0, 0.0]);
             let _: () = txn.finish();
             v0
         };
@@ -1430,7 +1434,7 @@ mod tests {
 
     #[test]
     fn delete_vertices_rejects_non_isolated_vertex() {
-        let mut mesh = exedra::Mesh::from_indexed_triangles(
+        let mut mesh = exedra_mesh::Mesh::from_indexed_triangles(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[[0, 1, 2]],
             &BuildParams::default(),

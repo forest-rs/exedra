@@ -43,7 +43,7 @@ Construction knowledge lives in separate rule-library crates (`joiner_timber`,
 `joiner_masonry`, …) so a consumer that needs four timber joints does not
 inherit a dependency on thirty, nor on stone.
 
-It owns none of: geometry math (`exedra_constructive`, `exedra`); site,
+It owns none of: geometry math (`exedra_constructive`, `exedra_mesh`); site,
 massing, and plan layout; statics, finite-element analysis, capacity, or code
 compliance; rendering and export; or an erased, document-shaped parameter
 boundary.

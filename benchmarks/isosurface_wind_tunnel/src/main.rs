@@ -20,11 +20,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{collections::BTreeMap, collections::BTreeSet};
 
-use exedra::{Mesh, VertexId, attr};
 use exedra_isosurface::{
     DualContourStats, ScalarField, SemiAnalyticContourResult, SemiAnalyticContourStats,
     dual_contour_semi_analytic,
 };
+use exedra_mesh::{Mesh, VertexId, attr};
 
 use crate::fixture::{BOX_A_REGION, BOX_B_REGION, CYLINDER_REGION};
 use crate::measure::{DyadicMeasurements, Measured, WorkMeasurements, reconstruct_dyadic};

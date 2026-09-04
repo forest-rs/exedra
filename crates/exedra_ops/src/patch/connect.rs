@@ -3,8 +3,8 @@
 
 use alloc::format;
 
-use exedra::op::AddFaceError;
-use exedra::{FaceId, VertexId, op};
+use exedra_mesh::op::AddFaceError;
+use exedra_mesh::{FaceId, VertexId, op};
 
 use crate::op_common::op_error;
 use crate::{DiagCode, DiagLevel, Diagnostic, OpContext, OpError, OpErrorKind};
@@ -26,8 +26,8 @@ impl FrameOrientationState {
     }
 }
 
-pub(crate) fn add_frame_face_with_orientation<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+pub(crate) fn add_frame_face_with_orientation<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     current: VertexId,
     next: VertexId,
     current_inner: VertexId,

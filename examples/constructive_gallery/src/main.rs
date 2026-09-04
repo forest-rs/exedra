@@ -4,12 +4,12 @@
 //! Reference scenarios exercising the public constructive surface as an
 //! external geometry frontend would.
 
-use exedra::ExtractParams;
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::evaluate;
 use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegKind, SegTag};
 use exedra_constructive::tessellate::EvalPolicy;
+use exedra_mesh::ExtractParams;
 use exedra_testkit::golden::trimesh_signature;
 
 /// One gallery scenario: a named recipe.
@@ -304,16 +304,17 @@ fn main() {
 /// by the kernel rounding pass (strips in region 9). Rounding constructive
 /// drill output is blocked on exe-8kli; this card rounds direct boolean
 /// output, which is the pass's proven envelope.
-fn rounded_drill_mesh() -> (exedra::Mesh, exedra::round::RoundStats) {
+fn rounded_drill_mesh() -> (exedra_mesh::Mesh, exedra_mesh::round::RoundStats) {
     let mut mesh = drilled_slab_mesh();
-    let stats = exedra::round::round_sharp_edges(&mut mesh, &rounding_policy()).expect("rounds");
+    let stats =
+        exedra_mesh::round::round_sharp_edges(&mut mesh, &rounding_policy()).expect("rounds");
     (mesh, stats)
 }
 
 /// A drilled slab built directly from meshes (the rounding pass's proven
 /// boolean fixture shape): slab minus a 16-gon prism through both caps.
-fn drilled_slab_mesh() -> exedra::Mesh {
-    use exedra::MeshBuilder;
+fn drilled_slab_mesh() -> exedra_mesh::Mesh {
+    use exedra_mesh::MeshBuilder;
     let mut b = MeshBuilder::new();
     // Slab 4 x 4 x 1.
     let corners: [[f32; 3]; 8] = [
@@ -361,13 +362,13 @@ fn drilled_slab_mesh() -> exedra::Mesh {
     }
     let prism = b.build().expect("valid prism").mesh;
 
-    let mut scratch = exedra::boolean::BooleanScratch::new();
-    let mut diagnostics = exedra::boolean::BooleanDiagnostics::default();
-    exedra::boolean::boolean_mesh(
+    let mut scratch = exedra_mesh::boolean::BooleanScratch::new();
+    let mut diagnostics = exedra_mesh::boolean::BooleanDiagnostics::default();
+    exedra_mesh::boolean::boolean_mesh(
         &slab,
         &prism,
-        exedra::boolean::BooleanOp::Difference,
-        exedra::FaceTriangulation::Fan,
+        exedra_mesh::boolean::BooleanOp::Difference,
+        exedra_mesh::FaceTriangulation::Fan,
         &mut scratch,
         &mut diagnostics,
     )
@@ -376,21 +377,21 @@ fn drilled_slab_mesh() -> exedra::Mesh {
 }
 
 /// The rounding policy for the gallery's filleted drill card.
-fn rounding_policy() -> exedra::round::RoundPolicy {
-    let mut policy = exedra::round::RoundPolicy::fillet(0.3);
+fn rounding_policy() -> exedra_mesh::round::RoundPolicy {
+    let mut policy = exedra_mesh::round::RoundPolicy::fillet(0.3);
     policy.region = Some(9);
     policy
 }
 
 /// Writes one OBJ plus its per-triangle `FACE_REGION` sidecar (fan order
 /// matches the OBJ), so viewers can shade by provenance.
-fn export_body(dir: &std::path::Path, name: &str, mesh: &exedra::Mesh) {
+fn export_body(dir: &std::path::Path, name: &str, mesh: &exedra_mesh::Mesh) {
     std::fs::write(
         dir.join(format!("{name}.obj")),
         exedra_testkit::dump::mesh_to_obj(mesh),
     )
     .expect("write obj");
-    let regions = mesh.attrs().dense(exedra::attr::FACE_REGION);
+    let regions = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
     let mut lines = String::new();
     for face in mesh.faces() {
         let degree = mesh.face_loop(face).count();
@@ -466,7 +467,7 @@ mod tests {
 
     /// Signed volume via the divergence theorem, fanning each face loop
     /// (boolean output faces are triangles or convex).
-    fn mesh_volume(mesh: &exedra::Mesh) -> f64 {
+    fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
         let mut vol = 0.0;
         for face in mesh.faces() {
             let verts: Vec<[f64; 3]> = mesh
@@ -486,7 +487,7 @@ mod tests {
 
     /// Euler characteristic V - E + F: 2 for a sphere-like shell, 0 for a
     /// single through-hole shell.
-    fn euler_characteristic(mesh: &exedra::Mesh) -> i64 {
+    fn euler_characteristic(mesh: &exedra_mesh::Mesh) -> i64 {
         let vertices = i64::try_from(mesh.vertices().count()).expect("small");
         let faces = i64::try_from(mesh.faces().count()).expect("small");
         let half_edges: usize = mesh.faces().map(|face| mesh.face_loop(face).count()).sum();

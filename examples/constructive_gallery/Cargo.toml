@@ -15,6 +15,6 @@ publish = false
 workspace = true
 
 [dependencies]
-exedra = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
+exedra_mesh = { features = ["std"], workspace = true }
 exedra_testkit = { features = ["std"], workspace = true }

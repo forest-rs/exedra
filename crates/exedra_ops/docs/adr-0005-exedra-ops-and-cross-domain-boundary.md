@@ -16,7 +16,7 @@ The implementation and its architectural description have also diverged. Its
 mesh surface is substantial: deterministic planning, stale-plan rejection,
 preview/apply parity, reports, policies, selections, and direct mesh edits.
 Its `EditOperator` trait and `OperatorRunner` nevertheless accept only
-`exedra::Mesh`. Analytic, constructive, and assembly workflows use separate
+`exedra_mesh::Mesh`. Analytic, constructive, and assembly workflows use separate
 functions with separate lifecycles, while scalar-field extraction is not
 present in the crate at all. The former `OperatorDomain` enum classified
 intent; it never dispatched heterogeneous values.
@@ -60,7 +60,7 @@ The system story is:
 
 It explicitly does not own:
 
-- polygon topology or attributes (`exedra`);
+- polygon topology or attributes (`exedra_mesh`);
 - constructive recipes or their evaluation (`exedra_constructive`);
 - analytic shell state or tessellation (`exedra_analytic`);
 - scalar fields or isosurface extraction (`exedra_isosurface`);
@@ -77,12 +77,11 @@ expresses domains through typed ports instead.
 
 ### Feature boundary
 
-The default `exedra_ops` build enables `std`, `constructive`, and `assembly`.
-That matches common use alongside the constructive and assembly heads while
-keeping the features independently selectable. It does not turn the adapters
-into one implicit pipeline or move their native APIs into this crate. A mesh
-consumer can request the minimum surface with `default-features = false` and
-either `std` or `libm`:
+The default `exedra_ops` build is the mesh-operation surface with `std`. Native
+head adapters remain independently selectable. The application-facing
+`exedra` facade owns the broader common feature bundle; direct operation users
+do not compile unrelated heads unless they request them. A `no_std` mesh
+consumer selects `libm` with `default-features = false`:
 
 | Feature | Enables |
 | --- | --- |
@@ -104,7 +103,7 @@ Each representation keeps the lifecycle that gives it value:
 
 | Head | Native value | Character | Typical explicit crossing |
 | --- | --- | --- | --- |
-| `exedra` | `Mesh` | mutable polygon topology and authored attributes | render extraction or input from another head |
+| `exedra_mesh` | `Mesh` | mutable polygon topology and authored attributes | render extraction or input from another head |
 | `exedra_constructive` | `Recipe` | immutable, fingerprinted construction intent | policy-controlled evaluation to one or more meshes |
 | `exedra_analytic` | `AnalyticShell` | bounded editable planar topology | deterministic tessellation to a mesh |
 | `exedra_isosurface` | `ScalarField` implementations | continuous inside/outside evaluation | policy-controlled isosurface extraction to a mesh |
@@ -279,9 +278,8 @@ Positive:
 
 Tradeoffs:
 
-- the commonly paired constructive and assembly adapters are available without
-  feature configuration, while their owning APIs remain separate and mesh-only
-  consumers must explicitly select their minimum backend;
+- direct users retain a small mesh-only default, while the `exedra` facade
+  selects the common multi-crate application surface;
 - a Houdini-like graph remains future work rather than a renamed facade.
 
 This change adds no new production dependency, no `unsafe`, and no geometry

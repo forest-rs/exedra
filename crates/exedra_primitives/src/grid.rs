@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{FaceBuildAttrs, MeshBuilder};
+use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common, sort_and_dedup_edges};
 
@@ -136,7 +136,7 @@ pub fn grid(params: &GridParams) -> Primitive {
 
 #[cfg(test)]
 mod tests {
-    use exedra::ExtractParams;
+    use exedra_mesh::ExtractParams;
 
     use super::{GridParams, REGION_GRID, grid};
 

@@ -444,7 +444,7 @@ fn goldens_are_signature_stable() {
             let (tri, _) = e.bodies[0]
                 .body
                 .mesh
-                .to_trimesh(&exedra::ExtractParams::default());
+                .to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
         assert_eq!(

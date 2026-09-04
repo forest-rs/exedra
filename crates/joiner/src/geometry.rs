@@ -5,7 +5,7 @@
 //!
 //! This module is deliberately tiny. `joiner` owns no geometry math: cuts,
 //! offsets, booleans, and tessellation belong to `exedra_constructive` and
-//! `exedra`, and vector arithmetic to `exedra_math`. What lives here is the
+//! `exedra_mesh`, and vector arithmetic to `exedra_math`. What lives here is the
 //! *analytic proxy* every element declares for itself — an [`OrientedBox`]
 //! extent — and the tolerance its frame is held to. Nothing here evaluates a
 //! recipe or touches a mesh.

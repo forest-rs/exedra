@@ -1,18 +1,22 @@
 # Exedra
 
-An actively validated geometry kernel and operator stack for building
-inspectable virtual-world assets.
+An actively validated geometry toolkit for building inspectable virtual-world
+assets.
 
-Exedra is the calm geometry foundation. Exedra Ops supplies a deterministic
-mesh-operator lifecycle and explicit, feature-gated adapters on top of it. The
-rest of the workspace holds focused construction, extraction, test, benchmark,
-and demo crates that prove those boundaries without bloating the kernel.
+The `exedra` crate is the thin application-facing facade. Focused crates retain
+the geometry state and algorithms behind it: Exedra Mesh supplies the polygon
+kernel, Exedra Constructive retains construction intent, Exedra Assembly owns
+placed structure, and Exedra Ops supplies deterministic workflow operations.
+Applications can start from one curated namespace while specialist crates stay
+small, independently usable, and honest about conversion boundaries.
 
 ## Workspace
 
 Core crates:
 
-- **[exedra](crates/exedra/)** - Structural half-edge mesh kernel:
+- **[exedra](crates/exedra/)** - Feature-gated facade for the stable
+  application-facing geometry heads. It contains no geometry implementation.
+- **[exedra_mesh](crates/exedra_mesh/)** - Structural half-edge mesh kernel:
   topology, stable IDs, attributes, validation, edit sessions, dirty/change
   summaries, and deterministic triangle extraction.
 - **[exedra_ops](crates/exedra_ops/)** - Deterministic mesh-operator lifecycle:
@@ -67,7 +71,12 @@ Adapter, test, benchmark, and app crates:
 
 ## Architecture
 
-Exedra owns the mesh model:
+The `exedra` facade owns dependency selection, curated namespaces, and
+end-to-end entry documentation. No implementation crate depends on it, and it
+does not define geometry state, algorithms, scheduling, or conversion
+semantics.
+
+Exedra Mesh owns the mesh model:
 
 - **Stable IDs**: index + generation handles for caching and stale-reference
   rejection.
@@ -95,18 +104,19 @@ procedural-network layer would define typed geometry nodes and compile them
 onto the shared `execution_graph` runtime; an `understory_node_graph` adapter
 could present the same authored network without becoming its execution model.
 
-Implicit and primitive crates stay outside the kernel. They produce or adapt
-geometry through explicit Exedra mesh/field boundaries rather than introducing a
-scene graph into the core.
+Implicit and primitive crates stay outside the mesh kernel. They produce or
+adapt geometry through explicit mesh/field boundaries rather than introducing
+a scene graph into the core.
 
 ## Example Flow
 
 ```rust
-use exedra_ops::{
-    Mesh, OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams,
+use exedra::Mesh;
+use exedra::ops::{
+    OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams,
 };
 
-fn main() -> Result<(), exedra_ops::OpError> {
+fn main() -> Result<(), exedra::ops::OpError> {
     let mesh = Mesh::new();
     let mut runner = OperatorRunner::new();
     let op = ValidateMesh;
@@ -123,7 +133,8 @@ fn main() -> Result<(), exedra_ops::OpError> {
 
 ## Glossary
 
-- **Kernel** - The long-lived mesh/topology core in `exedra`.
+- **Facade** - The leaf-only `exedra` crate that selects and names public heads.
+- **Mesh kernel** - The long-lived mesh/topology core in `exedra_mesh`.
 - **Operator** - An Exedra Ops mesh workflow unit with compile, preview, and
   apply steps.
 - **Attribute domain** - Where data lives: vertex, face, edge, or corner.
@@ -156,8 +167,8 @@ cargo doc --no-deps
 ## Status
 
 Exedra is early and evolving, but the workspace already contains a usable
-deterministic mesh kernel and focused constructive, field-extraction, assembly,
-inspection, and export layers.
+facade, deterministic mesh kernel, and focused constructive, field-extraction,
+assembly, inspection, and export layers.
 
 The project does not claim universal Boolean coverage, general manifold dual
 contouring, subdivision, CAD-grade exact arithmetic, structural analysis, or

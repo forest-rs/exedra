@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
-use exedra::{BuildError, ValidationError};
+use exedra_mesh::{BuildError, ValidationError};
 
 use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
 
@@ -61,7 +61,7 @@ pub struct OpError {
     /// Attached bounded artifacts.
     pub artifacts: Artifacts,
     /// Optional committed change summary when failure happens post-commit.
-    pub change_set: Option<Box<exedra::ChangeSet>>,
+    pub change_set: Option<Box<exedra_mesh::ChangeSet>>,
 }
 
 impl OpError {
@@ -78,7 +78,7 @@ impl OpError {
 
     /// Attaches a committed change summary.
     #[must_use]
-    pub fn with_change_set(mut self, change_set: exedra::ChangeSet) -> Self {
+    pub fn with_change_set(mut self, change_set: exedra_mesh::ChangeSet) -> Self {
         self.change_set = Some(Box::new(change_set));
         self
     }
@@ -142,7 +142,7 @@ impl core::error::Error for OpError {}
 mod tests {
     use alloc::string::ToString;
     use alloc::vec;
-    use exedra::{BuildError, FaceAttrErrorKind, ValidationError};
+    use exedra_mesh::{BuildError, FaceAttrErrorKind, ValidationError};
 
     use super::{OpError, OpErrorKind};
     use crate::{Artifacts, DiagCode, DiagLevel, Diagnostic};
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn change_set_can_be_attached_to_errors() {
-        let changes = exedra::ChangeSet::default();
+        let changes = exedra_mesh::ChangeSet::default();
         let error = OpError::new(OpErrorKind::InvalidMesh, vec![], Artifacts::new(2, 128))
             .with_change_set(changes.clone());
         assert_eq!(

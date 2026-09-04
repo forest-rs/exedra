@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Lightweight kernel operation catalog for Exedra.
+//! Lightweight kernel mutation surface for Exedra Mesh.
 //!
 //! This module defines explicit kernel edits over [`EditSession`](crate::EditSession).
 //! It is intentionally much smaller than Exedra Ops' workflow-operator layer:
@@ -12,11 +12,11 @@
 //! The boundary is:
 //! - [`EditSession`](crate::EditSession) owns eager edit hosting, bookkeeping,
 //!   dirty tracking, and low-level mutation plumbing.
-//! - `exedra::op::*` owns the public kernel mutation catalog.
+//! - `exedra_mesh::op::*` owns the public kernel mutation surface.
 //!
 //! # Example
 //! ```rust
-//! use exedra::{op, BuildParams, ChangeSetBuilder, Mesh, PropagatePolicy};
+//! use exedra_mesh::{op, BuildParams, ChangeSetBuilder, Mesh, PropagatePolicy};
 //!
 //! let mut mesh = Mesh::from_indexed_triangles(
 //!     &[
@@ -37,8 +37,8 @@
 //!             return false;
 //!         };
 //!         core::cmp::min(half_edge, twin) == half_edge
-//!             && mesh.face(half_edge) != Some(exedra::FaceId::OUTSIDE)
-//!             && mesh.face(twin) != Some(exedra::FaceId::OUTSIDE)
+//!             && mesh.face(half_edge) != Some(exedra_mesh::FaceId::OUTSIDE)
+//!             && mesh.face(twin) != Some(exedra_mesh::FaceId::OUTSIDE)
 //!     })
 //!     .expect("interior edge should exist");
 //!

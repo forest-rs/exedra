@@ -10,7 +10,7 @@
 //! - shell/loop/coedge topology,
 //! - explicit planar opening loops,
 //! - face-level mutation for regions and XY rectangular openings,
-//! - deterministic tessellation into [`exedra::Mesh`].
+//! - deterministic tessellation into [`exedra_mesh::Mesh`].
 //!
 //! It is not a general CAD kernel. Curved edges, booleans, and reverse
 //! conversion are all deferred.
@@ -24,8 +24,8 @@ compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 
 use alloc::vec::Vec;
 
-use exedra::{FaceId, Mesh, MeshBuilder};
 use exedra_math::{cross, dot, sub};
+use exedra_mesh::{FaceId, Mesh, MeshBuilder};
 
 /// Region ID carried by analytic faces and written into tessellated meshes.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -296,11 +296,11 @@ impl AnalyticShell {
         let build = builder.build().map_err(TessellateError::KernelBuild)?;
         let mut mesh = build.mesh;
         if params.write_face_regions {
-            let mut edit = mesh.edit_with(exedra::ChangeSetBuilder::new());
+            let mut edit = mesh.edit_with(exedra_mesh::ChangeSetBuilder::new());
             for (face_index, mesh_face) in build.face_ids.iter().enumerate() {
                 let analytic_face = source_faces[face_index];
                 let region = self.faces[analytic_face.index() as usize].region.0;
-                exedra::op::set_face_region(&mut edit, *mesh_face, region)
+                exedra_mesh::op::set_face_region(&mut edit, *mesh_face, region)
                     .map_err(TessellateError::SetFaceRegion)?;
             }
             let _ = edit.finish();
@@ -457,7 +457,7 @@ impl AnalyticShellBuilder {
 /// Parameters for one deterministic analytic-to-mesh conversion.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct TessellateParams {
-    /// When true, analytic face regions are written into `exedra::attr::FACE_REGION`.
+    /// When true, analytic face regions are written into `exedra_mesh::attr::FACE_REGION`.
     pub write_face_regions: bool,
 }
 
@@ -653,9 +653,9 @@ pub enum TessellateError {
         face: AnalyticFaceId,
     },
     /// The downstream Exedra mesh builder rejected the polygon set.
-    KernelBuild(exedra::BuildError),
+    KernelBuild(exedra_mesh::BuildError),
     /// `FACE_REGION` write failed unexpectedly.
-    SetFaceRegion(exedra::op::SetFaceRegionError),
+    SetFaceRegion(exedra_mesh::op::SetFaceRegionError),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -676,8 +676,8 @@ impl From<LoopError> for TessellateError {
 }
 
 /// Planarity/coincidence tolerance, sourced from the shared kernel policy
-/// rather than a module-local constant (exedra `NumericPolicy`).
-const PLANAR_EPSILON: f32 = exedra::NumericPolicy::DEFAULT_COPLANAR_TOLERANCE;
+/// rather than a module-local constant (`exedra_mesh::NumericPolicy`).
+const PLANAR_EPSILON: f32 = exedra_mesh::NumericPolicy::DEFAULT_COPLANAR_TOLERANCE;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct ProjectedVertex {
@@ -1071,7 +1071,7 @@ fn usize_to_u32(value: usize) -> u32 {
 mod tests {
     use alloc::vec;
 
-    use exedra::ExtractParams;
+    use exedra_mesh::ExtractParams;
 
     use super::{
         AnalyticFaceId, AnalyticShellBuilder, BuildError, EditError, RectFrameParams,
@@ -1103,7 +1103,7 @@ mod tests {
         let face_region = tessellated
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("region layer exists")
             .get(mesh_face.as_id())
             .copied();
@@ -1504,7 +1504,7 @@ mod tests {
             let region = tessellated
                 .mesh
                 .attrs()
-                .dense(exedra::attr::FACE_REGION)
+                .dense(exedra_mesh::attr::FACE_REGION)
                 .and_then(|layer| layer.get(mesh_face.as_id()).copied());
             assert_eq!(region, Some(19));
         }

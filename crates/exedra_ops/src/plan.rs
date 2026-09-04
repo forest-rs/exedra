@@ -6,7 +6,7 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use exedra::{FaceId, HalfEdgeId, Mesh, MeshRevision, attr};
+use exedra_mesh::{FaceId, HalfEdgeId, Mesh, MeshRevision, attr};
 
 /// Deterministic fingerprint for a compiled [`EditPlan`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -269,7 +269,7 @@ fn write_optional_vec3(hasher: &mut PlanHasher, value: Option<[f32; 3]>) {
 
 #[cfg(test)]
 mod tests {
-    use exedra::{Mesh, op};
+    use exedra_mesh::{Mesh, op};
 
     use super::{mesh_signature, mesh_topology_signature};
 
