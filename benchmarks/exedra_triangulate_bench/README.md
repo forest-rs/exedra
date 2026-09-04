@@ -17,6 +17,10 @@ Run the longer timing profile over the identical fixed corpus:
 cargo run --release -p exedra_triangulate_bench -- --stress
 ```
 
+Pass `--svg <directory>` to also write one SVG per fixture and strategy
+(`EarClip`, `ConstrainedDelaunay`, `Refined`); generated vertices are drawn
+as filled dots so the pictures show what the metrics measure.
+
 Each fixture has one typed diagnostic role. The role describes what the
 fixture is intended to probe; it does not claim that the role is the sole
 cause of its output quality:
@@ -74,11 +78,13 @@ preservation within rounding of generated boundary midpoints. It reports the
 same element metrics plus `below_20deg`, the full `RefineStats` counters
 (generated, boundary, interior, declined, remaining and input-limited
 violations, budget exhaustion, flips), and pins a signature that also covers
-every generated coordinate in insertion order. Tests require that every
-fixture whose remaining violations are all input-limited reaches the
-`sqrt(2)` bound's 20.7° minimum angle, that refinement never lowers the
-minimum angle below the legalized result, and that input-constraint
-fixtures improve materially. `refine_timing` reports end-to-end refinement
+every generated coordinate in insertion order. Tests require the `sqrt(2)`
+bound's 20.7° minimum angle only when no bad triangles remain. Remaining
+input-limited violations are honest exceptions for boundary geometry that
+the input fixes; they are reported rather than treated as a failed quality
+guarantee. Refinement must never lower the minimum angle below the legalized
+result, and input-constraint fixtures must improve materially.
+`refine_timing` reports end-to-end refinement
 timing in the same format as the triangulation timings.
 
 The final `predicate_timing` phase separately exercises and verifies one query

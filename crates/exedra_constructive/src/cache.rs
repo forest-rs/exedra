@@ -46,18 +46,10 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.discretize.max_segment_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.discretize.min_arc_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.sharp_sin_threshold.to_bits().to_le_bytes());
-    match policy.planar_face_refinement {
-        None => bytes.push(0),
-        Some(refinement) => {
-            bytes.push(1);
-            bytes.extend_from_slice(&refinement.max_radius_edge_ratio.to_bits().to_le_bytes());
-            bytes.extend_from_slice(&refinement.max_steiner_points.to_le_bytes());
-            bytes.push(match refinement.boundary_splits {
-                exedra_triangulate::BoundarySplits::Allowed => 0,
-                exedra_triangulate::BoundarySplits::Forbidden => 1,
-            });
-        }
-    }
+    push_refinement_fingerprint(&mut bytes, policy.planar_face_refinement, true);
+    // Cap refinement is always interior-only. Its caller-supplied boundary
+    // policy cannot affect geometry and therefore must not split cache keys.
+    push_refinement_fingerprint(&mut bytes, policy.cap_refinement, false);
     let mut hash: u128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D;
     for b in bytes {
         hash ^= u128::from(b);
@@ -69,6 +61,27 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     )]
     {
         (hash ^ (hash >> 64)) as u64
+    }
+}
+
+fn push_refinement_fingerprint(
+    bytes: &mut Vec<u8>,
+    refinement: Option<exedra_triangulate::RefineParams>,
+    include_boundary_policy: bool,
+) {
+    let Some(refinement) = refinement else {
+        bytes.push(0);
+        return;
+    };
+    bytes.push(1);
+    bytes.extend_from_slice(&refinement.max_radius_edge_ratio.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&refinement.max_steiner_points.to_le_bytes());
+    if include_boundary_policy {
+        bytes.push(match refinement.boundary_splits {
+            exedra_triangulate::BoundarySplits::Allowed => 0,
+            exedra_triangulate::BoundarySplits::Forbidden => 1,
+            _ => 2,
+        });
     }
 }
 
@@ -268,6 +281,8 @@ mod tests {
 
     #[test]
     fn policy_fingerprint_separates_policies_and_folds_schema() {
+        // Every policy choice that can alter tessellation must produce a
+        // distinct, deterministic cache identity.
         let a = policy_fingerprint(&EvalPolicy::default());
         let b = policy_fingerprint(&EvalPolicy {
             discretize: DiscretizePolicy {
@@ -283,5 +298,39 @@ mod tests {
             ..EvalPolicy::default()
         });
         assert_ne!(a, c, "planar-face refinement must change the fingerprint");
+        let d = policy_fingerprint(&EvalPolicy {
+            cap_refinement: Some(exedra_triangulate::RefineParams::default()),
+            ..EvalPolicy::default()
+        });
+        assert_ne!(a, d, "cap refinement must change the fingerprint");
+        assert_ne!(c, d, "the two refinement slots are distinct");
+
+        let allowed = exedra_triangulate::RefineParams::default();
+        let forbidden = allowed.with_boundary_splits(exedra_triangulate::BoundarySplits::Forbidden);
+        let cap_allowed = policy_fingerprint(&EvalPolicy {
+            cap_refinement: Some(allowed),
+            ..EvalPolicy::default()
+        });
+        let cap_forbidden = policy_fingerprint(&EvalPolicy {
+            cap_refinement: Some(forbidden),
+            ..EvalPolicy::default()
+        });
+        assert_eq!(
+            cap_allowed, cap_forbidden,
+            "the ignored cap boundary policy must not fragment the cache"
+        );
+
+        let planar_allowed = policy_fingerprint(&EvalPolicy {
+            planar_face_refinement: Some(allowed),
+            ..EvalPolicy::default()
+        });
+        let planar_forbidden = policy_fingerprint(&EvalPolicy {
+            planar_face_refinement: Some(forbidden),
+            ..EvalPolicy::default()
+        });
+        assert_ne!(
+            planar_allowed, planar_forbidden,
+            "planar-face boundary policy changes geometry"
+        );
     }
 }

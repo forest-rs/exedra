@@ -15,7 +15,8 @@ use alloc::vec::Vec;
 
 use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
 use exedra_triangulate::{
-    PolygonInput, RefineParams, SteinerOrigin, TriParams, refine, triangulate,
+    BoundarySplits, PolygonInput, RefineParams, RefineStats, SteinerOrigin, TriParams, refine,
+    triangulate,
 };
 
 use crate::discretize::{DiscretizePolicy, DiscretizedProfile, discretize_profile};
@@ -25,7 +26,11 @@ use crate::profile::Profile2;
 use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
 
 /// Evaluation policy shared by body tessellation.
+///
+/// Start from [`Default`], adjust the public scalar fields as needed, and use
+/// the `with_*_refinement` methods to opt into generated cap or face points.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct EvalPolicy {
     /// Curve discretization policy.
     pub discretize: DiscretizePolicy,
@@ -40,8 +45,39 @@ pub struct EvalPolicy {
     /// every triangle meets the requested quality bound or the budget stops
     /// it. Generated boundary vertices take the [`Feature::Wall`] of the
     /// profile segment they subdivide; interior ones take
-    /// [`Feature::PlanarFace`]. Bodies with side walls are not refined.
+    /// [`Feature::PlanarFace`]. Bodies with side walls use
+    /// `cap_refinement` instead.
     pub planar_face_refinement: Option<RefineParams>,
+    /// Optional interior-only Delaunay refinement for extrusion caps.
+    ///
+    /// When set, [`tessellate_extrude`] triangulates every cap, including
+    /// convex ones that would otherwise be one n-gon, and inserts generated
+    /// vertices strictly inside the cap until the quality bound or budget
+    /// is reached. The rim stays exactly as discretized so caps keep sharing
+    /// edges with the side walls: [`BoundarySplits`] is always treated as
+    /// `Forbidden` here, whatever the parameters say. Generated vertices take
+    /// [`Feature::CapStart`] or [`Feature::CapEnd`].
+    pub cap_refinement: Option<RefineParams>,
+}
+
+impl EvalPolicy {
+    /// Enables quality refinement for single-sided planar faces.
+    #[must_use]
+    pub const fn with_planar_face_refinement(mut self, params: RefineParams) -> Self {
+        self.planar_face_refinement = Some(params);
+        self
+    }
+
+    /// Enables interior-only quality refinement for extrusion caps.
+    ///
+    /// The cap tessellator always overrides [`RefineParams::boundary_splits`]
+    /// with [`BoundarySplits::Forbidden`] so the cap rim still shares every
+    /// vertex with its side walls.
+    #[must_use]
+    pub const fn with_cap_refinement(mut self, params: RefineParams) -> Self {
+        self.cap_refinement = Some(params);
+        self
+    }
 }
 
 impl Default for EvalPolicy {
@@ -50,6 +86,7 @@ impl Default for EvalPolicy {
             discretize: DiscretizePolicy::default(),
             sharp_sin_threshold: 0.1,
             planar_face_refinement: None,
+            cap_refinement: None,
         }
     }
 }
@@ -127,11 +164,17 @@ pub enum Feature {
 
 /// A tessellated body: the mesh plus its element provenance.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TessellatedBody {
     /// The tessellated mesh.
     pub mesh: exedra_mesh::Mesh,
     /// Element provenance, pinned to the mesh's revision.
     pub source_map: crate::source_map::SourceMap,
+    /// Refinement work and stopping outcome, when planar or cap refinement
+    /// was requested by the evaluation policy. This belongs to tessellation
+    /// rather than provenance, and is preserved by cache and rigid-instance
+    /// adapters.
+    pub refinement: Option<RefineStats>,
 }
 
 /// Region values written into [`exedra_mesh::attr::FACE_REGION`].
@@ -559,6 +602,7 @@ fn rebuild_placed_primitive(
     Ok(TessellatedBody {
         mesh: build.mesh,
         source_map,
+        refinement: None,
     })
 }
 
@@ -649,8 +693,10 @@ pub fn tessellate_planar_face(
     };
     // Triangulation indices address outer ++ holes in exactly the same order
     // used here and by profile_vertex_features; refinement appends generated
-    // points after them, with provenance derived from their origins.
+    // points after them, with provenance derived from their returned
+    // coordinates and the original discretized chain.
     let mut vertex_features = profile_vertex_features(&discretized, 1);
+    let mut refinement_stats: Option<RefineStats> = None;
     let (points, triangles): (Vec<[f64; 2]>, Vec<[u32; 3]>) = match policy.planar_face_refinement {
         None => (
             discretized
@@ -661,11 +707,19 @@ pub fn tessellate_planar_face(
         ),
         Some(params) => {
             let refined = refine(&input, &params)?;
+            refinement_stats = Some(refined.stats);
+            let generated = &refined.points[refined.input_vertex_count as usize..];
+            debug_assert_eq!(
+                refined.steiner.len(),
+                generated.len(),
+                "refinement provenance is parallel to generated points"
+            );
             vertex_features.extend(
                 refined
                     .steiner
                     .iter()
-                    .map(|origin| steiner_feature(&discretized, *origin)),
+                    .zip(generated)
+                    .map(|(origin, point)| steiner_feature(&discretized, *origin, *point)),
             );
             (refined.points, refined.triangles)
         }
@@ -699,6 +753,7 @@ pub fn tessellate_planar_face(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        refinement: refinement_stats,
     })
 }
 
@@ -832,7 +887,71 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
 
     // Caps.
     let convex_simple = d.holes.is_empty() && is_convex_ring(&d.outer);
-    if bottom_cap || top_cap {
+    let mut extra_vertex_features: Vec<Feature> = Vec::new();
+    let mut refinement_stats: Option<RefineStats> = None;
+    if (bottom_cap || top_cap)
+        && let Some(requested) = policy.cap_refinement
+    {
+        // Interior-only refinement: the rim must keep matching the walls.
+        let params = requested.with_boundary_splits(BoundarySplits::Forbidden);
+        let holes: Vec<&[[f64; 2]]> = d.holes.iter().map(|h| h.points.as_slice()).collect();
+        let refined = refine(
+            &PolygonInput {
+                outer: &d.outer.points,
+                holes: &holes,
+            },
+            &params,
+        )?;
+        refinement_stats = Some(refined.stats);
+        debug_assert!(
+            refined
+                .steiner
+                .iter()
+                .all(|origin| *origin == SteinerOrigin::Interior),
+            "forbidden boundary splits emit interior vertices only"
+        );
+        let generated = &refined.points[refined.input_vertex_count as usize..];
+        for (z, is_cap, feature, region) in [
+            (0.0, bottom_cap, Feature::CapStart, REGION_CAP_START),
+            (height, top_cap, Feature::CapEnd, REGION_CAP_END),
+        ] {
+            if !is_cap {
+                continue;
+            }
+            let mut base = None;
+            for p in generated {
+                let index =
+                    builder.push_vertex(narrow(apply_placement(placement, [p[0], p[1], z])));
+                base.get_or_insert(index);
+                extra_vertex_features.push(feature);
+            }
+            let base = base.unwrap_or(0);
+            let ring_offset = if z == 0.0 { 0 } else { top_offset };
+            let remap = |index: u32| {
+                if index < refined.input_vertex_count {
+                    ring_offset + index
+                } else {
+                    base + (index - refined.input_vertex_count)
+                }
+            };
+            for t in &refined.triangles {
+                let corners = if z == 0.0 {
+                    // Bottom cap faces -Z: reverse the CCW triangle.
+                    [remap(t[2]), remap(t[1]), remap(t[0])]
+                } else {
+                    [remap(t[0]), remap(t[1]), remap(t[2])]
+                };
+                builder.add_face_with_attrs(
+                    &corners,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        ..FaceBuildAttrs::default()
+                    },
+                )?;
+                face_origins.push(feature);
+            }
+        }
+    } else if bottom_cap || top_cap {
         if convex_simple {
             let n = len_u32(d.outer.points.len());
             if bottom_cap {
@@ -893,25 +1012,23 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
     }
 
     let result = builder.build()?;
-    let vertex_features = profile_vertex_features(&d, 2);
+    let mut vertex_features = profile_vertex_features(&d, 2);
+    vertex_features.extend(extra_vertex_features);
     let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        refinement: refinement_stats,
     })
 }
 
-/// Vertex features: each ring point's wall feature, repeated for each of
-/// the body's vertex rings (two for extrusions, one per path frame for
-/// sweeps). Revolutions build this table while emitting vertices because
-/// axis-contact points collapse across angular rings.
 /// Provenance of one generated vertex: a boundary point inherits the wall
-/// segment of the discretized edge it subdivides, an interior point belongs
-/// to the face. The origin names two input indices of one ring; when they
-/// are consecutive the edge leaving the earlier ring position identifies the
-/// segment, and when exactly collinear samples between them were pruned the
-/// segment leaving the lower index is the deterministic choice.
-fn steiner_feature(d: &DiscretizedProfile, origin: SteinerOrigin) -> Feature {
+/// segment of the original discretized edge it subdivides, an interior point
+/// belongs to the face. The triangulator may simplify a run of collinear
+/// input points before refinement, so the returned boundary origin only
+/// identifies the endpoints of that run; `point` is the adapter's evidence
+/// for which original edge owns the generated point.
+fn steiner_feature(d: &DiscretizedProfile, origin: SteinerOrigin, point: [f64; 2]) -> Feature {
     let SteinerOrigin::Boundary { edge } = origin else {
         return Feature::PlanarFace;
     };
@@ -922,17 +1039,89 @@ fn steiner_feature(d: &DiscretizedProfile, origin: SteinerOrigin) -> Feature {
             base += len;
             continue;
         }
+        if edge[1] >= base + len {
+            base += len;
+            continue;
+        }
         let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
         let (lo, hi) = (edge[0] - base, edge[1] - base);
-        // The ring closes from its last point to its first: that edge leaves
-        // the last point, not the first.
-        let leaving = if lo == 0 && hi == len - 1 { hi } else { lo };
-        let seg = ring.edge_seg[leaving as usize];
+        // The simplified closing edge can skip samples on either side of
+        // index zero. Determine which source-order chain lies on the edge
+        // instead of assuming its endpoints are the first and last indices.
+        let a = ring.points[lo as usize];
+        let b = ring.points[hi as usize];
+        let next = ring.points[((lo + 1) % len) as usize];
+        let forward = exedra_triangulate::predicates::orient2d(a, b, next)
+            == exedra_triangulate::predicates::Orientation::Collinear
+            && (0..2).all(|axis| {
+                next[axis] >= a[axis].min(b[axis]) && next[axis] <= a[axis].max(b[axis])
+            });
+        let (first, last) = if forward { (lo, hi) } else { (hi, lo) };
+        let from = ring.points[first as usize];
+        let to = ring.points[last as usize];
+        let axis = if (to[0] - from[0]).abs() >= (to[1] - from[1]).abs() {
+            0
+        } else {
+            1
+        };
+        let generated = point[axis];
+        let increasing = to[axis] >= from[axis];
+        let mut cursor = first;
+        let mut best: Option<(f64, u32)> = None;
+        loop {
+            let next = (cursor + 1) % len;
+            let source_from = ring.points[cursor as usize][axis];
+            let source_to = ring.points[next as usize][axis];
+            let final_edge = next == last;
+            // Use a half-open interval at internal source endpoints so a
+            // generated point exactly on an endpoint follows the ordinary
+            // outgoing-edge ownership rule. The final edge closes the run.
+            let owns = if increasing {
+                generated >= source_from
+                    && (generated < source_to || final_edge && generated <= source_to)
+            } else {
+                generated <= source_from
+                    && (generated > source_to || final_edge && generated >= source_to)
+            };
+            if owns {
+                return Feature::Wall {
+                    loop_index,
+                    seg: ring.edge_seg[cursor as usize],
+                };
+            }
+
+            // Rounded midpoints are permitted to miss the mathematical line;
+            // their dominant coordinate still gives a stable interval. If it
+            // falls just outside because of rounding, choose the nearest
+            // source interval, with source order as the tie-break—not the
+            // lower endpoint's segment.
+            let lower = source_from.min(source_to);
+            let upper = source_from.max(source_to);
+            let distance = if generated < lower {
+                lower - generated
+            } else if generated > upper {
+                generated - upper
+            } else {
+                0.0
+            };
+            if best.is_none_or(|(best_distance, _)| distance.total_cmp(&best_distance).is_lt()) {
+                best = Some((distance, ring.edge_seg[cursor as usize]));
+            }
+            if final_edge {
+                break;
+            }
+            cursor = next;
+        }
+        let (_, seg) = best.expect("a simplified boundary edge has source edges");
         return Feature::Wall { loop_index, seg };
     }
     Feature::PlanarFace
 }
 
+/// Vertex features: each ring point's wall feature, repeated for each of
+/// the body's vertex rings (two for extrusions, one per path frame for
+/// sweeps). Revolutions build this table while emitting vertices because
+/// axis-contact points collapse across angular rings.
 fn profile_vertex_features(d: &DiscretizedProfile, vertex_rings: u32) -> Vec<Feature> {
     let mut per_ring: Vec<Feature> = Vec::with_capacity(d.points_len());
     for (ring_index, ring) in d.rings().enumerate() {
@@ -1445,6 +1634,7 @@ pub fn tessellate_revolve(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        refinement: None,
     })
 }
 
@@ -1651,6 +1841,7 @@ pub fn tessellate_loft(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        refinement: None,
     })
 }
 
@@ -1961,6 +2152,7 @@ pub fn tessellate_sweep(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        refinement: None,
     })
 }
 
@@ -2213,6 +2405,7 @@ pub fn tessellate_grid(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        refinement: None,
     })
 }
 
@@ -2252,6 +2445,157 @@ mod tests {
     }
 
     #[test]
+    fn refined_caps_preserve_collinear_rim_vertices() {
+        use crate::profile::{Loop2, Seg2};
+        let outer = Loop2::new(alloc::vec![
+            Seg2::line((2.0, 0.0)),
+            Seg2::line((4.0, 0.0)),
+            Seg2::line((4.0, 2.0)),
+            Seg2::line((0.0, 2.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid collinear rim");
+        let profile = Profile2::simple(outer).expect("valid profile");
+        let policy = EvalPolicy::default().with_cap_refinement(RefineParams::default());
+        let body = tessellate_extrude(&profile, &Placement3::IDENTITY, 1.0, CapMode::Both, &policy)
+            .expect("refined extrusion");
+        assert_clean(&body);
+        assert!(
+            body.mesh
+                .boundary_loops()
+                .expect("boundary loops")
+                .is_empty(),
+            "every cap rim edge must pair with a wall edge"
+        );
+    }
+
+    #[test]
+    fn cylinder_cap_refinement_keeps_the_rim_and_inserts_interior_vertices() {
+        // A cylinder cap is the motivating case: the rim must stay shared
+        // with the walls, so only interior vertices may be generated.
+        let profile = builders::circle(1.0).expect("circle profile");
+        let mut plain_policy = EvalPolicy::default();
+        plain_policy.discretize.chord_tolerance = 0.002;
+        let refined_policy = plain_policy.with_cap_refinement(RefineParams::default());
+
+        let plain = tessellate_extrude(
+            &profile,
+            &Placement3::IDENTITY,
+            2.0,
+            CapMode::Both,
+            &plain_policy,
+        )
+        .expect("plain cylinder tessellates");
+        let refined = tessellate_extrude(
+            &profile,
+            &Placement3::IDENTITY,
+            2.0,
+            CapMode::Both,
+            &refined_policy,
+        )
+        .expect("refined cylinder tessellates");
+        let again = tessellate_extrude(
+            &profile,
+            &Placement3::IDENTITY,
+            2.0,
+            CapMode::Both,
+            &refined_policy,
+        )
+        .expect("refined cylinder tessellates again");
+        assert_clean(&plain);
+        assert_clean(&refined);
+        assert!(
+            refined
+                .mesh
+                .boundary_loops()
+                .expect("boundaries enumerate")
+                .is_empty(),
+            "refined caps still close the shell"
+        );
+        let rim_vertices = plain.mesh.vertices().count();
+        let generated = refined.mesh.vertices().count() - rim_vertices;
+        assert!(generated > 0, "interior cap vertices are generated");
+        assert_eq!(generated % 2, 0, "both caps receive the same vertices");
+        let feature_counts = |body: &TessellatedBody, wanted: Feature| {
+            body.mesh
+                .vertices()
+                .filter(|v| body.source_map.vertex_feature(*v) == Some(wanted))
+                .count()
+        };
+        assert_eq!(feature_counts(&refined, Feature::CapStart), generated / 2);
+        assert_eq!(feature_counts(&refined, Feature::CapEnd), generated / 2);
+        assert_eq!(
+            feature_counts(&refined, Feature::CapStart)
+                + feature_counts(&refined, Feature::CapEnd)
+                + refined
+                    .mesh
+                    .vertices()
+                    .filter(|v| matches!(
+                        refined.source_map.vertex_feature(*v),
+                        Some(Feature::Wall { .. })
+                    ))
+                    .count(),
+            refined.mesh.vertices().count(),
+            "every vertex carries a rim or cap feature"
+        );
+
+        // Every cap face is a triangle meeting the default sqrt(2) bound in
+        // the cap plane; the plain body has two n-gon caps instead.
+        let regions = refined
+            .mesh
+            .attrs()
+            .dense(exedra_mesh::attr::FACE_REGION)
+            .expect("face regions");
+        let mut cap_faces = 0;
+        for face in refined.mesh.faces() {
+            let region = regions.get(face.as_id()).copied();
+            if region != Some(REGION_CAP_START) && region != Some(REGION_CAP_END) {
+                continue;
+            }
+            cap_faces += 1;
+            let corners: Vec<[f64; 2]> = refined
+                .mesh
+                .face_loop(face)
+                .filter_map(|he| refined.mesh.to_vertex(he))
+                .filter_map(|v| refined.mesh.vertex_position(v))
+                .map(|p| [f64::from(p[0]), f64::from(p[1])])
+                .collect();
+            assert_eq!(corners.len(), 3, "refined caps are triangles");
+            let [a, b, c] = [corners[0], corners[1], corners[2]];
+            let edge2 = |p: [f64; 2], q: [f64; 2]| (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
+            let (la, lb, lc) = (edge2(b, c), edge2(c, a), edge2(a, b));
+            let area2 = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            let r2 = la * lb * lc / (4.0 * area2 * area2);
+            assert!(
+                r2 <= 2.0 * la.min(lb).min(lc) * (1.0 + 1e-4),
+                "cap triangle {corners:?} violates the bound after f32 narrowing"
+            );
+        }
+        assert!(
+            cap_faces > 2,
+            "caps are triangulated rather than two n-gons"
+        );
+        let same_corners = |body: &TessellatedBody| -> Vec<Vec<[f32; 3]>> {
+            body.mesh
+                .faces()
+                .map(|face| {
+                    body.mesh
+                        .face_loop(face)
+                        .filter_map(|he| body.mesh.to_vertex(he))
+                        .filter_map(|v| body.mesh.vertex_position(v))
+                        .copied()
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(
+            same_corners(&refined),
+            same_corners(&again),
+            "deterministic"
+        );
+    }
+
+    #[test]
     fn planar_face_refinement_adds_provenanced_vertices_and_meets_the_bound() {
         // A long plate with a small central hole: the sparse boundary forces
         // sliver triangles that only generated vertices can fix, and the
@@ -2274,11 +2618,7 @@ mod tests {
         .reversed();
         let profile = Profile2::new(outer, alloc::vec![hole]).expect("holed plate profile");
         let plain_policy = EvalPolicy::default();
-        let mut refined_policy = plain_policy;
-        refined_policy.planar_face_refinement = Some(RefineParams {
-            max_radius_edge_ratio: 1.0,
-            ..RefineParams::default()
-        });
+        let refined_policy = plain_policy.with_planar_face_refinement(RefineParams::new(1.0));
 
         let plain = tessellate_planar_face(&profile, &Placement3::IDENTITY, &plain_policy)
             .expect("plain face tessellates");
@@ -2410,6 +2750,101 @@ mod tests {
                 .iter()
                 .any(|feature| matches!(feature, Feature::Wall { loop_index: 1, .. })),
             "hole boundary vertices retain their generating segments"
+        );
+    }
+
+    #[test]
+    fn boundary_provenance_handles_simplified_chains_across_the_ring_seam() {
+        use crate::profile::{Loop2, Seg2};
+        let segments = alloc::vec![
+            Seg2::line((2.0, 0.0)),
+            Seg2::line((8.0, 0.0)),
+            Seg2::line((10.0, 0.0)),
+            Seg2::line((10.0, 1.0)),
+            Seg2::line((0.0, 1.0)),
+            Seg2::line((0.0, 0.0))
+        ];
+        for offset in 0..segments.len() {
+            let mut segments = segments.clone();
+            segments.rotate_left(offset);
+            let profile = Profile2::simple(Loop2::new(segments).expect("loop")).expect("profile");
+            let d = discretize_profile(&profile, &DiscretizePolicy::default()).expect("discretize");
+            let ring = &d.outer;
+            let index_of =
+                |point| len_u32(ring.points.iter().position(|&p| p == point).expect("point"));
+            let a = index_of([0.0, 0.0]);
+            let b = index_of([10.0, 0.0]);
+            let source = index_of([2.0, 0.0]);
+            assert_eq!(
+                steiner_feature(
+                    &d,
+                    SteinerOrigin::Boundary {
+                        edge: [a.min(b), a.max(b)]
+                    },
+                    [5.0, 0.0]
+                ),
+                Feature::Wall {
+                    loop_index: 0,
+                    seg: ring.edge_seg[source as usize]
+                },
+                "rotation {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn planar_refinement_collinear_source_segments_trap_boundary_provenance() {
+        // The triangulator deliberately prunes the redundant x=2 and x=8
+        // input points before making its cover. This trap keeps all three
+        // authored bottom segments distinct and checks that generated points
+        // on the resulting x=0..10 edge are mapped back through the original
+        // discretized chain instead of inheriting segment 0 throughout.
+        use crate::profile::{Loop2, Seg2, SegTag};
+
+        let outer = Loop2::new(alloc::vec![
+            Seg2::line((2.0, 0.0)).tagged(SegTag(50)),
+            Seg2::line((8.0, 0.0)).tagged(SegTag(51)),
+            Seg2::line((10.0, 0.0)).tagged(SegTag(52)),
+            Seg2::line((10.0, 1.0)).tagged(SegTag(53)),
+            Seg2::line((0.0, 1.0)).tagged(SegTag(54)),
+            Seg2::line((0.0, 0.0)).tagged(SegTag(55)),
+        ])
+        .expect("valid rectangle with a split collinear edge");
+        let profile = Profile2::simple(outer).expect("valid profile");
+        let policy = EvalPolicy::default().with_planar_face_refinement(RefineParams::new(1.0));
+        let body = tessellate_planar_face(&profile, &Placement3::IDENTITY, &policy)
+            .expect("refined planar face");
+        let stats = body
+            .refinement
+            .expect("direct tessellation retains refinement stats");
+        assert!(stats.steiner_points >= 5, "direct work is measurable");
+
+        let bottom: Vec<_> = body
+            .mesh
+            .vertices()
+            .filter_map(|vertex| {
+                let point = body.mesh.vertex_position(vertex)?;
+                (point[1] == 0.0).then_some((point[0], body.source_map.vertex_feature(vertex)))
+            })
+            .collect();
+        let wall = |seg| Some(Feature::Wall { loop_index: 0, seg });
+        assert!(
+            bottom
+                .iter()
+                .any(|(x, feature)| *x == 5.0 && *feature == wall(1)),
+            "generated x=5 must use authored segment 1: {bottom:?}"
+        );
+        assert!(
+            bottom
+                .iter()
+                .any(|(x, feature)| *x == 7.5 && *feature == wall(1)),
+            "generated x=7.5 must remain on authored segment 1: {bottom:?}"
+        );
+        assert!(
+            bottom
+                .iter()
+                .any(|(x, feature)| *x == 8.75 && *feature == wall(2)),
+            "generated x=8.75 must move to authored segment 2: {bottom:?}"
         );
     }
 

@@ -150,9 +150,22 @@ together would break both.
   `exedra_triangulate::refine` (see that crate's ADR-0001, budgeted
   refinement): generated boundary vertices inherit the `Feature::Wall` of the
   profile segment they subdivide and interior ones take `Feature::PlanarFace`.
-  The policy is part of the cache fingerprint. Bodies with side walls are not
-  refined, because a cap vertex without a matching wall vertex would open the
-  shell.
+  `EvalPolicy::cap_refinement` does the same for extrusion caps with boundary
+  splits forced off, so every generated vertex is interior and the rim keeps
+  matching the side walls, including every distinct collinear rim sample.
+  The owning boundary-preservation decision is in
+  [triangulation ADR-0001](../../exedra_triangulate/docs/adr-0001-deterministic-triangulation-scope.md#budgeted-refinement-with-generated-vertices).
+  Convex caps become triangles instead of one n-gon, and generated vertices
+  take `Feature::CapStart` or `Feature::CapEnd`. Generated planar boundary
+  provenance follows the original source chain even when simplification
+  removes samples on both sides of index zero.
+  Both policies are part of the cache fingerprint. `TessellatedBody` retains
+  the selected refiner's work and stopping outcome separately from its
+  provenance map; `GeometryReport` records that outcome per node and emits
+  typed `eval.refinement.*` warnings for incomplete quality. Cached bodies
+  replay the same outcome, so a warm evaluation cannot hide a budget stop or
+  declined insertion. This additive report output advances
+  `EVAL_SCHEMA_VERSION` from 9 to 10.
 - **Revolution-axis topology.** A revolve profile occupies the nonnegative
   radius half-plane. Exact axis points collapse across angular rings into one
   vertex apiece; incident profile edges emit triangle fans instead of
