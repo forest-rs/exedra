@@ -1,0 +1,22 @@
+{
+  "name": "exedra_ops_web_viewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build ../exedra_ops_web_bridge --target web --out-dir ../exedra_ops_web_viewer/src/wasm_pkg --no-typescript",
+    "dev": "vite",
+    "predev": "npm run build:wasm",
+    "build": "vite build",
+    "prebuild": "npm run build:wasm",
+    "preview": "vite preview",
+    "smoke:dist": "node scripts/smoke-dist.mjs"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

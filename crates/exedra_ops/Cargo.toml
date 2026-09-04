@@ -1,0 +1,54 @@
+[package]
+name = "exedra_ops"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic mesh operations and typed workflow adapters for Exedra"
+keywords = ["mesh", "modeling", "operators", "no_std"]
+categories = ["data-structures", "algorithms"]
+
+[dependencies]
+exedra.workspace = true
+exedra_analytic = { optional = true, workspace = true }
+exedra_assembly = { optional = true, workspace = true }
+exedra_constructive = { optional = true, workspace = true }
+exedra_math.workspace = true
+invalidation.workspace = true
+libm = { optional = true, workspace = true }
+
+[features]
+# The default matches common use alongside constructive and assembly heads. A
+# mesh-only build remains available with `default-features = false` plus `std`
+# or `libm`.
+default = ["std", "constructive", "assembly"]
+# Native-head adapters remain independently selectable.
+analytic = ["dep:exedra_analytic"]
+# Pattern expansion owns its planning; the structure head supplies state and
+# validation. Its placement type requires the supporting constructive crate,
+# without enabling this crate's separate constructive adapter surface.
+assembly = ["dep:exedra_assembly", "dep:exedra_constructive"]
+constructive = ["dep:exedra_constructive"]
+# Backend selection is valid without any adapter; weak forwarding avoids
+# enabling an optional dependency as a side effect.
+libm = ["dep:libm", "exedra/libm", "exedra_math/libm", "exedra_analytic?/libm"]
+std = [
+    "exedra/std",
+    "exedra_math/std",
+    "exedra_analytic?/std",
+    "exedra_assembly?/std",
+    "exedra_constructive?/std",
+]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time.workspace = true
+
+[dev-dependencies]
+exedra_assembly = { features = ["serde"], workspace = true }
+exedra_constructive.workspace = true
+exedra_ops_testkit.workspace = true
+exedra_testkit = { features = ["std"], workspace = true }
+
+[lints]
+workspace = true

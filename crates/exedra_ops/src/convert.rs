@@ -1,0 +1,437 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Explicit cross-domain conversion helpers.
+//!
+//! Exedra Ops intentionally keeps canonical geometry domains separate. This module
+//! exposes explicit, typed conversion seams rather than forcing analytic state
+//! through the mesh-only [`crate::EditOperator`] trait.
+//!
+//! The analytic conversion items are available with the `analytic` feature;
+//! the constructive conversion items are available with `constructive`.
+//! Enabling either feature exposes this module, while mesh-only consumers do
+//! not compile either sibling head.
+
+use alloc::vec::Vec;
+#[cfg(feature = "analytic")]
+use core::fmt;
+
+#[cfg(feature = "analytic")]
+use exedra::{FaceId, Mesh};
+#[cfg(feature = "analytic")]
+pub use exedra_analytic::{
+    AnalyticFaceId, AnalyticShell, AnalyticShellBuilder, AnalyticVertexId,
+    BuildError as AnalyticBuildError, RectFrameParams, RegionId as AnalyticRegionId,
+    TessellateError as AnalyticTessellateError, TessellateParams, rect_frame_xy,
+};
+
+/// Parameters for explicit analytic-shell to mesh conversion.
+#[cfg(feature = "analytic")]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct AnalyticToMeshParams {
+    /// Downstream tessellation settings used by `exedra_analytic`.
+    pub tessellate: TessellateParams,
+}
+
+/// Parameters for the rectangular frame convenience conversion.
+#[cfg(feature = "analytic")]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct RectFrameToMeshParams {
+    /// Analytic rectangular frame authoring parameters.
+    pub frame: RectFrameParams,
+    /// Downstream tessellation settings used by `exedra_analytic`.
+    pub tessellate: TessellateParams,
+}
+
+/// One deterministic analytic-face to mesh-face provenance mapping.
+#[cfg(feature = "analytic")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticFaceProvenance {
+    /// Source analytic face.
+    pub analytic_face: AnalyticFaceId,
+    /// Resulting Exedra mesh face.
+    pub mesh_face: FaceId,
+}
+
+/// Result of explicit analytic to mesh conversion.
+#[cfg(feature = "analytic")]
+#[derive(Clone, Debug)]
+pub struct AnalyticToMeshOutput {
+    /// Converted Exedra mesh.
+    pub mesh: Mesh,
+    /// Deterministic analytic-face provenance in source face order.
+    pub face_provenance: Vec<AnalyticFaceProvenance>,
+}
+
+#[cfg(feature = "analytic")]
+impl AnalyticToMeshOutput {
+    /// Returns the mapped mesh faces for `analytic_face`, when present.
+    #[must_use]
+    pub fn mesh_faces_for(&self, analytic_face: AnalyticFaceId) -> Vec<FaceId> {
+        self.face_provenance
+            .iter()
+            .filter(|mapping| mapping.analytic_face == analytic_face)
+            .map(|mapping| mapping.mesh_face)
+            .collect()
+    }
+}
+
+/// Explicit analytic to mesh conversion failure.
+#[cfg(feature = "analytic")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnalyticToMeshError {
+    /// Analytic authoring helper failed before tessellation.
+    Build(AnalyticBuildError),
+    /// Analytic tessellation into Exedra mesh failed.
+    Tessellate(AnalyticTessellateError),
+}
+
+#[cfg(feature = "analytic")]
+impl fmt::Display for AnalyticToMeshError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Build(error) => write!(f, "analytic build failed: {error:?}"),
+            Self::Tessellate(error) => write!(f, "analytic tessellation failed: {error:?}"),
+        }
+    }
+}
+
+#[cfg(feature = "analytic")]
+impl core::error::Error for AnalyticToMeshError {}
+
+#[cfg(feature = "analytic")]
+impl From<AnalyticBuildError> for AnalyticToMeshError {
+    fn from(error: AnalyticBuildError) -> Self {
+        Self::Build(error)
+    }
+}
+
+#[cfg(feature = "analytic")]
+impl From<AnalyticTessellateError> for AnalyticToMeshError {
+    fn from(error: AnalyticTessellateError) -> Self {
+        Self::Tessellate(error)
+    }
+}
+
+/// Converts one analytic shell into an Exedra mesh.
+#[cfg(feature = "analytic")]
+pub fn analytic_shell_to_mesh(
+    shell: &AnalyticShell,
+) -> Result<AnalyticToMeshOutput, AnalyticToMeshError> {
+    analytic_shell_to_mesh_with(shell, &AnalyticToMeshParams::default())
+}
+
+/// Converts one analytic shell into an Exedra mesh with explicit parameters.
+#[cfg(feature = "analytic")]
+pub fn analytic_shell_to_mesh_with(
+    shell: &AnalyticShell,
+    params: &AnalyticToMeshParams,
+) -> Result<AnalyticToMeshOutput, AnalyticToMeshError> {
+    let converted = shell
+        .to_exedra_mesh(&params.tessellate)
+        .map_err(AnalyticToMeshError::from)?;
+    Ok(AnalyticToMeshOutput {
+        mesh: converted.mesh,
+        face_provenance: converted
+            .face_provenance
+            .into_iter()
+            .map(|(analytic_face, mesh_face)| AnalyticFaceProvenance {
+                analytic_face,
+                mesh_face,
+            })
+            .collect(),
+    })
+}
+
+/// Builds the rectangular frame analytic spike and converts it into an Exedra
+/// mesh in one step.
+#[cfg(feature = "analytic")]
+pub fn rect_frame_to_mesh(
+    params: &RectFrameToMeshParams,
+) -> Result<AnalyticToMeshOutput, AnalyticToMeshError> {
+    let shell = rect_frame_xy(&params.frame).map_err(AnalyticToMeshError::from)?;
+    analytic_shell_to_mesh_with(
+        &shell,
+        &AnalyticToMeshParams {
+            tessellate: params.tessellate,
+        },
+    )
+}
+
+// --- Constructive recipe -> mesh --------------------------------------------
+
+#[cfg(feature = "constructive")]
+pub use exedra_constructive::cache::EvalCache as ConstructiveEvalCache;
+#[cfg(feature = "constructive")]
+pub use exedra_constructive::evaluate::{
+    EvalError as ConstructiveEvalError, GeometryReport, PlacedBody,
+    Severity as ConstructiveSeverity,
+};
+#[cfg(feature = "constructive")]
+pub use exedra_constructive::ir::{Fingerprint as RecipeFingerprint, Recipe};
+#[cfg(feature = "constructive")]
+pub use exedra_constructive::tessellate::EvalPolicy as ConstructiveEvalPolicy;
+
+#[cfg(feature = "constructive")]
+use crate::diag::{DiagCode, DiagLevel, Diagnostic};
+
+/// Parameters for explicit constructive-recipe to mesh conversion.
+#[cfg(feature = "constructive")]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct ConstructiveToMeshParams {
+    /// Evaluation policy used by `exedra_constructive`.
+    pub policy: ConstructiveEvalPolicy,
+}
+
+/// Output of a constructive-recipe conversion.
+#[cfg(feature = "constructive")]
+///
+/// The conversion is fingerprint-bound: `fingerprint` is the recipe's
+/// content fingerprint under the evaluation schema version, so downstream
+/// caches and plans can detect stale results exactly.
+#[derive(Debug)]
+pub struct ConstructiveToMeshOutput {
+    /// Tessellated bodies in deterministic node order.
+    pub bodies: Vec<PlacedBody>,
+    /// The recipe's content fingerprint at conversion time.
+    pub fingerprint: RecipeFingerprint,
+    /// The full constructive evaluation report (fidelity, envelopes,
+    /// counters, recorded policy).
+    pub report: GeometryReport,
+    /// The report's diagnostics, mapped into Exedra Ops diagnostics.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Converts a constructive recipe into tessellated Exedra meshes.
+#[cfg(feature = "constructive")]
+///
+/// This is the explicit conversion seam for the constructive head (the
+/// analogue of the analytic-shell conversion seam): deterministic for fixed
+/// `(recipe, params)`, provenance-carrying via each body's source map, and
+/// honest about anything not evaluable — those outcomes arrive as mapped
+/// diagnostics and report fidelity, never as silently approximate geometry.
+///
+/// # Errors
+///
+/// Fails only when a supported body fails to tessellate.
+pub fn constructive_recipe_to_mesh(
+    recipe: &Recipe,
+    params: &ConstructiveToMeshParams,
+) -> Result<ConstructiveToMeshOutput, ConstructiveEvalError> {
+    let evaluation = exedra_constructive::evaluate::evaluate(recipe, &params.policy)?;
+    Ok(constructive_output(recipe, evaluation))
+}
+
+/// [`constructive_recipe_to_mesh`] through a caller-owned evaluation cache.
+#[cfg(feature = "constructive")]
+///
+/// Identical output by contract (the cached evaluation is bit-identical to
+/// the pure one, modulo work counters); an edited recipe re-tessellates
+/// exactly its changed nodes. The cache is keyed on content fingerprints,
+/// so no staleness can be observed — see
+/// `exedra_constructive::cache` for the key design.
+///
+/// # Errors
+///
+/// Same contract as [`constructive_recipe_to_mesh`].
+pub fn constructive_recipe_to_mesh_cached(
+    recipe: &Recipe,
+    params: &ConstructiveToMeshParams,
+    cache: &mut ConstructiveEvalCache,
+) -> Result<ConstructiveToMeshOutput, ConstructiveEvalError> {
+    let evaluation =
+        exedra_constructive::evaluate::evaluate_with_cache(recipe, &params.policy, cache)?;
+    Ok(constructive_output(recipe, evaluation))
+}
+
+/// Maps one evaluation into the conversion output (shared by the pure and
+/// cached seams).
+#[cfg(feature = "constructive")]
+fn constructive_output(
+    recipe: &Recipe,
+    evaluation: exedra_constructive::evaluate::Evaluation,
+) -> ConstructiveToMeshOutput {
+    let diagnostics = evaluation
+        .report
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let level = match d.severity {
+                ConstructiveSeverity::Note => DiagLevel::Note,
+                ConstructiveSeverity::Warning => DiagLevel::Warn,
+                ConstructiveSeverity::Error => DiagLevel::Error,
+            };
+            let code = match d.code {
+                "eval.csg.unsupported" | "eval.unimplemented" => DiagCode::UnsupportedOperation,
+                _ => DiagCode::InternalInvariantViolation,
+            };
+            let mut message = alloc::string::String::from(d.code);
+            message.push_str(": ");
+            message.push_str(&d.message);
+            Diagnostic::new(level, code, message)
+        })
+        .collect();
+    ConstructiveToMeshOutput {
+        fingerprint: recipe.recipe_fingerprint(),
+        bodies: evaluation.bodies,
+        report: evaluation.report,
+        diagnostics,
+    }
+}
+
+#[cfg(all(test, feature = "analytic"))]
+mod tests {
+    use crate::mesh_signature;
+
+    use super::{
+        AnalyticFaceId, AnalyticRegionId, AnalyticToMeshParams, RectFrameToMeshParams,
+        analytic_shell_to_mesh, analytic_shell_to_mesh_with, rect_frame_to_mesh, rect_frame_xy,
+    };
+
+    #[test]
+    fn analytic_shell_to_mesh_preserves_region_and_face_provenance() {
+        let shell = rect_frame_xy(&super::RectFrameParams {
+            region: AnalyticRegionId(7),
+            ..super::RectFrameParams::default()
+        })
+        .expect("frame should build");
+
+        let converted = analytic_shell_to_mesh(&shell).expect("conversion should succeed");
+        assert_eq!(converted.mesh.faces().count(), 8);
+        assert_eq!(converted.face_provenance.len(), 8);
+        assert_eq!(
+            converted
+                .mesh_faces_for(AnalyticFaceId::from_index(0))
+                .len(),
+            8
+        );
+        for mapping in &converted.face_provenance {
+            let region = converted
+                .mesh
+                .attrs()
+                .dense(exedra::attr::FACE_REGION)
+                .and_then(|layer| layer.get(mapping.mesh_face.as_id()).copied());
+            assert_eq!(region, Some(7));
+        }
+    }
+
+    #[test]
+    fn analytic_shell_to_mesh_is_deterministic() {
+        let shell = rect_frame_xy(&super::RectFrameParams::default()).expect("frame should build");
+
+        let converted_a = analytic_shell_to_mesh_with(&shell, &AnalyticToMeshParams::default())
+            .expect("conversion should succeed");
+        let converted_b = analytic_shell_to_mesh_with(&shell, &AnalyticToMeshParams::default())
+            .expect("conversion should succeed");
+
+        assert_eq!(
+            mesh_signature(&converted_a.mesh),
+            mesh_signature(&converted_b.mesh)
+        );
+        assert_eq!(converted_a.face_provenance, converted_b.face_provenance);
+    }
+
+    #[test]
+    fn rect_frame_to_mesh_matches_manual_two_step_path() {
+        let params = RectFrameToMeshParams::default();
+
+        let direct = rect_frame_to_mesh(&params).expect("direct conversion should succeed");
+        let shell = rect_frame_xy(&params.frame).expect("frame should build");
+        let manual = analytic_shell_to_mesh_with(
+            &shell,
+            &AnalyticToMeshParams {
+                tessellate: params.tessellate,
+            },
+        )
+        .expect("manual conversion should succeed");
+
+        assert_eq!(mesh_signature(&direct.mesh), mesh_signature(&manual.mesh));
+        assert_eq!(direct.face_provenance, manual.face_provenance);
+    }
+}
+
+#[cfg(all(test, feature = "constructive"))]
+mod constructive_tests {
+    use crate::mesh_signature;
+
+    #[test]
+    fn constructive_recipe_conversion_is_fingerprint_bound() {
+        use super::{ConstructiveToMeshParams, RecipeFingerprint, constructive_recipe_to_mesh};
+        use exedra_constructive::builders;
+        use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+
+        let build = |height: f64| {
+            let mut b = RecipeBuilder::new();
+            let p = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+            let n = b
+                .add(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height,
+                    caps: CapMode::Both,
+                })
+                .expect("valid");
+            b.finish(n).expect("valid recipe")
+        };
+        let recipe = build(3.0);
+        let out = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
+            .expect("converts");
+        assert_eq!(out.bodies.len(), 1);
+        assert!(out.diagnostics.is_empty());
+        let fp: RecipeFingerprint = out.fingerprint;
+        assert_eq!(fp, recipe.recipe_fingerprint());
+        assert_ne!(fp, build(4.0).recipe_fingerprint());
+
+        // Repeating the same conversion must preserve both recipe identity and
+        // mesh bytes; the explicit seam cannot introduce run-order state.
+        let again = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
+            .expect("converts");
+        assert_eq!(
+            mesh_signature(&out.bodies[0].body.mesh),
+            mesh_signature(&again.bodies[0].body.mesh)
+        );
+    }
+
+    #[test]
+    fn constructive_csg_emits_supported_geometry_without_fallback() {
+        use super::{ConstructiveToMeshParams, constructive_recipe_to_mesh};
+        use exedra_constructive::builders;
+        use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, RecipeBuilder};
+
+        let mut b = RecipeBuilder::new();
+        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let e1 = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let e2 = b
+            .add(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::translate(0.5, 0.0, 0.0),
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("valid");
+        let csg = b
+            .add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands: alloc::vec![e1, e2],
+            })
+            .expect("valid");
+        let recipe = b.finish(csg).expect("valid recipe");
+
+        let out = constructive_recipe_to_mesh(&recipe, &ConstructiveToMeshParams::default())
+            .expect("converts");
+        // An ordinary overlapping-box union is supported geometry. This traps
+        // any adapter regression that turns a valid body into an envelope-only
+        // result or error diagnostic.
+        assert_eq!(out.bodies.len(), 1);
+        assert!(out.bodies[0].body.mesh.validate_deep().is_empty());
+        assert!(out.diagnostics.is_empty());
+        assert_eq!(out.report.counters.envelope_only, 0);
+    }
+}

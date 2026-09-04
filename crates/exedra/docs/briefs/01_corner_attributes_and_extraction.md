@@ -20,7 +20,7 @@ Encoding these by splitting topology destroys stable modeling topology, increase
 - Exedra extraction must define a deterministic **render-vertex key** (position source + enabled corner attributes).
 - Edit primitives must define **attribute propagation rules** for corner-domain layers.
 - Derived corner normals are recomputed from dirtiness; authored overrides are explicit and propagate via policy.
-- Cambium operators can create seams/hard edges by writing corner data, without changing topology.
+- Exedra Ops operators can create seams/hard edges by writing corner data, without changing topology.
 
 ## Non-goals / deferrals
 - Full UV unwrapping (charting/packing) is not required; corner storage remains the right substrate when you add it later.

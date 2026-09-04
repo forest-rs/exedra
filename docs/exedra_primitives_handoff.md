@@ -1,6 +1,6 @@
 # Handoff: `exedra_primitives` crate
 
-This document is a handoff spec for implementing a new crate **`exedra_primitives`**: a small library of deterministic mesh primitive generators that produce **Exedra modeling meshes** plus **semantic selections** and **region tags**. The goal is to provide “hello world” content that immediately exercises Exedra’s invariants, validation, extraction, and (later) booleans — and that plugs naturally into Cambium pipelines (like the Byzantine basilica ruin demo).
+This document is a handoff spec for implementing a new crate **`exedra_primitives`**: a small library of deterministic mesh primitive generators that produce **Exedra modeling meshes** plus **semantic selections** and **region tags**. The goal is to provide “hello world” content that immediately exercises Exedra’s invariants, validation, extraction, and (later) booleans — and that plugs naturally into Exedra Ops mesh workflows (like the Byzantine basilica ruin demo).
 
 This is **not** Exedra core. `exedra_primitives` is tooling/support code designed to accelerate development, testing, demos, and wind tunnels.
 
@@ -53,7 +53,7 @@ Recommended companion crates already exist:
 - `crates/exedra_testkit/` — fixtures, golden dumps (may depend on `std`)
 - `crates/exedra_wind_tunnel/` — perf scenarios (may depend on `std`)
 
-`exedra_primitives` should be usable from `exedra_testkit` and Cambium testkit later.
+`exedra_primitives` should be usable from `exedra_testkit` and `exedra_ops_testkit` later.
 
 ---
 
@@ -139,7 +139,7 @@ Primitives must write required Exedra built-ins:
 
 - `exedra::attr::VERTEX_POSITION` (required, dense)
 - **Do not** require UVs by default. Many primitives should leave:
-  - `exedra::attr::CORNER_UV` absent/missing, so Cambium UV operators can be validated.
+  - `exedra::attr::CORNER_UV` absent/missing, so Exedra Ops UV operators can be validated.
 
 Optional:
 - some primitives may emit a convenient initial UV set (behind a flag), but keep that separate from the default.
@@ -329,7 +329,7 @@ Add tests in `exedra_primitives` (or `exedra_testkit`) that:
 2. Validate it
 3. Extract a `TriMesh` with UV disabled and check:
    - stable indices/positions ordering (golden)
-4. Run Cambium `uv_planar` later against `quad` and `box` and validate UV results (future)
+4. Run Exedra Ops `uv_planar` later against `quad` and `box` and validate UV results (future)
 
 Golden snapshot guidance:
 - do **not** include timings
@@ -370,4 +370,4 @@ Expose as helper constructors so wind tunnels can call them.
 - All selections are canonical (sorted/dedup).
 - Primitives pass `validate_fast()` and (where available) `validate_deep()`.
 - Primitive outputs are stable across runs.
-- The returned semantic selections are sufficient to drive early Cambium operators (UV projection, sharpness tagging, region selection).
+- The returned semantic selections are sufficient to drive early Exedra Ops mesh operators (UV projection, sharpness tagging, region selection).

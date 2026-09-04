@@ -6,7 +6,7 @@ Accepted (2026-08-21). Supersedes the ADR 0001 consequence that the
 structural graph "stays example-private until a later ticket demonstrates a
 reusable boundary": this ADR records that boundary and the crate that will
 own it. The crate itself is created only with an earned first slice, per
-cambium ADR-0002.
+Exedra Ops ADR-0005.
 
 ## Context
 
@@ -16,7 +16,7 @@ The workspace has a geometry stack but no construction layer:
   recipe (profiles, extrude/revolve/loft/sweep, n-ary CSG through the mesh
   boolean pipeline, provenance down to profile segments) into meshes;
   `exedra_assembly` arranges parts as instances under stable paths with
-  material bindings; `cambium` is the operator SDK over meshes plus
+  material bindings; `exedra_ops` is the mesh-operator SDK plus
   deterministic placement patterns.
 - Nothing owns *how building elements fit together*. `basilica_ruin`
   encodes joints as per-part constants (`KING_POST_RAFTER_OVERLAP`,
@@ -145,10 +145,10 @@ stone.
   from ADR 0001: validation is schema, coherence, contact, transfer
   witness, and load path.
 - **Rendering and export.** Consumers of the compiled assembly.
-- **Cambium's operator lifecycle.** `joiner` uses `cambium::assembly`
+- **Exedra Ops' operator lifecycle.** `joiner` uses `exedra_ops::assembly`
   placement patterns for stationing (truss bays, window rhythm) and
   otherwise talks to `exedra_constructive` and `exedra_assembly` directly.
-  Cambium stays the mesh operator SDK; it does not become the construction
+  Exedra Ops stays the mesh-operator SDK; it does not become the construction
   SDK as well.
 
 ### Staged first slice
@@ -228,9 +228,9 @@ existed; stage 2 replaces the timber fixture geometry with concrete rules.
 
 ## Alternatives considered
 
-- **Extend `cambium`.** Rejected: Cambium's contract is the mesh operator
+- **Extend `exedra_ops`.** Rejected: Exedra Ops' contract is the mesh operator
   lifecycle; a construction vocabulary would double its responsibility and
-  pull building semantics into every Cambium consumer.
+  pull building semantics into every Exedra Ops consumer.
 - **Extend `exedra_assembly`.** Rejected: the structure head is a
   representation-neutral instance tree for external runtimes; building
   elements and rules are a different lifecycle with a different dependency

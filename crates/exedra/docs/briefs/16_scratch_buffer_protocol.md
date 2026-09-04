@@ -1,7 +1,7 @@
-# Brief: Scratch buffer protocol (reusable buffers across Exedra and Cambium)
+# Brief: Scratch buffer protocol (reusable buffers across Exedra and Exedra Ops)
 
 ## Decision
-Exedra and Cambium use a shared set of conventions for reusable scratch buffers:
+Exedra and Exedra Ops use a shared set of conventions for reusable scratch buffers:
 
 - Scratch is **caller-supplied** (or long-lived engine-owned) and passed into operations.
 - `clear()` **retains capacity**; scratch grows as needed but is reused across calls.
@@ -11,7 +11,7 @@ Exedra and Cambium use a shared set of conventions for reusable scratch buffers:
 
 This applies to:
 - Exedra: `ExtractScratch`, `BooleanScratch` (and similar staging buffers)
-- Cambium: `Scratch` in `OpContext`, runner-owned caches/scratch
+- Exedra Ops: `Scratch` in `OpContext`, runner-owned caches/scratch
 
 ## Why
 Scratch buffers are the key to performance without hidden allocations:
@@ -20,7 +20,7 @@ Scratch buffers are the key to performance without hidden allocations:
 - Keep memory locality good by reusing contiguous buffers.
 - Make performance predictable: allocation behavior becomes explicit and measurable.
 
-A shared protocol prevents style drift between Exedra and Cambium.
+A shared protocol prevents style drift between Exedra and Exedra Ops.
 
 ## Core conventions (locked)
 
@@ -51,7 +51,7 @@ A shared protocol prevents style drift between Exedra and Cambium.
 
 ### Clear-at-entry (simple v0.1 posture)
 - Runner/engine clears scratch at the start of each operation:
-  - Cambium: `OperatorRunner` calls `ctx.scratch.clear()`
+  - Exedra Ops: `OperatorRunner` calls `ctx.scratch.clear()`
   - Exedra: extract/boolean entry points clear their own scratch structs (or document expectations)
 
 ### Dedicated structs per subsystem
@@ -59,7 +59,7 @@ A shared protocol prevents style drift between Exedra and Cambium.
   - `ExtractScratch` for extraction/triangulation/normals
   - `BooleanScratch` for broad-phase BVH staging, intersection graph maps, etc.
 
-- Cambium’s `Scratch` focuses on common operator needs and may include reusable `hashbrown` maps/sets.
+- Exedra Ops' `Scratch` focuses on common operator needs and may include reusable `hashbrown` maps/sets.
 
 ### Hash maps/sets
 - Hash maps/sets are allowed in scratch, with rules:

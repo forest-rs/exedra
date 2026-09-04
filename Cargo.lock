@@ -91,45 +91,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
-name = "cambium"
-version = "0.1.0"
-dependencies = [
- "cambium_testkit",
- "exedra",
- "exedra_analytic",
- "exedra_assembly",
- "exedra_constructive",
- "exedra_math",
- "exedra_testkit",
- "invalidation",
- "libm",
- "web-time",
-]
-
-[[package]]
-name = "cambium_testkit"
-version = "0.1.0"
-dependencies = [
- "cambium",
- "exedra",
- "exedra_primitives",
-]
-
-[[package]]
-name = "cambium_web_bridge"
-version = "0.1.0"
-dependencies = [
- "cambium",
- "exedra",
- "exedra_assembly",
- "exedra_constructive",
- "exedra_primitives",
- "serde",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,6 +296,45 @@ name = "exedra_measurements"
 version = "0.0.0"
 dependencies = [
  "joto_constants",
+]
+
+[[package]]
+name = "exedra_ops"
+version = "0.1.0"
+dependencies = [
+ "exedra",
+ "exedra_analytic",
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_math",
+ "exedra_ops_testkit",
+ "exedra_testkit",
+ "invalidation",
+ "libm",
+ "web-time",
+]
+
+[[package]]
+name = "exedra_ops_testkit"
+version = "0.1.0"
+dependencies = [
+ "exedra",
+ "exedra_ops",
+ "exedra_primitives",
+]
+
+[[package]]
+name = "exedra_ops_web_bridge"
+version = "0.1.0"
+dependencies = [
+ "exedra",
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_ops",
+ "exedra_primitives",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

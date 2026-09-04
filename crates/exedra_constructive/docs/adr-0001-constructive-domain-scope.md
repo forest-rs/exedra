@@ -7,16 +7,15 @@
 ## Context
 
 Exedra's downstream machinery — the half-edge kernel, edit sessions,
-Cambium's operator lifecycle, primitives with semantic regions — is solid,
+Exedra Ops' mesh-operator lifecycle, primitives with semantic regions — is solid,
 but nothing upstream of the mesh exists: no curves, no pre-mesh profiles, no
 constructive operations, no recipe model. External spec compilers (parametric product specifications, living in
 separate repositories by decision) need a spec-agnostic construction
 representation they can target, with the mesh as its *output*, not its
 source model.
 
-Cambium ADR-0002 (multi-domain geometry architecture) already prescribes the
-shape of the answer: a new sibling head with explicit, lossy,
-provenance-carrying conversion into the mesh domain — never an extension of
+Exedra Ops ADR-0005 records the required boundary: a sibling head with
+explicit, lossy, provenance-carrying conversion into the mesh domain — never an extension of
 the mesh kernel, and never a universal geometry abstraction.
 
 Extending `exedra_analytic` was considered and rejected: analytic is a
@@ -211,8 +210,8 @@ mesh-side merge tolerances.
 - External frontends get a semver-conscious integration surface; mistakes
   in the canonical encoding are breaking changes, so it ships with golden
   coverage from the first slice.
-- `cambium` gains a real non-Mesh operator domain via an explicit
-  conversion seam (its own ADR when that lands).
+- `exedra_ops` can expose a typed conversion adapter while its runner remains
+  mesh-specific; it does not gain a heterogeneous operator domain.
 - One more workspace crate with a heavier dependency (kurbo) — accepted and
   recorded against the dependency-creep tenet in `ec-c3ii`'s audit.
 

@@ -20,7 +20,7 @@ never filed. Structure-lab ADR 0002 decides the reusable boundary: a new
 crate, `joiner`, owns the construction layer, with construction knowledge in
 separate rule-library crates.
 
-Cambium ADR-0002 forbids placeholder crates, so `crates/joiner` is created
+Exedra Ops ADR-0005 forbids placeholder crates, so `crates/joiner` is created
 together with its first slice. This ticket owns that slice and the deferred
 joint-specimen work.
 

@@ -3,8 +3,9 @@
 Constructive geometry head: an immutable, content-addressed recipe IR with
 deterministic tessellation into Exedra meshes.
 
-This crate is the fourth geometry head under Cambium's multi-domain
-architecture (Cambium ADR-0002): a *compiler target* for pre-mesh construction.
+This crate is a geometry head beside Exedra Ops: a *compiler target* for
+pre-mesh construction. It keeps recipe evaluation native until an explicit
+conversion produces a mesh.
 External geometry frontends build recipes from kurbo-backed 2D profiles and
 constructive bodies (declared boxes and cylinders, extrude, revolve, loft,
 sweep, CSG, transforms, and instances); evaluation tessellates them into

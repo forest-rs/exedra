@@ -12,8 +12,8 @@ env:
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS:
-    -p cambium
-    -p cambium_testkit
+    -p exedra_ops
+    -p exedra_ops_testkit
     -p exedra
     -p exedra_analytic
     -p exedra_assembly
@@ -29,8 +29,8 @@ env:
   # Foundational packages whose `no_std` contract is checked directly. Keep
   # this positive list in sync with crate-level `#![no_std]` declarations.
   RUST_NO_STD_PKGS:
-    -p cambium
-    -p cambium_testkit
+    -p exedra_ops
+    -p exedra_ops_testkit
     -p exedra
     -p exedra_analytic
     -p exedra_assembly
@@ -43,10 +43,10 @@ env:
     -p exedra_triangulate
   # Host auxiliary targets exclude the Wasm-only bridge.
   RUST_AUX_EXCLUDES:
-    --exclude cambium_web_bridge
+    --exclude exedra_ops_web_bridge
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS:
-    --exclude cambium_web_bridge
+    --exclude exedra_ops_web_bridge
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.
@@ -129,6 +129,40 @@ jobs:
 
       - name: check copyright headers
         run: bash .github/copyright.sh
+
+  exedra-ops-features:
+    name: exedra_ops feature boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE_VER }}
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'merge_group' }}
+
+      - name: cargo check (default constructive and assembly adapters)
+        run: cargo check -p exedra_ops --locked
+
+      - name: cargo check (mesh-only minimum)
+        run: cargo check -p exedra_ops --locked --no-default-features --features std
+
+      - name: cargo check (analytic adapter)
+        run: cargo check -p exedra_ops --locked --no-default-features --features std,analytic
+
+      - name: cargo check (assembly adapter)
+        run: cargo check -p exedra_ops --locked --no-default-features --features std,assembly
+
+      - name: cargo check (constructive adapter)
+        run: cargo check -p exedra_ops --locked --no-default-features --features std,constructive
+
+      - name: cargo check (all features)
+        run: cargo check -p exedra_ops --locked --all-features
 
   clippy-stable:
     name: cargo clippy

@@ -8,9 +8,9 @@ only current decisions and unresolved outcomes belong here.
 ## Architecture and scope
 
 Exedra owns editable polygon topology, attributes, validation, deterministic
-extraction, and mesh-mutation invariants. Cambium owns workflow orchestration,
-plans, diagnostics, selections, and mesh-facing operations. Sibling heads own
-their native representations:
+extraction, and mesh-mutation invariants. Exedra Ops owns deterministic
+mesh-operator planning, execution, diagnostics, selections, and explicit
+feature-gated adapters. Sibling heads own their native representations:
 
 - `exedra_constructive`: immutable fingerprinted recipes and deterministic
   tessellation;
@@ -40,9 +40,9 @@ The workspace currently provides:
 3. A staged mesh-Boolean pipeline with broad and narrow phases, splitting,
    classification, stitching, provenance, through-holes, selected coplanar
    contacts, seam cleanup, and typed diagnostics.
-4. Cambium compile, preview, and apply lifecycles with stale-plan rejection,
-   reports, timings, bounded artifacts, diagnostics, selections, UV projection,
-   face and normal edits, and Boolean orchestration.
+4. Exedra Ops mesh compile, preview, and apply lifecycles with stale-plan
+   rejection, reports, timings, bounded artifacts, diagnostics, selections, UV
+   projection, face and normal edits, and Boolean orchestration.
 5. Constructive profiles and recipes for extrusion, revolution, lofting,
    polyline sweeps, grid surfaces, primitive and import leaves, exact and
    mesh-backed stretch, transforms, mirrors, instances, groups, source maps,
@@ -56,6 +56,25 @@ The workspace currently provides:
 
 These capabilities are useful but not universal. Unsupported or ambiguous
 configurations must remain typed failures or explicitly counted fallbacks.
+
+## Cross-domain convergence
+
+1. `exedra_ops` is the current direct-operation SDK: its deterministic runner
+   plans and applies mesh operations, while focused adapters expose explicit
+   crossings into or out of sibling native heads.
+2. A future Exedra procedural-network layer is earned only by a real pipeline
+   that requires at least two native value kinds joined by an explicit
+   conversion. It owns the typed geometry vocabulary, native artifacts,
+   conversion reports, and compilation adapters. The shared `execution_graph`
+   runtime owns incremental scheduling and execution causality;
+   `understory_node_graph` owns editor documents and projections. None owns a
+   universal geometry value.
+3. Native heads keep their algorithms, identities, and provenance. CSG remains
+   domain-native: recipes combine construction intent, meshes use polygonal
+   operations, and fields compose before extraction.
+4. Persistent implicit identity and a general surface/B-rep head are separate
+   earned capabilities. The current field and planar-shell crates do not yet
+   provide either one.
 
 ## Active milestones
 

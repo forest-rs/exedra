@@ -11,7 +11,9 @@
 //! - deterministic render extraction ([`Mesh::to_trimesh`]).
 //!
 //! Exedra is the engine tier. For workflow/operator authoring and end-user
-//! modeling flows, prefer the Cambium SDK crate (`cambium::...`).
+//! modeling flows, prefer the Exedra Ops crate (`exedra_ops::...`). Its runner
+//! is mesh-specific; cross-domain work uses explicit adapters owned by the
+//! participating domains.
 //!
 //! The intended engine surface is this crate root (`exedra::...`) via
 //! re-exported kernel types like [`Mesh`], [`EditSession`], [`MeshBuilder`],
@@ -45,7 +47,7 @@
 //!
 //! Exedra does not own scene graphs, units, materials, UI/operator workflows,
 //! or exact analytic/CAD topology. Higher-level modeling policy belongs in
-//! Cambium or sibling domain crates. Exedra also does not compact IDs
+//! Exedra Ops or sibling domain crates. Exedra also does not compact IDs
 //! implicitly; use [`Mesh::compact`] when you want a tombstone-free copy.
 //!
 //! # Core Concepts
