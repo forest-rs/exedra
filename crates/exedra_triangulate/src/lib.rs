@@ -6,7 +6,8 @@
 //! The crate owns:
 //! - triangulation of simple polygons with holes via ear clipping,
 //! - deterministic hole bridging into a single ring,
-//! - the exact-sign orientation predicates those algorithms rely on.
+//! - optional constrained-Delaunay edge legalization,
+//! - the exact-sign planar predicates those algorithms rely on.
 //!
 //! Determinism is the contract: identical input bits produce identical output
 //! triangles on every platform, in every build mode. The algorithms use only
@@ -50,6 +51,7 @@
 extern crate alloc;
 
 mod bridge;
+mod delaunay;
 mod earclip;
 pub mod predicates;
 #[cfg(test)]
@@ -59,6 +61,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::bridge::{bridge_holes, prune_collinear_between};
+use crate::delaunay::legalize_edges;
 use crate::earclip::{earclip_ring, len_u32, twice_signed_area};
 pub use crate::predicates::MAX_COORDINATE;
 
@@ -152,8 +155,23 @@ pub fn triangulate(
     input: &PolygonInput<'_>,
     params: &TriParams,
 ) -> Result<Triangulation, TriError> {
+    triangulate_with_stats(input, params).map(|evaluation| evaluation.triangulation)
+}
+
+/// Triangulates one polygon and reports deterministic strategy work.
+///
+/// This is the diagnostic form of [`triangulate`]. It produces the same
+/// triangles and additionally reports work such as constrained-Delaunay edge
+/// flips without using global counters.
+///
+/// # Errors
+///
+/// Returns the same typed input and geometry errors as [`triangulate`].
+pub fn triangulate_with_stats(
+    input: &PolygonInput<'_>,
+    params: &TriParams,
+) -> Result<TriangulationEvaluation, TriError> {
     input.validate()?;
-    let TriStrategy::EarClip = params.strategy;
 
     // Materialize the virtual concatenation the output indices address.
     let mut points: Vec<[f64; 2]> = Vec::with_capacity(input.vertex_count());
@@ -203,15 +221,26 @@ pub fn triangulate(
             last_error = error;
             continue;
         }
-        if triangulation_preserves_boundaries(
+        if !triangulation_preserves_boundaries(
             &points,
             len_u32(input.outer.len()),
             &hole_ranges,
             &triangles,
         ) {
-            return Ok(Triangulation { triangles });
+            last_error = TriError::NonSimple;
+            continue;
         }
-        last_error = TriError::NonSimple;
+        // Legalize only an accepted cover: boundary incidence is already
+        // verified, so every edge with two incident triangles is a bridge or
+        // interior edge that flipping may legitimately replace.
+        let edge_flips = match params.strategy {
+            TriStrategy::EarClip => 0,
+            TriStrategy::ConstrainedDelaunay => legalize_edges(&points, &mut triangles),
+        };
+        return Ok(TriangulationEvaluation {
+            triangulation: Triangulation { triangles },
+            stats: TriangulationStats { edge_flips },
+        });
     }
     Err(last_error)
 }
@@ -268,9 +297,8 @@ fn triangulation_preserves_boundaries(
 /// Triangulation parameters.
 ///
 /// The default configuration is the supported v1 behavior: deterministic ear
-/// clipping with hole bridging. [`TriStrategy`] is the upgrade seam for later
-/// strategies (monotone decomposition, constrained Delaunay); each strategy is
-/// required to be independently deterministic.
+/// clipping with hole bridging. [`TriStrategy`] also offers opt-in exact edge
+/// legalization; each strategy is independently deterministic.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TriParams {
@@ -289,6 +317,12 @@ pub enum TriStrategy {
     /// O(n²) in the vertex count.
     #[default]
     EarClip,
+    /// Ear clipping followed by exact constrained-Delaunay edge legalization.
+    ///
+    /// Polygon and hole boundaries remain fixed. Unconstrained interior edges
+    /// are flipped in stable canonical order; exact cocircular ties choose the
+    /// lexicographically smaller diagonal. The result uses only input vertices.
+    ConstrainedDelaunay,
 }
 
 /// Structured triangulation failure.
@@ -420,6 +454,26 @@ impl Triangulation {
     }
 }
 
+/// Triangulation result together with deterministic strategy work.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TriangulationEvaluation {
+    /// Resulting input-indexed triangles.
+    pub triangulation: Triangulation,
+    /// Work performed after the initial ear-clipped cover was built.
+    pub stats: TriangulationStats,
+}
+
+/// Deterministic work counters for one triangulation.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TriangulationStats {
+    /// Number of unconstrained interior edge flips.
+    ///
+    /// This is zero for [`TriStrategy::EarClip`].
+    pub edge_flips: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,6 +533,12 @@ mod tests {
         assert_eq!(TriParams::default().strategy, TriStrategy::EarClip);
     }
 
+    fn constrained_delaunay_params() -> TriParams {
+        TriParams {
+            strategy: TriStrategy::ConstrainedDelaunay,
+        }
+    }
+
     /// Twice the signed area of the triangle `(a, b, c)` over `points`.
     fn tri_area2(points: &[[f64; 2]], t: [u32; 3]) -> f64 {
         let a = points[t[0] as usize];
@@ -527,6 +587,34 @@ mod tests {
     fn square_clips_to_two_triangles() {
         let result = assert_triangulation(&SQUARE, 2.0);
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn constrained_delaunay_flips_the_choice_driven_quad() {
+        let outer = [[4.9, 4.9], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let input = PolygonInput {
+            outer: &outer,
+            holes: &[],
+        };
+        let evaluation = triangulate_with_stats(&input, &constrained_delaunay_params())
+            .expect("choice-driven quad triangulates");
+        assert_eq!(evaluation.stats.edge_flips, 1);
+        assert_eq!(evaluation.triangulation.triangles, [[0, 1, 2], [0, 2, 3]]);
+    }
+
+    #[test]
+    fn constrained_delaunay_cocircular_tie_is_canonical() {
+        let outer = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+        let input = PolygonInput {
+            outer: &outer,
+            holes: &[],
+        };
+        let first = triangulate_with_stats(&input, &constrained_delaunay_params())
+            .expect("cocircular quad triangulates");
+        let second = triangulate_with_stats(&input, &constrained_delaunay_params())
+            .expect("repeat triangulation succeeds");
+        assert_eq!(first, second);
+        assert_eq!(first.triangulation.triangles, [[0, 1, 2], [0, 2, 3]]);
     }
 
     #[test]
@@ -655,6 +743,55 @@ mod tests {
         let result = assert_holed_triangulation(&SQUARE, &[&SQUARE_HOLE], 2.0 * (1.0 - 0.04));
         // n + 2h - 2 triangles for n total vertices and h bridged holes.
         assert_eq!(result.len(), 8 + 2 - 2);
+    }
+
+    #[test]
+    fn constrained_delaunay_preserves_outer_and_hole_boundaries() {
+        let holes = [&SQUARE_HOLE[..]];
+        let input = PolygonInput {
+            outer: &SQUARE,
+            holes: &holes,
+        };
+        let first = triangulate_with_stats(&input, &constrained_delaunay_params())
+            .expect("holed square triangulates");
+        let second = triangulate_with_stats(&input, &constrained_delaunay_params())
+            .expect("repeat triangulation succeeds");
+        assert_eq!(first, second);
+
+        let mut edges: Vec<[u32; 2]> = first
+            .triangulation
+            .triangles
+            .iter()
+            .flat_map(|&[a, b, c]| {
+                [
+                    [a.min(b), a.max(b)],
+                    [b.min(c), b.max(c)],
+                    [c.min(a), c.max(a)],
+                ]
+            })
+            .collect();
+        edges.sort_unstable();
+        for boundary in [
+            [0, 1],
+            [1, 2],
+            [2, 3],
+            [0, 3],
+            [4, 5],
+            [5, 6],
+            [6, 7],
+            [4, 7],
+        ] {
+            assert!(edges.contains(&boundary), "missing boundary {boundary:?}");
+        }
+
+        let points: Vec<[f64; 2]> = SQUARE.into_iter().chain(SQUARE_HOLE).collect();
+        let area2 = first
+            .triangulation
+            .triangles
+            .iter()
+            .map(|&triangle| tri_area2(&points, triangle))
+            .sum::<f64>();
+        assert!((area2 - 1.92).abs() <= 1e-12);
     }
 
     #[test]
