@@ -33,6 +33,21 @@
 //! - `std` (default): `sqrt` through the standard library.
 //! - `libm`: `sqrt` through the `libm` crate for `no_std` builds. When both are
 //!   enabled `std` is used; the results are identical either way.
+//!
+//! # Example
+//!
+//! ```
+//! use exedra_math::{cross, dot, normalize};
+//!
+//! let x = [1.0_f64, 0.0, 0.0];
+//! let y = [0.0_f64, 1.0, 0.0];
+//! assert_eq!(cross(x, y), [0.0, 0.0, 1.0]);
+//! assert_eq!(dot(x, y), 0.0);
+//!
+//! let direction = normalize([3.0_f64, 0.0, 4.0]).expect("non-degenerate vector");
+//! assert!((direction[0] - 0.6).abs() < 1.0e-12);
+//! assert!((direction[2] - 0.8).abs() < 1.0e-12);
+//! ```
 
 #![no_std]
 

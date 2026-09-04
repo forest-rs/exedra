@@ -10,9 +10,29 @@ placed structure, and Exedra Ops supplies deterministic workflow operations.
 Applications can start from one curated namespace while specialist crates stay
 small, independently usable, and honest about conversion boundaries.
 
-## Workspace
+## Using Exedra
 
-Core crates:
+Most applications should start with the facade:
+
+```toml
+[dependencies]
+exedra = "0.1"
+```
+
+Its default features provide the mesh kernel, constructive recipes,
+assemblies, and workflow operations. Primitive generation, analytic topology,
+implicit surfaces, glTF export, and interchange are opt-in features. Disable
+default features and select `libm` for a `no_std` application.
+
+Depend directly on a focused crate when you are implementing a lower-level
+algorithm or only need that domain. The public family includes the facade and
+the `exedra_*` geometry, support, adapter, and export crates listed below.
+Workspace testkits, examples, benchmarks, and the construction experiments are
+not published.
+
+## Crate map
+
+Facade and core workflow crates:
 
 - **[exedra](crates/exedra/)** - Feature-gated facade for the stable
   application-facing geometry heads. It contains no geometry implementation.
@@ -32,9 +52,6 @@ Construction and extraction crates:
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
   stable paths, material-slot binding, cached compilation, and deterministic
   flattening.
-- **[joiner](crates/joiner/)** - Construction layer: building elements, the
-  three relation kinds that connect them, the typed rule seam and its uniform
-  output, evidence labelling, layered validation, and lowering to an assembly.
 - **[exedra_triangulate](crates/exedra_triangulate/)** - Deterministic,
   dependency-free planar polygon triangulation and exact predicate seams.
 - **[exedra_primitives](crates/exedra_primitives/)** - Deterministic mesh
@@ -51,11 +68,16 @@ Construction and extraction crates:
   data, and dual-contouring extraction.
 - **[exedra_gltf](crates/exedra_gltf/)** - Deterministic glTF export for named
   render items, materials, instance metadata, and face-region provenance.
+- **[exedra_measurements](crates/exedra_measurements/)** - Exact positive
+  lengths, signed offsets, angle magnitudes, and signed angular offsets.
+- **[exedra_fidget](crates/exedra_fidget/)** - Adapter from Fidget expression
+  shapes to the `exedra_isosurface` field traits.
 
-Adapter, test, benchmark, and app crates:
+Workspace-only construction, test, benchmark, and app crates:
 
-- **[exedra_fidget](crates/exedra_fidget/)** - Thin adapter from Fidget shapes
-  into the `exedra_isosurface` field traits.
+- **[joiner](crates/joiner/)** and related `setout`/`joiner_timber` crates -
+  evolving construction and joinery layers kept outside the first public
+  package set.
 - **[exedra_testkit](crates/exedra_testkit/)** and
   **[exedra_ops_testkit](crates/exedra_ops_testkit/)** - Deterministic fixtures,
   golden snapshots, and debug dumps.

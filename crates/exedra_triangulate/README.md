@@ -16,8 +16,24 @@ knows nothing about meshes, curves, or tolerances — adapters live with their
 consumers (`exedra_mesh` render extraction, `exedra_analytic`, the constructive
 geometry head).
 
-See `docs/adr-0001-deterministic-triangulation-scope.md` for scope and
-contract details.
+```rust
+use exedra_triangulate::{PolygonInput, TriParams, triangulate};
+
+let square = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]];
+let result = triangulate(
+    &PolygonInput {
+        outer: &square,
+        holes: &[],
+    },
+    &TriParams::default(),
+)
+.expect("simple CCW polygon");
+
+assert_eq!(result.len(), 2);
+```
+
+See the [triangulation scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_triangulate/docs/adr-0001-deterministic-triangulation-scope.md)
+for contract details.
 
 ## Exact predicate exponent domain
 

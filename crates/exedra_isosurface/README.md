@@ -1,6 +1,34 @@
-# exedra_isosurface
+# `exedra_isosurface`
 
-Implicit-field seams and extraction-facing data types for the Exedra workspace.
+Implicit fields and dual-contouring surface extraction for Exedra.
+
+```rust
+use exedra_isosurface::{
+    Aabb, DualContourParams, EdgeSearchParams, QefParams,
+    analytic::SphereField, dual_contour,
+};
+
+let field = SphereField {
+    center: [0.0, 0.0, 0.0],
+    radius: 1.0,
+};
+let params = DualContourParams {
+    root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
+    max_depth: 4,
+    cell_budget: None,
+    edge_search: EdgeSearchParams::default(),
+    qef: QefParams::default(),
+};
+let result = dual_contour(&field, &params).expect("sphere extraction");
+
+assert!(result.stats.faces > 0);
+assert!(result.mesh.validate_deep().is_empty());
+```
+
+Implement `ScalarField` to supply interval, point, and gradient evaluation;
+then call `dual_contour`. `Aabb` and `QefParams` are re-exported because they
+are part of the extraction parameter surface. `DualContourResult` returns both
+the mesh and work counters.
 
 Current scope:
 
@@ -37,3 +65,10 @@ retain the bounded QEF result and increment typed counters.
 It does not yet attempt full manifold DC, topology-optimal variable-depth
 stitching, general clipped-conic feature solving, or richer seam recovery
 beyond region boundaries.
+
+The default `std` feature uses native math. For `no_std`, disable defaults and
+enable `libm`.
+
+## License
+
+Apache-2.0 OR MIT

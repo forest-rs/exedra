@@ -23,6 +23,46 @@
 //! instance. Paths are the *stable identity contract*: the same path across
 //! re-evaluations denotes the same logical part, regardless of insertion
 //! order, sibling count, or geometry changes. Indices are never identity.
+//!
+//! ## Typical flow
+//!
+//! Register each distinct part once, place it any number of times, compile
+//! part-local geometry, then flatten the instance tree for a renderer or
+//! exporter:
+//!
+//! ```
+//! use exedra_assembly::{Assembly, PartCompiler, flatten};
+//! use exedra_constructive::{
+//!     ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder},
+//!     tessellate::EvalPolicy,
+//! };
+//!
+//! let mut builder = RecipeBuilder::new();
+//! let root = builder
+//!     .add(NodeKind::Primitive {
+//!         spec: PrimitiveSpec::Box { size: [1.0; 3] },
+//!         placement: Placement3::IDENTITY,
+//!     })
+//!     .expect("valid box");
+//! let recipe = builder.finish(root).expect("valid recipe");
+//!
+//! let mut assembly = Assembly::new();
+//! let part = assembly.add_recipe_part("box", recipe).expect("unique part key");
+//! assembly
+//!     .add_instance(None, "left", part, Placement3::IDENTITY)
+//!     .expect("unique root key");
+//! assembly
+//!     .add_instance(None, "right", part, Placement3::translate(2.0, 0.0, 0.0))
+//!     .expect("unique root key");
+//!
+//! let compiled = PartCompiler::new()
+//!     .compile_parts(&assembly, &EvalPolicy::default())
+//!     .expect("part compiles");
+//! let render_list = flatten(&assembly, &compiled);
+//!
+//! assert_eq!(compiled.part(part).unwrap().triangle_count(), 12);
+//! assert_eq!(render_list.triangle_count(), 24);
+//! ```
 
 #![no_std]
 extern crate alloc;

@@ -19,6 +19,35 @@
 //!
 //! The output is deterministic: identical inputs produce byte-identical
 //! JSON. No external glTF or base64 dependency is used.
+//!
+//! # Example
+//!
+//! Export a placed baked mesh, then inspect the GLB semantically:
+//!
+//! ```
+//! use exedra_assembly::{Assembly, PartCompiler, flatten};
+//! use exedra_constructive::{ir::Placement3, tessellate::EvalPolicy};
+//! use exedra_gltf::{GlbDocument, export_glb};
+//! use exedra_mesh::{BuildParams, Mesh};
+//!
+//! let mesh = Mesh::from_indexed_triangles(
+//!     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+//!     &[[0, 1, 2]],
+//!     &BuildParams::default(),
+//! )?;
+//! let mut assembly = Assembly::new();
+//! let part = assembly.add_baked_part("triangle", mesh, &[])?;
+//! assembly.add_instance(None, "placed", part, Placement3::IDENTITY)?;
+//!
+//! let compiled = PartCompiler::new().compile_parts(&assembly, &EvalPolicy::default())?;
+//! let list = flatten(&assembly, &compiled);
+//! let export = export_glb(&assembly, &compiled, &list)?;
+//! let document = GlbDocument::parse(&export.bytes)?;
+//!
+//! assert_eq!(document.node_names(), ["placed"]);
+//! assert_eq!(document.triangle_count(), 1);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 mod inspect;
 

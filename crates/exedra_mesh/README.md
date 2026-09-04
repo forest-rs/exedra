@@ -5,7 +5,7 @@ Structural half-edge mesh kernel.
 Exedra Mesh is the production-capable, `#![no_std]` polygonal mesh core in this
 workspace. It owns topology, stable IDs, typed attributes, validation, edit
 sessions, explicit compaction, and deterministic render extraction. Higher-level
-modeling workflows live in [exedra_ops](../exedra_ops/); analytic, implicit, and
+modeling workflows live in [`exedra_ops`](https://crates.io/crates/exedra_ops); analytic, implicit, and
 primitive generation live in sibling crates.
 
 ## Guarantees and Non-goals
@@ -80,10 +80,10 @@ fn main() -> Result<(), exedra_mesh::BuildError> {
 
 ## Design
 
-- [API surface](docs/api-surface.md) — the audited mesh-kernel boundary.
-- [Design briefs](docs/briefs/) — focused decisions on specific topics
+- [API surface](https://github.com/forest-rs/exedra/blob/main/crates/exedra_mesh/docs/api-surface.md) — the audited mesh-kernel boundary.
+- [Design briefs](https://github.com/forest-rs/exedra/tree/main/crates/exedra_mesh/docs/briefs) — focused decisions on specific topics
   (boundary model, determinism, attribute storage, etc.).
-- [ADRs](docs/) — architectural decision records.
+- [ADRs](https://github.com/forest-rs/exedra/tree/main/crates/exedra_mesh/docs) — architectural decision records.
 
 ## License
 

@@ -14,6 +14,24 @@
 //!
 //! It is not a general CAD kernel. Curved edges, booleans, and reverse
 //! conversion are all deferred.
+//!
+//! # Example
+//!
+//! [`rect_frame_xy`] is the shortest path to an analytic shell. The same
+//! [`AnalyticShell`] can be edited before an explicit conversion to a mesh:
+//!
+//! ```
+//! use exedra_analytic::{RectFrameParams, TessellateParams, rect_frame_xy};
+//!
+//! let shell = rect_frame_xy(&RectFrameParams::default()).expect("valid frame");
+//! let output = shell
+//!     .to_exedra_mesh(&TessellateParams::default())
+//!     .expect("planar shell tessellates");
+//!
+//! assert_eq!(shell.faces().len(), 1);
+//! assert_eq!(output.mesh.faces().count(), 8);
+//! assert!(output.mesh.validate_deep().is_empty());
+//! ```
 
 #![no_std]
 extern crate alloc;

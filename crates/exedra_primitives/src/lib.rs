@@ -39,6 +39,24 @@
 //! 2. Read semantic metadata from [`Primitive::face_region`] and
 //!    [`Primitive::selections`].
 //! 3. Pass [`Primitive::mesh`] into Exedra/Exedra Ops workflows.
+//!
+//! ```
+//! use exedra_primitives::{BoxParams, box_primitive};
+//!
+//! let primitive = box_primitive(&BoxParams {
+//!     size: [2.0, 1.0, 0.5],
+//!     ..BoxParams::default()
+//! });
+//! assert!(primitive.mesh.validate_deep().is_empty());
+//!
+//! let (_, top) = primitive
+//!     .selections
+//!     .face_sets
+//!     .iter()
+//!     .find(|(name, _)| name.0 == "faces.side_z_pos")
+//!     .expect("boxes publish a top-face selection");
+//! assert_eq!(top.as_slice().len(), 1);
+//! ```
 
 #![no_std]
 extern crate alloc;

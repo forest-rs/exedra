@@ -29,6 +29,22 @@
 //! must wind counter-clockwise and holes clockwise (validated, not assumed).
 //! Output triangle indices address the virtual concatenation
 //! `outer ++ holes[0] ++ holes[1] ++ …`, in order.
+//!
+//! # Example
+//!
+//! ```
+//! use exedra_triangulate::{PolygonInput, TriParams, triangulate};
+//!
+//! let square = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]];
+//! let input = PolygonInput {
+//!     outer: &square,
+//!     holes: &[],
+//! };
+//! let result = triangulate(&input, &TriParams::default()).expect("simple CCW polygon");
+//!
+//! assert_eq!(result.len(), 2);
+//! assert!(result.triangles.iter().flatten().all(|&index| index < 4));
+//! ```
 
 #![no_std]
 extern crate alloc;
