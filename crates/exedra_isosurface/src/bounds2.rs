@@ -33,8 +33,8 @@ impl Aabb2 {
     #[must_use]
     pub fn center(&self) -> [f32; 2] {
         [
-            0.5 * (self.min[0] + self.max[0]),
-            0.5 * (self.min[1] + self.max[1]),
+            self.min[0].midpoint(self.max[0]),
+            self.min[1].midpoint(self.max[1]),
         ]
     }
 
@@ -69,5 +69,9 @@ mod tests {
             bounds.corners(),
             [[-2.0, -1.0], [4.0, -1.0], [-2.0, 3.0], [4.0, 3.0]]
         );
+
+        // `f32::midpoint` must not overflow for finite same-sign extremes.
+        let wide = Aabb2::new([f32::MAX / 2.0; 2], [f32::MAX; 2]).expect("finite ordered bounds");
+        assert!(wide.center().iter().all(|component| component.is_finite()));
     }
 }

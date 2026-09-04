@@ -13,6 +13,37 @@
 //!
 //! The crate is intentionally geometry-agnostic. It owns spatial indexing, not
 //! scalar-field evaluation or mesh extraction.
+//!
+//! [`Octree`] is an append-only arena rather than a general query accelerator.
+//! Cell IDs remain stable as leaves are refined; neighbor queries currently
+//! scan the stored leaves and return matches in storage order.
+//!
+//! # Example
+//!
+//! Build one subdivision level and attach each leaf's depth as its payload:
+//!
+//! ```
+//! use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
+//!
+//! struct OneLevel;
+//!
+//! impl OctreeVisitor for OneLevel {
+//!     type Payload = u8;
+//!
+//!     fn should_subdivide(&mut self, cell: CellRef) -> bool {
+//!         cell.depth == 0
+//!     }
+//!
+//!     fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
+//!         cell.depth
+//!     }
+//! }
+//!
+//! let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("ordered bounds");
+//! let tree = Octree::build(bounds, 1, &mut OneLevel);
+//! assert_eq!(tree.leaf_ids().len(), 8);
+//! assert!(tree.leaf_ids().iter().all(|&id| tree.cell(id).unwrap().payload() == Some(&1)));
+//! ```
 
 #![no_std]
 extern crate alloc;
@@ -21,6 +52,9 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 /// Stable octree cell identifier within one [`Octree`].
+///
+/// IDs are arena-local. Refinement never changes an existing ID, but an ID
+/// from one tree has no meaning in another tree.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct CellId(u32);
 
@@ -48,22 +82,30 @@ pub struct Aabb {
 }
 
 impl Aabb {
-    /// Creates a new bounding box when `min <= max` on every axis.
+    /// Creates a finite bounding box when `min <= max` on every axis.
     #[must_use]
     pub fn new(min: [f32; 3], max: [f32; 3]) -> Option<Self> {
-        if min[0] > max[0] || min[1] > max[1] || min[2] > max[2] {
-            return None;
-        }
-        Some(Self { min, max })
+        let bounds = Self { min, max };
+        bounds.is_valid().then_some(bounds)
+    }
+
+    /// Returns whether both corners are finite and ordered on every axis.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.min
+            .iter()
+            .chain(&self.max)
+            .all(|component| component.is_finite())
+            && self.min.iter().zip(self.max).all(|(min, max)| *min <= max)
     }
 
     /// Returns the box center.
     #[must_use]
     pub fn center(self) -> [f32; 3] {
         [
-            0.5 * (self.min[0] + self.max[0]),
-            0.5 * (self.min[1] + self.max[1]),
-            0.5 * (self.min[2] + self.max[2]),
+            self.min[0].midpoint(self.max[0]),
+            self.min[1].midpoint(self.max[1]),
+            self.min[2].midpoint(self.max[2]),
         ]
     }
 
@@ -243,14 +285,39 @@ pub enum CellAdjacency {
 
 /// Octree refinement error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum RefineError {
     /// Referenced cell does not exist.
     MissingCell(CellId),
     /// Referenced cell has already been subdivided.
     NotLeaf(CellId),
+    /// Referenced leaf is already at or beyond the requested maximum depth.
+    MaxDepth {
+        /// Leaf that cannot be subdivided under this request.
+        cell: CellId,
+        /// Requested maximum tree depth.
+        max_depth: u8,
+    },
 }
 
-/// Flat adaptive octree with deterministic traversal and refinement.
+impl core::fmt::Display for RefineError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MissingCell(cell) => write!(f, "octree cell {cell:?} does not exist"),
+            Self::NotLeaf(cell) => write!(f, "octree cell {cell:?} is not a leaf"),
+            Self::MaxDepth { cell, max_depth } => {
+                write!(
+                    f,
+                    "octree leaf {cell:?} is already at maximum depth {max_depth}"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for RefineError {}
+
+/// Flat, append-only adaptive octree with deterministic traversal and refinement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Octree<P> {
     cells: Vec<OctreeCell<P>>,
@@ -346,6 +413,11 @@ impl<P> Octree<P> {
     }
 
     /// Refines one existing leaf without rebuilding the whole tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefineError`] when `id` is missing, names an internal cell,
+    /// or is already at the requested maximum depth.
     pub fn refine_leaf<V>(
         &mut self,
         id: CellId,
@@ -355,25 +427,19 @@ impl<P> Octree<P> {
     where
         V: OctreeVisitor<Payload = P>,
     {
-        let (depth, bounds) = {
+        let depth = {
             let cell = self.cell(id).ok_or(RefineError::MissingCell(id))?;
             if !cell.is_leaf() {
                 return Err(RefineError::NotLeaf(id));
             }
-            (cell.depth, cell.bounds)
+            cell.depth
         };
 
         if depth >= max_depth {
-            let payload = visitor.make_leaf_payload(CellRef {
-                id,
-                bounds,
-                depth,
-                parent: self.cell(id).and_then(OctreeCell::parent),
+            return Err(RefineError::MaxDepth {
+                cell: id,
+                max_depth,
             });
-            self.cell_mut(id)
-                .expect("validated leaf should stay live")
-                .payload = Some(payload);
-            return Ok([id; 8]);
         }
 
         let children = self.insert_children(id);
@@ -384,6 +450,10 @@ impl<P> Octree<P> {
     }
 
     /// Returns leaf neighbors adjacent to `id` by the requested adjacency mode.
+    ///
+    /// This correctness-first query scans all stored leaves and returns matches
+    /// in stable arena order. It returns an empty vector when `id` is missing or
+    /// names an internal cell.
     #[must_use]
     pub fn leaf_neighbors(&self, id: CellId, adjacency: CellAdjacency) -> Vec<CellId> {
         let Some(target) = self.cell(id) else {
@@ -552,6 +622,18 @@ mod tests {
     }
 
     #[test]
+    fn aabb_constructor_rejects_nonfinite_and_reversed_coordinates() {
+        // A successfully constructed box must remain safe for split, overlap,
+        // and midpoint operations; NaN must not evade ordering comparisons.
+        assert_eq!(Aabb::new([f32::NAN, 0.0, 0.0], [1.0; 3]), None);
+        assert_eq!(Aabb::new([0.0; 3], [f32::INFINITY, 1.0, 1.0]), None);
+        assert_eq!(Aabb::new([1.0, 0.0, 0.0], [0.0, 1.0, 1.0]), None);
+
+        let wide = Aabb::new([f32::MAX / 2.0; 3], [f32::MAX; 3]).expect("finite ordered bounds");
+        assert!(wide.center().iter().all(|component| component.is_finite()));
+    }
+
+    #[test]
     fn octree_traversal_orders_are_deterministic() {
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = DepthVisitor;
@@ -599,6 +681,26 @@ mod tests {
     }
 
     #[test]
+    fn refinement_at_the_depth_limit_is_a_typed_no_op() {
+        // Returning the leaf eight times would look like successful
+        // subdivision and could keep a caller's refinement loop alive forever.
+        let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
+        let mut visitor = DepthVisitor;
+        let mut tree = Octree::build(bounds, 0, &mut visitor);
+        let root = tree.root_id();
+        let before = tree.clone();
+
+        assert_eq!(
+            tree.refine_leaf(root, 0, &mut visitor),
+            Err(RefineError::MaxDepth {
+                cell: root,
+                max_depth: 0,
+            })
+        );
+        assert_eq!(tree, before);
+    }
+
+    #[test]
     fn leaf_neighbors_find_face_and_edge_adjacency_across_depths() {
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = SelectiveVisitor;
@@ -622,5 +724,56 @@ mod tests {
         assert!(edge_neighbors.iter().any(|id| {
             tree.cell(*id).expect("neighbor should exist").bounds.min == [0.5, 0.5, 0.0]
         }));
+    }
+
+    #[test]
+    fn adaptive_leaves_partition_the_root_and_keep_parent_links() {
+        // A flat arena is useful only if adaptive insertion preserves both the
+        // spatial partition and the parent/child topology that stable IDs name.
+        let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
+        let mut visitor = SelectiveVisitor;
+        let tree = Octree::build(bounds, 2, &mut visitor);
+
+        let leaf_volume = tree
+            .leaf_ids()
+            .iter()
+            .map(|&id| tree.cell(id).expect("leaf should exist").bounds.volume())
+            .sum::<f32>();
+        assert_eq!(leaf_volume, bounds.volume());
+
+        for id in tree.depth_first_ids() {
+            let cell = tree.cell(id).expect("traversal IDs should be live");
+            if let Some(parent) = cell.parent() {
+                assert!(
+                    tree.cell(parent)
+                        .and_then(|parent| parent.children())
+                        .is_some_and(|children| children.contains(&id)),
+                    "cell {id:?} is absent from its recorded parent {parent:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adaptive_neighbor_queries_are_symmetric_and_canonical() {
+        // Cross-depth adjacency is an undirected spatial relation; this traps
+        // asymmetric overlap/touch predicates and unstable result ordering.
+        let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
+        let mut visitor = SelectiveVisitor;
+        let tree = Octree::build(bounds, 2, &mut visitor);
+
+        for adjacency in [
+            CellAdjacency::Face,
+            CellAdjacency::Edge,
+            CellAdjacency::Corner,
+        ] {
+            for leaf in tree.leaf_ids() {
+                let neighbors = tree.leaf_neighbors(leaf, adjacency);
+                assert!(neighbors.windows(2).all(|pair| pair[0] < pair[1]));
+                for neighbor in neighbors {
+                    assert!(tree.leaf_neighbors(neighbor, adjacency).contains(&leaf));
+                }
+            }
+        }
     }
 }
