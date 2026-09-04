@@ -6,8 +6,7 @@
 use core::fmt;
 use std::sync::{Mutex, MutexGuard};
 
-use exedra_isosurface::{ScalarField, SpecializableField};
-use exedra_spatial::Aabb;
+use exedra_isosurface::{Aabb, ScalarField, SpecializableField};
 use fidget::{
     eval::{BulkEvaluator, Function, TracingEvaluator},
     shape::{EzShape, Shape, ShapeBulkEval, ShapeTape, ShapeTracingEval},
@@ -18,8 +17,8 @@ use fidget::{
 use crate::FidgetFieldError;
 
 /// `ScalarField` adapter for any `fidget::shape::Shape`.
-pub struct FidgetField<F: Function, T = ()> {
-    shape: Shape<F, T>,
+pub struct FidgetField<F: Function> {
+    shape: Shape<F>,
     interval: Mutex<IntervalCache<F>>,
     float: Mutex<FloatCache<F::FloatSliceEval>>,
     grad: Mutex<GradCache<F::GradSliceEval>>,
@@ -53,25 +52,25 @@ struct GradCache<E: BulkEvaluator> {
     z: Vec<Grad>,
 }
 
-impl<F: Function + Clone, T> FidgetField<F, T> {
+impl<F: Function + Clone> FidgetField<F> {
     /// Wraps a `fidget` shape as an `exedra_isosurface::ScalarField`.
     ///
     /// The shape must depend only on the `x`, `y`, and `z` axes.
-    pub fn new(shape: Shape<F, T>) -> Result<Self, FidgetFieldError> {
+    pub fn new(shape: Shape<F>) -> Result<Self, FidgetFieldError> {
         reject_extra_vars(&shape)?;
         let interval = IntervalCache {
-            eval: Shape::<F, T>::new_interval_eval(),
+            eval: Shape::<F>::new_interval_eval(),
             tape: shape.ez_interval_tape(),
         };
         let float = FloatCache {
-            eval: Shape::<F, T>::new_float_slice_eval(),
+            eval: Shape::<F>::new_float_slice_eval(),
             tape: shape.ez_float_slice_tape(),
             x: Vec::new(),
             y: Vec::new(),
             z: Vec::new(),
         };
         let grad = GradCache {
-            eval: Shape::<F, T>::new_grad_slice_eval(),
+            eval: Shape::<F>::new_grad_slice_eval(),
             tape: shape.ez_grad_slice_tape(),
             x: Vec::new(),
             y: Vec::new(),
@@ -88,12 +87,12 @@ impl<F: Function + Clone, T> FidgetField<F, T> {
 
     /// Returns the wrapped `fidget` shape.
     #[must_use]
-    pub const fn shape(&self) -> &Shape<F, T> {
+    pub const fn shape(&self) -> &Shape<F> {
         &self.shape
     }
 }
 
-impl<F: Function + Clone, T> fmt::Debug for FidgetField<F, T> {
+impl<F: Function + Clone> fmt::Debug for FidgetField<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FidgetField")
             .field("size", &self.shape.size())
@@ -102,15 +101,15 @@ impl<F: Function + Clone, T> fmt::Debug for FidgetField<F, T> {
     }
 }
 
-impl<F: Function + Clone, T> TryFrom<Shape<F, T>> for FidgetField<F, T> {
+impl<F: Function + Clone> TryFrom<Shape<F>> for FidgetField<F> {
     type Error = FidgetFieldError;
 
-    fn try_from(shape: Shape<F, T>) -> Result<Self, Self::Error> {
+    fn try_from(shape: Shape<F>) -> Result<Self, Self::Error> {
         Self::new(shape)
     }
 }
 
-impl<F: Function + Clone, T> ScalarField for FidgetField<F, T> {
+impl<F: Function + Clone> ScalarField for FidgetField<F> {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let mut cache = lock_unpoison(&self.interval);
         let x = Interval::from([bounds.min[0], bounds.max[0]]);
@@ -174,7 +173,7 @@ impl<F: Function + Clone, T> ScalarField for FidgetField<F, T> {
     }
 }
 
-impl<F: Function + Clone, T> SpecializableField for FidgetField<F, T> {
+impl<F: Function + Clone> SpecializableField for FidgetField<F> {
     type Specialized = Self;
 
     fn specialize(&self, bounds: &Aabb) -> Option<Self::Specialized> {
@@ -204,7 +203,7 @@ impl<F: Function + Clone, T> SpecializableField for FidgetField<F, T> {
     }
 }
 
-fn reject_extra_vars<F: Function, T>(shape: &Shape<F, T>) -> Result<(), FidgetFieldError> {
+fn reject_extra_vars<F: Function>(shape: &Shape<F>) -> Result<(), FidgetFieldError> {
     let vars = shape.inner().vars();
     let axis_count = vars.get(&Var::X).is_some() as usize
         + vars.get(&Var::Y).is_some() as usize
@@ -268,10 +267,9 @@ fn assert_same_len(expected: usize, found: usize, label: &str) {
 #[cfg(test)]
 mod tests {
     use exedra_isosurface::{
-        DualContourParams, EdgeSearchParams, ScalarField, SpecializableField, dual_contour,
+        Aabb, DualContourParams, EdgeSearchParams, QefParams, ScalarField, SpecializableField,
+        dual_contour,
     };
-    use exedra_qef::QefParams;
-    use exedra_spatial::Aabb;
     use fidget::{context::Tree, var::Var, vm::VmShape};
 
     use super::{FidgetField, VmField};

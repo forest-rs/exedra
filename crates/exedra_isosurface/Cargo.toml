@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Implicit-field evaluation and surface extraction seams for exedra"
+description = "Implicit fields and dual-contouring surface extraction for Exedra"
 keywords = ["implicit", "isosurface", "sdf", "no_std"]
 categories = ["data-structures", "algorithms"]
 
@@ -13,7 +13,7 @@ categories = ["data-structures", "algorithms"]
 exedra_math.workspace = true
 exedra_mesh.workspace = true
 exedra_qef.workspace = true
-exedra_spatial = { default-features = false, path = "../exedra_spatial" }
+exedra_spatial.workspace = true
 hashbrown.workspace = true
 libm = { optional = true, workspace = true }
 

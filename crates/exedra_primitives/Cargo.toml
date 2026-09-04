@@ -5,12 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic mesh primitive generators for exedra"
+description = "Deterministic mesh primitive generators for Exedra"
 keywords = ["mesh", "primitives", "geometry", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
-exedra_mesh = { default-features = false, path = "../exedra_mesh" }
+exedra_mesh.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]

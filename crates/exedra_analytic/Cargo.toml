@@ -5,13 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Planar analytic topology spike for Exedra"
+description = "Planar analytic topology and deterministic mesh tessellation for Exedra"
 keywords = ["geometry", "analytic", "tessellation", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
 exedra_math.workspace = true
-exedra_mesh = { default-features = false, path = "../exedra_mesh" }
+exedra_mesh.workspace = true
 exedra_triangulate.workspace = true
 libm = { optional = true, workspace = true }
 

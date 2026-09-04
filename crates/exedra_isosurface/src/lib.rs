@@ -18,6 +18,33 @@
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
 //! define a full implicit scene/domain model.
+//!
+//! # Example
+//!
+//! Extract the zero surface of an analytic sphere into an Exedra mesh:
+//!
+//! ```
+//! use exedra_isosurface::{
+//!     Aabb, DualContourParams, EdgeSearchParams, QefParams,
+//!     analytic::SphereField, dual_contour,
+//! };
+//!
+//! let field = SphereField {
+//!     center: [0.0, 0.0, 0.0],
+//!     radius: 1.0,
+//! };
+//! let params = DualContourParams {
+//!     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
+//!     max_depth: 4,
+//!     cell_budget: None,
+//!     edge_search: EdgeSearchParams::default(),
+//!     qef: QefParams::default(),
+//! };
+//! let result = dual_contour(&field, &params).expect("sphere extraction");
+//!
+//! assert!(result.stats.faces > 0);
+//! assert!(result.mesh.validate_deep().is_empty());
+//! ```
 
 #![no_std]
 extern crate alloc;
@@ -37,7 +64,8 @@ pub mod lift;
 pub mod semi_analytic;
 pub mod transform;
 
-use exedra_spatial::Aabb;
+pub use exedra_qef::QefParams;
+pub use exedra_spatial::Aabb;
 
 pub use bounds2::Aabb2;
 pub use dual_contour::{
