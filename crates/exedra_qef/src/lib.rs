@@ -10,6 +10,32 @@
 //!
 //! The crate intentionally does not know about scalar fields, Hermite edge
 //! sampling, octrees, or mesh output.
+//!
+//! The solver normalizes every accepted normal, finds the unconstrained
+//! least-squares point, anchors rank-deficient directions, then clamps the
+//! result into the supplied bounds. It is not a general box-constrained
+//! optimizer.
+//!
+//! # Example
+//!
+//! Three independent planes recover their shared corner:
+//!
+//! ```
+//! use exedra_qef::{QefBounds, QefParams, QefSolver, SharpnessClass};
+//!
+//! let mut solver = QefSolver::new();
+//! assert!(solver.add([0.25, 0.0, 0.0], [1.0, 0.0, 0.0]));
+//! assert!(solver.add([0.0, -0.5, 0.0], [0.0, 1.0, 0.0]));
+//! assert!(solver.add([0.0, 0.0, 0.75], [0.0, 0.0, 1.0]));
+//!
+//! let bounds = QefBounds::new([-1.0; 3], [1.0; 3]).expect("ordered bounds");
+//! let result = solver
+//!     .solve(bounds, &QefParams::default())
+//!     .expect("the solver contains usable constraints");
+//!
+//! assert_eq!(result.position, [0.25, -0.5, 0.75]);
+//! assert_eq!(result.sharpness_class, SharpnessClass::Corner);
+//! ```
 
 #![no_std]
 #[cfg(feature = "std")]
@@ -28,7 +54,7 @@ pub struct PlaneConstraint {
     pub normal: [f32; 3],
 }
 
-/// Bounding box used to anchor and clamp one QEF solve.
+/// Axis-aligned bounds used to anchor and clamp one QEF solve.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct QefBounds {
     /// Minimum corner.
@@ -38,22 +64,30 @@ pub struct QefBounds {
 }
 
 impl QefBounds {
-    /// Creates bounds when `min <= max` on every axis.
+    /// Creates finite bounds when `min <= max` on every axis.
     #[must_use]
     pub fn new(min: [f32; 3], max: [f32; 3]) -> Option<Self> {
-        if min[0] > max[0] || min[1] > max[1] || min[2] > max[2] {
-            return None;
-        }
-        Some(Self { min, max })
+        let bounds = Self { min, max };
+        bounds.is_valid().then_some(bounds)
+    }
+
+    /// Returns whether both corners are finite and ordered on every axis.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.min
+            .iter()
+            .chain(&self.max)
+            .all(|component| component.is_finite())
+            && self.min.iter().zip(self.max).all(|(min, max)| *min <= max)
     }
 
     /// Returns the center point.
     #[must_use]
     pub fn center(self) -> [f32; 3] {
         [
-            0.5 * (self.min[0] + self.max[0]),
-            0.5 * (self.min[1] + self.max[1]),
-            0.5 * (self.min[2] + self.max[2]),
+            self.min[0].midpoint(self.max[0]),
+            self.min[1].midpoint(self.max[1]),
+            self.min[2].midpoint(self.max[2]),
         ]
     }
 
@@ -79,12 +113,12 @@ pub enum SharpnessClass {
     Corner,
 }
 
-/// Parameters controlling one QEF solve.
+/// Parameters controlling eigenvalue rank selection and the Jacobi solve.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct QefParams {
-    /// Relative cutoff applied against the largest eigenvalue.
+    /// Finite, nonnegative cutoff applied against the largest eigenvalue.
     pub relative_eigenvalue_cutoff: f32,
-    /// Maximum Jacobi sweeps used for the symmetric eigensolve.
+    /// Positive maximum Jacobi sweeps used for the symmetric eigensolve.
     pub jacobi_sweeps: u8,
 }
 
@@ -94,6 +128,17 @@ impl Default for QefParams {
             relative_eigenvalue_cutoff: 1.0e-3,
             jacobi_sweeps: 12,
         }
+    }
+}
+
+impl QefParams {
+    /// Returns whether the cutoff is finite and nonnegative and at least one
+    /// Jacobi sweep is requested.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.relative_eigenvalue_cutoff.is_finite()
+            && self.relative_eigenvalue_cutoff >= 0.0
+            && self.jacobi_sweeps > 0
     }
 }
 
@@ -116,12 +161,34 @@ pub struct QefResult {
 
 /// QEF solve failure.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum QefSolveError {
+    /// The solve bounds are non-finite or reversed on at least one axis.
+    InvalidBounds,
+    /// The null-space anchor contains a non-finite component.
+    InvalidAnchor,
+    /// The eigensolver parameters are non-finite or request zero sweeps.
+    InvalidParameters,
     /// No usable plane constraints were accumulated.
     Empty,
 }
 
-/// Incremental QEF accumulator for bounded 3D solves.
+impl core::fmt::Display for QefSolveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidBounds => f.write_str("QEF bounds must be finite and ordered"),
+            Self::InvalidAnchor => f.write_str("QEF anchor must be finite"),
+            Self::InvalidParameters => {
+                f.write_str("QEF parameters require a finite nonnegative cutoff and sweeps > 0")
+            }
+            Self::Empty => f.write_str("QEF contains no usable plane constraints"),
+        }
+    }
+}
+
+impl core::error::Error for QefSolveError {}
+
+/// Incremental accumulator for small 3D QEF solves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QefSolver {
     ata: [[f32; 3]; 3],
@@ -177,41 +244,85 @@ impl QefSolver {
         }
 
         let plane_distance = dot(unit_normal, constraint.position);
-        accumulate_outer(&mut self.ata, unit_normal);
-        for (axis, component) in unit_normal.into_iter().enumerate() {
-            self.atb[axis] += component * plane_distance;
+        if !plane_distance.is_finite() {
+            return false;
         }
-        self.btb += plane_distance * plane_distance;
-        self.constraint_count += 1;
+
+        // Stage the update so an extreme but finite input cannot poison the
+        // accumulator with overflow before it is rejected.
+        let mut next_ata = self.ata;
+        accumulate_outer(&mut next_ata, unit_normal);
+        let mut next_atb = self.atb;
+        for (axis, component) in unit_normal.into_iter().enumerate() {
+            next_atb[axis] += component * plane_distance;
+        }
+        let next_btb = self.btb + plane_distance * plane_distance;
+        let Some(next_count) = self.constraint_count.checked_add(1) else {
+            return false;
+        };
+        if !next_ata.iter().flatten().all(|value| value.is_finite())
+            || !next_atb.iter().all(|value| value.is_finite())
+            || !next_btb.is_finite()
+        {
+            return false;
+        }
+
+        self.ata = next_ata;
+        self.atb = next_atb;
+        self.btb = next_btb;
+        self.constraint_count = next_count;
         true
     }
 
-    /// Adds every constraint in `constraints`.
+    /// Adds every usable constraint in `constraints`.
+    ///
+    /// Constraints with a zero-length or non-finite normal, or a non-finite
+    /// position, are skipped. Use [`Self::constraint_count`] before and after
+    /// the call when rejected-input accounting matters.
     pub fn add_constraints(&mut self, constraints: &[PlaneConstraint]) {
         for constraint in constraints {
             let _ = self.add_constraint(*constraint);
         }
     }
 
-    /// Solves the accumulated QEF inside `bounds`.
+    /// Solves the accumulated QEF and clamps the result into `bounds`.
     ///
     /// Low-rank solves pin the null-space dimensions to `bounds.center()`
     /// before the final point is clamped back into the bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QefSolveError`] when the bounds or parameters are invalid, or
+    /// when no usable constraints have been accumulated.
     pub fn solve(&self, bounds: QefBounds, params: &QefParams) -> Result<QefResult, QefSolveError> {
         self.solve_with_anchor(bounds, bounds.center(), params)
     }
 
-    /// Solves the accumulated QEF inside `bounds`, pinning low-rank null-space
-    /// dimensions to `anchor`.
+    /// Solves the accumulated QEF, pinning low-rank null-space dimensions to
+    /// `anchor`, then clamps the result into `bounds`.
     ///
     /// `anchor` is clamped into `bounds` before use so callers may pass
     /// slightly out-of-bounds mass points without destabilizing the solve.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QefSolveError`] when the bounds, parameters, or anchor are
+    /// invalid, or when no usable constraints have been accumulated.
     pub fn solve_with_anchor(
         &self,
         bounds: QefBounds,
         anchor: [f32; 3],
         params: &QefParams,
     ) -> Result<QefResult, QefSolveError> {
+        if !bounds.is_valid() {
+            return Err(QefSolveError::InvalidBounds);
+        }
+        if !params.is_valid() {
+            return Err(QefSolveError::InvalidParameters);
+        }
+        if !anchor.iter().all(|component| component.is_finite()) {
+            return Err(QefSolveError::InvalidAnchor);
+        }
         if self.constraint_count == 0 {
             return Err(QefSolveError::Empty);
         }
@@ -432,10 +543,35 @@ fn sqrt(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use exedra_math::{dot, scale};
+
     use super::{PlaneConstraint, QefBounds, QefParams, QefSolveError, QefSolver, SharpnessClass};
 
     fn bounds() -> QefBounds {
         QefBounds::new([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]).expect("valid bounds")
+    }
+
+    #[test]
+    fn bounds_constructor_rejects_nonfinite_and_reversed_coordinates() {
+        // `Some` must mean the value is safe to pass through `f32::clamp` in
+        // every solve, rather than merely escaping a comparison with NaN.
+        assert_eq!(QefBounds::new([f32::NAN, 0.0, 0.0], [1.0; 3]), None);
+        assert_eq!(QefBounds::new([0.0; 3], [f32::INFINITY, 1.0, 1.0]), None);
+        assert_eq!(QefBounds::new([1.0, 0.0, 0.0], [0.0, 1.0, 1.0]), None);
+    }
+
+    #[test]
+    fn bounds_center_remains_finite_at_f32_extremes() {
+        // `f32::midpoint` must avoid overflowing two same-sign finite
+        // endpoints while preserving the midpoint contract.
+        let bounds =
+            QefBounds::new([f32::MAX / 2.0; 3], [f32::MAX; 3]).expect("finite ordered bounds");
+        assert!(
+            bounds
+                .center()
+                .iter()
+                .all(|component| component.is_finite())
+        );
     }
 
     #[test]
@@ -497,6 +633,36 @@ mod tests {
             .solve(bounds(), &QefParams::default())
             .expect_err("empty solve should fail");
         assert_eq!(error, QefSolveError::Empty);
+    }
+
+    #[test]
+    fn solve_rejects_invalid_public_inputs_before_numeric_work() {
+        // The structs intentionally remain plain data, so the solve boundary
+        // must defend against callers bypassing their validated constructors.
+        let mut solver = QefSolver::new();
+        assert!(solver.add([0.0; 3], [1.0, 0.0, 0.0]));
+
+        let invalid_bounds = QefBounds {
+            min: [f32::NAN, 0.0, 0.0],
+            max: [1.0; 3],
+        };
+        assert_eq!(
+            solver.solve(invalid_bounds, &QefParams::default()),
+            Err(QefSolveError::InvalidBounds)
+        );
+
+        let invalid_params = QefParams {
+            relative_eigenvalue_cutoff: f32::NAN,
+            jacobi_sweeps: 0,
+        };
+        assert_eq!(
+            solver.solve(bounds(), &invalid_params),
+            Err(QefSolveError::InvalidParameters)
+        );
+        assert_eq!(
+            solver.solve_with_anchor(bounds(), [f32::INFINITY, 0.0, 0.0], &QefParams::default()),
+            Err(QefSolveError::InvalidAnchor)
+        );
     }
 
     #[test]
@@ -572,5 +738,100 @@ mod tests {
         ]);
 
         assert_eq!(solver.constraint_count(), 1);
+    }
+
+    #[test]
+    fn rejected_extreme_constraint_does_not_poison_the_accumulator() {
+        // Finite coordinates can still overflow the normal equations; a
+        // rejected append must leave the previously usable system untouched.
+        let mut solver = QefSolver::new();
+        assert!(solver.add([0.25, 0.0, 0.0], [1.0, 0.0, 0.0]));
+        assert!(!solver.add([f32::MAX; 3], [1.0, 1.0, 1.0]));
+        assert_eq!(solver.constraint_count(), 1);
+
+        let result = solver
+            .solve(bounds(), &QefParams::default())
+            .expect("the original plane remains solvable");
+        assert!((result.position[0] - 0.25).abs() <= 1.0e-5);
+    }
+
+    #[test]
+    fn well_conditioned_three_plane_sweep_recovers_the_known_intersection() {
+        // This is an analytic oracle rather than a solver-to-solver comparison:
+        // all three planes are constructed through `expected`, so their unique
+        // least-squares intersection is known before the QEF is accumulated.
+        let solve_bounds = QefBounds::new([-100.0; 3], [100.0; 3]).expect("ordered bounds");
+        let mut random = Lcg(0x8c67_4de1_3a99_117b);
+        let mut accepted = 0_u32;
+
+        while accepted < 4_096 {
+            let expected = [
+                random.range(-10.0, 10.0),
+                random.range(-10.0, 10.0),
+                random.range(-10.0, 10.0),
+            ];
+            let normals = [
+                random.unit_vector(),
+                random.unit_vector(),
+                random.unit_vector(),
+            ];
+            if determinant(normals).abs() < 0.2 {
+                continue;
+            }
+
+            let mut solver = QefSolver::new();
+            for normal in normals {
+                assert!(solver.add(expected, normal));
+            }
+            let result = solver
+                .solve(solve_bounds, &QefParams::default())
+                .expect("three usable planes must solve");
+
+            assert_eq!(result.rank, 3);
+            for (actual, expected) in result.position.into_iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() <= 3.0e-4,
+                    "known intersection drifted: actual={actual}, expected={expected}"
+                );
+            }
+            accepted += 1;
+        }
+    }
+
+    fn determinant(rows: [[f32; 3]; 3]) -> f32 {
+        rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+            - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+            + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0])
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (self.0 >> 32) as u32
+        }
+
+        fn range(&mut self, min: f32, max: f32) -> f32 {
+            let unit = self.next() as f32 / u32::MAX as f32;
+            min + (max - min) * unit
+        }
+
+        fn unit_vector(&mut self) -> [f32; 3] {
+            loop {
+                let vector = [
+                    self.range(-1.0, 1.0),
+                    self.range(-1.0, 1.0),
+                    self.range(-1.0, 1.0),
+                ];
+                let squared = dot(vector, vector);
+                if squared > 0.01 {
+                    return scale(vector, 1.0 / squared.sqrt());
+                }
+            }
+        }
     }
 }
