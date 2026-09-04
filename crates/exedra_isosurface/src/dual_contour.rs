@@ -11,10 +11,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use exedra_mesh::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
-use exedra_qef::{
-    PlaneConstraint, QefBounds, QefParams, QefResult, QefSolveError, QefSolver, SharpnessClass,
-};
-use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
+use exedra_qef::{PlaneConstraint, QefBounds, QefResult, QefSolveError, QefSolver, SharpnessClass};
+use exedra_spatial::{CellId, CellRef, Octree, OctreeVisitor};
 use hashbrown::HashMap;
 
 use crate::adaptive_transition::{
@@ -24,8 +22,9 @@ use crate::adaptive_transition::{
 use crate::cell_topology::{CUBE_EDGES, CellTopology, classify_cell};
 use crate::hermite::locate_edge_zero;
 use crate::{
-    CellHermiteData, EdgeSearchParams, ProvenanceField, ScalarField, SemiAnalyticFeature,
-    SemiAnalyticField, SemiAnalyticProjectionOutcome, locate_edge_intersection,
+    Aabb, CellHermiteData, EdgeSearchParams, ProvenanceField, QefParams, ScalarField,
+    SemiAnalyticFeature, SemiAnalyticField, SemiAnalyticProjectionOutcome,
+    locate_edge_intersection,
 };
 use exedra_math::{distance_squared, dot, norm, normalize, sub};
 

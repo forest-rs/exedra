@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic spatial indexing primitives for exedra"
+description = "Deterministic adaptive-octree primitives for Exedra"
 keywords = ["spatial", "octree", "aabb", "no_std"]
 categories = ["data-structures", "algorithms"]
 

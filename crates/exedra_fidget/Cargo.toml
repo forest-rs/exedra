@@ -5,16 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Thin Fidget adapter crate for exedra_isosurface"
+description = "Fidget expression-field adapter for Exedra implicit surfaces"
 keywords = ["implicit", "fidget", "isosurface", "sdf"]
 categories = ["graphics", "algorithms"]
 
 [dependencies]
 exedra_isosurface = { features = ["std"], workspace = true }
-exedra_mesh = { features = ["std"], workspace = true }
-exedra_qef.workspace = true
-exedra_spatial.workspace = true
 fidget.workspace = true
+
+[dev-dependencies]
+exedra_mesh = { features = ["std"], workspace = true }
 
 [features]
 default = ["std"]

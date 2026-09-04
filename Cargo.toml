@@ -99,25 +99,25 @@ clippy.allow_attributes = "warn"
 rust.unsafe_code = "deny"
 
 [workspace.dependencies]
-exedra = { default-features = false, path = "crates/exedra" }
-exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
-exedra_assembly = { default-features = false, path = "crates/exedra_assembly" }
-exedra_constructive = { default-features = false, path = "crates/exedra_constructive" }
-exedra_fidget = { default-features = false, path = "crates/exedra_fidget" }
-exedra_gltf = { default-features = false, path = "crates/exedra_gltf" }
-exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
-exedra_math = { default-features = false, path = "crates/exedra_math" }
-exedra_measurements = { default-features = false, path = "crates/exedra_measurements" }
-exedra_mesh = { default-features = false, path = "crates/exedra_mesh" }
-exedra_ops = { default-features = false, path = "crates/exedra_ops" }
+exedra = { default-features = false, path = "crates/exedra", version = "0.1.0" }
+exedra_analytic = { default-features = false, path = "crates/exedra_analytic", version = "0.1.0" }
+exedra_assembly = { default-features = false, path = "crates/exedra_assembly", version = "0.1.0" }
+exedra_constructive = { default-features = false, path = "crates/exedra_constructive", version = "0.1.0" }
+exedra_fidget = { default-features = false, path = "crates/exedra_fidget", version = "0.1.0" }
+exedra_gltf = { default-features = false, path = "crates/exedra_gltf", version = "0.1.0" }
+exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface", version = "0.1.0" }
+exedra_math = { default-features = false, path = "crates/exedra_math", version = "0.1.0" }
+exedra_measurements = { default-features = false, path = "crates/exedra_measurements", version = "0.1.0" }
+exedra_mesh = { default-features = false, path = "crates/exedra_mesh", version = "0.1.0" }
+exedra_ops = { default-features = false, path = "crates/exedra_ops", version = "0.1.0" }
 exedra_ops_testkit = { default-features = false, path = "crates/exedra_ops_testkit" }
-exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
-exedra_qef = { default-features = false, path = "crates/exedra_qef" }
-exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }
+exedra_primitives = { default-features = false, path = "crates/exedra_primitives", version = "0.1.0" }
+exedra_qef = { default-features = false, path = "crates/exedra_qef", version = "0.1.0" }
+exedra_spatial = { default-features = false, path = "crates/exedra_spatial", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
-exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate" }
-fidget = { default-features = false, version = "0.4.2" }
-hashbrown = { default-features = false, features = ["default-hasher"], version = "0.16.1" }
+exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate", version = "0.1.0" }
+fidget = { default-features = false, version = "0.5.0" }
+hashbrown = { default-features = false, features = ["default-hasher"], version = "0.17.1" }
 invalidation = "0.2.0"
 joiner = { default-features = false, path = "crates/joiner" }
 joiner_timber = { default-features = false, path = "crates/joiner_timber" }
