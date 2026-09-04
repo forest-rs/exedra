@@ -426,6 +426,9 @@ impl OutputMesh {
         Ok(TessellatedBody {
             mesh: built.mesh,
             source_map,
+            // The child tessellation records its own refinement outcome
+            // before stretch consumes it; the derived body was not refined.
+            refinement: None,
         })
     }
 }
@@ -475,7 +478,11 @@ fn stretch_mesh_expansion(
         let mesh = mesh.clone();
         let source_map = source.source_map.repinned(&mesh);
         return Ok((
-            TessellatedBody { mesh, source_map },
+            TessellatedBody {
+                mesh,
+                source_map,
+                refinement: None,
+            },
             MeshStretchStats::default(),
         ));
     }
@@ -690,7 +697,11 @@ fn stretch_mesh_contraction(
         let mesh = mesh.clone();
         let source_map = source.source_map.repinned(&mesh);
         return Ok((
-            TessellatedBody { mesh, source_map },
+            TessellatedBody {
+                mesh,
+                source_map,
+                refinement: None,
+            },
             MeshStretchStats::default(),
         ));
     }
@@ -1138,7 +1149,11 @@ fn translate_body(source: &TessellatedBody, displacement: [f64; 3]) -> Tessellat
         }
     }
     let source_map = source.source_map.repinned(&mesh);
-    TessellatedBody { mesh, source_map }
+    TessellatedBody {
+        mesh,
+        source_map,
+        refinement: None,
+    }
 }
 
 fn cut_key(a: ClipVertex, b: ClipVertex, plane: u8) -> Result<CutKey, StretchRefusal> {

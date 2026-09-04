@@ -13,6 +13,8 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use exedra_triangulate::RefineStats;
+
 use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
 use crate::ir::{NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
 use crate::tessellate::{
@@ -153,6 +155,7 @@ pub struct EvalCounters {
 
 /// The honest ledger of one evaluation.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct GeometryReport {
     /// Per-node fidelity outcomes, in node order (only nodes the walk
     /// visited).
@@ -163,6 +166,11 @@ pub struct GeometryReport {
     pub envelopes: Vec<(NodeId, Aabb3)>,
     /// Policy-defined curve usage: which nodes used which curve policies.
     pub policy_curves: Vec<(NodeId, PolicyId)>,
+    /// Refinement work and stopping outcomes, in node order. Entries are
+    /// present only for bodies whose policy requested planar or cap
+    /// refinement; cache hits replay the outcome stored with the tessellated
+    /// body so they cannot hide incomplete quality.
+    pub refinements: Vec<(NodeId, RefineStats)>,
     /// Work counters.
     pub counters: EvalCounters,
     /// The policy evaluation ran under.
@@ -179,6 +187,15 @@ impl GeometryReport {
             .iter()
             .find(|(n, _)| *n == node)
             .map(|(_, f)| *f)
+    }
+
+    /// Refinement work and stopping outcome recorded for a node, if any.
+    #[must_use]
+    pub fn refinement_of(&self, node: NodeId) -> Option<RefineStats> {
+        self.refinements
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, stats)| *stats)
     }
 
     /// True when no diagnostics of `severity` or higher were emitted.
@@ -286,6 +303,7 @@ fn evaluate_inner(
             diagnostics: Vec::new(),
             envelopes: Vec::new(),
             policy_curves: Vec::new(),
+            refinements: Vec::new(),
             counters: EvalCounters::default(),
             policy: *policy,
             schema_version: crate::EVAL_SCHEMA_VERSION,
@@ -521,7 +539,11 @@ impl EvalCx<'_> {
                         alloc::vec![crate::tessellate::Feature::Imported; mesh.vertices().count()];
                     let source_map =
                         crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
-                    Ok(TessellatedBody { mesh, source_map })
+                    Ok(TessellatedBody {
+                        mesh,
+                        source_map,
+                        refinement: None,
+                    })
                 })?;
                 Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
             }
@@ -955,7 +977,11 @@ impl EvalCx<'_> {
                 ];
                 let source_map =
                     crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
-                let body = Rc::new(TessellatedBody { mesh, source_map });
+                let body = Rc::new(TessellatedBody {
+                    mesh,
+                    source_map,
+                    refinement: None,
+                });
                 self.report.counters.tessellations += 1;
                 if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key) {
                     cache.insert(key, Rc::clone(&body));
@@ -1018,6 +1044,57 @@ impl EvalCx<'_> {
             node: Some(node),
             source,
         });
+    }
+
+    /// Records refinement work and makes every incomplete stopping reason
+    /// visible in the honest geometry report. The tessellated body carries
+    /// the same value, which makes this replayable on cache hits.
+    fn record_refinement(&mut self, node: NodeId, stats: RefineStats) {
+        self.report.refinements.push((node, stats));
+        if stats.budget_exhausted {
+            self.push_diagnostic(
+                node,
+                Severity::Warning,
+                "eval.refinement.budget_exhausted",
+                alloc::format!(
+                    "refinement exhausted its generated-point or internal-index budget after {} generated point(s)",
+                    stats.steiner_points
+                ),
+            );
+        }
+        if stats.declined_insertions > 0 {
+            self.push_diagnostic(
+                node,
+                Severity::Warning,
+                "eval.refinement.declined_insertions",
+                alloc::format!(
+                    "{} refinement insertion(s) were declined",
+                    stats.declined_insertions
+                ),
+            );
+        }
+        if stats.input_limited_triangles > 0 {
+            self.push_diagnostic(
+                node,
+                Severity::Warning,
+                "eval.refinement.input_limited",
+                alloc::format!(
+                    "{} triangle(s) remain limited by input boundary angles",
+                    stats.input_limited_triangles
+                ),
+            );
+        }
+        if stats.remaining_bad_triangles > 0 {
+            self.push_diagnostic(
+                node,
+                Severity::Warning,
+                "eval.refinement.remaining_violations",
+                alloc::format!(
+                    "{} triangle(s) remain outside the requested quality bound",
+                    stats.remaining_bad_triangles
+                ),
+            );
+        }
     }
 
     /// Fidelity of a body node: frontend-declared conflicts win, then
@@ -1117,6 +1194,9 @@ impl EvalCx<'_> {
                 }
             }
         }
+        if let Some(stats) = body.refinement {
+            self.record_refinement(node, stats);
+        }
         self.report.fidelity.push((node, fidelity));
         if emit {
             self.report.counters.bodies += 1;
@@ -1165,7 +1245,11 @@ pub(crate) fn mesh_bounds(mesh: &exedra_mesh::Mesh) -> Aabb3 {
 fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedBody {
     let mesh = transform_mesh(&source.mesh, placement);
     let source_map = source.source_map.repinned(&mesh);
-    TessellatedBody { mesh, source_map }
+    TessellatedBody {
+        mesh,
+        source_map,
+        refinement: source.refinement,
+    }
 }
 
 /// Clones a mesh with vertices rigid-transformed (f64 math, one narrowing).
@@ -1441,6 +1525,62 @@ mod tests {
                 "triangle winding faces local +Z"
             );
         }
+    }
+
+    #[test]
+    fn planar_refinement_stats_and_incomplete_quality_reach_report_and_cache() {
+        // A long, thin face with a five-point budget cannot finish its
+        // requested quality pass. This trap requires the evaluator to retain
+        // generated work, expose the remaining violations, and replay both
+        // the stats and warnings when the body comes from the cache.
+        use exedra_triangulate::RefineParams;
+
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::rect(10.0, 1.0).expect("rectangle"));
+        let face = builder
+            .add(NodeKind::PlanarFace {
+                profile,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("planar face");
+        let recipe = builder.finish(face).expect("valid planar-face recipe");
+        let policy = EvalPolicy::default()
+            .with_planar_face_refinement(RefineParams::new(1.0).with_max_steiner_points(5));
+
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&recipe, &policy, &mut cache).expect("cold evaluation");
+        let stats = cold
+            .report
+            .refinement_of(face)
+            .expect("refinement stats are reported");
+        assert_eq!(
+            stats.steiner_points, 5,
+            "the configured work budget is visible"
+        );
+        assert!(stats.budget_exhausted, "pending refinement hits the budget");
+        assert!(
+            stats.remaining_bad_triangles > 0,
+            "the report does not claim an incomplete pass is complete"
+        );
+        for code in [
+            "eval.refinement.budget_exhausted",
+            "eval.refinement.remaining_violations",
+        ] {
+            assert!(
+                cold.report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "incomplete refinement explains {code}"
+            );
+        }
+        assert!(!cold.report.clean_at(Severity::Warning));
+
+        let warm = evaluate_with_cache(&recipe, &policy, &mut cache).expect("warm evaluation");
+        assert_eq!(warm.report.refinements, cold.report.refinements);
+        assert_eq!(warm.report.diagnostics, cold.report.diagnostics);
+        assert_eq!(warm.report.counters.tessellations, 0);
+        assert_eq!(warm.report.counters.cache_hits, 1);
     }
 
     #[test]
@@ -3015,6 +3155,7 @@ mod cache_regression {
         assert_eq!(a.diagnostics, b.diagnostics, "diagnostics");
         assert_eq!(a.envelopes, b.envelopes, "envelopes");
         assert_eq!(a.policy_curves, b.policy_curves, "policy curves");
+        assert_eq!(a.refinements, b.refinements, "refinement outcomes");
         assert_eq!(a.policy, b.policy, "policy");
         assert_eq!(a.schema_version, b.schema_version, "schema version");
         assert_eq!(a.counters.bodies, b.counters.bodies, "bodies counter");
