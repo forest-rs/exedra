@@ -12,7 +12,36 @@ sweep, CSG, transforms, and instances); evaluation tessellates them into
 `exedra_mesh::Mesh` values carrying a full provenance source map, semantic region
 and material slots, and an honest fidelity report.
 
-Design commitments (see `docs/adr-0001-constructive-domain-scope.md`):
+```rust
+use exedra_constructive::{
+    evaluate::{Fidelity, evaluate},
+    ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder},
+    tessellate::EvalPolicy,
+};
+
+let mut builder = RecipeBuilder::new();
+let root = builder
+    .add(NodeKind::Primitive {
+        spec: PrimitiveSpec::Box {
+            size: [1.0, 2.0, 0.5],
+        },
+        placement: Placement3::IDENTITY,
+    })
+    .expect("valid box");
+let recipe = builder.finish(root).expect("valid recipe");
+
+let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluation succeeds");
+assert_eq!(result.bodies.len(), 1);
+assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+assert!(result.bodies[0].body.mesh.validate_deep().is_empty());
+```
+
+Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
+`evaluate` with an explicit `EvalPolicy`. The result contains placed bodies and
+a `GeometryReport`; callers should inspect both rather than treating emitted
+geometry alone as success. Use the `serde` feature for host-side interchange.
+
+Design commitments (see the [constructive-domain scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_constructive/docs/adr-0001-constructive-domain-scope.md)):
 
 - **f64 construction, f32 emission.** All construction and evaluation happen
   in f64 (kurbo-native); the single narrowing to `[f32; 3]` happens at mesh

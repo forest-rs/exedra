@@ -1,8 +1,26 @@
-# exedra_analytic
+# `exedra_analytic`
 
-Experimental analytic geometry head for the Exedra workspace.
+Narrow analytic geometry head for Exedra. It retains planar topology and
+face-level provenance until an explicit tessellation into `exedra_mesh::Mesh`.
 
-This crate is a narrow spike, not a full CAD kernel. The current scope is:
+```rust
+use exedra_analytic::{RectFrameParams, TessellateParams, rect_frame_xy};
+
+let shell = rect_frame_xy(&RectFrameParams::default()).expect("valid frame");
+let output = shell
+    .to_exedra_mesh(&TessellateParams::default())
+    .expect("planar shell tessellates");
+
+assert_eq!(shell.faces().len(), 1);
+assert_eq!(output.mesh.faces().count(), 8);
+assert!(output.mesh.validate_deep().is_empty());
+```
+
+Use `AnalyticShellBuilder` for arbitrary planar faces, `AnalyticShell` for
+retained topology and edits, and `TessellatedShell` for the mesh plus its
+analytic-face provenance.
+
+This crate is deliberately not a full CAD kernel. The current scope is:
 
 - planar faces,
 - line-segment coedges,
@@ -13,6 +31,9 @@ This crate is a narrow spike, not a full CAD kernel. The current scope is:
 
 The goal is to prove the multi-domain architecture with one honest second
 canonical domain, while keeping `exedra_mesh` as the polygon head.
+
+The default `std` feature selects native floating-point support. For `no_std`,
+disable defaults and enable `libm`.
 
 ## Current limitations
 

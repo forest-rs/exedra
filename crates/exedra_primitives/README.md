@@ -1,18 +1,35 @@
-# exedra_primitives
+# `exedra_primitives`
 
-Deterministic mesh primitive generators for exedra.
+Deterministic mesh primitive generators for Exedra.
 
-Provides a small library of primitive shapes (quad, box, cylinder, UV
-sphere) that produce Exedra modeling meshes with semantic region tags
-and canonical selections. Useful for testing, demos, and wind tunnels.
+The crate provides quads, grids, boxes, cylinders, cones, tori, UV spheres,
+and icospheres. Each constructor returns a `Primitive`: an `exedra_mesh::Mesh`
+plus semantic face regions and named canonical selections.
+
+```rust
+use exedra_primitives::{BoxParams, box_primitive};
+
+let primitive = box_primitive(&BoxParams {
+    size: [2.0, 1.0, 0.5],
+    ..BoxParams::default()
+});
+assert!(primitive.mesh.validate_deep().is_empty());
+
+let (_, top) = primitive
+    .selections
+    .face_sets
+    .iter()
+    .find(|(name, _)| name.0 == "faces.side_z_pos")
+    .expect("boxes publish a top-face selection");
+assert_eq!(top.as_slice().len(), 1);
+```
 
 Primitive constructors also author default edge sharpness for semantically
 obvious feature boundaries, such as box outer edges and capped rotational rims,
 so extracted shading matches typical modeling expectations without requiring an
 angle-based fallback.
 
-This is `#![no_std]` (with `alloc`) — IO and debug dumping live in
-`exedra_testkit`.
+This is `#![no_std]` with `alloc`; IO and debug dumping live elsewhere.
 
 ## Numeric Policy
 
@@ -32,10 +49,11 @@ to an `f64` reference. Coordinate error scales with primitive radius.
 
 ## Design
 
-See the [handoff spec](../../docs/exedra_primitives_handoff.md) for the
-full design document. See [`docs/adr-0001-primitive-feature-edge-sharpness.md`](docs/adr-0001-primitive-feature-edge-sharpness.md)
+See the [handoff spec](https://github.com/forest-rs/exedra/blob/main/docs/exedra_primitives_handoff.md)
+for the full design document. See
+[`docs/adr-0001-primitive-feature-edge-sharpness.md`](https://github.com/forest-rs/exedra/blob/main/crates/exedra_primitives/docs/adr-0001-primitive-feature-edge-sharpness.md)
 for the default sharp-edge contract and
-[`docs/adr-0002-trig-backend-policy.md`](docs/adr-0002-trig-backend-policy.md)
+[`docs/adr-0002-trig-backend-policy.md`](https://github.com/forest-rs/exedra/blob/main/crates/exedra_primitives/docs/adr-0002-trig-backend-policy.md)
 for the trigonometric backend policy.
 
 ## License

@@ -72,5 +72,16 @@ assembly.add_baked_part("detail", Mesh::new(), &[])?;
 # }
 ```
 
-For the boundary and extension rule, see
-[`adr-0001-facade-boundary.md`](docs/adr-0001-facade-boundary.md).
+For the boundary and extension rule, see the
+[facade boundary decision](https://github.com/forest-rs/exedra/blob/main/crates/exedra/docs/adr-0001-facade-boundary.md).
+
+## Status
+
+The 0.1 API is intentionally early. The facade identifies the supported crate
+boundaries and common flow; it does not imply universal Boolean, analytic, or
+implicit-surface coverage. Domain crates document their current refusal and
+fidelity contracts.
+
+## License
+
+Apache-2.0 OR MIT

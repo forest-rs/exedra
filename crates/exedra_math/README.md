@@ -1,4 +1,4 @@
-# exedra_math
+# `exedra_math`
 
 Small, deterministic 3-vector helpers for the Exedra workspace.
 
@@ -20,3 +20,22 @@ crates that need them keep their own backend plumbing.
 
 This crate owns only scalar vector arithmetic. It does not own vector types,
 placements, bounding boxes, or matrices.
+
+```rust
+use exedra_math::{cross, dot, normalize};
+
+let x = [1.0_f64, 0.0, 0.0];
+let y = [0.0_f64, 1.0, 0.0];
+assert_eq!(cross(x, y), [0.0, 0.0, 1.0]);
+assert_eq!(dot(x, y), 0.0);
+let direction = normalize([3.0_f64, 0.0, 4.0]).expect("non-degenerate vector");
+assert!((direction[0] - 0.6).abs() < 1.0e-12);
+assert!((direction[2] - 0.8).abs() < 1.0e-12);
+```
+
+The default `std` feature supplies square root. For a `no_std` build, disable
+defaults and enable `libm`.
+
+## License
+
+Apache-2.0 OR MIT
