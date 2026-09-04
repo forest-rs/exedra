@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use exedra::ExtractParams;
+    use exedra_mesh::ExtractParams;
     use exedra_ops::{OperatorRunner, UvBox, UvBoxParams, UvScope};
     use exedra_primitives::{BoxParams, box_primitive};
 

@@ -54,7 +54,7 @@ callers can observe rather than guess.
 
 ## Consequences
 
-- `exedra` gains a dependency on `exedra_triangulate` (a zero-dependency
+- `exedra_mesh` gains a dependency on `exedra_triangulate` (a zero-dependency
   `no_std` leaf below it in the graph, designed for this).
 - The boolean broad phase migrates to this enumeration and records its
   strategy (`exe-o1su`); the future narrow phase and split stages must be

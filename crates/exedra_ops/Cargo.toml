@@ -10,19 +10,18 @@ keywords = ["mesh", "modeling", "operators", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
-exedra.workspace = true
 exedra_analytic = { optional = true, workspace = true }
 exedra_assembly = { optional = true, workspace = true }
 exedra_constructive = { optional = true, workspace = true }
 exedra_math.workspace = true
+exedra_mesh.workspace = true
 invalidation.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]
-# The default matches common use alongside constructive and assembly heads. A
-# mesh-only build remains available with `default-features = false` plus `std`
-# or `libm`.
-default = ["std", "constructive", "assembly"]
+# Direct users get the focused mesh-operation SDK. The `exedra` facade owns
+# the broader common application bundle.
+default = ["std"]
 # Native-head adapters remain independently selectable.
 analytic = ["dep:exedra_analytic"]
 # Pattern expansion owns its planning; the structure head supplies state and
@@ -32,9 +31,9 @@ assembly = ["dep:exedra_assembly", "dep:exedra_constructive"]
 constructive = ["dep:exedra_constructive"]
 # Backend selection is valid without any adapter; weak forwarding avoids
 # enabling an optional dependency as a side effect.
-libm = ["dep:libm", "exedra/libm", "exedra_math/libm", "exedra_analytic?/libm"]
+libm = ["dep:libm", "exedra_mesh/libm", "exedra_math/libm", "exedra_analytic?/libm"]
 std = [
-    "exedra/std",
+    "exedra_mesh/std",
     "exedra_math/std",
     "exedra_analytic?/std",
     "exedra_assembly?/std",

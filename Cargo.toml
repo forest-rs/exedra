@@ -19,6 +19,7 @@ members = [
     "crates/exedra_isosurface",
     "crates/exedra_math",
     "crates/exedra_measurements",
+    "crates/exedra_mesh",
     "crates/exedra_ops",
     "crates/exedra_ops_testkit",
     "crates/exedra_primitives",
@@ -107,6 +108,7 @@ exedra_gltf = { default-features = false, path = "crates/exedra_gltf" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_math = { default-features = false, path = "crates/exedra_math" }
 exedra_measurements = { default-features = false, path = "crates/exedra_measurements" }
+exedra_mesh = { default-features = false, path = "crates/exedra_mesh" }
 exedra_ops = { default-features = false, path = "crates/exedra_ops" }
 exedra_ops_testkit = { default-features = false, path = "crates/exedra_ops_testkit" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }

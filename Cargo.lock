@@ -63,9 +63,9 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 name = "boolean_oracle"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_isosurface",
  "exedra_math",
+ "exedra_mesh",
  "exedra_primitives",
  "exedra_qef",
  "exedra_spatial",
@@ -100,8 +100,8 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "constructive_gallery"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_constructive",
+ "exedra_mesh",
  "exedra_testkit",
 ]
 
@@ -109,8 +109,8 @@ dependencies = [
 name = "constructive_wind_tunnel"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_constructive",
+ "exedra_mesh",
  "exedra_testkit",
 ]
 
@@ -194,20 +194,22 @@ dependencies = [
 name = "exedra"
 version = "0.1.0"
 dependencies = [
- "exedra_math",
- "exedra_testkit",
- "exedra_triangulate",
- "hashbrown 0.16.1",
- "invalidation",
- "libm",
+ "exedra_analytic",
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_gltf",
+ "exedra_isosurface",
+ "exedra_mesh",
+ "exedra_ops",
+ "exedra_primitives",
 ]
 
 [[package]]
 name = "exedra_analytic"
 version = "0.1.0"
 dependencies = [
- "exedra",
  "exedra_math",
+ "exedra_mesh",
  "exedra_triangulate",
  "libm",
 ]
@@ -216,8 +218,8 @@ dependencies = [
 name = "exedra_assembly"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_constructive",
+ "exedra_mesh",
  "hashbrown 0.16.1",
  "invalidation",
  "serde",
@@ -228,8 +230,8 @@ dependencies = [
 name = "exedra_constructive"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_math",
+ "exedra_mesh",
  "exedra_primitives",
  "exedra_testkit",
  "exedra_triangulate",
@@ -244,8 +246,8 @@ dependencies = [
 name = "exedra_fidget"
 version = "0.1.0"
 dependencies = [
- "exedra",
  "exedra_isosurface",
+ "exedra_mesh",
  "exedra_qef",
  "exedra_spatial",
  "fidget",
@@ -266,9 +268,9 @@ dependencies = [
 name = "exedra_gltf"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_mesh",
  "serde_json",
 ]
 
@@ -276,8 +278,8 @@ dependencies = [
 name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [
- "exedra",
  "exedra_math",
+ "exedra_mesh",
  "exedra_qef",
  "exedra_spatial",
  "hashbrown 0.16.1",
@@ -299,14 +301,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_mesh"
+version = "0.1.0"
+dependencies = [
+ "exedra_math",
+ "exedra_testkit",
+ "exedra_triangulate",
+ "hashbrown 0.16.1",
+ "invalidation",
+ "libm",
+]
+
+[[package]]
 name = "exedra_ops"
 version = "0.1.0"
 dependencies = [
- "exedra",
  "exedra_analytic",
  "exedra_assembly",
  "exedra_constructive",
  "exedra_math",
+ "exedra_mesh",
  "exedra_ops_testkit",
  "exedra_testkit",
  "invalidation",
@@ -318,7 +332,7 @@ dependencies = [
 name = "exedra_ops_testkit"
 version = "0.1.0"
 dependencies = [
- "exedra",
+ "exedra_mesh",
  "exedra_ops",
  "exedra_primitives",
 ]
@@ -327,9 +341,9 @@ dependencies = [
 name = "exedra_ops_web_bridge"
 version = "0.1.0"
 dependencies = [
- "exedra",
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_mesh",
  "exedra_ops",
  "exedra_primitives",
  "serde",
@@ -341,7 +355,7 @@ dependencies = [
 name = "exedra_primitives"
 version = "0.1.0"
 dependencies = [
- "exedra",
+ "exedra_mesh",
  "libm",
 ]
 
@@ -364,9 +378,9 @@ dependencies = [
 name = "exedra_render_bench"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_fidget",
  "exedra_isosurface",
+ "exedra_mesh",
  "exedra_primitives",
  "exedra_qef",
  "exedra_spatial",
@@ -381,7 +395,7 @@ version = "0.1.0"
 name = "exedra_testkit"
 version = "0.1.0"
 dependencies = [
- "exedra",
+ "exedra_mesh",
  "exedra_primitives",
 ]
 
@@ -400,7 +414,7 @@ dependencies = [
 name = "exedra_wind_tunnel"
 version = "0.0.0"
 dependencies = [
- "exedra",
+ "exedra_mesh",
  "exedra_primitives",
  "exedra_testkit",
 ]
@@ -702,9 +716,9 @@ dependencies = [
 name = "isosurface_wind_tunnel"
 version = "0.0.0"
 dependencies = [
- "exedra",
  "exedra_isosurface",
  "exedra_math",
+ "exedra_mesh",
  "exedra_qef",
  "exedra_spatial",
 ]

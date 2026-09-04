@@ -13,7 +13,7 @@ triangulation unchanged.
 Inputs are f64 coordinate slices; outputs are `u32` indices into their
 concatenation. The crate is `no_std` + `alloc` with zero dependencies and
 knows nothing about meshes, curves, or tolerances — adapters live with their
-consumers (`exedra` render extraction, `exedra_analytic`, the constructive
+consumers (`exedra_mesh` render extraction, `exedra_analytic`, the constructive
 geometry head).
 
 See `docs/adr-0001-deterministic-triangulation-scope.md` for scope and

@@ -62,7 +62,7 @@ This is not a spec for every operator listed here; it is an **example pipeline**
 
 ### Outputs
 
-* `exedra::Mesh` — canonical modeling mesh.
+* `exedra_mesh::Mesh` — canonical modeling mesh.
 * Renderable extraction (`TriMesh`) is produced by Exedra extraction using `ChangeSet.dirty` (incremental mode) or full rebuild.
 
 ---
@@ -140,9 +140,9 @@ A typical interactive workflow uses preview/commit around steps 8–10.
 
 **Writes**:
 
-* Constructs a new `exedra::Mesh` with:
+* Constructs a new `exedra_mesh::Mesh` with:
 
-  * vertex positions (`exedra::attr::VERTEX_POSITION`)
+  * vertex positions (`exedra_mesh::attr::VERTEX_POSITION`)
   * one face tagged `REGION_FOOTPRINT`
 
 **Artifacts (optional, bounded)**:
@@ -336,7 +336,7 @@ A typical interactive workflow uses preview/commit around steps 8–10.
 
 **Writes**:
 
-* corner UV layer (`exedra::attr::CORNER_UV`)
+* corner UV layer (`exedra_mesh::attr::CORNER_UV`)
 
 **DirtySet**:
 

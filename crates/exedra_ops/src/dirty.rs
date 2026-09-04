@@ -15,7 +15,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{ChangeSet, CornerId, FaceId, VertexId};
+use exedra_mesh::{ChangeSet, CornerId, FaceId, VertexId};
 use invalidation::{Channel, InvalidationSet};
 
 /// Fixed runtime cache channels for Exedra Ops.
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn channel_set_clear_and_query() {
         let mut dirty = CacheDirtySet::new();
-        let face = exedra::FaceId::from(exedra::Id::new(3, NonZeroU32::MIN));
+        let face = exedra_mesh::FaceId::from(exedra_mesh::Id::new(3, NonZeroU32::MIN));
         assert!(!dirty.has_any(DirtyChannel::Adjacency));
 
         dirty.mark_face(DirtyChannel::Adjacency, face);
@@ -187,8 +187,8 @@ mod tests {
     #[test]
     fn drain_is_deterministic() {
         let mut dirty = CacheDirtySet::new();
-        let f2 = exedra::FaceId::from(exedra::Id::new(2, NonZeroU32::MIN));
-        let f0 = exedra::FaceId::from(exedra::Id::new(0, NonZeroU32::MIN));
+        let f2 = exedra_mesh::FaceId::from(exedra_mesh::Id::new(2, NonZeroU32::MIN));
+        let f0 = exedra_mesh::FaceId::from(exedra_mesh::Id::new(0, NonZeroU32::MIN));
         dirty.mark_face(DirtyChannel::Adjacency, f2);
         dirty.mark_global(DirtyChannel::Adjacency);
         dirty.mark_face(DirtyChannel::Adjacency, f0);
@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn change_set_mapping_marks_runtime_channels() {
-        let mut change_set = exedra::ChangeSet::default();
-        let face = exedra::FaceId::from(exedra::Id::new(1, NonZeroU32::MIN));
+        let mut change_set = exedra_mesh::ChangeSet::default();
+        let face = exedra_mesh::FaceId::from(exedra_mesh::Id::new(1, NonZeroU32::MIN));
         change_set.created_faces.push(face);
         change_set.dirty.mark_face(face);
 

@@ -95,7 +95,7 @@ The deployable output is `apps/exedra_ops_web_viewer/dist/` and includes:
 ## Troubleshooting
 
 - `exedra_primitives requires either std or libm` during wasm build:
-  ensure the bridge keeps `libm` enabled explicitly for `exedra`,
+  ensure the bridge keeps `libm` enabled explicitly for `exedra_mesh`,
   `exedra_ops`, and `exedra_primitives`; the bridge uses that deterministic
   backend on every target.
 - `wasm-opt` permission issues in restricted environments:

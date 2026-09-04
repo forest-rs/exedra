@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use exedra::{FaceId, HalfEdgeId, VertexId, op};
+use exedra_mesh::{FaceId, HalfEdgeId, VertexId, op};
 
 use crate::op_common::op_error;
 use crate::patch::connect::{FrameOrientationState, add_frame_face_with_orientation};
@@ -60,7 +60,7 @@ impl EditOperator for BridgeBoundaryLoops {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -120,9 +120,9 @@ impl EditOperator for BridgeBoundaryLoops {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -213,7 +213,7 @@ struct OrderedBoundaryLoop {
 }
 
 fn ordered_boundary_loop(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     canonical_edges: &[HalfEdgeId],
     ctx: &OpContext,
     label: &str,
@@ -294,7 +294,7 @@ fn ordered_boundary_loop(
     Ok(OrderedBoundaryLoop { vertices })
 }
 
-fn orient_boundary_edge(mesh: &exedra::Mesh, edge: HalfEdgeId) -> Option<HalfEdgeId> {
+fn orient_boundary_edge(mesh: &exedra_mesh::Mesh, edge: HalfEdgeId) -> Option<HalfEdgeId> {
     let twin = mesh.twin(edge)?;
     let edge_face = mesh.face(edge)?;
     let twin_face = mesh.face(twin)?;
@@ -308,7 +308,7 @@ fn orient_boundary_edge(mesh: &exedra::Mesh, edge: HalfEdgeId) -> Option<HalfEdg
 }
 
 fn align_loop_vertices(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     loop_a: &[VertexId],
     loop_b: &[VertexId],
 ) -> Option<Vec<VertexId>> {
@@ -345,7 +345,7 @@ fn align_loop_vertices(
 }
 
 fn candidate_alignment_score(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     loop_a: &[VertexId],
     loop_b: &[VertexId],
 ) -> Option<u64> {
@@ -365,7 +365,7 @@ fn candidate_alignment_score(
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::Mesh;
+    use exedra_mesh::Mesh;
 
     use super::{BridgeBoundaryLoops, BridgeBoundaryLoopsParams};
     use crate::{
@@ -373,7 +373,7 @@ mod tests {
         test_support::commit,
     };
 
-    fn two_parallel_quads() -> (Mesh, exedra::FaceId, exedra::FaceId) {
+    fn two_parallel_quads() -> (Mesh, exedra_mesh::FaceId, exedra_mesh::FaceId) {
         let mesh = Mesh::from_polygons(
             &[
                 [0.0, 0.0, 0.0],

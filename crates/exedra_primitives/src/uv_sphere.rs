@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra_mesh::MeshBuilder;
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -173,7 +173,7 @@ pub fn uv_sphere(params: &UvSphereParams) -> Primitive {
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::{ExtractParams, HalfEdgeId};
+    use exedra_mesh::{ExtractParams, HalfEdgeId};
 
     use super::{REGION_BODY, REGION_POLE_BOTTOM, REGION_POLE_TOP, UvSphereParams, uv_sphere};
 

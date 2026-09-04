@@ -27,8 +27,8 @@
 //!
 //! Registering and writing a custom face-region dense layer:
 //! ```rust
-//! use exedra::attributes::{AttrKey, Attributes, Domain};
-//! use exedra::{FaceId, Id};
+//! use exedra_mesh::attributes::{AttrKey, Attributes, Domain};
+//! use exedra_mesh::{FaceId, Id};
 //! use core::num::NonZeroU32;
 //!
 //! let mut attrs = Attributes::new();
@@ -40,13 +40,13 @@
 //! let face = FaceId::from(Id::new(2, NonZeroU32::MIN));
 //! attrs.dense_mut(custom_region).unwrap().set(face.as_id(), 7);
 //! assert_eq!(attrs.dense(custom_region).unwrap().get(face.as_id()), Some(&7));
-//! # Ok::<(), exedra::attributes::AttrError>(())
+//! # Ok::<(), exedra_mesh::attributes::AttrError>(())
 //! ```
 //!
 //! Registering and writing a sparse per-corner UV layer:
 //! ```rust
-//! use exedra::attributes::{AttrKey, Attributes, Domain};
-//! use exedra::{CornerId, Id};
+//! use exedra_mesh::attributes::{AttrKey, Attributes, Domain};
+//! use exedra_mesh::{CornerId, Id};
 //! use core::num::NonZeroU32;
 //!
 //! let mut attrs = Attributes::new();
@@ -56,7 +56,7 @@
 //! let corner = CornerId::from(Id::new(3, NonZeroU32::MIN));
 //! attrs.sparse_mut(custom_uv).unwrap().set(corner.as_id(), [0.25, 0.75]);
 //! assert_eq!(attrs.sparse(custom_uv).unwrap().get(corner.as_id()), Some(&[0.25, 0.75]));
-//! # Ok::<(), exedra::attributes::AttrError>(())
+//! # Ok::<(), exedra_mesh::attributes::AttrError>(())
 //! ```
 //!
 //! Domain capacities are synchronized from mesh slot counts (not live counts),

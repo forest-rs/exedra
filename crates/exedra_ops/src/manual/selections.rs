@@ -28,7 +28,7 @@
 //!
 //! ```rust
 //! use exedra_ops::{FaceSet, canonicalize_face_set};
-//! use exedra::{FaceId, Id};
+//! use exedra_mesh::{FaceId, Id};
 //! use core::num::NonZeroU32;
 //!
 //! let f0 = FaceId::from(Id::new(0, NonZeroU32::MIN));

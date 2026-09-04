@@ -26,7 +26,7 @@
 //!   whose results are empty, total, a component pair, or an internal
 //!   cavity — the result-shape contract edges.
 
-use exedra::boolean::BooleanOp;
+use exedra_mesh::boolean::BooleanOp;
 
 use crate::operands::{
     Operand, Rigid, box_operand, random_curved_operand, random_nonconvex_operand, random_operand,

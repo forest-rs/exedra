@@ -17,13 +17,13 @@ use alloc::vec::Vec;
 use core::fmt;
 
 #[cfg(feature = "analytic")]
-use exedra::{FaceId, Mesh};
-#[cfg(feature = "analytic")]
 pub use exedra_analytic::{
     AnalyticFaceId, AnalyticShell, AnalyticShellBuilder, AnalyticVertexId,
     BuildError as AnalyticBuildError, RectFrameParams, RegionId as AnalyticRegionId,
     TessellateError as AnalyticTessellateError, TessellateParams, rect_frame_xy,
 };
+#[cfg(feature = "analytic")]
+use exedra_mesh::{FaceId, Mesh};
 
 /// Parameters for explicit analytic-shell to mesh conversion.
 #[cfg(feature = "analytic")]
@@ -309,7 +309,7 @@ mod tests {
             let region = converted
                 .mesh
                 .attrs()
-                .dense(exedra::attr::FACE_REGION)
+                .dense(exedra_mesh::attr::FACE_REGION)
                 .and_then(|layer| layer.get(mapping.mesh_face.as_id()).copied());
             assert_eq!(region, Some(7));
         }

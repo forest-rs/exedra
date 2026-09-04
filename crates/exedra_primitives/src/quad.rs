@@ -5,7 +5,7 @@
 
 use alloc::vec;
 
-use exedra::{FaceBuildAttrs, MeshBuilder};
+use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -77,7 +77,7 @@ pub fn quad(params: &QuadParams) -> Primitive {
 
 #[cfg(test)]
 mod tests {
-    use exedra::{ExtractParams, attr};
+    use exedra_mesh::{ExtractParams, attr};
 
     use super::{QuadParams, REGION_FACE, quad};
 

@@ -15,7 +15,7 @@ Shared attribute identity is a kernel boundary concern. Built-in keys ensure:
 - **Per-operator local layers only**: prevents reuse and interop.
 
 ## Implications
-- Exedra must expose stable built-in keys (e.g., `exedra::attr::CORNER_UV`).
+- Exedra must expose stable built-in keys (e.g., `exedra_mesh::attr::CORNER_UV`).
 - Additional layers can be introduced later via explicit registration APIs.
 
 ## Non-goals / deferrals

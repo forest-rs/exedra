@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{CornerId, FaceId};
+use exedra_mesh::{CornerId, FaceId};
 
 use crate::{
     Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, FaceSet, OpContext,
@@ -78,9 +78,9 @@ impl EditOperator for UvPlanar {
         "uv.planar"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -159,7 +159,7 @@ impl EditOperator for UvPlanar {
         {
             let _bucket = ctx.clock.bucket("attrs");
             for (corner, uv) in pending {
-                if exedra::op::set_corner_uv(txn, corner, uv).is_ok() {
+                if exedra_mesh::op::set_corner_uv(txn, corner, uv).is_ok() {
                     report.stats.counters.corners_written =
                         report.stats.counters.corners_written.saturating_add(1);
                 }
@@ -171,16 +171,16 @@ impl EditOperator for UvPlanar {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -189,7 +189,7 @@ impl EditOperator for UvPlanar {
 }
 
 fn project_corner(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     corner: CornerId,
     plane: UvPlane,
     scale: f32,
@@ -212,7 +212,7 @@ fn project_corner(
     [base[0] * scale + offset[0], base[1] * scale + offset[1]]
 }
 
-fn dominant_plane(mesh: &exedra::Mesh, face: FaceId, epsilon: f32) -> (UvPlane, bool) {
+fn dominant_plane(mesh: &exedra_mesh::Mesh, face: FaceId, epsilon: f32) -> (UvPlane, bool) {
     let Some([nx, ny, nz]) = face_normal(mesh, face) else {
         return (UvPlane::WorldXY, true);
     };
@@ -234,7 +234,7 @@ fn dominant_plane(mesh: &exedra::Mesh, face: FaceId, epsilon: f32) -> (UvPlane, 
 
 #[cfg(test)]
 mod tests {
-    use exedra::{ExtractParams, MeshBuilder};
+    use exedra_mesh::{ExtractParams, MeshBuilder};
 
     use super::{UvPlanar, UvPlanarParams, UvPlane, UvScope};
     use crate::{OperatorRunner, test_support::commit};
@@ -290,7 +290,7 @@ mod tests {
         let corner = mesh.face_loop(face).next().expect("corner should exist");
         {
             let mut txn = mesh.edit();
-            assert!(exedra::op::set_corner_uv(&mut txn, corner, [9.0, 9.0]).is_ok());
+            assert!(exedra_mesh::op::set_corner_uv(&mut txn, corner, [9.0, 9.0]).is_ok());
             let _: () = txn.finish();
         }
 
@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(result.report.stats.counters.corners_skipped_existing, 1);
         let uv = mesh
             .attrs()
-            .sparse(exedra::attr::CORNER_UV)
+            .sparse(exedra_mesh::attr::CORNER_UV)
             .and_then(|layer| layer.get(corner.as_id()))
             .copied();
         assert_eq!(uv, Some([9.0, 9.0]));

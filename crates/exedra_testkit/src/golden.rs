@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::string::String;
 use core::fmt;
 
-use exedra::{FaceId, HalfEdgeId, Mesh, TriMesh};
+use exedra_mesh::{FaceId, HalfEdgeId, Mesh, TriMesh};
 
 /// Snapshot mismatch payload returned by [`assert_trimesh_snapshot`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -243,7 +243,7 @@ fn dump_mesh_attributes(mesh: &Mesh, out: &mut String) {
     out.push_str("attributes [\n");
 
     out.push_str("  vertex.sharpness [");
-    if let Some(layer) = mesh.attrs().sparse(exedra::attr::VERTEX_SHARPNESS) {
+    if let Some(layer) = mesh.attrs().sparse(exedra_mesh::attr::VERTEX_SHARPNESS) {
         let mut first = true;
         for vertex in mesh.vertices() {
             if let Some(sharpness) = layer.get(vertex.as_id()) {
@@ -259,7 +259,7 @@ fn dump_mesh_attributes(mesh: &Mesh, out: &mut String) {
     out.push_str("]\n");
 
     out.push_str("  face.region [");
-    if let Some(layer) = mesh.attrs().dense(exedra::attr::FACE_REGION) {
+    if let Some(layer) = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION) {
         let mut first = true;
         for face in mesh.faces() {
             if let Some(region) = layer.get(face.as_id()) {
@@ -271,7 +271,7 @@ fn dump_mesh_attributes(mesh: &Mesh, out: &mut String) {
     out.push_str("]\n");
 
     out.push_str("  corner.uv [");
-    if let Some(layer) = mesh.attrs().sparse(exedra::attr::CORNER_UV) {
+    if let Some(layer) = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV) {
         let mut first = true;
         for face in mesh.faces() {
             for corner in mesh.face_loop(face) {
@@ -290,7 +290,10 @@ fn dump_mesh_attributes(mesh: &Mesh, out: &mut String) {
     out.push_str("]\n");
 
     out.push_str("  corner.normal_override [");
-    if let Some(layer) = mesh.attrs().sparse(exedra::attr::CORNER_NORMAL_OVERRIDE) {
+    if let Some(layer) = mesh
+        .attrs()
+        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+    {
         let mut first = true;
         for face in mesh.faces() {
             for corner in mesh.face_loop(face) {
@@ -393,7 +396,7 @@ mod tests {
     use alloc::string::ToString;
     use alloc::vec::Vec;
 
-    use exedra::{BuildParams, ExtractParams, Mesh};
+    use exedra_mesh::{BuildParams, ExtractParams, Mesh};
 
     use super::{
         GoldenSelection, assert_mesh_golden, assert_trimesh_snapshot, dump_golden,

@@ -6,7 +6,7 @@
 
 ## Context
 
-The Exedra family has a topology/attribute kernel (`exedra`) and a separate
+The Exedra family has a topology/attribute kernel (`exedra_mesh`) and a separate
 mesh-operations crate (`exedra_ops`). The kernel owns polygon state and its
 invariants; the operations crate owns deterministic mesh workflows, reports,
 policies, and selections. Keeping those responsibilities separate prevents

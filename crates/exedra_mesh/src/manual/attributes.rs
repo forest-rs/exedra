@@ -45,12 +45,12 @@
 //! # Example
 //!
 //! ```rust
-//! use exedra::attributes::{AttrKey, Attributes, Domain};
+//! use exedra_mesh::attributes::{AttrKey, Attributes, Domain};
 //!
 //! let mut attrs = Attributes::new();
 //! let key = AttrKey::<u32>::new(Domain::Face, "custom.region");
 //! attrs.define_dense(key, 0)?;
 //! attrs.sync_capacities(0, 2, 0);
 //! assert_eq!(attrs.domain_capacity(Domain::Face), 2);
-//! # Ok::<(), exedra::attributes::AttrError>(())
+//! # Ok::<(), exedra_mesh::attributes::AttrError>(())
 //! ```

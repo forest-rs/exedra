@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{DeletePolicy, FaceId, VertexId, op};
+use exedra_mesh::{DeletePolicy, FaceId, VertexId, op};
 
 use crate::math::FloatExt;
 use crate::op_common::op_error;
@@ -257,7 +257,7 @@ impl EditOperator for PokeFaces {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -292,9 +292,9 @@ impl EditOperator for PokeFaces {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -399,9 +399,9 @@ impl EditOperator for PokeFaces {
         ))
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -462,9 +462,9 @@ impl EditOperator for ExtrudeFaces {
         "edit.face.extrude"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -690,16 +690,16 @@ impl EditOperator for ExtrudeFaces {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -732,7 +732,7 @@ impl EditOperator for InsetFaces {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -755,9 +755,9 @@ impl EditOperator for InsetFaces {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -979,7 +979,7 @@ impl EditOperator for SolidifyFaces {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -996,9 +996,9 @@ impl EditOperator for SolidifyFaces {
         op.compile(mesh, &mapped, ctx)
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -1052,7 +1052,7 @@ impl EditOperator for CutRectFace {
 
     fn compile(
         &self,
-        mesh: &exedra::Mesh,
+        mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
@@ -1231,7 +1231,7 @@ impl EditOperator for CutRectFace {
         }
         let region = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .and_then(|layer| layer.get(params.face.as_id()).copied())
             .unwrap_or(0);
 
@@ -1244,9 +1244,9 @@ impl EditOperator for CutRectFace {
         })
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -1498,8 +1498,8 @@ fn average_uv(uvs: &[Option<[f32; 2]>]) -> Option<[f32; 2]> {
     Some([sum[0] * inv, sum[1] * inv])
 }
 
-fn mark_frame_feature_edges_sharp<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+fn mark_frame_feature_edges_sharp<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     face: FaceId,
     current: VertexId,
     next: VertexId,
@@ -1528,7 +1528,7 @@ mod tests {
 
     use core::num::NonZeroU32;
 
-    use exedra::{BuildParams, EdgeAttrPropagation, Id, Mesh, PropagatePolicy};
+    use exedra_mesh::{BuildParams, EdgeAttrPropagation, Id, Mesh, PropagatePolicy};
 
     use super::{
         CutRectFace, CutRectFaceParams, ExtrudeFaces, ExtrudeFacesParams, ExtrudeMode, InsetFaces,
@@ -1540,7 +1540,7 @@ mod tests {
         TagFaceRegionParams, mesh_signature, test_support::commit,
     };
 
-    fn quad_mesh() -> (Mesh, exedra::FaceId) {
+    fn quad_mesh() -> (Mesh, exedra_mesh::FaceId) {
         let mesh = Mesh::from_polygons(
             &[
                 [0.0, 0.0, 0.0],
@@ -1555,7 +1555,7 @@ mod tests {
         (mesh, face)
     }
 
-    fn face_normal(mesh: &Mesh, face: exedra::FaceId) -> [f32; 3] {
+    fn face_normal(mesh: &Mesh, face: exedra_mesh::FaceId) -> [f32; 3] {
         let corners = mesh.face_loop(face).collect::<Vec<_>>();
         let mut sum = [0.0_f32, 0.0_f32, 0.0_f32];
         for i in 0..corners.len() {
@@ -1578,7 +1578,7 @@ mod tests {
 
     fn wall_edge_sharpness_classes(
         mesh: &Mesh,
-        face: exedra::FaceId,
+        face: exedra_mesh::FaceId,
     ) -> Vec<([f32; 3], [f32; 3], f32)> {
         mesh.face_loop(face)
             .map(|corner| {
@@ -1706,7 +1706,7 @@ mod tests {
 
         let layer = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("face.region must exist");
         for face in mesh.faces() {
             let region = layer
@@ -1750,7 +1750,7 @@ mod tests {
         .expect("inset should succeed");
         let layer = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("face.region must exist");
         for face in mesh.faces() {
             let region = layer
@@ -1932,7 +1932,7 @@ mod tests {
     #[test]
     fn poke_compile_canonicalizes_and_rejects_stale_face() {
         let (mesh, face) = quad_mesh();
-        let stale = exedra::FaceId::from(Id::new(999, NonZeroU32::MIN));
+        let stale = exedra_mesh::FaceId::from(Id::new(999, NonZeroU32::MIN));
         let mut runner = OperatorRunner::new();
 
         let plan = runner
@@ -1952,7 +1952,7 @@ mod tests {
         assert_eq!(err.kind, OpErrorKind::PreconditionFailed);
     }
 
-    fn face_avg_z(mesh: &Mesh, face: exedra::FaceId) -> f32 {
+    fn face_avg_z(mesh: &Mesh, face: exedra_mesh::FaceId) -> f32 {
         let mut sum = 0.0_f32;
         let mut count = 0_u32;
         for corner in mesh.face_loop(face) {
@@ -2196,9 +2196,11 @@ mod tests {
         {
             let mut txn = mesh.edit();
             for (index, &corner) in corners.iter().enumerate() {
-                assert!(exedra::op::set_corner_uv(&mut txn, corner, [index as f32, 0.0]).is_ok());
-                assert!(exedra::op::set_edge_seam(&mut txn, corner, true).is_ok());
-                assert!(exedra::op::set_edge_sharpness(&mut txn, corner, 2.5).is_ok());
+                assert!(
+                    exedra_mesh::op::set_corner_uv(&mut txn, corner, [index as f32, 0.0]).is_ok()
+                );
+                assert!(exedra_mesh::op::set_edge_seam(&mut txn, corner, true).is_ok());
+                assert!(exedra_mesh::op::set_edge_sharpness(&mut txn, corner, 2.5).is_ok());
             }
             let _: () = txn.finish();
         }
@@ -2219,7 +2221,7 @@ mod tests {
 
         let uv_layer = mesh
             .attrs()
-            .sparse(exedra::attr::CORNER_UV)
+            .sparse(exedra_mesh::attr::CORNER_UV)
             .expect("corner uv layer should exist");
         for corner in mesh.face_loop(cap) {
             assert!(uv_layer.get(corner.as_id()).is_some());
@@ -2325,8 +2327,8 @@ mod tests {
         {
             let mut txn = mesh.edit();
             for &corner in &corners {
-                assert!(exedra::op::set_edge_seam(&mut txn, corner, true).is_ok());
-                assert!(exedra::op::set_edge_sharpness(&mut txn, corner, 3.0).is_ok());
+                assert!(exedra_mesh::op::set_edge_seam(&mut txn, corner, true).is_ok());
+                assert!(exedra_mesh::op::set_edge_sharpness(&mut txn, corner, 3.0).is_ok());
             }
             let _: () = txn.finish();
         }
@@ -2480,7 +2482,7 @@ mod tests {
             &DeleteFaces,
             &DeleteFacesParams {
                 faces: cut.output.inner_faces.clone(),
-                policy: exedra::DeletePolicy::KeepIsolated,
+                policy: exedra_mesh::DeletePolicy::KeepIsolated,
             },
         )
         .expect("delete inner face should succeed");
@@ -2508,7 +2510,7 @@ mod tests {
     }
 
     fn normal_variants_at_position(mesh: &Mesh, position: [f32; 3]) -> Vec<[u32; 3]> {
-        let (tri, _) = mesh.to_trimesh(&exedra::ExtractParams::default());
+        let (tri, _) = mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
         let mut variants = tri
             .positions
             .iter()
@@ -2578,7 +2580,7 @@ mod tests {
             &DeleteFaces,
             &DeleteFacesParams {
                 faces: cut.output.inner_faces.clone(),
-                policy: exedra::DeletePolicy::KeepIsolated,
+                policy: exedra_mesh::DeletePolicy::KeepIsolated,
             },
         )
         .expect("delete inner face should succeed");
@@ -2627,7 +2629,7 @@ mod tests {
             &DeleteFaces,
             &DeleteFacesParams {
                 faces: vec![inner],
-                policy: exedra::DeletePolicy::KeepIsolated,
+                policy: exedra_mesh::DeletePolicy::KeepIsolated,
             },
         )
         .expect("delete inner cut face should succeed");

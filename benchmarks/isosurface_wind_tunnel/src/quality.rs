@@ -3,7 +3,7 @@
 
 //! Deterministic f64 surface sampling and nearest-triangle queries.
 
-use exedra::{ExtractParams, Mesh};
+use exedra_mesh::{ExtractParams, Mesh};
 
 use crate::fixture::RectPatch;
 use exedra_math::{add, cross, dot, norm, scale as mul, sub};

@@ -37,7 +37,7 @@
 //! thirty, nor on stone.
 //!
 //! It owns none of: geometry math (that is [`exedra_constructive`] and
-//! `exedra`); site, massing, and plan layout; statics, finite-element
+//! `exedra_mesh`); site, massing, and plan layout; statics, finite-element
 //! analysis, capacity, or code compliance; rendering and export; or an
 //! erased, document-shaped parameter boundary. See
 //! `docs/adr-0001-construction-layer-scope.md`.

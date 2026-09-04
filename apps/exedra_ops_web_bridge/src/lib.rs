@@ -10,8 +10,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::attr;
-use exedra::{ChangeSetBuilder, op};
+use exedra_mesh::attr;
+use exedra_mesh::{ChangeSetBuilder, op};
 use exedra_ops::{
     BakeFaceNormals, BakeFaceNormalsParams, BridgeBoundaryLoops, BridgeBoundaryLoopsParams,
     CutRectFace, CutRectFaceParams, CylinderAxis, DeleteFaces, DeleteFacesParams, DiagCode,
@@ -1342,7 +1342,7 @@ fn run_topology_dissolve_repair(options: &ScenarioOptions) -> Result<ScenarioRes
         .ok_or("topology_dissolve_repair expected one canonical interior edge".to_string())?;
     let split_stats = {
         let mut edit = mesh.edit_with(ChangeSetBuilder::new());
-        let inserted = op::split_edge(&mut edit, edge, &exedra::PropagatePolicy::default())
+        let inserted = op::split_edge(&mut edit, edge, &exedra_mesh::PropagatePolicy::default())
             .map_err(|err| err.to_string())?;
         let changes = edit.finish();
         steps.push(snapshot_from_mesh(

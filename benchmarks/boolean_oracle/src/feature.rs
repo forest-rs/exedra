@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use exedra::{ExtractParams, Mesh, VertexId, attr};
 use exedra_isosurface::analytic::{
     BoxField, CylinderField, Difference, Intersection, TaggedField, Union,
 };
@@ -16,6 +15,7 @@ use exedra_isosurface::{
     UniformScale, dual_contour, dual_contour_semi_analytic,
 };
 use exedra_math::{add, dot, scale, sub};
+use exedra_mesh::{ExtractParams, Mesh, VertexId, attr};
 use exedra_qef::QefParams;
 use exedra_spatial::Aabb;
 

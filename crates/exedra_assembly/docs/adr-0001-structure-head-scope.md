@@ -19,7 +19,7 @@ deterministic, and cache-friendly.
 `exedra_assembly` is the structure head. It owns exactly:
 
 - **Part definitions.** A part is a constructive `Recipe` or a baked
-  `exedra::Mesh`, registered under an opaque frontend-supplied `PartKey`
+  `exedra_mesh::Mesh`, registered under an opaque frontend-supplied `PartKey`
   string. Parts declare material slot names and an optional mapping from
   tessellation regions (`FACE_REGION` values) to slots.
 - **Instance trees.** Instances reference a part, carry an f64 `Placement3`,
@@ -51,7 +51,7 @@ deterministic, and cache-friendly.
 It owns none of:
 
 - **Geometry math.** Tessellation, booleans, discretization live in
-  `exedra` / `exedra_constructive`. This crate inspects emitted positions only
+  `exedra_mesh` / `exedra_constructive`. This crate inspects emitted positions only
   to account for the exact world-space bounds at its render seam; it does not
   alter geometry.
 - **Parameter models, conditional logic, pricing.** External runtimes

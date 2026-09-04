@@ -7,7 +7,7 @@
 //! [`Mesh::edit`](crate::Mesh::edit) or [`Mesh::edit_with`](crate::Mesh::edit_with).
 //!
 //! ```rust
-//! use exedra::{op, ChangeSetBuilder, Mesh};
+//! use exedra_mesh::{op, ChangeSetBuilder, Mesh};
 //!
 //! let mut mesh = Mesh::new();
 //! let mut edit = mesh.edit_with(ChangeSetBuilder::new());

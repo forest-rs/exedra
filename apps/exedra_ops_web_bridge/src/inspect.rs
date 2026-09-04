@@ -443,7 +443,11 @@ fn append_recipe(
 
     for placed in &evaluation.bodies {
         let (mesh, tri_face) = extract_mesh_buffers(&placed.body.mesh);
-        let region_layer = placed.body.mesh.attrs().dense(exedra::attr::FACE_REGION);
+        let region_layer = placed
+            .body
+            .mesh
+            .attrs()
+            .dense(exedra_mesh::attr::FACE_REGION);
         let faces: Vec<InspectionFace> = placed
             .body
             .mesh

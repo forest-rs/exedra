@@ -1,11 +1,11 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Exedra Ops: deterministic operator layer over Exedra.
+//! Exedra Ops: deterministic operator layer over Exedra Mesh.
 //!
 //! Exedra Ops is the workflow-facing SDK tier for mesh operations.
 //!
-//! Exedra Ops builds on Exedra with a curated operator/runtime API:
+//! Exedra Ops builds on Exedra Mesh with a curated operator/runtime API:
 //! - operator trait and runner orchestration ([`EditOperator`], [`OperatorRunner`]),
 //! - structured diagnostics/artifacts/reports,
 //! - policy-controlled execution,
@@ -16,14 +16,13 @@
 //! - deterministic UV/tagging operators,
 //! - basic face-edit operators ([`ExtrudeFaces`], [`InsetFaces`], [`PokeFaces`]).
 //!
-//! Default features include the constructive and assembly adapters alongside
-//! mesh operations, matching common use without moving either native API into
-//! this crate. For the minimum mesh-only surface, disable default features and
-//! enable either `std` or `libm`. The analytic adapter is independently opt-in.
+//! The default feature set is the focused `std` mesh-operation surface.
+//! Analytic, constructive, and assembly adapters are independently opt-in; the
+//! application-facing `exedra` facade selects their common bundle.
 //!
 //! API tiers:
 //! - SDK tier (`exedra_ops`): workflows, operators, planning lifecycle, reporting.
-//! - Engine tier (`exedra`): topology/attributes kernel and invariants.
+//! - Engine tier (`exedra_mesh`): topology/attributes kernel and invariants.
 //!   Workflow users should start in `exedra_ops::...`.
 //!
 //! Tagging note:
@@ -44,9 +43,8 @@
 //! - Planning lifecycle: [`OperatorRunner::compile`],
 //!   [`OperatorRunner::preview_on_clone`], [`OperatorRunner::apply_in_place`]
 //! - Analytic edits: enable the `analytic` feature.
-//! - Assembly patterns: available by default through the `assembly` feature.
-//! - Constructive workflows: available by default through the `constructive`
-//!   feature.
+//! - Assembly patterns: enable the `assembly` feature.
+//! - Constructive workflows: enable the `constructive` feature.
 //! - Explicit conversions: enable `analytic` and/or `constructive`.
 //! - Selection tools: [`FaceSet`], [`EdgeSet`], [`VertexSet`]
 //! - Fluent workflows: [`MeshEdit`], [`MeshEditPlan`]
@@ -166,8 +164,8 @@ pub use plan::{
 pub use report::{ElementCounts, OpReport, SmallCounters, Stats, TimeBucket, Timings};
 pub use runner::{OpResult, OperatorRunner, PreviewResult};
 
-// Shared mesh/kernel types re-exported from Exedra.
-pub use exedra::{
+// Shared mesh/kernel types re-exported from Exedra Mesh.
+pub use exedra_mesh::{
     BuildParams, CornerId, DeletePolicy, ExtractParams, FaceId, HalfEdgeId, Mesh, MeshBuilder,
     NormalParams, NormalWeightMode, NormalsSource, TriMesh, VertexId,
 };

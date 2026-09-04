@@ -7,7 +7,7 @@ use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 
-use exedra::{ExtractParams, Mesh};
+use exedra_mesh::{ExtractParams, Mesh};
 
 /// Renders a deterministic topology dump for quick inspection.
 #[must_use]
@@ -73,7 +73,7 @@ pub fn dump_attributes(mesh: &Mesh) -> String {
     }
 
     out.push_str("vertex.sharpness\n");
-    if let Some(layer) = mesh.attrs().sparse(exedra::attr::VERTEX_SHARPNESS) {
+    if let Some(layer) = mesh.attrs().sparse(exedra_mesh::attr::VERTEX_SHARPNESS) {
         for vertex in mesh.vertices() {
             if let Some(sharpness) = layer.get(vertex.as_id()) {
                 out.push_str(&format!(
@@ -86,7 +86,7 @@ pub fn dump_attributes(mesh: &Mesh) -> String {
     }
 
     out.push_str("face.region\n");
-    if let Some(layer) = mesh.attrs().dense(exedra::attr::FACE_REGION) {
+    if let Some(layer) = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION) {
         for face in mesh.faces() {
             if let Some(value) = layer.get(face.as_id()) {
                 out.push_str(&format!("  f {} {}\n", face.index(), value));
@@ -95,7 +95,7 @@ pub fn dump_attributes(mesh: &Mesh) -> String {
     }
 
     out.push_str("corner.uv\n");
-    if let Some(layer) = mesh.attrs().sparse(exedra::attr::CORNER_UV) {
+    if let Some(layer) = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV) {
         for face in mesh.faces() {
             for corner in mesh.face_loop(face) {
                 if let Some(uv) = layer.get(corner.as_id()) {
@@ -111,7 +111,10 @@ pub fn dump_attributes(mesh: &Mesh) -> String {
     }
 
     out.push_str("corner.normal_override\n");
-    if let Some(layer) = mesh.attrs().sparse(exedra::attr::CORNER_NORMAL_OVERRIDE) {
+    if let Some(layer) = mesh
+        .attrs()
+        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+    {
         for face in mesh.faces() {
             for corner in mesh.face_loop(face) {
                 if let Some(normal) = layer.get(corner.as_id()) {

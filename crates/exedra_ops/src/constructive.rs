@@ -222,7 +222,7 @@ mod tests {
             let (tri, _) = run.output.bodies[0]
                 .body
                 .mesh
-                .to_trimesh(&exedra::ExtractParams::default());
+                .to_trimesh(&exedra_mesh::ExtractParams::default());
             trimesh_signature(&tri)
         };
         assert_eq!(
@@ -276,7 +276,7 @@ mod tests {
                     let (tri, _) = placed
                         .body
                         .mesh
-                        .to_trimesh(&exedra::ExtractParams::default());
+                        .to_trimesh(&exedra_mesh::ExtractParams::default());
                     trimesh_signature(&tri)
                 })
                 .collect()

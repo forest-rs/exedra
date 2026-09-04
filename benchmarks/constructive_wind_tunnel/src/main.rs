@@ -26,9 +26,6 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use exedra::boolean::{BooleanDiagnostics, BooleanOp, BooleanScratch, BooleanStats, boolean_mesh};
-use exedra::round::{RoundPolicy, RoundStats, round_sharp_edges};
-use exedra::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder};
 use exedra_constructive::builders;
 use exedra_constructive::cache::EvalCache;
 use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
@@ -36,6 +33,11 @@ use exedra_constructive::ir::{
     CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
 use exedra_constructive::tessellate::EvalPolicy;
+use exedra_mesh::boolean::{
+    BooleanDiagnostics, BooleanOp, BooleanScratch, BooleanStats, boolean_mesh,
+};
+use exedra_mesh::round::{RoundPolicy, RoundStats, round_sharp_edges};
+use exedra_mesh::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder};
 use exedra_testkit::trimesh_signature;
 
 fn main() {

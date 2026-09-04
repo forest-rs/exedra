@@ -59,7 +59,7 @@ pub enum ExtractMode {
 ///
 /// # Example
 /// ```rust
-/// use exedra::{ExtractMode, ExtractParams, NormalsSource};
+/// use exedra_mesh::{ExtractMode, ExtractParams, NormalsSource};
 ///
 /// let params = ExtractParams {
 ///     mode: ExtractMode::FullRebuild,
@@ -67,7 +67,7 @@ pub enum ExtractMode {
 ///     ..ExtractParams::default()
 /// };
 /// assert_eq!(params.mode, ExtractMode::FullRebuild);
-/// assert_eq!(params.face_triangulation, exedra::FaceTriangulation::Fan);
+/// assert_eq!(params.face_triangulation, exedra_mesh::FaceTriangulation::Fan);
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ExtractParams {
@@ -213,7 +213,7 @@ impl Mesh {
     ///
     /// # Example
     /// ```rust
-    /// use exedra::{ExtractParams, Mesh};
+    /// use exedra_mesh::{ExtractParams, Mesh};
     ///
     /// let positions = [
     ///     [0.0, 0.0, 0.0],
@@ -226,7 +226,7 @@ impl Mesh {
     /// let (tri, stats) = mesh.to_trimesh(&ExtractParams::default());
     /// assert_eq!(tri.indices, vec![0, 1, 2]);
     /// assert_eq!(stats.triangle_count, 1);
-    /// # Ok::<(), exedra::BuildError>(())
+    /// # Ok::<(), exedra_mesh::BuildError>(())
     /// ```
     pub fn to_trimesh(&self, params: &ExtractParams) -> (TriMesh, ExtractStats) {
         let (mesh, mut stats) = self.extract_full(params);

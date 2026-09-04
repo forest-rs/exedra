@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
+use exedra_mesh::{EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
 
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct SourceEdgeAttrs {
@@ -11,8 +11,8 @@ pub(crate) struct SourceEdgeAttrs {
     pub(crate) sharpness: Option<f32>,
 }
 
-pub(crate) fn propagate_face_corner_uvs<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+pub(crate) fn propagate_face_corner_uvs<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     face: FaceId,
     uv_map: &[(VertexId, Option<[f32; 2]>)],
 ) {
@@ -31,13 +31,13 @@ pub(crate) fn propagate_face_corner_uvs<S: exedra::ChangeSink>(
     }
 }
 
-pub(crate) fn propagate_edge_attrs_for_vertices<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+pub(crate) fn propagate_edge_attrs_for_vertices<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     face: FaceId,
     a: VertexId,
     b: VertexId,
     source: SourceEdgeAttrs,
-    policy: &exedra::PropagatePolicy,
+    policy: &exedra_mesh::PropagatePolicy,
 ) {
     let Some(corner) = find_face_edge_for_vertices(txn.mesh(), face, a, b) else {
         return;
@@ -62,15 +62,15 @@ pub(crate) fn propagate_edge_attrs_for_vertices<S: exedra::ChangeSink>(
     }
 }
 
-pub(crate) fn propagate_frame_edge_attrs<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+pub(crate) fn propagate_frame_edge_attrs<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     face: FaceId,
     current: VertexId,
     next: VertexId,
     current_inner: VertexId,
     next_inner: VertexId,
     source: SourceEdgeAttrs,
-    policy: &exedra::PropagatePolicy,
+    policy: &exedra_mesh::PropagatePolicy,
 ) {
     propagate_edge_attrs_for_vertices(txn, face, current, next, source, policy);
     propagate_edge_attrs_for_vertices(txn, face, current_inner, next_inner, source, policy);
@@ -92,8 +92,8 @@ pub(crate) fn propagate_frame_edge_attrs<S: exedra::ChangeSink>(
     );
 }
 
-pub(crate) fn set_face_edge_sharpness_for_vertices<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+pub(crate) fn set_face_edge_sharpness_for_vertices<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     face: FaceId,
     a: VertexId,
     b: VertexId,
@@ -106,7 +106,7 @@ pub(crate) fn set_face_edge_sharpness_for_vertices<S: exedra::ChangeSink>(
 }
 
 fn find_face_edge_for_vertices(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     face: FaceId,
     a: VertexId,
     b: VertexId,

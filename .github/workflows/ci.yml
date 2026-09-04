@@ -15,6 +15,7 @@ env:
     -p exedra_ops
     -p exedra_ops_testkit
     -p exedra
+    -p exedra_mesh
     -p exedra_analytic
     -p exedra_assembly
     -p exedra_constructive
@@ -32,6 +33,7 @@ env:
     -p exedra_ops
     -p exedra_ops_testkit
     -p exedra
+    -p exedra_mesh
     -p exedra_analytic
     -p exedra_assembly
     -p exedra_constructive
@@ -50,7 +52,7 @@ env:
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.
-  FEATURES_DEPENDING_ON_STD: "std,default,serde"
+  FEATURES_DEPENDING_ON_STD: "std,default,serde,gltf"
 
 
 # Rationale
@@ -127,6 +129,14 @@ jobs:
           sudo apt update
           sudo apt install ripgrep
 
+      - name: enforce facade dependency direction
+        run: |
+          if rg --glob 'Cargo.toml' --glob '!exedra/Cargo.toml' \
+            '(^exedra([.]workspace|[[:space:]]*=)|package[[:space:]]*=[[:space:]]*"exedra")' crates; then
+            echo 'implementation crates must depend on focused heads, never the exedra facade'
+            exit 1
+          fi
+
       - name: check copyright headers
         run: bash .github/copyright.sh
 
@@ -146,7 +156,7 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'merge_group' }}
 
-      - name: cargo check (default constructive and assembly adapters)
+      - name: cargo check (default mesh operations)
         run: cargo check -p exedra_ops --locked
 
       - name: cargo check (mesh-only minimum)
@@ -163,6 +173,41 @@ jobs:
 
       - name: cargo check (all features)
         run: cargo check -p exedra_ops --locked --all-features
+
+  exedra-facade-features:
+    name: exedra facade feature boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE_VER }}
+          targets: x86_64-unknown-none
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'merge_group' }}
+
+      - name: cargo check (default application surface)
+        run: cargo check -p exedra --locked
+
+      - name: cargo check (mesh-only facade)
+        run: cargo check -p exedra --locked --no-default-features --features std
+
+      - name: cargo check (analytic operation adapter)
+        run: cargo check -p exedra --locked --no-default-features --features std,analytic,ops
+
+      - name: cargo check (optional no_std heads)
+        run: cargo check -p exedra --locked --no-default-features --features libm,analytic,primitives --target x86_64-unknown-none
+
+      - name: cargo check (common no_std surface)
+        run: cargo check -p exedra --locked --no-default-features --features libm,assembly,ops --target x86_64-unknown-none
+
+      - name: cargo check (all features)
+        run: cargo check -p exedra --locked --all-features
 
   clippy-stable:
     name: cargo clippy

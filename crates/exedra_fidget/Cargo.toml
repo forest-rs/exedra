@@ -10,8 +10,8 @@ keywords = ["implicit", "fidget", "isosurface", "sdf"]
 categories = ["graphics", "algorithms"]
 
 [dependencies]
-exedra = { features = ["std"], workspace = true }
 exedra_isosurface = { features = ["std"], workspace = true }
+exedra_mesh = { features = ["std"], workspace = true }
 exedra_qef.workspace = true
 exedra_spatial.workspace = true
 fidget.workspace = true

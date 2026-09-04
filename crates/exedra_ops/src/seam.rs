@@ -29,9 +29,9 @@ impl EditOperator for MarkEdgeSeam {
         "mark.edge.seam"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -42,22 +42,22 @@ impl EditOperator for MarkEdgeSeam {
             ctx,
             self.name(),
             "edge set contains invalid/stale half-edge id",
-            |txn, edge, seam| exedra::op::set_edge_seam(txn, edge, seam).is_ok(),
+            |txn, edge, seam| exedra_mesh::op::set_edge_seam(txn, edge, seam).is_ok(),
         )
     }
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {

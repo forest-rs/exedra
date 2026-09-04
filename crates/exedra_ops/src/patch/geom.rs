@@ -1,11 +1,11 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use exedra::VertexId;
+use exedra_mesh::VertexId;
 
 use crate::math::FloatExt;
 
-pub(crate) fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
+pub(crate) fn centroid(mesh: &exedra_mesh::Mesh, vertices: &[VertexId]) -> Option<[f32; 3]> {
     if vertices.is_empty() {
         return None;
     }
@@ -21,7 +21,7 @@ pub(crate) fn centroid(mesh: &exedra::Mesh, vertices: &[VertexId]) -> Option<[f3
 }
 
 pub(crate) fn normalized_face_normal(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     vertices: &[VertexId],
 ) -> Option<[f32; 3]> {
     let mut nx = 0.0_f32;

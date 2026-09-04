@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra::{FaceId, HalfEdgeId, VertexId};
+use exedra_mesh::{FaceId, HalfEdgeId, VertexId};
 
 /// Canonical face selection (`Vec<FaceId>` sorted and deduplicated).
 ///
@@ -252,7 +252,7 @@ mod tests {
     use alloc::vec;
     use core::num::NonZeroU32;
 
-    use exedra::{FaceId, HalfEdgeId, Id, VertexId};
+    use exedra_mesh::{FaceId, HalfEdgeId, Id, VertexId};
 
     use super::{
         EdgeSet, FaceSet, Selection, SelectionDomainError, SelectionKind, VertexSet,

@@ -10,7 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
+use exedra_mesh::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
 use exedra_qef::{
     PlaneConstraint, QefBounds, QefParams, QefResult, QefSolveError, QefSolver, SharpnessClass,
 };
@@ -1728,7 +1728,7 @@ fn populate_region_boundary_seams(mesh: &mut Mesh) {
             let Some(other_face) = mesh.face(twin) else {
                 continue;
             };
-            if other_face == exedra::FaceId::OUTSIDE {
+            if other_face == exedra_mesh::FaceId::OUTSIDE {
                 continue;
             }
             let Some(other_region) = region_layer.get(other_face.as_id()).copied() else {
@@ -1853,7 +1853,7 @@ fn sqrt(value: f32) -> f32 {
     }
 }
 
-fn face_centroid(mesh: &Mesh, corners: &[exedra::CornerId]) -> [f32; 3] {
+fn face_centroid(mesh: &Mesh, corners: &[exedra_mesh::CornerId]) -> [f32; 3] {
     let mut sum = [0.0_f32; 3];
     let mut count = 0_u32;
     for &corner in corners {
@@ -1914,7 +1914,7 @@ mod tests {
         HermiteIntersection, ProvenanceField, ScalarField, SemiAnalyticField,
         SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
     };
-    use exedra::{BuildError, ExtractParams, FaceLoopErrorKind, attr};
+    use exedra_mesh::{BuildError, ExtractParams, FaceLoopErrorKind, attr};
     use exedra_qef::{QefParams, QefResult};
     use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
     use hashbrown::HashSet;
@@ -1931,7 +1931,7 @@ mod tests {
         }
     }
 
-    fn assert_closed_transition_mesh(mesh: &exedra::Mesh) {
+    fn assert_closed_transition_mesh(mesh: &exedra_mesh::Mesh) {
         assert!(mesh.validate_deep().is_empty());
         assert!(
             mesh.boundary_loops()
@@ -1951,7 +1951,7 @@ mod tests {
                 let twin = mesh.twin(corner).expect("closed edge has a twin");
                 assert_ne!(
                     mesh.face(twin),
-                    Some(exedra::FaceId::OUTSIDE),
+                    Some(exedra_mesh::FaceId::OUTSIDE),
                     "every emitted edge must have exactly two incident faces"
                 );
             }
@@ -1967,7 +1967,7 @@ mod tests {
         );
     }
 
-    fn degenerate_face_count(mesh: &exedra::Mesh) -> usize {
+    fn degenerate_face_count(mesh: &exedra_mesh::Mesh) -> usize {
         mesh.faces()
             .filter(|&face| {
                 let positions = mesh
@@ -4219,7 +4219,7 @@ mod tests {
         ];
         assert_eq!(select_quad_diagonal(positions), None);
 
-        let mut builder = exedra::MeshBuilder::new();
+        let mut builder = exedra_mesh::MeshBuilder::new();
         let mut face = Vec::new();
         for position in positions {
             face.push(VertexEntry {
@@ -4294,7 +4294,7 @@ mod tests {
         )
     }
 
-    fn mesh_geometry(mesh: &exedra::Mesh) -> (Vec<[f32; 3]>, Vec<Vec<u32>>) {
+    fn mesh_geometry(mesh: &exedra_mesh::Mesh) -> (Vec<[f32; 3]>, Vec<Vec<u32>>) {
         let positions = mesh
             .vertices()
             .map(|vertex| *mesh.vertex_position(vertex).expect("vertex position"))
@@ -4658,7 +4658,7 @@ mod tests {
         }
     }
 
-    fn forced_pin_regions(mesh: &exedra::Mesh) -> Vec<(u32, usize)> {
+    fn forced_pin_regions(mesh: &exedra_mesh::Mesh) -> Vec<(u32, usize)> {
         use alloc::collections::BTreeMap as ForcedPinBTreeMap;
 
         let regions = mesh

@@ -6,7 +6,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use exedra::ValidationError;
+use exedra_mesh::ValidationError;
 
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError, OpReport,
@@ -58,9 +58,9 @@ impl EditOperator for ValidateMesh {
         "inspect.validate.mesh"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -96,16 +96,16 @@ impl EditOperator for ValidateMesh {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(*params)
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -135,7 +135,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
 
-    use exedra::Mesh;
+    use exedra_mesh::Mesh;
     use exedra_ops_testkit::{GoldenSnapshot, GoldenStep, parse_snapshot, render_snapshot};
 
     use super::{ValidateMesh, ValidateMeshMode, ValidateMeshParams, validation_diagnostics};
@@ -186,7 +186,7 @@ mod tests {
     fn validation_diagnostics_maps_invalid_errors() {
         let diagnostics = validation_diagnostics(
             "fast",
-            &[exedra::ValidationError::EdgeMultiplicity {
+            &[exedra_mesh::ValidationError::EdgeMultiplicity {
                 a: 1,
                 b: 2,
                 count: 3,

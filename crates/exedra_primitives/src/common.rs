@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{ChangeSetBuilder, FaceId, HalfEdgeId, Mesh, op};
+use exedra_mesh::{ChangeSetBuilder, FaceId, HalfEdgeId, Mesh, op};
 
 use crate::{EdgeSet, FaceRegionLayer, FaceSet, Primitive, RegionId, SelectionName, Selections};
 

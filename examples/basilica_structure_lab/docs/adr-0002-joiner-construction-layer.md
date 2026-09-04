@@ -12,7 +12,7 @@ Exedra Ops ADR-0005.
 
 The workspace has a geometry stack but no construction layer:
 
-- `exedra` is the mesh kernel; `exedra_constructive` compiles one part's
+- `exedra_mesh` is the mesh kernel; `exedra_constructive` compiles one part's
   recipe (profiles, extrude/revolve/loft/sweep, n-ary CSG through the mesh
   boolean pipeline, provenance down to profile segments) into meshes;
   `exedra_assembly` arranges parts as instances under stable paths with
@@ -132,7 +132,7 @@ stone.
 `joiner` owns none of:
 
 - **Geometry math.** Cuts, offsets, tessellation, booleans are
-  `exedra_constructive` and `exedra`. The only Exedra-side change this
+  `exedra_constructive` and `exedra_mesh`. The only Exedra-side change this
   layer requires is a **profile offset** operation in
   `exedra_constructive` (clearance generation); see the linked ticket. The
   reserved `Stretch` node is *not* a dependency: member length is an

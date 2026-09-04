@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Simple executable benchmarks for exedra render extraction"
+description = "Simple executable benchmarks for exedra_mesh render extraction"
 keywords = ["benchmark", "mesh", "render-extraction"]
 categories = ["algorithms"]
 
@@ -14,9 +14,9 @@ categories = ["algorithms"]
 workspace = true
 
 [dependencies]
-exedra = { features = ["std"], workspace = true }
 exedra_fidget = { features = ["std"], workspace = true }
 exedra_isosurface = { features = ["std"], workspace = true }
+exedra_mesh = { features = ["std"], workspace = true }
 exedra_primitives = { features = ["std"], workspace = true }
 exedra_qef = { features = ["std"], workspace = true }
 exedra_spatial = { workspace = true }

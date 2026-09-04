@@ -7,7 +7,7 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{CornerId, FaceId, Mesh};
+use exedra_mesh::{CornerId, FaceId, Mesh};
 
 use crate::{
     Artifacts, DiagCode, DiagLevel, Diagnostic, OpError, OpErrorKind, canonicalize_face_set,

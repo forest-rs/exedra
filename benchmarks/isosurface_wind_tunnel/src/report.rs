@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use exedra::{ExtractParams, Mesh, VertexId, attr};
 use exedra_math::{dot, sub};
+use exedra_mesh::{ExtractParams, Mesh, VertexId, attr};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TopologyReport {
@@ -232,7 +232,7 @@ fn fnv_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use exedra::MeshBuilder;
+    use exedra_mesh::MeshBuilder;
 
     use super::{extraction_signature, topology};
 

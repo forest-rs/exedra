@@ -26,7 +26,7 @@
 //! # Example
 //!
 //! ```rust
-//! use exedra::Mesh;
+//! use exedra_mesh::Mesh;
 //!
 //! let mesh = Mesh::from_indexed_triangles(
 //!     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -34,5 +34,5 @@
 //!     &Default::default(),
 //! )?;
 //! assert_eq!(mesh.faces().count(), 1);
-//! # Ok::<(), exedra::BuildError>(())
+//! # Ok::<(), exedra_mesh::BuildError>(())
 //! ```

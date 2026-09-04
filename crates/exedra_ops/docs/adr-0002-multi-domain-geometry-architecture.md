@@ -6,7 +6,7 @@
 
 ## Context
 
-The workspace has a real polygon kernel (`exedra`) and a real mesh-operations
+The workspace has a real polygon kernel (`exedra_mesh`) and a real mesh-operations
 layer (`exedra_ops`). The architectural pressure is coming from geometry
 domains that do not fit a mesh-first source of truth:
 
@@ -22,7 +22,7 @@ domain's value.
 
 Adopt a multi-domain geometry boundary:
 
-- `exedra` remains the polygon head.
+- `exedra_mesh` remains the polygon head.
 - sibling crates own other canonical domains.
 - `exedra_ops` owns deterministic mesh operations and typed adapters for
   explicit conversions or workflow expansion.
@@ -34,7 +34,7 @@ The current `EditOperator`/`OperatorRunner` contract remains mesh-specific.
 
 ## Domain Ownership
 
-### Polygon head (`exedra`)
+### Polygon head (`exedra_mesh`)
 
 Owns:
 - editable polygon topology,
@@ -104,12 +104,12 @@ Examples:
 ### What stays true
 
 - current mesh-native Exedra Ops operators remain valid,
-- `exedra` should continue getting stronger as an editable polygon kernel,
+- `exedra_mesh` should continue getting stronger as an editable polygon kernel,
 - mesh-native helpers/primitives in Exedra are still worthwhile.
 
 ### What changes
 
-- new domains should not be designed as layers hidden inside `exedra`,
+- new domains should not be designed as layers hidden inside `exedra_mesh`,
 - crossings use typed adapters with their own input, output, and failure
   contracts,
 - a future graph may schedule those typed crossings, but the mesh runner does

@@ -20,10 +20,10 @@
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use exedra::{ExtractParams, FaceTriangulation, TriMesh};
 use exedra_constructive::EVAL_SCHEMA_VERSION;
 use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
+use exedra_mesh::{ExtractParams, FaceTriangulation, TriMesh};
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
 
@@ -100,7 +100,7 @@ impl CompiledBody {
     /// # Example
     ///
     /// ```
-    /// use exedra::TriMesh;
+    /// use exedra_mesh::TriMesh;
     /// use exedra_assembly::CompiledBody;
     ///
     /// let body = CompiledBody {
@@ -446,7 +446,7 @@ fn compile_source(
 
 /// Extracts render buffers and regroups the index buffer so each
 /// `FACE_REGION` value is one contiguous range.
-fn compile_body(mesh: &exedra::Mesh) -> CompiledBody {
+fn compile_body(mesh: &exedra_mesh::Mesh) -> CompiledBody {
     let params = ExtractParams {
         face_triangulation: FaceTriangulation::Robust,
         ..ExtractParams::default()
@@ -454,7 +454,7 @@ fn compile_body(mesh: &exedra::Mesh) -> CompiledBody {
     let (tri, _stats) = mesh.to_trimesh(&params);
     // Per-triangle regions in extraction order: to_trimesh emits faces in
     // face-id order, so per-face triangle counts line up exactly.
-    let regions_layer = mesh.attrs().dense(exedra::attr::FACE_REGION);
+    let regions_layer = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
     let triangle_count = tri.indices.len() / 3;
     let mut tri_regions = Vec::with_capacity(triangle_count);
     for face in mesh.faces() {
@@ -498,7 +498,7 @@ fn compile_body(mesh: &exedra::Mesh) -> CompiledBody {
 
 /// Canonical content fingerprint of a baked mesh: vertex positions in id
 /// order plus face loops rotated to their minimum vertex index.
-fn baked_mesh_fingerprint(mesh: &exedra::Mesh) -> PartFingerprint {
+fn baked_mesh_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
     bytes.extend_from_slice(b"baked-mesh");
@@ -513,7 +513,7 @@ fn baked_mesh_fingerprint(mesh: &exedra::Mesh) -> PartFingerprint {
         let mut loop_vertices: Vec<u32> = mesh
             .face_loop(face)
             .filter_map(|he| mesh.to_vertex(he))
-            .map(exedra::VertexId::index)
+            .map(exedra_mesh::VertexId::index)
             .collect();
         if let Some(min_pos) = loop_vertices
             .iter()

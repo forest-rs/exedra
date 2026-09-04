@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::MeshBuilder;
+use exedra_mesh::MeshBuilder;
 
 use crate::{Primitive, RegionId, SelectionName, common};
 
@@ -163,7 +163,7 @@ fn normalize_scaled(v: [f32; 3], radius: f32) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests {
-    use exedra::ExtractParams;
+    use exedra_mesh::ExtractParams;
 
     use super::{IcosphereParams, REGION_BODY, icosphere};
 

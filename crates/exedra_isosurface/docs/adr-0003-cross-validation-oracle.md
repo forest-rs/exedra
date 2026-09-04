@@ -7,7 +7,7 @@ Accepted (2026-08). Implemented by the `boolean_oracle` harness crate
 
 ## Context
 
-Two independent CSG implementations exist in the workspace: the exedra mesh
+Two independent CSG implementations exist in the workspace: the `exedra_mesh`
 boolean pipeline (exact predicates, split/classify/stitch) and this crate's
 pointwise field combinators (`analytic::Union` / `Intersection` /
 `Difference` over `ScalarField`s). Each had only self-referential tests

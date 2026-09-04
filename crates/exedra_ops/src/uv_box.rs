@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{CornerId, FaceId};
+use exedra_mesh::{CornerId, FaceId};
 
 use crate::{
     Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError,
@@ -53,9 +53,9 @@ impl EditOperator for UvBox {
         "uv.box"
     }
 
-    fn apply<S: exedra::ChangeSink>(
+    fn apply<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         params: &Self::Params,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -125,7 +125,7 @@ impl EditOperator for UvBox {
         {
             let _bucket = ctx.clock.bucket("attrs");
             for (corner, uv) in pending {
-                if exedra::op::set_corner_uv(txn, corner, uv).is_ok() {
+                if exedra_mesh::op::set_corner_uv(txn, corner, uv).is_ok() {
                     report.stats.counters.corners_written =
                         report.stats.counters.corners_written.saturating_add(1);
                 }
@@ -136,16 +136,16 @@ impl EditOperator for UvBox {
 
     fn compile(
         &self,
-        _mesh: &exedra::Mesh,
+        _mesh: &exedra_mesh::Mesh,
         params: &Self::Params,
         _ctx: &mut OpContext,
     ) -> Result<Self::Plan, OpError> {
         Ok(params.clone())
     }
 
-    fn apply_plan<S: exedra::ChangeSink>(
+    fn apply_plan<S: exedra_mesh::ChangeSink>(
         &self,
-        txn: &mut exedra::EditSession<'_, S>,
+        txn: &mut exedra_mesh::EditSession<'_, S>,
         plan: &Self::Plan,
         ctx: &mut OpContext,
     ) -> Result<(OpReport, Self::Output), OpError> {
@@ -164,7 +164,7 @@ enum BoxPlane {
 }
 
 fn project_corner_box(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     corner: CornerId,
     plane: BoxPlane,
     scale: f32,
@@ -187,7 +187,7 @@ fn project_corner_box(
     [base[0] * scale + offset[0], base[1] * scale + offset[1]]
 }
 
-fn dominant_box_plane(mesh: &exedra::Mesh, face: FaceId, epsilon: f32) -> (BoxPlane, bool) {
+fn dominant_box_plane(mesh: &exedra_mesh::Mesh, face: FaceId, epsilon: f32) -> (BoxPlane, bool) {
     let Some([nx, ny, nz]) = face_normal(mesh, face) else {
         return (BoxPlane::PosZ, true);
     };
@@ -230,7 +230,7 @@ fn dominant_box_plane(mesh: &exedra::Mesh, face: FaceId, epsilon: f32) -> (BoxPl
 
 #[cfg(test)]
 mod tests {
-    use exedra::MeshBuilder;
+    use exedra_mesh::MeshBuilder;
 
     use super::{UvBox, UvBoxParams};
     use crate::{OperatorRunner, UvScope, test_support::commit};
@@ -292,8 +292,8 @@ mod tests {
         let _ = commit(&mut runner_a, &mut mesh_a, &UvBox, &params).expect("run");
         let _ = commit(&mut runner_b, &mut mesh_b, &UvBox, &params).expect("run");
 
-        let (tri_a, stats_a) = mesh_a.to_trimesh(&exedra::ExtractParams::default());
-        let (tri_b, stats_b) = mesh_b.to_trimesh(&exedra::ExtractParams::default());
+        let (tri_a, stats_a) = mesh_a.to_trimesh(&exedra_mesh::ExtractParams::default());
+        let (tri_b, stats_b) = mesh_b.to_trimesh(&exedra_mesh::ExtractParams::default());
         assert_eq!(stats_a, stats_b);
         assert_eq!(tri_a.indices, tri_b.indices);
         assert_eq!(tri_a.uvs, tri_b.uvs);

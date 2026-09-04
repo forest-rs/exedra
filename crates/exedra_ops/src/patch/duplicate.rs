@@ -4,10 +4,10 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use exedra::{VertexId, op};
+use exedra_mesh::{VertexId, op};
 
-pub(crate) fn create_vertex_copies<S: exedra::ChangeSink>(
-    txn: &mut exedra::EditSession<'_, S>,
+pub(crate) fn create_vertex_copies<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
     positions: &BTreeMap<VertexId, [f32; 3]>,
 ) -> BTreeMap<VertexId, VertexId> {
     positions

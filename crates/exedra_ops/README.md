@@ -3,19 +3,18 @@
 Deterministic mesh operations and typed workflow adapters for Exedra.
 
 Exedra Ops provides higher-level modeling operations on top of
-[exedra](../exedra/), the structural mesh kernel. It is `#![no_std]`
+[exedra_mesh](../exedra_mesh/), the structural mesh kernel. It is `#![no_std]`
 compatible (with `alloc`) and designed for both interactive and
 procedural workflows.
 
-The default feature set includes `std`, constructive recipe workflows, and
-assembly pattern expansion, matching common use alongside those two native
-heads. They remain separate APIs owned by their respective crates rather than
-one implicit pipeline. A mesh-only build remains available with
-`default-features = false` plus `std` or `libm`. Enable `analytic` for analytic
-editing and analytic-to-mesh conversion. The `profile_section` module is
-included by `constructive`; `convert` is included by either `analytic` or
-`constructive`, with its items gated independently. `std` and `libm` can be
-selected independently and are forwarded only to enabled adapters.
+The default feature set is the focused `std` mesh-operation surface. Enable
+`analytic` for analytic editing and analytic-to-mesh conversion,
+`constructive` for recipe workflows, or `assembly` for pattern expansion. The
+application-facing `exedra` facade selects the common constructive, assembly,
+and operations bundle. The `profile_section` module is included by
+`constructive`; `convert` is included by either `analytic` or `constructive`,
+with its items gated independently. `std` and `libm` can be selected
+independently and are forwarded only to enabled adapters.
 
 ## Core concepts
 
@@ -37,7 +36,7 @@ selected independently and are forwarded only to enabled adapters.
 - **Topology edits**: delete and dissolve, boundary-loop bridge, rectangular
   face cut, extrude, inset, poke, and solidify.
 - **Normals**: clear, face, derived, and smoothing operations.
-- **Boolean orchestration**: preview/commit staging over Exedra's Boolean
+- **Boolean orchestration**: preview/commit staging over Exedra Mesh's Boolean
   pipeline.
 
 ## Design

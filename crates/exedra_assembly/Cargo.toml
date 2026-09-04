@@ -18,11 +18,11 @@ default = ["std"]
 # The JSON interchange surface for external frontends. Implies std, matching
 # the exedra-recipe-v1 policy: interchange is a host-side format.
 serde = ["dep:serde", "exedra_constructive/serde", "std"]
-std = ["exedra/std", "exedra_constructive/std"]
+std = ["exedra_mesh/std", "exedra_constructive/std"]
 
 [dependencies]
-exedra = { features = ["libm"], workspace = true }
 exedra_constructive.workspace = true
+exedra_mesh = { features = ["libm"], workspace = true }
 hashbrown.workspace = true
 invalidation.workspace = true
 serde = { optional = true, workspace = true }

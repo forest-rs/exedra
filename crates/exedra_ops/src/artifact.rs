@@ -7,8 +7,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use exedra::attributes::Domain;
-use exedra::{CornerId, FaceId, HalfEdgeId, Mesh};
+use exedra_mesh::attributes::Domain;
+use exedra_mesh::{CornerId, FaceId, HalfEdgeId, Mesh};
 
 /// Default artifact item cap for [`Artifacts`].
 pub const DEFAULT_MAX_ARTIFACT_ITEMS: usize = 16;
@@ -188,8 +188,8 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroU32;
 
-    use exedra::attributes::Domain;
-    use exedra::{FaceId, Id, Mesh};
+    use exedra_mesh::attributes::Domain;
+    use exedra_mesh::{FaceId, Id, Mesh};
 
     use super::{Artifact, Artifacts, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACT_ITEMS};
 

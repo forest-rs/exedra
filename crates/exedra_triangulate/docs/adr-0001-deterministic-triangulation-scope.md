@@ -9,7 +9,7 @@
 Three parts of the workspace need to triangulate concave polygons with holes,
 and today none of them share an implementation:
 
-- `exedra`'s render extraction fan-triangulates every face
+- `exedra_mesh`'s render extraction fan-triangulates every face
   (`Mesh::triangulate_face_fan`), which silently produces overlapping or
   inverted triangles for non-convex ngons.
 - `exedra_analytic` carries a private ear clipper with its own hardcoded
@@ -22,7 +22,7 @@ and today none of them share an implementation:
 
 Triangulation sits under caches, goldens, and cross-platform fingerprints, so
 determinism is an invariant, not a preference. A shared facility must sit
-*below* `exedra` in the dependency graph so the kernel itself can consume it.
+*below* `exedra_mesh` in the dependency graph so the kernel itself can consume it.
 
 ## Decision
 
@@ -97,7 +97,7 @@ consumers).
 ## Consequences
 
 - `exedra_analytic` will retire its private clipper and epsilon (`ea-ds4b`).
-- `exedra` render extraction and boolean split retriangulation gain a robust
+- `exedra_mesh` render extraction and boolean split retriangulation gain a robust
   strategy without the kernel owning triangulation math (`exe-hi4e`,
   `exe-o1su`).
 - Exedra brief 11 is implemented by this crate; the brief remains as design

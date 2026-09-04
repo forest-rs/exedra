@@ -1,7 +1,7 @@
 # boolean_oracle
 
 Dual-witness cross-validation oracle: seeded random CSG expression trees are
-evaluated by the exedra mesh boolean pipeline and by the `exedra_isosurface`
+evaluated by the `exedra_mesh` boolean pipeline and by the `exedra_isosurface`
 field combinators, and both are checked point-by-point against a closed-form
 convex half-space referee that attributes every disagreement to the
 responsible witness. A separate fixed, typed suite exercises opt-in

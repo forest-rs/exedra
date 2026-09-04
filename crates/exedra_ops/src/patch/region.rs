@@ -4,7 +4,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use exedra::{FaceId, HalfEdgeId, VertexId};
+use exedra_mesh::{FaceId, HalfEdgeId, VertexId};
 
 use crate::op_common::op_error;
 use crate::patch::attrs::SourceEdgeAttrs;
@@ -21,8 +21,8 @@ pub(crate) struct SelectedFace {
     pub(crate) region: u32,
 }
 
-pub(crate) type FaceEdgeRef = exedra::SelectedFacePatchEdge;
-pub(crate) type SharedRegionEdge = exedra::SelectedFacePatchSharedEdge;
+pub(crate) type FaceEdgeRef = exedra_mesh::SelectedFacePatchEdge;
+pub(crate) type SharedRegionEdge = exedra_mesh::SelectedFacePatchSharedEdge;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SelectedFaceRegion {
@@ -42,7 +42,7 @@ pub(crate) struct SelectedFaceRegion {
 }
 
 pub(crate) fn selected_face_region(
-    mesh: &exedra::Mesh,
+    mesh: &exedra_mesh::Mesh,
     faces: &[FaceId],
     require_normal: bool,
     ctx: &OpContext,
@@ -90,14 +90,14 @@ pub(crate) fn selected_face_region(
         };
         let region = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .and_then(|layer| layer.get(face.as_id()).copied())
             .unwrap_or(0);
         let mut vertex_uvs = Vec::with_capacity(corners.len());
         for &corner in &corners {
             let uv = mesh
                 .attrs()
-                .sparse(exedra::attr::CORNER_UV)
+                .sparse(exedra_mesh::attr::CORNER_UV)
                 .and_then(|layer| layer.get(corner.as_id()).copied());
             vertex_uvs.push(uv);
         }
@@ -130,23 +130,23 @@ pub(crate) fn selected_face_region(
 }
 
 fn map_selected_face_patch_error(
-    error: exedra::SelectedFacePatchError,
+    error: exedra_mesh::SelectedFacePatchError,
     ctx: &OpContext,
 ) -> OpError {
     match error {
-        exedra::SelectedFacePatchError::OutsideFaceInSelection => op_error(
+        exedra_mesh::SelectedFacePatchError::OutsideFaceInSelection => op_error(
             ctx,
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
             "selection contains FaceId::OUTSIDE",
         ),
-        exedra::SelectedFacePatchError::StaleFace { face } => op_error(
+        exedra_mesh::SelectedFacePatchError::StaleFace { face } => op_error(
             ctx,
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
             format!("selection contains stale face id: {}", face.index()),
         ),
-        exedra::SelectedFacePatchError::InvalidFaceLoop { .. } => op_error(
+        exedra_mesh::SelectedFacePatchError::InvalidFaceLoop { .. } => op_error(
             ctx,
             OpErrorKind::InvalidMesh,
             DiagCode::InternalInvariantViolation,
@@ -159,7 +159,7 @@ fn map_selected_face_patch_error(
 mod tests {
     use alloc::vec::Vec;
 
-    use exedra::{BuildParams, Mesh};
+    use exedra_mesh::{BuildParams, Mesh};
 
     use super::selected_face_region;
     use crate::OpContext;

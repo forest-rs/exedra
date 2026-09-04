@@ -13,7 +13,7 @@
 
 use alloc::vec::Vec;
 
-use exedra::{FaceBuildAttrs, MeshBuilder};
+use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
 use exedra_triangulate::{PolygonInput, TriParams, triangulate};
 
 use crate::discretize::{DiscretizePolicy, DiscretizedProfile, discretize_profile};
@@ -118,12 +118,12 @@ pub enum Feature {
 #[derive(Debug)]
 pub struct TessellatedBody {
     /// The tessellated mesh.
-    pub mesh: exedra::Mesh,
+    pub mesh: exedra_mesh::Mesh,
     /// Element provenance, pinned to the mesh's revision.
     pub source_map: crate::source_map::SourceMap,
 }
 
-/// Region values written into [`exedra::attr::FACE_REGION`].
+/// Region values written into [`exedra_mesh::attr::FACE_REGION`].
 ///
 /// Stable, documented mapping: `0` = start cap, `1` = end cap, `2 + k` =
 /// side wall of global segment `k` (outer loop segments first, then each
@@ -162,7 +162,7 @@ pub enum TessellateError {
     /// discretization.
     Triangulate(exedra_triangulate::TriError),
     /// Mesh construction failed (an internal invariant violation).
-    Build(exedra::BuildError),
+    Build(exedra_mesh::BuildError),
     /// A revolved profile crosses into negative radius.
     NegativeRadius {
         /// The smallest radius found in the discretized profile.
@@ -277,8 +277,8 @@ impl From<exedra_triangulate::TriError> for TessellateError {
     }
 }
 
-impl From<exedra::BuildError> for TessellateError {
-    fn from(e: exedra::BuildError) -> Self {
+impl From<exedra_mesh::BuildError> for TessellateError {
+    fn from(e: exedra_mesh::BuildError) -> Self {
         Self::Build(e)
     }
 }
@@ -350,7 +350,7 @@ impl OrientedBuilder {
         &mut self,
         corners: &[u32],
         attrs: &FaceBuildAttrs<'_>,
-    ) -> Result<(), exedra::BuildError> {
+    ) -> Result<(), exedra_mesh::BuildError> {
         if !self.flip {
             return self.inner.add_face_with_attrs(corners, attrs);
         }
@@ -367,7 +367,7 @@ impl OrientedBuilder {
         )
     }
 
-    fn build(&self) -> Result<exedra::MeshBuildResult, TessellateError> {
+    fn build(&self) -> Result<exedra_mesh::MeshBuildResult, TessellateError> {
         if self.non_finite {
             return Err(TessellateError::NonFiniteGeometry);
         }
@@ -552,8 +552,8 @@ fn rebuild_placed_primitive(
 }
 
 fn primitive_local_position(
-    source: &exedra::Mesh,
-    vertex: exedra::VertexId,
+    source: &exedra_mesh::Mesh,
+    vertex: exedra_mesh::VertexId,
     ordinal: usize,
     coordinates: PrimitiveCoordinates,
 ) -> [f64; 3] {
@@ -2091,7 +2091,7 @@ pub fn tessellate_grid(
                     corners: [u32; 4],
                     side_index: u32,
                     feature: Feature|
-         -> Result<(), exedra::BuildError> {
+         -> Result<(), exedra_mesh::BuildError> {
             builder.add_face_with_attrs(
                 &corners,
                 &FaceBuildAttrs {
@@ -2168,7 +2168,7 @@ mod tests {
 
     /// Signed volume via the divergence theorem, fanning each face loop.
     /// Valid for planar convex faces (all faces this tessellator emits).
-    fn mesh_volume(mesh: &exedra::Mesh) -> f64 {
+    fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
         let mut vol = 0.0;
         for face in mesh.faces() {
             let verts: Vec<[f64; 3]> = mesh
@@ -2231,7 +2231,7 @@ mod tests {
         let regions = fine
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("planar-face region layer");
         for face in fine.mesh.faces() {
             assert_eq!(regions.get(face.as_id()).copied(), Some(REGION_PLANAR_FACE));
@@ -2315,7 +2315,7 @@ mod tests {
         let regions = reflected
             .mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("primitive regions were copied onto the mesh");
         let mut seen = alloc::collections::BTreeSet::new();
         for face in reflected.mesh.faces() {
@@ -2576,7 +2576,7 @@ mod tests {
         let profile = builders::rounded_rect(4.0, 2.0, 0.5).expect("rounded rect");
         let policy = EvalPolicy::default();
         let sig = |body: &TessellatedBody| {
-            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
         let a = tessellate_extrude(&profile, &Placement3::IDENTITY, 1.0, CapMode::Both, &policy)
@@ -2948,7 +2948,7 @@ mod tests {
         let profile = annulus_square(2.0, 0.5);
         let policy = EvalPolicy::default();
         let sig = |body: &TessellatedBody| {
-            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
         let a = tessellate_revolve(
@@ -3086,7 +3086,7 @@ mod tests {
             (Placement3::translate(1.0, 0.5, 3.0), &small),
         ];
         let sig = |body: &TessellatedBody| {
-            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
         let a = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("a");
@@ -3178,7 +3178,7 @@ mod tests {
             [3.0, 1.0, 3.5],
         ];
         let sig = |body: &TessellatedBody| {
-            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
         let a = tessellate_sweep(
@@ -3234,7 +3234,7 @@ mod tests {
         // Regions: front, back, and all four sides present.
         let regions = mesh
             .attrs()
-            .dense(exedra::attr::FACE_REGION)
+            .dense(exedra_mesh::attr::FACE_REGION)
             .expect("region layer");
         let mut seen = alloc::collections::BTreeSet::new();
         for face in mesh.faces() {
@@ -3372,7 +3372,7 @@ mod tests {
             .expect("grid tessellates")
         };
         let sig = |body: &TessellatedBody| {
-            let (tri, _) = body.mesh.to_trimesh(&exedra::ExtractParams::default());
+            let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
         let (a, b) = (run(), run());

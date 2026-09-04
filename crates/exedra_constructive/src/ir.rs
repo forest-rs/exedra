@@ -546,7 +546,7 @@ pub struct Recipe {
     sources: Vec<String>,
     slots: Vec<String>,
     policies: Vec<String>,
-    imports: Vec<exedra::Mesh>,
+    imports: Vec<exedra_mesh::Mesh>,
     fingerprints: Vec<Fingerprint>,
 }
 
@@ -651,13 +651,13 @@ impl Recipe {
 
     /// Looks up an imported mesh; `None` for out-of-range ids.
     #[must_use]
-    pub fn import(&self, id: ImportId) -> Option<&exedra::Mesh> {
+    pub fn import(&self, id: ImportId) -> Option<&exedra_mesh::Mesh> {
         self.imports.get(id.0 as usize)
     }
 
     /// All imported meshes, in id order.
     #[must_use]
-    pub fn imports(&self) -> &[exedra::Mesh] {
+    pub fn imports(&self) -> &[exedra_mesh::Mesh] {
         &self.imports
     }
 
@@ -796,7 +796,7 @@ pub struct RecipeBuilder {
     sources: Vec<String>,
     slots: Vec<String>,
     policies: Vec<String>,
-    imports: Vec<exedra::Mesh>,
+    imports: Vec<exedra_mesh::Mesh>,
     pending_source: Option<SourceId>,
     pending_material: Option<SlotId>,
     pending_issue: Option<SourceId>,
@@ -867,7 +867,7 @@ impl RecipeBuilder {
     /// # Errors
     ///
     /// Fails when the mesh is empty or fails deep validation.
-    pub fn add_import(&mut self, mesh: exedra::Mesh) -> Result<ImportId, RecipeError> {
+    pub fn add_import(&mut self, mesh: exedra_mesh::Mesh) -> Result<ImportId, RecipeError> {
         if mesh.faces().next().is_none() || !mesh.validate_deep().is_empty() {
             return Err(RecipeError::InvalidImport {
                 import: len_u32(self.imports.len()),
@@ -1246,7 +1246,7 @@ fn fnv128(bytes: &[u8], seed: u128) -> u128 {
 
 /// A face loop's vertex indices rotated to start at the smallest index —
 /// canonical under the arbitrary loop phase a rebuild introduces.
-fn canonical_face_loop(mesh: &exedra::Mesh, face: exedra::FaceId) -> Vec<u32> {
+fn canonical_face_loop(mesh: &exedra_mesh::Mesh, face: exedra_mesh::FaceId) -> Vec<u32> {
     let mut loop_vertices: Vec<u32> = mesh
         .face_loop(face)
         .filter_map(|he| mesh.to_vertex(he))
@@ -1264,14 +1264,17 @@ fn canonical_face_loop(mesh: &exedra::Mesh, face: exedra::FaceId) -> Vec<u32> {
 }
 
 /// Crate-visible canonical loop helper for the serialization formats.
-pub(crate) fn canonical_face_loop_pub(mesh: &exedra::Mesh, face: exedra::FaceId) -> Vec<u32> {
+pub(crate) fn canonical_face_loop_pub(
+    mesh: &exedra_mesh::Mesh,
+    face: exedra_mesh::FaceId,
+) -> Vec<u32> {
     canonical_face_loop(mesh, face)
 }
 
 /// Canonical bytes of a mesh: vertex positions (f32 bit patterns) plus face
 /// loops, in deterministic iteration order.
-fn mesh_canon_bytes(mesh: &exedra::Mesh, out: &mut Vec<u8>) {
-    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
+fn mesh_canon_bytes(mesh: &exedra_mesh::Mesh, out: &mut Vec<u8>) {
+    let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
     put_u32(out, len_u32(vertices.len()));
     for vertex in &vertices {
         if let Some(p) = mesh.vertex_position(*vertex) {
@@ -1280,7 +1283,7 @@ fn mesh_canon_bytes(mesh: &exedra::Mesh, out: &mut Vec<u8>) {
             }
         }
     }
-    let faces: Vec<exedra::FaceId> = mesh.faces().collect();
+    let faces: Vec<exedra_mesh::FaceId> = mesh.faces().collect();
     put_u32(out, len_u32(faces.len()));
     for face in &faces {
         let loop_vertices = canonical_face_loop(mesh, *face);
@@ -1295,7 +1298,7 @@ fn compute_fingerprints(
     profiles: &[Profile2],
     nodes: &[Node],
     sources: &[String],
-    imports: &[exedra::Mesh],
+    imports: &[exedra_mesh::Mesh],
 ) -> Vec<Fingerprint> {
     // Profile hashes first (content-addressed, schema-stamped).
     let profile_hashes: Vec<u128> = profiles
@@ -1738,7 +1741,7 @@ mod tests {
         )
         .expect("valid profile");
         let profile = builder.add_profile(profile);
-        let imported = exedra::Mesh::from_polygons(
+        let imported = exedra_mesh::Mesh::from_polygons(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[&[0, 1, 2]],
         )

@@ -47,7 +47,7 @@ into coordinated geometry on all participants.
 
 ### Not owned
 
-Geometry math (`exedra_constructive`, `exedra`); site, massing, and plan
+Geometry math (`exedra_constructive`, `exedra_mesh`); site, massing, and plan
 layout; statics, finite-element analysis, capacity, code compliance, or
 certification; rendering and export; Exedra Ops' mesh-operator lifecycle; and any
 erased, document-shaped, or agent-facing parameter boundary. Specific joints,
@@ -194,6 +194,6 @@ re-intern to the same indices yields `LowerError::PolicyRemapUnsupported`.
   `lower` itself incremental is follow-on work.
 - Lowering depends on the Boolean pipeline handling an n-ary difference,
   including cutters that touch, overlap, or share a projection. That behavior
-  is owned and regression-tested in `exedra`; rule libraries continue to emit
+  is owned and regression-tested in `exedra_mesh`; rule libraries continue to emit
   the ordinary n-ary operation and must not reorder, separate, or otherwise
   disguise interacting cutters.

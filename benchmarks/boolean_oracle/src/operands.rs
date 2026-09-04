@@ -4,7 +4,7 @@
 //! Oracle operands: one solid in three witness forms.
 //!
 //! Every operand is a planar-faced polyhedron carried as:
-//! - an exedra [`Mesh`] (the mesh-boolean witness input),
+//! - an `exedra_mesh` [`Mesh`] (the mesh-boolean witness input),
 //! - a union of convex pieces, each a set of f64 half-space planes — for
 //!   convex operands one piece derived from the mesh itself; for L/U
 //!   prisms an analytic box decomposition mapped through the same rigid
@@ -14,12 +14,12 @@
 //!   approximates, plus a Hausdorff bound between the two
 //!   (`field_deviation`), which widens the field comparison band.
 
-use exedra::{FaceTriangulation, Mesh, op::set_vertex_position};
 use exedra_isosurface::{
     ScalarField,
     analytic::{BoxField, CylinderField, SphereField, Union},
     transform::{RigidTransform3, Transform3},
 };
+use exedra_mesh::{FaceTriangulation, Mesh, op::set_vertex_position};
 use exedra_primitives::{
     BoxParams, CylinderParams, UvSphereParams, box_primitive, cylinder, uv_sphere,
 };
@@ -403,7 +403,7 @@ pub(crate) fn u_prism_operand(size: [f64; 3], cut: [f64; 2], rigid: &Rigid) -> O
 /// like every other operand (build local f32, one f64 rigid apply, one
 /// narrowing).
 fn extruded_polygon_mesh(section: &[[f64; 2]], height: f64, rigid: &Rigid) -> Mesh {
-    let mut builder = exedra::MeshBuilder::new();
+    let mut builder = exedra_mesh::MeshBuilder::new();
     let n = section.len();
     let count = u32::try_from(n).expect("small section");
     for z in [-height * 0.5, height * 0.5] {
@@ -489,7 +489,7 @@ fn place_field<F: ScalarField + 'static>(field: F, rigid: &Rigid) -> Transform3<
 /// Clones a mesh with vertices rigid-transformed in f64 and narrowed once.
 fn transform_mesh(source: &Mesh, rigid: &Rigid) -> Mesh {
     let mut mesh = source.clone();
-    let vertices: Vec<exedra::VertexId> = mesh.vertices().collect();
+    let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
     {
         let mut session = mesh.edit();
         for vertex in vertices {
@@ -529,7 +529,7 @@ fn convex_planes(mesh: &Mesh) -> Vec<Plane> {
         if loop_points.len() < 3 {
             continue;
         }
-        // Newell normal over the loop; outward because exedra faces wind CCW
+        // Newell normal over the loop; outward because exedra_mesh faces wind CCW
         // as seen from outside.
         let mut normal = [0.0_f64; 3];
         let mut centroid = [0.0_f64; 3];

@@ -13,7 +13,7 @@
 //!    each leaf pseudo-SDF is 1-Lipschitz in space), so `|referee| > band`
 //!    soundly excludes boundary-ambiguous points — never unsoundly
 //!    includes them.
-//! 2. **Mesh witness**: the exedra boolean pipeline folded over the tree
+//! 2. **Mesh witness**: the `exedra_mesh` boolean pipeline folded over the tree
 //!    (chained classes feed intermediate outputs back in as operands),
 //!    then exact ray-parity membership on the result.
 //! 3. **Field witness**: the `exedra_isosurface` CSG combinators composed
@@ -29,13 +29,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use exedra::boolean::{
+use exedra_isosurface::ScalarField;
+use exedra_isosurface::analytic::{Difference, Intersection, Union};
+use exedra_mesh::boolean::{
     BooleanDiagnostics, BooleanError, BooleanFailureKind, BooleanOp, BooleanOutput, BooleanScratch,
     boolean_mesh,
 };
-use exedra::{FaceTriangulation, Mesh, VertexId};
-use exedra_isosurface::ScalarField;
-use exedra_isosurface::analytic::{Difference, Intersection, Union};
+use exedra_mesh::{FaceTriangulation, Mesh, VertexId};
 
 use crate::membership::{Parity, point_in_triangles};
 use crate::operands::{Operand, mesh_triangles_f64};
@@ -611,7 +611,7 @@ mod triage {
     #[test]
     #[ignore = "triage tool, run by hand"]
     fn isolate_patches() {
-        use exedra::boolean::{
+        use exedra_mesh::boolean::{
             BooleanBvh, MeshSide, build_intersection_graph, classify_patches,
             collect_coplanar_contacts, narrow_phase, split_mesh_along_graph,
         };

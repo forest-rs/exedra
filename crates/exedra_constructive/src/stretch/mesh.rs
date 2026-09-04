@@ -231,7 +231,7 @@ struct OutputVertex {
 }
 
 struct OutputMesh {
-    builder: exedra::MeshBuilder,
+    builder: exedra_mesh::MeshBuilder,
     source_edges: BTreeMap<(u32, u32), (bool, f32)>,
     source_vertex_sharpness: BTreeMap<u32, f32>,
     vertices: BTreeMap<OutputKey, u32>,
@@ -243,7 +243,7 @@ struct OutputMesh {
 }
 
 impl OutputMesh {
-    fn new(source: &exedra::Mesh) -> Self {
+    fn new(source: &exedra_mesh::Mesh) -> Self {
         let mut source_edges = BTreeMap::new();
         for face in source.faces() {
             for edge in source.face_loop(face) {
@@ -271,7 +271,7 @@ impl OutputMesh {
             })
             .collect();
         Self {
-            builder: exedra::MeshBuilder::new(),
+            builder: exedra_mesh::MeshBuilder::new(),
             source_edges,
             source_vertex_sharpness,
             vertices: BTreeMap::new(),
@@ -341,7 +341,7 @@ impl OutputMesh {
         self.builder
             .add_face_with_attrs(
                 &corners,
-                &exedra::FaceBuildAttrs {
+                &exedra_mesh::FaceBuildAttrs {
                     region: Some(source.region),
                     edge_seams: Some(&seams),
                     edge_sharpness: Some(&inherited_sharpness),
@@ -384,7 +384,7 @@ impl OutputMesh {
             let mut edit = built.mesh.edit();
             for (vertex, sharpness) in built.vertex_ids.iter().zip(&self.vertex_sharpness) {
                 if let Some(sharpness) = sharpness {
-                    exedra::op::set_vertex_sharpness(&mut edit, *vertex, *sharpness)
+                    exedra_mesh::op::set_vertex_sharpness(&mut edit, *vertex, *sharpness)
                         .map_err(|_| StretchRefusal::BuildFailed)?;
                 }
             }
@@ -396,12 +396,16 @@ impl OutputMesh {
             {
                 for ((edge, uv), normal) in edges.iter().zip(uvs).zip(normals) {
                     if let Some(uv) = uv {
-                        exedra::op::set_corner_uv(&mut edit, *edge, *uv)
+                        exedra_mesh::op::set_corner_uv(&mut edit, *edge, *uv)
                             .map_err(|_| StretchRefusal::BuildFailed)?;
                     }
                     if let Some(normal) = normal {
-                        exedra::op::set_corner_normal_override(&mut edit, *edge, Some(*normal))
-                            .map_err(|_| StretchRefusal::BuildFailed)?;
+                        exedra_mesh::op::set_corner_normal_override(
+                            &mut edit,
+                            *edge,
+                            Some(*normal),
+                        )
+                        .map_err(|_| StretchRefusal::BuildFailed)?;
                     }
                 }
             }
@@ -487,10 +491,12 @@ fn stretch_mesh_expansion(
 
     let regions = mesh
         .attrs()
-        .dense(exedra::attr::FACE_REGION)
+        .dense(exedra_mesh::attr::FACE_REGION)
         .expect("FACE_REGION is a required built-in layer");
-    let uv_layer = mesh.attrs().sparse(exedra::attr::CORNER_UV);
-    let normal_layer = mesh.attrs().sparse(exedra::attr::CORNER_NORMAL_OVERRIDE);
+    let uv_layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
+    let normal_layer = mesh
+        .attrs()
+        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE);
     let has_uvs = uv_layer.is_some();
     let mut output = OutputMesh::new(mesh);
     let mut sections = Vec::new();
@@ -703,10 +709,12 @@ fn stretch_mesh_contraction(
 
     let regions = mesh
         .attrs()
-        .dense(exedra::attr::FACE_REGION)
+        .dense(exedra_mesh::attr::FACE_REGION)
         .expect("FACE_REGION is a required built-in layer");
-    let uv_layer = mesh.attrs().sparse(exedra::attr::CORNER_UV);
-    let normal_layer = mesh.attrs().sparse(exedra::attr::CORNER_NORMAL_OVERRIDE);
+    let uv_layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
+    let normal_layer = mesh
+        .attrs()
+        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE);
     let has_uvs = uv_layer.is_some();
     let mut faces = Vec::new();
     let mut near_sections = BTreeMap::<PositionEdge, SectionOwner>::new();
@@ -1095,12 +1103,12 @@ fn planar_uv_delta(
     None
 }
 
-fn has_open_boundary(mesh: &exedra::Mesh) -> bool {
+fn has_open_boundary(mesh: &exedra_mesh::Mesh) -> bool {
     mesh.faces().any(|face| {
         mesh.face_loop(face).any(|edge| {
             mesh.twin(edge)
                 .and_then(|twin| mesh.face(twin))
-                .is_some_and(|face| face == exedra::FaceId::OUTSIDE)
+                .is_some_and(|face| face == exedra_mesh::FaceId::OUTSIDE)
         })
     })
 }
@@ -1122,7 +1130,7 @@ fn translate_body(source: &TessellatedBody, displacement: [f64; 3]) -> Tessellat
                 reason = "stretch crosses the documented f64-to-f32 mesh emission boundary"
             )]
             let narrowed = [moved[0] as f32, moved[1] as f32, moved[2] as f32];
-            let _ = exedra::op::set_vertex_position(&mut edit, vertex, narrowed);
+            let _ = exedra_mesh::op::set_vertex_position(&mut edit, vertex, narrowed);
         }
         #[expect(unused_must_use, reason = "discard sink output")]
         {

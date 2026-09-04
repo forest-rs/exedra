@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra::{ChangeSet, ChangeSetBuilder, Mesh, ValidationError};
+use exedra_mesh::{ChangeSet, ChangeSetBuilder, Mesh, ValidationError};
 #[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -319,7 +319,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use exedra::EditSession;
+    use exedra_mesh::EditSession;
 
     use super::OperatorRunner;
     use crate::{
@@ -329,8 +329,8 @@ mod tests {
 
     struct AddVertexOperator;
 
-    fn quad_mesh() -> exedra::Mesh {
-        exedra::Mesh::from_polygons(
+    fn quad_mesh() -> exedra_mesh::Mesh {
+        exedra_mesh::Mesh::from_polygons(
             &[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -351,7 +351,7 @@ mod tests {
             "test.add_vertex"
         }
 
-        fn apply<S: exedra::ChangeSink>(
+        fn apply<S: exedra_mesh::ChangeSink>(
             &self,
             txn: &mut EditSession<'_, S>,
             params: &Self::Params,
@@ -359,20 +359,20 @@ mod tests {
         ) -> Result<(OpReport, Self::Output), OpError> {
             assert!(ctx.scratch.u32s.is_empty());
             ctx.scratch.u32s.push(7);
-            let _ = exedra::op::add_vertex(txn, *params);
+            let _ = exedra_mesh::op::add_vertex(txn, *params);
             Ok((OpReport::new(self.name(), Artifacts::default()), ()))
         }
 
         fn compile(
             &self,
-            _mesh: &exedra::Mesh,
+            _mesh: &exedra_mesh::Mesh,
             params: &Self::Params,
             _ctx: &mut OpContext,
         ) -> Result<Self::Plan, OpError> {
             Ok(*params)
         }
 
-        fn apply_plan<S: exedra::ChangeSink>(
+        fn apply_plan<S: exedra_mesh::ChangeSink>(
             &self,
             txn: &mut EditSession<'_, S>,
             plan: &Self::Plan,
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn apply_in_place_mutates_mesh_and_returns_change_set() {
-        let mut mesh = exedra::Mesh::new();
+        let mut mesh = exedra_mesh::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
         let plan = runner
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn preview_on_clone_does_not_mutate_base_mesh() {
-        let base = exedra::Mesh::new();
+        let base = exedra_mesh::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
         let plan = runner
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn scratch_is_cleared_before_each_run() {
-        let mut mesh = exedra::Mesh::new();
+        let mut mesh = exedra_mesh::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
 
@@ -489,7 +489,7 @@ mod tests {
             .expect("compile should succeed");
 
         let mut edit = mesh.edit();
-        let _ = exedra::op::add_vertex(&mut edit, [2.0, 2.0, 0.0]);
+        let _ = exedra_mesh::op::add_vertex(&mut edit, [2.0, 2.0, 0.0]);
         let _: () = edit.finish();
 
         let err = runner
@@ -514,7 +514,7 @@ mod tests {
             .expect("compile should succeed");
 
         let mut edit = mesh.edit();
-        exedra::op::set_face_region(&mut edit, face, 9).expect("region write should succeed");
+        exedra_mesh::op::set_face_region(&mut edit, face, 9).expect("region write should succeed");
         let _: () = edit.finish();
 
         let err = runner
@@ -532,9 +532,9 @@ mod tests {
     fn post_commit_validation_error_carries_change_set() {
         let runner = OperatorRunner::new();
         let report = OpReport::new("test", Artifacts::default());
-        let change_set = exedra::ChangeSet::default();
+        let change_set = exedra_mesh::ChangeSet::default();
         let error = runner.post_commit_validation_error(
-            &[exedra::ValidationError::FaceLoopNotClosed { face: 0 }],
+            &[exedra_mesh::ValidationError::FaceLoopNotClosed { face: 0 }],
             &report,
             change_set,
         );
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn preview_on_clone_with_validation_enabled_still_succeeds_for_valid_mesh() {
-        let base = exedra::Mesh::new();
+        let base = exedra_mesh::Mesh::new();
         let op = AddVertexOperator;
         let mut runner = OperatorRunner::new();
         runner.ctx.policy.validate.validate_on_preview = true;
@@ -575,7 +575,7 @@ mod tests {
             "test.marks_preview_dirty"
         }
 
-        fn apply<S: exedra::ChangeSink>(
+        fn apply<S: exedra_mesh::ChangeSink>(
             &self,
             _txn: &mut EditSession<'_, S>,
             _params: &Self::Params,
@@ -587,14 +587,14 @@ mod tests {
 
         fn compile(
             &self,
-            _mesh: &exedra::Mesh,
+            _mesh: &exedra_mesh::Mesh,
             _params: &Self::Params,
             _ctx: &mut OpContext,
         ) -> Result<Self::Plan, OpError> {
             Ok(())
         }
 
-        fn apply_plan<S: exedra::ChangeSink>(
+        fn apply_plan<S: exedra_mesh::ChangeSink>(
             &self,
             txn: &mut EditSession<'_, S>,
             _plan: &Self::Plan,
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn preview_on_clone_discards_cache_dirty_mutations() {
-        let base = exedra::Mesh::new();
+        let base = exedra_mesh::Mesh::new();
         let op = MarksPreviewDirtyOperator;
         let mut runner = OperatorRunner::new();
         let plan = runner

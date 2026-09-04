@@ -3,7 +3,7 @@
 
 //! Deterministic mesh fixtures for tests.
 
-use exedra::{BuildParams, Mesh, MeshBuilder};
+use exedra_mesh::{BuildParams, Mesh, MeshBuilder};
 use exedra_primitives::{
     BoxParams, CapFill, CylinderParams, QuadParams, UvSphereParams, box_primitive, cylinder, quad,
     uv_sphere,
