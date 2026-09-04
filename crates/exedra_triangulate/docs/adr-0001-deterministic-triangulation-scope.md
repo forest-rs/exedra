@@ -30,7 +30,8 @@ determinism is an invariant, not a preference. A shared facility must sit
 
 - triangulation of simple polygons with holes ([`PolygonInput`] →
   [`Triangulation`]), via deterministic ear clipping with deterministic hole
-  bridging ([`TriStrategy::EarClip`]);
+  bridging ([`TriStrategy::EarClip`]) and optional exact edge legalization
+  ([`TriStrategy::ConstrainedDelaunay`]);
 - exact-sign planar predicates (`orient2d` and `incircle`) used by current and
   future strategies;
 - a typed failure taxonomy ([`TriError`]) distinguishing invalid-input
@@ -51,10 +52,10 @@ Contract points:
   meshes, curves, tolerances, or Exedra ID types, and has zero dependencies
   (`no_std` + `alloc`).
 - **Strategy seam.** `TriParams::strategy` is `#[non_exhaustive]`; later
-  strategies (monotone decomposition, constrained Delaunay quality passes)
-  arrive behind the same API and must each be independently deterministic.
-  Ear clipping is O(n²), which is acceptable at profile-cap sizes; a quality
-  pass is deferred until a consumer demonstrably needs it.
+  strategies arrive behind the same API and must each be independently
+  deterministic. `EarClip` remains the default. `triangulate_with_stats`
+  provides local strategy work diagnostics without global counters; the
+  sign-only `triangulate` entry point remains unchanged.
 
 ### Exact `orient2d` exponent domain
 
@@ -114,6 +115,38 @@ therefore remains allocation-free, dependency-free, safe, and available under
 `no_std`. `incircle_evaluated` reports a typed per-call path and uses an
 explicit `NonFiniteInput` sentinel contract. Existing APIs and ear-clipping
 behavior are unchanged; no caller migration is required.
+
+### Deterministic edge legalization
+
+`ConstrainedDelaunay` begins with the same validated ear-clipped cover, then
+legalizes only edges with exactly two incident triangles. True outer and hole
+boundary edges have one incident triangle and cannot enter the worklist;
+temporary bridge edges have two and correctly remain eligible. A convex
+quadrilateral flips when the exact `incircle` determinant says the opposite
+vertex is inside the circumcircle. Exact cocircular cases choose the
+lexicographically smaller normalized diagonal.
+
+Adjacency is maintained incrementally in an ordered map, and affected edges
+are revisited through an ordered set. This makes both the result and the
+`edge_flips` work count independent of allocation addresses or hash order.
+After legalization, every triangle is rotated to its lowest vertex and the
+ordered result is sorted, giving one stable representation. The operation
+does not add vertices and cannot alter a constrained boundary. The API is
+additive: `EarClip` remains the default and existing callers require no
+migration.
+
+The cocircular rule is the exact answer for a symbolic perturbation of the
+paraboloid lift in which lower input indices are lowered slightly more than
+higher ones, so the lowest index of any cocircular set lies inside every
+circle through the others. Strict decisions are unchanged by an infinitesimal
+perturbation, so every flip is a legal Lawson flip on a point set without
+cocircular quadruples. That gives termination without an iteration guard, and
+because a constrained Delaunay triangulation is unique in general position,
+the legalized triangle set does not depend on the ear-clipped cover it started
+from. Both properties are pinned: fans of the same convex ring from every apex
+legalize to one canonical set, and the torture corpus checks every generated
+polygon for unchanged boundary edges, zero remaining illegal edges, and
+idempotence.
 
 ## Consequences
 

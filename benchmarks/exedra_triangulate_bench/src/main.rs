@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use exedra_triangulate::predicates::{
     InCircle, IncirclePath, Orient2dPath, Orientation, incircle_evaluated, orient2d_evaluated,
 };
-use exedra_triangulate::{PolygonInput, TriParams, TriStrategy, Triangulation, triangulate};
+use exedra_triangulate::{
+    PolygonInput, TriParams, TriStrategy, Triangulation, triangulate, triangulate_with_stats,
+};
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -22,24 +24,31 @@ const MAX_BATCH_SIZE: usize = 64;
 fn main() {
     let profile = Profile::from_args(std::env::args().skip(1));
     let fixtures = fixtures();
-    let reports: Vec<QualityReport> = fixtures.iter().map(analyze).collect();
+    for strategy in [TriStrategy::EarClip, TriStrategy::ConstrainedDelaunay] {
+        let reports: Vec<QualityReport> = fixtures
+            .iter()
+            .map(|fixture| analyze(fixture, strategy))
+            .collect();
 
-    println!(
-        "phase=quality profile={} strategy=EarClip fixtures={}",
-        profile.label(),
-        fixtures.len()
-    );
-    for report in &reports {
-        report.print();
-    }
+        println!(
+            "phase=quality profile={} strategy={} fixtures={}",
+            profile.label(),
+            strategy_label(strategy),
+            fixtures.len()
+        );
+        for report in &reports {
+            report.print();
+        }
 
-    println!(
-        "phase=timing profile={} strategy=EarClip fixtures={}",
-        profile.label(),
-        fixtures.len()
-    );
-    for fixture in &fixtures {
-        time_fixture(fixture, profile).print();
+        println!(
+            "phase=timing profile={} strategy={} fixtures={}",
+            profile.label(),
+            strategy_label(strategy),
+            fixtures.len()
+        );
+        for fixture in &fixtures {
+            time_fixture(fixture, profile, strategy).print();
+        }
     }
 
     let predicate_scenarios = predicate_scenarios();
@@ -390,6 +399,7 @@ fn incircle_scenarios() -> [IncircleScenario; 2] {
 #[derive(Clone, Debug)]
 struct QualityReport {
     name: &'static str,
+    strategy: &'static str,
     role: FixtureRole,
     vertices: usize,
     holes: usize,
@@ -401,13 +411,15 @@ struct QualityReport {
     below_1deg: usize,
     below_5deg: usize,
     below_10deg: usize,
+    edge_flips: usize,
 }
 
 impl QualityReport {
     fn print(&self) {
         println!(
-            "scenario={} role={} vertices={} holes={} triangles={} signature={:016x} min_angle_deg={:.9} p01_angle_deg={:.9} worst_quality={:.9e} below_1deg={} below_5deg={} below_10deg={}",
+            "scenario={} strategy={} role={} vertices={} holes={} triangles={} signature={:016x} min_angle_deg={:.9} p01_angle_deg={:.9} worst_quality={:.9e} below_1deg={} below_5deg={} below_10deg={} edge_flips={}",
             self.name,
+            self.strategy,
             self.role.label(),
             self.vertices,
             self.holes,
@@ -419,27 +431,30 @@ impl QualityReport {
             self.below_1deg,
             self.below_5deg,
             self.below_10deg,
+            self.edge_flips,
         );
     }
 }
 
-fn analyze(fixture: &Fixture) -> QualityReport {
-    let params = ear_clip_params();
+fn analyze(fixture: &Fixture, strategy: TriStrategy) -> QualityReport {
+    let params = strategy_params(strategy);
     let prepared = fixture.prepare();
     let input = prepared.input();
-    let first = triangulate(&input, &params).expect("fixed fixture must triangulate");
-    let second = triangulate(&input, &params).expect("fixed fixture repeat must triangulate");
+    let first = triangulate_with_stats(&input, &params).expect("fixed fixture must triangulate");
+    let second =
+        triangulate_with_stats(&input, &params).expect("fixed fixture repeat must triangulate");
     assert_eq!(
         first, second,
         "{} must produce byte-identical triangles",
         fixture.name
     );
+    let result = &first.triangulation;
 
     let points = fixture.points();
-    validate_cover(fixture, &points, &first);
-    let mut minimum_angles = Vec::with_capacity(first.triangles.len());
+    validate_cover(fixture, &points, result);
+    let mut minimum_angles = Vec::with_capacity(result.triangles.len());
     let mut worst_quality = f64::INFINITY;
-    for &triangle in &first.triangles {
+    for &triangle in &result.triangles {
         let [a, b, c] = triangle_points(&points, triangle);
         minimum_angles.push(triangle_min_angle(a, b, c));
         worst_quality = worst_quality.min(normalized_quality(a, b, c));
@@ -451,17 +466,19 @@ fn analyze(fixture: &Fixture) -> QualityReport {
 
     QualityReport {
         name: fixture.name,
+        strategy: strategy_label(strategy),
         role: fixture.role,
         vertices: fixture.vertex_count(),
         holes: fixture.holes.len(),
-        triangles: first.triangles.len(),
-        signature: signature(fixture, &first),
+        triangles: result.triangles.len(),
+        signature: signature(fixture, result),
         min_angle_deg: min_angle * degrees,
         p01_angle_deg: p01_angle * degrees,
         worst_quality,
         below_1deg: count_below(&minimum_angles, 1.0 / degrees),
         below_5deg: count_below(&minimum_angles, 5.0 / degrees),
         below_10deg: count_below(&minimum_angles, 10.0 / degrees),
+        edge_flips: first.stats.edge_flips,
     }
 }
 
@@ -593,7 +610,9 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
 #[derive(Copy, Clone, Debug)]
 struct TimingReport {
     name: &'static str,
+    strategy: &'static str,
     vertices: usize,
+    edge_flips: usize,
     samples: usize,
     batch_size: usize,
     triangulations: usize,
@@ -605,9 +624,11 @@ struct TimingReport {
 impl TimingReport {
     fn print(self) {
         println!(
-            "scenario={} vertices={} samples={} batch_size={} triangulations={} best_ns={} avg_ns={} best_ns_per_vertex={:.3} avg_ns_per_vertex={:.3} checksum={:016x}",
+            "scenario={} strategy={} vertices={} edge_flips={} samples={} batch_size={} triangulations={} best_ns={} avg_ns={} best_ns_per_vertex={:.3} avg_ns_per_vertex={:.3} checksum={:016x}",
             self.name,
+            self.strategy,
             self.vertices,
+            self.edge_flips,
             self.samples,
             self.batch_size,
             self.triangulations,
@@ -620,7 +641,7 @@ impl TimingReport {
     }
 }
 
-fn time_fixture(fixture: &Fixture, profile: Profile) -> TimingReport {
+fn time_fixture(fixture: &Fixture, profile: Profile, strategy: TriStrategy) -> TimingReport {
     let vertices = fixture.vertex_count();
     let batch_size = timing_batch_size(vertices);
     let vertices_per_batch = vertices
@@ -630,11 +651,12 @@ fn time_fixture(fixture: &Fixture, profile: Profile) -> TimingReport {
     let triangulations = samples
         .checked_mul(batch_size)
         .expect("fixed timing sample count must fit usize");
-    let params = ear_clip_params();
+    let params = strategy_params(strategy);
     let prepared = fixture.prepare();
     let input = prepared.input();
-    let warmup = triangulate(black_box(&input), &params).expect("warmup");
-    let checksum = triangle_checksum(&warmup);
+    let warmup = triangulate_with_stats(black_box(&input), &params).expect("warmup");
+    let checksum = triangle_checksum(&warmup.triangulation);
+    let edge_flips = warmup.stats.edge_flips;
     black_box(&warmup);
 
     let mut best = Duration::MAX;
@@ -652,7 +674,9 @@ fn time_fixture(fixture: &Fixture, profile: Profile) -> TimingReport {
     black_box(checksum);
     TimingReport {
         name: fixture.name,
+        strategy: strategy_label(strategy),
         vertices,
+        edge_flips,
         samples,
         batch_size,
         triangulations,
@@ -794,10 +818,18 @@ const fn incircle_path_label(path: IncirclePath) -> &'static str {
     }
 }
 
-fn ear_clip_params() -> TriParams {
+fn strategy_params(strategy: TriStrategy) -> TriParams {
     let mut params = TriParams::default();
-    params.strategy = TriStrategy::EarClip;
+    params.strategy = strategy;
     params
+}
+
+const fn strategy_label(strategy: TriStrategy) -> &'static str {
+    match strategy {
+        TriStrategy::EarClip => "EarClip",
+        TriStrategy::ConstrainedDelaunay => "ConstrainedDelaunay",
+        _ => "Unknown",
+    }
 }
 
 #[cfg(test)]
@@ -872,6 +904,22 @@ mod tests {
         ),
     ];
 
+    const DELAUNAY_PINS: [(&str, u64, usize); 13] = [
+        ("choice_driven_quad", 0x61e1_e303_41fc_2357, 1),
+        ("exact_cocircular_quad", 0xfb69_ec33_ed2e_9fe2, 1),
+        ("near_circle_16", 0x429d_e374_81fd_242a, 23),
+        ("near_circle_64", 0x5c4e_0ae6_2a32_8660, 116),
+        ("near_circle_120", 0x581c_c8f0_19d7_428f, 96),
+        ("sparse_rect_dense_hole_16", 0x5691_c23f_23f3_30c3, 4),
+        ("sparse_rect_dense_hole_64", 0xc1b6_ec9a_ceb5_fc37, 11),
+        ("sparse_rect_dense_hole_120", 0xec57_fe5b_ca27_46fd, 21),
+        ("drill_like_collinear_midpoints", 0x0fb3_38c6_3e40_b363, 1),
+        ("three_hole_bridge_stress", 0xdcff_9d39_e6f3_51fc, 27),
+        ("small_angle_wedge", 0x9210_97b6_21ea_dcdd, 0),
+        ("choice_scale_down_2p-200", 0xd62d_e155_79a9_bce6, 1),
+        ("choice_scale_up_2p200", 0xd83f_5bbf_fecc_9fd4, 1),
+    ];
+
     #[test]
     fn predicate_scenarios_reach_each_typed_path() {
         let scenarios = predicate_scenarios();
@@ -903,7 +951,7 @@ mod tests {
     #[test]
     fn fixed_corpus_triangulates_and_reports_finite_quality() {
         for fixture in fixtures() {
-            let report = analyze(&fixture);
+            let report = analyze(&fixture, TriStrategy::EarClip);
             assert!(report.triangles > 0, "{}", fixture.name);
             assert!(report.min_angle_deg.is_finite(), "{}", fixture.name);
             assert!(report.p01_angle_deg.is_finite(), "{}", fixture.name);
@@ -922,7 +970,7 @@ mod tests {
             assert_eq!(fixture.name, expected_name);
             assert_eq!(fixture.role, expected_role, "{expected_name}");
             assert_eq!(
-                analyze(fixture).signature,
+                analyze(fixture, TriStrategy::EarClip).signature,
                 expected_signature,
                 "{expected_name}"
             );
@@ -930,9 +978,26 @@ mod tests {
     }
 
     #[test]
+    fn constrained_delaunay_signatures_and_work_are_pinned() {
+        let fixtures = fixtures();
+        assert_eq!(fixtures.len(), DELAUNAY_PINS.len());
+        for (fixture, &(expected_name, expected_signature, expected_flips)) in
+            fixtures.iter().zip(&DELAUNAY_PINS)
+        {
+            assert_eq!(fixture.name, expected_name);
+            let report = analyze(fixture, TriStrategy::ConstrainedDelaunay);
+            assert_eq!(report.signature, expected_signature, "{expected_name}");
+            assert_eq!(report.edge_flips, expected_flips, "{expected_name}");
+        }
+    }
+
+    #[test]
     fn power_of_two_fixtures_preserve_indices_and_every_quality_metric() {
         let fixtures = fixtures();
-        let reports: Vec<QualityReport> = fixtures.iter().map(analyze).collect();
+        let reports: Vec<QualityReport> = fixtures
+            .iter()
+            .map(|fixture| analyze(fixture, TriStrategy::EarClip))
+            .collect();
         let base = &reports[0];
         for transformed in &reports[11..=12] {
             assert_eq!(transformed.triangles, base.triangles);
@@ -944,7 +1009,7 @@ mod tests {
             assert_eq!(transformed.below_10deg, base.below_10deg);
         }
 
-        let params = ear_clip_params();
+        let params = strategy_params(TriStrategy::EarClip);
         let base_prepared = fixtures[0].prepare();
         let base_result =
             triangulate(&base_prepared.input(), &params).expect("base fixture triangulates");
@@ -957,6 +1022,30 @@ mod tests {
                 "{}",
                 transformed.name
             );
+        }
+    }
+
+    #[test]
+    fn constrained_delaunay_quality_does_not_regress_and_improves_choice_cases() {
+        for fixture in fixtures() {
+            let ear_clip = analyze(&fixture, TriStrategy::EarClip);
+            let delaunay = analyze(&fixture, TriStrategy::ConstrainedDelaunay);
+            assert_eq!(delaunay.triangles, ear_clip.triangles, "{}", fixture.name);
+            assert!(
+                delaunay.min_angle_deg >= ear_clip.min_angle_deg,
+                "{}: {} < {}",
+                fixture.name,
+                delaunay.min_angle_deg,
+                ear_clip.min_angle_deg
+            );
+            if fixture.role == FixtureRole::ChoiceQuality {
+                assert!(
+                    delaunay.min_angle_deg > ear_clip.min_angle_deg,
+                    "{} should improve when diagonal choice is causal",
+                    fixture.name
+                );
+                assert!(delaunay.edge_flips > 0, "{}", fixture.name);
+            }
         }
     }
 

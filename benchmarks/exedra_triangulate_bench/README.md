@@ -1,9 +1,9 @@
 # exedra_triangulate quality wind tunnel
 
-This executable establishes the deterministic EarClip baseline for
-`exedra_triangulate`. It keeps quality reporting separate from wall-clock
-sampling so formatting, angle calculation, and signature construction are not
-part of the timed region.
+This executable compares deterministic `EarClip` and `ConstrainedDelaunay`
+results for `exedra_triangulate`. It keeps quality reporting separate from
+wall-clock sampling so formatting, angle calculation, and signature
+construction are not part of the timed region.
 
 Run the quick profile:
 
@@ -29,9 +29,11 @@ cause of its output quality:
   drill-like loop with exactly collinear chord midpoints, and a constrained
   small-angle wedge.
 
-Every fixture is triangulated twice before measurement. The quality phase
-checks byte-identical triangle output, positive triangle orientation, valid
-input indices, and polygon-area preservation. The pinned signature is FNV-1a
+Every fixture is triangulated twice with each strategy before measurement.
+The quality phase checks byte-identical triangle output, positive triangle
+orientation, valid input indices, polygon-area preservation, and
+non-regression of the minimum angle. It also reports and pins the exact
+constrained-Delaunay `edge_flips` count. The pinned signature is FNV-1a
 over, in order: the scenario-name bytes, outer-loop length, ordered outer
 coordinate bits, hole count, each hole length and ordered coordinate bits,
 then every emitted triangle index. Lengths, coordinate bits, and indices are
@@ -48,9 +50,9 @@ Quality metrics are element-oriented:
 - `below_{1,5,10}deg` count triangles whose minimum angle is below that
   threshold.
 
-These metrics are diagnostics, not acceptance thresholds. A later constrained
-Delaunay strategy can change choices within the same surviving input vertex
-set and fixed boundary constraints. Low residual quality in a sparse-boundary,
+These metrics are diagnostics, not a general quality threshold. Edge
+legalization can change choices within the same surviving input vertex set and
+fixed boundary constraints. Low residual quality in a sparse-boundary,
 collinear, or small-angle fixture is consistent with an input constraint, but
 this corpus alone does not establish the cause or the best remedy.
 

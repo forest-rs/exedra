@@ -10,7 +10,10 @@
 
 use alloc::vec::Vec;
 
-use crate::{PolygonInput, TriParams, Triangulation, triangulate};
+use crate::delaunay::{illegal_edge_count, legalize_edges};
+use crate::{
+    PolygonInput, TriParams, TriStrategy, Triangulation, triangulate, triangulate_with_stats,
+};
 
 /// `SplitMix64`: tiny deterministic PRNG for corpus generation.
 struct Rng(u64);
@@ -111,7 +114,96 @@ fn check_invariants(outer: &[[f64; 2]], holes: &[&[[f64; 2]]], label: &str) -> T
         (area2 - expected).abs() <= scale * 1e-9,
         "{label}: area {area2} != expected {expected}"
     );
+    check_constrained_delaunay(&input, &points, &result, label);
     result
+}
+
+/// Sorted `(min, max)` edges that have exactly one incident triangle: the
+/// simplified boundary the triangulation represents.
+fn boundary_edges(triangles: &[[u32; 3]]) -> Vec<(u32, u32)> {
+    let mut edges: Vec<(u32, u32)> = triangles
+        .iter()
+        .flat_map(|&[a, b, c]| {
+            [
+                (a.min(b), a.max(b)),
+                (b.min(c), b.max(c)),
+                (c.min(a), c.max(a)),
+            ]
+        })
+        .collect();
+    edges.sort_unstable();
+    let mut boundary = Vec::new();
+    let mut index = 0;
+    while index < edges.len() {
+        let run = edges[index..]
+            .iter()
+            .take_while(|&&e| e == edges[index])
+            .count();
+        if run == 1 {
+            boundary.push(edges[index]);
+        }
+        index += run;
+    }
+    boundary
+}
+
+/// Asserts the constrained-Delaunay invariants against the ear-clipped
+/// `reference` for the same input: identical triangle count, CCW triangles,
+/// the same area and boundary edge set, no remaining illegal edge,
+/// idempotence, and double-run determinism including the flip count.
+fn check_constrained_delaunay(
+    input: &PolygonInput<'_>,
+    points: &[[f64; 2]],
+    reference: &Triangulation,
+    label: &str,
+) {
+    let params = TriParams {
+        strategy: TriStrategy::ConstrainedDelaunay,
+    };
+    let first = triangulate_with_stats(input, &params)
+        .unwrap_or_else(|e| panic!("{label}: constrained Delaunay failed: {e}"));
+    let second = triangulate_with_stats(input, &params).expect("second run");
+    assert_eq!(
+        first, second,
+        "{label}: constrained Delaunay determinism violated"
+    );
+
+    let triangles = &first.triangulation.triangles;
+    assert_eq!(
+        triangles.len(),
+        reference.len(),
+        "{label}: flips changed the count"
+    );
+    let mut area2 = 0.0;
+    let mut reference_area2 = 0.0;
+    for (&t, &r) in triangles.iter().zip(&reference.triangles) {
+        let a2 = tri_area2(points, t);
+        assert!(a2 > 0.0, "{label}: non-CCW legalized triangle {t:?}");
+        area2 += a2;
+        reference_area2 += tri_area2(points, r);
+    }
+    let scale = reference_area2.abs().max(1.0);
+    assert!(
+        (area2 - reference_area2).abs() <= scale * 1e-9,
+        "{label}: legalized area {area2} != ear-clipped {reference_area2}"
+    );
+    assert_eq!(
+        boundary_edges(triangles),
+        boundary_edges(&reference.triangles),
+        "{label}: legalization changed the boundary"
+    );
+    assert_eq!(
+        illegal_edge_count(points, triangles),
+        0,
+        "{label}: illegal edge remains"
+    );
+    let mut again = triangles.clone();
+    assert_eq!(
+        legalize_edges(points, &mut again),
+        0,
+        "{label}: not idempotent"
+    );
+    assert_eq!(&again, triangles, "{label}: canonical order unstable");
 }
 
 #[test]
@@ -259,6 +351,40 @@ fn golden_square_with_hole_indices() {
             [2, 6, 7]
         ],
         "golden triangulation changed; review and re-bless deliberately"
+    );
+}
+
+#[test]
+fn golden_square_with_hole_constrained_delaunay_indices() {
+    // The legalized cover is canonical (each triangle rotated to its lowest
+    // index, then sorted), so this pins the unique perturbed constrained
+    // Delaunay triangulation and the exact flip count.
+    let outer: [[f64; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let hole: [[f64; 2]; 4] = [[0.4, 0.4], [0.4, 0.6], [0.6, 0.6], [0.6, 0.4]];
+    let input = PolygonInput {
+        outer: &outer,
+        holes: &[&hole],
+    };
+    let params = TriParams {
+        strategy: TriStrategy::ConstrainedDelaunay,
+    };
+    let result = triangulate_with_stats(&input, &params).expect("golden fixture");
+    assert_eq!(result.stats.edge_flips, 2, "flip count changed");
+    // The quad 0-4-5-3 is an isosceles trapezoid, hence exactly cocircular;
+    // the lowest-index rule keeps vertex 0 on its diagonal.
+    assert_eq!(
+        result.triangulation.triangles,
+        alloc::vec![
+            [0, 1, 7],
+            [0, 4, 5],
+            [0, 5, 3],
+            [0, 7, 4],
+            [1, 2, 6],
+            [1, 6, 7],
+            [2, 3, 5],
+            [2, 5, 6]
+        ],
+        "golden legalized triangulation changed; review and re-bless deliberately"
     );
 }
 
