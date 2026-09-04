@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "apps/cambium_web_bridge",
+    "apps/exedra_ops_web_bridge",
     "benchmarks/boolean_oracle",
     "benchmarks/constructive_wind_tunnel",
     "benchmarks/exedra_fidget_bench",
@@ -10,8 +10,6 @@ members = [
     "benchmarks/exedra_triangulate_bench",
     "benchmarks/exedra_wind_tunnel",
     "benchmarks/isosurface_wind_tunnel",
-    "crates/cambium",
-    "crates/cambium_testkit",
     "crates/exedra",
     "crates/exedra_analytic",
     "crates/exedra_assembly",
@@ -21,6 +19,8 @@ members = [
     "crates/exedra_isosurface",
     "crates/exedra_math",
     "crates/exedra_measurements",
+    "crates/exedra_ops",
+    "crates/exedra_ops_testkit",
     "crates/exedra_primitives",
     "crates/exedra_qef",
     "crates/exedra_spatial",
@@ -98,8 +98,6 @@ clippy.allow_attributes = "warn"
 rust.unsafe_code = "deny"
 
 [workspace.dependencies]
-cambium = { default-features = false, path = "crates/cambium" }
-cambium_testkit = { default-features = false, path = "crates/cambium_testkit" }
 exedra = { default-features = false, path = "crates/exedra" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic" }
 exedra_assembly = { default-features = false, path = "crates/exedra_assembly" }
@@ -109,6 +107,8 @@ exedra_gltf = { default-features = false, path = "crates/exedra_gltf" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface" }
 exedra_math = { default-features = false, path = "crates/exedra_math" }
 exedra_measurements = { default-features = false, path = "crates/exedra_measurements" }
+exedra_ops = { default-features = false, path = "crates/exedra_ops" }
+exedra_ops_testkit = { default-features = false, path = "crates/exedra_ops_testkit" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial" }

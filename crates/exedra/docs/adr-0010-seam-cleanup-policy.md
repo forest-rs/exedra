@@ -99,7 +99,7 @@ allowing the downstream typed refusal to stand instead of guessing.
 - The drill fixture's worst squared triangle quality improves from
   ~9.3e-16 to ~3.5e-5 with two flips and ~7e-18 volume drift; healthy
   outputs (touching-box unions) pass through untouched.
-- cambium's `BooleanRunPolicy` gains an opt-in `seam_cleanup` field
+- Exedra Ops' `BooleanRunPolicy` gains an opt-in `seam_cleanup` field
   (default `None`); enabling it runs the pass after tiny-component
   removal, reports `SeamCleanupStats` on the commit, and prunes
   provenance rows for faces the collapses removed.

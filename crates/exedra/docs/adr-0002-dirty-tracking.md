@@ -8,7 +8,7 @@
 
 Exedra's kernel boundary contract requires explicit dirty tracking: recorded
 edit scopes produce a `ChangeSet` containing a `DirtySet` that tells higher layers which
-faces, vertices, and corners need derived data recomputed. Cambium consumes
+faces, vertices, and corners need derived data recomputed. Exedra Ops consumes
 these dirty sets for incremental workflows.
 
 Dirty tracking is a shared concern across forest-rs projects, not specific to
@@ -16,7 +16,7 @@ mesh topology.
 
 ## Decision
 
-Both Exedra and Cambium use **`invalidation`** (crates.io, the published
+Both Exedra and Exedra Ops use **`invalidation`** (crates.io, the published
 evolution of the earlier `understory_dirty` git crate) for invalidation
 primitives.
 
@@ -27,7 +27,7 @@ invalidation = "0.2.0"
 ```
 
 Exedra's `DirtySet` and `ChangeSet` types are built on top of
-`invalidation::InvalidationSet` rather than rolling custom tracking. Cambium's
+`invalidation::InvalidationSet` rather than rolling custom tracking. Exedra Ops'
 `CacheDirtySet` wraps the same primitive with its own channel vocabulary.
 
 Beyond the channelized set used today, `invalidation` also provides

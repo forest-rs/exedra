@@ -6,7 +6,7 @@ Accepted (2026-08-19).
 
 ## Context
 
-The workspace's multi-domain architecture (cambium ADR-0002) gives each
+The workspace's multi-domain architecture (Exedra Ops ADR-0005) gives each
 geometry domain a dedicated head with a narrow responsibility and explicit,
 lossy conversions between heads. `exedra_constructive` compiles a single
 part's recipe into one or more meshes; nothing in the workspace owned the

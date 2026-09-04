@@ -1,14 +1,14 @@
 # Byzantine Basilica Ruin Pipeline
 
-*(A concrete end-to-end example tying Exedra + Cambium together)*
+*(A concrete end-to-end example tying Exedra + Exedra Ops together)*
 
-This document is a **worked example** that makes Exedra and Cambium concrete. It describes a complete procedural pipeline that generates a Byzantine-flavored basilica ruin, including:
+This document is a **worked example** that makes Exedra and Exedra Ops concrete. It describes a complete procedural pipeline that generates a Byzantine-flavored basilica ruin, including:
 
-* the operator sequence (a “Cambium Program”)
+* an illustrative Exedra Ops mesh-workflow sequence
 * what each operator reads/writes
 * what artifacts are emitted
 * how `Txn → ChangeSet → DirtySet` drives incremental extraction
-* where `invalidation` (formerly `understory_dirty`) channels apply (Cambium caches)
+* where `invalidation` (formerly `understory_dirty`) channels apply (Exedra Ops caches)
 * how an LLM can generate or vary the program safely
 
 This is not a spec for every operator listed here; it is an **example pipeline** that we can use as a guiding demo and a future wind tunnel scenario.
@@ -58,7 +58,7 @@ This is not a spec for every operator listed here; it is an **example pipeline**
 
 * `seed: u64` — top-level seed controlling any randomized decisions.
 * `NumericPolicy` — explicit tolerances.
-* `PolicySet` — Cambium policies (preview/commit, budgets, artifact limits, validation).
+* `PolicySet` — Exedra Ops policies (preview/commit, budgets, artifact limits, validation).
 
 ### Outputs
 
@@ -69,7 +69,7 @@ This is not a spec for every operator listed here; it is an **example pipeline**
 
 ## Region tags and selections
 
-This demo uses **semantic regions** as face-domain tags (Exedra) and canonical face selections (Cambium).
+This demo uses **semantic regions** as face-domain tags (Exedra) and canonical face selections (Exedra Ops).
 
 ### Face-domain region tag
 
@@ -85,7 +85,7 @@ A minimal region tag is a `u32` or small enum stored in a face-domain attribute 
 * `REGION_DRUM`
 * `REGION_DOME`
 
-### Canonical selection representation (Cambium)
+### Canonical selection representation (Exedra Ops)
 
 Selections passed between operators are canonical `Vec<FaceId>`:
 
@@ -96,9 +96,12 @@ Selections may also be emitted as artifacts (FaceSet).
 
 ---
 
-## The Cambium Program (baseline)
+## Illustrative mesh-workflow sequence
 
-This is the baseline “script” the demo runs. Each operator produces an `OpReport`, and commit-mode operators produce an Exedra `ChangeSet`.
+This is the baseline “script” for the demo. It does not claim that the current
+SDK deserializes or routes a heterogeneous program: an application selects and
+runs these mesh operators explicitly. Each operator produces an `OpReport`, and
+commit-mode operators produce an Exedra `ChangeSet`.
 
 1. `shape.floor_plan.basilica`
 2. `shape.extrude.walls`
@@ -450,7 +453,7 @@ Preview-mode steps run against a cloned mesh; the same ChangeSet/DirtySet logic 
 
 ## `invalidation`: where it applies
 
-Cambium uses `invalidation` for **operator-runtime caches** and workflow state.
+Exedra Ops uses `invalidation` for **operator-runtime caches** and workflow state.
 
 For this demo, typical mappings:
 
@@ -466,7 +469,7 @@ This is intentionally coarse and conservative.
 
 LLMs should generate **programs and parameters**, not raw mesh data.
 
-### Cambium Program JSON
+### Illustrative mesh-workflow JSON
 
 Example format:
 
@@ -501,7 +504,8 @@ A useful pattern:
 
 1. LLM produces a *style intent* ("collapsed dome, heavy ivy, many arcades")
 2. A deterministic compiler maps intent → parameter ranges and operator variants
-3. The resulting validated program is executed by Cambium
+3. The application runs the resulting validated sequence through selected
+   Exedra Ops mesh operators
 
 ---
 
@@ -531,7 +535,7 @@ For any pipeline run, the minimum useful outputs are:
 
 1. **Program input**
 
-   * the Cambium Program JSON (or equivalent structured config)
+   * the illustrative mesh-workflow JSON (or equivalent structured config)
    * seed(s)
    * `NumericPolicy` and `PolicySet` used
 
@@ -629,7 +633,8 @@ Avoid storing entire intermediate meshes as goldens early unless necessary; mesh
 This pipeline is intentionally designed so that:
 
 * Exedra stays calm (topology + attributes + deterministic extraction).
-* Cambium owns meaning (basilica, dome, ruinization).
+* The basilica workflow owns meaning (basilica, dome, ruinization); Exedra Ops
+  supplies the deterministic mesh lifecycle it uses.
 * The LLM is “boxed in” to generating **validated programs**, not arbitrary geometry.
 
 Use this document as:

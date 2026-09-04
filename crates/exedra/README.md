@@ -5,7 +5,7 @@ Structural half-edge mesh kernel.
 Exedra is the production-capable, `#![no_std]` polygonal mesh core in this
 workspace. It owns topology, stable IDs, typed attributes, validation, edit
 sessions, explicit compaction, and deterministic render extraction. Higher-level
-modeling workflows live in [cambium](../cambium/); analytic, implicit, and
+modeling workflows live in [exedra_ops](../exedra_ops/); analytic, implicit, and
 primitive generation live in sibling crates.
 
 ## Guarantees and Non-goals

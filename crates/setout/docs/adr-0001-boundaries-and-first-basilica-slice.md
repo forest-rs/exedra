@@ -297,7 +297,7 @@ adapter lowers each rational coordinate through
 `setout_joiner::lower_rational_iotas` and expands it into the seven existing
 `joiner_timber` recipes. The east singleton bypasses generation because a
 one-point linear distribution would misstate its topology. This removes the
-Basilica's `cambium` dependency without moving pattern or assembly knowledge
+Basilica's `exedra_ops` dependency without moving pattern or assembly knowledge
 into `setout_generate`, `joiner`, or `joiner_timber`.
 
 This migration adds the public `BasilicaPremises::nave_truss_bays` root, exact

@@ -13,7 +13,7 @@ when the first slice landed.
 Structure-lab ADR 0002 decided that a new crate, `joiner`, owns the
 construction layer: above `exedra_assembly`, below any future planning layer,
 knowing about building elements and their relations rather than about meshes.
-Cambium ADR-0002 forbids placeholder crates, so the crate was created together
+Exedra Ops ADR-0005 forbids placeholder crates, so the crate was created together
 with a first slice that carries real semantics.
 
 The seed of that slice is `basilica_structure_lab`'s `model.rs`: an
@@ -49,7 +49,7 @@ into coordinated geometry on all participants.
 
 Geometry math (`exedra_constructive`, `exedra`); site, massing, and plan
 layout; statics, finite-element analysis, capacity, code compliance, or
-certification; rendering and export; Cambium's operator lifecycle; and any
+certification; rendering and export; Exedra Ops' mesh-operator lifecycle; and any
 erased, document-shaped, or agent-facing parameter boundary. Specific joints,
 bonds, and profiles live in rule-library crates.
 

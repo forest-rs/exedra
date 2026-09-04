@@ -125,7 +125,7 @@ pub enum ValidateCode {
 ## Relationship to other error types
 - Validation issues are distinct from boolean failures.
 - Boolean errors may include a `ValidateReport` snapshot (or a subset) when helpful.
-- Cambium can present validation reports via its `DiagnosticsSink`, preserving codes/spans.
+- Exedra Ops can present validation reports via its `DiagnosticsSink`, preserving codes/spans.
 
 ## Non-goals / deferrals
 - Proving manifoldness or watertightness for all meshes in v0.1.

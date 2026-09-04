@@ -223,9 +223,9 @@ a genuinely open crossing bay and remain independently addressable.
 
 ## Workflow mapping
 
-The old worked scenario described basilica-specific Cambium operators that do
-not yet exist as a serialized program. This example keeps that architectural
-meaning local while exercising the mechanisms now available:
+The old worked scenario described basilica-specific mesh operators that do not
+yet exist. This example keeps that architectural meaning local while exercising
+the mechanisms now available:
 
 | Worked scenario step | Executable realization |
 | --- | --- |
@@ -243,8 +243,8 @@ meaning local while exercising the mechanisms now available:
 
 ## Deliberate compromises
 
-- The example composes immutable recipes directly; it is not yet a JSON
-  `Cambium Program` with per-step `OpReport` and `ChangeSet` values.
+- The example composes immutable recipes directly; it is not yet a serialized
+  procedural network with per-step reports and change sets.
 - Major masses stay as named assembly parts. They may overlap where real
   masonry would be joined, preserving semantic identity and avoiding a
   brittle building-wide Boolean union.

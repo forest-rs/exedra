@@ -98,7 +98,7 @@ Version 1 extends a face's complete affine planar corner-UV map along a
 displacement tangent to that face. The same UV delta shifts the moved face,
 so both band rims remain continuous. Missing, partial, underdetermined, or
 non-tangent UV data remains absent on the new band; texture-space repair and
-higher-level UV operations belong to Cambium. Evaluation counts those faces
+higher-level UV operations belong to Exedra Ops. Evaluation counts those faces
 and reports `eval.stretch.uv_unmapped` rather than inventing coordinates.
 
 ## Consequences

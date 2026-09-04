@@ -84,7 +84,7 @@ not an allocator measurement).
 
 The `invalidation` crate models *channel-based dirty marking* for
 identities that are not content-addressed (mesh element ids, assembly
-part slots — see `exedra_assembly::PartCompiler` and cambium's dirty
+part slots — see `exedra_assembly::PartCompiler` and Exedra Ops' dirty
 channels, which use it correctly). Recipe evaluation identity *is*
 content-addressed: the Merkle fingerprint already encodes exactly the
 ancestor-path invalidation a dirty channel would approximate, with

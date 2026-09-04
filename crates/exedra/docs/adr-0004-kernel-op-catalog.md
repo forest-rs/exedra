@@ -14,7 +14,7 @@ Exedra's topology-editing surface currently lives mostly on
 4. public catalog of kernel edits.
 
 This has become hard to navigate and obscures the architectural boundary
-between Exedra kernel edits and Cambium workflow operators.
+between Exedra kernel edits and Exedra Ops workflow operators.
 
 ## Decision
 
@@ -26,7 +26,7 @@ The boundary is:
 - `session/*` owns eager edit hosting, bookkeeping, dirty/change tracking,
   cache invalidation, and low-level mutation helpers.
 - `op/*` owns public kernel mutation functions over `&mut EditSession`.
-- `cambium` owns compile/apply plans, diagnostics, reports, artifacts, and
+- `exedra_ops` owns compile/apply plans, diagnostics, reports, artifacts, and
   user-facing workflow operators.
 
 Exedra ops are namespaced free functions such as `op::split_edge(...)` and
@@ -38,7 +38,7 @@ hierarchy, runner layer, or command-object representation in Exedra.
 - Makes kernel edits explicit and discoverable without turning `EditSession`
   into the public operation catalog.
 - Keeps bookkeeping and mutation plumbing where it belongs: on the session.
-- Gives Cambium a cleaner composition seam for future modeling operators.
+- Gives Exedra Ops a cleaner composition seam for future modeling operators.
 - Avoids the allocation/verbosity cost of struct-wrapped command values for
   borrowed slice inputs and simple authored writes.
 

@@ -34,7 +34,8 @@ The first slice explicitly does not support:
 Positive:
 - proves the second canonical domain with a bounded implementation,
 - preserves `exedra` as the polygon head,
-- gives Cambium a real future conversion seam.
+- supplies the bounded analytic-to-mesh conversion seam that Exedra Ops stages
+  through an explicit adapter.
 
 Tradeoffs:
 - the spike is intentionally narrow,

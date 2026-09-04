@@ -4,7 +4,7 @@
 //! Lightweight kernel operation catalog for Exedra.
 //!
 //! This module defines explicit kernel edits over [`EditSession`](crate::EditSession).
-//! It is intentionally much smaller than Cambium's workflow-operator layer:
+//! It is intentionally much smaller than Exedra Ops' workflow-operator layer:
 //! - no compile/apply plan lifecycle,
 //! - no reports, diagnostics, or artifacts,
 //! - no preview/runner abstraction.

@@ -36,7 +36,7 @@ Adopt eager edit-scope terminology and make change recording explicit.
 - Preview and one-off edit paths can avoid unnecessary `Vec` pushes and dirty
   bookkeeping.
 - Change recording becomes an explicit choice instead of an implicit tax.
-- Cambium can request a `ChangeSet` only in the runner path that actually uses
+- Exedra Ops can request a `ChangeSet` only in the runner path that actually uses
   it.
 
 ## Consequences

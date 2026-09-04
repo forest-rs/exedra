@@ -15,7 +15,7 @@ Exedra is a kernel: dependency surface and determinism matter more than ergonomi
 - **Custom newtypes everywhere**: adds boilerplate without much benefit over `[f32; N]` at this stage.
 
 ## Implications
-- Cambium and higher layers may use a math crate internally, but write back to Exedra using `[f32; N]`.
+- Exedra Ops and higher layers may use a math crate internally, but write back to Exedra using `[f32; N]`.
 - Any transcendental usage (sin/cos/atan2) should live above the core or be explicitly policy-controlled.
 
 ## Non-goals / deferrals

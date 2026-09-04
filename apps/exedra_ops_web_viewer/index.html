@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Exedra Ops Web Viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <h1>Exedra Ops Demo</h1>
+        <nav><a href="/inspector.html">Provenance Inspector →</a></nav>
+        <label>
+          Scenario
+          <select id="scenario"></select>
+        </label>
+        <button id="run">Run Scenario</button>
+
+        <label>
+          Step
+          <input id="step-slider" type="range" min="0" max="0" value="0" />
+        </label>
+        <div id="step-label">Step: -</div>
+
+        <label class="toggle">
+          <input id="wireframe" type="checkbox" />
+          Wireframe
+        </label>
+        <label class="toggle">
+          <input id="region-colors" type="checkbox" />
+          Region-color mode
+        </label>
+        <label class="toggle">
+          <input id="topology-lines" type="checkbox" checked />
+          Topology edges
+        </label>
+        <label class="toggle">
+          <input id="normal-debug" type="checkbox" />
+          Normal debug
+        </label>
+        <label class="toggle">
+          <input id="normal-lines" type="checkbox" />
+          Normal lines
+        </label>
+
+        <section>
+          <h2>Plan</h2>
+          <div id="operator">Operator: -</div>
+          <div id="fingerprint">Fingerprint: -</div>
+          <div id="mesh-signature">Mesh signature: -</div>
+        </section>
+
+        <section>
+          <h2>Stats</h2>
+          <pre id="stats">-</pre>
+          <div id="step-delta"></div>
+        </section>
+
+        <section>
+          <h2>Diagnostics</h2>
+          <pre id="diagnostics">-</pre>
+        </section>
+      </aside>
+      <main id="viewport"></main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

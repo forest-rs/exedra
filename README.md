@@ -3,10 +3,10 @@
 An actively validated geometry kernel and operator stack for building
 inspectable virtual-world assets.
 
-Exedra is the calm geometry foundation. Cambium is the workflow-facing operator
-SDK on top of it. The rest of the workspace holds focused construction,
-extraction, adapter, test, benchmark, and demo crates that prove those
-boundaries without bloating the kernel.
+Exedra is the calm geometry foundation. Exedra Ops supplies a deterministic
+mesh-operator lifecycle and explicit, feature-gated adapters on top of it. The
+rest of the workspace holds focused construction, extraction, test, benchmark,
+and demo crates that prove those boundaries without bloating the kernel.
 
 ## Workspace
 
@@ -15,9 +15,10 @@ Core crates:
 - **[exedra](crates/exedra/)** - Structural half-edge mesh kernel:
   topology, stable IDs, attributes, validation, edit sessions, dirty/change
   summaries, and deterministic triangle extraction.
-- **[cambium](crates/cambium/)** - Operator and growth layer:
-  compile/preview/apply lifecycle, diagnostics, reports, policy, selections,
-  UV projection, face edits, normal edits, and fluent mesh workflows.
+- **[exedra_ops](crates/exedra_ops/)** - Deterministic mesh-operator lifecycle:
+  compile/preview/apply, diagnostics, reports, policy, selections, UV
+  projection, face and normal edits, fluent mesh workflows, and focused
+  adapters for explicit domain crossings.
 
 Construction and extraction crates:
 
@@ -52,15 +53,15 @@ Adapter, test, benchmark, and app crates:
 - **[exedra_fidget](crates/exedra_fidget/)** - Thin adapter from Fidget shapes
   into the `exedra_isosurface` field traits.
 - **[exedra_testkit](crates/exedra_testkit/)** and
-  **[cambium_testkit](crates/cambium_testkit/)** - Deterministic fixtures,
+  **[exedra_ops_testkit](crates/exedra_ops_testkit/)** - Deterministic fixtures,
   golden snapshots, and debug dumps.
 - **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for Exedra
   kernel scenarios, QEF solves, render extraction, and Fidget-backed
   field/extraction paths.
-- **[apps/cambium_web_bridge](apps/cambium_web_bridge/)** - Wasm bridge for
-  deterministic Cambium scenario execution.
-- **[apps/cambium_web_viewer](apps/cambium_web_viewer/)** - Three.js viewer for
-  the wasm scenario snapshots.
+- **[apps/exedra_ops_web_bridge](apps/exedra_ops_web_bridge/)** - Wasm bridge
+  for deterministic Exedra Ops scenario execution.
+- **[apps/exedra_ops_web_viewer](apps/exedra_ops_web_viewer/)** - Three.js
+  viewer for the wasm scenario snapshots.
 - **[examples/](examples/)** - Standalone constructive, basilica, and structural
   integration scenarios kept outside the core crates.
 
@@ -78,7 +79,7 @@ Exedra owns the mesh model:
 - **Deterministic extraction**: polygonal meshes to GPU-ready triangle buffers.
 - **Edit sessions**: eager mutation with optional ChangeSet and DirtySet output.
 
-Cambium owns workflow orchestration:
+Exedra Ops owns the deterministic mesh workflow lifecycle:
 
 - **Operator lifecycle**: compile, preview-on-clone, and apply-in-place.
 - **Structured reporting**: deterministic stats, bounded artifacts, diagnostics,
@@ -87,6 +88,13 @@ Cambium owns workflow orchestration:
 - **Mesh edits**: delete/dissolve, bridge, cut, extrude, inset, poke, solidify,
   UV projection, and corner-normal operations.
 
+Native heads retain their own values and algorithms. Exedra Ops does not
+dispatch a heterogeneous geometry graph: its mesh runner accepts `Mesh`, while
+its adapters make a conversion or expansion explicit. A future Exedra
+procedural-network layer would define typed geometry nodes and compile them
+onto the shared `execution_graph` runtime; an `understory_node_graph` adapter
+could present the same authored network without becoming its execution model.
+
 Implicit and primitive crates stay outside the kernel. They produce or adapt
 geometry through explicit Exedra mesh/field boundaries rather than introducing a
 scene graph into the core.
@@ -94,11 +102,11 @@ scene graph into the core.
 ## Example Flow
 
 ```rust
-use cambium::{
+use exedra_ops::{
     Mesh, OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams,
 };
 
-fn main() -> Result<(), cambium::OpError> {
+fn main() -> Result<(), exedra_ops::OpError> {
     let mesh = Mesh::new();
     let mut runner = OperatorRunner::new();
     let op = ValidateMesh;
@@ -116,7 +124,8 @@ fn main() -> Result<(), cambium::OpError> {
 ## Glossary
 
 - **Kernel** - The long-lived mesh/topology core in `exedra`.
-- **Operator** - A Cambium workflow unit with compile, preview, and apply steps.
+- **Operator** - An Exedra Ops mesh workflow unit with compile, preview, and
+  apply steps.
 - **Attribute domain** - Where data lives: vertex, face, edge, or corner.
 - **Field seam** - The trait boundary used by implicit-surface extractors.
 - **Wind tunnel** - A small executable benchmark crate outside the core crates.
