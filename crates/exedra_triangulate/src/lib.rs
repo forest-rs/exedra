@@ -7,6 +7,7 @@
 //! - triangulation of simple polygons with holes via ear clipping,
 //! - deterministic hole bridging into a single ring,
 //! - optional constrained-Delaunay edge legalization,
+//! - opt-in, budgeted Delaunay refinement with generated vertices,
 //! - the exact-sign planar predicates those algorithms rely on.
 //!
 //! Determinism is the contract: identical input bits produce identical output
@@ -15,9 +16,10 @@
 //! ambient epsilons, no hash-order iteration. Ambiguous choices (equally valid
 //! ears) resolve by lowest stable input index.
 //!
-//! Every output vertex is an input vertex. The triangulator never invents
-//! points (no Steiner insertion), so callers can carry per-vertex provenance
-//! through triangulation unchanged.
+//! The [`triangulate`] entry point never invents points, so callers can carry
+//! per-vertex provenance through ordinary triangulation unchanged. [`refine()`]
+//! is the explicit point-generating entry point; it returns the extended point
+//! list and the origin of every generated vertex.
 //!
 //! The crate intentionally does not know about meshes, curves, flattening
 //! tolerances, or any Exedra ID type. Inputs are coordinate slices; outputs
@@ -54,6 +56,7 @@ mod bridge;
 mod delaunay;
 mod earclip;
 pub mod predicates;
+mod refine;
 #[cfg(test)]
 mod torture;
 
@@ -64,6 +67,7 @@ use crate::bridge::{bridge_holes, prune_collinear_between};
 use crate::delaunay::legalize_edges;
 use crate::earclip::{earclip_ring, len_u32, twice_signed_area};
 pub use crate::predicates::MAX_COORDINATE;
+use crate::refine::refine_cover;
 
 /// One planar polygon: an outer loop with zero or more hole loops.
 ///
@@ -171,6 +175,155 @@ pub fn triangulate_with_stats(
     input: &PolygonInput<'_>,
     params: &TriParams,
 ) -> Result<TriangulationEvaluation, TriError> {
+    let cover = build_cover(input, params.strategy)?;
+    Ok(TriangulationEvaluation {
+        triangulation: Triangulation {
+            triangles: cover.triangles,
+        },
+        stats: TriangulationStats {
+            edge_flips: cover.edge_flips,
+        },
+    })
+}
+
+/// Triangulates one polygon and then inserts deterministic generated
+/// vertices until every triangle meets the requested quality bound or a
+/// budget stops the work.
+///
+/// The cover starts as the [`TriStrategy::ConstrainedDelaunay`] result and is
+/// refined by inserting triangle circumcenters and boundary-segment
+/// midpoints in a fixed worst-first order. Unlike [`triangulate`], the result
+/// may contain vertices that are not input vertices; they are appended after
+/// the input concatenation and each carries a [`SteinerOrigin`] so callers
+/// can extend per-vertex provenance deliberately.
+///
+/// Refinement is deterministic: identical input bits and parameters produce
+/// identical generated coordinates and triangles on every platform. Scaling
+/// every coordinate by the same power of two scales the generated
+/// coordinates exactly and leaves the triangles unchanged, absent overflow.
+/// Every triangle winds counter-clockwise; a candidate insertion that would
+/// violate that is declined and counted rather than emitted.
+/// After restoring boundary samples when splits are forbidden, a legalized
+/// cover that already meets the requested quality bound is returned unchanged:
+/// boundary encroachment alone does not request a conforming-Delaunay pass.
+///
+/// Generated boundary vertices are rounded midpoints, so a split boundary
+/// segment becomes two segments that meet within rounding of the original
+/// line. Callers that cannot accept new boundary vertices, for example a cap
+/// that must share edges with untouched side walls, set
+/// [`RefineParams::boundary_splits`] to [`BoundarySplits::Forbidden`]; the
+/// initial cover restores distinct collinear input samples so each original
+/// boundary edge remains available to such callers. The refiner then declines
+/// work that would need a split, which weakens the quality it can reach near
+/// the boundary.
+///
+/// # Errors
+///
+/// Returns the same typed input and geometry errors as [`triangulate`], and
+/// [`TriError::InvalidParams`] when the quality bound is not a finite positive
+/// number.
+pub fn refine(
+    input: &PolygonInput<'_>,
+    params: &RefineParams,
+) -> Result<RefinedTriangulation, TriError> {
+    if !params.max_radius_edge_ratio.is_finite() || params.max_radius_edge_ratio <= 0.0 {
+        return Err(TriError::InvalidParams);
+    }
+    let mut cover = build_cover(input, TriStrategy::ConstrainedDelaunay)?;
+    if params.boundary_splits == BoundarySplits::Forbidden {
+        let original_count = cover.triangles.len();
+        restore_boundary_samples(input, &mut cover.triangles);
+        if cover.triangles.len() != original_count {
+            cover.edge_flips += legalize_edges(&cover.points, &mut cover.triangles);
+        }
+    }
+    let mut points = cover.points;
+    let refined = refine_cover(&mut points, cover.triangles, params, cover.edge_flips);
+    Ok(RefinedTriangulation {
+        triangles: refined.triangles,
+        points,
+        input_vertex_count: len_u32(input.vertex_count()),
+        steiner: refined.origins,
+        stats: refined.stats,
+    })
+}
+
+/// Restores distinct collinear input samples before interior-only refinement.
+/// The accepted cover identifies retained samples; ring order identifies each
+/// omitted chain, including chains that cross the ring's index-zero seam.
+fn restore_boundary_samples(input: &PolygonInput<'_>, triangles: &mut Vec<[u32; 3]>) {
+    let mut retained = alloc::vec![false; input.vertex_count()];
+    for &vertex in triangles.iter().flatten() {
+        retained[vertex as usize] = true;
+    }
+    if retained.iter().all(|&present| present) {
+        return;
+    }
+    let mut owners = BTreeMap::new();
+    for (index, &[a, b, c]) in triangles.iter().enumerate() {
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            owners.insert((from, to), index);
+        }
+    }
+    let mut base = 0_u32;
+    for ring in core::iter::once(input.outer).chain(input.holes.iter().copied()) {
+        let len = len_u32(ring.len());
+        let start = (0..len)
+            .find(|&v| retained[(base + v) as usize])
+            .expect("validated cover retains each ring");
+        let mut from = start;
+        loop {
+            let mut to = (from + 1) % len;
+            while !retained[(base + to) as usize] {
+                to = (to + 1) % len;
+            }
+            let mut previous = from;
+            let mut sample = (from + 1) % len;
+            while sample != to {
+                // Coincident input samples cannot form a nonzero boundary edge.
+                if ring[sample as usize] != ring[previous as usize]
+                    && ring[sample as usize] != ring[to as usize]
+                {
+                    let (a, b, v) = (base + previous, base + to, base + sample);
+                    let index = owners.remove(&(a, b)).expect("accepted boundary edge");
+                    let c = *triangles[index]
+                        .iter()
+                        .find(|&&v| v != a && v != b)
+                        .expect("boundary triangle apex");
+                    let added = triangles.len();
+                    triangles[index] = [a, v, c];
+                    triangles.push([v, b, c]);
+                    for (edge, owner) in [
+                        ((a, v), index),
+                        ((v, c), index),
+                        ((c, a), index),
+                        ((v, b), added),
+                        ((b, c), added),
+                        ((c, v), added),
+                    ] {
+                        owners.insert(edge, owner);
+                    }
+                    previous = sample;
+                }
+                sample = (sample + 1) % len;
+            }
+            from = to;
+            if from == start {
+                break;
+            }
+        }
+        base += len;
+    }
+}
+
+/// A validated cover over the materialized input concatenation.
+struct Cover {
+    points: Vec<[f64; 2]>,
+    triangles: Vec<[u32; 3]>,
+    edge_flips: usize,
+}
+
+fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover, TriError> {
     input.validate()?;
 
     // Materialize the virtual concatenation the output indices address.
@@ -233,13 +386,14 @@ pub fn triangulate_with_stats(
         // Legalize only an accepted cover: boundary incidence is already
         // verified, so every edge with two incident triangles is a bridge or
         // interior edge that flipping may legitimately replace.
-        let edge_flips = match params.strategy {
+        let edge_flips = match strategy {
             TriStrategy::EarClip => 0,
             TriStrategy::ConstrainedDelaunay => legalize_edges(&points, &mut triangles),
         };
-        return Ok(TriangulationEvaluation {
-            triangulation: Triangulation { triangles },
-            stats: TriangulationStats { edge_flips },
+        return Ok(Cover {
+            points,
+            triangles,
+            edge_flips,
         });
     }
     Err(last_error)
@@ -304,6 +458,24 @@ fn triangulation_preserves_boundaries(
 pub struct TriParams {
     /// Triangulation strategy to apply.
     pub strategy: TriStrategy,
+}
+
+impl TriParams {
+    /// Selects deterministic ear clipping without an edge-quality pass.
+    #[must_use]
+    pub const fn ear_clip() -> Self {
+        Self {
+            strategy: TriStrategy::EarClip,
+        }
+    }
+
+    /// Selects ear clipping followed by constrained-Delaunay legalization.
+    #[must_use]
+    pub const fn constrained_delaunay() -> Self {
+        Self {
+            strategy: TriStrategy::ConstrainedDelaunay,
+        }
+    }
 }
 
 /// Selects the triangulation algorithm.
@@ -377,6 +549,8 @@ pub enum TriError {
     },
     /// Total vertex count exceeds the `u32` index budget.
     TooManyVertices,
+    /// The refinement quality bound is non-finite or not positive.
+    InvalidParams,
 }
 
 impl core::fmt::Display for TriError {
@@ -422,6 +596,9 @@ impl core::fmt::Display for TriError {
                 write!(f, "hole {hole} cannot be bridged without crossing an edge")
             }
             Self::TooManyVertices => write!(f, "total vertex count exceeds u32 indices"),
+            Self::InvalidParams => {
+                write!(f, "refinement quality bound must be finite and positive")
+            }
         }
     }
 }
@@ -472,6 +649,138 @@ pub struct TriangulationStats {
     ///
     /// This is zero for [`TriStrategy::EarClip`].
     pub edge_flips: usize,
+}
+
+/// Parameters for [`refine()`].
+///
+/// The quality bound is the maximum allowed ratio of circumradius to
+/// shortest edge, `B`. Every triangle meeting it has minimum angle at least
+/// `asin(1 / (2B))`: `1.0` allows nothing below 30° and the default
+/// `sqrt(2)` nothing below about 20.7°, the classic bound below which
+/// Ruppert refinement is proven to terminate for inputs without small
+/// angles. Tighter bounds and small input angles make the budget the
+/// effective stopping rule; [`RefineStats`] reports which happened.
+///
+/// Use [`RefineParams::new`] for an explicit quality bound and the `with_*`
+/// methods to tune the work and boundary policy.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct RefineParams {
+    /// Maximum circumradius-to-shortest-edge ratio; finite and positive.
+    pub max_radius_edge_ratio: f64,
+    /// Hard cap on generated vertices. Zero returns the legalized cover.
+    pub max_steiner_points: u32,
+    /// Whether boundary segments may be split by generated midpoints.
+    pub boundary_splits: BoundarySplits,
+}
+
+impl RefineParams {
+    /// Creates parameters with `max_radius_edge_ratio` and the default vertex
+    /// budget and boundary policy.
+    ///
+    /// Validation is deferred to [`refine()`], which reports
+    /// [`TriError::InvalidParams`] for a non-finite or non-positive bound.
+    #[must_use]
+    pub const fn new(max_radius_edge_ratio: f64) -> Self {
+        Self {
+            max_radius_edge_ratio,
+            max_steiner_points: 1024,
+            boundary_splits: BoundarySplits::Allowed,
+        }
+    }
+
+    /// Replaces the hard generated-vertex budget.
+    #[must_use]
+    pub const fn with_max_steiner_points(mut self, max_steiner_points: u32) -> Self {
+        self.max_steiner_points = max_steiner_points;
+        self
+    }
+
+    /// Replaces the boundary-splitting policy.
+    #[must_use]
+    pub const fn with_boundary_splits(mut self, boundary_splits: BoundarySplits) -> Self {
+        self.boundary_splits = boundary_splits;
+        self
+    }
+}
+
+impl Default for RefineParams {
+    fn default() -> Self {
+        Self::new(core::f64::consts::SQRT_2)
+    }
+}
+
+/// Whether [`refine()`] may place generated vertices on boundary segments.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BoundarySplits {
+    /// Encroached and blocking segments split at their rounded midpoint.
+    #[default]
+    Allowed,
+    /// Distinct input boundary samples, including collinear ones, are retained.
+    /// Work that would need a generated boundary vertex is declined and counted.
+    Forbidden,
+}
+
+/// Provenance of one generated vertex.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SteinerOrigin {
+    /// A point on a boundary segment, splitting the simplified boundary
+    /// edge bounded by these two input indices (ascending). The indices are
+    /// consecutive ring vertices unless exactly collinear input samples
+    /// between them were pruned.
+    Boundary {
+        /// Input indices bounding the split boundary edge.
+        edge: [u32; 2],
+    },
+    /// A circumcenter strictly inside the polygon.
+    Interior,
+}
+
+/// Output of [`refine()`]: a CCW cover over the input vertices plus generated
+/// vertices.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct RefinedTriangulation {
+    /// Counter-clockwise triangles indexing `points`, in canonical order.
+    pub triangles: Vec<[u32; 3]>,
+    /// The input concatenation `outer ++ holes[0] ++ …` followed by every
+    /// generated vertex in insertion order.
+    pub points: Vec<[f64; 2]>,
+    /// Number of leading input vertices in `points`.
+    pub input_vertex_count: u32,
+    /// Provenance for `points[input_vertex_count..]`, in the same order.
+    pub steiner: Vec<SteinerOrigin>,
+    /// Deterministic work and outcome counters.
+    pub stats: RefineStats,
+}
+
+/// Deterministic work and outcome counters for one [`refine()`] call.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RefineStats {
+    /// Edge flips performed by legalization and by every insertion.
+    pub edge_flips: usize,
+    /// Generated vertices emitted.
+    pub steiner_points: u32,
+    /// Generated vertices placed on boundary segments.
+    pub boundary_splits: u32,
+    /// Generated vertices placed strictly inside the polygon.
+    pub interior_insertions: u32,
+    /// Candidate insertions declined because they would duplicate a vertex,
+    /// produce a non-CCW triangle, need a forbidden boundary split, or could
+    /// not be located.
+    pub declined_insertions: u32,
+    /// Triangles still violating the quality bound when refinement stopped.
+    pub remaining_bad_triangles: usize,
+    /// Remaining violations whose smallest angle lies between two boundary
+    /// segments. The input fixes that angle, so no insertion can meet the
+    /// bound there; these are never chased.
+    pub input_limited_triangles: usize,
+    /// Whether the configured generated-point budget or the representable
+    /// internal index budget stopped refinement with work pending.
+    pub budget_exhausted: bool,
 }
 
 #[cfg(test)]
@@ -534,9 +843,7 @@ mod tests {
     }
 
     fn constrained_delaunay_params() -> TriParams {
-        TriParams {
-            strategy: TriStrategy::ConstrainedDelaunay,
-        }
+        TriParams::constrained_delaunay()
     }
 
     /// Twice the signed area of the triangle `(a, b, c)` over `points`.
@@ -591,6 +898,8 @@ mod tests {
 
     #[test]
     fn constrained_delaunay_flips_the_choice_driven_quad() {
+        // The default ear diagonal is locally illegal, so the opt-in strategy
+        // must choose the other diagonal and report exactly one flip.
         let outer = [[4.9, 4.9], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
         let input = PolygonInput {
             outer: &outer,
@@ -604,6 +913,8 @@ mod tests {
 
     #[test]
     fn constrained_delaunay_cocircular_tie_is_canonical() {
+        // An exact square has two Delaunay diagonals; the symbolic tie rule
+        // must select the one containing the lowest stable input index.
         let outer = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
         let input = PolygonInput {
             outer: &outer,
@@ -747,6 +1058,8 @@ mod tests {
 
     #[test]
     fn constrained_delaunay_preserves_outer_and_hole_boundaries() {
+        // Legalization may replace bridge and interior edges, but every edge
+        // belonging to either input ring must survive exactly.
         let holes = [&SQUARE_HOLE[..]];
         let input = PolygonInput {
             outer: &SQUARE,

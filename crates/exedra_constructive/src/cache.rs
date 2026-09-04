@@ -46,6 +46,18 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.discretize.max_segment_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.discretize.min_arc_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.sharp_sin_threshold.to_bits().to_le_bytes());
+    match policy.planar_face_refinement {
+        None => bytes.push(0),
+        Some(refinement) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&refinement.max_radius_edge_ratio.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&refinement.max_steiner_points.to_le_bytes());
+            bytes.push(match refinement.boundary_splits {
+                exedra_triangulate::BoundarySplits::Allowed => 0,
+                exedra_triangulate::BoundarySplits::Forbidden => 1,
+            });
+        }
+    }
     let mut hash: u128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D;
     for b in bytes {
         hash ^= u128::from(b);
@@ -266,5 +278,10 @@ mod tests {
         });
         assert_ne!(a, b, "chord tolerance must change the fingerprint");
         assert_eq!(a, policy_fingerprint(&EvalPolicy::default()), "stable");
+        let c = policy_fingerprint(&EvalPolicy {
+            planar_face_refinement: Some(exedra_triangulate::RefineParams::default()),
+            ..EvalPolicy::default()
+        });
+        assert_ne!(a, c, "planar-face refinement must change the fingerprint");
     }
 }

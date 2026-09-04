@@ -13,7 +13,8 @@ use exedra_triangulate::predicates::{
     InCircle, IncirclePath, Orient2dPath, Orientation, incircle_evaluated, orient2d_evaluated,
 };
 use exedra_triangulate::{
-    PolygonInput, TriParams, TriStrategy, Triangulation, triangulate, triangulate_with_stats,
+    PolygonInput, RefineParams, RefineStats, RefinedTriangulation, TriParams, TriStrategy,
+    Triangulation, refine, triangulate, triangulate_with_stats,
 };
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -49,6 +50,23 @@ fn main() {
         for fixture in &fixtures {
             time_fixture(fixture, profile, strategy).print();
         }
+    }
+
+    println!(
+        "phase=refine_quality profile={} fixtures={}",
+        profile.label(),
+        fixtures.len()
+    );
+    for fixture in &fixtures {
+        analyze_refined(fixture).print();
+    }
+    println!(
+        "phase=refine_timing profile={} fixtures={}",
+        profile.label(),
+        fixtures.len()
+    );
+    for fixture in &fixtures {
+        time_refined(fixture, profile).print();
     }
 
     let predicate_scenarios = predicate_scenarios();
@@ -479,6 +497,213 @@ fn analyze(fixture: &Fixture, strategy: TriStrategy) -> QualityReport {
         below_5deg: count_below(&minimum_angles, 5.0 / degrees),
         below_10deg: count_below(&minimum_angles, 10.0 / degrees),
         edge_flips: first.stats.edge_flips,
+    }
+}
+
+/// Quality and work of one budgeted refinement run under the default bound.
+struct RefineReport {
+    name: &'static str,
+    role: FixtureRole,
+    vertices: usize,
+    triangles: usize,
+    signature: u64,
+    min_angle_deg: f64,
+    p01_angle_deg: f64,
+    worst_quality: f64,
+    below_10deg: usize,
+    below_20deg: usize,
+    stats: RefineStats,
+}
+
+impl RefineReport {
+    fn print(&self) {
+        let stats = self.stats;
+        println!(
+            "scenario={} strategy=Refined role={} vertices={} triangles={} signature={:016x} min_angle_deg={:.9} p01_angle_deg={:.9} worst_quality={:.9e} below_10deg={} below_20deg={} steiner_points={} boundary_splits={} interior_insertions={} declined_insertions={} remaining_bad={} input_limited={} budget_exhausted={} edge_flips={}",
+            self.name,
+            self.role.label(),
+            self.vertices,
+            self.triangles,
+            self.signature,
+            self.min_angle_deg,
+            self.p01_angle_deg,
+            self.worst_quality,
+            self.below_10deg,
+            self.below_20deg,
+            stats.steiner_points,
+            stats.boundary_splits,
+            stats.interior_insertions,
+            stats.declined_insertions,
+            stats.remaining_bad_triangles,
+            stats.input_limited_triangles,
+            stats.budget_exhausted,
+            stats.edge_flips,
+        );
+    }
+}
+
+fn refine_params() -> RefineParams {
+    RefineParams::default()
+}
+
+fn analyze_refined(fixture: &Fixture) -> RefineReport {
+    let params = refine_params();
+    let prepared = fixture.prepare();
+    let input = prepared.input();
+    let first = refine(&input, &params).expect("fixed fixture must refine");
+    let second = refine(&input, &params).expect("fixed fixture repeat must refine");
+    assert_eq!(
+        first, second,
+        "{} must produce byte-identical refinement",
+        fixture.name
+    );
+    validate_refined_cover(fixture, &first);
+
+    let mut minimum_angles = Vec::with_capacity(first.triangles.len());
+    let mut worst_quality = f64::INFINITY;
+    for &triangle in &first.triangles {
+        let [a, b, c] = triangle_points(&first.points, triangle);
+        minimum_angles.push(triangle_min_angle(a, b, c));
+        worst_quality = worst_quality.min(normalized_quality(a, b, c));
+    }
+    minimum_angles.sort_by(f64::total_cmp);
+    let degrees = 180.0 / std::f64::consts::PI;
+    RefineReport {
+        name: fixture.name,
+        role: fixture.role,
+        vertices: first.points.len(),
+        triangles: first.triangles.len(),
+        signature: refined_signature(fixture, &first),
+        min_angle_deg: minimum_angles.first().copied().unwrap_or(0.0) * degrees,
+        p01_angle_deg: first_percentile(&minimum_angles) * degrees,
+        worst_quality,
+        below_10deg: count_below(&minimum_angles, 10.0 / degrees),
+        below_20deg: count_below(&minimum_angles, 20.0 / degrees),
+        stats: first.stats,
+    }
+}
+
+/// Refined covers add rounded boundary midpoints, so the area check allows
+/// rounding-scale slivers; indices, orientation, and provenance are exact.
+fn validate_refined_cover(fixture: &Fixture, result: &RefinedTriangulation) {
+    let input_count = result.input_vertex_count as usize;
+    assert_eq!(input_count, fixture.vertex_count(), "{}", fixture.name);
+    assert_eq!(
+        result.points.len(),
+        input_count + result.steiner.len(),
+        "{}",
+        fixture.name
+    );
+    assert_eq!(
+        &result.points[..input_count],
+        fixture.points(),
+        "{}",
+        fixture.name
+    );
+    let mut triangle_area2 = 0.0;
+    for &triangle in &result.triangles {
+        for index in triangle {
+            assert!(
+                (index as usize) < result.points.len(),
+                "{} emitted out-of-range index {index}",
+                fixture.name
+            );
+        }
+        let [a, b, c] = triangle_points(&result.points, triangle);
+        let area2 = cross(a, b, c);
+        assert!(
+            area2 > 0.0,
+            "{} emitted non-CCW refined triangle {triangle:?}",
+            fixture.name
+        );
+        triangle_area2 += area2;
+    }
+    let expected_area2 = signed_area2(&fixture.outer)
+        + fixture
+            .holes
+            .iter()
+            .map(|hole| signed_area2(hole))
+            .sum::<f64>();
+    let scale = expected_area2.abs().max(f64::MIN_POSITIVE);
+    assert!(
+        (triangle_area2 - expected_area2).abs() <= scale * 1e-10,
+        "{} refined area mismatch: triangles={triangle_area2:e} polygon={expected_area2:e}",
+        fixture.name
+    );
+}
+
+/// FNV-1a over the fixture, every generated coordinate in insertion order,
+/// and every emitted triangle index.
+fn refined_signature(fixture: &Fixture, result: &RefinedTriangulation) -> u64 {
+    let mut hash = FNV_OFFSET;
+    hash_bytes(&mut hash, fixture.name.as_bytes());
+    hash_u64(&mut hash, fixture.outer.len() as u64);
+    for point in &fixture.outer {
+        hash_point(&mut hash, *point);
+    }
+    hash_u64(&mut hash, fixture.holes.len() as u64);
+    for hole in &fixture.holes {
+        hash_u64(&mut hash, hole.len() as u64);
+        for point in hole {
+            hash_point(&mut hash, *point);
+        }
+    }
+    hash_u64(&mut hash, result.steiner.len() as u64);
+    for point in &result.points[result.input_vertex_count as usize..] {
+        hash_point(&mut hash, *point);
+    }
+    for triangle in &result.triangles {
+        for &index in triangle {
+            hash_u64(&mut hash, u64::from(index));
+        }
+    }
+    hash
+}
+
+fn time_refined(fixture: &Fixture, profile: Profile) -> TimingReport {
+    let vertices = fixture.vertex_count();
+    let batch_size = timing_batch_size(vertices);
+    let vertices_per_batch = vertices
+        .checked_mul(batch_size)
+        .expect("fixed timing batch size must fit usize");
+    let samples = (profile.target_vertices() / vertices_per_batch).max(8);
+    let triangulations = samples
+        .checked_mul(batch_size)
+        .expect("fixed timing sample count must fit usize");
+    let params = refine_params();
+    let prepared = fixture.prepare();
+    let input = prepared.input();
+    let warmup = refine(black_box(&input), &params).expect("warmup");
+    let checksum = triangle_checksum(&Triangulation {
+        triangles: warmup.triangles.clone(),
+    });
+    let edge_flips = warmup.stats.edge_flips;
+    black_box(&warmup);
+
+    let mut best = Duration::MAX;
+    let mut total = Duration::ZERO;
+    for _ in 0..samples {
+        let start = Instant::now();
+        for _ in 0..batch_size {
+            let result = refine(black_box(&input), &params).expect("timed fixture");
+            black_box(result);
+        }
+        let elapsed = start.elapsed();
+        best = best.min(elapsed);
+        total += elapsed;
+    }
+    black_box(checksum);
+    TimingReport {
+        name: fixture.name,
+        strategy: "Refined",
+        vertices,
+        edge_flips,
+        samples,
+        batch_size,
+        triangulations,
+        best_ns: best.as_nanos() / batch_size as u128,
+        average_ns: total.as_nanos() / triangulations as u128,
+        checksum,
     }
 }
 
@@ -919,6 +1144,103 @@ mod tests {
         ("choice_scale_down_2p-200", 0xd62d_e155_79a9_bce6, 1),
         ("choice_scale_up_2p200", 0xd83f_5bbf_fecc_9fd4, 1),
     ];
+
+    /// `(name, signature, steiner_points, remaining_bad)` under the default
+    /// refinement bound and budget.
+    const REFINE_PINS: [(&str, u64, u32, usize); 13] = [
+        ("choice_driven_quad", 0x97c7_b807_45c5_17f7, 0, 0),
+        ("exact_cocircular_quad", 0x68b8_8d88_f0ae_33e2, 0, 0),
+        ("near_circle_16", 0x247d_2a72_dd61_6d18, 1, 0),
+        ("near_circle_64", 0x2835_df33_b8ee_65c2, 45, 0),
+        ("near_circle_120", 0xdf31_dc03_b25e_1b67, 99, 0),
+        ("sparse_rect_dense_hole_16", 0x85cf_200e_8c38_dc93, 16, 0),
+        ("sparse_rect_dense_hole_64", 0xe542_3a1d_f417_e323, 84, 0),
+        ("sparse_rect_dense_hole_120", 0xe2fc_297b_5429_0c4b, 148, 0),
+        (
+            "drill_like_collinear_midpoints",
+            0x4e49_b1d2_9d73_98ea,
+            12,
+            0,
+        ),
+        ("three_hole_bridge_stress", 0xcc43_0d26_62a3_de73, 43, 0),
+        ("small_angle_wedge", 0x675d_421c_11d2_3fbc, 20, 0),
+        ("choice_scale_down_2p-200", 0xdc6f_f0ad_e1ac_1966, 0, 0),
+        ("choice_scale_up_2p200", 0xb43a_6c6e_ffab_7e94, 0, 0),
+    ];
+
+    /// Minimum angle guaranteed by the default `sqrt(2)` ratio bound:
+    /// `asin(1 / (2 sqrt 2))`, minus rounding slack.
+    const DEFAULT_BOUND_MIN_ANGLE_DEG: f64 = 20.704_811_054_635_35 - 1e-9;
+
+    #[test]
+    fn refinement_signatures_and_work_are_pinned() {
+        let fixtures = fixtures();
+        assert_eq!(fixtures.len(), REFINE_PINS.len());
+        for (fixture, &(expected_name, expected_signature, expected_steiner, expected_bad)) in
+            fixtures.iter().zip(&REFINE_PINS)
+        {
+            assert_eq!(fixture.name, expected_name);
+            let report = analyze_refined(fixture);
+            assert_eq!(report.signature, expected_signature, "{expected_name}");
+            assert_eq!(
+                report.stats.steiner_points, expected_steiner,
+                "{expected_name}"
+            );
+            assert_eq!(
+                report.stats.remaining_bad_triangles, expected_bad,
+                "{expected_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn refinement_meets_the_default_bound_and_improves_constrained_fixtures() {
+        for fixture in fixtures() {
+            let refined = analyze_refined(&fixture);
+            let legalized = analyze(&fixture, TriStrategy::ConstrainedDelaunay);
+            assert!(!refined.stats.budget_exhausted, "{}", fixture.name);
+            if refined.stats.remaining_bad_triangles == refined.stats.input_limited_triangles {
+                assert!(
+                    refined.min_angle_deg >= DEFAULT_BOUND_MIN_ANGLE_DEG,
+                    "{}: {} degrees",
+                    fixture.name,
+                    refined.min_angle_deg
+                );
+            }
+            assert!(
+                refined.min_angle_deg >= legalized.min_angle_deg,
+                "{}: refinement regressed the minimum angle",
+                fixture.name
+            );
+            if fixture.role == FixtureRole::InputConstraint {
+                assert!(
+                    refined.min_angle_deg > legalized.min_angle_deg * 2.0,
+                    "{}: refinement must materially improve a constrained fixture",
+                    fixture.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn power_of_two_fixtures_refine_to_exactly_scaled_results() {
+        let fixtures = fixtures();
+        let base = refine(&fixtures[0].prepare().input(), &refine_params()).expect("base");
+        for (fixture, exponent) in [(&fixtures[11], -200), (&fixtures[12], 200)] {
+            let scaled = refine(&fixture.prepare().input(), &refine_params()).expect("scaled");
+            assert_eq!(scaled.triangles, base.triangles, "{}", fixture.name);
+            assert_eq!(scaled.stats, base.stats, "{}", fixture.name);
+            let scale = power_of_two(exponent);
+            for (got, expected) in scaled.points.iter().zip(&base.points) {
+                assert_eq!(
+                    *got,
+                    [expected[0] * scale, expected[1] * scale],
+                    "{}",
+                    fixture.name
+                );
+            }
+        }
+    }
 
     #[test]
     fn predicate_scenarios_reach_each_typed_path() {

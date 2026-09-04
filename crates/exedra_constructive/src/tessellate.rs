@@ -14,7 +14,9 @@
 use alloc::vec::Vec;
 
 use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
-use exedra_triangulate::{PolygonInput, TriParams, triangulate};
+use exedra_triangulate::{
+    PolygonInput, RefineParams, SteinerOrigin, TriParams, refine, triangulate,
+};
 
 use crate::discretize::{DiscretizePolicy, DiscretizedProfile, discretize_profile};
 use crate::ir::{CapMode, Placement3, PrimitiveSpec};
@@ -32,6 +34,14 @@ pub struct EvalPolicy {
     /// meeting lines smoothly) fall below any sensible threshold and stay
     /// smooth; square corners exceed it and crease.
     pub sharp_sin_threshold: f64,
+    /// Optional budgeted Delaunay refinement for single-sided planar faces.
+    ///
+    /// When set, [`tessellate_planar_face`] inserts generated vertices until
+    /// every triangle meets the requested quality bound or the budget stops
+    /// it. Generated boundary vertices take the [`Feature::Wall`] of the
+    /// profile segment they subdivide; interior ones take
+    /// [`Feature::PlanarFace`]. Bodies with side walls are not refined.
+    pub planar_face_refinement: Option<RefineParams>,
 }
 
 impl Default for EvalPolicy {
@@ -39,6 +49,7 @@ impl Default for EvalPolicy {
         Self {
             discretize: DiscretizePolicy::default(),
             sharp_sin_threshold: 0.1,
+            planar_face_refinement: None,
         }
     }
 }
@@ -632,29 +643,46 @@ pub fn tessellate_planar_face(
         .iter()
         .map(|hole| hole.points.as_slice())
         .collect();
-    let triangles = triangulate(
-        &PolygonInput {
-            outer: &discretized.outer.points,
-            holes: &holes,
-        },
-        &TriParams::default(),
-    )?;
-
+    let input = PolygonInput {
+        outer: &discretized.outer.points,
+        holes: &holes,
+    };
     // Triangulation indices address outer ++ holes in exactly the same order
-    // used here and by profile_vertex_features. A reflecting placement flips
-    // complete triangle loops after transforming points, keeping the visible
-    // surface oriented toward the transformed local +Z direction.
-    let mut builder = OrientedBuilder::new(det3(placement) < 0.0);
-    for ring in discretized.rings() {
-        for point in &ring.points {
-            builder.push_vertex(narrow(apply_placement(
-                placement,
-                [point[0], point[1], 0.0],
-            )));
+    // used here and by profile_vertex_features; refinement appends generated
+    // points after them, with provenance derived from their origins.
+    let mut vertex_features = profile_vertex_features(&discretized, 1);
+    let (points, triangles): (Vec<[f64; 2]>, Vec<[u32; 3]>) = match policy.planar_face_refinement {
+        None => (
+            discretized
+                .rings()
+                .flat_map(|ring| ring.points.iter().copied())
+                .collect(),
+            triangulate(&input, &TriParams::default())?.triangles,
+        ),
+        Some(params) => {
+            let refined = refine(&input, &params)?;
+            vertex_features.extend(
+                refined
+                    .steiner
+                    .iter()
+                    .map(|origin| steiner_feature(&discretized, *origin)),
+            );
+            (refined.points, refined.triangles)
         }
+    };
+
+    // A reflecting placement flips complete triangle loops after
+    // transforming points, keeping the visible surface oriented toward the
+    // transformed local +Z direction.
+    let mut builder = OrientedBuilder::new(det3(placement) < 0.0);
+    for point in &points {
+        builder.push_vertex(narrow(apply_placement(
+            placement,
+            [point[0], point[1], 0.0],
+        )));
     }
-    let mut face_features = Vec::with_capacity(triangles.triangles.len());
-    for triangle in triangles.triangles {
+    let mut face_features = Vec::with_capacity(triangles.len());
+    for triangle in triangles {
         builder.add_face_with_attrs(
             &triangle,
             &FaceBuildAttrs {
@@ -666,7 +694,6 @@ pub fn tessellate_planar_face(
     }
 
     let result = builder.build()?;
-    let vertex_features = profile_vertex_features(&discretized, 1);
     let source_map =
         crate::source_map::SourceMap::new(&result.mesh, face_features, vertex_features);
     Ok(TessellatedBody {
@@ -878,6 +905,34 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
 /// the body's vertex rings (two for extrusions, one per path frame for
 /// sweeps). Revolutions build this table while emitting vertices because
 /// axis-contact points collapse across angular rings.
+/// Provenance of one generated vertex: a boundary point inherits the wall
+/// segment of the discretized edge it subdivides, an interior point belongs
+/// to the face. The origin names two input indices of one ring; when they
+/// are consecutive the edge leaving the earlier ring position identifies the
+/// segment, and when exactly collinear samples between them were pruned the
+/// segment leaving the lower index is the deterministic choice.
+fn steiner_feature(d: &DiscretizedProfile, origin: SteinerOrigin) -> Feature {
+    let SteinerOrigin::Boundary { edge } = origin else {
+        return Feature::PlanarFace;
+    };
+    let mut base = 0_u32;
+    for (ring_index, ring) in d.rings().enumerate() {
+        let len = len_u32(ring.points.len());
+        if edge[0] >= base + len {
+            base += len;
+            continue;
+        }
+        let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
+        let (lo, hi) = (edge[0] - base, edge[1] - base);
+        // The ring closes from its last point to its first: that edge leaves
+        // the last point, not the first.
+        let leaving = if lo == 0 && hi == len - 1 { hi } else { lo };
+        let seg = ring.edge_seg[leaving as usize];
+        return Feature::Wall { loop_index, seg };
+    }
+    Feature::PlanarFace
+}
+
 fn profile_vertex_features(d: &DiscretizedProfile, vertex_rings: u32) -> Vec<Feature> {
     let mut per_ring: Vec<Feature> = Vec::with_capacity(d.points_len());
     for (ring_index, ring) in d.rings().enumerate() {
@@ -2194,6 +2249,105 @@ mod tests {
             body.mesh.faces().count(),
             "one origin per face"
         );
+    }
+
+    #[test]
+    fn planar_face_refinement_adds_provenanced_vertices_and_meets_the_bound() {
+        // A long plate with a small central hole: the sparse boundary forces
+        // sliver triangles that only generated vertices can fix, and the
+        // hole bridge produces both boundary and interior insertions.
+        use crate::profile::{Loop2, Seg2};
+        let outer = Loop2::new(alloc::vec![
+            Seg2::line((8.0, 0.0)),
+            Seg2::line((8.0, 2.0)),
+            Seg2::line((0.0, 2.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid plate loop");
+        let hole = Loop2::new(alloc::vec![
+            Seg2::line((4.25, 0.75)),
+            Seg2::line((4.25, 1.25)),
+            Seg2::line((3.75, 1.25)),
+            Seg2::line((3.75, 0.75)),
+        ])
+        .expect("valid hole loop")
+        .reversed();
+        let profile = Profile2::new(outer, alloc::vec![hole]).expect("holed plate profile");
+        let plain_policy = EvalPolicy::default();
+        let mut refined_policy = plain_policy;
+        refined_policy.planar_face_refinement = Some(RefineParams {
+            max_radius_edge_ratio: 1.0,
+            ..RefineParams::default()
+        });
+
+        let plain = tessellate_planar_face(&profile, &Placement3::IDENTITY, &plain_policy)
+            .expect("plain face tessellates");
+        let refined = tessellate_planar_face(&profile, &Placement3::IDENTITY, &refined_policy)
+            .expect("refined face tessellates");
+        let again = tessellate_planar_face(&profile, &Placement3::IDENTITY, &refined_policy)
+            .expect("refined face tessellates again");
+        assert_clean(&plain);
+        assert_clean(&refined);
+        let corners = |body: &TessellatedBody| -> Vec<Vec<[f64; 2]>> {
+            body.mesh
+                .faces()
+                .map(|face| {
+                    body.mesh
+                        .face_loop(face)
+                        .filter_map(|he| body.mesh.to_vertex(he))
+                        .filter_map(|v| body.mesh.vertex_position(v))
+                        .map(|p| [f64::from(p[0]), f64::from(p[1])])
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(
+            corners(&refined),
+            corners(&again),
+            "refinement is deterministic"
+        );
+        assert!(
+            refined.mesh.vertices().count() > plain.mesh.vertices().count(),
+            "refinement generates vertices"
+        );
+        assert_eq!(
+            refined
+                .mesh
+                .boundary_loops()
+                .expect("boundaries enumerate")
+                .len(),
+            2,
+            "both rims remain open boundaries"
+        );
+        let mut boundary_walls = 0;
+        let mut interior = 0;
+        for vertex in refined.mesh.vertices() {
+            match refined.source_map.vertex_feature(vertex) {
+                Some(Feature::Wall { .. }) => boundary_walls += 1,
+                Some(Feature::PlanarFace) => interior += 1,
+                other => panic!("unexpected vertex feature {other:?}"),
+            }
+        }
+        assert!(interior > 0, "circumcenters land inside the face");
+        assert!(
+            boundary_walls > plain.mesh.vertices().count(),
+            "boundary midpoints inherit wall segments"
+        );
+
+        // Every refined triangle meets the 30 degree bound: circumradius is
+        // at most the shortest edge, allowing for f32 narrowing.
+        for triangle in corners(&refined) {
+            let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
+            assert_eq!(triangle.len(), 3, "planar faces are triangles");
+            let edge2 = |p: [f64; 2], q: [f64; 2]| (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
+            let (la, lb, lc) = (edge2(b, c), edge2(c, a), edge2(a, b));
+            let area2 = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            let r2 = la * lb * lc / (4.0 * area2 * area2);
+            assert!(
+                r2 <= la.min(lb).min(lc) * (1.0 + 1e-5),
+                "triangle {triangle:?} violates the bound after f32 narrowing"
+            );
+        }
     }
 
     #[test]

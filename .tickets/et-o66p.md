@@ -1,7 +1,7 @@
 ---
 id: et-o66p
 status: open
-deps: [et-c9eu, exe-ccxf]
+deps: [et-c9eu]
 links: [et-c9eu, exe-ccxf, et-jmpb]
 created: 2026-08-21T13:39:16Z
 type: feature

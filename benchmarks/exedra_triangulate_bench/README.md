@@ -1,7 +1,7 @@
 # exedra_triangulate quality wind tunnel
 
-This executable compares deterministic `EarClip` and `ConstrainedDelaunay`
-results for `exedra_triangulate`. It keeps quality reporting separate from
+This executable compares deterministic `EarClip`, `ConstrainedDelaunay`, and
+budgeted `refine` results for `exedra_triangulate`. It keeps quality reporting separate from
 wall-clock sampling so formatting, angle calculation, and signature
 construction are not part of the timed region.
 
@@ -65,6 +65,21 @@ timed batches and `triangulations` counts total calls. An untimed output
 checksum and `black_box` prevent dead-code elimination. Cross-machine
 wall-clock values are not goldens; compare profiles on the same machine and
 build configuration.
+
+The `refine_quality` phase runs `refine` under `RefineParams::default()`
+(ratio bound `sqrt(2)`, 1024 generated vertices, boundary splits allowed)
+on the same corpus. It checks byte-identical repeat output, positive
+orientation, valid indices into the extended point list, and area
+preservation within rounding of generated boundary midpoints. It reports the
+same element metrics plus `below_20deg`, the full `RefineStats` counters
+(generated, boundary, interior, declined, remaining and input-limited
+violations, budget exhaustion, flips), and pins a signature that also covers
+every generated coordinate in insertion order. Tests require that every
+fixture whose remaining violations are all input-limited reaches the
+`sqrt(2)` bound's 20.7° minimum angle, that refinement never lowers the
+minimum angle below the legalized result, and that input-constraint
+fixtures improve materially. `refine_timing` reports end-to-end refinement
+timing in the same format as the triangulation timings.
 
 The final `predicate_timing` phase separately exercises and verifies one query
 on every finite typed path used by `orient2d_evaluated` and
