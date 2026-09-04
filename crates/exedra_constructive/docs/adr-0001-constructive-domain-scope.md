@@ -145,7 +145,14 @@ together would break both.
   placements reverse triangle loops after transforming positions, matching
   the winding policy of the other constructive bodies. Making this previously
   declared node evaluable changes output for an unchanged recipe, so it
-  advances `EVAL_SCHEMA_VERSION` from 5 to 6.
+  advances `EVAL_SCHEMA_VERSION` from 5 to 6. An optional
+  `EvalPolicy::planar_face_refinement` routes the face through
+  `exedra_triangulate::refine` (see that crate's ADR-0001, budgeted
+  refinement): generated boundary vertices inherit the `Feature::Wall` of the
+  profile segment they subdivide and interior ones take `Feature::PlanarFace`.
+  The policy is part of the cache fingerprint. Bodies with side walls are not
+  refined, because a cap vertex without a matching wall vertex would open the
+  shell.
 - **Revolution-axis topology.** A revolve profile occupies the nonnegative
   radius half-plane. Exact axis points collapse across angular rings into one
   vertex apiece; incident profile edges emit triangle fans instead of

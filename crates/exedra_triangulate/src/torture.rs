@@ -12,7 +12,8 @@ use alloc::vec::Vec;
 
 use crate::delaunay::{illegal_edge_count, legalize_edges};
 use crate::{
-    PolygonInput, TriParams, TriStrategy, Triangulation, triangulate, triangulate_with_stats,
+    PolygonInput, RefineParams, SteinerOrigin, TriParams, Triangulation, refine, triangulate,
+    triangulate_with_stats,
 };
 
 /// `SplitMix64`: tiny deterministic PRNG for corpus generation.
@@ -83,6 +84,120 @@ fn tri_area2(points: &[[f64; 2]], t: [u32; 3]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
+fn cross(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+}
+
+/// Independent closed-segment check used only to discard ambiguous samples.
+fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
+    cross(a, b, p) == 0.0
+        && p[0] >= a[0].min(b[0])
+        && p[0] <= a[0].max(b[0])
+        && p[1] >= a[1].min(b[1])
+        && p[1] <= a[1].max(b[1])
+}
+
+/// Independent odd-even point-in-loop test. Samples on an edge are filtered
+/// before this function is called, so the horizontal-ray crossing rule has no
+/// boundary convention to choose.
+fn inside_loop(point: [f64; 2], loop_points: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    for index in 0..loop_points.len() {
+        let a = loop_points[index];
+        let b = loop_points[(index + 1) % loop_points.len()];
+        if (a[1] > point[1]) != (b[1] > point[1]) {
+            let x = a[0] + (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]);
+            if point[0] < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn source_contains(point: [f64; 2], outer: &[[f64; 2]], holes: &[&[[f64; 2]]]) -> bool {
+    inside_loop(point, outer) && holes.iter().all(|hole| !inside_loop(point, hole))
+}
+
+fn triangle_contains(point: [f64; 2], points: &[[f64; 2]], [a, b, c]: [u32; 3]) -> bool {
+    let (a, b, c) = (points[a as usize], points[b as usize], points[c as usize]);
+    let signs = [cross(a, b, point), cross(b, c, point), cross(c, a, point)];
+    signs.iter().all(|&sign| sign > 0.0) || signs.iter().all(|&sign| sign < 0.0)
+}
+
+fn on_any_edge(
+    point: [f64; 2],
+    loops: &[&[[f64; 2]]],
+    points: &[[f64; 2]],
+    triangles: &[[u32; 3]],
+) -> bool {
+    loops.iter().any(|loop_points| {
+        (0..loop_points.len()).any(|index| {
+            on_segment(
+                loop_points[index],
+                loop_points[(index + 1) % loop_points.len()],
+                point,
+            )
+        })
+    }) || triangles.iter().any(|&[a, b, c]| {
+        on_segment(points[a as usize], points[b as usize], point)
+            || on_segment(points[b as usize], points[c as usize], point)
+            || on_segment(points[c as usize], points[a as usize], point)
+    })
+}
+
+/// Compares a triangulation's union with an independent source-domain oracle
+/// at a fixed lattice of samples. Source and triangle edge samples are
+/// ignored because both point-in-polygon and triangle coverage are boundary
+/// convention questions; every other sample must have exactly one covering
+/// triangle inside the outer loop and holes, and none outside.
+fn assert_sampled_occupancy(
+    outer: &[[f64; 2]],
+    holes: &[&[[f64; 2]]],
+    points: &[[f64; 2]],
+    triangles: &[[u32; 3]],
+    label: &str,
+) {
+    let mut min = outer[0];
+    let mut max = outer[0];
+    for &point in outer
+        .iter()
+        .chain(holes.iter().flat_map(|hole| hole.iter()))
+    {
+        min[0] = min[0].min(point[0]);
+        min[1] = min[1].min(point[1]);
+        max[0] = max[0].max(point[0]);
+        max[1] = max[1].max(point[1]);
+    }
+    let span = [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)];
+    let loops = core::iter::once(outer)
+        .chain(holes.iter().copied())
+        .collect::<Vec<_>>();
+    const GRID: usize = 17;
+    let extent_min = [min[0] - span[0] / 4.0, min[1] - span[1] / 4.0];
+    let extent_span = [span[0] * 1.5, span[1] * 1.5];
+    for row in 0..GRID {
+        for column in 0..GRID {
+            let sample = [
+                extent_min[0] + extent_span[0] * (column as f64 + 0.5) / GRID as f64,
+                extent_min[1] + extent_span[1] * (row as f64 + 0.5) / GRID as f64,
+            ];
+            if on_any_edge(sample, &loops, points, triangles) {
+                continue;
+            }
+            let expected = usize::from(source_contains(sample, outer, holes));
+            let covered = triangles
+                .iter()
+                .filter(|&&triangle| triangle_contains(sample, points, triangle))
+                .count();
+            assert_eq!(
+                covered, expected,
+                "{label}: sample {sample:?} expected {expected} covering triangle(s), got {covered}"
+            );
+        }
+    }
+}
+
 /// Checks every invariant a successful triangulation must uphold.
 fn check_invariants(outer: &[[f64; 2]], holes: &[&[[f64; 2]]], label: &str) -> Triangulation {
     let input = PolygonInput { outer, holes };
@@ -115,7 +230,89 @@ fn check_invariants(outer: &[[f64; 2]], holes: &[&[[f64; 2]]], label: &str) -> T
         "{label}: area {area2} != expected {expected}"
     );
     check_constrained_delaunay(&input, &points, &result, label);
+    check_refinement(&input, &result, expected, label);
     result
+}
+
+/// Asserts the refinement invariants: determinism, CCW triangles, area
+/// equal to the polygon within rounding of generated boundary points, every
+/// boundary edge of the result lying on one input boundary edge, no
+/// remaining illegal edge, and either a met bound or an honest stop reason.
+fn check_refinement(
+    input: &PolygonInput<'_>,
+    reference: &Triangulation,
+    expected_area2: f64,
+    label: &str,
+) {
+    let params = RefineParams {
+        max_steiner_points: 256,
+        ..RefineParams::default()
+    };
+    let first = refine(input, &params).unwrap_or_else(|e| panic!("{label}: refine failed: {e}"));
+    let second = refine(input, &params).expect("second run");
+    assert_eq!(first, second, "{label}: refinement determinism violated");
+
+    let count = first.input_vertex_count as usize;
+    assert_eq!(first.points.len(), count + first.steiner.len());
+    assert_eq!(first.stats.steiner_points as usize, first.steiner.len());
+    assert!(first.triangles.len() >= reference.len());
+    let mut area2 = 0.0;
+    for &t in &first.triangles {
+        for &i in &t {
+            assert!((i as usize) < first.points.len(), "{label}: index {i}");
+        }
+        let a2 = tri_area2(&first.points, t);
+        assert!(a2 > 0.0, "{label}: non-CCW refined triangle {t:?}");
+        area2 += a2;
+    }
+    let scale = expected_area2.abs().max(1.0);
+    assert!(
+        (area2 - expected_area2).abs() <= scale * 1e-9,
+        "{label}: refined area {area2} != expected {expected_area2}"
+    );
+
+    // Every refined boundary edge lies within rounding of one reference
+    // boundary edge: both endpoints are input vertices of that edge or
+    // generated points whose origin names it.
+    let reference_boundary = boundary_edges(&reference.triangles);
+    let origin_of = |index: u32| -> Option<[u32; 2]> {
+        let steiner = (index as usize).checked_sub(count)?;
+        match first.steiner[steiner] {
+            SteinerOrigin::Boundary { edge } => Some(edge),
+            SteinerOrigin::Interior => None,
+        }
+    };
+    for (a, b) in boundary_edges(&first.triangles) {
+        let owner = origin_of(a).or_else(|| origin_of(b));
+        let (lo, hi) = match owner {
+            Some(edge) => (edge[0], edge[1]),
+            None => (a, b),
+        };
+        assert!(
+            reference_boundary.contains(&(lo, hi)),
+            "{label}: boundary edge ({a}, {b}) is not on a reference boundary edge"
+        );
+        for endpoint in [a, b] {
+            if let Some(edge) = origin_of(endpoint) {
+                assert_eq!(edge, [lo, hi], "{label}: mixed boundary origins");
+            } else {
+                assert!(endpoint == lo || endpoint == hi, "{label}: stray endpoint");
+            }
+        }
+    }
+
+    assert_eq!(
+        illegal_edge_count(&first.points, &first.triangles),
+        0,
+        "{label}: refined cover is not Delaunay"
+    );
+    let stats = first.stats;
+    assert!(
+        stats.remaining_bad_triangles == stats.input_limited_triangles
+            || stats.budget_exhausted
+            || stats.declined_insertions > 0,
+        "{label}: unexplained remaining violations {stats:?}"
+    );
 }
 
 /// Sorted `(min, max)` edges that have exactly one incident triangle: the
@@ -157,9 +354,7 @@ fn check_constrained_delaunay(
     reference: &Triangulation,
     label: &str,
 ) {
-    let params = TriParams {
-        strategy: TriStrategy::ConstrainedDelaunay,
-    };
+    let params = TriParams::constrained_delaunay();
     let first = triangulate_with_stats(input, &params)
         .unwrap_or_else(|e| panic!("{label}: constrained Delaunay failed: {e}"));
     let second = triangulate_with_stats(input, &params).expect("second run");
@@ -328,6 +523,72 @@ fn dense_arc_like_profile_with_hole() {
 }
 
 #[test]
+fn sampled_occupancy_matches_independent_polygon_oracle() {
+    // Exercise both a hole and a concave source, checking the ordinary cover
+    // and the generated-vertex refinement without making the corpus tests
+    // multiply their existing sample cost.
+    let outer: [[f64; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+    let hole: [[f64; 2]; 4] = [[1.25, 1.25], [1.25, 2.75], [2.75, 2.75], [2.75, 1.25]];
+    let holes: [&[[f64; 2]]; 1] = [&hole];
+    let input = PolygonInput {
+        outer: &outer,
+        holes: &holes,
+    };
+    let mut source_points = outer.to_vec();
+    source_points.extend_from_slice(&hole);
+
+    let triangulated = triangulate(&input, &TriParams::constrained_delaunay())
+        .expect("sampled source triangulates");
+    assert_sampled_occupancy(
+        &outer,
+        &holes,
+        &source_points,
+        &triangulated.triangles,
+        "triangulated square with hole",
+    );
+
+    let refined = refine(&input, &RefineParams::default()).expect("sampled source refines");
+    assert_sampled_occupancy(
+        &outer,
+        &holes,
+        &refined.points,
+        &refined.triangles,
+        "refined square with hole",
+    );
+
+    let concave: [[f64; 2]; 6] = [
+        [0.0, 0.0],
+        [4.0, 0.0],
+        [4.0, 1.5],
+        [1.5, 1.5],
+        [1.5, 4.0],
+        [0.0, 4.0],
+    ];
+    let concave_input = PolygonInput {
+        outer: &concave,
+        holes: &[],
+    };
+    let concave_triangles = triangulate(&concave_input, &TriParams::constrained_delaunay())
+        .expect("sampled concave source triangulates");
+    assert_sampled_occupancy(
+        &concave,
+        &[],
+        &concave,
+        &concave_triangles.triangles,
+        "triangulated concave source",
+    );
+    let concave_refined =
+        refine(&concave_input, &RefineParams::default()).expect("sampled concave source refines");
+    assert_sampled_occupancy(
+        &concave,
+        &[],
+        &concave_refined.points,
+        &concave_refined.triangles,
+        "refined concave source",
+    );
+}
+
+#[test]
 fn golden_square_with_hole_indices() {
     // Exact output pin: any change to tie-breaks, bridging order, or
     // predicates shows up here as a reviewable diff.
@@ -365,9 +626,7 @@ fn golden_square_with_hole_constrained_delaunay_indices() {
         outer: &outer,
         holes: &[&hole],
     };
-    let params = TriParams {
-        strategy: TriStrategy::ConstrainedDelaunay,
-    };
+    let params = TriParams::constrained_delaunay();
     let result = triangulate_with_stats(&input, &params).expect("golden fixture");
     assert_eq!(result.stats.edge_flips, 2, "flip count changed");
     // The quad 0-4-5-3 is an isosceles trapezoid, hence exactly cocircular;
