@@ -35,9 +35,11 @@ use crate::profile::{Loop2, Profile2, SegKind};
 pub struct DiscretizePolicy {
     /// Maximum chord-to-curve deviation (sagitta), in model units.
     pub chord_tolerance: f64,
-    /// Hard cap on edges produced per curve segment.
+    /// Hard cap on edges produced per curve segment. Must be at least
+    /// [`Self::min_arc_edges`].
     pub max_segment_edges: u32,
-    /// Minimum edges per arc segment, regardless of tolerance.
+    /// Minimum edges per arc segment, regardless of tolerance. Must not
+    /// exceed [`Self::max_segment_edges`].
     pub min_arc_edges: u32,
 }
 
@@ -56,7 +58,10 @@ impl DiscretizePolicy {
         if !(self.chord_tolerance.is_finite() && self.chord_tolerance > 0.0) {
             return Err(DiscretizeError::InvalidTolerance);
         }
-        if self.max_segment_edges == 0 || self.min_arc_edges == 0 {
+        if self.max_segment_edges == 0
+            || self.min_arc_edges == 0
+            || self.min_arc_edges > self.max_segment_edges
+        {
             return Err(DiscretizeError::InvalidEdgeBounds);
         }
         Ok(())
@@ -92,7 +97,7 @@ pub struct DiscretizedProfile {
 pub enum DiscretizeError {
     /// The chord tolerance is zero, negative, or non-finite.
     InvalidTolerance,
-    /// An edge-count bound is zero.
+    /// An edge-count bound is zero or the minimum exceeds the maximum.
     InvalidEdgeBounds,
 }
 
@@ -100,7 +105,12 @@ impl core::fmt::Display for DiscretizeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidTolerance => write!(f, "chord tolerance must be finite and positive"),
-            Self::InvalidEdgeBounds => write!(f, "edge-count bounds must be nonzero"),
+            Self::InvalidEdgeBounds => {
+                write!(
+                    f,
+                    "edge-count bounds must be nonzero with minimum <= maximum"
+                )
+            }
         }
     }
 }
@@ -306,7 +316,7 @@ fn emit_cubic_interior(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{Seg2, SegTag};
+    use crate::profile::{Profile2, Seg2, SegTag};
     use alloc::vec;
 
     fn square() -> Loop2 {
@@ -474,5 +484,76 @@ mod tests {
             discretize_loop(&square, &bad_edges),
             Err(DiscretizeError::InvalidEdgeBounds)
         );
+    }
+
+    #[test]
+    fn inverted_edge_bounds_return_a_typed_error() {
+        let bulge = libm::tan(core::f64::consts::FRAC_PI_8);
+        let arc_loop = Loop2::new(vec![
+            Seg2::line((2.0, 0.0)),
+            Seg2::arc((0.0, 2.0), bulge),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid arc loop");
+        let policy = DiscretizePolicy {
+            min_arc_edges: 8,
+            max_segment_edges: 4,
+            ..DiscretizePolicy::default()
+        };
+
+        assert_eq!(
+            discretize_loop(&arc_loop, &policy),
+            Err(DiscretizeError::InvalidEdgeBounds)
+        );
+    }
+
+    #[test]
+    fn edge_bounds_are_validated_before_segment_discretization() {
+        let line_loop = square();
+        let arc_loop = Loop2::new(vec![
+            Seg2::line((2.0, 0.0)),
+            Seg2::arc((0.0, 2.0), libm::tan(core::f64::consts::FRAC_PI_8)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid arc loop");
+        let arc_profile = Profile2::simple(arc_loop.clone()).expect("valid arc profile");
+
+        for policy in [
+            DiscretizePolicy {
+                min_arc_edges: 0,
+                ..DiscretizePolicy::default()
+            },
+            DiscretizePolicy {
+                max_segment_edges: 0,
+                ..DiscretizePolicy::default()
+            },
+            DiscretizePolicy {
+                min_arc_edges: 8,
+                max_segment_edges: 4,
+                ..DiscretizePolicy::default()
+            },
+        ] {
+            assert_eq!(
+                discretize_loop(&line_loop, &policy),
+                Err(DiscretizeError::InvalidEdgeBounds)
+            );
+            assert_eq!(
+                discretize_loop(&arc_loop, &policy),
+                Err(DiscretizeError::InvalidEdgeBounds)
+            );
+            assert_eq!(
+                discretize_profile(&arc_profile, &policy),
+                Err(DiscretizeError::InvalidEdgeBounds)
+            );
+        }
+
+        let equal = DiscretizePolicy {
+            min_arc_edges: 4,
+            max_segment_edges: 4,
+            ..DiscretizePolicy::default()
+        };
+        assert!(discretize_loop(&line_loop, &equal).is_ok());
+        assert!(discretize_loop(&arc_loop, &equal).is_ok());
+        assert!(discretize_profile(&arc_profile, &equal).is_ok());
     }
 }
