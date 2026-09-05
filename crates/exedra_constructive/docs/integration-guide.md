@@ -131,6 +131,44 @@ queries about nodes that did not emit diagnostics.
   inherited semantics and per-instance rebinding arrive with the assembly
   head; rebinding never re-tessellates.
 
+## Tolerance-bounded circles and cylinders
+
+Curve accuracy, minimum topology, and maximum work are separate inputs. A
+successful profile discretization meets `EvalPolicy::discretize.chord_tolerance`
+in its public f64 output. If the count budget or numeric representation cannot
+meet it, evaluation returns a typed error instead of a coarser body.
+
+An explicit `PrimitiveSpec::Cylinder::segments` value is authored sampling. To
+construct a tolerance-driven cylinder, calculate that authored value through
+the same policy used by profile arcs:
+
+```rust
+use exedra_constructive::discretize::{
+    CircularEdgeConstraints, circular_edge_count,
+};
+use exedra_constructive::ir::PrimitiveSpec;
+
+let radius = 25.0;
+let tolerance = 0.01;
+let segments = circular_edge_count(
+    radius,
+    core::f64::consts::TAU,
+    tolerance,
+    CircularEdgeConstraints::new(8, 4096).with_edge_multiple(4),
+)?;
+let cylinder = PrimitiveSpec::Cylinder {
+    radius,
+    height: 80.0,
+    segments,
+};
+assert_eq!(segments % 4, 0);
+# let _ = cylinder;
+# Ok::<(), exedra_constructive::discretize::DiscretizeError>(())
+```
+
+The multiple-of-four choice is explicit here because this caller wants axis
+extrema. Leave the multiple at one for curves that do not need that placement.
+
 ## Provenance queries
 
 `body.source_map` answers both directions in O(1)/O(log n):

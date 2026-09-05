@@ -175,8 +175,9 @@ together would break both.
   Full sweeps use a multiple of four angular steps so all cardinal meridians
   are present and symmetric bounds retain exact extrema. This replaces the
   public `TessellateError::AxisContact` refusal with the more precise
-  `NegativeRadius`, `NonClosingAxisSegment`, and `RevolveSegmentLimit`
-  variants; the error enum is non-exhaustive. Changing evaluation of existing
+  `NegativeRadius` and `NonClosingAxisSegment` variants; angular budget
+  failures now flow through the shared `DiscretizeError` contract. The error
+  enums are non-exhaustive. Changing evaluation of existing
   axis-contact recipes and full-sweep discretization advances
   `EVAL_SCHEMA_VERSION` from 6 to 7.
 

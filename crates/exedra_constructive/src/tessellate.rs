@@ -19,7 +19,10 @@ use exedra_triangulate::{
     triangulate,
 };
 
-use crate::discretize::{DiscretizePolicy, DiscretizedProfile, discretize_profile};
+use crate::discretize::{
+    CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
+    DiscretizedProfile, circular_edge_count, discretize_profile,
+};
 use crate::ir::{CapMode, Placement3, PrimitiveSpec};
 use crate::len_u32;
 use crate::profile::Profile2;
@@ -210,8 +213,9 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TessellateError {
-    /// Discretization failed (invalid policy).
-    Discretize(crate::discretize::DiscretizeError),
+    /// Discretization failed because its policy, accuracy budget, or numeric
+    /// realization could not be satisfied.
+    Discretize(DiscretizeError),
     /// Profile-area triangulation failed; the profile was not simple after
     /// discretization.
     Triangulate(exedra_triangulate::TriError),
@@ -229,14 +233,6 @@ pub enum TessellateError {
         loop_index: u16,
         /// Source segment index within the loop.
         segment: u32,
-    },
-    /// The angular edge budget cannot meet the minimum topology required by
-    /// a revolution.
-    RevolveSegmentLimit {
-        /// Minimum number of angular steps required.
-        required: u32,
-        /// Maximum number allowed by the discretization policy.
-        maximum: u32,
     },
     /// Loft sections are incompatible: correspondence requires the same
     /// hole count and identical per-loop point counts after
@@ -292,10 +288,6 @@ impl core::fmt::Display for TessellateError {
                 f,
                 "revolved profile loop {loop_index} segment {segment} lies on the axis but is not its closing segment"
             ),
-            Self::RevolveSegmentLimit { required, maximum } => write!(
-                f,
-                "revolution needs at least {required} angular steps but the policy allows {maximum}"
-            ),
             Self::SectionMismatch { section } => {
                 write!(f, "loft section {section} does not correspond to section 0")
             }
@@ -319,8 +311,8 @@ impl core::fmt::Display for TessellateError {
 
 impl core::error::Error for TessellateError {}
 
-impl From<crate::discretize::DiscretizeError> for TessellateError {
-    fn from(e: crate::discretize::DiscretizeError) -> Self {
+impl From<DiscretizeError> for TessellateError {
+    fn from(e: DiscretizeError) -> Self {
         Self::Discretize(e)
     }
 }
@@ -1138,7 +1130,7 @@ fn profile_vertex_features(d: &DiscretizedProfile, vertex_rings: u32) -> Vec<Fea
 }
 
 impl DiscretizedProfile {
-    fn rings(&self) -> impl Iterator<Item = &crate::discretize::DiscretizedLoop> {
+    fn rings(&self) -> impl Iterator<Item = &DiscretizedLoop> {
         core::iter::once(&self.outer).chain(self.holes.iter())
     }
 
@@ -1147,7 +1139,7 @@ impl DiscretizedProfile {
     }
 }
 
-impl crate::discretize::DiscretizedLoop {
+impl DiscretizedLoop {
     /// True when ring point `i` is an exact source endpoint (edge ownership
     /// changes there).
     fn is_endpoint(&self, i: u32) -> bool {
@@ -1248,7 +1240,7 @@ fn loop_corner_sharpness(source: &crate::profile::Loop2, policy: &EvalPolicy) ->
 }
 
 /// True when every turn of the (CCW) ring is non-reflex.
-fn is_convex_ring(ring: &crate::discretize::DiscretizedLoop) -> bool {
+fn is_convex_ring(ring: &DiscretizedLoop) -> bool {
     let n = ring.points.len();
     for i in 0..n {
         let a = ring.points[i];
@@ -1292,11 +1284,7 @@ fn kind_lies_on_revolve_axis(kind: &crate::profile::SegKind) -> bool {
 /// ring-major mapping. A pole whose outgoing edge is the skipped axis closure
 /// instead inherits the incoming wall segment, so every pole remains tied to
 /// geometry that actually emitted faces.
-fn revolve_vertex_feature(
-    ring: &crate::discretize::DiscretizedLoop,
-    loop_index: u16,
-    point_index: usize,
-) -> Feature {
+fn revolve_vertex_feature(ring: &DiscretizedLoop, loop_index: u16, point_index: usize) -> Feature {
     let next = (point_index + 1) % ring.points.len();
     let previous = (point_index + ring.points.len() - 1) % ring.points.len();
     let seg = if ring.points[point_index][0] == 0.0 && ring.points[next][0] == 0.0 {
@@ -1370,67 +1358,49 @@ pub fn tessellate_revolve(
         }
     }
 
-    // Angular step count from the chord tolerance at the outermost radius.
-    let mut steps = {
-        let tol = policy.discretize.chord_tolerance;
-        let per_edge = if tol >= 2.0 * max_x {
-            sweep
-        } else {
-            2.0 * libm::acos(1.0 - tol / max_x)
-        };
-        let needed = libm::ceil(sweep / per_edge);
-        let capped = if needed >= f64::from(policy.discretize.max_segment_edges) {
-            policy.discretize.max_segment_edges
-        } else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "needed is a ceil of a finite positive value below the u32 cap"
-            )]
-            {
-                needed as u32
-            }
-        };
-        let minimum = policy
-            .discretize
-            .min_arc_edges
-            .max(if full { 4 } else { 3 });
-        if minimum > policy.discretize.max_segment_edges {
-            return Err(TessellateError::RevolveSegmentLimit {
+    // Angular accuracy uses the same public circular count contract as profile
+    // arcs and external primitive adapters. Full sweeps explicitly request a
+    // multiple of four so their cardinal meridians preserve exact extrema;
+    // partial sweeps carry no universal alignment rule.
+    let minimum = policy
+        .discretize
+        .min_arc_edges
+        .max(if full { 4 } else { 3 });
+    if minimum > policy.discretize.max_segment_edges {
+        return Err(TessellateError::Discretize(
+            DiscretizeError::ToleranceBudgetExceeded {
                 required: minimum,
                 maximum: policy.discretize.max_segment_edges,
-            });
-        }
-        capped.clamp(minimum, policy.discretize.max_segment_edges)
-    };
-    if full {
-        // Cardinal meridians make symmetric full-sweep bounds exact, which is
-        // observable at the constructive boundary. Prefer rounding up; at a
-        // hard policy cap, round down only when that still honors the minimum.
-        let rounded_up = steps.saturating_add(3) / 4 * 4;
-        steps = if rounded_up <= policy.discretize.max_segment_edges {
-            rounded_up
-        } else {
-            let rounded_down = policy.discretize.max_segment_edges / 4 * 4;
-            let minimum = policy.discretize.min_arc_edges.max(4);
-            if rounded_down < minimum {
-                return Err(TessellateError::RevolveSegmentLimit {
-                    required: rounded_up,
-                    maximum: policy.discretize.max_segment_edges,
-                });
-            }
-            rounded_down
-        };
+            },
+        ));
     }
+    let mut constraints =
+        CircularEdgeConstraints::new(minimum, policy.discretize.max_segment_edges);
+    if full {
+        constraints = constraints.with_edge_multiple(4);
+    }
+    let steps = circular_edge_count(max_x, sweep, policy.discretize.chord_tolerance, constraints)?;
     // Vertex rings: `steps` for a full sweep (wrapping), `steps + 1`
     // otherwise.
-    let vertex_rings = if full { steps } else { steps + 1 };
+    let vertex_rings = if full {
+        steps
+    } else {
+        steps.checked_add(1).ok_or(TessellateError::Discretize(
+            DiscretizeError::EdgeCountOverflow,
+        ))?
+    };
 
     let ring_starts = ring_starts(&d);
     let total = len_u32(d.points_len());
     let mut builder = OrientedBuilder::new(flip);
-    let mut vertex_indices = Vec::with_capacity((vertex_rings * total) as usize);
-    let mut vertex_features = Vec::with_capacity((vertex_rings * total) as usize);
+    let vertex_capacity =
+        (vertex_rings as usize)
+            .checked_mul(total as usize)
+            .ok_or(TessellateError::Discretize(
+                DiscretizeError::EdgeCountOverflow,
+            ))?;
+    let mut vertex_indices = Vec::with_capacity(vertex_capacity);
+    let mut vertex_features = Vec::with_capacity(vertex_capacity);
     let mut axis_vertices = alloc::vec![None; total as usize];
 
     // Vertices remain angular-step major and profile-point minor in the lookup
@@ -1465,8 +1435,9 @@ pub fn tessellate_revolve(
             }
         }
     }
-    let vertex_at =
-        |k: u32, flat: u32| vertex_indices[((k % vertex_rings) * total + flat) as usize];
+    let vertex_at = |k: u32, flat: u32| {
+        vertex_indices[(k % vertex_rings) as usize * total as usize + flat as usize]
+    };
 
     let mut face_origins: Vec<Feature> = Vec::new();
     let seg_offsets = seg_offsets(profile);
@@ -2974,6 +2945,48 @@ mod tests {
     }
 
     #[test]
+    fn shared_circular_policy_drives_a_cylinder_with_bounded_sagitta() {
+        let radius = 2.0;
+        let tolerance = 1.0e-3;
+        let segments = circular_edge_count(
+            radius,
+            core::f64::consts::TAU,
+            tolerance,
+            CircularEdgeConstraints::new(8, 4096).with_edge_multiple(4),
+        )
+        .expect("cylinder count fits budget");
+        let body = tessellate_primitive(
+            PrimitiveSpec::Cylinder {
+                radius,
+                height: 1.0,
+                segments,
+            },
+            &Placement3::IDENTITY,
+            &EvalPolicy::default(),
+        )
+        .expect("policy-derived cylinder tessellates");
+        let ring: Vec<[f64; 2]> = body
+            .mesh
+            .vertices()
+            .take(segments as usize)
+            .map(|vertex| {
+                let p = body.mesh.vertex_position(vertex).expect("ring position");
+                [f64::from(p[0]), f64::from(p[1])]
+            })
+            .collect();
+        for index in 0..ring.len() {
+            let a = ring[index];
+            let b = ring[(index + 1) % ring.len()];
+            let midpoint = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+            let sagitta = radius - libm::hypot(midpoint[0], midpoint[1]);
+            assert!(
+                sagitta <= tolerance + 2.0e-7,
+                "emitted cylinder sagitta {sagitta} exceeded f32-aware bound"
+            );
+        }
+    }
+
+    #[test]
     fn rect_extrude_is_a_box() {
         let profile = builders::rect(2.0, 1.0).expect("rect");
         let body = tessellate_extrude(
@@ -3523,12 +3536,71 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(TessellateError::RevolveSegmentLimit {
-                    required: 4,
-                    maximum: 3,
-                })
+                Err(TessellateError::Discretize(
+                    DiscretizeError::ToleranceBudgetExceeded {
+                        required: 4,
+                        maximum: 3,
+                    }
+                ))
             ),
             "insufficient full-sweep budget must fail typed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn full_revolve_uses_shared_count_and_meets_angular_deviation() {
+        let mut policy = EvalPolicy::default();
+        policy.discretize.chord_tolerance = 1.0e-3;
+        let radial_center = 2.0;
+        let section_width = 0.5;
+        let radius = radial_center + section_width * 0.5;
+        let expected_steps = circular_edge_count(
+            radius,
+            core::f64::consts::TAU,
+            policy.discretize.chord_tolerance,
+            CircularEdgeConstraints::new(
+                policy.discretize.min_arc_edges.max(4),
+                policy.discretize.max_segment_edges,
+            )
+            .with_edge_multiple(4),
+        )
+        .expect("revolution count fits budget");
+        let body = tessellate_revolve(
+            &annulus_square(radial_center, section_width),
+            &Placement3::IDENTITY,
+            core::f64::consts::TAU,
+            CapMode::Both,
+            &policy,
+        )
+        .expect("full revolution tessellates");
+        assert_eq!(
+            body.mesh.vertices().count(),
+            expected_steps as usize * 4,
+            "four off-axis profile vertices are emitted per angular step"
+        );
+        let first = body
+            .mesh
+            .vertex_position(body.mesh.vertices().nth(1).expect("outer first vertex"))
+            .copied()
+            .expect("first position");
+        let next = body
+            .mesh
+            .vertex_position(
+                body.mesh
+                    .vertices()
+                    .nth(5)
+                    .expect("outer next angular ring"),
+            )
+            .copied()
+            .expect("next position");
+        let midpoint = [
+            (f64::from(first[0]) + f64::from(next[0])) * 0.5,
+            (f64::from(first[2]) + f64::from(next[2])) * 0.5,
+        ];
+        let deviation = radius - libm::hypot(midpoint[0], midpoint[1]);
+        assert!(
+            deviation <= policy.discretize.chord_tolerance + 2.0e-7,
+            "emitted revolution deviation {deviation} exceeded f32-aware bound"
         );
     }
 
