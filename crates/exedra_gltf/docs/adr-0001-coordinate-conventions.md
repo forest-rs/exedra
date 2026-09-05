@@ -49,3 +49,13 @@ wildcard remain source-compatible. Instance metadata that was previously
 absent from glTF output now changes the deterministic export bytes; consumers
 that hash whole files should expect annotated assemblies to receive new asset
 identities.
+
+## Exact empty geometry
+
+The constructive [n-ary CSG and empty-result contract](../../exedra_constructive/docs/adr-0006-nary-csg-fold-and-empty-results.md)
+represents a valid empty result as an exact zero-face body. Export retains its
+instance node, transform, and metadata without attaching a mesh. When no
+geometry remains, optional mesh/accessor/buffer-view/buffer arrays are omitted,
+and GLB contains only its JSON chunk. An entirely empty scene also omits empty
+node/children arrays. This satisfies glTF's nonempty-array and positive-count
+requirements without inventing triangles or losing instance identity.

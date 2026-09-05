@@ -13,12 +13,17 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use exedra_mesh::boolean::{
+    BooleanDiagnostics, BooleanError, BooleanOp, BooleanScratch, MeshSide, boolean_mesh,
+};
+use exedra_mesh::{FaceId, FaceTriangulation, Mesh};
 use exedra_triangulate::RefineStats;
+use hashbrown::HashMap;
 
 use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
-use crate::ir::{NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
+use crate::ir::{CsgOp, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
 use crate::tessellate::{
-    EvalPolicy, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
+    EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
     tessellate_planar_face, tessellate_primitive, tessellate_revolve, tessellate_sweep,
 };
 
@@ -296,7 +301,7 @@ fn evaluate_inner(
         policy,
         policy_fp: policy_fingerprint(policy),
         cache,
-        instance_cache: hashbrown::HashMap::new(),
+        instance_cache: HashMap::new(),
         bodies: Vec::new(),
         report: GeometryReport {
             fidelity: Vec::new(),
@@ -326,7 +331,59 @@ struct EvalCx<'a> {
     bodies: Vec<PlacedBody>,
     report: GeometryReport,
     /// Local-space evaluations of instanced definitions, keyed by node.
-    instance_cache: hashbrown::HashMap<NodeId, Rc<Vec<PlacedBody>>>,
+    instance_cache: HashMap<NodeId, Rc<Vec<PlacedBody>>>,
+}
+
+/// One intermediate CSG mesh with the originating CSG operand for every face.
+///
+/// Boolean provenance names faces on the immediate left or right mesh. Keeping
+/// this ID-keyed table alongside intermediate folds composes that local identity
+/// back to the public CSG operand index.
+struct CsgMesh {
+    mesh: Mesh,
+    face_operands: HashMap<FaceId, u16>,
+}
+
+impl CsgMesh {
+    fn operand(mesh: Mesh, index: usize) -> Self {
+        let operand = u16::try_from(index).unwrap_or(u16::MAX);
+        Self {
+            face_operands: mesh.faces().map(|face| (face, operand)).collect(),
+            mesh,
+        }
+    }
+
+    fn combine(
+        self,
+        other: Self,
+        op: BooleanOp,
+        scratch: &mut BooleanScratch,
+        diagnostics: &mut BooleanDiagnostics,
+    ) -> Result<Self, BooleanError> {
+        let output = boolean_mesh(
+            &self.mesh,
+            &other.mesh,
+            op,
+            FaceTriangulation::Fan,
+            scratch,
+            diagnostics,
+        )?;
+        let mut face_operands = HashMap::with_capacity(output.mesh.faces().count());
+        for &(face, side, source_face) in &output.face_provenance {
+            let operands = match side {
+                MeshSide::A => &self.face_operands,
+                MeshSide::B => &other.face_operands,
+            };
+            let operand = *operands
+                .get(&source_face)
+                .expect("boolean provenance references an input face");
+            face_operands.insert(face, operand);
+        }
+        Ok(Self {
+            mesh: output.mesh,
+            face_operands,
+        })
+    }
 }
 
 impl EvalCx<'_> {
@@ -533,10 +590,8 @@ impl EvalCx<'_> {
                     } else {
                         transform_mesh(source, &placement)
                     };
-                    let face_features =
-                        alloc::vec![crate::tessellate::Feature::Imported; mesh.faces().count()];
-                    let vertex_features =
-                        alloc::vec![crate::tessellate::Feature::Imported; mesh.vertices().count()];
+                    let face_features = alloc::vec![Feature::Imported; mesh.faces().count()];
+                    let vertex_features = alloc::vec![Feature::Imported; mesh.vertices().count()];
                     let source_map =
                         crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
                     Ok(TessellatedBody {
@@ -829,9 +884,9 @@ impl EvalCx<'_> {
         &mut self,
         operand: NodeId,
         world: &Placement3,
-        scratch: &mut exedra_mesh::boolean::BooleanScratch,
-        diagnostics: &mut exedra_mesh::boolean::BooleanDiagnostics,
-    ) -> Result<Option<exedra_mesh::Mesh>, EvalError> {
+        scratch: &mut BooleanScratch,
+        diagnostics: &mut BooleanDiagnostics,
+    ) -> Result<Option<Mesh>, EvalError> {
         let taken = core::mem::take(&mut self.bodies);
         let emitted_before = self.report.counters.bodies;
         self.walk(operand, world, true)?;
@@ -850,11 +905,11 @@ impl EvalCx<'_> {
             return Ok(None);
         };
         for next in meshes {
-            match exedra_mesh::boolean::boolean_mesh(
+            match boolean_mesh(
                 &folded,
                 &next,
-                exedra_mesh::boolean::BooleanOp::Union,
-                exedra_mesh::FaceTriangulation::Fan,
+                BooleanOp::Union,
+                FaceTriangulation::Fan,
                 scratch,
                 diagnostics,
             ) {
@@ -867,28 +922,26 @@ impl EvalCx<'_> {
 
     /// Evaluates a CSG node through the mesh boolean pipeline.
     ///
-    /// Success reports `Exact` fidelity; any pipeline refusal (suspect
-    /// patches, empty operands) falls back to the envelope-only report —
-    /// typed and visible, never silently wrong geometry.
+    /// Success reports `Exact` fidelity, including a valid empty mesh. Any
+    /// pipeline refusal (such as suspect patches) falls back to the
+    /// envelope-only report — typed and visible, never silently wrong geometry.
     fn evaluate_csg(
         &mut self,
         node_id: NodeId,
-        op: crate::ir::CsgOp,
+        op: CsgOp,
         operands: &[NodeId],
         world: &Placement3,
         emit: bool,
     ) -> Result<Aabb3, EvalError> {
-        use exedra_mesh::boolean::{BooleanOp, BooleanScratch};
-
         let mut scratch = BooleanScratch::default();
-        let mut diagnostics = exedra_mesh::boolean::BooleanDiagnostics::default();
+        let mut diagnostics = BooleanDiagnostics::default();
 
-        // The catalog-free difference convention: A op (union of the rest).
-        let mut meshes: Vec<exedra_mesh::Mesh> = Vec::with_capacity(operands.len());
+        // Difference alone uses the catalog-free A minus union(rest) convention.
+        let mut meshes: Vec<CsgMesh> = Vec::with_capacity(operands.len());
         let mut all_present = true;
-        for operand in operands {
+        for (index, operand) in operands.iter().enumerate() {
             match self.collect_operand_mesh(*operand, world, &mut scratch, &mut diagnostics)? {
-                Some(mesh) => meshes.push(mesh),
+                Some(mesh) => meshes.push(CsgMesh::operand(mesh, index)),
                 None => {
                     all_present = false;
                     break;
@@ -916,63 +969,45 @@ impl EvalCx<'_> {
             Some(body)
         } else if all_present {
             let boolean_op = match op {
-                crate::ir::CsgOp::Union => BooleanOp::Union,
-                crate::ir::CsgOp::Intersection => BooleanOp::Intersection,
-                crate::ir::CsgOp::Difference => BooleanOp::Difference,
+                CsgOp::Union => BooleanOp::Union,
+                CsgOp::Intersection => BooleanOp::Intersection,
+                CsgOp::Difference => BooleanOp::Difference,
             };
             let mut iter = meshes.into_iter();
             let first = iter.next().expect("IR validation requires >= 2 operands");
-            // Fold the tail together with Union first (the documented
-            // n-ary Difference rule folds 2..n before subtracting), then
-            // apply the operation once. Union/Intersection fold pairwise
-            // identically under associativity.
-            let mut tail = iter.next().expect("IR validation requires >= 2 operands");
-            let mut tail_ok = true;
-            for next in iter {
-                match exedra_mesh::boolean::boolean_mesh(
-                    &tail,
-                    &next,
-                    BooleanOp::Union,
-                    exedra_mesh::FaceTriangulation::Fan,
-                    &mut scratch,
-                    &mut diagnostics,
-                ) {
-                    Ok(output) => tail = output.mesh,
-                    Err(_) => {
-                        tail_ok = false;
-                        break;
-                    }
+            let output = match op {
+                CsgOp::Difference => {
+                    // Difference is A minus the union of every subtrahend.
+                    let tail = iter.next().expect("IR validation requires >= 2 operands");
+                    let tail = iter.try_fold(tail, |folded, next| {
+                        folded.combine(next, BooleanOp::Union, &mut scratch, &mut diagnostics)
+                    });
+                    tail.and_then(|tail| {
+                        first.combine(tail, BooleanOp::Difference, &mut scratch, &mut diagnostics)
+                    })
+                    .ok()
                 }
-            }
-            let output = if tail_ok {
-                exedra_mesh::boolean::boolean_mesh(
-                    &first,
-                    &tail,
-                    boolean_op,
-                    exedra_mesh::FaceTriangulation::Fan,
-                    &mut scratch,
-                    &mut diagnostics,
-                )
-                .ok()
-            } else {
-                None
+                CsgOp::Union | CsgOp::Intersection => iter
+                    .try_fold(first, |folded, next| {
+                        folded.combine(next, boolean_op, &mut scratch, &mut diagnostics)
+                    })
+                    .ok(),
             };
             output.map(|output| {
                 let mesh = output.mesh;
-                // Coarse per-operand attribution; fine detail rides the
-                // FACE_REGION values the pipeline carried through.
-                let face_features: Vec<crate::tessellate::Feature> = output
-                    .face_provenance
-                    .iter()
-                    .map(|(_, side, _)| crate::tessellate::Feature::BooleanFace {
-                        operand: match side {
-                            exedra_mesh::boolean::MeshSide::A => 0,
-                            exedra_mesh::boolean::MeshSide::B => 1,
-                        },
+                // Operand attribution composes through every intermediate;
+                // fine detail rides FACE_REGION from the originating face.
+                let face_features: Vec<Feature> = mesh
+                    .faces()
+                    .map(|face| Feature::BooleanFace {
+                        operand: *output
+                            .face_operands
+                            .get(&face)
+                            .expect("every boolean output face has provenance"),
                     })
                     .collect();
                 let vertex_features = alloc::vec![
-                    crate::tessellate::Feature::BooleanFace { operand: 0 };
+                    Feature::BooleanFace { operand: 0 };
                     mesh.vertices().count()
                 ];
                 let source_map =
@@ -1229,7 +1264,7 @@ fn reflection_placement(plane: &crate::ir::Plane3) -> Placement3 {
 }
 
 /// World-space bounds of a mesh (f32 positions promoted).
-pub(crate) fn mesh_bounds(mesh: &exedra_mesh::Mesh) -> Aabb3 {
+pub(crate) fn mesh_bounds(mesh: &Mesh) -> Aabb3 {
     let mut bounds = Aabb3::EMPTY;
     for vertex in mesh.vertices() {
         if let Some(p) = mesh.vertex_position(vertex) {
@@ -1253,7 +1288,7 @@ fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedB
 }
 
 /// Clones a mesh with vertices rigid-transformed (f64 math, one narrowing).
-fn transform_mesh(source: &exedra_mesh::Mesh, placement: &Placement3) -> exedra_mesh::Mesh {
+fn transform_mesh(source: &Mesh, placement: &Placement3) -> Mesh {
     let mut mesh = source.clone();
     let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
     {
@@ -1332,7 +1367,7 @@ mod tests {
         );
     }
 
-    fn imported_unit_box() -> exedra_mesh::Mesh {
+    fn imported_unit_box() -> Mesh {
         let mut builder = exedra_mesh::MeshBuilder::new();
         for point in [
             [0.0, 0.0, 0.0],
@@ -1359,7 +1394,7 @@ mod tests {
         builder.build().expect("box mesh is valid").mesh
     }
 
-    fn attributed_imported_unit_box() -> exedra_mesh::Mesh {
+    fn attributed_imported_unit_box() -> Mesh {
         let mut mesh = imported_unit_box();
         let face = mesh.faces().next().expect("box has a face");
         let corner = mesh
@@ -1394,10 +1429,10 @@ mod tests {
         mesh
     }
 
-    fn signed_mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
+    fn signed_mesh_volume(mesh: &Mesh) -> f64 {
         let mut six_volume = 0.0;
         for face in mesh.faces() {
-            for corners in mesh.face_triangles(face, exedra_mesh::FaceTriangulation::Fan) {
+            for corners in mesh.face_triangles(face, FaceTriangulation::Fan) {
                 let points = corners.map(|corner| {
                     let vertex = mesh.to_vertex(corner).expect("corner has a vertex");
                     mesh.vertex_position(vertex)
@@ -1410,7 +1445,7 @@ mod tests {
         six_volume / 6.0
     }
 
-    fn mirrored_import_recipe(mesh: exedra_mesh::Mesh) -> Recipe {
+    fn mirrored_import_recipe(mesh: Mesh) -> Recipe {
         let mut builder = RecipeBuilder::new();
         let import = builder.add_import(mesh).expect("deep-valid import");
         let imported = builder
@@ -1449,7 +1484,7 @@ mod tests {
         b.finish(t).expect("valid recipe")
     }
 
-    fn face_cross_z(mesh: &exedra_mesh::Mesh, face: exedra_mesh::FaceId) -> f32 {
+    fn face_cross_z(mesh: &Mesh, face: FaceId) -> f32 {
         let positions: Vec<[f32; 3]> = mesh
             .face_loop(face)
             .filter_map(|half_edge| mesh.to_vertex(half_edge))
@@ -1642,7 +1677,7 @@ mod tests {
             );
             assert_eq!(
                 body.source_map.face_feature(mesh_face),
-                Some(crate::tessellate::Feature::PlanarFace)
+                Some(Feature::PlanarFace)
             );
         }
     }
@@ -1750,11 +1785,13 @@ mod tests {
             body.source_map
                 .face_features()
                 .iter()
-                .all(|feature| *feature == crate::tessellate::Feature::Imported)
+                .all(|feature| *feature == Feature::Imported)
         );
-        assert!(body.mesh.vertices().all(|vertex| {
-            body.source_map.vertex_feature(vertex) == Some(crate::tessellate::Feature::Imported)
-        }));
+        assert!(
+            body.mesh.vertices().all(|vertex| {
+                body.source_map.vertex_feature(vertex) == Some(Feature::Imported)
+            })
+        );
         body.source_map
             .check(&body.mesh)
             .expect("rebuilt provenance is pinned to the output revision");
@@ -1772,7 +1809,7 @@ mod tests {
         // Reflection repairs orientation without changing dimensionality: an
         // authored single-sided import remains one open face with one boundary
         // loop, rather than being rejected or implicitly solidified.
-        let triangle = exedra_mesh::Mesh::from_polygons(
+        let triangle = Mesh::from_polygons(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[&[0, 1, 2]],
         )
@@ -2564,6 +2601,420 @@ mod tests {
 }
 
 #[cfg(test)]
+mod nary_intersection_regression {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use exedra_mesh::DeletePolicy;
+    use exedra_mesh::op::{add_face, add_vertex, delete_faces};
+    use exedra_primitives::{BoxParams, box_primitive};
+
+    use super::*;
+    use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+    use crate::tessellate::EvalPolicy;
+
+    fn add_box(builder: &mut RecipeBuilder, min: [f64; 3], max: [f64; 3]) -> NodeId {
+        builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: core::array::from_fn(|axis| max[axis] - min[axis]),
+                },
+                placement: Placement3::translate(min[0], min[1], min[2]),
+            })
+            .expect("valid box")
+    }
+
+    fn box_csg(op: CsgOp, boxes: &[([f64; 3], [f64; 3])]) -> (Recipe, NodeId) {
+        let mut builder = RecipeBuilder::new();
+        let operands = boxes
+            .iter()
+            .map(|&(min, max)| add_box(&mut builder, min, max))
+            .collect();
+        let root = builder
+            .add(NodeKind::Csg { op, operands })
+            .expect("valid CSG");
+        (builder.finish(root).expect("valid recipe"), root)
+    }
+
+    fn add_pairwise_only_prisms(builder: &mut RecipeBuilder) -> [NodeId; 3] {
+        use crate::profile::{Loop2, Profile2, Seg2};
+
+        let rectangle_a = add_box(builder, [0.0, -3.0, 0.0], [3.0, 3.0, 2.0]);
+        let rectangle_b = add_box(builder, [-3.0, 0.0, -1.0], [3.0, 3.0, 1.0]);
+        let triangle = builder.add_profile(
+            Profile2::simple(
+                Loop2::new(vec![
+                    Seg2::line((2.0, -3.0)),
+                    Seg2::line((-3.0, 2.0)),
+                    Seg2::line((-3.0, -3.0)),
+                ])
+                .expect("triangle loop"),
+            )
+            .expect("triangle profile"),
+        );
+        let triangle = builder
+            .add(NodeKind::Extrude {
+                profile: triangle,
+                placement: Placement3::translate(0.0, 0.0, 0.25),
+                height: 1.25,
+                caps: CapMode::Both,
+            })
+            .expect("triangle prism");
+        [rectangle_a, rectangle_b, triangle]
+    }
+
+    fn pairwise_only_prism_csg(operands: &[usize]) -> (Recipe, NodeId) {
+        let mut builder = RecipeBuilder::new();
+        let nodes = add_pairwise_only_prisms(&mut builder);
+        let operands = operands.iter().map(|&index| nodes[index]).collect();
+        let root = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Intersection,
+                operands,
+            })
+            .expect("valid intersection");
+        (builder.finish(root).expect("valid recipe"), root)
+    }
+
+    fn mesh_volume(mesh: &Mesh) -> f64 {
+        let mut volume = 0.0;
+        for face in mesh.faces() {
+            let points: Vec<[f64; 3]> = mesh
+                .face_loop(face)
+                .filter_map(|half_edge| mesh.to_vertex(half_edge))
+                .filter_map(|vertex| mesh.vertex_position(vertex))
+                .map(|point| point.map(f64::from))
+                .collect();
+            for index in 1..points.len().saturating_sub(1) {
+                let (a, b, c) = (points[0], points[index], points[index + 1]);
+                volume += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            }
+        }
+        volume / 6.0
+    }
+
+    fn assert_bounds(actual: Aabb3, min: [f64; 3], max: [f64; 3]) {
+        for axis in 0..3 {
+            assert!(
+                (actual.min[axis] - min[axis]).abs() < 1.0e-6,
+                "min axis {axis}: {actual:?}"
+            );
+            assert!(
+                (actual.max[axis] - max[axis]).abs() < 1.0e-6,
+                "max axis {axis}: {actual:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_three_way_intersection_is_the_common_volume() {
+        let boxes = [
+            ([0.0; 3], [10.0; 3]),
+            ([1.0; 3], [5.0; 3]),
+            ([2.0; 3], [3.0; 3]),
+        ];
+        let (recipe, root) = box_csg(CsgOp::Intersection, &boxes);
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("intersection evaluates");
+
+        assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!(result.report.clean_at(Severity::Warning));
+        let [body] = result.bodies.as_slice() else {
+            panic!("intersection must produce one body");
+        };
+        let bounds = mesh_bounds(&body.body.mesh);
+        assert_bounds(bounds, [2.0; 3], [3.0; 3]);
+        assert!((mesh_volume(&body.body.mesh) - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn non_nested_intersection_lies_in_every_operand_and_keeps_provenance() {
+        let boxes = [
+            ([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            ([0.5, 0.5, 0.5], [2.5, 2.5, 2.5]),
+            ([-1.0, -1.0, 1.0], [3.0, 3.0, 3.0]),
+        ];
+        let (recipe, root) = box_csg(CsgOp::Intersection, &boxes);
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("intersection evaluates");
+        let [body] = result.bodies.as_slice() else {
+            panic!(
+                "intersection must produce one body: {:?}",
+                result.report.diagnostics
+            );
+        };
+        assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!(result.report.clean_at(Severity::Warning));
+        assert_bounds(
+            mesh_bounds(&body.body.mesh),
+            [0.5, 0.5, 1.0],
+            [2.0, 2.0, 2.0],
+        );
+        assert!((mesh_volume(&body.body.mesh) - 2.25).abs() < 1.0e-6);
+        for vertex in body.body.mesh.vertices() {
+            let point = body.body.mesh.vertex_position(vertex).expect("vertex");
+            for &(min, max) in &boxes {
+                assert!(
+                    (0..3).all(|axis| {
+                        f64::from(point[axis]) >= min[axis] - 1.0e-6
+                            && f64::from(point[axis]) <= max[axis] + 1.0e-6
+                    }),
+                    "vertex {point:?} escaped operand {min:?}..{max:?}"
+                );
+            }
+        }
+        for operand in 0..3 {
+            assert!(
+                body.body.source_map.face_features().iter().any(|feature| {
+                    matches!(
+                        feature,
+                        Feature::BooleanFace { operand: found }
+                            if *found == operand
+                    )
+                }),
+                "operand {operand} must retain at least one boundary face"
+            );
+        }
+    }
+
+    #[test]
+    fn intersection_permutations_preserve_bounds_and_volume() {
+        let boxes = [
+            ([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            ([0.5, 0.5, 0.5], [2.5, 2.5, 2.5]),
+            ([-1.0, -1.0, 1.0], [3.0, 3.0, 3.0]),
+        ];
+        for permutation in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let ordered = permutation.map(|index| boxes[index]);
+            let (recipe, root) = box_csg(CsgOp::Intersection, &ordered);
+            let result = evaluate(&recipe, &EvalPolicy::default()).expect("intersection evaluates");
+            let [body] = result.bodies.as_slice() else {
+                panic!(
+                    "permutation {permutation:?} must produce one body: {:?}",
+                    result.report.diagnostics
+                );
+            };
+            assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+            assert_bounds(
+                mesh_bounds(&body.body.mesh),
+                [0.5, 0.5, 1.0],
+                [2.0, 2.0, 2.0],
+            );
+            assert!(
+                (mesh_volume(&body.body.mesh) - 2.25).abs() < 1.0e-6,
+                "permutation {permutation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pairwise_overlap_without_common_volume_is_exact_empty_geometry() {
+        // A occupies x >= 0, B occupies y >= 0, and triangle C occupies
+        // x + y <= -1. Every pair shares positive area, but all three cannot.
+        let inside_a = |p: [f64; 3]| {
+            (0.0..3.0).contains(&p[0]) && (-3.0..3.0).contains(&p[1]) && (0.0..2.0).contains(&p[2])
+        };
+        let inside_b = |p: [f64; 3]| {
+            (-3.0..3.0).contains(&p[0]) && (0.0..3.0).contains(&p[1]) && (-1.0..1.0).contains(&p[2])
+        };
+        let inside_c = |p: [f64; 3]| {
+            p[0] > -3.0 && p[1] > -3.0 && p[0] + p[1] < -1.0 && (0.25..1.5).contains(&p[2])
+        };
+        let witnesses = [[1.0, 1.0, 0.5], [-2.0, 0.5, 0.5], [0.5, -2.0, 0.5]];
+        assert!(inside_a(witnesses[0]) && inside_b(witnesses[0]));
+        assert!(inside_b(witnesses[1]) && inside_c(witnesses[1]));
+        assert!(inside_c(witnesses[2]) && inside_a(witnesses[2]));
+
+        let (recipe, root) = pairwise_only_prism_csg(&[0, 1, 2]);
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("triple evaluates");
+        assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!(result.report.clean_at(Severity::Warning));
+        let [body] = result.bodies.as_slice() else {
+            panic!("an exact empty result remains an explicit empty body");
+        };
+        assert_eq!(body.body.mesh.faces().count(), 0);
+        assert_eq!(body.body.mesh.vertices().count(), 0);
+        assert_eq!(body.body.source_map.face_count(), 0);
+        assert_eq!(result.report.counters.bodies, 1);
+        assert_eq!(result.report.counters.envelope_only, 0);
+    }
+
+    #[test]
+    fn exact_empty_intersection_remains_empty_when_nested() {
+        let mut builder = RecipeBuilder::new();
+        let operands = add_pairwise_only_prisms(&mut builder);
+        let empty = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Intersection,
+                operands: operands.to_vec(),
+            })
+            .expect("inner intersection");
+        let enclosing = add_box(&mut builder, [-10.0; 3], [10.0; 3]);
+        let root = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Intersection,
+                operands: vec![empty, enclosing],
+            })
+            .expect("outer intersection");
+        let recipe = builder.finish(root).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("nested empty evaluates");
+
+        assert_eq!(result.report.fidelity_of(empty), Some(Fidelity::Exact));
+        assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!(result.report.clean_at(Severity::Warning));
+        let [body] = result.bodies.as_slice() else {
+            panic!("nested exact empty stays represented as one empty body");
+        };
+        assert_eq!(body.node, root);
+        assert_eq!(body.body.mesh.faces().count(), 0);
+    }
+
+    #[test]
+    fn intermediate_provenance_handles_sparse_face_ids() {
+        let mut sparse = box_primitive(&BoxParams::default()).mesh;
+        let removed = sparse.faces().nth(2).expect("box face");
+        let loop_vertices: Vec<_> = sparse
+            .face_loop(removed)
+            .filter_map(|half_edge| sparse.to_vertex(half_edge))
+            .collect();
+        {
+            let mut session = sparse.edit();
+            delete_faces(&mut session, &[removed], DeletePolicy::KeepIsolated)
+                .expect("remove face");
+            let filler_vertices = [
+                add_vertex(&mut session, [10.0, 10.0, 10.0]),
+                add_vertex(&mut session, [11.0, 10.0, 10.0]),
+                add_vertex(&mut session, [10.0, 11.0, 10.0]),
+            ];
+            let filler =
+                add_face(&mut session, &filler_vertices).expect("occupy removed face slot");
+            add_face(&mut session, &loop_vertices).expect("restore face");
+            delete_faces(&mut session, &[filler], DeletePolicy::CleanupIsolated)
+                .expect("remove filler");
+            #[expect(
+                unused_must_use,
+                reason = "the sparse-ID setup needs the edit, not its unit sink output"
+            )]
+            {
+                session.finish();
+            }
+        }
+        assert!(sparse.faces().any(|face| face.index() >= 6));
+        assert!(sparse.validate_deep().is_empty());
+
+        let enclosing = box_primitive(&BoxParams {
+            size: [3.0; 3],
+            ..BoxParams::default()
+        })
+        .mesh;
+        let mut scratch = BooleanScratch::default();
+        let mut diagnostics = BooleanDiagnostics::default();
+        let output = CsgMesh::operand(sparse, 7)
+            .combine(
+                CsgMesh::operand(enclosing, 8),
+                BooleanOp::Intersection,
+                &mut scratch,
+                &mut diagnostics,
+            )
+            .expect("contained sparse mesh intersects");
+        assert_eq!(output.mesh.faces().count(), 6);
+        assert!(output.face_operands.values().all(|&operand| operand == 7));
+    }
+
+    #[test]
+    fn four_way_binary_union_and_multi_subtrahend_semantics_stay_distinct() {
+        let nested = [
+            ([0.0; 3], [10.0; 3]),
+            ([1.0; 3], [7.0; 3]),
+            ([2.0; 3], [5.0; 3]),
+            ([3.0; 3], [4.0; 3]),
+        ];
+        for operands in [&nested[..2], &nested[..]] {
+            let (recipe, _) = box_csg(CsgOp::Intersection, operands);
+            let result = evaluate(&recipe, &EvalPolicy::default()).expect("intersection");
+            let mesh = &result.bodies[0].body.mesh;
+            let expected_min = if operands.len() == 2 {
+                [1.0; 3]
+            } else {
+                [3.0; 3]
+            };
+            let expected_max = if operands.len() == 2 {
+                [7.0; 3]
+            } else {
+                [4.0; 3]
+            };
+            assert_bounds(mesh_bounds(mesh), expected_min, expected_max);
+        }
+
+        let (union_recipe, _) = box_csg(CsgOp::Union, &nested[..3]);
+        let union = evaluate(&union_recipe, &EvalPolicy::default()).expect("union");
+        assert_bounds(mesh_bounds(&union.bodies[0].body.mesh), [0.0; 3], [10.0; 3]);
+        assert!((mesh_volume(&union.bodies[0].body.mesh) - 1000.0).abs() < 1.0e-6);
+
+        let difference_boxes = [
+            ([0.0; 3], [4.0; 3]),
+            ([0.5, 0.5, -1.0], [1.5, 1.5, 5.0]),
+            ([2.5, 2.5, -1.0], [3.5, 3.5, 5.0]),
+        ];
+        let (difference_recipe, root) = box_csg(CsgOp::Difference, &difference_boxes);
+        let difference = evaluate(&difference_recipe, &EvalPolicy::default()).expect("difference");
+        assert_eq!(difference.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!((mesh_volume(&difference.bodies[0].body.mesh) - 56.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn nary_intersection_cache_replays_geometry_fidelity_and_empty_results() {
+        let boxes = [
+            ([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            ([0.5, 0.5, 0.5], [2.5, 2.5, 2.5]),
+            ([-1.0, -1.0, 1.0], [3.0, 3.0, 3.0]),
+        ];
+        let (recipe, root) = box_csg(CsgOp::Intersection, &boxes);
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache)
+            .expect("cold evaluation");
+        let warm = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache)
+            .expect("warm evaluation");
+        assert_eq!(cold.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert_eq!(warm.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert_eq!(cold.report.counters.cache_misses, 4);
+        assert_eq!(warm.report.counters.cache_hits, 4);
+        assert_eq!(
+            mesh_bounds(&cold.bodies[0].body.mesh),
+            mesh_bounds(&warm.bodies[0].body.mesh)
+        );
+        assert_eq!(
+            mesh_volume(&cold.bodies[0].body.mesh).to_bits(),
+            mesh_volume(&warm.bodies[0].body.mesh).to_bits()
+        );
+        assert_eq!(
+            cold.bodies[0].body.source_map.face_features(),
+            warm.bodies[0].body.source_map.face_features()
+        );
+
+        let (empty_recipe, empty_root) = pairwise_only_prism_csg(&[0, 1, 2]);
+        let mut empty_cache = EvalCache::new();
+        let _ = evaluate_with_cache(&empty_recipe, &EvalPolicy::default(), &mut empty_cache)
+            .expect("cold empty evaluation");
+        let empty_warm =
+            evaluate_with_cache(&empty_recipe, &EvalPolicy::default(), &mut empty_cache)
+                .expect("warm empty evaluation");
+        assert_eq!(
+            empty_warm.report.fidelity_of(empty_root),
+            Some(Fidelity::Exact)
+        );
+        assert_eq!(empty_warm.report.counters.cache_hits, 4);
+        assert_eq!(empty_warm.bodies[0].body.mesh.faces().count(), 0);
+    }
+}
+
+#[cfg(test)]
 mod multi_cutter_regression {
     use alloc::format;
     use alloc::vec;
@@ -2682,7 +3133,7 @@ mod multi_cutter_regression {
     }
 
     /// Signed volume via the divergence theorem over each planar face fan.
-    fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
+    fn mesh_volume(mesh: &Mesh) -> f64 {
         let mut volume = 0.0;
         for face in mesh.faces() {
             let points: Vec<[f64; 3]> = mesh
