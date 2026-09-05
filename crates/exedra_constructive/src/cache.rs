@@ -292,6 +292,28 @@ mod tests {
             ..EvalPolicy::default()
         });
         assert_ne!(a, b, "chord tolerance must change the fingerprint");
+        let tighter_budget = policy_fingerprint(&EvalPolicy {
+            discretize: DiscretizePolicy {
+                max_segment_edges: DiscretizePolicy::default().max_segment_edges - 1,
+                ..DiscretizePolicy::default()
+            },
+            ..EvalPolicy::default()
+        });
+        assert_ne!(
+            a, tighter_budget,
+            "curve work budget must change the fingerprint"
+        );
+        let higher_minimum = policy_fingerprint(&EvalPolicy {
+            discretize: DiscretizePolicy {
+                min_arc_edges: DiscretizePolicy::default().min_arc_edges + 1,
+                ..DiscretizePolicy::default()
+            },
+            ..EvalPolicy::default()
+        });
+        assert_ne!(
+            a, higher_minimum,
+            "minimum arc topology must change the fingerprint"
+        );
         assert_eq!(a, policy_fingerprint(&EvalPolicy::default()), "stable");
         let c = policy_fingerprint(&EvalPolicy {
             planar_face_refinement: Some(exedra_triangulate::RefineParams::default()),

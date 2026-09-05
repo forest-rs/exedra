@@ -1340,6 +1340,7 @@ fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
 mod tests {
     use super::*;
     use crate::builders;
+    use crate::discretize::{DiscretizeError, DiscretizePolicy};
     use crate::ir::{CapMode, CsgOp, Plane3, PrimitiveSpec, RecipeBuilder};
     use alloc::vec;
 
@@ -2057,6 +2058,53 @@ mod tests {
         for (actual, expected) in bounds.max.into_iter().zip([9.0, 13.0, 18.0]) {
             assert!((actual - expected).abs() < 1.0e-5, "max bound {bounds:?}");
         }
+    }
+
+    #[test]
+    fn tolerance_budget_failure_survives_evaluation_and_cache() {
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::circle(1.0).expect("circle"));
+        let node = builder
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("extrude");
+        let recipe = builder.finish(node).expect("recipe");
+        let policy = EvalPolicy {
+            discretize: DiscretizePolicy {
+                chord_tolerance: 1.0e-9,
+                min_arc_edges: 1,
+                max_segment_edges: 4,
+            },
+            ..EvalPolicy::default()
+        };
+        let expected = evaluate(&recipe, &policy).expect_err("budget must fail");
+        assert!(matches!(
+            &expected,
+            EvalError {
+                node: failed_node,
+                error: TessellateError::Discretize(
+                    DiscretizeError::ToleranceBudgetExceeded {
+                        required,
+                        maximum: 4,
+                    }
+                ),
+            } if *failed_node == node && *required > 4
+        ));
+
+        let mut cache = EvalCache::new();
+        assert_eq!(
+            evaluate_with_cache(&recipe, &policy, &mut cache).expect_err("cold budget failure"),
+            expected
+        );
+        assert_eq!(
+            evaluate_with_cache(&recipe, &policy, &mut cache).expect_err("repeated budget failure"),
+            expected
+        );
+        assert!(cache.is_empty(), "failed bodies never enter the cache");
     }
 
     #[test]

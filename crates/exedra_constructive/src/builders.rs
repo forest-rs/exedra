@@ -226,7 +226,9 @@ pub enum ProfileShapeClass {
 }
 
 /// Classifies a profile by discretizing its outer loop coarsely and
-/// checking turn directions; any hole makes the profile concave.
+/// checking turn directions. Any hole, or any inability to realize the
+/// coarse default-policy discretization within its accuracy and numeric
+/// contract, is conservatively classified as concave.
 #[must_use]
 pub fn classify_profile(profile: &Profile2) -> ProfileShapeClass {
     if !profile.holes().is_empty() {

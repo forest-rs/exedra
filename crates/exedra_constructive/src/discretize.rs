@@ -12,7 +12,7 @@
 //!   so loop closure survives discretization bit-for-bit.
 //! - Arc interior points are computed with [`libm`] trig only (never `std`,
 //!   never kurbo's feature-dependent dispatch), from subdivision counts
-//!   derived once per arc.
+//!   derived once per arc by [`circular_edge_count`].
 //! - Cubic interior points are sampled at uniform parameters with a count
 //!   from the second-difference flatness bound — arithmetic plus square
 //!   roots, owned here (kurbo does not sit on the deterministic path at
@@ -25,12 +25,19 @@ use kurbo::Point;
 use crate::len_u32;
 use crate::profile::{Loop2, Profile2, SegKind};
 
+/// Arithmetic and coordinate emission each consume rounding headroom. Below
+/// this many ulps at the source-coordinate scale, reject instead of claiming a
+/// chord bound that f64 output cannot reliably represent.
+const REALIZATION_ULPS: f64 = 16.0;
+
 /// Controls how finely curves are discretized.
 ///
-/// The chord tolerance is an absolute sagitta bound in model units: no
-/// discretized edge deviates from its source curve by more than this.
-/// Callers (evaluation policies) choose it deliberately; the default is
-/// suitable for millimeter-unit parametric spec geometry.
+/// The chord tolerance is an absolute mathematical chord-to-curve bound in
+/// model units. A successful discretization uses enough edges to satisfy it;
+/// an insufficient work budget is a typed error. This bound does not include
+/// later coordinate quantization such as tessellation's f64-to-f32 boundary.
+/// Callers choose it deliberately; the default is suitable for millimeter-unit
+/// parametric spec geometry.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct DiscretizePolicy {
     /// Maximum chord-to-curve deviation (sagitta), in model units.
@@ -68,6 +75,43 @@ impl DiscretizePolicy {
     }
 }
 
+/// Edge-count constraints for one circular sweep.
+///
+/// Minimum topology, maximum work, and optional angular alignment are
+/// independent choices. Set [`Self::edge_multiple`] to `1` when no alignment
+/// is required, or for example `4` when a full circle must include cardinal
+/// axes. The multiple is caller-selected and is never imposed on profile arcs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CircularEdgeConstraints {
+    /// Minimum permitted edge count.
+    pub min_edges: u32,
+    /// Maximum permitted edge count (the finite work budget).
+    pub max_edges: u32,
+    /// Required edge-count multiple; `1` means no additional alignment.
+    pub edge_multiple: u32,
+}
+
+impl CircularEdgeConstraints {
+    /// Creates constraints without an additional edge-count multiple.
+    #[must_use]
+    pub const fn new(min_edges: u32, max_edges: u32) -> Self {
+        Self {
+            min_edges,
+            max_edges,
+            edge_multiple: 1,
+        }
+    }
+
+    /// Requires the result to be a multiple of `edge_multiple`.
+    ///
+    /// A zero multiple is rejected by [`circular_edge_count`].
+    #[must_use]
+    pub const fn with_edge_multiple(mut self, edge_multiple: u32) -> Self {
+        self.edge_multiple = edge_multiple;
+        self
+    }
+}
+
 /// One discretized loop: a point ring plus edge-to-segment provenance.
 ///
 /// Edge `i` runs `points[i] -> points[(i + 1) % len]` and was produced by
@@ -99,6 +143,23 @@ pub enum DiscretizeError {
     InvalidTolerance,
     /// An edge-count bound is zero or the minimum exceeds the maximum.
     InvalidEdgeBounds,
+    /// A circle radius or sweep is zero, negative, non-finite, or the sweep
+    /// exceeds one full turn.
+    InvalidCircularGeometry,
+    /// The requested accuracy, topology, or alignment constraints need more
+    /// edges than the finite work budget.
+    ToleranceBudgetExceeded {
+        /// Smallest edge count that satisfies accuracy, topology, and any
+        /// requested edge-count multiple.
+        required: u32,
+        /// Maximum edge count permitted by the caller.
+        maximum: u32,
+    },
+    /// The edge count required by the requested accuracy cannot fit in `u32`.
+    EdgeCountOverflow,
+    /// Finite inputs produced intermediate or output coordinates that cannot
+    /// be represented reliably in f64.
+    NumericLimit,
 }
 
 impl core::fmt::Display for DiscretizeError {
@@ -111,17 +172,127 @@ impl core::fmt::Display for DiscretizeError {
                     "edge-count bounds must be nonzero with minimum <= maximum"
                 )
             }
+            Self::InvalidCircularGeometry => write!(
+                f,
+                "circle radius and sweep must be finite and positive, with sweep <= tau"
+            ),
+            Self::ToleranceBudgetExceeded { required, maximum } => write!(
+                f,
+                "subdivision constraints require {required} edges but the budget allows {maximum}"
+            ),
+            Self::EdgeCountOverflow => {
+                write!(f, "required edge count exceeds the u32 count domain")
+            }
+            Self::NumericLimit => write!(
+                f,
+                "curve cannot be discretized reliably within f64 numeric limits"
+            ),
         }
     }
 }
 
 impl core::error::Error for DiscretizeError {}
 
+/// Returns the smallest circular edge count that satisfies a chord tolerance
+/// and explicit count constraints.
+///
+/// The count uses the cancellation-resistant identity
+/// `acos(1 - x) = 2 asin(sqrt(x / 2))`. This remains stable when tolerance is
+/// tiny relative to radius. A requested multiple rounds upward only; a work
+/// budget never silently coarsens the result.
+///
+/// # Errors
+///
+/// Returns a typed error for invalid tolerance, circle geometry, constraints,
+/// an unrepresentable required count, or a maximum below the required count.
+pub fn circular_edge_count(
+    radius: f64,
+    sweep: f64,
+    chord_tolerance: f64,
+    constraints: CircularEdgeConstraints,
+) -> Result<u32, DiscretizeError> {
+    if !(chord_tolerance.is_finite() && chord_tolerance > 0.0) {
+        return Err(DiscretizeError::InvalidTolerance);
+    }
+    if !(radius.is_finite()
+        && radius > 0.0
+        && sweep.is_finite()
+        && sweep > 0.0
+        && sweep <= core::f64::consts::TAU)
+    {
+        return Err(DiscretizeError::InvalidCircularGeometry);
+    }
+    if constraints.min_edges == 0
+        || constraints.max_edges == 0
+        || constraints.edge_multiple == 0
+        || constraints.min_edges > constraints.max_edges
+    {
+        return Err(DiscretizeError::InvalidEdgeBounds);
+    }
+
+    // sqrt(tol / (2r)), factored so tol/r cannot underflow before sqrt.
+    let ratio_root = libm::sqrt(chord_tolerance) / libm::sqrt(radius) / core::f64::consts::SQRT_2;
+    if ratio_root == 0.0 {
+        return Err(DiscretizeError::EdgeCountOverflow);
+    }
+    let needed = if ratio_root >= 1.0 {
+        1.0
+    } else {
+        let per_edge_angle = 4.0 * libm::asin(ratio_root);
+        libm::ceil(sweep / per_edge_angle)
+    };
+    if !needed.is_finite() || needed > f64::from(u32::MAX) {
+        return Err(DiscretizeError::EdgeCountOverflow);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "needed is a finite nonnegative ceil within the u32 domain"
+    )]
+    let needed = needed as u32;
+    let mut required = needed.max(1).max(constraints.min_edges);
+    required = round_up_to_multiple(required, constraints.edge_multiple)
+        .ok_or(DiscretizeError::EdgeCountOverflow)?;
+
+    // Guard a count that landed infinitesimally below the exact threshold due
+    // to floating rounding. Incrementing by the requested multiple preserves
+    // alignment and makes successful outcomes conservative.
+    while !circular_sagitta_within(radius, sweep, chord_tolerance, required) {
+        required = required
+            .checked_add(constraints.edge_multiple)
+            .ok_or(DiscretizeError::EdgeCountOverflow)?;
+    }
+    if required > constraints.max_edges {
+        return Err(DiscretizeError::ToleranceBudgetExceeded {
+            required,
+            maximum: constraints.max_edges,
+        });
+    }
+    Ok(required)
+}
+
+fn round_up_to_multiple(value: u32, multiple: u32) -> Option<u32> {
+    let remainder = value % multiple;
+    if remainder == 0 {
+        Some(value)
+    } else {
+        value.checked_add(multiple - remainder)
+    }
+}
+
+fn circular_sagitta_within(radius: f64, sweep: f64, tolerance: f64, edges: u32) -> bool {
+    // sqrt(sagitta) = sqrt(2r) * sin(sweep / 4n). Compare after dividing by
+    // sqrt(2r) to avoid forming either 2r or a tiny tolerance/radius ratio.
+    let allowed_sine = libm::sqrt(tolerance) / libm::sqrt(radius) / core::f64::consts::SQRT_2;
+    libm::sin(sweep / (4.0 * f64::from(edges))) <= allowed_sine
+}
+
 /// Discretizes one loop.
 ///
 /// # Errors
 ///
-/// Fails only on invalid policy values; valid loops always discretize.
+/// Fails on invalid policy values, an insufficient edge budget, count
+/// overflow, or numeric limits that prevent reliable curve realization.
 pub fn discretize_loop(
     source: &Loop2,
     policy: &DiscretizePolicy,
@@ -136,7 +307,7 @@ pub fn discretize_loop(
         // Each segment contributes its start point plus interior points;
         // its exact endpoint is contributed as the next segment's start.
         push_point(&mut out, [start.x, start.y], seg_index);
-        emit_kind_interior(&mut out, start, seg.to, &seg.kind, policy, seg_index);
+        emit_kind_interior(&mut out, start, seg.to, &seg.kind, policy, seg_index)?;
     }
     Ok(out)
 }
@@ -145,7 +316,7 @@ pub fn discretize_loop(
 ///
 /// # Errors
 ///
-/// Fails only on invalid policy values.
+/// Fails under the same conditions as [`discretize_loop`].
 pub fn discretize_profile(
     profile: &Profile2,
     policy: &DiscretizePolicy,
@@ -168,14 +339,12 @@ fn emit_kind_interior(
     kind: &SegKind,
     policy: &DiscretizePolicy,
     seg_index: u32,
-) {
+) -> Result<(), DiscretizeError> {
     match kind {
-        SegKind::Line => {}
-        SegKind::Arc { bulge } => {
-            emit_arc_interior(out, start, to, *bulge, policy, seg_index);
-        }
+        SegKind::Line => Ok(()),
+        SegKind::Arc { bulge } => emit_arc_interior(out, start, to, *bulge, policy, seg_index),
         SegKind::Cubic { c1, c2 } => {
-            emit_cubic_interior(out, start, *c1, *c2, to, policy, seg_index);
+            emit_cubic_interior(out, start, *c1, *c2, to, policy, seg_index)
         }
         SegKind::PolicyTo {
             policy: _,
@@ -206,47 +375,49 @@ fn emit_arc_interior(
     bulge: f64,
     policy: &DiscretizePolicy,
     seg_index: u32,
-) {
+) -> Result<(), DiscretizeError> {
+    let output_start = out.points.len() - 1;
     let dx = to.x - from.x;
     let dy = to.y - from.y;
-    let half_chord = 0.5 * libm::sqrt(dx * dx + dy * dy);
-    let sagitta = bulge * half_chord;
-    let radius = ((half_chord * half_chord + sagitta * sagitta) / (2.0 * sagitta)).abs();
+    let chord = libm::hypot(dx, dy);
+    let half_chord = 0.5 * chord;
+    let reciprocal_bulge = 1.0 / bulge;
+    let signed_radius = half_chord * 0.5 * (bulge + reciprocal_bulge);
+    let radius = signed_radius.abs();
+    let offset = half_chord * 0.5 * (reciprocal_bulge - bulge);
     // sweep = 4 atan(bulge); signed, counter-clockwise positive.
     let sweep = 4.0 * libm::atan(bulge);
-    debug_assert!(radius.is_finite(), "validated bulges give finite radii");
-
-    // Edges needed so each sub-arc's sagitta stays within tolerance:
-    // s = r (1 - cos(theta / 2n))  =>  n >= theta / (2 acos(1 - tol / r)).
-    let edges = if policy.chord_tolerance >= 2.0 * radius {
-        1
-    } else {
-        let per_edge = 2.0 * libm::acos(1.0 - policy.chord_tolerance / radius);
-        let needed = libm::ceil(libm::fabs(sweep) / per_edge);
-        if needed >= f64::from(policy.max_segment_edges) {
-            policy.max_segment_edges
-        } else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "needed is a ceil of a finite positive value below the u32 cap"
-            )]
-            {
-                needed as u32
-            }
-        }
-    };
-    let edges = edges.clamp(policy.min_arc_edges, policy.max_segment_edges);
-
+    if !dx.is_finite()
+        || !dy.is_finite()
+        || !chord.is_finite()
+        || !radius.is_finite()
+        || radius == 0.0
+        || !offset.is_finite()
+        || !sweep.is_finite()
+        || sweep == 0.0
+    {
+        return Err(DiscretizeError::NumericLimit);
+    }
     // Center: midpoint plus left normal scaled by (signed radius - sagitta).
     // Signed radius carries the bulge sign, which puts the center on the
     // correct side for both sweep directions and both minor/major arcs.
-    let signed_radius = (half_chord * half_chord + sagitta * sagitta) / (2.0 * sagitta);
-    let mid = [(from.x + to.x) * 0.5, (from.y + to.y) * 0.5];
-    let inv_chord = 0.5 / half_chord;
-    let normal = [-dy * inv_chord, dx * inv_chord];
-    let offset = signed_radius - sagitta;
+    let mid = [from.x + dx * 0.5, from.y + dy * 0.5];
+    let normal = [-dy / chord, dx / chord];
     let center = [mid[0] + normal[0] * offset, mid[1] + normal[1] * offset];
+    if center.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(DiscretizeError::NumericLimit);
+    }
+    let realizable_tolerance = coordinate_tolerance(
+        policy.chord_tolerance,
+        &[from.x, from.y, to.x, to.y, center[0], center[1]],
+    )
+    .ok_or(DiscretizeError::NumericLimit)?;
+    let edges = circular_edge_count(
+        radius,
+        libm::fabs(sweep),
+        realizable_tolerance,
+        CircularEdgeConstraints::new(policy.min_arc_edges, policy.max_segment_edges),
+    )?;
     let start_angle = libm::atan2(from.y - center[1], from.x - center[0]);
     let step = sweep / f64::from(edges);
     for k in 1..edges {
@@ -255,16 +426,101 @@ fn emit_arc_interior(
             center[0] + radius * libm::cos(angle),
             center[1] + radius * libm::sin(angle),
         ];
+        if p.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(DiscretizeError::NumericLimit);
+        }
         push_point(out, p, seg_index);
     }
+    if !arc_chords_within(
+        &out.points[output_start..],
+        [to.x, to.y],
+        center,
+        radius,
+        realizable_tolerance,
+    ) {
+        return Err(DiscretizeError::NumericLimit);
+    }
+    Ok(())
+}
+
+fn arc_chords_within(
+    emitted: &[[f64; 2]],
+    endpoint: [f64; 2],
+    center: [f64; 2],
+    radius: f64,
+    tolerance: f64,
+) -> bool {
+    emitted
+        .iter()
+        .copied()
+        .zip(
+            emitted
+                .iter()
+                .copied()
+                .skip(1)
+                .chain(core::iter::once(endpoint)),
+        )
+        .all(|(from, to)| {
+            // Work relative to the center. Re-forming a global midpoint can
+            // discard precisely the low bits this check is meant to audit.
+            let a = [from[0] - center[0], from[1] - center[1]];
+            let b = [to[0] - center[0], to[1] - center[1]];
+            let delta = [b[0] - a[0], b[1] - a[1]];
+            let chord = libm::hypot(delta[0], delta[1]);
+            if !chord.is_finite() || chord == 0.0 {
+                return false;
+            }
+            let direction = [delta[0] / chord, delta[1] / chord];
+            let projection = -(a[0] * direction[0] + a[1] * direction[1]);
+            let closest = if projection <= 0.0 {
+                a
+            } else if projection >= chord {
+                b
+            } else {
+                [
+                    a[0] + direction[0] * projection,
+                    a[1] + direction[1] * projection,
+                ]
+            };
+            let radii = [
+                libm::hypot(a[0], a[1]),
+                libm::hypot(b[0], b[1]),
+                libm::hypot(closest[0], closest[1]),
+            ];
+            projection.is_finite()
+                && radii.iter().all(|value| value.is_finite())
+                && (radii[0] - radius).abs() <= tolerance
+                && (radii[1] - radius).abs() <= tolerance
+                && radius - radii[2] <= tolerance
+        })
+}
+
+fn coordinate_tolerance(tolerance: f64, coordinates: &[f64]) -> Option<f64> {
+    let max_ulp = coordinates
+        .iter()
+        .copied()
+        .map(float_ulp)
+        .fold(0.0_f64, f64::max);
+    let margin = REALIZATION_ULPS * max_ulp;
+    let remaining = tolerance - margin;
+    (max_ulp.is_finite() && remaining.is_finite() && remaining > 0.0).then_some(remaining)
+}
+
+fn float_ulp(value: f64) -> f64 {
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        return f64::from_bits(1);
+    }
+    f64::from_bits(magnitude.to_bits() + 1) - magnitude
 }
 
 /// Emits a cubic's interior points by uniform-parameter sampling.
 ///
 /// The subdivision count derives once from the classic second-difference
 /// flatness bound (`n >= sqrt(3 d / (4 tol))`, `d` the largest control
-/// second difference), clamped by the policy cap — so the work is bounded
-/// up front even for hostile control points, and the math is arithmetic
+/// second difference). If the required count exceeds the policy cap, the
+/// operation fails typed — so work is bounded up front even for hostile
+/// control points, and the math is arithmetic
 /// plus one square root: bit-deterministic everywhere and independent of
 /// kurbo's flattener.
 fn emit_cubic_interior(
@@ -275,31 +531,47 @@ fn emit_cubic_interior(
     to: Point,
     policy: &DiscretizePolicy,
     seg_index: u32,
-) {
-    let d1 = [from.x - 2.0 * c1.x + c2.x, from.y - 2.0 * c1.y + c2.y];
-    let d2 = [c1.x - 2.0 * c2.x + to.x, c1.y - 2.0 * c2.y + to.y];
-    let d =
-        libm::sqrt(d1[0] * d1[0] + d1[1] * d1[1]).max(libm::sqrt(d2[0] * d2[0] + d2[1] * d2[1]));
-    let needed = libm::ceil(libm::sqrt(3.0 * d / (4.0 * policy.chord_tolerance)));
-    let edges = if needed.is_finite() && needed >= 1.0 {
-        if needed >= f64::from(policy.max_segment_edges) {
-            policy.max_segment_edges
-        } else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "needed is a finite positive ceil below the u32 cap"
-            )]
-            {
-                needed as u32
-            }
-        }
-    } else {
-        policy.max_segment_edges
-    };
+) -> Result<(), DiscretizeError> {
+    let realizable_tolerance = coordinate_tolerance(
+        policy.chord_tolerance,
+        &[from.x, from.y, c1.x, c1.y, c2.x, c2.y, to.x, to.y],
+    )
+    .ok_or(DiscretizeError::NumericLimit)?;
+    let output_start = out.points.len() - 1;
+    let d1 = [
+        (from.x - c1.x) - (c1.x - c2.x),
+        (from.y - c1.y) - (c1.y - c2.y),
+    ];
+    let d2 = [(c1.x - c2.x) - (c2.x - to.x), (c1.y - c2.y) - (c2.y - to.y)];
+    let d = libm::hypot(d1[0], d1[1]).max(libm::hypot(d2[0], d2[1]));
+    if !d.is_finite() {
+        return Err(DiscretizeError::NumericLimit);
+    }
+    let root_bound = libm::sqrt(d) * (libm::sqrt(3.0) * 0.5);
+    let needed = libm::ceil(root_bound / libm::sqrt(realizable_tolerance));
+    if !needed.is_finite() || needed > f64::from(u32::MAX) {
+        return Err(DiscretizeError::EdgeCountOverflow);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "needed is a finite nonnegative ceil within the u32 domain"
+    )]
+    let mut edges = (needed as u32).max(1);
+    while root_bound / f64::from(edges) > libm::sqrt(realizable_tolerance) {
+        edges = edges
+            .checked_add(1)
+            .ok_or(DiscretizeError::EdgeCountOverflow)?;
+    }
+    if edges > policy.max_segment_edges {
+        return Err(DiscretizeError::ToleranceBudgetExceeded {
+            required: edges,
+            maximum: policy.max_segment_edges,
+        });
+    }
     for k in 1..edges {
         let t = f64::from(k) / f64::from(edges);
-        // Horner-form cubic Bézier evaluation: pure arithmetic.
+        // Bernstein-basis cubic Bézier evaluation: pure arithmetic.
         let mt = 1.0 - t;
         let a = mt * mt * mt;
         let b = 3.0 * mt * mt * t;
@@ -309,8 +581,83 @@ fn emit_cubic_interior(
             a * from.x + b * c1.x + c * c2.x + e * to.x,
             a * from.y + b * c1.y + c * c2.y + e * to.y,
         ];
+        if p.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(DiscretizeError::NumericLimit);
+        }
         push_point(out, p, seg_index);
     }
+    if out.points.len() - output_start != edges as usize
+        || !cubic_chords_within(
+            &out.points[output_start..],
+            [from.x, from.y],
+            [c1.x, c1.y],
+            [c2.x, c2.y],
+            [to.x, to.y],
+            d,
+            realizable_tolerance,
+            edges,
+        )
+    {
+        return Err(DiscretizeError::NumericLimit);
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the cubic's four points, emitted samples, bound, and count are the audited contract"
+)]
+fn cubic_chords_within(
+    emitted: &[[f64; 2]],
+    from: [f64; 2],
+    c1: [f64; 2],
+    c2: [f64; 2],
+    to: [f64; 2],
+    second_difference: f64,
+    tolerance: f64,
+    edges: u32,
+) -> bool {
+    let local_c1 = [c1[0] - from[0], c1[1] - from[1]];
+    let local_c2 = [c2[0] - from[0], c2[1] - from[1]];
+    let local_to = [to[0] - from[0], to[1] - from[1]];
+    if local_c1
+        .iter()
+        .chain(&local_c2)
+        .chain(&local_to)
+        .any(|value| !value.is_finite())
+    {
+        return false;
+    }
+    let mut max_emission_error = 0.0_f64;
+    for k in 0..=edges {
+        let actual = if k == edges { to } else { emitted[k as usize] };
+        let actual_local = [actual[0] - from[0], actual[1] - from[1]];
+        let t = f64::from(k) / f64::from(edges);
+        let ideal_local = cubic_point_at([0.0, 0.0], local_c1, local_c2, local_to, t);
+        let error = libm::hypot(
+            actual_local[0] - ideal_local[0],
+            actual_local[1] - ideal_local[1],
+        );
+        if !error.is_finite() {
+            return false;
+        }
+        max_emission_error = max_emission_error.max(error);
+    }
+    let edges = f64::from(edges);
+    let flatness_bound = 0.75 * second_difference / (edges * edges);
+    flatness_bound.is_finite() && flatness_bound + max_emission_error <= tolerance
+}
+
+fn cubic_point_at(from: [f64; 2], c1: [f64; 2], c2: [f64; 2], to: [f64; 2], t: f64) -> [f64; 2] {
+    let mt = 1.0 - t;
+    let a = mt * mt * mt;
+    let b = 3.0 * mt * mt * t;
+    let c = 3.0 * mt * t * t;
+    let d = t * t * t;
+    [
+        a * from[0] + b * c1[0] + c * c2[0] + d * to[0],
+        a * from[1] + b * c1[1] + c * c2[1] + d * to[1],
+    ]
 }
 
 #[cfg(test)]
@@ -548,12 +895,246 @@ mod tests {
         }
 
         let equal = DiscretizePolicy {
+            chord_tolerance: 0.1,
             min_arc_edges: 4,
             max_segment_edges: 4,
-            ..DiscretizePolicy::default()
         };
         assert!(discretize_loop(&line_loop, &equal).is_ok());
         assert!(discretize_loop(&arc_loop, &equal).is_ok());
         assert!(discretize_profile(&arc_profile, &equal).is_ok());
+    }
+
+    #[test]
+    fn insufficient_arc_budget_does_not_claim_tolerance() {
+        let semicircle = Loop2::new(vec![Seg2::arc((1.0, 0.0), 1.0), Seg2::line((-1.0, 0.0))])
+            .expect("valid semicircle");
+        let policy = DiscretizePolicy {
+            chord_tolerance: 1.0e-9,
+            min_arc_edges: 1,
+            max_segment_edges: 4,
+        };
+
+        assert!(
+            matches!(
+                discretize_loop(&semicircle, &policy),
+                Err(DiscretizeError::ToleranceBudgetExceeded { maximum: 4, .. })
+            ),
+            "four chords cannot satisfy a 1e-9 sagitta bound on a unit-radius semicircle"
+        );
+    }
+
+    #[test]
+    fn circular_count_is_stable_monotone_and_caller_aligned() {
+        let constraints = CircularEdgeConstraints::new(8, u32::MAX).with_edge_multiple(4);
+        let representative = circular_edge_count(1.0, core::f64::consts::TAU, 5.0e-4, constraints)
+            .expect("representative circle count");
+        assert_eq!(representative, 100);
+        assert_eq!(representative % 4, 0, "caller alignment is honored");
+
+        let mut previous = 0;
+        for tolerance in [1.0, 0.1, 1.0e-3, 1.0e-6, 1.0e-12] {
+            let edges = circular_edge_count(2.0, core::f64::consts::TAU, tolerance, constraints)
+                .expect("representable count");
+            assert!(
+                edges >= previous,
+                "tightening tolerance reduced {previous} edges to {edges}"
+            );
+            previous = edges;
+        }
+    }
+
+    #[test]
+    fn circular_count_reports_budget_overflow_and_invalid_inputs() {
+        assert!(matches!(
+            circular_edge_count(
+                1.0,
+                core::f64::consts::PI,
+                1.0e-9,
+                CircularEdgeConstraints::new(1, 4),
+            ),
+            Err(DiscretizeError::ToleranceBudgetExceeded { maximum: 4, .. })
+        ));
+        assert_eq!(
+            circular_edge_count(
+                1.0,
+                core::f64::consts::TAU,
+                1.0e-20,
+                CircularEdgeConstraints::new(1, u32::MAX),
+            ),
+            Err(DiscretizeError::EdgeCountOverflow)
+        );
+        for (radius, sweep, tolerance) in [
+            (0.0, 1.0, 0.1),
+            (1.0, 0.0, 0.1),
+            (1.0, core::f64::consts::TAU + 0.1, 0.1),
+            (f64::INFINITY, 1.0, 0.1),
+        ] {
+            assert_eq!(
+                circular_edge_count(
+                    radius,
+                    sweep,
+                    tolerance,
+                    CircularEdgeConstraints::new(1, 100),
+                ),
+                Err(DiscretizeError::InvalidCircularGeometry)
+            );
+        }
+        assert_eq!(
+            circular_edge_count(
+                1.0,
+                1.0,
+                0.1,
+                CircularEdgeConstraints::new(1, 100).with_edge_multiple(0),
+            ),
+            Err(DiscretizeError::InvalidEdgeBounds)
+        );
+    }
+
+    #[test]
+    fn cubic_deviation_is_bounded_and_straight_cubics_need_one_edge() {
+        let curve = Loop2::new(vec![
+            Seg2::cubic((2.0, 0.0), (0.5, 1.0), (1.5, -1.0)).tagged(SegTag(7)),
+            Seg2::line((2.0, 2.0)),
+            Seg2::line((0.0, 2.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid cubic loop");
+        let policy = DiscretizePolicy {
+            chord_tolerance: 1.0e-4,
+            max_segment_edges: 4096,
+            ..DiscretizePolicy::default()
+        };
+        let discretized = discretize_loop(&curve, &policy).expect("cubic fits budget");
+        let edges = discretized
+            .edge_seg
+            .iter()
+            .take_while(|&&segment| segment == 0)
+            .count();
+        assert!(edges > 1);
+        for edge in 0..edges {
+            let from = discretized.points[edge];
+            let to = discretized.points[edge + 1];
+            for sample in 1..10 {
+                let u = f64::from(sample) / 10.0;
+                let t = (edge as f64 + u) / edges as f64;
+                let curve_point = cubic_point([0.0, 0.0], [0.5, 1.0], [1.5, -1.0], [2.0, 0.0], t);
+                let chord_point = [
+                    from[0] * (1.0 - u) + to[0] * u,
+                    from[1] * (1.0 - u) + to[1] * u,
+                ];
+                let deviation = libm::hypot(
+                    curve_point[0] - chord_point[0],
+                    curve_point[1] - chord_point[1],
+                );
+                assert!(
+                    deviation <= policy.chord_tolerance,
+                    "cubic deviation {deviation} exceeded {}",
+                    policy.chord_tolerance
+                );
+            }
+        }
+
+        let straight = Loop2::new(vec![
+            Seg2::cubic((3.0, 0.0), (1.0, 0.0), (2.0, 0.0)),
+            Seg2::line((3.0, 1.0)),
+            Seg2::line((0.0, 1.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid straight cubic loop");
+        let one_edge = DiscretizePolicy {
+            max_segment_edges: 1,
+            min_arc_edges: 1,
+            ..DiscretizePolicy::default()
+        };
+        let discretized = discretize_loop(&straight, &one_edge).expect("straight cubic");
+        assert_eq!(
+            discretized
+                .edge_seg
+                .iter()
+                .filter(|&&segment| segment == 0)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cubic_budget_and_numeric_limits_are_typed() {
+        let curve = Loop2::new(vec![
+            Seg2::cubic((2.0, 0.0), (0.5, 1.0), (1.5, -1.0)),
+            Seg2::line((2.0, 2.0)),
+            Seg2::line((0.0, 2.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid cubic loop");
+        let policy = DiscretizePolicy {
+            chord_tolerance: 1.0e-9,
+            max_segment_edges: 4,
+            min_arc_edges: 1,
+        };
+        assert!(matches!(
+            discretize_loop(&curve, &policy),
+            Err(DiscretizeError::ToleranceBudgetExceeded { maximum: 4, .. })
+        ));
+
+        let extreme_arc = Loop2::new(vec![
+            Seg2::arc((f64::MAX, 0.0), 1.0),
+            Seg2::line((-f64::MAX, 0.0)),
+        ])
+        .expect("finite endpoints are structurally valid");
+        assert_eq!(
+            discretize_loop(&extreme_arc, &DiscretizePolicy::default()),
+            Err(DiscretizeError::NumericLimit)
+        );
+
+        for (center, tolerance, maximum) in [
+            (1.0e8, 1.0e-7, 100_000),
+            (1.0e8, 1.0e-9, 100_000),
+            (1.0e12, 1.0e-9, 100_000),
+        ] {
+            let translated = Loop2::new(vec![
+                Seg2::arc((center + 1.0, 0.0), 1.0),
+                Seg2::line((center - 1.0, 0.0)),
+            ])
+            .expect("finite translated semicircle");
+            let policy = DiscretizePolicy {
+                chord_tolerance: tolerance,
+                min_arc_edges: 1,
+                max_segment_edges: maximum,
+            };
+            assert_eq!(
+                discretize_loop(&translated, &policy),
+                Err(DiscretizeError::NumericLimit),
+                "origin {center:e} cannot realize tolerance {tolerance:e} reliably"
+            );
+        }
+
+        for center in [1.0e8, 1.0e12] {
+            let translated = Loop2::new(vec![
+                Seg2::cubic((center + 1.0, 0.0), (center, 1.0), (center + 1.0, 1.0)),
+                Seg2::line((center + 1.0, 2.0)),
+                Seg2::line((center, 2.0)),
+                Seg2::line((center, 0.0)),
+            ])
+            .expect("finite translated cubic");
+            let policy = DiscretizePolicy {
+                chord_tolerance: 1.0e-9,
+                min_arc_edges: 1,
+                max_segment_edges: 100_000,
+            };
+            assert_eq!(
+                discretize_loop(&translated, &policy),
+                Err(DiscretizeError::NumericLimit),
+                "translated cubic cannot realize a sub-ulp tolerance at {center:e}"
+            );
+        }
+    }
+
+    fn cubic_point(from: [f64; 2], c1: [f64; 2], c2: [f64; 2], to: [f64; 2], t: f64) -> [f64; 2] {
+        let mt = 1.0 - t;
+        let weights = [mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t];
+        [
+            weights[0] * from[0] + weights[1] * c1[0] + weights[2] * c2[0] + weights[3] * to[0],
+            weights[0] * from[1] + weights[1] * c1[1] + weights[2] * c2[1] + weights[3] * to[1],
+        ]
     }
 }

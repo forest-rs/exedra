@@ -610,7 +610,9 @@ mod tests {
     use super::*;
     use crate::assembly::{Assembly, InstanceId};
     use exedra_constructive::builders;
+    use exedra_constructive::discretize::{DiscretizeError, DiscretizePolicy};
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
+    use exedra_constructive::tessellate::TessellateError;
 
     fn prism_recipe(width: f64) -> Recipe {
         let mut b = RecipeBuilder::new();
@@ -820,6 +822,53 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
         );
+    }
+
+    #[test]
+    fn tolerance_budget_failure_keeps_its_typed_payload_through_compilation() {
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(builders::circle(1.0).expect("circle"));
+        let node = builder
+            .add(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .expect("extrude");
+        let recipe = builder.finish(node).expect("recipe");
+        let mut assembly = Assembly::new();
+        let part = assembly
+            .add_recipe_part("tight-circle", recipe)
+            .expect("part");
+        assembly
+            .add_instance(None, "tight-circle", part, Placement3::IDENTITY)
+            .expect("instance");
+        let mut policy = EvalPolicy::default();
+        policy.discretize = DiscretizePolicy {
+            chord_tolerance: 1.0e-9,
+            min_arc_edges: 1,
+            max_segment_edges: 4,
+        };
+
+        let error = PartCompiler::new()
+            .compile_parts(&assembly, &policy)
+            .expect_err("insufficient tolerance budget must fail compilation");
+        assert!(matches!(
+            error,
+            CompileError::Evaluate {
+                part: failed_part,
+                error: EvalError {
+                    node: failed_node,
+                    error: TessellateError::Discretize(
+                        DiscretizeError::ToleranceBudgetExceeded {
+                            required,
+                            maximum: 4,
+                        }
+                    ),
+                },
+            } if failed_part == part && failed_node == node && required > 4
+        ));
     }
 
     #[test]

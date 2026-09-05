@@ -2,7 +2,7 @@
 id: ec-dhp7
 status: closed
 deps: []
-links: []
+links: [ec-xkra]
 created: 2026-09-05T02:28:19Z
 type: bug
 priority: 1

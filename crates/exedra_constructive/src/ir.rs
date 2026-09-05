@@ -340,9 +340,13 @@ pub enum PrimitiveSpec {
         radius: f64,
         /// Height along +Z; positive.
         height: f64,
-        /// Number of side segments; at least 3.
-        /// Evaluation also requires this not to exceed
-        /// [`crate::discretize::DiscretizePolicy::max_segment_edges`].
+        /// Authored number of side segments; at least 3.
+        ///
+        /// Evaluation requires this not to exceed
+        /// [`crate::discretize::DiscretizePolicy::max_segment_edges`], but
+        /// does not derive it from chord tolerance. Callers requesting a
+        /// tolerance-bounded round cylinder can calculate this value with
+        /// [`crate::discretize::circular_edge_count`].
         segments: u32,
     },
 }
@@ -2095,7 +2099,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x004C_4D5D_F1C6_8988_A431_349B_C4F0_078C,
+            0xBEA4_B5D6_B432_08DF_92F4_CE8B_53B9_F245,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }
