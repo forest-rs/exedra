@@ -16,6 +16,8 @@
 //!   base color derived from the key;
 //! - items that share a part, body, and material resolution share one
 //!   glTF mesh (glTF-level instancing).
+//! - empty bodies retain their instance nodes and metadata without a mesh;
+//!   geometry-free scenes omit buffers and the optional GLB BIN chunk.
 //!
 //! The output is deterministic: identical inputs produce byte-identical
 //! JSON. No external glTF or base64 dependency is used.
@@ -206,16 +208,18 @@ pub fn export_gltf_with_options(
 ) -> Result<GltfExport, GltfError> {
     let built = build_export(assembly, compiled, list, options)?;
     let mut document = built.document;
-    document.insert(
-        "buffers".into(),
-        json!([{
-            "byteLength": built.buffer.len(),
-            "uri": format!(
-                "data:application/octet-stream;base64,{}",
-                base64(&built.buffer)
-            ),
-        }]),
-    );
+    if !built.buffer.is_empty() {
+        document.insert(
+            "buffers".into(),
+            json!([{
+                "byteLength": built.buffer.len(),
+                "uri": format!(
+                    "data:application/octet-stream;base64,{}",
+                    base64(&built.buffer)
+                ),
+            }]),
+        );
+    }
     let json = serde_json::to_string_pretty(&Value::Object(document))
         .expect("document is finite JSON by construction");
     Ok(GltfExport {
@@ -293,32 +297,35 @@ fn build_export(
                 body: item.body,
             })?;
 
-        let resolution: Vec<Option<String>> =
-            item.regions.iter().map(|r| r.material.clone()).collect();
-        let key = (item.part.0, item.body, resolution);
-        let mesh = if let Some(&index) = mesh_index.get(&key) {
-            index
-        } else {
-            let index = emit_mesh(
-                body,
-                item,
-                &mut buffer,
-                &mut buffer_views,
-                &mut accessors,
-                &mut materials,
-                &mut material_index,
-                &mut stats,
-            );
-            meshes.push(index);
-            let mesh_number = meshes.len() - 1;
-            mesh_index.insert(key, mesh_number);
-            stats.meshes += 1;
-            mesh_number
-        };
-
         let mut node = Map::new();
         node.insert("name".into(), Value::String(item.path.to_string()));
-        node.insert("mesh".into(), json!(mesh));
+        // An exact empty Boolean still has instance identity, but glTF
+        // meshes/accessors cannot represent zero geometry with zero counts.
+        if !body.tri.indices.is_empty() {
+            let resolution: Vec<Option<String>> =
+                item.regions.iter().map(|r| r.material.clone()).collect();
+            let key = (item.part.0, item.body, resolution);
+            let mesh = if let Some(&index) = mesh_index.get(&key) {
+                index
+            } else {
+                let index = emit_mesh(
+                    body,
+                    item,
+                    &mut buffer,
+                    &mut buffer_views,
+                    &mut accessors,
+                    &mut materials,
+                    &mut material_index,
+                    &mut stats,
+                );
+                meshes.push(index);
+                let mesh_number = meshes.len() - 1;
+                mesh_index.insert(key, mesh_number);
+                stats.meshes += 1;
+                mesh_number
+            };
+            node.insert("mesh".into(), json!(mesh));
+        }
         if item.world.rows != exedra_constructive::ir::Placement3::IDENTITY.rows {
             node.insert(
                 "matrix".into(),
@@ -359,8 +366,10 @@ fn build_export(
                     0.0, 1.0, 0.0, 0.0,
                     0.0, 0.0, 0.0, 1.0
                 ],
-                "children": item_nodes,
             }));
+            if !item_nodes.is_empty() {
+                nodes[root]["children"] = json!(item_nodes);
+            }
             stats.nodes += 1;
             vec![root]
         }
@@ -371,14 +380,24 @@ fn build_export(
         json!({ "version": "2.0", "generator": "exedra_gltf" }),
     );
     document.insert("scene".into(), json!(0));
-    document.insert("scenes".into(), json!([{ "nodes": scene_nodes }]));
-    document.insert("nodes".into(), Value::Array(nodes));
-    document.insert("meshes".into(), Value::Array(meshes));
-    if !materials.is_empty() {
-        document.insert("materials".into(), Value::Array(materials));
+    let scene = if scene_nodes.is_empty() {
+        json!({})
+    } else {
+        json!({ "nodes": scene_nodes })
+    };
+    document.insert("scenes".into(), json!([scene]));
+    // Optional glTF arrays must be omitted, rather than present and empty.
+    for (name, values) in [
+        ("nodes", nodes),
+        ("meshes", meshes),
+        ("materials", materials),
+        ("accessors", accessors),
+        ("bufferViews", buffer_views),
+    ] {
+        if !values.is_empty() {
+            document.insert(name.into(), Value::Array(values));
+        }
     }
-    document.insert("accessors".into(), Value::Array(accessors));
-    document.insert("bufferViews".into(), Value::Array(buffer_views));
     Ok(BuiltExport {
         document,
         buffer,
@@ -387,7 +406,9 @@ fn build_export(
 }
 
 fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec<u8>, GltfError> {
-    document.insert("buffers".into(), json!([{ "byteLength": buffer.len() }]));
+    if !buffer.is_empty() {
+        document.insert("buffers".into(), json!([{ "byteLength": buffer.len() }]));
+    }
     let mut json = serde_json::to_vec(&Value::Object(document))
         .expect("document is finite JSON by construction");
     while !json.len().is_multiple_of(4) {
@@ -400,8 +421,13 @@ fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec
     let total_len = 12_usize
         .checked_add(8)
         .and_then(|length| length.checked_add(json.len()))
-        .and_then(|length| length.checked_add(8))
-        .and_then(|length| length.checked_add(buffer.len()))
+        .and_then(|length| {
+            if buffer.is_empty() {
+                Some(length)
+            } else {
+                length.checked_add(8)?.checked_add(buffer.len())
+            }
+        })
         .ok_or(GltfError::GlbTooLarge)?;
     let total_len = u32::try_from(total_len).map_err(|_| GltfError::GlbTooLarge)?;
     let json_len = u32::try_from(json.len()).map_err(|_| GltfError::GlbTooLarge)?;
@@ -414,9 +440,11 @@ fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec
     glb.extend_from_slice(&json_len.to_le_bytes());
     glb.extend_from_slice(b"JSON");
     glb.extend_from_slice(&json);
-    glb.extend_from_slice(&buffer_len.to_le_bytes());
-    glb.extend_from_slice(b"BIN\0");
-    glb.extend_from_slice(&buffer);
+    if !buffer.is_empty() {
+        glb.extend_from_slice(&buffer_len.to_le_bytes());
+        glb.extend_from_slice(b"BIN\0");
+        glb.extend_from_slice(&buffer);
+    }
     Ok(glb)
 }
 
@@ -671,6 +699,101 @@ mod tests {
             .unwrap();
         let list = flatten(&asm, &compiled);
         (asm, compiled, list)
+    }
+
+    #[test]
+    fn empty_scene_omits_optional_arrays_and_binary_payload() {
+        let assembly = Assembly::new();
+        let compiled = PartCompiler::new()
+            .compile_parts(&assembly, &EvalPolicy::default())
+            .expect("empty assembly compiles");
+        let list = flatten(&assembly, &compiled);
+        for options in [
+            GltfExportOptions::default(),
+            GltfExportOptions::z_up_to_y_up(),
+        ] {
+            let export = export_glb_with_options(&assembly, &compiled, &list, options)
+                .expect("empty scene exports");
+            let document = GlbDocument::parse(&export.bytes).expect("valid JSON-only GLB");
+            for name in ["meshes", "accessors", "bufferViews", "buffers", "materials"] {
+                assert!(document.json().get(name).is_none(), "omit {name}");
+            }
+            assert_eq!(export.stats.buffer_bytes, 0);
+            assert_eq!(export.stats.meshes, 0);
+            let json_len =
+                u32::from_le_bytes(export.bytes[12..16].try_into().expect("chunk length"));
+            assert_eq!(
+                export.bytes.len(),
+                20 + usize::try_from(json_len).expect("JSON length"),
+                "no empty BIN chunk"
+            );
+            if options.coordinates == GltfCoordinates::Preserve {
+                assert!(document.json().get("nodes").is_none());
+                assert!(document.json()["scenes"][0].get("nodes").is_none());
+            } else {
+                assert_eq!(document.node_names(), ["Exedra Z-up to glTF Y-up"]);
+                assert!(document.json()["nodes"][0].get("children").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn empty_intersection_exports_identity_without_empty_geometry() {
+        use exedra_constructive::evaluate::{Fidelity, Severity};
+        use exedra_constructive::ir::{CsgOp, PrimitiveSpec};
+        let mut builder = RecipeBuilder::new();
+        let operands = [0.0, 2.0, 4.0].map(|x| {
+            builder
+                .add(NodeKind::Primitive {
+                    spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                    placement: Placement3::translate(x, 0.0, 0.0),
+                })
+                .expect("box")
+        });
+        let root = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Intersection,
+                operands: operands.to_vec(),
+            })
+            .expect("intersection");
+        let recipe = builder.finish(root).expect("recipe");
+        let mut assembly = Assembly::new();
+        let part = assembly
+            .add_recipe_part("empty-part", recipe)
+            .expect("part");
+        assembly
+            .add_instance(None, "empty-instance", part, Placement3::IDENTITY)
+            .expect("instance");
+        let compiled = PartCompiler::new()
+            .compile_parts(&assembly, &EvalPolicy::default())
+            .expect("exact empty part compiles");
+        let report = compiled.report(part).expect("evaluation report");
+        assert_eq!(report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!(report.clean_at(Severity::Warning));
+        let list = flatten(&assembly, &compiled);
+        assert_eq!(list.triangle_count(), 0);
+        for options in [
+            GltfExportOptions::default(),
+            GltfExportOptions::z_up_to_y_up(),
+        ] {
+            let export = export_gltf_with_options(&assembly, &compiled, &list, options)
+                .expect("JSON export");
+            let json: Value = serde_json::from_str(&export.json).expect("JSON");
+            assert_eq!(json["nodes"][0]["name"], "empty-instance");
+            assert_eq!(json["nodes"][0]["extras"]["partKey"], "empty-part");
+            assert!(json["nodes"][0].get("mesh").is_none());
+            for field in ["meshes", "accessors", "bufferViews", "buffers"] {
+                assert!(json.get(field).is_none(), "empty geometry omits {field}");
+            }
+            let glb =
+                export_glb_with_options(&assembly, &compiled, &list, options).expect("GLB export");
+            let document = GlbDocument::parse(&glb.bytes).expect("valid container");
+            assert_eq!(document.json(), &json);
+            assert!(document.bin().is_empty());
+            assert_eq!(document.triangle_count(), 0);
+            assert_eq!(glb.stats.meshes, 0);
+            assert_eq!(glb.stats.buffer_bytes, 0);
+        }
     }
 
     #[test]
