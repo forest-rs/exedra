@@ -1997,6 +1997,84 @@ mod tests {
     }
 
     #[test]
+    fn import_fingerprint_covers_attributes() {
+        // Two imports that agree on positions and topology but differ only
+        // in a corner UV must fingerprint differently, so a warm
+        // `evaluate_with_cache` never returns the other import's stale body.
+        fn import_recipe(mesh: Mesh) -> Recipe {
+            let mut builder = RecipeBuilder::new();
+            let import = builder.add_import(mesh).expect("deep-valid import");
+            let imported = builder
+                .add(NodeKind::MeshImport {
+                    import,
+                    placement: Placement3::IDENTITY,
+                })
+                .expect("import node");
+            builder.finish(imported).expect("valid recipe")
+        }
+
+        let recipe_a = import_recipe(attributed_imported_unit_box());
+
+        let mut mesh_b = attributed_imported_unit_box();
+        let face = mesh_b.faces().next().expect("box has a face");
+        let corner = mesh_b
+            .face_loop(face)
+            .nth(1)
+            .expect("box face has a second corner");
+        {
+            let mut edit = mesh_b.edit();
+            exedra_mesh::op::set_corner_uv(&mut edit, corner, [0.5, 0.5]).expect("live corner");
+            #[expect(unused_must_use, reason = "discard sink output")]
+            {
+                edit.finish();
+            }
+        }
+        let recipe_b = import_recipe(mesh_b);
+
+        assert_ne!(recipe_a.recipe_fingerprint(), recipe_b.recipe_fingerprint());
+
+        let policy = EvalPolicy::default();
+        let mut cache = EvalCache::new();
+        let warm_a =
+            evaluate_with_cache(&recipe_a, &policy, &mut cache).expect("recipe a evaluates");
+        assert_eq!(warm_a.report.counters.cache_hits, 0);
+        let warm_b =
+            evaluate_with_cache(&recipe_b, &policy, &mut cache).expect("recipe b evaluates");
+        assert_eq!(
+            warm_b.report.counters.cache_hits, 0,
+            "distinct import attributes must not share recipe a's cache entry"
+        );
+
+        let pure_b = evaluate(&recipe_b, &policy).expect("pure evaluation of recipe b");
+        assert_eq!(
+            exedra_testkit::dump_mesh_topology(&warm_b.bodies[0].body.mesh),
+            exedra_testkit::dump_mesh_topology(&pure_b.bodies[0].body.mesh)
+        );
+        assert_eq!(
+            exedra_testkit::dump_attributes(&warm_b.bodies[0].body.mesh),
+            exedra_testkit::dump_attributes(&pure_b.bodies[0].body.mesh)
+        );
+
+        let warm_b_mesh = &warm_b.bodies[0].body.mesh;
+        let corner_uvs = warm_b_mesh
+            .attrs()
+            .sparse(exedra_mesh::attr::CORNER_UV)
+            .expect("emitted mesh keeps corner UVs");
+        let mut found_new_uv = false;
+        let mut found_old_uv = false;
+        for face in warm_b_mesh.faces() {
+            for he in warm_b_mesh.face_loop(face) {
+                if let Some(&uv) = corner_uvs.get(he.into()) {
+                    found_new_uv |= uv == [0.5, 0.5];
+                    found_old_uv |= uv == [0.25, 0.75];
+                }
+            }
+        }
+        assert!(found_new_uv, "expected the updated corner UV to survive");
+        assert!(!found_old_uv, "the stale corner UV must not survive");
+    }
+
+    #[test]
     fn declared_box_primitive_evaluates_as_one_exact_body() {
         // PrimitiveSpec::Box is already accepted by the public IR. This test
         // pins the missing evaluator contract: its minimum corner is the

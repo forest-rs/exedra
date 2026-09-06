@@ -525,6 +525,18 @@ impl Attributes {
         mismatches
     }
 
+    /// Returns every registered layer's `(domain, name)` key, dense layers
+    /// first then sparse layers, each group in registration order.
+    ///
+    /// Useful for auditing which attribute layers a mesh carries, for example
+    /// to reject layers a consumer does not know how to preserve.
+    pub fn keys(&self) -> impl Iterator<Item = (Domain, &'static str)> + '_ {
+        self.dense
+            .iter()
+            .chain(self.sparse.iter())
+            .map(|entry| (entry.domain, entry.name))
+    }
+
     pub(crate) fn compacted(
         &self,
         vertex_map: &[Option<Id>],

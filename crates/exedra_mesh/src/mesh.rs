@@ -16,7 +16,7 @@ use core::num::NonZeroU32;
 
 use crate::{
     Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Id, Vertex, VertexId, attr,
-    attributes::{Attributes, Domain},
+    attributes::{AttrError, AttrKey, Attributes, Domain, LayerValue},
 };
 
 /// Parameters for [`Mesh::from_indexed_triangles`].
@@ -898,6 +898,37 @@ impl Mesh {
     #[must_use]
     pub(crate) fn attrs_mut(&mut self) -> &mut Attributes {
         &mut self.attrs
+    }
+
+    /// Registers a dense attribute layer under `key`, filled with `default`
+    /// for every current and future slot of its domain.
+    ///
+    /// Registration changes no element value, so it neither advances the
+    /// mesh revision nor marks anything dirty. Values are written through
+    /// edit sessions, which own dirty tracking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrError`] when a layer already exists under the key with
+    /// this or another value type.
+    pub fn define_dense_layer<T: LayerValue>(
+        &mut self,
+        key: AttrKey<T>,
+        default: T,
+    ) -> Result<(), AttrError> {
+        self.attrs.define_dense(key, default)
+    }
+
+    /// Registers a sparse attribute layer under `key`.
+    ///
+    /// Like [`Self::define_dense_layer`], registration is not an edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrError`] when a layer already exists under the key with
+    /// this or another value type.
+    pub fn define_sparse_layer<T: LayerValue>(&mut self, key: AttrKey<T>) -> Result<(), AttrError> {
+        self.attrs.define_sparse(key)
     }
 
     /// Adds a new vertex with a required position value.

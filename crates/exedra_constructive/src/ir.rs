@@ -767,6 +767,15 @@ pub enum RecipeError {
         /// Index the import would have received.
         import: u32,
     },
+    /// An imported mesh carries an attribute layer the constructive head does
+    /// not preserve or fingerprint; only the built-in layers in
+    /// [`exedra_mesh::attr`] are supported.
+    UnsupportedImportLayer {
+        /// Index the import would have received.
+        import: u32,
+        /// The unsupported layer's stable name.
+        name: &'static str,
+    },
 }
 
 impl core::fmt::Display for RecipeError {
@@ -785,6 +794,12 @@ impl core::fmt::Display for RecipeError {
             Self::UnknownImport { import } => write!(f, "unknown import id {import}"),
             Self::InvalidImport { import } => {
                 write!(f, "import {import} is empty or fails validation")
+            }
+            Self::UnsupportedImportLayer { import, name } => {
+                write!(
+                    f,
+                    "import {import} carries unsupported attribute layer {name}"
+                )
             }
         }
     }
@@ -870,12 +885,55 @@ impl RecipeBuilder {
     ///
     /// # Errors
     ///
-    /// Fails when the mesh is empty or fails deep validation.
+    /// Fails when the mesh is empty or fails deep validation, or when it
+    /// carries an attribute layer the constructive head does not know how to
+    /// preserve or fingerprint (see [`RecipeError::UnsupportedImportLayer`]).
     pub fn add_import(&mut self, mesh: exedra_mesh::Mesh) -> Result<ImportId, RecipeError> {
         if mesh.faces().next().is_none() || !mesh.validate_deep().is_empty() {
             return Err(RecipeError::InvalidImport {
                 import: len_u32(self.imports.len()),
             });
+        }
+        const BUILT_IN_LAYERS: &[(exedra_mesh::attributes::Domain, &str)] = &[
+            (
+                exedra_mesh::attr::VERTEX_POSITION.domain(),
+                exedra_mesh::attr::VERTEX_POSITION.name(),
+            ),
+            (
+                exedra_mesh::attr::VERTEX_SHARPNESS.domain(),
+                exedra_mesh::attr::VERTEX_SHARPNESS.name(),
+            ),
+            (
+                exedra_mesh::attr::CORNER_UV.domain(),
+                exedra_mesh::attr::CORNER_UV.name(),
+            ),
+            (
+                exedra_mesh::attr::CORNER_NORMAL_OVERRIDE.domain(),
+                exedra_mesh::attr::CORNER_NORMAL_OVERRIDE.name(),
+            ),
+            (
+                exedra_mesh::attr::EDGE_SEAM.domain(),
+                exedra_mesh::attr::EDGE_SEAM.name(),
+            ),
+            (
+                exedra_mesh::attr::EDGE_SHARPNESS.domain(),
+                exedra_mesh::attr::EDGE_SHARPNESS.name(),
+            ),
+            (
+                exedra_mesh::attr::FACE_REGION.domain(),
+                exedra_mesh::attr::FACE_REGION.name(),
+            ),
+        ];
+        for (domain, name) in mesh.attrs().keys() {
+            if !BUILT_IN_LAYERS
+                .iter()
+                .any(|(built_domain, built_name)| *built_domain == domain && *built_name == name)
+            {
+                return Err(RecipeError::UnsupportedImportLayer {
+                    import: len_u32(self.imports.len()),
+                    name,
+                });
+            }
         }
         self.imports.push(mesh);
         Ok(ImportId(len_u32(self.imports.len()) - 1))
@@ -1248,23 +1306,36 @@ fn fnv128(bytes: &[u8], seed: u128) -> u128 {
     hash
 }
 
+/// A face loop's half-edges rotated so the corner landing on the smallest
+/// vertex index comes first — canonical under the arbitrary loop phase a
+/// rebuild introduces.
+fn canonical_face_loop_half_edges(
+    mesh: &exedra_mesh::Mesh,
+    face: exedra_mesh::FaceId,
+) -> Vec<exedra_mesh::HalfEdgeId> {
+    let mut loop_corners: Vec<(exedra_mesh::HalfEdgeId, u32)> = mesh
+        .face_loop(face)
+        .filter_map(|he| mesh.to_vertex(he).map(|v| (he, v.index())))
+        .collect();
+    if let Some(min_position) = loop_corners
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &(_, v))| v)
+        .map(|(i, _)| i)
+    {
+        loop_corners.rotate_left(min_position);
+    }
+    loop_corners.into_iter().map(|(he, _)| he).collect()
+}
+
 /// A face loop's vertex indices rotated to start at the smallest index —
 /// canonical under the arbitrary loop phase a rebuild introduces.
 fn canonical_face_loop(mesh: &exedra_mesh::Mesh, face: exedra_mesh::FaceId) -> Vec<u32> {
-    let mut loop_vertices: Vec<u32> = mesh
-        .face_loop(face)
+    canonical_face_loop_half_edges(mesh, face)
+        .into_iter()
         .filter_map(|he| mesh.to_vertex(he))
         .map(|v| v.index())
-        .collect();
-    if let Some(min_position) = loop_vertices
-        .iter()
-        .enumerate()
-        .min_by_key(|&(_, &v)| v)
-        .map(|(i, _)| i)
-    {
-        loop_vertices.rotate_left(min_position);
-    }
-    loop_vertices
+        .collect()
 }
 
 /// Crate-visible canonical loop helper for the serialization formats.
@@ -1275,8 +1346,53 @@ pub(crate) fn canonical_face_loop_pub(
     canonical_face_loop(mesh, face)
 }
 
-/// Canonical bytes of a mesh: vertex positions (f32 bit patterns) plus face
-/// loops, in deterministic iteration order.
+/// Appends a presence byte (0/1) followed by the f32's bit pattern when
+/// present.
+fn put_present_f32(out: &mut Vec<u8>, value: Option<f32>) {
+    match value {
+        Some(v) => {
+            out.push(1);
+            out.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+/// Appends a presence byte (0/1) followed by the bool as a single byte when
+/// present.
+fn put_present_bool(out: &mut Vec<u8>, value: Option<bool>) {
+    match value {
+        Some(v) => {
+            out.push(1);
+            out.push(u8::from(v));
+        }
+        None => out.push(0),
+    }
+}
+
+/// Appends a presence byte (0/1) followed by each component's f32 bit
+/// pattern when present.
+fn put_present_floats(out: &mut Vec<u8>, value: Option<&[f32]>) {
+    match value {
+        Some(components) => {
+            out.push(1);
+            for &c in components {
+                out.extend_from_slice(&c.to_bits().to_le_bytes());
+            }
+        }
+        None => out.push(0),
+    }
+}
+
+/// Canonical bytes of a mesh: every built-in attribute layer in
+/// [`exedra_mesh::attr`], in deterministic iteration order.
+///
+/// Covers, in order: vertex positions, vertex sharpness overrides, face
+/// loops (topology), face regions, and per-corner attributes (UV, normal
+/// override, edge seam, edge sharpness) walked in the same rotated order as
+/// [`canonical_face_loop`]. This must stay in sync with every attribute
+/// layer [`RecipeBuilder::add_import`] accepts, since anything hashed here
+/// is what keys the evaluation cache.
 fn mesh_canon_bytes(mesh: &exedra_mesh::Mesh, out: &mut Vec<u8>) {
     let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
     put_u32(out, len_u32(vertices.len()));
@@ -1287,6 +1403,10 @@ fn mesh_canon_bytes(mesh: &exedra_mesh::Mesh, out: &mut Vec<u8>) {
             }
         }
     }
+    for vertex in &vertices {
+        put_present_f32(out, mesh.vertex_sharpness(*vertex));
+    }
+
     let faces: Vec<exedra_mesh::FaceId> = mesh.faces().collect();
     put_u32(out, len_u32(faces.len()));
     for face in &faces {
@@ -1294,6 +1414,31 @@ fn mesh_canon_bytes(mesh: &exedra_mesh::Mesh, out: &mut Vec<u8>) {
         put_u32(out, len_u32(loop_vertices.len()));
         for index in loop_vertices {
             put_u32(out, index);
+        }
+    }
+    for face in &faces {
+        let region = mesh
+            .attrs()
+            .dense(exedra_mesh::attr::FACE_REGION)
+            .and_then(|layer| layer.get((*face).into()))
+            .copied()
+            .unwrap_or(0);
+        put_u32(out, region);
+    }
+    for face in &faces {
+        for he in canonical_face_loop_half_edges(mesh, *face) {
+            let uv = mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_UV)
+                .and_then(|layer| layer.get(he.into()));
+            put_present_floats(out, uv.map(|v| v.as_slice()));
+            let normal = mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                .and_then(|layer| layer.get(he.into()));
+            put_present_floats(out, normal.map(|v| v.as_slice()));
+            put_present_bool(out, mesh.edge_seam(he));
+            put_present_f32(out, mesh.edge_sharpness(he));
         }
     }
 }
@@ -1809,6 +1954,31 @@ mod tests {
     }
 
     #[test]
+    fn imports_with_custom_layers_are_refused() {
+        // Anything an import carries that mesh_canon_bytes does not know how
+        // to hash must be refused, not silently dropped from the fingerprint.
+        use exedra_mesh::attributes::{AttrKey, Domain};
+
+        let mut mesh = exedra_mesh::Mesh::from_polygons(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[&[0, 1, 2]],
+        )
+        .expect("valid imported triangle");
+        let custom_weight = AttrKey::<f32>::new(Domain::Vertex, "custom.weight");
+        mesh.define_sparse_layer(custom_weight)
+            .expect("custom layer registers");
+
+        let mut builder = RecipeBuilder::new();
+        assert_eq!(
+            builder.add_import(mesh),
+            Err(RecipeError::UnsupportedImportLayer {
+                import: 0,
+                name: "custom.weight",
+            })
+        );
+    }
+
+    #[test]
     fn mirrored_recipe_rejects_planes_that_cannot_normalize() {
         // Bad scale encodings must fail at composition, before they can turn
         // reflection placement or emitted mesh coordinates into NaN/infinity.
@@ -2099,7 +2269,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xBEA4_B5D6_B432_08DF_92F4_CE8B_53B9_F245,
+            0x85A6_695A_3CA5_DD26_A2FE_A5A9_E8B3_32DC,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }
