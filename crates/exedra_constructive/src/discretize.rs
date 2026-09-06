@@ -297,17 +297,66 @@ pub fn discretize_loop(
     source: &Loop2,
     policy: &DiscretizePolicy,
 ) -> Result<DiscretizedLoop, DiscretizeError> {
+    let counts = loop_edge_counts(source, policy)?;
+    discretize_loop_with_counts(source, policy, &counts)
+}
+
+/// The edge count each segment of `source` needs under `policy`, in
+/// segment order: one for a line, the sagitta- or flatness-derived count
+/// for a curve.
+///
+/// # Errors
+///
+/// Fails under the same conditions as [`discretize_loop`].
+pub fn loop_edge_counts(
+    source: &Loop2,
+    policy: &DiscretizePolicy,
+) -> Result<Vec<u32>, DiscretizeError> {
     policy.validate()?;
+    source
+        .iter_with_starts()
+        .map(|(start, seg)| segment_edge_count(start, seg.to, &seg.kind, policy))
+        .collect()
+}
+
+/// Discretizes one loop giving segment `i` at least `counts[i]` edges.
+///
+/// Each count is a lower bound: a segment that needs more edges to meet the
+/// policy tolerance still gets them, so raising counts never coarsens a
+/// curve. Lines subdivide uniformly, arcs by angle, cubics by parameter.
+/// Loops discretized with equal counts from equal segment structure yield
+/// rings of equal length with identical [`DiscretizedLoop::edge_seg`],
+/// which is what lofting between sections relies on.
+///
+/// # Errors
+///
+/// Fails under the same conditions as [`discretize_loop`], when `counts`
+/// does not have one entry per segment, or when a segment cannot emit its
+/// requested count exactly (a numeric limit).
+pub fn discretize_loop_with_counts(
+    source: &Loop2,
+    policy: &DiscretizePolicy,
+    counts: &[u32],
+) -> Result<DiscretizedLoop, DiscretizeError> {
+    policy.validate()?;
+    if counts.len() != source.segs().len() {
+        return Err(DiscretizeError::InvalidEdgeBounds);
+    }
     let mut out = DiscretizedLoop {
         points: Vec::new(),
         edge_seg: Vec::new(),
     };
-    for (index, (start, seg)) in source.iter_with_starts().enumerate() {
+    for (index, ((start, seg), &count)) in source.iter_with_starts().zip(counts).enumerate() {
         let seg_index = len_u32(index);
+        let edges = count.max(segment_edge_count(start, seg.to, &seg.kind, policy)?);
         // Each segment contributes its start point plus interior points;
         // its exact endpoint is contributed as the next segment's start.
+        let before = out.points.len();
         push_point(&mut out, [start.x, start.y], seg_index);
-        emit_kind_interior(&mut out, start, seg.to, &seg.kind, policy, seg_index)?;
+        emit_kind_interior(&mut out, start, seg.to, &seg.kind, policy, seg_index, edges)?;
+        if out.points.len() - before != edges as usize {
+            return Err(DiscretizeError::NumericLimit);
+        }
     }
     Ok(out)
 }
@@ -330,8 +379,69 @@ pub fn discretize_profile(
     Ok(DiscretizedProfile { outer, holes })
 }
 
-/// Emits a segment kind's interior points; policy segments discretize
-/// their realization (one level — nesting is rejected at validation).
+/// The edge counts every loop of `profile` needs under `policy`: the outer
+/// loop first, then each hole, as [`loop_edge_counts`] reports them.
+///
+/// # Errors
+///
+/// Fails under the same conditions as [`discretize_loop`].
+pub fn profile_edge_counts(
+    profile: &Profile2,
+    policy: &DiscretizePolicy,
+) -> Result<Vec<Vec<u32>>, DiscretizeError> {
+    core::iter::once(profile.outer())
+        .chain(profile.holes().iter())
+        .map(|source| loop_edge_counts(source, policy))
+        .collect()
+}
+
+/// Discretizes a profile with per-loop lower-bound edge counts, in the
+/// order [`profile_edge_counts`] reports them.
+///
+/// # Errors
+///
+/// Fails under the same conditions as [`discretize_loop_with_counts`], or
+/// when `counts` does not have one entry per loop.
+pub fn discretize_profile_with_counts(
+    profile: &Profile2,
+    policy: &DiscretizePolicy,
+    counts: &[Vec<u32>],
+) -> Result<DiscretizedProfile, DiscretizeError> {
+    if counts.len() != 1 + profile.holes().len() {
+        return Err(DiscretizeError::InvalidEdgeBounds);
+    }
+    let outer = discretize_loop_with_counts(profile.outer(), policy, &counts[0])?;
+    let holes = profile
+        .holes()
+        .iter()
+        .zip(&counts[1..])
+        .map(|(hole, hole_counts)| discretize_loop_with_counts(hole, policy, hole_counts))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DiscretizedProfile { outer, holes })
+}
+
+/// The edge count one segment needs; policy segments count their
+/// realization (one level — nesting is rejected at validation).
+fn segment_edge_count(
+    start: Point,
+    to: Point,
+    kind: &SegKind,
+    policy: &DiscretizePolicy,
+) -> Result<u32, DiscretizeError> {
+    match kind {
+        SegKind::Line => Ok(1),
+        SegKind::Arc { bulge } => Ok(arc_geometry(start, to, *bulge, policy)?.edges),
+        SegKind::Cubic { c1, c2 } => Ok(cubic_plan(start, *c1, *c2, to, policy)?.edges),
+        SegKind::PolicyTo {
+            policy: _,
+            realized,
+        } => segment_edge_count(start, to, realized, policy),
+    }
+}
+
+/// Emits a segment kind's interior points for exactly `edges` edges (at
+/// least the segment's own required count); policy segments discretize
+/// their realization.
 fn emit_kind_interior(
     out: &mut DiscretizedLoop,
     start: Point,
@@ -339,18 +449,42 @@ fn emit_kind_interior(
     kind: &SegKind,
     policy: &DiscretizePolicy,
     seg_index: u32,
+    edges: u32,
 ) -> Result<(), DiscretizeError> {
     match kind {
-        SegKind::Line => Ok(()),
-        SegKind::Arc { bulge } => emit_arc_interior(out, start, to, *bulge, policy, seg_index),
+        SegKind::Line => emit_line_interior(out, start, to, seg_index, edges),
+        SegKind::Arc { bulge } => {
+            emit_arc_interior(out, start, to, *bulge, policy, seg_index, edges)
+        }
         SegKind::Cubic { c1, c2 } => {
-            emit_cubic_interior(out, start, *c1, *c2, to, policy, seg_index)
+            emit_cubic_interior(out, start, *c1, *c2, to, policy, seg_index, edges)
         }
         SegKind::PolicyTo {
             policy: _,
             realized,
-        } => emit_kind_interior(out, start, to, realized, policy, seg_index),
+        } => emit_kind_interior(out, start, to, realized, policy, seg_index, edges),
     }
+}
+
+/// Emits a line's interior points by uniform subdivision. A line needs no
+/// interior points of its own; it gets them only to correspond with a
+/// curved partner segment in another loft section.
+fn emit_line_interior(
+    out: &mut DiscretizedLoop,
+    from: Point,
+    to: Point,
+    seg_index: u32,
+    edges: u32,
+) -> Result<(), DiscretizeError> {
+    for k in 1..edges {
+        let t = f64::from(k) / f64::from(edges);
+        let p = [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
+        if p.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(DiscretizeError::NumericLimit);
+        }
+        push_point(out, p, seg_index);
+    }
+    Ok(())
 }
 
 fn push_point(out: &mut DiscretizedLoop, p: [f64; 2], seg: u32) {
@@ -363,11 +497,22 @@ fn push_point(out: &mut DiscretizedLoop, p: [f64; 2], seg: u32) {
     out.edge_seg.push(seg);
 }
 
+/// An arc's realized geometry and the edge count its tolerance requires.
+struct ArcGeometry {
+    center: [f64; 2],
+    radius: f64,
+    sweep: f64,
+    start_angle: f64,
+    tolerance: f64,
+    edges: u32,
+}
+
 /// Emits an arc's interior points via libm-only trigonometry.
 ///
-/// The subdivision count derives once from the sagitta bound; interior
-/// point `k` is evaluated independently at angle `start + k * step` (no
-/// accumulated increments), so precision does not drift with count.
+/// The subdivision count derives once from the sagitta bound (or a larger
+/// caller-requested count); interior point `k` is evaluated independently
+/// at angle `start + k * step` (no accumulated increments), so precision
+/// does not drift with count.
 fn emit_arc_interior(
     out: &mut DiscretizedLoop,
     from: Point,
@@ -375,8 +520,41 @@ fn emit_arc_interior(
     bulge: f64,
     policy: &DiscretizePolicy,
     seg_index: u32,
+    edges: u32,
 ) -> Result<(), DiscretizeError> {
     let output_start = out.points.len() - 1;
+    let arc = arc_geometry(from, to, bulge, policy)?;
+    let edges = edges.max(arc.edges);
+    let step = arc.sweep / f64::from(edges);
+    for k in 1..edges {
+        let angle = arc.start_angle + step * f64::from(k);
+        let p = [
+            arc.center[0] + arc.radius * libm::cos(angle),
+            arc.center[1] + arc.radius * libm::sin(angle),
+        ];
+        if p.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(DiscretizeError::NumericLimit);
+        }
+        push_point(out, p, seg_index);
+    }
+    if !arc_chords_within(
+        &out.points[output_start..],
+        [to.x, to.y],
+        arc.center,
+        arc.radius,
+        arc.tolerance,
+    ) {
+        return Err(DiscretizeError::NumericLimit);
+    }
+    Ok(())
+}
+
+fn arc_geometry(
+    from: Point,
+    to: Point,
+    bulge: f64,
+    policy: &DiscretizePolicy,
+) -> Result<ArcGeometry, DiscretizeError> {
     let dx = to.x - from.x;
     let dy = to.y - from.y;
     let chord = libm::hypot(dx, dy);
@@ -419,28 +597,14 @@ fn emit_arc_interior(
         CircularEdgeConstraints::new(policy.min_arc_edges, policy.max_segment_edges),
     )?;
     let start_angle = libm::atan2(from.y - center[1], from.x - center[0]);
-    let step = sweep / f64::from(edges);
-    for k in 1..edges {
-        let angle = start_angle + step * f64::from(k);
-        let p = [
-            center[0] + radius * libm::cos(angle),
-            center[1] + radius * libm::sin(angle),
-        ];
-        if p.iter().any(|coordinate| !coordinate.is_finite()) {
-            return Err(DiscretizeError::NumericLimit);
-        }
-        push_point(out, p, seg_index);
-    }
-    if !arc_chords_within(
-        &out.points[output_start..],
-        [to.x, to.y],
+    Ok(ArcGeometry {
         center,
         radius,
-        realizable_tolerance,
-    ) {
-        return Err(DiscretizeError::NumericLimit);
-    }
-    Ok(())
+        sweep,
+        start_angle,
+        tolerance: realizable_tolerance,
+        edges,
+    })
 }
 
 fn arc_chords_within(
@@ -523,6 +687,10 @@ fn float_ulp(value: f64) -> f64 {
 /// control points, and the math is arithmetic
 /// plus one square root: bit-deterministic everywhere and independent of
 /// kurbo's flattener.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the cubic's four points, policy, provenance, and count are the emission contract"
+)]
 fn emit_cubic_interior(
     out: &mut DiscretizedLoop,
     from: Point,
@@ -531,13 +699,64 @@ fn emit_cubic_interior(
     to: Point,
     policy: &DiscretizePolicy,
     seg_index: u32,
+    edges: u32,
 ) -> Result<(), DiscretizeError> {
+    let plan = cubic_plan(from, c1, c2, to, policy)?;
+    let edges = edges.max(plan.edges);
+    let output_start = out.points.len() - 1;
+    for k in 1..edges {
+        let t = f64::from(k) / f64::from(edges);
+        // Bernstein-basis cubic Bézier evaluation: pure arithmetic.
+        let mt = 1.0 - t;
+        let a = mt * mt * mt;
+        let b = 3.0 * mt * mt * t;
+        let c = 3.0 * mt * t * t;
+        let e = t * t * t;
+        let p = [
+            a * from.x + b * c1.x + c * c2.x + e * to.x,
+            a * from.y + b * c1.y + c * c2.y + e * to.y,
+        ];
+        if p.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(DiscretizeError::NumericLimit);
+        }
+        push_point(out, p, seg_index);
+    }
+    if out.points.len() - output_start != edges as usize
+        || !cubic_chords_within(
+            &out.points[output_start..],
+            [from.x, from.y],
+            [c1.x, c1.y],
+            [c2.x, c2.y],
+            [to.x, to.y],
+            plan.second_difference,
+            plan.tolerance,
+            edges,
+        )
+    {
+        return Err(DiscretizeError::NumericLimit);
+    }
+    Ok(())
+}
+
+/// A cubic's flatness bound and the edge count its tolerance requires.
+struct CubicPlan {
+    second_difference: f64,
+    tolerance: f64,
+    edges: u32,
+}
+
+fn cubic_plan(
+    from: Point,
+    c1: Point,
+    c2: Point,
+    to: Point,
+    policy: &DiscretizePolicy,
+) -> Result<CubicPlan, DiscretizeError> {
     let realizable_tolerance = coordinate_tolerance(
         policy.chord_tolerance,
         &[from.x, from.y, c1.x, c1.y, c2.x, c2.y, to.x, to.y],
     )
     .ok_or(DiscretizeError::NumericLimit)?;
-    let output_start = out.points.len() - 1;
     let d1 = [
         (from.x - c1.x) - (c1.x - c2.x),
         (from.y - c1.y) - (c1.y - c2.y),
@@ -569,38 +788,11 @@ fn emit_cubic_interior(
             maximum: policy.max_segment_edges,
         });
     }
-    for k in 1..edges {
-        let t = f64::from(k) / f64::from(edges);
-        // Bernstein-basis cubic Bézier evaluation: pure arithmetic.
-        let mt = 1.0 - t;
-        let a = mt * mt * mt;
-        let b = 3.0 * mt * mt * t;
-        let c = 3.0 * mt * t * t;
-        let e = t * t * t;
-        let p = [
-            a * from.x + b * c1.x + c * c2.x + e * to.x,
-            a * from.y + b * c1.y + c * c2.y + e * to.y,
-        ];
-        if p.iter().any(|coordinate| !coordinate.is_finite()) {
-            return Err(DiscretizeError::NumericLimit);
-        }
-        push_point(out, p, seg_index);
-    }
-    if out.points.len() - output_start != edges as usize
-        || !cubic_chords_within(
-            &out.points[output_start..],
-            [from.x, from.y],
-            [c1.x, c1.y],
-            [c2.x, c2.y],
-            [to.x, to.y],
-            d,
-            realizable_tolerance,
-            edges,
-        )
-    {
-        return Err(DiscretizeError::NumericLimit);
-    }
-    Ok(())
+    Ok(CubicPlan {
+        second_difference: d,
+        tolerance: realizable_tolerance,
+        edges,
+    })
 }
 
 #[expect(
@@ -674,6 +866,36 @@ mod tests {
             Seg2::line((0.0, 0.0)).tagged(SegTag(3)),
         ])
         .expect("valid square")
+    }
+
+    #[test]
+    fn edge_counts_are_lower_bounds_and_lines_subdivide() {
+        let policy = DiscretizePolicy::default();
+        assert_eq!(
+            loop_edge_counts(&square(), &policy).expect("counts"),
+            vec![1, 1, 1, 1]
+        );
+        let d = discretize_loop_with_counts(&square(), &policy, &[2, 1, 3, 1]).expect("subdivides");
+        assert_eq!(d.points.len(), 7);
+        assert_eq!(d.edge_seg, vec![0, 0, 1, 2, 2, 2, 3]);
+        assert_eq!(d.points[1], [0.5, 0.0]);
+        assert!((d.points[4][0] - 2.0 / 3.0).abs() < 1e-12 && d.points[4][1] == 1.0);
+        // A count below what the curve needs is raised, never honored.
+        let bulge = libm::tan(core::f64::consts::FRAC_PI_8);
+        let pie = Loop2::new(vec![
+            Seg2::line((2.0, 0.0)),
+            Seg2::arc((0.0, 2.0), bulge),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .expect("valid pie slice");
+        let own = loop_edge_counts(&pie, &policy).expect("counts");
+        assert!(own[1] > 1);
+        let forced = discretize_loop_with_counts(&pie, &policy, &[1, 1, 1]).expect("raised");
+        assert_eq!(forced, discretize_loop(&pie, &policy).expect("plain"));
+        assert!(matches!(
+            discretize_loop_with_counts(&pie, &policy, &[1, 1]),
+            Err(DiscretizeError::InvalidEdgeBounds)
+        ));
     }
 
     #[test]

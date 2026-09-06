@@ -1629,9 +1629,13 @@ pub fn tessellate_revolve(
 ///
 /// Each section is a profile with its own placement; corresponding
 /// discretized ring points connect with quads band by band. Sections must
-/// correspond: the same hole count and identical per-loop point counts
-/// after discretization (a typed [`TessellateError::SectionMismatch`]
-/// otherwise — frontends control correspondence through segment structure).
+/// share one segment structure: the same hole count and the same segment
+/// count per loop (a typed [`TessellateError::SectionMismatch`] otherwise —
+/// frontends control correspondence through segment structure). Segment
+/// `k` of every section then corresponds, and each such segment family is
+/// discretized with the largest edge count any of its members needs, so
+/// two circles of different radius, or an arc facing a line, loft without
+/// either falling short of the chord tolerance.
 /// The start cap closes section 0 (reversed), the end cap the last section;
 /// sections must be ordered so counter-clockwise outer loops yield
 /// outward-facing walls (the extrude convention generalized).
@@ -1650,24 +1654,45 @@ pub fn tessellate_loft(
 ) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(sections.len() >= 2, "IR validation requires >= 2 sections");
     let flip = det3(&sections[0].0) < 0.0;
-    let discretized: Vec<DiscretizedProfile> = sections
-        .iter()
-        .map(|(_, profile)| discretize_profile(profile, &policy.discretize))
-        .collect::<Result<_, _>>()?;
 
-    // Correspondence: identical loop structure across sections.
-    let reference = &discretized[0];
-    for (index, d) in discretized.iter().enumerate().skip(1) {
-        let matches = d.holes.len() == reference.holes.len()
-            && d.outer.points.len() == reference.outer.points.len()
-            && d.holes
-                .iter()
-                .zip(&reference.holes)
-                .all(|(a, b)| a.points.len() == b.points.len());
-        if !matches {
+    // Correspondence: identical segment structure across sections.
+    let structure = |profile: &Profile2| -> Vec<usize> {
+        core::iter::once(profile.outer())
+            .chain(profile.holes().iter())
+            .map(|source| source.segs().len())
+            .collect()
+    };
+    let reference_structure = structure(sections[0].1);
+    for (index, (_, profile)) in sections.iter().enumerate().skip(1) {
+        if structure(profile) != reference_structure {
             return Err(TessellateError::SectionMismatch { section: index });
         }
     }
+
+    // Joint discretization: every corresponding segment takes the largest
+    // edge count any section needs for it.
+    let mut counts = crate::discretize::profile_edge_counts(sections[0].1, &policy.discretize)?;
+    for (_, profile) in &sections[1..] {
+        let own = crate::discretize::profile_edge_counts(profile, &policy.discretize)?;
+        for (family, needed) in counts.iter_mut().zip(&own) {
+            for (count, need) in family.iter_mut().zip(needed) {
+                *count = (*count).max(*need);
+            }
+        }
+    }
+    let discretized: Vec<DiscretizedProfile> = sections
+        .iter()
+        .map(|(_, profile)| {
+            crate::discretize::discretize_profile_with_counts(profile, &policy.discretize, &counts)
+        })
+        .collect::<Result<_, _>>()?;
+    let reference = &discretized[0];
+    debug_assert!(
+        discretized
+            .iter()
+            .all(|d| d.points_len() == reference.points_len()),
+        "joint discretization yields equal rings"
+    );
     if !loft_has_volumetric_span(sections, &discretized) {
         return Err(TessellateError::DegenerateLoft);
     }
@@ -2398,8 +2423,11 @@ pub fn tessellate_grid(
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::builders;
+    use crate::profile::{Loop2, Seg2};
 
     /// Signed volume via the divergence theorem, fanning each face loop.
     /// Valid for planar convex faces (all faces this tessellator emits).
@@ -3752,6 +3780,113 @@ mod tests {
                 .map(|e| matches!(e, TessellateError::SectionMismatch { section: 1 })),
             Some(true)
         );
+    }
+
+    #[test]
+    fn loft_joins_circles_of_different_radius() {
+        // The two circles need different edge counts on their own; the
+        // loft discretizes both with the larger, so the frustum meets the
+        // chord tolerance on both rims and the rings correspond exactly.
+        let big = builders::circle(60.0).expect("circle");
+        let small = builders::circle(25.0).expect("circle");
+        let policy = EvalPolicy::default();
+        let own_big = discretize_profile(&big, &policy.discretize).expect("big");
+        let own_small = discretize_profile(&small, &policy.discretize).expect("small");
+        assert!(own_big.outer.points.len() > own_small.outer.points.len());
+        let sections = [
+            (Placement3::IDENTITY, &big),
+            (Placement3::translate(0.0, 0.0, 120.0), &small),
+        ];
+        let body = tessellate_loft(&sections, CapMode::Both, &policy).expect("lofts");
+        assert_clean(&body);
+        let (r1, r2, h) = (60.0_f64, 25.0_f64, 120.0);
+        let frustum = core::f64::consts::PI * h / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2);
+        let volume = mesh_volume(&body.mesh);
+        assert!(
+            (volume - frustum).abs() / frustum < 2e-3,
+            "volume {volume} vs frustum {frustum}"
+        );
+        // Every wall band pairs ring points from the same source segment.
+        let walls = body
+            .source_map
+            .face_features()
+            .iter()
+            .filter(|f| matches!(f, Feature::LoftWall { .. }))
+            .count();
+        assert_eq!(walls, own_big.outer.points.len());
+    }
+
+    #[test]
+    fn loft_subdivides_lines_to_meet_partner_arcs() {
+        // Same three-segment structure, but section 0 rounds one edge into
+        // an arc while section 1 keeps it straight: the straight edge takes
+        // the arc's edge count so the rings still correspond.
+        let bulge = libm::tan(core::f64::consts::FRAC_PI_8);
+        let rounded = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((4.0, 0.0)),
+                Seg2::arc((0.0, 4.0), bulge),
+                Seg2::line((0.0, 0.0)),
+            ])
+            .expect("loop"),
+        )
+        .expect("profile");
+        let straight = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((3.0, 0.0)),
+                Seg2::line((0.0, 3.0)),
+                Seg2::line((0.0, 0.0)),
+            ])
+            .expect("loop"),
+        )
+        .expect("profile");
+        let policy = EvalPolicy::default();
+        let sections = [
+            (Placement3::IDENTITY, &rounded),
+            (Placement3::translate(0.5, 0.5, 5.0), &straight),
+        ];
+        let body = tessellate_loft(&sections, CapMode::Both, &policy).expect("lofts");
+        assert_clean(&body);
+        assert!(mesh_volume(&body.mesh) > 0.0);
+        let arc_edges = discretize_profile(&rounded, &policy.discretize)
+            .expect("rounded")
+            .outer
+            .points
+            .len();
+        assert!(arc_edges > 3);
+        // Both rings carry arc_edges points: vertices are 2 rings.
+        assert_eq!(body.mesh.vertices().count(), 2 * arc_edges);
+        // Reversing the sections lofts too: lines subdivide regardless of
+        // which section they sit in.
+        let reversed = [
+            (Placement3::IDENTITY, &straight),
+            (Placement3::translate(0.5, 0.5, 5.0), &rounded),
+        ];
+        let body = tessellate_loft(&reversed, CapMode::Both, &policy).expect("lofts");
+        assert_clean(&body);
+        assert_eq!(body.mesh.vertices().count(), 2 * arc_edges);
+    }
+
+    #[test]
+    fn loft_refuses_different_segment_structure() {
+        let rect = builders::rect(4.0, 2.0).expect("rect");
+        let triangle = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((3.0, 0.0)),
+                Seg2::line((0.0, 3.0)),
+                Seg2::line((0.0, 0.0)),
+            ])
+            .expect("loop"),
+        )
+        .expect("profile");
+        let sections = [
+            (Placement3::IDENTITY, &rect),
+            (Placement3::translate(0.0, 0.0, 3.0), &triangle),
+        ];
+        assert!(matches!(
+            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()),
+            Err(TessellateError::SectionMismatch { section: 1 })
+        ));
     }
 
     #[test]

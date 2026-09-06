@@ -396,6 +396,14 @@ pub enum NodeKind {
         caps: CapMode,
     },
     /// Loft between placed sections.
+    ///
+    /// Sections must share one segment structure: the same hole count and
+    /// the same segment count per loop, so that segment `k` of every
+    /// section corresponds. Corresponding segments are discretized with
+    /// the largest edge count any section needs, so sections may differ
+    /// freely in size and in which segments are curved. Sections with
+    /// different structures are refused at evaluation with an
+    /// `eval.loft.section_mismatch` diagnostic.
     Loft {
         /// Sections in order; at least two.
         sections: Vec<(Placement3, ProfileId)>,

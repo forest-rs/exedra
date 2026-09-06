@@ -530,9 +530,9 @@ impl EvalCx<'_> {
                             &placed,
                             "eval.loft.section_mismatch",
                             alloc::format!(
-                                "loft section {section} does not correspond to section 0 \
-                                 after discretization; sections need the same hole count \
-                                 and per-loop point counts"
+                                "loft section {section} does not correspond to section 0; \
+                                 sections need the same hole count and the same segment \
+                                 count per loop"
                             ),
                         ));
                     }
@@ -2351,14 +2351,24 @@ mod tests {
 
     #[test]
     fn loft_with_mismatched_sections_is_a_typed_refusal() {
-        // Two circles of different radius discretize to different point
-        // counts, so the tessellator cannot pair them. A cone frustum is an
-        // ordinary request: it must report envelope-only with a loft
-        // diagnostic and leave the rest of the model alive, not fail the
-        // whole evaluation.
+        // A rectangle and a triangle have different segment structures, so
+        // the tessellator has no correspondence for them. That is a typed
+        // refusal: the node reports envelope-only with a loft diagnostic and
+        // leaves the rest of the model alive instead of failing the whole
+        // evaluation.
         let mut b = RecipeBuilder::new();
-        let big = b.add_profile(builders::circle(60.0).expect("circle"));
-        let small = b.add_profile(builders::circle(25.0).expect("circle"));
+        let big = b.add_profile(builders::rect(120.0, 120.0).expect("rect"));
+        let small = b.add_profile(
+            crate::profile::Profile2::simple(
+                crate::profile::Loop2::new(vec![
+                    crate::profile::Seg2::line((50.0, 0.0)),
+                    crate::profile::Seg2::line((0.0, 50.0)),
+                    crate::profile::Seg2::line((0.0, 0.0)),
+                ])
+                .expect("loop"),
+            )
+            .expect("triangle"),
+        );
         let loft = b
             .add(NodeKind::Loft {
                 sections: vec![
@@ -2407,21 +2417,12 @@ mod tests {
             .find(|(node, _)| *node == loft)
             .map(|(_, bounds)| *bounds)
             .expect("refused lofts record their envelope");
-        // The envelope comes from the discretized rings, so it may sit
-        // inside the analytic circle by up to the chord tolerance.
-        let tolerance = EvalPolicy::default().discretize.chord_tolerance;
-        for (axis, (min, max)) in [(-60.0, 60.0), (-60.0, 60.0), (0.0, 120.0)]
+        for (axis, (min, max)) in [(0.0, 120.0), (0.0, 120.0), (0.0, 120.0)]
             .into_iter()
             .enumerate()
         {
-            assert!(
-                (envelope.min[axis] - min).abs() <= tolerance,
-                "{envelope:?}"
-            );
-            assert!(
-                (envelope.max[axis] - max).abs() <= tolerance,
-                "{envelope:?}"
-            );
+            assert!((envelope.min[axis] - min).abs() < 1e-9, "{envelope:?}");
+            assert!((envelope.max[axis] - max).abs() < 1e-9, "{envelope:?}");
         }
     }
 
