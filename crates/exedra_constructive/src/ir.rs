@@ -380,9 +380,10 @@ pub enum NodeKind {
     },
     /// Revolve a profile about its local Y axis.
     ///
-    /// The profile lives in its local XZ half-plane (profile x maps to
-    /// radius, profile y to height along the axis). It may touch but must not
-    /// cross the axis. A segment that lies on the axis is allowed only as the
+    /// The profile lives in the local XY plane with profile x as radius
+    /// and profile y as height along the axis, so the axis of revolution
+    /// is the placement's Y axis (unlike [`PrimitiveSpec::Cylinder`], whose
+    /// axis is Z). It may touch but must not cross the axis. A segment that lies on the axis is allowed only as the
     /// profile's final closing segment; evaluation emits no wall for it.
     Revolve {
         /// The profile to revolve; must lie at nonnegative radius.
