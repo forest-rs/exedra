@@ -451,7 +451,9 @@ pub enum NodeKind {
     /// Instance of an earlier node's geometry under a placement.
     ///
     /// Instances never duplicate tessellation: evaluation reuses the
-    /// definition's body and records the placement.
+    /// definition's body and places a copy. A reflecting placement (for
+    /// example a [`NodeKind::Mirror`] above the instance) reverses the
+    /// copy's face loops so it stays outward.
     Instance {
         /// The instanced definition.
         of: NodeId,

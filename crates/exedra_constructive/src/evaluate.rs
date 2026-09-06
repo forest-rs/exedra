@@ -657,22 +657,6 @@ impl EvalCx<'_> {
             NodeKind::Instance { of, placement } => {
                 let of = *of;
                 let placement = compose(world, placement);
-                if crate::tessellate::det3(&placement) < 0.0 {
-                    // Reflecting instances would need winding repair on the
-                    // cloned mesh; route reflections through Mirror inside
-                    // the definition instead.
-                    self.report.counters.unimplemented += 1;
-                    self.push_diagnostic(
-                        node_id,
-                        Severity::Error,
-                        "eval.instance.reflecting",
-                        String::from(
-                            "instance placements must not reflect; put a Mirror \
-                             node inside the instanced definition",
-                        ),
-                    );
-                    return Ok(Aabb3::EMPTY);
-                }
                 let local = if let Some(cached) = self.instance_cache.get(&of) {
                     Rc::clone(cached)
                 } else {
@@ -1418,15 +1402,35 @@ pub(crate) fn mesh_bounds(mesh: &Mesh) -> Aabb3 {
     bounds
 }
 
-/// Clones a local-space body under a non-reflecting placement through the
-/// shared import transform (positions and authored normals move, topology
-/// keeps its ids) and re-pins the source map to the edited revision.
+/// Places a local-space body through the shared import transform. A proper
+/// placement edits a clone (positions and authored normals move, topology
+/// keeps its ids) and re-pins the source map; a reflecting placement
+/// rebuilds the mesh with reversed loops, densely renumbered in source
+/// iteration order, so provenance is carried over element by element.
 fn instantiate(
     source: &TessellatedBody,
     placement: &Placement3,
 ) -> Result<TessellatedBody, TessellateError> {
     let mesh = crate::import_mesh::transform(&source.mesh, placement)?;
-    let source_map = source.source_map.repinned(&mesh);
+    let source_map = if crate::tessellate::det3(placement) < 0.0 {
+        let map = &source.source_map;
+        let face_features = source
+            .mesh
+            .faces()
+            .map(|face| map.face_feature(face).expect("every source face is mapped"))
+            .collect();
+        let vertex_features = source
+            .mesh
+            .vertices()
+            .map(|vertex| {
+                map.vertex_feature(vertex)
+                    .expect("every source vertex is mapped")
+            })
+            .collect();
+        crate::source_map::SourceMap::new(&mesh, face_features, vertex_features)
+    } else {
+        source.source_map.repinned(&mesh)
+    };
     Ok(TessellatedBody {
         mesh,
         source_map,
@@ -2862,9 +2866,13 @@ mod tests {
     }
 
     #[test]
-    fn reflecting_instances_are_rejected() {
+    fn reflecting_instances_mirror_their_definition() {
+        // A definition instanced under a reflecting placement, and a Mirror
+        // over an instance (the common "mirror this sub-assembly" shape),
+        // both produce outward, deep-valid bodies whose provenance is the
+        // definition's, element for element.
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::l_profile(2.0, 2.0, 1.0, 1.0).expect("L"));
         let def = b
             .add(NodeKind::Extrude {
                 profile: p,
@@ -2873,29 +2881,67 @@ mod tests {
                 caps: CapMode::Both,
             })
             .expect("valid");
-        let mirror_placement = Placement3 {
-            rows: [
-                [-1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-            ],
-        };
-        let inst = b
+        let reflected = b
             .add(NodeKind::Instance {
                 of: def,
-                placement: mirror_placement,
+                placement: Placement3::from_axes(
+                    [-1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [10.0, 0.0, 0.0],
+                ),
             })
             .expect("valid");
-        let recipe = b.finish(inst).expect("valid recipe");
+        let moved = b
+            .add(NodeKind::Instance {
+                of: def,
+                placement: Placement3::translate(0.0, 10.0, 0.0),
+            })
+            .expect("valid");
+        let mirrored = b
+            .add(NodeKind::Mirror {
+                child: moved,
+                plane: Plane3 {
+                    normal: [0.0, 0.0, 1.0],
+                    distance: -5.0,
+                },
+            })
+            .expect("valid");
+        let root = b
+            .add(NodeKind::Group {
+                children: vec![def, reflected, moved, mirrored],
+            })
+            .expect("valid");
+        let recipe = b.finish(root).expect("valid recipe");
         let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
-        assert!(result.bodies.is_empty());
-        assert!(
-            result
-                .report
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "eval.instance.reflecting")
-        );
+        assert!(result.report.clean_at(Severity::Warning));
+        assert_eq!(result.bodies.len(), 4);
+        // The direct child and the instance definition are separate walks;
+        // the three instances themselves clone rather than tessellate.
+        assert_eq!(result.report.counters.tessellations, 2);
+        let definition = &result.bodies[0].body;
+        let reference = signed_mesh_volume(&definition.mesh);
+        assert!(reference > 0.0);
+        for placed in &result.bodies[1..] {
+            let body = &placed.body;
+            assert!(body.mesh.validate_deep().is_empty());
+            body.source_map.check(&body.mesh).expect("fresh map");
+            assert!(
+                (signed_mesh_volume(&body.mesh) - reference).abs() < 1e-9,
+                "reflected instances stay outward"
+            );
+            assert_eq!(
+                body.source_map.face_features(),
+                definition.source_map.face_features(),
+                "provenance follows the definition element by element"
+            );
+        }
+        let reflected_bounds = mesh_bounds(&result.bodies[1].body.mesh);
+        assert!((reflected_bounds.min[0] - 8.0).abs() < 1e-9);
+        assert!((reflected_bounds.max[0] - 10.0).abs() < 1e-9);
+        let mirrored_bounds = mesh_bounds(&result.bodies[3].body.mesh);
+        assert!((mirrored_bounds.min[2] + 11.0).abs() < 1e-9);
+        assert!((mirrored_bounds.max[2] + 10.0).abs() < 1e-9);
     }
 
     #[test]
@@ -3048,7 +3094,7 @@ mod nary_intersection_regression {
     use exedra_primitives::{BoxParams, box_primitive};
 
     use super::*;
-    use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+    use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, RecipeBuilder};
     use crate::tessellate::EvalPolicy;
 
     fn add_box(builder: &mut RecipeBuilder, min: [f64; 3], max: [f64; 3]) -> NodeId {
@@ -3317,25 +3363,32 @@ mod nary_intersection_regression {
     fn csg_withholds_results_built_from_incomplete_operands() {
         // `Difference(A, Group(B, refused))`: the group still emits B, so
         // without a completeness verdict the Boolean would quietly become
-        // `A - B` and report it exact. A reflecting instance is a
-        // deterministic refusal with no geometry.
+        // `A - B` and report it exact.
         let build = |with_refused: bool| {
             let mut builder = RecipeBuilder::new();
             let a = add_box(&mut builder, [0.0; 3], [4.0; 3]);
             let b = add_box(&mut builder, [1.0; 3], [2.0; 3]);
             let mut children = vec![b];
             if with_refused {
-                let refused = builder
-                    .add(NodeKind::Instance {
-                        of: b,
-                        placement: Placement3::from_axes(
-                            [-1.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0],
-                            [0.0, 0.0, 1.0],
-                            [0.0, 0.0, 0.0],
-                        ),
+                // Stretching an open planar face is a deterministic typed
+                // refusal that emits no geometry.
+                let sheet = builder.add_profile(crate::builders::rect(1.0, 1.0).expect("rect"));
+                let face = builder
+                    .add(NodeKind::PlanarFace {
+                        profile: sheet,
+                        placement: Placement3::translate(1.0, 1.0, 3.0),
                     })
-                    .expect("reflecting instance passes IR validation");
+                    .expect("valid face");
+                let refused = builder
+                    .add(NodeKind::Stretch {
+                        child: face,
+                        plane: Plane3 {
+                            normal: [1.0, 0.0, 0.0],
+                            distance: 1.5,
+                        },
+                        length: 1.0,
+                    })
+                    .expect("stretch passes IR validation");
                 children.push(refused);
             }
             let group = builder
@@ -3361,15 +3414,18 @@ mod nary_intersection_regression {
             .expect("refusals are reported, not raised");
         assert_eq!(cold.report.fidelity_of(root), Some(Fidelity::EnvelopeOnly));
         assert!(cold.bodies.is_empty(), "no partial solid is emitted");
-        assert_eq!(cold.report.counters.envelope_only, 1);
+        assert_eq!(
+            cold.report.counters.envelope_only, 2,
+            "the refused stretch and the withheld difference"
+        );
         let codes: Vec<&str> = cold.report.diagnostics.iter().map(|d| d.code).collect();
-        assert!(codes.contains(&"eval.instance.reflecting"));
+        assert!(codes.iter().any(|code| code.starts_with("eval.stretch.")));
         assert!(codes.contains(&"eval.csg.incomplete_operand"));
         assert!(codes.contains(&"eval.csg.unsupported"));
         assert_eq!(
             codes
                 .iter()
-                .filter(|code| **code == "eval.instance.reflecting")
+                .filter(|code| code.starts_with("eval.stretch."))
                 .count(),
             1,
             "the fallback does not re-walk operands and duplicate diagnostics"
@@ -3388,8 +3444,14 @@ mod nary_intersection_regression {
         let warm = evaluate_with_cache(&partial, &EvalPolicy::default(), &mut cache)
             .expect("refusals are reported, not raised");
         assert_eq!(warm.report.fidelity_of(root), Some(Fidelity::EnvelopeOnly));
-        assert_eq!(warm.report.counters.cache_hits, 2);
-        assert_eq!(warm.report.counters.cache_misses, 0);
+        assert_eq!(
+            warm.report.counters.cache_hits, 3,
+            "both boxes and the refused stretch's planar face replay"
+        );
+        assert_eq!(
+            warm.report.counters.cache_misses, 1,
+            "refusals are not cached: the stretch is retried and misses again"
+        );
         assert_eq!(warm.report.diagnostics, cold.report.diagnostics);
     }
 
