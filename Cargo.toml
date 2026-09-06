@@ -36,6 +36,7 @@ members = [
     "examples/basilica_ruin",
     "examples/basilica_structure_lab",
     "examples/constructive_gallery",
+    "examples/constructive_probe",
 ]
 
 [workspace.package]

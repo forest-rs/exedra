@@ -138,6 +138,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "constructive_probe"
+version = "0.0.0"
+dependencies = [
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_gltf",
+ "exedra_mesh",
+ "exedra_testkit",
+]
+
+[[package]]
 name = "constructive_wind_tunnel"
 version = "0.0.0"
 dependencies = [
