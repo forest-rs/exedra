@@ -597,6 +597,7 @@ fn feature_dto(feature: Feature) -> InspectionFeature {
             dto.kind = "boolean_face".to_string();
             dto.operand = Some(u32::from(operand));
         }
+        Feature::BooleanSeam => dto.kind = "boolean_seam".to_string(),
         Feature::GridPatch { row, col } => {
             dto.kind = "grid_patch".to_string();
             dto.row = Some(u32::from(row));

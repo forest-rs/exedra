@@ -364,7 +364,7 @@ struct CsgMesh {
 
 impl CsgMesh {
     fn operand(mesh: Mesh, index: usize) -> Self {
-        let operand = u16::try_from(index).unwrap_or(u16::MAX);
+        let operand = u16::try_from(index).expect("IR validation bounds CSG operand counts");
         Self {
             face_operands: mesh.faces().map(|face| (face, operand)).collect(),
             mesh,
@@ -1088,10 +1088,32 @@ impl EvalCx<'_> {
                             .expect("every boolean output face has provenance"),
                     })
                     .collect();
-                let vertex_features = alloc::vec![
-                    Feature::BooleanFace { operand: 0 };
-                    mesh.vertices().count()
-                ];
+                // Vertices carry no pipeline provenance of their own, so
+                // attribution is derived: a vertex whose incident faces all
+                // come from one operand belongs to it, and one where faces
+                // of several operands meet lies on a cut curve.
+                let mut vertex_operands: HashMap<exedra_mesh::VertexId, Option<u16>> =
+                    HashMap::with_capacity(mesh.vertices().count());
+                for face in mesh.faces() {
+                    let operand = output.face_operands[&face];
+                    for vertex in mesh.face_loop(face).filter_map(|he| mesh.to_vertex(he)) {
+                        vertex_operands
+                            .entry(vertex)
+                            .and_modify(|owner| {
+                                if *owner != Some(operand) {
+                                    *owner = None;
+                                }
+                            })
+                            .or_insert(Some(operand));
+                    }
+                }
+                let vertex_features: Vec<Feature> = mesh
+                    .vertices()
+                    .map(|vertex| match vertex_operands.get(&vertex) {
+                        Some(Some(operand)) => Feature::BooleanFace { operand: *operand },
+                        _ => Feature::BooleanSeam,
+                    })
+                    .collect();
                 let source_map =
                     crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
                 let body = Rc::new(TessellatedBody {
@@ -3616,6 +3638,57 @@ mod nary_intersection_regression {
         )
         .expect("topologically valid quad");
         assert_eq!(fan_unsafe_faces(&bow_tie), 1);
+    }
+
+    #[test]
+    fn boolean_vertex_provenance_follows_incident_faces() {
+        // Vertices used to be attributed wholesale to operand 0. A vertex
+        // that belongs only to the second box must say so, and a vertex on
+        // the cut curve of an overlapping union must not claim either box.
+        let (recipe, _) = box_csg(
+            CsgOp::Union,
+            &[([0.0; 3], [1.0; 3]), ([5.0, 0.0, 0.0], [6.0, 1.0, 1.0])],
+        );
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("disjoint union");
+        let body = &result.bodies[0].body;
+        assert_eq!(body.mesh.vertices().count(), 16);
+        for vertex in body.mesh.vertices() {
+            let x = body.mesh.vertex_position(vertex).expect("live vertex")[0];
+            let expected = u16::from(x >= 5.0);
+            assert_eq!(
+                body.source_map.vertex_feature(vertex),
+                Some(Feature::BooleanFace { operand: expected }),
+                "vertex at x = {x}"
+            );
+        }
+
+        let (recipe, _) = box_csg(CsgOp::Union, &[([0.0; 3], [2.0; 3]), ([1.0; 3], [3.0; 3])]);
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("overlapping union");
+        let body = &result.bodies[0].body;
+        let mut seams = 0;
+        for vertex in body.mesh.vertices() {
+            let mut owners: Vec<u16> = body
+                .mesh
+                .vertex_star(vertex)
+                .filter_map(|he| body.mesh.face(he))
+                .filter(|face| *face != FaceId::OUTSIDE)
+                .map(|face| match body.source_map.face_feature(face) {
+                    Some(Feature::BooleanFace { operand }) => operand,
+                    other => panic!("boolean faces carry operands: {other:?}"),
+                })
+                .collect();
+            owners.sort_unstable();
+            owners.dedup();
+            let expected = match owners.as_slice() {
+                [operand] => Feature::BooleanFace { operand: *operand },
+                _ => {
+                    seams += 1;
+                    Feature::BooleanSeam
+                }
+            };
+            assert_eq!(body.source_map.vertex_feature(vertex), Some(expected));
+        }
+        assert!(seams > 0, "an overlapping union has cut-curve vertices");
     }
 
     #[test]

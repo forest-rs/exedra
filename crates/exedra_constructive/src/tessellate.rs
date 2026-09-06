@@ -139,6 +139,11 @@ pub enum Feature {
         /// Operand index within the CSG node.
         operand: u16,
     },
+    /// A vertex of a boolean result that no single operand owns: faces
+    /// attributed to different operands meet there, so it lies on a cut
+    /// curve. Vertex attribution is derived from the incident faces'
+    /// operands; the pipeline carries no finer vertex provenance yet.
+    BooleanSeam,
     /// A sweep wall face between path points `band` and `band + 1`.
     SweepWall {
         /// Index of the path segment.

@@ -538,6 +538,12 @@ pub struct Node {
     pub issue: Option<SourceId>,
 }
 
+/// The most operands one CSG node accepts: Boolean provenance
+/// ([`crate::tessellate::Feature::BooleanFace`]) addresses operands as
+/// `u16`, and validation refuses larger lists rather than letting indices
+/// saturate into one shared identity.
+pub const MAX_CSG_OPERANDS: usize = u16::MAX as usize;
+
 /// A frozen constructive recipe.
 ///
 /// Immutable after [`RecipeBuilder::finish`]; all lookups are index-based
@@ -740,6 +746,15 @@ pub enum RecipeError {
         /// How many were provided.
         count: usize,
     },
+    /// A node has more operands than its provenance can address.
+    TooManyOperands {
+        /// Which node kind, as a stable diagnostic name.
+        what: &'static str,
+        /// How many were provided.
+        count: usize,
+        /// The most the node kind supports.
+        max: usize,
+    },
     /// The recipe has no nodes.
     Empty,
     /// A profile references a curve policy that was never registered.
@@ -786,6 +801,9 @@ impl core::fmt::Display for RecipeError {
             Self::InvalidParameter { what } => write!(f, "invalid parameter: {what}"),
             Self::TooFewOperands { what, count } => {
                 write!(f, "{what} needs more operands, got {count}")
+            }
+            Self::TooManyOperands { what, count, max } => {
+                write!(f, "{what} allows at most {max} operands, got {count}")
             }
             Self::Empty => write!(f, "recipe has no nodes"),
             Self::UnknownPolicy { policy } => write!(f, "unknown curve policy id {policy}"),
@@ -1169,6 +1187,14 @@ impl RecipeBuilder {
                     return Err(RecipeError::TooFewOperands {
                         what: "csg operands",
                         count: operands.len(),
+                    });
+                }
+                // Boolean provenance addresses operands as `u16`.
+                if operands.len() > MAX_CSG_OPERANDS {
+                    return Err(RecipeError::TooManyOperands {
+                        what: "csg operands",
+                        count: operands.len(),
+                        max: MAX_CSG_OPERANDS,
                     });
                 }
                 for operand in operands {
@@ -1951,6 +1977,35 @@ mod tests {
         );
         assert_ne!(mirrored.recipe_fingerprint(), original_fingerprint);
         assert_eq!(mirrored.recipe_fingerprint(), repeated.recipe_fingerprint());
+    }
+
+    #[test]
+    fn csg_operand_counts_are_bounded_by_provenance() {
+        let mut b = RecipeBuilder::new();
+        let body = b
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                placement: Placement3::IDENTITY,
+            })
+            .expect("valid box");
+        assert!(
+            b.add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands: vec![body; MAX_CSG_OPERANDS],
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            b.add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands: vec![body; MAX_CSG_OPERANDS + 1],
+            }),
+            Err(RecipeError::TooManyOperands {
+                what: "csg operands",
+                count: MAX_CSG_OPERANDS + 1,
+                max: MAX_CSG_OPERANDS,
+            })
+        );
     }
 
     #[test]

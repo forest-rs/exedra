@@ -206,6 +206,7 @@ impl core::fmt::Display for FeatureLabel {
             Feature::Imported => write!(f, "imported"),
             Feature::PrimitiveRegion { region } => write!(f, "primitive_region {region}"),
             Feature::BooleanFace { operand } => write!(f, "boolean_face {operand}"),
+            Feature::BooleanSeam => write!(f, "boolean_seam"),
             Feature::SweepWall {
                 band,
                 loop_index,
