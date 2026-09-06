@@ -386,6 +386,19 @@ impl CsgMesh {
     }
 }
 
+/// One consumed CSG operand subtree.
+struct CsgOperand {
+    /// The folded operand mesh; `None` when the subtree emitted no bodies
+    /// or its multi-body fold was refused.
+    mesh: Option<Mesh>,
+    /// World bounds of everything the subtree evaluated.
+    bounds: Aabb3,
+    /// Whether the subtree evaluated without any refusal below it. A
+    /// partial subtree is still useful for inspection, but it is never a
+    /// complete solid.
+    complete: bool,
+}
+
 impl EvalCx<'_> {
     /// Walks one node under an accumulated world placement. When `emit` is
     /// false the walk only computes envelopes (used under CSG operands).
@@ -592,7 +605,8 @@ impl EvalCx<'_> {
                         refinement: None,
                     })
                 })?;
-                Ok(self.finish_body(node_id, body, emit, Fidelity::Exact))
+                let fidelity = self.body_fidelity(node_id, &[]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
             }
             NodeKind::Stretch {
                 child,
@@ -638,6 +652,7 @@ impl EvalCx<'_> {
                     self.instance_cache.insert(of, Rc::clone(&rc));
                     rc
                 };
+                let fidelity = self.body_fidelity(node_id, &[]);
                 let mut bounds = Aabb3::EMPTY;
                 for source in local.iter() {
                     let body =
@@ -647,7 +662,7 @@ impl EvalCx<'_> {
                         })?;
                     let body = Rc::new(body);
                     bounds.union(&mesh_bounds(&body.mesh));
-                    self.report.fidelity.push((node_id, Fidelity::Exact));
+                    self.report.fidelity.push((node_id, fidelity));
                     if emit {
                         self.report.counters.bodies += 1;
                         self.report.counters.faces += crate::len_u32(body.mesh.faces().count());
@@ -877,19 +892,28 @@ impl EvalCx<'_> {
 
     /// Evaluates one operand subtree into its bodies (world-placed),
     /// folding multi-body operands into one mesh by union.
+    ///
+    /// The subtree's bodies alone do not say whether it evaluated: a group
+    /// with one refused child still emits the others. The returned operand
+    /// therefore carries an explicit completeness verdict, so a Boolean
+    /// never consumes a partial preview as if it were the whole solid.
     fn collect_operand_mesh(
         &mut self,
         operand: NodeId,
         world: &Placement3,
         scratch: &mut BooleanScratch,
         diagnostics: &mut BooleanDiagnostics,
-    ) -> Result<Option<Mesh>, EvalError> {
+    ) -> Result<CsgOperand, EvalError> {
         let taken = core::mem::take(&mut self.bodies);
         let emitted_before = self.report.counters.bodies;
-        self.walk(operand, world, true)?;
+        let errors_before = self.error_count();
+        let bounds = self.walk(operand, world, true)?;
         let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
         // Consumed operand bodies are not part of the evaluation output.
         self.report.counters.bodies = emitted_before;
+        // Every refusal below this operand is reported at `Error` severity;
+        // none may have appeared for the subtree to count as complete.
+        let complete = self.error_count() == errors_before;
         // Shared (cached) bodies clone their mesh for consumption; unshared
         // ones move it out without copying.
         let mut meshes = collected
@@ -898,23 +922,33 @@ impl EvalCx<'_> {
                 Ok(body) => body.mesh,
                 Err(shared) => shared.mesh.clone(),
             });
-        let Some(mut folded) = meshes.next() else {
-            return Ok(None);
-        };
+        let mut mesh = meshes.next();
         for next in meshes {
-            match boolean_mesh(
-                &folded,
+            let Some(folded) = mesh.as_ref() else { break };
+            mesh = boolean_mesh(
+                folded,
                 &next,
                 BooleanOp::Union,
                 FaceTriangulation::Fan,
                 scratch,
                 diagnostics,
-            ) {
-                Ok(output) => folded = output.mesh,
-                Err(_) => return Ok(None),
-            }
+            )
+            .ok()
+            .map(|output| output.mesh);
         }
-        Ok(Some(folded))
+        Ok(CsgOperand {
+            mesh,
+            bounds,
+            complete,
+        })
+    }
+
+    fn error_count(&self) -> usize {
+        self.report
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity >= Severity::Error)
+            .count()
     }
 
     /// Evaluates a CSG node through the mesh boolean pipeline.
@@ -933,23 +967,32 @@ impl EvalCx<'_> {
         let mut scratch = BooleanScratch::default();
         let mut diagnostics = BooleanDiagnostics::default();
 
-        // Difference alone uses the catalog-free A minus union(rest) convention.
+        // Every operand is walked, whatever the others did, so the report
+        // describes the whole subtree exactly once.
         let mut meshes: Vec<CsgMesh> = Vec::with_capacity(operands.len());
+        let mut incomplete: Vec<usize> = Vec::new();
         let mut all_present = true;
+        let mut bounds = Aabb3::EMPTY;
         for (index, operand) in operands.iter().enumerate() {
-            match self.collect_operand_mesh(*operand, world, &mut scratch, &mut diagnostics)? {
+            let collected =
+                self.collect_operand_mesh(*operand, world, &mut scratch, &mut diagnostics)?;
+            bounds.union(&collected.bounds);
+            if !collected.complete {
+                incomplete.push(index);
+            }
+            match collected.mesh {
                 Some(mesh) => meshes.push(CsgMesh::operand(mesh, index)),
-                None => {
-                    all_present = false;
-                    break;
-                }
+                None => all_present = false,
             }
         }
+        let operands_complete = incomplete.is_empty();
 
         // Cache lookup happens after the operand walks so the report is
         // identical either way; the key is content-addressed, so a hit is
         // exactly what the pipeline below would deterministically produce.
-        let key = self.cache_key(node_id, world);
+        // An incomplete operand never consults the cache: its result is
+        // withheld, not looked up.
+        let key = self.cache_key(node_id, world).filter(|_| operands_complete);
         let cached = if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
             let hit = cache.get(key);
             if hit.is_some() {
@@ -964,7 +1007,7 @@ impl EvalCx<'_> {
 
         let combined: Option<Rc<TessellatedBody>> = if let Some(body) = cached {
             Some(body)
-        } else if all_present {
+        } else if all_present && operands_complete {
             let boolean_op = match op {
                 CsgOp::Union => BooleanOp::Union,
                 CsgOp::Intersection => BooleanOp::Intersection,
@@ -1025,15 +1068,13 @@ impl EvalCx<'_> {
         };
 
         match combined {
-            Some(body) => Ok(self.finish_body(node_id, body, emit, Fidelity::Exact)),
+            Some(body) => {
+                let fidelity = self.body_fidelity(node_id, &[]);
+                Ok(self.finish_body(node_id, body, emit, fidelity))
+            }
             None => {
                 // Typed fallback: envelope-only, with the pipeline's
                 // diagnostics surfaced.
-                let mut bounds = Aabb3::EMPTY;
-                for operand in operands {
-                    let b = self.walk(*operand, world, false)?;
-                    bounds.union(&b);
-                }
                 self.report.counters.envelope_only += 1;
                 self.report.fidelity.push((node_id, Fidelity::EnvelopeOnly));
                 if !bounds.is_empty() {
@@ -1047,13 +1088,24 @@ impl EvalCx<'_> {
                         alloc::format!("{entry}"),
                     );
                 }
+                for index in incomplete {
+                    self.push_diagnostic(
+                        node_id,
+                        Severity::Error,
+                        "eval.csg.incomplete_operand",
+                        alloc::format!(
+                            "operand {index} did not evaluate completely; its partial \
+                             geometry was not used as a Boolean operand"
+                        ),
+                    );
+                }
                 self.push_diagnostic(
                     node_id,
                     Severity::Error,
                     "eval.csg.unsupported",
                     String::from(
                         "CSG evaluation fell back to the operand envelope; \
-                         see the pipeline diagnostics",
+                         see the preceding diagnostics",
                     ),
                 );
                 Ok(bounds)
@@ -3164,6 +3216,135 @@ mod nary_intersection_regression {
         };
         assert_eq!(body.node, root);
         assert_eq!(body.body.mesh.faces().count(), 0);
+    }
+
+    #[test]
+    fn csg_withholds_results_built_from_incomplete_operands() {
+        // `Difference(A, Group(B, refused))`: the group still emits B, so
+        // without a completeness verdict the Boolean would quietly become
+        // `A - B` and report it exact. A reflecting instance is a
+        // deterministic refusal with no geometry.
+        let build = |with_refused: bool| {
+            let mut builder = RecipeBuilder::new();
+            let a = add_box(&mut builder, [0.0; 3], [4.0; 3]);
+            let b = add_box(&mut builder, [1.0; 3], [2.0; 3]);
+            let mut children = vec![b];
+            if with_refused {
+                let refused = builder
+                    .add(NodeKind::Instance {
+                        of: b,
+                        placement: Placement3::from_axes(
+                            [-1.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0],
+                            [0.0, 0.0, 1.0],
+                            [0.0, 0.0, 0.0],
+                        ),
+                    })
+                    .expect("reflecting instance passes IR validation");
+                children.push(refused);
+            }
+            let group = builder
+                .add(NodeKind::Group { children })
+                .expect("valid group");
+            let root = builder
+                .add(NodeKind::Csg {
+                    op: CsgOp::Difference,
+                    operands: vec![a, group],
+                })
+                .expect("valid difference");
+            (builder.finish(root).expect("valid recipe"), root)
+        };
+
+        let (complete, root) = build(false);
+        let result = evaluate(&complete, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.report.fidelity_of(root), Some(Fidelity::Exact));
+        assert!((mesh_volume(&result.bodies[0].body.mesh) - 63.0).abs() < 1e-9);
+
+        let (partial, root) = build(true);
+        let mut cache = EvalCache::new();
+        let cold = evaluate_with_cache(&partial, &EvalPolicy::default(), &mut cache)
+            .expect("refusals are reported, not raised");
+        assert_eq!(cold.report.fidelity_of(root), Some(Fidelity::EnvelopeOnly));
+        assert!(cold.bodies.is_empty(), "no partial solid is emitted");
+        assert_eq!(cold.report.counters.envelope_only, 1);
+        let codes: Vec<&str> = cold.report.diagnostics.iter().map(|d| d.code).collect();
+        assert!(codes.contains(&"eval.instance.reflecting"));
+        assert!(codes.contains(&"eval.csg.incomplete_operand"));
+        assert!(codes.contains(&"eval.csg.unsupported"));
+        assert_eq!(
+            codes
+                .iter()
+                .filter(|code| **code == "eval.instance.reflecting")
+                .count(),
+            1,
+            "the fallback does not re-walk operands and duplicate diagnostics"
+        );
+        let envelope = cold
+            .report
+            .envelopes
+            .iter()
+            .find(|(node, _)| *node == root)
+            .map(|(_, bounds)| *bounds)
+            .expect("envelope-only nodes record their bounds");
+        assert_bounds(envelope, [0.0; 3], [4.0; 3]);
+
+        // Warm: the operand bodies replay from the cache, the withheld
+        // result is never looked up, and the verdict is unchanged.
+        let warm = evaluate_with_cache(&partial, &EvalPolicy::default(), &mut cache)
+            .expect("refusals are reported, not raised");
+        assert_eq!(warm.report.fidelity_of(root), Some(Fidelity::EnvelopeOnly));
+        assert_eq!(warm.report.counters.cache_hits, 2);
+        assert_eq!(warm.report.counters.cache_misses, 0);
+        assert_eq!(warm.report.diagnostics, cold.report.diagnostics);
+    }
+
+    #[test]
+    fn declared_issues_report_conflicted_on_every_body_path() {
+        // `with_issue` promises a conflicted classification. Imports, CSG
+        // results, and instances must honor it exactly like profile bodies.
+        let mut builder = RecipeBuilder::new();
+        let issue = builder.source_ref("spec.issue.contradiction");
+        let import = builder
+            .add_import(box_primitive(&BoxParams::default()).mesh)
+            .expect("deep-valid import");
+        let imported = builder
+            .with_issue(issue)
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("valid import node");
+        let other = add_box(&mut builder, [0.5; 3], [2.0; 3]);
+        let csg = builder
+            .with_issue(issue)
+            .add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands: vec![imported, other],
+            })
+            .expect("valid union");
+        let instance = builder
+            .with_issue(issue)
+            .add(NodeKind::Instance {
+                of: csg,
+                placement: Placement3::translate(5.0, 0.0, 0.0),
+            })
+            .expect("valid instance");
+        let root = builder
+            .add(NodeKind::Group {
+                children: vec![imported, instance],
+            })
+            .expect("valid group");
+        let recipe = builder.finish(root).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.bodies.len(), 2);
+        for node in [imported, csg, instance] {
+            assert_eq!(
+                result.report.fidelity_of(node),
+                Some(Fidelity::Conflicted(issue)),
+                "node {node:?}"
+            );
+        }
     }
 
     #[test]
