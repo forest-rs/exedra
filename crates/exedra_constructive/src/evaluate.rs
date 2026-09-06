@@ -149,6 +149,9 @@ pub struct EvalCounters {
     pub stretch_uv_unmapped_faces: u64,
     /// Stretch nodes refused because their topology was not safely evaluable.
     pub stretch_refusals: u32,
+    /// CSG operand faces whose fan triangulation overlaps or inverts. The
+    /// Boolean pipeline still ran on that cover; see `eval.csg.fan_unsafe_faces`.
+    pub csg_fan_unsafe_faces: u64,
     /// Total source-map bytes retained across emitted bodies.
     pub source_map_bytes: u64,
     /// Bodies reused from the evaluation cache (always zero for the pure
@@ -334,6 +337,21 @@ struct EvalCx<'a> {
     instance_cache: HashMap<NodeId, Rc<Vec<PlacedBody>>>,
 }
 
+/// Triangle enumeration for every Boolean the evaluator runs.
+///
+/// A fan is a valid cover only when every fan triangle winds with its
+/// face. Tessellated bodies guarantee that (caps are emitted as
+/// triangles), but imported n-gons and the notched faces a Boolean leaves
+/// behind for the next one in a chain do not. The fan is nevertheless the
+/// only strategy the pipeline is verified with end to end: under
+/// `FaceTriangulation::Robust` chained axis-aligned differences defer with
+/// dangling cuts, so switching is kernel work, not a dispatch change.
+/// Until then every operand is measured with [`fan_unsafe_faces`]; the
+/// count lands in the report and a `Warning` names the operand, so a
+/// Boolean that ran over an invalid cover is never reported clean even
+/// when its result happens to be right.
+const CSG_TRIANGULATION: FaceTriangulation = FaceTriangulation::Fan;
+
 /// One intermediate CSG mesh with the originating CSG operand for every face.
 ///
 /// Boolean provenance names faces on the immediate left or right mesh. Keeping
@@ -364,7 +382,7 @@ impl CsgMesh {
             &self.mesh,
             &other.mesh,
             op,
-            FaceTriangulation::Fan,
+            CSG_TRIANGULATION,
             scratch,
             diagnostics,
         )?;
@@ -899,6 +917,8 @@ impl EvalCx<'_> {
     /// never consumes a partial preview as if it were the whole solid.
     fn collect_operand_mesh(
         &mut self,
+        node_id: NodeId,
+        index: usize,
         operand: NodeId,
         world: &Placement3,
         scratch: &mut BooleanScratch,
@@ -916,12 +936,28 @@ impl EvalCx<'_> {
         let complete = self.error_count() == errors_before;
         // Shared (cached) bodies clone their mesh for consumption; unshared
         // ones move it out without copying.
-        let mut meshes = collected
+        let meshes: Vec<Mesh> = collected
             .into_iter()
             .map(|placed| match Rc::try_unwrap(placed.body) {
                 Ok(body) => body.mesh,
                 Err(shared) => shared.mesh.clone(),
-            });
+            })
+            .collect();
+        let fan_unsafe: u64 = meshes.iter().map(fan_unsafe_faces).sum();
+        if fan_unsafe > 0 {
+            self.report.counters.csg_fan_unsafe_faces += fan_unsafe;
+            self.push_diagnostic(
+                node_id,
+                Severity::Warning,
+                "eval.csg.fan_unsafe_faces",
+                alloc::format!(
+                    "operand {index} has {fan_unsafe} face(s) whose fan triangulation \
+                     overlaps or inverts; the Boolean ran on that cover, so its result \
+                     is not verified even where its volume is right"
+                ),
+            );
+        }
+        let mut meshes = meshes.into_iter();
         let mut mesh = meshes.next();
         for next in meshes {
             let Some(folded) = mesh.as_ref() else { break };
@@ -929,7 +965,7 @@ impl EvalCx<'_> {
                 folded,
                 &next,
                 BooleanOp::Union,
-                FaceTriangulation::Fan,
+                CSG_TRIANGULATION,
                 scratch,
                 diagnostics,
             )
@@ -974,8 +1010,14 @@ impl EvalCx<'_> {
         let mut all_present = true;
         let mut bounds = Aabb3::EMPTY;
         for (index, operand) in operands.iter().enumerate() {
-            let collected =
-                self.collect_operand_mesh(*operand, world, &mut scratch, &mut diagnostics)?;
+            let collected = self.collect_operand_mesh(
+                node_id,
+                index,
+                *operand,
+                world,
+                &mut scratch,
+                &mut diagnostics,
+            )?;
             bounds.union(&collected.bounds);
             if !collected.complete {
                 incomplete.push(index);
@@ -1291,6 +1333,46 @@ impl EvalCx<'_> {
         }
         bounds
     }
+}
+
+/// Faces whose fan from the first corner is not a valid cover: some fan
+/// triangle winds against the face's Newell normal (a concave n-gon seen
+/// from a reflex-adjacent corner), or the face has no normal at all (a
+/// self-intersecting loop). Triangles always pass; collinear fan triangles
+/// contribute no area and are tolerated.
+fn fan_unsafe_faces(mesh: &Mesh) -> u64 {
+    mesh.faces()
+        .filter(|face| !fan_covers_face(mesh, *face))
+        .count() as u64
+}
+
+fn fan_covers_face(mesh: &Mesh, face: FaceId) -> bool {
+    let points: Vec<[f64; 3]> = mesh
+        .face_loop(face)
+        .filter_map(|half_edge| mesh.to_vertex(half_edge))
+        .filter_map(|vertex| mesh.vertex_position(vertex))
+        .map(|point| point.map(f64::from))
+        .collect();
+    if points.len() <= 3 {
+        return true;
+    }
+    let mut normal = [0.0_f64; 3];
+    for (index, a) in points.iter().enumerate() {
+        let b = points[(index + 1) % points.len()];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    if !exedra_math::finite(normal) || normal == [0.0; 3] {
+        return false;
+    }
+    points.windows(2).skip(1).all(|pair| {
+        let winding = exedra_math::cross(
+            exedra_math::sub(pair[0], points[0]),
+            exedra_math::sub(pair[1], points[0]),
+        );
+        exedra_math::dot(winding, normal) >= 0.0
+    })
 }
 
 /// Reflection across a plane `dot(n, p) = d` as a placement.
@@ -3345,6 +3427,195 @@ mod nary_intersection_regression {
                 "node {node:?}"
             );
         }
+    }
+
+    /// A prism over a U-shaped cap, imported with each cap as one concave
+    /// octagon. Area 7, height 2, volume 14. A fan from the first cap
+    /// vertex covers 11 units of absolute area with inverted triangles.
+    fn u_prism_import() -> Mesh {
+        let cap = [
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ];
+        let mut positions = Vec::new();
+        for z in [0.0, 2.0] {
+            for [x, y] in cap {
+                positions.push([x, y, z]);
+            }
+        }
+        let bottom: Vec<u32> = (0..8).rev().collect();
+        let top: Vec<u32> = (8..16).collect();
+        let mut loops: Vec<Vec<u32>> = vec![bottom, top];
+        for i in 0..8_u32 {
+            let j = (i + 1) % 8;
+            loops.push(vec![i, j, j + 8, i + 8]);
+        }
+        let loops: Vec<&[u32]> = loops.iter().map(Vec::as_slice).collect();
+        Mesh::from_polygons(&positions, &loops).expect("U prism is valid")
+    }
+
+    #[test]
+    fn csg_over_concave_faces_is_exact_or_typed_and_measured() {
+        // The U cap's fan cover overlaps and inverts. The kernel still runs
+        // on it: a cut through one arm touches only valid fan triangles and
+        // comes out right, while a cut across the notch defers as a typed
+        // refusal. Neither may be a wrong volume, both carry a warning and
+        // the count, and the same geometry supplied as triangles is exact
+        // and clean.
+        let evaluate_difference = |mesh: Mesh, cutter: ([f64; 3], [f64; 3])| {
+            let mut builder = RecipeBuilder::new();
+            let import = builder.add_import(mesh).expect("deep-valid import");
+            let prism = builder
+                .add(NodeKind::MeshImport {
+                    import,
+                    placement: Placement3::IDENTITY,
+                })
+                .expect("valid import node");
+            let cutter = add_box(&mut builder, cutter.0, cutter.1);
+            let root = builder
+                .add(NodeKind::Csg {
+                    op: CsgOp::Difference,
+                    operands: vec![prism, cutter],
+                })
+                .expect("valid difference");
+            let recipe = builder.finish(root).expect("valid recipe");
+            let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+            let volume = match result.report.fidelity_of(root) {
+                Some(Fidelity::Exact) => {
+                    let mesh = &result.bodies[0].body.mesh;
+                    assert!(mesh.validate_deep().is_empty());
+                    Some(mesh_volume(mesh))
+                }
+                Some(Fidelity::EnvelopeOnly) => {
+                    assert!(result.bodies.is_empty());
+                    assert!(
+                        result
+                            .report
+                            .diagnostics
+                            .iter()
+                            .any(|d| d.code == "eval.csg.unsupported")
+                    );
+                    None
+                }
+                other => panic!("unexpected fidelity {other:?}"),
+            };
+            (volume, result.report)
+        };
+        // Through the left arm only: removes 0.5 x 2.5 x 2.
+        let arm = ([0.25, 0.25, -1.0], [0.75, 2.75, 3.0]);
+        // Across both arms and the empty notch between them: removes
+        // 1 x 1 x 2 from each arm and nothing from the notch, where the fan
+        // cover of the caps places overlapping and inverted triangles.
+        let across = ([-1.0, 1.5, -1.0], [4.0, 2.5, 3.0]);
+
+        let concave = u_prism_import();
+        assert!((mesh_volume(&concave) - 14.0).abs() < 1e-9);
+        assert_eq!(fan_unsafe_faces(&concave), 2, "both caps");
+        for (cutter, expected) in [(arm, 11.5), (across, 10.0)] {
+            let (volume, report) = evaluate_difference(u_prism_import(), cutter);
+            if let Some(volume) = volume {
+                assert!((volume - expected).abs() < 1e-6, "{volume} != {expected}");
+            }
+            assert_eq!(report.counters.csg_fan_unsafe_faces, 2);
+            let warnings: Vec<&Diagnostic> = report
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == "eval.csg.fan_unsafe_faces")
+                .collect();
+            assert_eq!(warnings.len(), 1, "{:?}", report.diagnostics);
+            assert_eq!(warnings[0].severity, Severity::Warning);
+            assert!(!report.clean_at(Severity::Warning));
+            assert!(warnings[0].message.contains("operand 0 has 2 face(s)"));
+        }
+
+        let source = u_prism_import();
+        let mut triangles = Vec::new();
+        for face in source.faces() {
+            for corners in source.face_triangles(face, FaceTriangulation::Robust) {
+                triangles.push(corners.map(|corner| {
+                    source
+                        .to_vertex(corner)
+                        .expect("corner has a vertex")
+                        .index()
+                }));
+            }
+        }
+        let positions: Vec<[f32; 3]> = source
+            .vertices()
+            .map(|vertex| *source.vertex_position(vertex).expect("live vertex"))
+            .collect();
+        let loops: Vec<&[u32]> = triangles.iter().map(<[u32; 3]>::as_slice).collect();
+        let triangulated = Mesh::from_polygons(&positions, &loops).expect("valid triangles");
+        assert_eq!(fan_unsafe_faces(&triangulated), 0);
+        for (cutter, expected) in [(arm, 11.5), (across, 10.0)] {
+            let (volume, report) = evaluate_difference(triangulated.clone(), cutter);
+            let volume = volume.expect("triangulated input is exact");
+            assert!((volume - expected).abs() < 1e-6, "{volume} != {expected}");
+            assert_eq!(report.counters.csg_fan_unsafe_faces, 0);
+            assert!(report.clean_at(Severity::Note));
+        }
+    }
+
+    #[test]
+    fn fan_cover_check_accepts_convex_and_collinear_faces() {
+        // Rectangles, rectangles with a collinear seam vertex (what a split
+        // leaves behind), and triangles are valid fan covers; a notched
+        // rectangle and a bow-tie are not.
+        let quad = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("quad");
+        assert_eq!(fan_unsafe_faces(&quad), 0);
+        let seamed = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4]],
+        )
+        .expect("seamed quad");
+        assert_eq!(fan_unsafe_faces(&seamed), 0);
+        let notched = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [2.0, 0.5, 0.0],
+                [1.0, 0.5, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4, 5, 6, 7]],
+        )
+        .expect("notched quad");
+        assert_eq!(fan_unsafe_faces(&notched), 1);
+        let bow_tie = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("topologically valid quad");
+        assert_eq!(fan_unsafe_faces(&bow_tie), 1);
     }
 
     #[test]
