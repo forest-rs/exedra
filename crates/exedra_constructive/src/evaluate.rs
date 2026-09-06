@@ -125,13 +125,19 @@ impl Aabb3 {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EvalCounters {
-    /// Bodies emitted into the evaluation output.
+    /// Bodies in the evaluation output.
+    ///
+    /// The output counters (`bodies`, `faces`, `vertices`,
+    /// `source_map_bytes`) are derived from the emitted bodies once the walk
+    /// completes, so geometry consumed by CSG or stretch and definitions
+    /// evaluated for instancing never count. The remaining counters are
+    /// work counters, incremented as evaluation proceeds.
     pub bodies: u32,
     /// Distinct tessellations performed (instances reuse tessellations).
     pub tessellations: u32,
-    /// Total faces emitted.
+    /// Faces across the emitted bodies.
     pub faces: u32,
-    /// Total vertices emitted.
+    /// Vertices across the emitted bodies.
     pub vertices: u32,
     /// Nodes reported as envelope-only.
     pub envelope_only: u32,
@@ -152,7 +158,7 @@ pub struct EvalCounters {
     /// CSG operand faces whose fan triangulation overlaps or inverts. The
     /// Boolean pipeline still ran on that cover; see `eval.csg.fan_unsafe_faces`.
     pub csg_fan_unsafe_faces: u64,
-    /// Total source-map bytes retained across emitted bodies.
+    /// Source-map bytes retained across the emitted bodies.
     pub source_map_bytes: u64,
     /// Bodies reused from the evaluation cache (always zero for the pure
     /// [`evaluate`]).
@@ -318,6 +324,14 @@ fn evaluate_inner(
         },
     };
     cx.walk(recipe.root(), &Placement3::IDENTITY, true)?;
+    // The output ledger describes what was emitted, not what was visited.
+    for placed in &cx.bodies {
+        let counters = &mut cx.report.counters;
+        counters.bodies += 1;
+        counters.faces += crate::len_u32(placed.body.mesh.faces().count());
+        counters.vertices += crate::len_u32(placed.body.mesh.vertices().count());
+        counters.source_map_bytes += placed.body.source_map.stats().approx_bytes as u64;
+    }
     Ok(Evaluation {
         bodies: cx.bodies,
         report: cx.report,
@@ -682,10 +696,6 @@ impl EvalCx<'_> {
                     bounds.union(&mesh_bounds(&body.mesh));
                     self.report.fidelity.push((node_id, fidelity));
                     if emit {
-                        self.report.counters.bodies += 1;
-                        self.report.counters.faces += crate::len_u32(body.mesh.faces().count());
-                        self.report.counters.vertices +=
-                            crate::len_u32(body.mesh.vertices().count());
                         self.bodies.push(PlacedBody {
                             node: node_id,
                             body,
@@ -731,20 +741,8 @@ impl EvalCx<'_> {
                 // their evaluation work and fidelity stay visible, but their
                 // pre-deformation meshes are not emitted alongside the result.
                 let taken = core::mem::take(&mut self.bodies);
-                let emitted_before = (
-                    self.report.counters.bodies,
-                    self.report.counters.faces,
-                    self.report.counters.vertices,
-                    self.report.counters.source_map_bytes,
-                );
                 self.walk(child, world, true)?;
                 let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
-                (
-                    self.report.counters.bodies,
-                    self.report.counters.faces,
-                    self.report.counters.vertices,
-                    self.report.counters.source_map_bytes,
-                ) = emitted_before;
                 let mut bounds = Aabb3::EMPTY;
                 for placed in &collected {
                     bounds.union(&mesh_bounds(&placed.body.mesh));
@@ -925,12 +923,9 @@ impl EvalCx<'_> {
         diagnostics: &mut BooleanDiagnostics,
     ) -> Result<CsgOperand, EvalError> {
         let taken = core::mem::take(&mut self.bodies);
-        let emitted_before = self.report.counters.bodies;
         let errors_before = self.error_count();
         let bounds = self.walk(operand, world, true)?;
         let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
-        // Consumed operand bodies are not part of the evaluation output.
-        self.report.counters.bodies = emitted_before;
         // Every refusal below this operand is reported at `Error` severity;
         // none may have appeared for the subtree to count as complete.
         let complete = self.error_count() == errors_before;
@@ -1347,10 +1342,6 @@ impl EvalCx<'_> {
         }
         self.report.fidelity.push((node, fidelity));
         if emit {
-            self.report.counters.bodies += 1;
-            self.report.counters.source_map_bytes += body.source_map.stats().approx_bytes as u64;
-            self.report.counters.faces += crate::len_u32(mesh.faces().count());
-            self.report.counters.vertices += crate::len_u32(mesh.vertices().count());
             self.bodies.push(PlacedBody { node, body });
         }
         bounds
@@ -3689,6 +3680,69 @@ mod nary_intersection_regression {
             assert_eq!(body.source_map.vertex_feature(vertex), Some(expected));
         }
         assert!(seams > 0, "an overlapping union has cut-curve vertices");
+    }
+
+    #[test]
+    fn output_counters_describe_emitted_bodies_only() {
+        // Two instances of a CSG definition: the operands are consumed, the
+        // definition is evaluated in local space and not emitted, and only
+        // the two placed instances are output. Every output counter must
+        // agree with the emitted bodies, including source-map bytes on the
+        // instance path.
+        let mut builder = RecipeBuilder::new();
+        let a = add_box(&mut builder, [0.0; 3], [2.0; 3]);
+        let b = add_box(&mut builder, [1.0; 3], [3.0; 3]);
+        let definition = builder
+            .add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands: vec![a, b],
+            })
+            .expect("valid union");
+        let instances: Vec<NodeId> = [5.0, 10.0]
+            .into_iter()
+            .map(|x| {
+                builder
+                    .add(NodeKind::Instance {
+                        of: definition,
+                        placement: Placement3::translate(x, 0.0, 0.0),
+                    })
+                    .expect("valid instance")
+            })
+            .collect();
+        let root = builder
+            .add(NodeKind::Group {
+                children: instances,
+            })
+            .expect("valid group");
+        let recipe = builder.finish(root).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
+        assert_eq!(result.bodies.len(), 2);
+        let counters = result.report.counters;
+        assert_eq!(counters.bodies, 2);
+        assert_eq!(counters.tessellations, 3, "two boxes and one union");
+        let faces: usize = result
+            .bodies
+            .iter()
+            .map(|placed| placed.body.mesh.faces().count())
+            .sum();
+        let vertices: usize = result
+            .bodies
+            .iter()
+            .map(|placed| placed.body.mesh.vertices().count())
+            .sum();
+        let map_bytes: usize = result
+            .bodies
+            .iter()
+            .map(|placed| placed.body.source_map.stats().approx_bytes)
+            .sum();
+        assert_eq!(counters.faces as usize, faces);
+        assert_eq!(counters.vertices as usize, vertices);
+        assert_eq!(
+            counters.source_map_bytes,
+            u64::try_from(map_bytes).expect("byte counts fit u64")
+        );
+        assert!(map_bytes > 0);
     }
 
     #[test]
