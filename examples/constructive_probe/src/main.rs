@@ -472,7 +472,8 @@ fn tapered_loft() -> Probe {
 }
 
 /// Two circles of different radius: a natural request whose discretization
-/// counts may differ. Either it lofts, or it refuses with a typed reason.
+/// counts differ, so it is a typed loft refusal until sections can be
+/// resampled to a common count.
 fn loft_between_circles() -> Probe {
     let mut b = RecipeBuilder::new();
     let big = b.add_profile(builders::circle(60.0).expect("circle"));
@@ -1105,15 +1106,18 @@ mod tests {
     /// Probes the kernel refuses today, with the diagnostic naming why.
     /// Equal-radius perpendicular cylinders put one cylinder's edges exactly
     /// on the other's surface; the Boolean pipeline defers those cuts.
+    /// The loft is refused because its circles discretize to different
+    /// point counts; the tessellator has no correspondence policy yet.
     const KNOWN_REFUSALS: &[(&str, &str)] = &[
         ("two_cylinder_intersection", "eval.csg.unsupported"),
         ("three_cylinder_intersection", "eval.csg.unsupported"),
         ("three_cylinder_chained", "eval.csg.unsupported"),
+        ("loft_between_circles", "eval.loft.section_mismatch"),
     ];
 
     /// Probes that fail the whole evaluation today rather than reporting
-    /// a typed refusal: loft sections whose discretizations disagree.
-    const KNOWN_HARD_FAILURES: &[&str] = &["loft_between_circles"];
+    /// a typed refusal.
+    const KNOWN_HARD_FAILURES: &[&str] = &[];
 
     #[test]
     fn every_probe_matches_its_pinned_outcome() {

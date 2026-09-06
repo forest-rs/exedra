@@ -263,8 +263,9 @@ impl core::error::Error for EvalError {}
 ///
 /// Supported nodes include declared box/cylinder primitives, constructive
 /// bodies, planar faces, groups, transforms, stretch, and CSG operations
-/// handled by the mesh Boolean pipeline. Refused CSG and stretch operations
-/// report [`Fidelity::EnvelopeOnly`] with structured diagnostics rather than
+/// handled by the mesh Boolean pipeline. Refused CSG and stretch operations,
+/// and lofts whose sections do not correspond or span no volume, report
+/// [`Fidelity::EnvelopeOnly`] with structured diagnostics rather than
 /// returning invented geometry.
 /// The walk starts at the recipe root and visits children depth-first in
 /// operand order.
@@ -513,7 +514,41 @@ impl EvalCx<'_> {
                         node: node_id,
                         error,
                     })
-                })?;
+                });
+                // Sections that do not correspond, or span no volume, are a
+                // valid request the tessellator cannot honor: a typed
+                // refusal like a CSG deferral, not a failure of the whole
+                // evaluation.
+                let body = match body {
+                    Ok(body) => body,
+                    Err(EvalError {
+                        error: TessellateError::SectionMismatch { section },
+                        ..
+                    }) => {
+                        return Ok(self.record_loft_refusal(
+                            node_id,
+                            &placed,
+                            "eval.loft.section_mismatch",
+                            alloc::format!(
+                                "loft section {section} does not correspond to section 0 \
+                                 after discretization; sections need the same hole count \
+                                 and per-loop point counts"
+                            ),
+                        ));
+                    }
+                    Err(EvalError {
+                        error: TessellateError::DegenerateLoft,
+                        ..
+                    }) => {
+                        return Ok(self.record_loft_refusal(
+                            node_id,
+                            &placed,
+                            "eval.loft.degenerate",
+                            String::from("loft sections are coplanar and span no volume"),
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                };
                 let fidelity = self.body_fidelity(node_id, &profile_ids);
                 Ok(self.finish_body(node_id, body, emit, fidelity))
             }
@@ -871,6 +906,41 @@ impl EvalCx<'_> {
     ) -> Result<Aabb3, EvalError> {
         let bounds = self.walk(child, world, false)?;
         Ok(self.record_stretch_refusal(node_id, bounds, code, message))
+    }
+
+    /// Reports a loft the tessellator refused as envelope-only, with the
+    /// envelope taken from the placed section rings.
+    fn record_loft_refusal(
+        &mut self,
+        node_id: NodeId,
+        sections: &[(Placement3, &crate::profile::Profile2)],
+        code: &'static str,
+        message: String,
+    ) -> Aabb3 {
+        let mut bounds = Aabb3::EMPTY;
+        for (placement, profile) in sections {
+            if let Ok(rings) =
+                crate::discretize::discretize_profile(profile, &self.policy.discretize)
+            {
+                for ring in core::iter::once(&rings.outer).chain(rings.holes.iter()) {
+                    for point in &ring.points {
+                        let r = &placement.rows;
+                        bounds.include([
+                            r[0][0] * point[0] + r[0][1] * point[1] + r[0][3],
+                            r[1][0] * point[0] + r[1][1] * point[1] + r[1][3],
+                            r[2][0] * point[0] + r[2][1] * point[1] + r[2][3],
+                        ]);
+                    }
+                }
+            }
+        }
+        self.report.counters.envelope_only += 1;
+        self.report.fidelity.push((node_id, Fidelity::EnvelopeOnly));
+        if !bounds.is_empty() {
+            self.report.envelopes.push((node_id, bounds));
+        }
+        self.push_diagnostic(node_id, Severity::Error, code, message);
+        bounds
     }
 
     fn record_stretch_refusal(
@@ -2276,6 +2346,82 @@ mod tests {
                 })
             ));
             assert!(evaluate_placed(Placement3::translate(1e6, 0.0, 0.0)).is_ok());
+        }
+    }
+
+    #[test]
+    fn loft_with_mismatched_sections_is_a_typed_refusal() {
+        // Two circles of different radius discretize to different point
+        // counts, so the tessellator cannot pair them. A cone frustum is an
+        // ordinary request: it must report envelope-only with a loft
+        // diagnostic and leave the rest of the model alive, not fail the
+        // whole evaluation.
+        let mut b = RecipeBuilder::new();
+        let big = b.add_profile(builders::circle(60.0).expect("circle"));
+        let small = b.add_profile(builders::circle(25.0).expect("circle"));
+        let loft = b
+            .add(NodeKind::Loft {
+                sections: vec![
+                    (Placement3::IDENTITY, big),
+                    (Placement3::translate(0.0, 0.0, 120.0), small),
+                ],
+                policy: crate::ir::LoftPolicy::Ruled,
+                caps: CapMode::Both,
+            })
+            .expect("valid loft");
+        let slab = b
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [10.0, 10.0, 10.0],
+                },
+                placement: Placement3::translate(200.0, 0.0, 0.0),
+            })
+            .expect("valid box");
+        let root = b
+            .add(NodeKind::Group {
+                children: vec![loft, slab],
+            })
+            .expect("valid group");
+        let recipe = b.finish(root).expect("valid recipe");
+
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("refusal is reported");
+        assert_eq!(
+            result.report.fidelity_of(loft),
+            Some(Fidelity::EnvelopeOnly)
+        );
+        assert_eq!(result.report.counters.envelope_only, 1);
+        assert_eq!(result.bodies.len(), 1, "the slab still evaluates");
+        assert_eq!(result.bodies[0].node, slab);
+        let refusal = result
+            .report
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "eval.loft.section_mismatch")
+            .expect("typed loft diagnostic");
+        assert_eq!(refusal.severity, Severity::Error);
+        assert!(refusal.message.contains("section 1"));
+        let envelope = result
+            .report
+            .envelopes
+            .iter()
+            .find(|(node, _)| *node == loft)
+            .map(|(_, bounds)| *bounds)
+            .expect("refused lofts record their envelope");
+        // The envelope comes from the discretized rings, so it may sit
+        // inside the analytic circle by up to the chord tolerance.
+        let tolerance = EvalPolicy::default().discretize.chord_tolerance;
+        for (axis, (min, max)) in [(-60.0, 60.0), (-60.0, 60.0), (0.0, 120.0)]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(
+                (envelope.min[axis] - min).abs() <= tolerance,
+                "{envelope:?}"
+            );
+            assert!(
+                (envelope.max[axis] - max).abs() <= tolerance,
+                "{envelope:?}"
+            );
         }
     }
 
