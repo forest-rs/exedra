@@ -253,6 +253,11 @@ pub enum TessellateError {
     /// an overflow to infinity or a positive primitive extent narrowing to
     /// zero).
     NonFiniteGeometry,
+    /// Distinct source vertices along one face edge narrow to the same `f32`
+    /// position, so the placed mesh would carry a zero-length edge its
+    /// source did not have (for example a placement far from the origin
+    /// relative to the feature size).
+    CollapsedGeometry,
     /// A declared cylinder requests more angular edges than the evaluation
     /// policy permits for one curved segment.
     PrimitiveSegmentLimit {
@@ -297,6 +302,12 @@ impl core::fmt::Display for TessellateError {
             }
             Self::NonFiniteGeometry => {
                 write!(f, "geometry is not representable at the f32 mesh boundary")
+            }
+            Self::CollapsedGeometry => {
+                write!(
+                    f,
+                    "distinct vertices collapse together at the f32 mesh boundary"
+                )
             }
             Self::PrimitiveSegmentLimit { requested, maximum } => write!(
                 f,

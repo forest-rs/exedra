@@ -2066,6 +2066,69 @@ mod tests {
     }
 
     #[test]
+    fn import_placement_refuses_unrepresentable_narrowing() {
+        // `check_placement` only proves the matrix finite. Materializing a
+        // placement into `f32` mesh coordinates is where representability
+        // is decided: an overflow is non-finite, and a finite translation
+        // that folds a unit edge onto one `f32` value is a collapse. Both
+        // must be typed refusals on the import and the instance path.
+        let evaluate_import = |placement: Placement3| {
+            let mut builder = RecipeBuilder::new();
+            let import = builder
+                .add_import(imported_unit_box())
+                .expect("deep-valid import");
+            let imported = builder
+                .add(NodeKind::MeshImport { import, placement })
+                .expect("finite placement passes IR validation");
+            let recipe = builder.finish(imported).expect("valid recipe");
+            evaluate(&recipe, &EvalPolicy::default()).map(|_| ())
+        };
+        let evaluate_instance = |placement: Placement3| {
+            let mut builder = RecipeBuilder::new();
+            let import = builder
+                .add_import(imported_unit_box())
+                .expect("deep-valid import");
+            let definition = builder
+                .add(NodeKind::MeshImport {
+                    import,
+                    placement: Placement3::IDENTITY,
+                })
+                .expect("local import");
+            let instance = builder
+                .add(NodeKind::Instance {
+                    of: definition,
+                    placement,
+                })
+                .expect("finite placement passes IR validation");
+            let recipe = builder.finish(instance).expect("valid recipe");
+            evaluate(&recipe, &EvalPolicy::default()).map(|_| ())
+        };
+
+        let overflow = Placement3::translate(1e40, 0.0, 0.0);
+        let collapse = Placement3::translate(1e8, 0.0, 0.0);
+        for evaluate_placed in [
+            &evaluate_import as &dyn Fn(Placement3) -> Result<(), EvalError>,
+            &evaluate_instance,
+        ] {
+            assert!(matches!(
+                evaluate_placed(overflow),
+                Err(EvalError {
+                    error: TessellateError::NonFiniteGeometry,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                evaluate_placed(collapse),
+                Err(EvalError {
+                    error: TessellateError::CollapsedGeometry,
+                    ..
+                })
+            ));
+            assert!(evaluate_placed(Placement3::translate(1e6, 0.0, 0.0)).is_ok());
+        }
+    }
+
+    #[test]
     fn mirrored_import_is_bit_identical_across_cache_reuse() {
         // A reflected rebuild is cached under the same content/world/policy
         // contract as other bodies; warm reuse must return identical topology,

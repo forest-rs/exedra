@@ -77,11 +77,17 @@ fn transform_proper(source: &Mesh, placement: &Placement3) -> Result<Mesh, Tesse
 }
 
 /// Every live vertex with its placed, narrowed position.
+///
+/// Narrowing is the representation boundary the placement contract owns:
+/// an overflow to infinity is refused, and so is a placement that folds two
+/// distinct endpoints of a face edge onto one `f32` position, because the
+/// source's nondegenerate edge would silently become a zero-length one.
 fn placed_positions(
     source: &Mesh,
     placement: &Placement3,
 ) -> Result<Vec<(VertexId, [f32; 3])>, TessellateError> {
     let mut positions = Vec::with_capacity(source.vertices().count());
+    let mut placed = BTreeMap::<u32, [f32; 3]>::new();
     for vertex in source.vertices() {
         let local = source
             .vertex_position(vertex)
@@ -93,6 +99,19 @@ fn placed_positions(
             return Err(TessellateError::NonFiniteGeometry);
         }
         positions.push((vertex, position));
+        placed.insert(vertex.index(), position);
+    }
+    for edge in source.faces().flat_map(|face| source.face_loop(face)) {
+        let from = source
+            .from_vertex(edge)
+            .expect("a validated face edge has an origin");
+        let to = source
+            .to_vertex(edge)
+            .expect("a validated face edge has a destination");
+        let distinct_source = source.vertex_position(from) != source.vertex_position(to);
+        if distinct_source && placed[&from.index()] == placed[&to.index()] {
+            return Err(TessellateError::CollapsedGeometry);
+        }
     }
     Ok(positions)
 }
