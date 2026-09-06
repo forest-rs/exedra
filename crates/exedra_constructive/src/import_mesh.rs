@@ -1,10 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Orientation repair for imported meshes under constructive reflections.
+//! Placement of imported and instanced meshes, including orientation repair
+//! under constructive reflections.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+
+use exedra_mesh::{HalfEdgeId, Mesh, VertexId};
 
 use crate::ir::Placement3;
 use crate::tessellate::TessellateError;
@@ -27,24 +30,112 @@ struct FaceAttrs {
     corners: Vec<CornerAttrs>,
 }
 
+/// Places a mesh under an affine placement.
+///
+/// This is the one transformation contract shared by imported-mesh
+/// placement and instancing: positions transform in `f64` and narrow once
+/// to `f32`, authored corner normal overrides transport as covectors
+/// (inverse transpose, renormalized), and every other attribute follows its
+/// owning element unchanged. Reflecting placements additionally rebuild the
+/// mesh with reversed face loops so outward orientation survives.
+///
+/// # Errors
+///
+/// [`TessellateError::NonFiniteGeometry`] when a transformed position or
+/// normal is not representable, or when an authored normal cannot be
+/// transported because the placement's linear part is singular.
+pub(crate) fn transform(source: &Mesh, placement: &Placement3) -> Result<Mesh, TessellateError> {
+    if crate::tessellate::det3(placement) < 0.0 {
+        transform_reflecting(source, placement)
+    } else {
+        transform_proper(source, placement)
+    }
+}
+
+/// Applies a non-reflecting placement in place: topology and every attribute
+/// keep their ids, positions and authored normals move.
+fn transform_proper(source: &Mesh, placement: &Placement3) -> Result<Mesh, TessellateError> {
+    let positions = placed_positions(source, placement)?;
+    let normals = placed_normals(source, placement)?;
+    let mut mesh = source.clone();
+    {
+        let mut edit = mesh.edit();
+        for (vertex, position) in positions {
+            exedra_mesh::op::set_vertex_position(&mut edit, vertex, position)
+                .expect("a cloned live vertex stays live");
+        }
+        for (corner, normal) in normals {
+            exedra_mesh::op::set_corner_normal_override(&mut edit, corner, Some(normal))
+                .expect("a cloned live corner stays live");
+        }
+        #[expect(unused_must_use, reason = "discard sink output")]
+        {
+            edit.finish();
+        }
+    }
+    Ok(mesh)
+}
+
+/// Every live vertex with its placed, narrowed position.
+fn placed_positions(
+    source: &Mesh,
+    placement: &Placement3,
+) -> Result<Vec<(VertexId, [f32; 3])>, TessellateError> {
+    let mut positions = Vec::with_capacity(source.vertices().count());
+    for vertex in source.vertices() {
+        let local = source
+            .vertex_position(vertex)
+            .copied()
+            .expect("a live vertex has a position")
+            .map(f64::from);
+        let position = exedra_math::narrow(apply_placement(placement, local));
+        if !exedra_math::finite(position) {
+            return Err(TessellateError::NonFiniteGeometry);
+        }
+        positions.push((vertex, position));
+    }
+    Ok(positions)
+}
+
+/// Every authored corner normal override, transported under `placement`.
+fn placed_normals(
+    source: &Mesh,
+    placement: &Placement3,
+) -> Result<Vec<(HalfEdgeId, [f32; 3])>, TessellateError> {
+    let Some(layer) = source
+        .attrs()
+        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+    else {
+        return Ok(Vec::new());
+    };
+    // Inverse-transpose transport is needed only for authored normal
+    // overrides. A representable placement with no such overrides should
+    // not be refused merely because its inverse overflows at an extreme
+    // scale.
+    let inverse = inverse_linear(placement);
+    let mut normals = Vec::new();
+    for corner in source.faces().flat_map(|face| source.face_loop(face)) {
+        if let Some(normal) = layer.get(corner.into()) {
+            let inverse = inverse.ok_or(TessellateError::NonFiniteGeometry)?;
+            normals.push((corner, transform_normal(*normal, inverse)?));
+        }
+    }
+    Ok(normals)
+}
+
 /// Applies a known reflecting placement and repairs the resulting orientation.
 ///
 /// Rebuilding is necessary because an affine transform with negative
 /// determinant reverses every face. Face loops are reversed while attributes
 /// follow their semantic owners: region values follow faces, seam/sharpness
 /// values follow undirected edges, and UV/normal values follow face corners.
-pub(crate) fn transform_reflecting(
-    source: &exedra_mesh::Mesh,
-    placement: &Placement3,
-) -> Result<exedra_mesh::Mesh, TessellateError> {
+fn transform_reflecting(source: &Mesh, placement: &Placement3) -> Result<Mesh, TessellateError> {
     debug_assert!(
         crate::tessellate::det3(placement) < 0.0,
         "orientation repair is only needed for reflecting placements"
     );
 
-    // Inverse-transpose transport is needed only for authored normal
-    // overrides. A representable reflection with no such overrides should not
-    // be refused merely because its inverse overflows at an extreme scale.
+    // See `placed_normals` for why a missing inverse is tolerated here.
     let inverse = inverse_linear(placement);
     let regions = source
         .attrs()
@@ -61,16 +152,7 @@ pub(crate) fn transform_reflecting(
     let mut builder = exedra_mesh::MeshBuilder::new();
     let mut vertex_indices = BTreeMap::<u32, u32>::new();
     let mut vertex_sharpness = Vec::with_capacity(source.vertices().count());
-    for vertex in source.vertices() {
-        let local = source
-            .vertex_position(vertex)
-            .copied()
-            .expect("a live vertex has a position")
-            .map(f64::from);
-        let position = exedra_math::narrow(apply_placement(placement, local));
-        if position.iter().any(|component| !component.is_finite()) {
-            return Err(TessellateError::NonFiniteGeometry);
-        }
+    for (vertex, position) in placed_positions(source, placement)? {
         let output = builder.push_vertex(position);
         vertex_indices.insert(vertex.index(), output);
         vertex_sharpness.push(source.vertex_sharpness(vertex));
@@ -182,7 +264,7 @@ pub(crate) fn transform_reflecting(
 }
 
 fn collect_edge_attrs(
-    source: &exedra_mesh::Mesh,
+    source: &Mesh,
     seams: Option<&exedra_mesh::attributes::SparseLayer<bool>>,
     sharpness: Option<&exedra_mesh::attributes::SparseLayer<f32>>,
 ) -> BTreeMap<(u32, u32), EdgeAttrs> {
@@ -212,8 +294,8 @@ fn collect_edge_attrs(
 }
 
 fn collect_corner_attrs(
-    source: &exedra_mesh::Mesh,
-    face_loop: &[exedra_mesh::HalfEdgeId],
+    source: &Mesh,
+    face_loop: &[HalfEdgeId],
     uvs: Option<&exedra_mesh::attributes::SparseLayer<[f32; 2]>>,
     normals: Option<&exedra_mesh::attributes::SparseLayer<[f32; 3]>>,
     inverse: Option<[[f64; 3]; 3]>,

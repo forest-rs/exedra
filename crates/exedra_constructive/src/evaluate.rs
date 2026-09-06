@@ -572,24 +572,16 @@ impl EvalCx<'_> {
             }
             NodeKind::MeshImport { import, placement } => {
                 let placement = compose(world, placement);
-                let reflects = crate::tessellate::det3(&placement) < 0.0;
                 let import = *import;
                 let body = self.body_cached(node_id, world, |cx| {
                     let source = cx.recipe.import(import).expect("validated import id");
-                    // A reflection reverses orientation, so transforming only
-                    // positions would leave an outward source inside out. The
-                    // rebuild reverses loops and remaps every built-in semantic
-                    // attribute; proper placements retain the cheaper clone.
-                    let mesh = if reflects {
-                        crate::import_mesh::transform_reflecting(source, &placement).map_err(
-                            |error| EvalError {
+                    let mesh =
+                        crate::import_mesh::transform(source, &placement).map_err(|error| {
+                            EvalError {
                                 node: node_id,
                                 error,
-                            },
-                        )?
-                    } else {
-                        transform_mesh(source, &placement)
-                    };
+                            }
+                        })?;
                     let face_features = alloc::vec![Feature::Imported; mesh.faces().count()];
                     let vertex_features = alloc::vec![Feature::Imported; mesh.vertices().count()];
                     let source_map =
@@ -648,7 +640,12 @@ impl EvalCx<'_> {
                 };
                 let mut bounds = Aabb3::EMPTY;
                 for source in local.iter() {
-                    let body = Rc::new(instantiate(&source.body, &placement));
+                    let body =
+                        instantiate(&source.body, &placement).map_err(|error| EvalError {
+                            node: node_id,
+                            error,
+                        })?;
+                    let body = Rc::new(body);
                     bounds.union(&mesh_bounds(&body.mesh));
                     self.report.fidelity.push((node_id, Fidelity::Exact));
                     if emit {
@@ -1274,52 +1271,20 @@ pub(crate) fn mesh_bounds(mesh: &Mesh) -> Aabb3 {
     bounds
 }
 
-/// Clones a local-space body under a rigid placement: vertex positions
-/// transform (f64 math, one narrowing), topology and attributes are
-/// untouched, and the source map re-pins to the edited revision.
-fn instantiate(source: &TessellatedBody, placement: &Placement3) -> TessellatedBody {
-    let mesh = transform_mesh(&source.mesh, placement);
+/// Clones a local-space body under a non-reflecting placement through the
+/// shared import transform (positions and authored normals move, topology
+/// keeps its ids) and re-pins the source map to the edited revision.
+fn instantiate(
+    source: &TessellatedBody,
+    placement: &Placement3,
+) -> Result<TessellatedBody, TessellateError> {
+    let mesh = crate::import_mesh::transform(&source.mesh, placement)?;
     let source_map = source.source_map.repinned(&mesh);
-    TessellatedBody {
+    Ok(TessellatedBody {
         mesh,
         source_map,
         refinement: source.refinement,
-    }
-}
-
-/// Clones a mesh with vertices rigid-transformed (f64 math, one narrowing).
-fn transform_mesh(source: &Mesh, placement: &Placement3) -> Mesh {
-    let mut mesh = source.clone();
-    let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
-    {
-        let mut session = mesh.edit();
-        for vertex in vertices {
-            if let Some(p) = session.mesh().vertex_position(vertex) {
-                let local = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-                let world = apply_placement_pub(placement, local);
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "instance placement narrowing mirrors the tessellation boundary"
-                )]
-                let narrowed = [world[0] as f32, world[1] as f32, world[2] as f32];
-                let _ = exedra_mesh::op::set_vertex_position(&mut session, vertex, narrowed);
-            }
-        }
-        #[expect(unused_must_use, reason = "discard sink output")]
-        {
-            session.finish();
-        }
-    }
-    mesh
-}
-
-fn apply_placement_pub(p: &Placement3, v: [f64; 3]) -> [f64; 3] {
-    let r = &p.rows;
-    [
-        r[0][0] * v[0] + r[0][1] * v[1] + r[0][2] * v[2] + r[0][3],
-        r[1][0] * v[0] + r[1][1] * v[1] + r[1][2] * v[2] + r[1][3],
-        r[2][0] * v[0] + r[2][1] * v[1] + r[2][2] * v[2] + r[2][3],
-    ]
+    })
 }
 
 /// Composes two placements: `outer * inner` (inner applies first).
@@ -1960,6 +1925,143 @@ mod tests {
                 min: [1.0, -2.0, 5.0],
                 max: [3.0, 1.0, 9.0],
             }
+        );
+    }
+
+    fn imported_face_with_normal(normal: [f32; 3]) -> Mesh {
+        let mut mesh = Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3]],
+        )
+        .expect("open quad is valid");
+        let corners: Vec<_> = mesh.faces().flat_map(|face| mesh.face_loop(face)).collect();
+        {
+            let mut edit = mesh.edit();
+            for corner in corners {
+                exedra_mesh::op::set_corner_normal_override(&mut edit, corner, Some(normal))
+                    .expect("live corner");
+            }
+            #[expect(unused_must_use, reason = "discard sink output")]
+            {
+                edit.finish();
+            }
+        }
+        mesh
+    }
+
+    fn corner_normals(mesh: &Mesh) -> Vec<[f32; 3]> {
+        let layer = mesh
+            .attrs()
+            .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+            .expect("authored normal layer survives");
+        mesh.faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .map(|corner| {
+                *layer
+                    .get(corner.into())
+                    .expect("every corner keeps its authored normal")
+            })
+            .collect()
+    }
+
+    fn assert_normals_close(actual: &[[f32; 3]], expected: [f32; 3]) {
+        assert!(!actual.is_empty());
+        for normal in actual {
+            for axis in 0..3 {
+                assert!(
+                    (normal[axis] - expected[axis]).abs() <= 4.0 * f32::EPSILON,
+                    "axis {axis}: {normal:?} != {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn import_placement_transports_authored_normals() {
+        // A quarter turn about +X sends +Z to -Y. Positions alone rotating
+        // would leave the authored normal in the source frame, so this pins
+        // the normal on both the direct import path and the instance path.
+        let quarter_turn =
+            Placement3::rotate_x_then_translate(core::f64::consts::FRAC_PI_2, 0.0, 0.0, 0.0);
+        let expected = [0.0, -1.0, 0.0];
+
+        let mut builder = RecipeBuilder::new();
+        let import = builder
+            .add_import(imported_face_with_normal([0.0, 0.0, 1.0]))
+            .expect("deep-valid import");
+        let direct = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: quarter_turn,
+            })
+            .expect("rotated import");
+        let recipe = builder.finish(direct).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("import evaluates");
+        assert_eq!(result.report.fidelity_of(direct), Some(Fidelity::Exact));
+        assert_normals_close(&corner_normals(&result.bodies[0].body.mesh), expected);
+
+        let mut builder = RecipeBuilder::new();
+        let import = builder
+            .add_import(imported_face_with_normal([0.0, 0.0, 1.0]))
+            .expect("deep-valid import");
+        let definition = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("local import");
+        let instance = builder
+            .add(NodeKind::Instance {
+                of: definition,
+                placement: quarter_turn,
+            })
+            .expect("rotated instance");
+        let recipe = builder.finish(instance).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("instance evaluates");
+        assert_eq!(result.bodies.len(), 1);
+        assert_normals_close(&corner_normals(&result.bodies[0].body.mesh), expected);
+    }
+
+    #[test]
+    fn proper_non_uniform_import_transform_transports_normals_as_covectors() {
+        // Non-uniform scale must use the inverse transpose, exactly as the
+        // reflecting path already does; the two paths share one contract.
+        let mut builder = RecipeBuilder::new();
+        let import = builder
+            .add_import(attributed_imported_unit_box())
+            .expect("deep-valid attributed import");
+        let imported = builder
+            .add(NodeKind::MeshImport {
+                import,
+                placement: Placement3::from_axes(
+                    [2.0, 0.0, 0.0],
+                    [0.0, 3.0, 0.0],
+                    [0.0, 0.0, 4.0],
+                    [0.0, 0.0, 0.0],
+                ),
+            })
+            .expect("scaled import");
+        let recipe = builder.finish(imported).expect("valid recipe");
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("import evaluates");
+        let mesh = &result.bodies[0].body.mesh;
+        let normals = mesh
+            .attrs()
+            .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+            .expect("authored normal layer survives");
+        let authored: Vec<[f32; 3]> = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .filter_map(|corner| normals.get(corner.into()).copied())
+            .collect();
+        assert_eq!(authored.len(), 1, "exactly one corner carries an override");
+        assert_normals_close(
+            &authored,
+            [3.0 / 13.0_f32.sqrt(), 2.0 / 13.0_f32.sqrt(), 0.0],
         );
     }
 
