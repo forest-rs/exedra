@@ -47,8 +47,8 @@ pub enum PartSource {
 
 /// A part definition: geometry source plus declared material slots.
 ///
-/// Slots are declared names; regions of the tessellated geometry map to
-/// slots via [`PartDef::region_slot`] entries with a part-wide default.
+/// Slots are declared names. Recipe bodies carry authored slots; regions
+/// without an authored slot can use [`PartDef::region_slot`] as fallback.
 /// Instances bind slots to opaque material keys; parts may carry default
 /// keys per slot.
 #[derive(Clone, Debug)]
@@ -313,15 +313,15 @@ impl Assembly {
     }
 
     /// Registers a recipe-backed part; slots come from the recipe's slot
-    /// table. A recipe with exactly one slot uses that slot as its default.
+    /// table. Slot declarations do not assign geometry. Authored node bindings
+    /// supply per-body slots; use explicit region/default mappings for fallback.
     ///
     /// # Errors
     ///
     /// Fails on a duplicate or invalid key.
     pub fn add_recipe_part(&mut self, key: &str, recipe: Recipe) -> Result<PartId, AssemblyError> {
         let slots = recipe.slots().to_vec();
-        let default_slot = (slots.len() == 1).then_some(SlotIndex(0));
-        self.add_part_inner(key, PartSource::Recipe(recipe), slots, default_slot)
+        self.add_part_inner(key, PartSource::Recipe(recipe), slots, None)
     }
 
     /// Registers a baked-mesh part with explicitly declared slots.
@@ -428,7 +428,8 @@ impl Assembly {
         &self.parts
     }
 
-    /// Maps a tessellation region of a part to a slot name.
+    /// Maps a tessellation region of a part to a fallback slot name.
+    /// An authored body slot takes precedence over this mapping.
     ///
     /// # Errors
     ///
@@ -447,8 +448,8 @@ impl Assembly {
         Ok(())
     }
 
-    /// Sets the part-wide default slot for regions without an explicit
-    /// mapping.
+    /// Sets the part-wide fallback slot for geometry without an authored
+    /// body slot or explicit region mapping.
     ///
     /// # Errors
     ///
@@ -749,14 +750,14 @@ mod tests {
     }
 
     #[test]
-    fn single_slot_recipe_uses_its_only_slot_as_default() {
+    fn declaring_one_recipe_slot_does_not_assign_unrelated_geometry() {
         let mut asm = Assembly::new();
         let part = asm
             .add_recipe_part("single-slot", single_slot_recipe())
             .unwrap();
         let def = asm.part(part).unwrap();
-        assert_eq!(def.default_slot(), def.slot_index("surface"));
-        assert_eq!(def.region_slot(42), def.slot_index("surface"));
+        assert_eq!(def.default_slot(), None);
+        assert_eq!(def.region_slot(42), None);
     }
 
     #[test]

@@ -207,3 +207,15 @@ Before shipping a compiler against this crate:
 - [ ] Contradictory shapes use `with_issue` and still build.
 - [ ] Wire consumers verify fingerprints after `from_dto`.
 - [ ] Golden tests pin your shapes with mesh goldens + report snapshots.
+
+## Authored material slots
+
+Declaring a material slot does not assign geometry. Apply `with_material(slot)`
+to a leaf or ancestor; descendants inherit it unless they have their own slot.
+Evaluation and compilation retain the effective assignment per body, separately
+from geometric region IDs. Bind those slots to opaque material IDs in assembly.
+`PlacedBody` and `CompiledBody` literals need their new optional slot fields.
+Use `set_default_slot` only for deliberate assembly fallback; declaring one slot
+no longer assigns unrelated geometry. Mixed-slot Booleans report
+`eval.csg.material_slots_unsupported`. Evaluation schema 14 invalidates older
+fingerprints and caches.

@@ -183,6 +183,10 @@ pub fn compose(construction: &Construction, element: &Element) -> Result<Recipe,
     let mut builder = RecipeBuilder::new();
     let mut root = splice(&mut builder, &part.recipe)
         .map_err(|error| error.into_lower(&element.key, &format!("base:{}", element.key)))?;
+    // Edits create surfaces of the host part. Give unassigned tool subtrees
+    // the host's declared slot explicitly; authored tool overrides remain
+    // visible to the constructive evaluator's composition policy.
+    let material = builder.material_slot(&part.slot);
     // Consecutive edits of the same kind fold into one n-ary node, because
     // that is what the operation already means: a difference is "the first
     // operand minus the union of the rest", an intersection is the common
@@ -210,7 +214,9 @@ pub fn compose(construction: &Construction, element: &Element) -> Result<Recipe,
             operands.push(node);
             index += 1;
         }
-        root = builder.add(NodeKind::Csg { op, operands })?;
+        root = builder
+            .with_material(material)
+            .add(NodeKind::Csg { op, operands })?;
     }
     Ok(builder.finish(root)?)
 }
