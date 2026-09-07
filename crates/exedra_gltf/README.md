@@ -57,6 +57,39 @@ is emitted directly in node `extras`; the exporter-reserved `instancePath`,
 
 ## Main APIs
 
+For authored appearance, use `export_glb_with_materials` or
+`export_gltf_with_materials`. Assembly carries opaque material IDs. The caller
+maps each ID to glTF JSON through `MaterialResolver` (including a closure), using
+whatever material model it owns:
+
+```rust,ignore
+let resolve = |id: &str| match id {
+    "paint.red" => Some(serde_json::json!({
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [0.65, 0.025, 0.015, 1.0], // Linear RGBA.
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.6
+        }
+    })),
+    _ => None,
+};
+assembly.set_part_material(part, "finish", "paint.red")?;
+let list = exedra_assembly::flatten(&assembly, &compiled);
+let export = exedra_gltf::export_glb_with_materials(
+    &assembly, &compiled, &list, &resolve,
+    exedra_gltf::GltfExportOptions::z_up_to_y_up(),
+)?;
+```
+
+The current export subset supports core untextured material factors, alpha, and
+sidedness. Names and `extras` are preserved. Missing IDs, invalid fields, and
+unsupported textures/extensions are typed errors; unassigned regions remain
+unassigned. Material-only edits reuse `compiled`, and differing instance
+finishes share geometry buffers.
+
+The original functions below use hashed preview colors. See the runnable
+[material gallery](../../examples/material_gallery).
+
 - `export_gltf` and `export_glb` preserve authored coordinates.
 - `export_gltf_with_options` and `export_glb_with_options` accept explicit
   coordinate conversion through `GltfExportOptions`.

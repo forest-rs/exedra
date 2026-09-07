@@ -12,8 +12,9 @@
 //!   in `extras`;
 //! - every per-region index range becomes a mesh *primitive*, so region
 //!   materials survive as real material bindings;
-//! - material keys become named PBR material stubs with a deterministic
-//!   base color derived from the key;
+//! - [`export_glb_with_materials`] and [`export_gltf_with_materials`] resolve
+//!   material keys to caller-provided glTF material data; the original
+//!   entry points produce deterministic preview colors derived from keys;
 //! - items that share a part, body, and material resolution share one
 //!   glTF mesh (glTF-level instancing).
 //! - empty bodies retain their instance nodes and metadata without a mesh;
@@ -52,8 +53,10 @@
 //! ```
 
 mod inspect;
+mod materials;
 
 pub use inspect::GlbDocument;
+pub use materials::MaterialResolver;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -132,6 +135,25 @@ impl GltfExportOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum GltfError {
+    /// A bound material key has no description in the supplied resolver.
+    MissingMaterial {
+        /// The unresolved assembly material key.
+        key: String,
+    },
+    /// A resolved material has an invalid object, field type, or factor value.
+    InvalidMaterial {
+        /// The assembly material key.
+        key: String,
+        /// The invalid glTF material field.
+        field: String,
+    },
+    /// A material requests a field outside the supported export subset.
+    UnsupportedMaterialField {
+        /// The assembly material key.
+        key: String,
+        /// The unsupported glTF material field.
+        field: String,
+    },
     /// A render item references a part with no compiled entry.
     MissingPart {
         /// The part index the item referenced.
@@ -161,6 +183,13 @@ pub enum GltfError {
 impl std::fmt::Display for GltfError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::MissingMaterial { key } => write!(f, "no material description for {key:?}"),
+            Self::InvalidMaterial { key, field } => {
+                write!(f, "material {key:?} has invalid field {field:?}")
+            }
+            Self::UnsupportedMaterialField { key, field } => {
+                write!(f, "material {key:?} requests unsupported field {field:?}")
+            }
             Self::MissingPart { part } => write!(f, "no compiled entry for part {part}"),
             Self::MissingBody { part, body } => {
                 write!(f, "part {part} has no compiled body {body}")
@@ -178,6 +207,8 @@ impl std::error::Error for GltfError {}
 ///
 /// `assembly` supplies part keys for `extras`; `compiled` supplies the
 /// geometry the list references.
+/// Material keys use deterministic preview colors. For authored appearance,
+/// use [`export_gltf_with_materials`].
 ///
 /// # Errors
 ///
@@ -206,7 +237,39 @@ pub fn export_gltf_with_options(
     list: &RenderList,
     options: GltfExportOptions,
 ) -> Result<GltfExport, GltfError> {
-    let built = build_export(assembly, compiled, list, options)?;
+    finish_gltf(build_export(assembly, compiled, list, options, None)?)
+}
+
+/// Exports glTF using real, caller-resolved untextured PBR materials.
+///
+/// Resolution is strict: bound keys must have valid descriptions. Unassigned
+/// regions remain without a material. Geometry is read from `compiled`; material
+/// edits never invoke compilation. Instances with different materials share
+/// geometry buffers while retaining separate mesh primitives.
+///
+/// # Errors
+///
+/// Returns [`GltfError::MissingMaterial`], [`GltfError::InvalidMaterial`], or
+/// [`GltfError::UnsupportedMaterialField`] for unresolved, invalid, or unsupported
+/// used descriptions, and geometry errors under the same conditions as
+/// [`export_gltf`].
+pub fn export_gltf_with_materials(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    list: &RenderList,
+    materials: &dyn MaterialResolver,
+    options: GltfExportOptions,
+) -> Result<GltfExport, GltfError> {
+    finish_gltf(build_export(
+        assembly,
+        compiled,
+        list,
+        options,
+        Some(materials),
+    )?)
+}
+
+fn finish_gltf(built: BuiltExport) -> Result<GltfExport, GltfError> {
     let mut document = built.document;
     if !built.buffer.is_empty() {
         document.insert(
@@ -229,6 +292,9 @@ pub fn export_gltf_with_options(
 }
 
 /// Exports a render list as a binary glTF 2.0 container.
+///
+/// Material keys use deterministic preview colors. For authored appearance,
+/// use [`export_glb_with_materials`].
 ///
 /// # Errors
 ///
@@ -254,7 +320,35 @@ pub fn export_glb_with_options(
     list: &RenderList,
     options: GltfExportOptions,
 ) -> Result<GlbExport, GltfError> {
-    let built = build_export(assembly, compiled, list, options)?;
+    finish_glb(build_export(assembly, compiled, list, options, None)?)
+}
+
+/// Exports a GLB using real, caller-resolved untextured PBR materials.
+///
+/// Uses the same strict resolution and geometry sharing contract as
+/// [`export_gltf_with_materials`], with geometry embedded in the GLB BIN chunk.
+///
+/// # Errors
+///
+/// Fails for missing, invalid, or unsupported used materials, absent compiled
+/// geometry, or a GLB exceeding the unsigned 32-bit container limit.
+pub fn export_glb_with_materials(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    list: &RenderList,
+    materials: &dyn MaterialResolver,
+    options: GltfExportOptions,
+) -> Result<GlbExport, GltfError> {
+    finish_glb(build_export(
+        assembly,
+        compiled,
+        list,
+        options,
+        Some(materials),
+    )?)
+}
+
+fn finish_glb(built: BuiltExport) -> Result<GlbExport, GltfError> {
     let stats = built.stats;
     let bytes = pack_glb(built.document, built.buffer)?;
     Ok(GlbExport { bytes, stats })
@@ -272,6 +366,7 @@ fn build_export(
     compiled: &CompiledParts,
     list: &RenderList,
     options: GltfExportOptions,
+    resolver: Option<&dyn MaterialResolver>,
 ) -> Result<BuiltExport, GltfError> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut buffer_views: Vec<Value> = Vec::new();
@@ -282,6 +377,7 @@ fn build_export(
     // Mesh sharing: items with the same part, body, and material
     // resolution reference one glTF mesh.
     let mut mesh_index: HashMap<(u32, u32, Vec<Option<String>>), usize> = HashMap::new();
+    let mut geometry_index: HashMap<(u32, u32), GeometryAccessors> = HashMap::new();
     let mut nodes: Vec<Value> = Vec::new();
     let mut stats = GltfStats::default();
 
@@ -308,16 +404,20 @@ fn build_export(
             let mesh = if let Some(&index) = mesh_index.get(&key) {
                 index
             } else {
+                let geometry = *geometry_index
+                    .entry((item.part.0, item.body))
+                    .or_insert_with(|| {
+                        emit_geometry(body, &mut buffer, &mut buffer_views, &mut accessors)
+                    });
                 let index = emit_mesh(
-                    body,
+                    geometry,
                     item,
-                    &mut buffer,
-                    &mut buffer_views,
                     &mut accessors,
                     &mut materials,
                     &mut material_index,
                     &mut stats,
-                );
+                    resolver,
+                )?;
                 meshes.push(index);
                 let mesh_number = meshes.len() - 1;
                 mesh_index.insert(key, mesh_number);
@@ -448,22 +548,21 @@ fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec
     Ok(glb)
 }
 
-/// Emits one glTF mesh (buffer data, views, accessors, primitives) for a
-/// compiled body under a given material resolution. Returns the mesh JSON.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading fixed export context"
-)]
-fn emit_mesh(
+#[derive(Clone, Copy, Debug)]
+struct GeometryAccessors {
+    positions: usize,
+    normals: usize,
+    uvs: usize,
+    indices_view: usize,
+}
+
+/// Emits a compiled body's geometry once, independently of material binding.
+fn emit_geometry(
     body: &exedra_assembly::CompiledBody,
-    item: &RenderItem,
     buffer: &mut Vec<u8>,
     buffer_views: &mut Vec<Value>,
     accessors: &mut Vec<Value>,
-    materials: &mut Vec<Value>,
-    material_index: &mut HashMap<String, usize>,
-    stats: &mut GltfStats,
-) -> Value {
+) -> GeometryAccessors {
     let tri = &body.tri;
     let vertex_count = tri.positions.len();
 
@@ -503,11 +602,29 @@ fn emit_mesh(
     }
     let indices_view = push_view(buffer, buffer_views, &index_bytes);
 
+    GeometryAccessors {
+        positions: positions_accessor,
+        normals: normals_accessor,
+        uvs: uvs_accessor,
+        indices_view,
+    }
+}
+
+/// Emits the primitive wrapper for one material resolution of shared geometry.
+fn emit_mesh(
+    geometry: GeometryAccessors,
+    item: &RenderItem,
+    accessors: &mut Vec<Value>,
+    materials: &mut Vec<Value>,
+    material_index: &mut HashMap<String, usize>,
+    stats: &mut GltfStats,
+    resolver: Option<&dyn MaterialResolver>,
+) -> Result<Value, GltfError> {
     let mut primitives: Vec<Value> = Vec::new();
     for region in &item.regions {
         let indices_accessor = accessors.len();
         accessors.push(json!({
-            "bufferView": indices_view,
+            "bufferView": geometry.indices_view,
             "byteOffset": region.start as usize * 4,
             "componentType": 5125,
             "count": region.count,
@@ -517,26 +634,40 @@ fn emit_mesh(
         primitive.insert(
             "attributes".into(),
             json!({
-                "POSITION": positions_accessor,
-                "NORMAL": normals_accessor,
-                "TEXCOORD_0": uvs_accessor,
+                "POSITION": geometry.positions,
+                "NORMAL": geometry.normals,
+                "TEXCOORD_0": geometry.uvs,
             }),
         );
         primitive.insert("indices".into(), json!(indices_accessor));
         primitive.insert("extras".into(), json!({ "faceRegion": region.region }));
         if let Some(material) = &region.material {
-            let index = *material_index.entry(material.clone()).or_insert_with(|| {
-                materials.push(material_stub(material));
-                stats.materials += 1;
-                materials.len() - 1
-            });
+            let index = match material_index.entry(material.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let value = match resolver {
+                        Some(resolver) => materials::validate(
+                            resolver.resolve(material).ok_or_else(|| {
+                                GltfError::MissingMaterial {
+                                    key: material.clone(),
+                                }
+                            })?,
+                            material,
+                        )?,
+                        None => material_stub(material),
+                    };
+                    materials.push(value);
+                    stats.materials += 1;
+                    *entry.insert(materials.len() - 1)
+                }
+            };
             primitive.insert("material".into(), json!(index));
         }
         primitives.push(Value::Object(primitive));
         stats.primitives += 1;
     }
 
-    json!({ "primitives": primitives })
+    Ok(json!({ "primitives": primitives }))
 }
 
 /// A named PBR stub whose base color derives deterministically from the
@@ -663,6 +794,8 @@ mod tests {
     use exedra_constructive::builders;
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
     use exedra_constructive::tessellate::EvalPolicy;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
 
     fn example() -> (Assembly, CompiledParts, RenderList) {
         let mut b = RecipeBuilder::new();
@@ -699,6 +832,213 @@ mod tests {
             .unwrap();
         let list = flatten(&asm, &compiled);
         (asm, compiled, list)
+    }
+
+    #[test]
+    fn resolved_materials_share_geometry_and_resolve_once_per_key() {
+        let (mut assembly, _, _) = example();
+        let part = assembly.part_by_key("panel").unwrap();
+        assembly
+            .add_instance(None, "c", part, Placement3::translate(120.0, 0.0, 0.0))
+            .unwrap();
+        let mut compiler = PartCompiler::new();
+        let compiled = compiler
+            .compile_parts(&assembly, &EvalPolicy::default())
+            .unwrap();
+        let counters = compiler.counters();
+        let list = flatten(&assembly, &compiled);
+        let oak = json!({"pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.25, 0.1, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.7}});
+        let walnut = json!({"pbrMetallicRoughness": {"baseColorFactor": [0.1, 0.05, 0.02, 0.4], "metallicFactor": 0.2, "roughnessFactor": 0.3}, "emissiveFactor": [0.01, 0.02, 0.03], "alphaMode": "BLEND", "doubleSided": true});
+        let table = BTreeMap::from([("oak", oak.clone()), ("walnut", walnut.clone())]);
+        let calls = RefCell::new(Vec::new());
+        let resolve = |key: &str| {
+            calls.borrow_mut().push(key.to_owned());
+            table.get(key).cloned()
+        };
+        let export = export_glb_with_materials(
+            &assembly,
+            &compiled,
+            &list,
+            &resolve,
+            GltfExportOptions::z_up_to_y_up(),
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["oak", "walnut"]);
+        let document = GlbDocument::parse(&export.bytes).unwrap();
+        let json = document.json();
+        assert_eq!(document.material_names(), ["oak", "walnut"]);
+        assert_eq!(
+            json["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"],
+            oak["pbrMetallicRoughness"]["baseColorFactor"]
+        );
+        assert_eq!(
+            json["materials"][0]["pbrMetallicRoughness"]["roughnessFactor"],
+            0.7
+        );
+        assert_eq!(
+            json["materials"][1]["pbrMetallicRoughness"]["metallicFactor"],
+            0.2
+        );
+        assert_eq!(
+            json["materials"][1]["emissiveFactor"],
+            walnut["emissiveFactor"]
+        );
+        assert_eq!(json["materials"][1]["alphaMode"], "BLEND");
+        assert_eq!(json["materials"][1]["doubleSided"], true);
+        assert!(json["materials"][1].get("alphaCutoff").is_none());
+        assert_eq!(export.stats.meshes, 2);
+        assert_eq!(json["nodes"][0]["mesh"], json["nodes"][2]["mesh"]);
+        let first = &json["meshes"][0]["primitives"][0];
+        let second = &json["meshes"][1]["primitives"][0];
+        assert_ne!(first["material"], second["material"]);
+        assert_eq!(first["attributes"], second["attributes"]);
+        let index_view = |primitive: &Value| {
+            &json["accessors"][usize::try_from(primitive["indices"].as_u64().unwrap()).unwrap()]["bufferView"]
+        };
+        assert_eq!(index_view(first), index_view(second));
+        let tri = &compiled.part(part).unwrap().bodies[0].tri;
+        assert_eq!(
+            export.stats.buffer_bytes,
+            (tri.positions.len() * 32 + tri.indices.len() * 4) as u64
+        );
+        assert_eq!(
+            compiler.counters(),
+            counters,
+            "export performs no compilation"
+        );
+        let repeat = export_glb_with_materials(
+            &assembly,
+            &compiled,
+            &list,
+            &resolve,
+            GltfExportOptions::z_up_to_y_up(),
+        )
+        .unwrap();
+        assert_eq!(export.bytes, repeat.bytes);
+        let text = export_gltf_with_materials(
+            &assembly,
+            &compiled,
+            &list,
+            &resolve,
+            GltfExportOptions::z_up_to_y_up(),
+        )
+        .unwrap();
+        let text_json: Value = serde_json::from_str(&text.json).unwrap();
+        assert_eq!(text_json["materials"], json["materials"]);
+        assert_eq!(text_json["meshes"], json["meshes"]);
+        assert_eq!(text.stats, export.stats);
+    }
+
+    #[test]
+    fn appearance_edits_and_rebinding_reuse_compiled_parts() {
+        let (mut assembly, _, _) = example();
+        let mut compiler = PartCompiler::new();
+        let compiled = compiler
+            .compile_parts(&assembly, &EvalPolicy::default())
+            .unwrap();
+        let part = assembly.part_by_key("panel").unwrap();
+        let tri_before = compiled.part(part).unwrap().bodies[0].tri.clone();
+        let work_before = compiler.counters();
+        let list = flatten(&assembly, &compiled);
+        let mut table = BTreeMap::from([
+            ("oak", json!({"pbrMetallicRoughness": {}})),
+            ("walnut", json!({"pbrMetallicRoughness": {}})),
+        ]);
+        let export = |assembly: &Assembly, list: &RenderList, table: &BTreeMap<&str, Value>| {
+            export_glb_with_materials(
+                assembly,
+                &compiled,
+                list,
+                &|key: &str| table.get(key).cloned(),
+                GltfExportOptions::default(),
+            )
+            .unwrap()
+        };
+        let before = export(&assembly, &list, &table);
+        let oak = table.get_mut("oak").unwrap();
+        oak["pbrMetallicRoughness"]["roughnessFactor"] = json!(0.25);
+        oak["pbrMetallicRoughness"]["baseColorFactor"] = json!([0.6, 0.2, 0.1, 1.0]);
+        let after = export(&assembly, &list, &table);
+        assert_ne!(before.bytes, after.bytes);
+        let old = GlbDocument::parse(&before.bytes).unwrap();
+        let new = GlbDocument::parse(&after.bytes).unwrap();
+        assert_eq!(
+            old.bin(),
+            new.bin(),
+            "appearance edits preserve geometry bytes"
+        );
+        assert_eq!(
+            old.json()["materials"][1],
+            new.json()["materials"][1],
+            "other material is unchanged"
+        );
+        for key in ["meshes", "accessors", "bufferViews"] {
+            assert_eq!(old.json()[key], new.json()[key]);
+        }
+        assert_eq!(compiler.counters(), work_before);
+        // Change only the second occurrence; the first keeps the part default.
+        assembly
+            .bind_material(list.items[1].instance, "front", "oak")
+            .unwrap();
+        let rebound = flatten(&assembly, &compiled);
+        let rebound_export = export(&assembly, &rebound, &table);
+        assert_eq!(rebound_export.stats.materials, 1);
+        assert_eq!(rebound_export.stats.meshes, 1);
+        assert_eq!(before.stats.buffer_bytes, rebound_export.stats.buffer_bytes);
+        let reused = compiler
+            .compile_parts(&assembly, &EvalPolicy::default())
+            .unwrap();
+        assert!(std::rc::Rc::ptr_eq(
+            compiled.part(part).unwrap(),
+            reused.part(part).unwrap()
+        ));
+        assert_eq!(
+            compiler.counters().parts_compiled,
+            work_before.parts_compiled
+        );
+        assert_eq!(
+            compiler.counters().triangles_emitted,
+            work_before.triangles_emitted
+        );
+        assert_eq!(reused.part(part).unwrap().bodies[0].tri, tri_before);
+        assert_eq!(compiled.part(part).unwrap().bodies[0].tri, tri_before);
+    }
+
+    #[test]
+    fn strict_resolution_distinguishes_missing_from_unassigned() {
+        let (assembly, compiled, mut list) = example();
+        let missing = |_: &str| None;
+        assert!(matches!(
+            export_glb_with_materials(&assembly, &compiled, &list, &missing, GltfExportOptions::default()),
+            Err(GltfError::MissingMaterial { key }) if key == "oak"
+        ));
+        assert!(
+            export_glb(&assembly, &compiled, &list).is_ok(),
+            "preview remains opt-in through the legacy API"
+        );
+        for item in &mut list.items {
+            for region in &mut item.regions {
+                region.material = None;
+            }
+        }
+        let never_resolve =
+            |_: &str| -> Option<Value> { panic!("unassigned is not a missing resource") };
+        let export = export_glb_with_materials(
+            &assembly,
+            &compiled,
+            &list,
+            &never_resolve,
+            GltfExportOptions::default(),
+        )
+        .unwrap();
+        let document = GlbDocument::parse(&export.bytes).unwrap();
+        assert_eq!(export.stats.materials, 0);
+        assert!(document.json().get("materials").is_none());
+        assert!(
+            document.json()["meshes"][0]["primitives"][0]
+                .get("material")
+                .is_none()
+        );
     }
 
     #[test]
