@@ -42,7 +42,8 @@ const REALIZATION_ULPS: f64 = 16.0;
 pub struct DiscretizePolicy {
     /// Maximum chord-to-curve deviation (sagitta), in model units.
     pub chord_tolerance: f64,
-    /// Hard cap on edges produced per curve segment. Must be at least
+    /// Hard cap on edges produced per segment, including subdivided lines.
+    /// Must be at least
     /// [`Self::min_arc_edges`].
     pub max_segment_edges: u32,
     /// Minimum edges per arc segment, regardless of tolerance. Must not
@@ -324,14 +325,16 @@ pub fn loop_edge_counts(
 /// Each count is a lower bound: a segment that needs more edges to meet the
 /// policy tolerance still gets them, so raising counts never coarsens a
 /// curve. Lines subdivide uniformly, arcs by angle, cubics by parameter.
-/// Loops discretized with equal counts from equal segment structure yield
-/// rings of equal length with identical [`DiscretizedLoop::edge_seg`],
-/// which is what lofting between sections relies on.
+/// When the supplied counts meet every corresponding segment's own required
+/// count, loops with equal segment structure yield rings of equal length with
+/// identical [`DiscretizedLoop::edge_seg`]. Lofting uses the maximum required
+/// counts across all sections to establish that correspondence.
 ///
 /// # Errors
 ///
 /// Fails under the same conditions as [`discretize_loop`], when `counts`
-/// does not have one entry per segment, or when a segment cannot emit its
+/// does not have one entry per segment, when a requested count exceeds
+/// [`DiscretizePolicy::max_segment_edges`], or when a segment cannot emit its
 /// requested count exactly (a numeric limit).
 pub fn discretize_loop_with_counts(
     source: &Loop2,
@@ -349,6 +352,12 @@ pub fn discretize_loop_with_counts(
     for (index, ((start, seg), &count)) in source.iter_with_starts().zip(counts).enumerate() {
         let seg_index = len_u32(index);
         let edges = count.max(segment_edge_count(start, seg.to, &seg.kind, policy)?);
+        if edges > policy.max_segment_edges {
+            return Err(DiscretizeError::ToleranceBudgetExceeded {
+                required: edges,
+                maximum: policy.max_segment_edges,
+            });
+        }
         // Each segment contributes its start point plus interior points;
         // its exact endpoint is contributed as the next segment's start.
         let before = out.points.len();
@@ -866,6 +875,30 @@ mod tests {
             Seg2::line((0.0, 0.0)).tagged(SegTag(3)),
         ])
         .expect("valid square")
+    }
+
+    #[test]
+    fn requested_edge_counts_respect_work_budget() {
+        let policy = DiscretizePolicy {
+            chord_tolerance: 0.5,
+            max_segment_edges: 4,
+            min_arc_edges: 1,
+        };
+        let circle = crate::builders::circle(1.0).expect("circle");
+        for source in [&square(), circle.outer()] {
+            let counts = vec![policy.max_segment_edges; source.segs().len()];
+            let result = discretize_loop_with_counts(source, &policy, &counts)
+                .expect("count at the budget is accepted");
+            assert_eq!(result.points.len(), 4 * source.segs().len());
+            let counts = vec![policy.max_segment_edges + 1; source.segs().len()];
+            assert_eq!(
+                discretize_loop_with_counts(source, &policy, &counts),
+                Err(DiscretizeError::ToleranceBudgetExceeded {
+                    required: 5,
+                    maximum: 4,
+                })
+            );
+        }
     }
 
     #[test]

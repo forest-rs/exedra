@@ -196,6 +196,9 @@ are exact; no hash-order iteration). Signatures
 
 ## Checklists
 
+For schema-13 imports, CSG provenance, and loft correspondence changes, see the
+[evaluation hardening migration notes](adr-0008-constructive-evaluation-hardening.md#migration).
+
 Before shipping a compiler against this crate:
 
 - [ ] All spec vocabulary stays in your repository (names here are opaque).

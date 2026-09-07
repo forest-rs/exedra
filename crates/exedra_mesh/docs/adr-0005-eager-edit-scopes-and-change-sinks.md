@@ -46,3 +46,11 @@ Adopt eager edit-scope terminology and make change recording explicit.
 - Callers that need a `ChangeSet` must opt in with `ChangeSetBuilder`.
 - Internal mutation code stays generic over `ChangeSink`, so kernel ops work
   with either recorded or unrecorded edit scopes.
+
+## Attribute registration
+
+`Mesh::define_dense_layer` and `Mesh::define_sparse_layer` register typed layers
+outside edit scopes without advancing revision or recording changes. Value edits
+continue through edit sessions. The import identity boundary that motivated this
+public seam is recorded in
+[constructive ADR-0008](../../exedra_constructive/docs/adr-0008-constructive-evaluation-hardening.md).
