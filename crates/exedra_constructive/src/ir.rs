@@ -542,6 +542,8 @@ pub struct Node {
     /// Opaque frontend-assigned source reference.
     pub source: Option<SourceId>,
     /// Material slot binding, inherited by descendants that lack one.
+    /// Evaluation preserves the effective recipe-local slot on each
+    /// [`crate::evaluate::PlacedBody`], independently of geometric regions.
     pub material: Option<SlotId>,
     /// Opaque spec-issue citation: the node's specification is
     /// contradictory and the frontend chose a resolution. Evaluation
@@ -2335,7 +2337,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x85A6_695A_3CA5_DD26_A2FE_A5A9_E8B3_32DC,
+            0x3734_7AAC_3424_839D_5D4A_C5C4_02D1_10FE,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

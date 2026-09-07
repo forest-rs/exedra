@@ -83,6 +83,8 @@ mod hostile;
 mod import_mesh;
 pub mod interchange;
 pub mod ir;
+#[cfg(test)]
+mod material_tests;
 pub mod offset;
 pub mod profile;
 pub mod source_map;
@@ -110,4 +112,4 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// recipe: a kurbo upgrade, a discretization-rule change, a canonical
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
-pub const EVAL_SCHEMA_VERSION: u32 = 13;
+pub const EVAL_SCHEMA_VERSION: u32 = 14;

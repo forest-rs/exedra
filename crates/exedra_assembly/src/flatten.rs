@@ -5,7 +5,8 @@
 //!
 //! [`flatten`] walks the instance tree depth-first in insertion order,
 //! composes f64 world placements down the tree, and resolves every
-//! region's material key through the binding chain (instance binding wins
+//! region's material key from its body's authored slot or explicit part fallback
+//! through the binding chain (instance binding wins
 //! over part default). The result is a flat, deterministic list that
 //! renderers and exporters consume; it carries no geometry of its own —
 //! items reference compiled bodies in the [`CompiledParts`] set. Each item
@@ -147,8 +148,9 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
                         region: range.region,
                         start: range.start,
                         count: range.count,
-                        material: def
-                            .region_slot(range.region)
+                        material: body
+                            .material_slot
+                            .or_else(|| def.region_slot(range.region))
                             .and_then(|slot| assembly.resolved_material(id, slot))
                             .map(ToString::to_string),
                     })

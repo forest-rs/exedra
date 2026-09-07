@@ -54,6 +54,8 @@
 
 mod inspect;
 mod materials;
+#[cfg(test)]
+mod slot_tests;
 
 pub use inspect::GlbDocument;
 pub use materials::MaterialResolver;
@@ -800,9 +802,9 @@ mod tests {
     fn example() -> (Assembly, CompiledParts, RenderList) {
         let mut b = RecipeBuilder::new();
         let front = b.material_slot("front");
-        let _ = front;
         let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
         let node = b
+            .with_material(front)
             .add(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,

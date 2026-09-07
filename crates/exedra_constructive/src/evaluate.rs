@@ -9,6 +9,7 @@
 //! including what could *not* be evaluated — lands in the report as typed
 //! fidelity and diagnostics rather than silent approximation.
 
+use alloc::collections::BTreeSet;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -21,7 +22,9 @@ use exedra_triangulate::RefineStats;
 use hashbrown::HashMap;
 
 use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
-use crate::ir::{CsgOp, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SourceId};
+use crate::ir::{
+    CsgOp, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SlotId, SourceId,
+};
 use crate::tessellate::{
     EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
     tessellate_planar_face, tessellate_primitive, tessellate_revolve, tessellate_sweep,
@@ -229,6 +232,9 @@ impl GeometryReport {
 pub struct PlacedBody {
     /// The producing node.
     pub node: NodeId,
+    /// Effective authored slot in this recipe, or no assignment.
+    /// Inherited per occurrence; independent of geometric region numbers.
+    pub material: Option<SlotId>,
     /// The tessellated body (already placed in world space).
     pub body: Rc<TessellatedBody>,
 }
@@ -324,7 +330,7 @@ fn evaluate_inner(
             schema_version: crate::EVAL_SCHEMA_VERSION,
         },
     };
-    cx.walk(recipe.root(), &Placement3::IDENTITY, true)?;
+    cx.walk(recipe.root(), &Placement3::IDENTITY, true, None)?;
     // The output ledger describes what was emitted, not what was visited.
     for placed in &cx.bodies {
         let counters = &mut cx.report.counters;
@@ -348,8 +354,8 @@ struct EvalCx<'a> {
     cache: Option<&'a mut EvalCache>,
     bodies: Vec<PlacedBody>,
     report: GeometryReport,
-    /// Local-space evaluations of instanced definitions, keyed by node.
-    instance_cache: HashMap<NodeId, Rc<Vec<PlacedBody>>>,
+    /// Local-space evaluations keyed by definition and inherited slot context.
+    instance_cache: HashMap<(NodeId, Option<SlotId>), Rc<Vec<PlacedBody>>>,
 }
 
 /// Triangle enumeration for every Boolean the evaluator runs.
@@ -430,6 +436,8 @@ struct CsgOperand {
     /// partial subtree is still useful for inspection, but it is never a
     /// complete solid.
     complete: bool,
+    /// Distinct effective slots on nonempty bodies, including unassigned.
+    materials: BTreeSet<Option<u32>>,
 }
 
 impl EvalCx<'_> {
@@ -441,8 +449,10 @@ impl EvalCx<'_> {
         node_id: NodeId,
         world: &Placement3,
         emit: bool,
+        inherited_material: Option<SlotId>,
     ) -> Result<Aabb3, EvalError> {
         let node = self.recipe.node(node_id).expect("walked ids are validated");
+        let material = node.material.or(inherited_material);
         match &node.kind {
             NodeKind::Extrude {
                 profile,
@@ -466,7 +476,7 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Revolve {
                 profile,
@@ -490,7 +500,7 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Loft {
                 sections,
@@ -550,7 +560,7 @@ impl EvalCx<'_> {
                     Err(error) => return Err(error),
                 };
                 let fidelity = self.body_fidelity(node_id, &profile_ids);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Sweep {
                 profile,
@@ -575,7 +585,7 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::PlanarFace { profile, placement } => {
                 let combined = compose(world, placement);
@@ -592,7 +602,7 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Primitive { spec, placement } => {
                 let combined = compose(world, placement);
@@ -604,13 +614,13 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Group { children } => {
                 let children = children.clone();
                 let mut bounds = Aabb3::EMPTY;
                 for child in children {
-                    let b = self.walk(child, world, emit)?;
+                    let b = self.walk(child, world, emit, material)?;
                     bounds.union(&b);
                 }
                 Ok(bounds)
@@ -618,12 +628,12 @@ impl EvalCx<'_> {
             NodeKind::Transform { child, xf } => {
                 let combined = compose(world, xf);
                 let child = *child;
-                self.walk(child, &combined, emit)
+                self.walk(child, &combined, emit, material)
             }
             NodeKind::Csg { op, operands } => {
                 let op = *op;
                 let operands = operands.clone();
-                self.evaluate_csg(node_id, op, &operands, world, emit)
+                self.evaluate_csg(node_id, op, &operands, world, emit, material)
             }
             NodeKind::GridSurface {
                 points,
@@ -648,7 +658,7 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::MeshImport { import, placement } => {
                 let placement = compose(world, placement);
@@ -673,13 +683,13 @@ impl EvalCx<'_> {
                     })
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Stretch {
                 child,
                 plane,
                 length,
-            } => self.evaluate_stretch(node_id, *child, plane, *length, world, emit),
+            } => self.evaluate_stretch(node_id, *child, plane, *length, world, emit, material),
             NodeKind::Mirror { child, plane } => {
                 let reflection = reflection_placement(plane);
                 let combined = compose(world, &reflection);
@@ -687,20 +697,25 @@ impl EvalCx<'_> {
                 // The reflecting placement composes downward; body
                 // tessellation detects the negative determinant and
                 // reverses face loops to keep outward orientation.
-                self.walk(child, &combined, emit)
+                self.walk(child, &combined, emit, material)
             }
             NodeKind::Instance { of, placement } => {
                 let of = *of;
                 let placement = compose(world, placement);
-                let local = if let Some(cached) = self.instance_cache.get(&of) {
+                let local = if let Some(cached) = self.instance_cache.get(&(of, material)) {
                     Rc::clone(cached)
                 } else {
                     // Evaluate the definition once in local space.
                     let taken = core::mem::take(&mut self.bodies);
-                    self.walk(of, &Placement3::IDENTITY, true)?;
+                    let errors_before = self.error_count();
+                    self.walk(of, &Placement3::IDENTITY, true, material)?;
                     let local: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
                     let rc = Rc::new(local);
-                    self.instance_cache.insert(of, Rc::clone(&rc));
+                    // A partial definition must replay its refusal on every
+                    // occurrence so a consuming Boolean cannot treat it as complete.
+                    if self.error_count() == errors_before {
+                        self.instance_cache.insert((of, material), Rc::clone(&rc));
+                    }
                     rc
                 };
                 let fidelity = self.body_fidelity(node_id, &[]);
@@ -717,6 +732,7 @@ impl EvalCx<'_> {
                     if emit {
                         self.bodies.push(PlacedBody {
                             node: node_id,
+                            material: source.material,
                             body,
                         });
                     }
@@ -734,10 +750,11 @@ impl EvalCx<'_> {
         length: f64,
         world: &Placement3,
         emit: bool,
+        material: Option<SlotId>,
     ) -> Result<Aabb3, EvalError> {
         match crate::stretch::exact_plan(self.recipe, child, plane, length, world) {
             Ok(Some(plan)) => {
-                let profiles = self.record_exact_stretch_child(child);
+                let (profiles, material) = self.record_exact_stretch_child(child, material);
                 let body = self.body_cached(node_id, world, |cx| {
                     plan.tessellate(cx.policy).map_err(|error| EvalError {
                         node: node_id,
@@ -746,7 +763,7 @@ impl EvalCx<'_> {
                 })?;
                 self.report.counters.stretch_exact += plan.stretch_nodes();
                 let fidelity = self.body_fidelity(node_id, &profiles);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             Err(refusal) => self.finish_stretch_refusal(
                 node_id,
@@ -754,13 +771,14 @@ impl EvalCx<'_> {
                 world,
                 refusal.code(),
                 refusal.message(),
+                material,
             ),
             Ok(None) => {
                 // General stretch consumes child bodies just like CSG does:
                 // their evaluation work and fidelity stay visible, but their
                 // pre-deformation meshes are not emitted alongside the result.
                 let taken = core::mem::take(&mut self.bodies);
-                self.walk(child, world, true)?;
+                self.walk(child, world, true, material)?;
                 let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
                 let mut bounds = Aabb3::EMPTY;
                 for placed in &collected {
@@ -803,7 +821,7 @@ impl EvalCx<'_> {
                 let mut stretched = Vec::with_capacity(collected.len());
                 let mut stats = crate::stretch::MeshStretchStats::default();
                 if let Some(body) = cached {
-                    stretched.push(body);
+                    stretched.push((body, collected[0].material));
                 } else {
                     for placed in collected {
                         match crate::stretch::stretch_mesh(
@@ -817,7 +835,7 @@ impl EvalCx<'_> {
                                 stats.split_faces += body_stats.split_faces;
                                 stats.band_faces += body_stats.band_faces;
                                 stats.uv_unmapped_faces += body_stats.uv_unmapped_faces;
-                                stretched.push(Rc::new(body));
+                                stretched.push((Rc::new(body), placed.material));
                                 self.report.counters.tessellations += 1;
                             }
                             Err(refusal) => {
@@ -830,7 +848,7 @@ impl EvalCx<'_> {
                             }
                         }
                     }
-                    if let (Some(cache), Some(key), [body]) =
+                    if let (Some(cache), Some(key), [(body, _)]) =
                         (self.cache.as_deref_mut(), key, stretched.as_slice())
                     {
                         cache.insert(key, Rc::clone(body));
@@ -852,9 +870,9 @@ impl EvalCx<'_> {
                     );
                 }
                 let mut result_bounds = Aabb3::EMPTY;
-                for body in stretched {
+                for (body, material) in stretched {
                     let fidelity = self.body_fidelity(node_id, &[]);
-                    result_bounds.union(&self.finish_body(node_id, body, emit, fidelity));
+                    result_bounds.union(&self.finish_body(node_id, body, emit, fidelity, material));
                 }
                 Ok(result_bounds)
             }
@@ -864,34 +882,32 @@ impl EvalCx<'_> {
     /// Replays the fidelity footprint that an exact stretch rewrite bypasses.
     /// Transform nodes do not record their own fidelity in the ordinary walk;
     /// the underlying body does, including any profile policy attribution.
-    fn record_exact_stretch_child(&mut self, child: NodeId) -> Vec<ProfileId> {
-        let kind = self
-            .recipe
-            .node(child)
-            .expect("stretch child is validated")
-            .kind
-            .clone();
-        match kind {
-            NodeKind::Transform { child, .. } => self.record_exact_stretch_child(child),
+    fn record_exact_stretch_child(
+        &mut self,
+        child: NodeId,
+        inherited: Option<SlotId>,
+    ) -> (Vec<ProfileId>, Option<SlotId>) {
+        let node = self.recipe.node(child).expect("stretch child is validated");
+        let material = node.material.or(inherited);
+        match node.kind.clone() {
+            NodeKind::Transform { child, .. } => self.record_exact_stretch_child(child, material),
             NodeKind::Stretch {
                 child: nested_child,
                 ..
             } => {
-                let profiles = self.record_exact_stretch_child(nested_child);
+                let (profiles, material) = self.record_exact_stretch_child(nested_child, material);
                 let fidelity = self.body_fidelity(child, &profiles);
                 self.report.fidelity.push((child, fidelity));
-                profiles
+                (profiles, material)
             }
-            NodeKind::Extrude { profile, .. } => {
-                let profiles = alloc::vec![profile];
+            kind => {
+                let profiles = match kind {
+                    NodeKind::Extrude { profile, .. } => alloc::vec![profile],
+                    _ => Vec::new(),
+                };
                 let fidelity = self.body_fidelity(child, &profiles);
                 self.report.fidelity.push((child, fidelity));
-                profiles
-            }
-            _ => {
-                let fidelity = self.body_fidelity(child, &[]);
-                self.report.fidelity.push((child, fidelity));
-                Vec::new()
+                (profiles, material)
             }
         }
     }
@@ -903,8 +919,9 @@ impl EvalCx<'_> {
         world: &Placement3,
         code: &'static str,
         message: &'static str,
+        material: Option<SlotId>,
     ) -> Result<Aabb3, EvalError> {
-        let bounds = self.walk(child, world, false)?;
+        let bounds = self.walk(child, world, false, material)?;
         Ok(self.record_stretch_refusal(node_id, bounds, code, message))
     }
 
@@ -973,16 +990,22 @@ impl EvalCx<'_> {
         index: usize,
         operand: NodeId,
         world: &Placement3,
+        material: Option<SlotId>,
         scratch: &mut BooleanScratch,
         diagnostics: &mut BooleanDiagnostics,
     ) -> Result<CsgOperand, EvalError> {
         let taken = core::mem::take(&mut self.bodies);
         let errors_before = self.error_count();
-        let bounds = self.walk(operand, world, true)?;
+        let bounds = self.walk(operand, world, true, material)?;
         let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
         // Every refusal below this operand is reported at `Error` severity;
         // none may have appeared for the subtree to count as complete.
         let complete = self.error_count() == errors_before;
+        let materials = collected
+            .iter()
+            .filter(|placed| placed.body.mesh.faces().next().is_some())
+            .map(|placed| placed.material.map(|slot| slot.0))
+            .collect();
         // Shared (cached) bodies clone their mesh for consumption; unshared
         // ones move it out without copying.
         let meshes: Vec<Mesh> = collected
@@ -1025,6 +1048,7 @@ impl EvalCx<'_> {
             mesh,
             bounds,
             complete,
+            materials,
         })
     }
 
@@ -1048,6 +1072,7 @@ impl EvalCx<'_> {
         operands: &[NodeId],
         world: &Placement3,
         emit: bool,
+        material: Option<SlotId>,
     ) -> Result<Aabb3, EvalError> {
         let mut scratch = BooleanScratch::default();
         let mut diagnostics = BooleanDiagnostics::default();
@@ -1058,16 +1083,19 @@ impl EvalCx<'_> {
         let mut incomplete: Vec<usize> = Vec::new();
         let mut all_present = true;
         let mut bounds = Aabb3::EMPTY;
+        let mut materials = BTreeSet::new();
         for (index, operand) in operands.iter().enumerate() {
             let collected = self.collect_operand_mesh(
                 node_id,
                 index,
                 *operand,
                 world,
+                material,
                 &mut scratch,
                 &mut diagnostics,
             )?;
             bounds.union(&collected.bounds);
+            materials.extend(collected.materials);
             if !collected.complete {
                 incomplete.push(index);
             }
@@ -1076,7 +1104,14 @@ impl EvalCx<'_> {
                 None => all_present = false,
             }
         }
-        let operands_complete = incomplete.is_empty();
+        let slots_supported = materials.len() <= 1;
+        if !slots_supported {
+            self.push_diagnostic(node_id, Severity::Error,
+                "eval.csg.material_slots_unsupported",
+                String::from("Boolean operands have different effective material slots; face-level slot propagation is not supported"));
+        }
+        let material = materials.first().copied().flatten().map(SlotId);
+        let operands_complete = incomplete.is_empty() && slots_supported;
 
         // Cache lookup happens after the operand walks so the report is
         // identical either way; the key is content-addressed, so a hit is
@@ -1183,7 +1218,7 @@ impl EvalCx<'_> {
         match combined {
             Some(body) => {
                 let fidelity = self.body_fidelity(node_id, &[]);
-                Ok(self.finish_body(node_id, body, emit, fidelity))
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             None => {
                 // Typed fallback: envelope-only, with the pipeline's
@@ -1381,6 +1416,7 @@ impl EvalCx<'_> {
         body: Rc<TessellatedBody>,
         emit: bool,
         fidelity: Fidelity,
+        material: Option<SlotId>,
     ) -> Aabb3 {
         let mut bounds = Aabb3::EMPTY;
         let mesh = &body.mesh;
@@ -1396,7 +1432,11 @@ impl EvalCx<'_> {
         }
         self.report.fidelity.push((node, fidelity));
         if emit {
-            self.bodies.push(PlacedBody { node, body });
+            self.bodies.push(PlacedBody {
+                node,
+                material,
+                body,
+            });
         }
         bounds
     }

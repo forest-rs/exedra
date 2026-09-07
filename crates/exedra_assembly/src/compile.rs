@@ -27,7 +27,7 @@ use exedra_mesh::{ExtractParams, FaceTriangulation, TriMesh};
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
 
-use crate::assembly::{Assembly, PartId, PartSource};
+use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
 
 /// The single invalidation channel this layer uses: part content.
 const PARTS_CHANNEL: Channel = Channel::new(0);
@@ -81,6 +81,9 @@ pub struct RegionRange {
 /// region preserves extraction order, so output is deterministic.
 #[derive(Clone, Debug)]
 pub struct CompiledBody {
+    /// Authored body-local slot in the owning part, independent of region IDs.
+    /// `None` permits explicit assembly region/default mappings as fallback.
+    pub material_slot: Option<SlotIndex>,
     /// Extracted render buffers (indices region-grouped).
     pub tri: TriMesh,
     /// Contiguous per-region ranges covering the whole index buffer, in
@@ -104,6 +107,7 @@ impl CompiledBody {
     /// use exedra_assembly::CompiledBody;
     ///
     /// let body = CompiledBody {
+    ///     material_slot: None,
     ///     tri: TriMesh {
     ///         positions: vec![[-2.0, 1.0, 4.0], [3.0, 5.0, -1.0]],
     ///         ..TriMesh::default()
@@ -429,11 +433,16 @@ fn compile_source(
             let bodies = evaluation
                 .bodies
                 .iter()
-                .map(|placed| compile_body(&placed.body.mesh))
+                .map(|placed| {
+                    compile_body(
+                        &placed.body.mesh,
+                        placed.material.map(|slot| SlotIndex(slot.0)),
+                    )
+                })
                 .collect();
             (bodies, Some(evaluation.report))
         }
-        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh)], None),
+        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh, None)], None),
     };
     Ok((
         CompiledPart {
@@ -446,7 +455,7 @@ fn compile_source(
 
 /// Extracts render buffers and regroups the index buffer so each
 /// `FACE_REGION` value is one contiguous range.
-fn compile_body(mesh: &exedra_mesh::Mesh) -> CompiledBody {
+fn compile_body(mesh: &exedra_mesh::Mesh, material_slot: Option<SlotIndex>) -> CompiledBody {
     let params = ExtractParams {
         face_triangulation: FaceTriangulation::Robust,
         ..ExtractParams::default()
@@ -491,6 +500,7 @@ fn compile_body(mesh: &exedra_mesh::Mesh) -> CompiledBody {
         indices.extend_from_slice(&tri.indices[base..base + 3]);
     }
     CompiledBody {
+        material_slot,
         tri: TriMesh { indices, ..tri },
         regions,
     }
@@ -786,6 +796,7 @@ mod tests {
         );
 
         let empty = CompiledBody {
+            material_slot: None,
             tri: TriMesh::default(),
             regions: Vec::new(),
         };
@@ -822,6 +833,64 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "eval.stretch.open_shell")
         );
+    }
+
+    #[test]
+    fn mixed_slot_boolean_refusal_survives_compilation_and_cache_reuse() {
+        use exedra_constructive::ir::{CsgOp, PrimitiveSpec};
+
+        for partial in [false, true] {
+            let mut builder = RecipeBuilder::new();
+            let slots = [builder.material_slot("a"), builder.material_slot("b")];
+            let boxes = slots.map(|slot| {
+                builder
+                    .with_material(slot)
+                    .add(NodeKind::Primitive {
+                        spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                        placement: Placement3::IDENTITY,
+                    })
+                    .unwrap()
+            });
+            let boolean = builder
+                .add(NodeKind::Csg {
+                    op: CsgOp::Union,
+                    operands: boxes.to_vec(),
+                })
+                .unwrap();
+            let root = if partial {
+                builder
+                    .add(NodeKind::Group {
+                        children: alloc::vec![boxes[0], boolean],
+                    })
+                    .unwrap()
+            } else {
+                boolean
+            };
+            let mut assembly = Assembly::new();
+            let part = assembly
+                .add_recipe_part("mixed", builder.finish(root).unwrap())
+                .unwrap();
+            let mut compiler = PartCompiler::new();
+            for _ in 0..2 {
+                let result = compiler.compile_parts(&assembly, &EvalPolicy::default());
+                let report = if partial {
+                    let compiled = result.unwrap();
+                    assert_eq!(compiled.part(part).unwrap().bodies.len(), 1);
+                    compiled.report(part).unwrap().clone()
+                } else {
+                    let CompileError::NoGeometry { report, .. } = result.unwrap_err() else {
+                        panic!("expected report-bearing refusal");
+                    };
+                    (*report).clone()
+                };
+                assert!(
+                    report
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.code == "eval.csg.material_slots_unsupported")
+                );
+            }
+        }
     }
 
     #[test]
