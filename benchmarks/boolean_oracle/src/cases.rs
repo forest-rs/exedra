@@ -515,15 +515,29 @@ mod tests {
     fn chained_face_partition_keeps_boundary_continuation_unambiguous() {
         // A deep chained sweep found this partition order adding a sub-face
         // while two distinct OUTSIDE continuations met at vertex 16. The
-        // splitter must either rebuild the face safely or report a typed
-        // deferral; malformed intermediate topology must never reach the
-        // stitcher's invariant panic.
-        let outcome = run_case(ScenarioClass::Chained, 7_497_488_052_617_644_153, 1);
+        // partition now rebuilds safely, but its stored surface still has a
+        // degenerate face. Withhold that surface with a numerical diagnostic;
+        // neither an invariant panic nor invalid successful output is allowed.
+        let case = build_case(ScenarioClass::Chained, 7_497_488_052_617_644_153);
+        let mut diagnostics = BooleanDiagnostics::default();
+        let mut checks = MeshChecks::default();
+        let result = eval_mesh_tree(
+            &case.tree,
+            &case.operands,
+            &mut BooleanScratch::default(),
+            &mut diagnostics,
+            &mut checks,
+        );
 
-        assert_eq!(outcome.skip, Some(SkipReason::SplitDeferred));
-        assert_eq!(outcome.mesh_validation_errors, 0);
-        assert_eq!(outcome.mesh_bookkeeping_errors, 0);
-        assert_eq!(outcome.seam_identity_conflicts, 0);
+        assert_eq!(result.unwrap_err(), SkipReason::OtherSuspect);
+        assert!(diagnostics.entries().iter().any(|entry| {
+            entry.kind == BooleanFailureKind::NumericalInstability
+                && entry.detail
+                    == "assembled Boolean face has no nondegenerate robust triangulation"
+        }));
+        assert_eq!(checks.validation_errors, 0);
+        assert_eq!(checks.bookkeeping_errors, 0);
+        assert_eq!(checks.seam_identity_conflicts, 0);
     }
 
     #[test]
@@ -539,15 +553,17 @@ mod tests {
     }
 
     #[test]
-    fn scale_sliver_collapse_is_a_typed_numerical_skip() {
+    fn scale_cut_preserves_topology_when_endpoints_share_a_stored_position() {
         // This fixed kilo-scale seed contains an intersection seam edge whose
-        // distinct f64 endpoints narrow to one f32 point. Collapsing the seam
-        // would give a neighboring output edge four faces, so the pipeline
-        // must report numerical uncertainty rather than leak BuildError.
-        let outcome = run_case(ScenarioClass::Scale, 6_750_632_535_653_330_089, 80);
+        // distinct f64 endpoints narrow to one f32 point. Triangulating with
+        // those stored positions must preserve the seam without a sliver
+        // whose collapse would make the result non-manifold.
+        let outcome = run_case(ScenarioClass::Scale, 6_750_632_535_653_330_089, 400);
 
         assert_eq!(outcome.submode, "kilo");
-        assert_eq!(outcome.skip, Some(SkipReason::OtherSuspect));
+        assert_eq!(outcome.skip, None);
+        assert!(!outcome.empty_result);
+        assert!(outcome.mesh_points > 0);
         assert_eq!(outcome.mesh_validation_errors, 0);
         assert_eq!(outcome.mesh_bookkeeping_errors, 0);
         assert_eq!(outcome.seam_identity_conflicts, 0);

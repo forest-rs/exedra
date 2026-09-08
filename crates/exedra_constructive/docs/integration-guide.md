@@ -219,3 +219,20 @@ Use `set_default_slot` only for deliberate assembly fallback; declaring one slot
 no longer assigns unrelated geometry. Mixed-slot Booleans report
 `eval.csg.material_slots_unsupported`. Evaluation schema 14 invalidates older
 fingerprints and caches.
+
+## Evaluation schema 15
+
+CSG now uses robust face triangulation, including for results of earlier cuts.
+Rebuild persisted recipe fingerprints and evaluation caches from authored inputs;
+mesh topology and diagnostic counts can change for unchanged recipes. The
+`csg_fan_unsafe_faces` counter now counts unsafe fan fallbacks from robust
+triangulation. Rust recipe calls and the JSON interchange shape are unchanged.
+
+Interior cut faces use constrained Delaunay triangulation of the coordinates
+stored in the mesh. Boolean results with open boundaries or degenerate robust
+face triangulations are withheld with diagnostics instead of reported exact.
+
+Chamfers and roundovers with a constant cross-section can be authored as line
+and arc profile segments and extruded before Boolean cuts. Choose the curve
+chord tolerance in your model units. This does not add a general edge fillet
+operation.
