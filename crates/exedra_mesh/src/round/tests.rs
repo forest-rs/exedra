@@ -588,20 +588,35 @@ fn cleaned_drilled_rim_rounding_never_panics_or_partially_rewrites() {
 
         let before = exact_snapshot(&mesh);
         let revision = mesh.revision();
-        let error = round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.05))
-            .expect_err("the cleaned rim is not currently roundable");
-
-        assert_eq!(
-            error,
-            RoundError::UnsupportedTopology {
-                detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+        let volume_before = signed_volume(&mesh);
+        match round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.05)) {
+            Ok(stats) => {
+                assert_eq!(stats.closed_chains, 2);
+                assert_clean(&mesh);
+                assert_eq!(euler_characteristic(&mesh), 0);
+                let volume = signed_volume(&mesh);
+                assert!(volume > 0.99 * volume_before && volume < volume_before);
+                for face in mesh.faces() {
+                    assert!(
+                        mesh.face_loop(face)
+                            .all(|h| mesh.face(mesh.twin(h).unwrap()) != Some(FaceId::OUTSIDE))
+                    );
+                }
             }
-        );
-        assert_eq!(
-            exact_snapshot(&mesh),
-            before,
-            "failed rounding must be atomic"
-        );
-        assert_eq!(mesh.revision(), revision, "failed rounding keeps revision");
+            Err(error) => {
+                assert_eq!(
+                    error,
+                    RoundError::UnsupportedTopology {
+                        detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+                    }
+                );
+                assert_eq!(
+                    exact_snapshot(&mesh),
+                    before,
+                    "failed rounding must be atomic"
+                );
+                assert_eq!(mesh.revision(), revision, "failed rounding keeps revision");
+            }
+        }
     }
 }

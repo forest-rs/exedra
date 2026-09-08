@@ -572,54 +572,30 @@ fn face_contact(
     strategy: FaceTriangulation,
     buffer: &mut Vec<[crate::CornerId; 3]>,
 ) -> PatchContact {
-    let mut contact: Option<bool> = None;
-    for &index in indices {
+    let first = &contacts[indices[0] as usize];
+    let counterpart = |index: u32| match side {
+        MeshSide::A => contacts[index as usize].polygon_b.as_slice(),
+        MeshSide::B => contacts[index as usize].polygon_a.as_slice(),
+    };
+    // Adjacent coplanar source faces may partition one continuous contact.
+    // Their internal edges are not cuts through the other solid. When those
+    // faces form one simple region, classify against its exterior boundary.
+    let combined = (indices.len() > 1
+        && indices.iter().all(|&i| {
+            contacts[i as usize].opposed == first.opposed && contacts[i as usize].axis == first.axis
+        }))
+    .then(|| joined_contact_boundary(indices.iter().map(|&i| counterpart(i))))
+    .flatten();
+    let mut contact = None;
+    for &index in indices
+        .iter()
+        .take(if combined.is_some() { 1 } else { indices.len() })
+    {
         let entry = &contacts[index as usize];
-        let counterpart = match side {
-            MeshSide::A => &entry.polygon_b,
-            MeshSide::B => &entry.polygon_a,
-        };
-        let mut strictly_inside = 0_u32;
-        let mut strictly_outside = 0_u32;
-        let mut own_polygon: Vec<[f64; 2]> = Vec::new();
-        for half_edge in mesh.face_loop(face) {
-            let Some(p) = mesh
-                .to_vertex(half_edge)
-                .and_then(|v| mesh.vertex_position(v))
-            else {
-                continue;
-            };
-            let projected = project_point(promote(*p), entry.axis);
-            own_polygon.push(projected);
-            match place_point_in_polygon(projected, counterpart) {
-                Placement::Inside => strictly_inside += 1,
-                Placement::Outside => strictly_outside += 1,
-                Placement::OnBoundary => {}
-            }
-        }
-        if strictly_inside > 0 && strictly_outside > 0 {
+        let polygon = combined.as_deref().unwrap_or_else(|| counterpart(index));
+        let Some(inside) = face_inside_contact(mesh, face, entry.axis, polygon, strategy, buffer)
+        else {
             return PatchContact::Ambiguous;
-        }
-        let inside = if strictly_inside > 0 {
-            true
-        } else if strictly_outside > 0 {
-            false
-        } else {
-            // Every vertex on the counterpart boundary: decide by an
-            // interior sample of this face.
-            match interior_sample_placement(
-                mesh,
-                face,
-                entry.axis,
-                &own_polygon,
-                counterpart,
-                strategy,
-                buffer,
-            ) {
-                Some(Placement::Inside) => true,
-                Some(Placement::Outside) => false,
-                _ => return PatchContact::Ambiguous,
-            }
         };
         if inside {
             match contact {
@@ -629,9 +605,87 @@ fn face_contact(
             }
         }
     }
-    match contact {
-        Some(opposed) => PatchContact::Contact { opposed },
-        None => PatchContact::Clear,
+    contact.map_or(PatchContact::Clear, |opposed| PatchContact::Contact {
+        opposed,
+    })
+}
+
+/// Cancels shared edges of adjacent face polygons. Accept only one simple
+/// boundary; disconnected regions, holes, and branching contacts retain the
+/// conservative per-face classification path.
+fn joined_contact_boundary<'a>(
+    polygons: impl Iterator<Item = &'a [[f64; 2]]>,
+) -> Option<Vec<[f64; 2]>> {
+    let mut edges = Vec::new();
+    for polygon in polygons {
+        for i in 0..polygon.len() {
+            let edge = (polygon[i], polygon[(i + 1) % polygon.len()]);
+            if let Some(index) = edges.iter().position(|&other| other == (edge.1, edge.0)) {
+                edges.swap_remove(index);
+            } else {
+                edges.push(edge);
+            }
+        }
+    }
+    let (first, mut next) = edges.pop()?;
+    let mut boundary = alloc::vec![first];
+    while next != first {
+        if boundary.contains(&next) {
+            return None;
+        }
+        boundary.push(next);
+        let mut candidates = edges.iter().enumerate().filter(|(_, edge)| edge.0 == next);
+        let (index, _) = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        next = edges.swap_remove(index).1;
+    }
+    (edges.is_empty() && boundary.len() >= 3).then_some(boundary)
+}
+
+fn face_inside_contact(
+    mesh: &Mesh,
+    face: FaceId,
+    axis: usize,
+    counterpart: &[[f64; 2]],
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[crate::CornerId; 3]>,
+) -> Option<bool> {
+    let mut strictly_inside = 0;
+    let mut strictly_outside = 0;
+    let mut own_polygon = Vec::new();
+    for half_edge in mesh.face_loop(face) {
+        let p = mesh.vertex_position(mesh.to_vertex(half_edge)?)?;
+        let projected = project_point(promote(*p), axis);
+        own_polygon.push(projected);
+        match place_point_in_polygon(projected, counterpart) {
+            Placement::Inside => strictly_inside += 1,
+            Placement::Outside => strictly_outside += 1,
+            Placement::OnBoundary => {}
+        }
+    }
+    if strictly_inside > 0 && strictly_outside > 0 {
+        return None;
+    }
+    if strictly_inside > 0 {
+        Some(true)
+    } else if strictly_outside > 0 {
+        Some(false)
+    } else {
+        match interior_sample_placement(
+            mesh,
+            face,
+            axis,
+            &own_polygon,
+            counterpart,
+            strategy,
+            buffer,
+        ) {
+            Some(Placement::Inside) => Some(true),
+            Some(Placement::Outside) => Some(false),
+            _ => None,
+        }
     }
 }
 
@@ -968,6 +1022,19 @@ mod tests {
     use crate::boolean::{
         BooleanBvh, BooleanScratch, build_intersection_graph, narrow_phase, split_mesh_along_graph,
     };
+
+    #[test]
+    fn contact_boundaries_join_only_one_simple_region() {
+        let left = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let right = [[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]];
+        let separate = [[3.0, 0.0], [4.0, 0.0], [4.0, 1.0], [3.0, 1.0]];
+        let hole = [[0.25, 0.25], [0.25, 0.75], [0.75, 0.75], [0.75, 0.25]];
+        assert!(joined_contact_boundary([left.as_slice(), right.as_slice()].into_iter()).is_some());
+        assert!(
+            joined_contact_boundary([left.as_slice(), separate.as_slice()].into_iter()).is_none()
+        );
+        assert!(joined_contact_boundary([left.as_slice(), hole.as_slice()].into_iter()).is_none());
+    }
 
     fn cube(origin: [f32; 3]) -> Mesh {
         let o = origin;

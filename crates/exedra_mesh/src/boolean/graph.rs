@@ -654,8 +654,8 @@ fn edge_edge_intersection(
 }
 
 /// Intersects an exact promoted-f32 edge with an exact promoted-f32 triangle
-/// plane, then solves the plane's dominant coordinate last. The final solve
-/// is what preserves exactly constant coordinates for axis-aligned inputs.
+/// plane, then solves its strongest coordinate that varies along the edge.
+/// Coordinates fixed by either an axis-aligned plane or edge stay exact.
 fn edge_plane_intersection(
     edge_mesh: &Mesh,
     edge: [VertexId; 2],
@@ -683,7 +683,15 @@ fn edge_plane_intersection(
         return None;
     }
     let mut point = lerp(edge_a, edge_b, parameter);
-    let axis = dominant_axis(normal);
+    // Preserve coordinates fixed by the source edge. Solving one of those
+    // against an oblique plane can manufacture a tiny off-edge sliver.
+    let axis = dominant_axis(core::array::from_fn(|axis| {
+        if direction[axis] == 0.0 {
+            0.0
+        } else {
+            normal[axis]
+        }
+    }));
     if normal[axis] == 0.0 {
         return None;
     }
@@ -1211,7 +1219,15 @@ fn spans_share_carrier(
         .into_iter()
         .find(|vertex| *vertex == right[0] || *vertex == right[1]);
     let Some(shared) = shared else {
-        return false;
+        // Two triangulations can omit different collinear corners of the
+        // same boundary, yielding overlapping spans without a shared end.
+        return span_contains_position(mesh, left, position)
+            && span_contains_position(mesh, right, position)
+            && (left.into_iter().any(|vertex| {
+                anchor_contains_vertex(mesh, MeshAnchor::EdgeSpan(right[0], right[1]), vertex)
+            }) || right.into_iter().any(|vertex| {
+                anchor_contains_vertex(mesh, MeshAnchor::EdgeSpan(left[0], left[1]), vertex)
+            }));
     };
     if mesh.vertex_position(shared) == Some(&position) {
         return true;
@@ -1247,7 +1263,23 @@ fn span_bounds_contain(a: [f64; 3], b: [f64; 3], point: [f64; 3]) -> bool {
 fn anchor_contains_vertex(mesh: &Mesh, anchor: MeshAnchor, vertex: VertexId) -> bool {
     match anchor {
         MeshAnchor::Vertex(candidate) => candidate == vertex,
-        MeshAnchor::EdgeSpan(a, b) => a == vertex || b == vertex,
+        MeshAnchor::EdgeSpan(a, b) => {
+            if a == vertex || b == vertex {
+                return true;
+            }
+            // Robust triangulation may span a collinear boundary corner. The
+            // corner belongs to that span only when both share a source face;
+            // coincident vertices in disconnected geometry remain distinct.
+            mesh.vertex_position(vertex).is_some_and(|&position| {
+                span_contains_position(mesh, [a, b], position)
+                    && mesh.vertex_star(vertex).any(|half_edge| {
+                        mesh.face(half_edge).is_some_and(|face| {
+                            face_contains_vertex(mesh, face, a)
+                                && face_contains_vertex(mesh, face, b)
+                        })
+                    })
+            })
+        }
         MeshAnchor::FaceInterior(face) => face_contains_vertex(mesh, face, vertex),
     }
 }
@@ -1435,6 +1467,48 @@ mod tests {
             builder.add_face(&face).expect("valid cube face");
         }
         builder.build().expect("valid cube").mesh
+    }
+
+    #[test]
+    fn collinear_span_identity_requires_a_shared_face() {
+        let mut builder = MeshBuilder::new();
+        for p in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ] {
+            builder.push_vertex(p);
+        }
+        builder.add_face(&[0, 1, 2, 3, 4, 5]).unwrap();
+        let result = builder.build().unwrap();
+        let v = &result.vertex_ids;
+        let mesh = &result.mesh;
+        assert!(anchor_contains_vertex(
+            mesh,
+            MeshAnchor::EdgeSpan(v[0], v[3]),
+            v[1]
+        ));
+        assert!(!anchor_contains_vertex(
+            mesh,
+            MeshAnchor::EdgeSpan(v[0], v[3]),
+            v[6]
+        ));
+        assert!(spans_share_carrier(
+            mesh,
+            [v[0], v[2]],
+            [v[1], v[3]],
+            [1.5, 0.0, 0.0]
+        ));
+        assert!(!spans_share_carrier(
+            mesh,
+            [v[0], v[2]],
+            [v[1], v[3]],
+            [2.5, 0.0, 0.0]
+        ));
     }
 
     fn build_graph(mesh_a: &Mesh, mesh_b: &Mesh) -> (IntersectionGraph, BooleanDiagnostics) {

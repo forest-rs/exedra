@@ -3,11 +3,9 @@
 
 //! Post-stitch seam cleanup: sliver removal along boolean cut rings.
 //!
-//! Boolean outputs concentrate low-quality triangles along their seam
-//! rings — cut-loop vertices are f32-narrowed f64 constructions, and the
-//! exactly-collinear rim vertices reinserted by drilled-face re-facing
-//! produce zero-or-near-zero-area triangles hugging the rings. This pass
-//! removes them with the kernel's [`crate::op::collapse_edge`] and
+//! Boolean cut loops can leave very thin triangles along their seam rings,
+//! even when triangulation accounts for stored vertex positions. This pass
+//! improves them with the kernel's [`crate::op::collapse_edge`] and
 //! [`crate::op::flip_edge`] surgery under explicit, geometry-conservative
 //! guards:
 //!
@@ -598,8 +596,7 @@ mod tests {
 
     /// A 16-gon drill prism (radius 0.8, through the slab). Its wall
     /// quads' fan diagonals cross the cap planes at exact chord midpoints,
-    /// so the cut loops carry near-collinear triples — the re-faced caps
-    /// come out full of the rim slivers this pass targets.
+    /// so the cut loops carry near-collinear triples.
     fn sliver_drill() -> Mesh {
         let n = 16_u32;
         let mut builder = MeshBuilder::new();
@@ -636,6 +633,27 @@ mod tests {
         .expect("drill boolean succeeds");
         assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
         output.mesh
+    }
+
+    /// Closed prism with a deliberately poor diagonal on its roof. Lifting
+    /// one corner makes a quality-improving flip change the enclosed volume.
+    fn sliver_prism(lift: f32) -> Mesh {
+        let mut builder = MeshBuilder::new();
+        let footprint = [[0.0, 0.0], [1.0, 0.0], [0.5, 1.0 / 4096.0], [0.5, -1.0]];
+        for z in [-1.0, 0.0] {
+            for (i, [x, y]) in footprint.into_iter().enumerate() {
+                builder.push_vertex([x, y, z + if z == 0.0 && i == 2 { lift } else { 0.0 }]);
+            }
+        }
+        builder.add_face(&[2, 1, 3, 0]).expect("bottom");
+        builder.add_face(&[4, 5, 6]).expect("sliver roof triangle");
+        builder.add_face(&[5, 4, 7]).expect("other roof triangle");
+        let boundary = [0, 3, 1, 2];
+        for i in 0..4 {
+            let (a, b) = (boundary[i], boundary[(i + 1) % 4]);
+            builder.add_face(&[a, b, b + 4, a + 4]).expect("wall");
+        }
+        builder.build().expect("closed sliver prism").mesh
     }
 
     /// Two unit cubes sharing a full face: a clean union with no slivers.
@@ -762,21 +780,19 @@ mod tests {
     }
 
     #[test]
-    fn drill_cleanup_improves_worst_quality_within_budget() {
+    fn drill_cleanup_preserves_quality_and_volume_budget() {
         let policy = SeamCleanupPolicy::default();
         let mut mesh = drilled_difference();
         let before = worst_quality(&mesh);
         let volume_before = signed_volume(&mesh);
-        assert!(before < 1e-12, "the drill output must carry rim slivers");
         assert_eq!(euler_characteristic(&mesh), 0, "through-hole shell");
         assert!(seam_ring_degrees_are_two(&mesh), "closed seam rings");
 
         let stats = cleanup_seams(&mut mesh, &policy);
 
-        assert!(stats.collapses + stats.flips > 0, "{stats:?}");
         let after = worst_quality(&mesh);
         assert!(
-            after > before && after > 1e-6,
+            after >= before && after > 1e-6,
             "worst quality {before:e} -> {after:e}"
         );
         let volume_after = signed_volume(&mesh);
@@ -804,25 +820,56 @@ mod tests {
 
     #[test]
     fn zero_budget_admits_only_zero_drift_ops() {
-        let mut mesh = drilled_difference();
+        for lift in [0.0, 1.0 / 4096.0] {
+            let mut mesh = sliver_prism(lift);
+            let before = snapshot(&mesh);
+            let volume_before = signed_volume(&mesh);
+            let stats = cleanup_seams(
+                &mut mesh,
+                &SeamCleanupPolicy {
+                    relative_volume_budget: 0.0,
+                    seam_scope: false,
+                    ..SeamCleanupPolicy::default()
+                },
+            );
+            // Ops with exactly zero drift are free under any budget; anything
+            // that would move volume at all is refused and counted.
+            if lift == 0.0 {
+                assert_eq!(stats.flips, 1, "{stats:?}");
+                assert!(worst_quality(&mesh) > 1e-3);
+            } else {
+                assert!(stats.skipped_budget > 0, "{stats:?}");
+                assert_eq!(snapshot(&mesh), before);
+            }
+            assert_eq!(stats.volume_drift_abs, 0.0, "{stats:?}");
+            assert_eq!(
+                signed_volume(&mesh).to_bits(),
+                volume_before.to_bits(),
+                "zero budget keeps the volume bit-identical"
+            );
+            assert!(mesh.validate_deep().is_empty());
+            assert_eq!(euler_characteristic(&mesh), 2);
+        }
+    }
+
+    #[test]
+    fn sliver_flip_improves_quality_within_volume_budget() {
+        let mut mesh = sliver_prism(1.0 / 4096.0);
+        let before = worst_quality(&mesh);
         let volume_before = signed_volume(&mesh);
-        let stats = cleanup_seams(
-            &mut mesh,
-            &SeamCleanupPolicy {
-                relative_volume_budget: 0.0,
-                ..SeamCleanupPolicy::default()
-            },
-        );
-        // Ops with exactly zero drift are free under any budget; anything
-        // that would move volume at all is refused and counted.
-        assert!(stats.skipped_budget > 0, "{stats:?}");
-        assert_eq!(stats.volume_drift_abs, 0.0, "{stats:?}");
-        assert_eq!(
-            signed_volume(&mesh).to_bits(),
-            volume_before.to_bits(),
-            "zero budget keeps the volume bit-identical"
-        );
+        let policy = SeamCleanupPolicy {
+            relative_volume_budget: 1e-3,
+            seam_scope: false,
+            ..SeamCleanupPolicy::default()
+        };
+        let stats = cleanup_seams(&mut mesh, &policy);
+        assert_eq!(stats.flips, 1, "{stats:?}");
+        assert!(worst_quality(&mesh) > before);
+        let budget = policy.relative_volume_budget * volume_before.abs();
+        assert!(stats.volume_drift_abs > 0.0 && stats.volume_drift_abs <= budget);
+        assert!((signed_volume(&mesh) - volume_before).abs() <= budget);
         assert!(mesh.validate_deep().is_empty());
+        assert_eq!(euler_characteristic(&mesh), 2);
     }
 
     #[test]

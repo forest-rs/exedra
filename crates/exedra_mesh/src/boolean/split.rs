@@ -53,7 +53,7 @@ use crate::{
         set_vertex_position, split_edge,
     },
 };
-use exedra_math::{dot, narrow, promote, sub};
+use exedra_math::{cross, dot, narrow, promote, sub};
 
 /// Which mesh of the boolean pair is being split.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -113,9 +113,18 @@ pub fn split_mesh_along_graph(
         ..MeshSplitOutcome::default()
     };
 
-    let anchor_of = |index: usize| match side {
-        MeshSide::A => graph.vertices[index].anchor_a,
-        MeshSide::B => graph.vertices[index].anchor_b,
+    let mut half_edge_index = HalfEdgeIndex::build(mesh);
+    let anchor_of = |index: usize| {
+        let vertex = &graph.vertices[index];
+        let (anchor, faces) = match side {
+            MeshSide::A => (vertex.anchor_a, &vertex.faces_a),
+            MeshSide::B => (vertex.anchor_b, &vertex.faces_b),
+        };
+        match anchor {
+            MeshAnchor::Vertex(_) => anchor,
+            MeshAnchor::EdgeSpan(a, b) if half_edge_index.find(a, b).is_some() => anchor,
+            _ => boundary_anchor(mesh, faces, narrow(vertex.position)).unwrap_or(anchor),
+        }
     };
     // Graph-vertex degrees over the cut network: degree-0 vertices are
     // touch points (or unwelded coincident duplicates of a welded curve
@@ -127,8 +136,6 @@ pub fn split_mesh_along_graph(
             degree[vertex as usize] += 1;
         }
     }
-    let mut half_edge_index = HalfEdgeIndex::build(mesh);
-
     // --- Stage 1: resolve vertex-anchored and edge-anchored graph
     // vertices to mesh vertices (kernel edge splits for the latter).
     let mut on_edge: HashMap<(VertexId, VertexId), Vec<u32>> = HashMap::new();
@@ -178,6 +185,18 @@ pub fn split_mesh_along_graph(
 
             let mut cursor = u;
             for point in points {
+                let position = narrow(graph.vertices[point as usize].position);
+                // Several graph constructions can name the same stored
+                // point on this one mesh edge. Materialize it only once,
+                // including when it coincides with an existing endpoint.
+                if session.mesh().vertex_position(cursor) == Some(&position) {
+                    outcome.graph_vertices[point as usize] = Some(cursor);
+                    continue;
+                }
+                if session.mesh().vertex_position(v) == Some(&position) {
+                    outcome.graph_vertices[point as usize] = Some(v);
+                    continue;
+                }
                 let Some(half_edge) = half_edge_index.find(cursor, v) else {
                     diagnostics.push(BooleanDiagnostic {
                         kind: BooleanFailureKind::InternalInvariantViolation,
@@ -197,7 +216,6 @@ pub fn split_mesh_along_graph(
                     break;
                 };
                 half_edge_index.refresh_after_split(session.mesh(), half_edge, cursor, v);
-                let position = narrow(graph.vertices[point as usize].position);
                 let _ = set_vertex_position(&mut session, new_vertex, position);
                 outcome.graph_vertices[point as usize] = Some(new_vertex);
                 outcome.stats.edge_splits += 1;
@@ -219,7 +237,21 @@ pub fn split_mesh_along_graph(
         let [p, q] = edge.vertices;
         let on_mesh_edge = outcome.graph_vertices[p as usize]
             .zip(outcome.graph_vertices[q as usize])
-            .is_some_and(|(u, v)| half_edge_index.find(u, v).is_some());
+            .is_some_and(|(u, v)| {
+                u == v
+                    || half_edge_index.find(u, v).is_some()
+                    || edge.crossings.iter().any(|&(a, b)| {
+                        boundary_contains_span(
+                            mesh,
+                            match side {
+                                MeshSide::A => a,
+                                MeshSide::B => b,
+                            },
+                            u,
+                            v,
+                        )
+                    })
+            });
         if on_mesh_edge {
             outcome.stats.on_edge_edges += 1;
             continue;
@@ -256,6 +288,77 @@ pub fn split_mesh_along_graph(
         .face_origins
         .sort_unstable_by_key(|(new, old)| (old.index(), new.index()));
     outcome
+}
+
+/// A triangle diagonal or clipped interior endpoint may lie on a real face
+/// boundary. Resolve that boundary using the final stored point, without
+/// changing the intersection graph's provenance-based welding identities.
+fn boundary_anchor(mesh: &Mesh, faces: &[FaceId], position: [f32; 3]) -> Option<MeshAnchor> {
+    let p = promote(position);
+    for &face in faces {
+        for he in mesh.face_loop(face) {
+            let a = mesh.from_vertex(he)?;
+            let b = mesh.to_vertex(he)?;
+            let from = promote(*mesh.vertex_position(a)?);
+            let to = promote(*mesh.vertex_position(b)?);
+            if p == from {
+                return Some(MeshAnchor::Vertex(a));
+            }
+            if p == to {
+                return Some(MeshAnchor::Vertex(b));
+            }
+            if (0..3).all(|axis| {
+                (from[axis].min(to[axis])..=from[axis].max(to[axis])).contains(&p[axis])
+            }) && [(0, 1), (1, 2), (2, 0)].into_iter().all(|(u, v)| {
+                orient2d([from[u], from[v]], [to[u], to[v]], [p[u], p[v]]) == Orientation::Collinear
+            }) {
+                return Some(if a.index() <= b.index() {
+                    MeshAnchor::EdgeSpan(a, b)
+                } else {
+                    MeshAnchor::EdgeSpan(b, a)
+                });
+            }
+        }
+    }
+    None
+}
+
+/// A triangle span can bypass collinear boundary corners already present in
+/// the mesh. Such a span is a boundary cut, not a new zero-area face.
+fn boundary_contains_span(mesh: &Mesh, face: FaceId, a: VertexId, b: VertexId) -> bool {
+    let vertices: Vec<_> = mesh
+        .face_loop(face)
+        .filter_map(|he| mesh.to_vertex(he))
+        .collect();
+    let Some(start) = vertices.iter().position(|&v| v == a) else {
+        return false;
+    };
+    let Some(end) = vertices.iter().position(|&v| v == b) else {
+        return false;
+    };
+    let from = promote(*mesh.vertex_position(a).expect("live boundary vertex"));
+    let to = promote(*mesh.vertex_position(b).expect("live boundary vertex"));
+    [(start, end), (end, start)]
+        .into_iter()
+        .any(|(start, end)| {
+            let mut i = (start + 1) % vertices.len();
+            while i != end {
+                let p = promote(
+                    *mesh
+                        .vertex_position(vertices[i])
+                        .expect("live boundary vertex"),
+                );
+                if cross(sub(to, from), sub(p, from)) != [0.0; 3]
+                    || !(0..3).all(|axis| {
+                        (from[axis].min(to[axis])..=from[axis].max(to[axis])).contains(&p[axis])
+                    })
+                {
+                    return false;
+                }
+                i = (i + 1) % vertices.len();
+            }
+            true
+        })
 }
 
 fn dominant_axis(v: [f64; 3]) -> usize {
@@ -922,6 +1025,30 @@ fn order_fragments(outer_len: u32, fragments: &[[u32; 3]]) -> Option<Vec<usize>>
     }
 }
 
+/// Consecutive points on one cut loop can round to the same mesh position.
+/// Keep one label in both the ring and its disk, and retain aliases so graph
+/// edges on either side still resolve to that same materialized vertex.
+fn collapse_loop_aliases(loops: &mut [Vec<u32>], graph: &IntersectionGraph) -> Vec<(u32, u32)> {
+    let mut aliases = Vec::new();
+    let same_position = |a: u32, b: u32| {
+        narrow(graph.vertices[a as usize].position) == narrow(graph.vertices[b as usize].position)
+    };
+    for ring in loops {
+        ring.dedup_by(|dropped, kept| {
+            if same_position(*dropped, *kept) {
+                aliases.push((*dropped, *kept));
+                true
+            } else {
+                false
+            }
+        });
+        if ring.len() > 1 && same_position(ring[0], *ring.last().expect("nonempty")) {
+            aliases.push((ring.pop().expect("nonempty"), ring[0]));
+        }
+    }
+    aliases
+}
+
 /// Reinserts labels the triangulator dropped as exactly-collinear ring
 /// vertices. Every label indexes `points`; a dropped label lies exactly on
 /// the chord that replaced it. The label is reinserted only on a boundary
@@ -1092,12 +1219,15 @@ fn split_face_with_partitioned_interior_loops(
     outcome: &mut MeshSplitOutcome,
     diagnostics: &mut BooleanDiagnostics,
 ) {
+    let mut loops = loops.to_vec();
+    let aliases = collapse_loop_aliases(&mut loops, graph);
     let position = |vertex: FacePartitionVertex| -> Option<[f64; 3]> {
         match vertex {
             FacePartitionVertex::Mesh(vertex) => mesh.vertex_position(vertex).copied().map(promote),
-            FacePartitionVertex::Graph(vertex) => {
-                graph.vertices.get(vertex as usize).map(|v| v.position)
-            }
+            FacePartitionVertex::Graph(vertex) => graph
+                .vertices
+                .get(vertex as usize)
+                .map(|v| promote(narrow(v.position))),
         }
     };
     let boundary3: Vec<[f64; 3]> = boundary.iter().copied().filter_map(position).collect();
@@ -1169,7 +1299,7 @@ fn split_face_with_partitioned_interior_loops(
         .iter()
         .map(|ring| {
             ring.iter()
-                .map(|&vertex| project(graph.vertices[vertex as usize].position))
+                .map(|&vertex| project(promote(narrow(graph.vertices[vertex as usize].position))))
                 .collect()
         })
         .collect();
@@ -1204,7 +1334,7 @@ fn split_face_with_partitioned_interior_loops(
         assigned[*owner].push(loop_index);
     }
 
-    let params = exedra_triangulate::TriParams::default();
+    let params = exedra_triangulate::TriParams::constrained_delaunay();
     let mut fragments: Vec<Vec<FacePartitionVertex>> = Vec::new();
     for region_index in 0..region_symbols.len() {
         let holes: Vec<&[[f64; 2]]> = assigned[region_index]
@@ -1376,6 +1506,9 @@ fn split_face_with_partitioned_interior_loops(
             }
         }
     }
+    for &(dropped, kept) in aliases.iter().rev() {
+        outcome.graph_vertices[dropped as usize] = outcome.graph_vertices[kept as usize];
+    }
     if delete_faces(&mut session, &[face], DeletePolicy::KeepIsolated).is_err() {
         diagnostics.push(BooleanDiagnostic {
             kind: BooleanFailureKind::InternalInvariantViolation,
@@ -1501,6 +1634,7 @@ fn split_face_with_interior_loops(
     if loops.is_empty() {
         return;
     }
+    let aliases = collapse_loop_aliases(&mut loops, graph);
 
     // Face boundary and its Newell normal, promoted to f64.
     let loop_vertices: Vec<VertexId> = mesh
@@ -1551,6 +1685,11 @@ fn split_face_with_interior_loops(
     let project = |p: [f64; 3]| [p[u], p[v]];
     let outer_projected: Vec<[f64; 2]> = outer3.iter().map(|&p| project(p)).collect();
 
+    // Triangulate the stored f32 coordinates, exactly promoted to f64. A
+    // triangle with positive area in the construction coordinates can become
+    // collinear when stored; triangulating before narrowing creates slivers
+    // that are already degenerate when they enter the mesh.
+    //
     // Hole rings must wind opposite the outer loop in the projected
     // frame: reverse any loop that projects counter-clockwise. Vertex
     // orders travel with their points so index mapping stays aligned.
@@ -1559,7 +1698,7 @@ fn split_face_with_interior_loops(
     for ring in &loops {
         let mut points: Vec<[f64; 2]> = ring
             .iter()
-            .map(|&index| project(graph.vertices[index as usize].position))
+            .map(|&index| project(promote(narrow(graph.vertices[index as usize].position))))
             .collect();
         let mut indices = ring.clone();
         if projected_area2(&points) > 0.0 {
@@ -1572,7 +1711,7 @@ fn split_face_with_interior_loops(
 
     // Triangulate the ring and every disk BEFORE mutating the mesh, so a
     // typed failure leaves the face untouched.
-    let params = exedra_triangulate::TriParams::default();
+    let params = exedra_triangulate::TriParams::constrained_delaunay();
     let holes: Vec<&[[f64; 2]]> = hole_projected.iter().map(Vec::as_slice).collect();
     let ring_input = exedra_triangulate::PolygonInput {
         outer: &outer_projected,
@@ -1722,6 +1861,9 @@ fn split_face_with_interior_loops(
         }
     }
     // Triangulator indices address the outer ++ holes concatenation.
+    for &(dropped, kept) in aliases.iter().rev() {
+        outcome.graph_vertices[dropped as usize] = outcome.graph_vertices[kept as usize];
+    }
     let mut index_map: Vec<VertexId> = loop_vertices;
     for indices in &hole_indices {
         for &index in indices {

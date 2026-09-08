@@ -58,7 +58,7 @@
 
 use alloc::vec::Vec;
 
-use exedra_math::narrow;
+use exedra_math::{cross, narrow, promote, sub};
 use hashbrown::HashMap;
 
 use super::classify::{PatchClassification, PatchSide, classify_patches};
@@ -94,7 +94,7 @@ pub struct BooleanStats {
     pub patches: u64,
     /// Faces kept into the output.
     pub kept_faces: u64,
-    /// Output vertices welded from both meshes' cut curves.
+    /// Seam vertex welds performed while assembling the result.
     pub welded_vertices: u64,
     /// Seam edges tagged in the output.
     pub seam_edges: u64,
@@ -103,8 +103,9 @@ pub struct BooleanStats {
 /// The stitched boolean result.
 #[derive(Clone, Debug)]
 pub struct BooleanOutput {
-    /// The result mesh (validated by the pipeline's tests; callers may
-    /// re-validate).
+    /// The result mesh, checked for closed boundaries and nondegenerate
+    /// robust face triangulations. This does not certify freedom from
+    /// self-intersections.
     pub mesh: Mesh,
     /// `(output face, operand side, original pre-split face)` for every
     /// output face, in face-creation order — composed through the split
@@ -169,15 +170,16 @@ impl core::error::Error for BooleanError {}
 /// Runs the full boolean pipeline on two meshes.
 ///
 /// Deterministic for fixed inputs: every stage orders its work canonically
-/// and every geometric decision is exact. Trouble is typed — diagnostics
-/// accumulate in `diagnostics`, suspect classifications fail the operation,
-/// and nothing is silently approximated.
+/// and predicates use exact signs for their floating-point inputs. Constructed
+/// coordinates are rounded to mesh storage precision. Diagnostics accumulate
+/// in `diagnostics`; unresolved classifications and invalid output surfaces
+/// fail the operation without returning a mesh.
 ///
 /// # Errors
 ///
 /// [`BooleanError::SuspectPatches`] when the pipeline could not soundly
 /// represent or decide every region (deferred splits, exhausted rays,
-/// coplanar overlap, stored-position seam collapse);
+/// coplanar overlap, stored-position seam collapse, invalid output surface);
 /// [`BooleanError::NonManifoldContact`] when otherwise-manifold operands meet
 /// only along an edge that would have four incident result faces;
 /// [`BooleanError::InvariantViolation`] when any stage diagnosed an
@@ -279,12 +281,15 @@ pub fn boolean_mesh(
         &classification,
         &mut stats,
     ) {
-        Ok((mesh, face_provenance)) => Ok(BooleanOutput {
-            mesh,
-            face_provenance,
-            classification,
-            stats,
-        }),
+        Ok((mesh, face_provenance)) => {
+            check_output_surface(&mesh, diagnostics)?;
+            Ok(BooleanOutput {
+                mesh,
+                face_provenance,
+                classification,
+                stats,
+            })
+        }
         Err(StitchError::NonManifoldContact) => {
             diagnostics.push(BooleanDiagnostic {
                 kind: BooleanFailureKind::NonManifoldContact,
@@ -305,6 +310,47 @@ pub fn boolean_mesh(
         }
         Err(StitchError::Build(error)) => Err(BooleanError::Build(error)),
     }
+}
+
+/// Rounding during construction must not silently invalidate the solid that
+/// the next Boolean receives. Check the actual stored surface before success.
+fn check_output_surface(
+    mesh: &Mesh,
+    diagnostics: &mut BooleanDiagnostics,
+) -> Result<(), BooleanError> {
+    let mut triangles = Vec::new();
+    for face in mesh.faces() {
+        let open = mesh
+            .face_loop(face)
+            .any(|edge| mesh.twin(edge).and_then(|twin| mesh.face(twin)) == Some(FaceId::OUTSIDE));
+        let fallback = mesh.face_triangles_into(face, FaceTriangulation::Robust, &mut triangles);
+        let degenerate = fallback
+            || triangles.is_empty()
+            || triangles.iter().any(|triangle| {
+                let [a, b, c] = triangle.map(|corner| {
+                    promote(
+                        *mesh
+                            .vertex_position(mesh.to_vertex(corner).expect("built corner"))
+                            .expect("built vertex"),
+                    )
+                });
+                cross(sub(b, a), sub(c, a)) == [0.0; 3]
+            });
+        if open || degenerate {
+            diagnostics.push(BooleanDiagnostic {
+                kind: BooleanFailureKind::NumericalInstability,
+                a: None,
+                b: None,
+                detail: if open {
+                    "assembled Boolean surface has an open boundary"
+                } else {
+                    "assembled Boolean face has no nondegenerate robust triangulation"
+                },
+            });
+            return Err(BooleanError::SuspectPatches { count: 1 });
+        }
+    }
+    Ok(())
 }
 
 /// Counts unresolved regions conservatively without double-counting the same
@@ -594,10 +640,16 @@ fn stitch(
 
     // --- Weld-seam crease policy plus captured attribute re-application.
     let vertex_of = |index: u32| result.vertex_ids.get(index as usize).copied();
-    // Topology is stable throughout this attribute-only scope. Build one edge
+    // Edge topology stays stable while reapplying attributes. Build one edge
     // identity index instead of walking every output face for every seam and
     // captured source attribute.
     let half_edge_index = HalfEdgeIndex::build(&mesh);
+    // Preallocated seam points can belong exclusively to discarded patches.
+    // They are not part of the result and must not inflate its bounds.
+    let isolated: Vec<_> = mesh
+        .vertices()
+        .filter(|&v| mesh.vertex_out(v).is_none())
+        .collect();
     {
         let mut session = mesh.edit();
         for polyline in &graph.polylines {
@@ -637,6 +689,8 @@ fn stitch(
                 }
             }
         }
+        crate::op::delete_vertices(&mut session, &isolated)
+            .expect("newly built vertices without outgoing edges are isolated");
         #[expect(unused_must_use, reason = "discard sink output")]
         {
             session.finish();
@@ -1082,6 +1136,45 @@ mod tests {
             builder.add_face(&face).expect("valid cube face");
         }
         builder.build().expect("valid cube").mesh
+    }
+
+    #[test]
+    fn output_surface_requires_closed_nondegenerate_faces() {
+        let mut diagnostics = BooleanDiagnostics::default();
+        assert!(check_output_surface(&Mesh::new(), &mut diagnostics).is_ok());
+        assert!(check_output_surface(&cube([0.0; 3]), &mut diagnostics).is_ok());
+        assert!(diagnostics.is_clean());
+
+        let mut open = MeshBuilder::new();
+        for point in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            open.push_vertex(point);
+        }
+        open.add_face(&[0, 1, 2]).unwrap();
+        assert!(matches!(
+            check_output_surface(&open.build().unwrap().mesh, &mut diagnostics),
+            Err(BooleanError::SuspectPatches { .. })
+        ));
+        assert_eq!(
+            diagnostics.entries().last().unwrap().detail,
+            "assembled Boolean surface has an open boundary"
+        );
+
+        let mut flat = cube([0.0; 3]);
+        let vertices: Vec<_> = flat.vertices().collect();
+        for vertex in vertices {
+            let [x, y, _] = *flat.vertex_position(vertex).unwrap();
+            assert!(flat.set_vertex_position(vertex, [x, y, 0.0]));
+        }
+        // Connectivity validation alone accepts this closed, flattened cube.
+        assert!(flat.validate_deep().is_empty());
+        assert!(matches!(
+            check_output_surface(&flat, &mut diagnostics),
+            Err(BooleanError::SuspectPatches { .. })
+        ));
+        assert_eq!(
+            diagnostics.entries().last().unwrap().detail,
+            "assembled Boolean face has no nondegenerate robust triangulation"
+        );
     }
 
     fn translated_sphere(x: f32, lat_segments: usize, lon_segments: usize) -> Mesh {
@@ -1816,6 +1909,47 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         let volume = signed_volume(&output.mesh);
         assert!((volume - 1.6).abs() < 1e-5, "union volume {volume}");
+    }
+
+    #[test]
+    fn panel_wall_union_remains_valid_boolean_input() {
+        let run_boolean = |a: &Mesh, b: &Mesh, op| {
+            let mut diagnostics = BooleanDiagnostics::default();
+            boolean_mesh(
+                a,
+                b,
+                op,
+                FaceTriangulation::Robust,
+                &mut BooleanScratch::new(),
+                &mut diagnostics,
+            )
+            .map(|output| (output, diagnostics))
+        };
+        let right = box_mesh([0.582, 0.0, 0.018], [0.6, 0.56, 0.702]);
+        let back = box_mesh([0.0, 0.552, 0.018], [0.6, 0.56, 0.702]);
+        let (output, diagnostics) = run_boolean(&right, &back, BooleanOp::Union).unwrap();
+        assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+        let zero = zero_area_faces(&output.mesh);
+        assert!(zero.is_empty(), "{zero:?}");
+        let shelf = extruded_box_mesh([0.0, 0.0, 0.351], [0.6, 0.56, 0.369]);
+        let result = run_boolean(&shelf, &output.mesh, BooleanOp::Difference);
+        assert!(result.is_ok(), "{result:?}");
+        assert_closed(&result.unwrap().0.mesh);
+
+        // A later contact can span collinear corners left by an earlier cut.
+        // It must not manufacture a zero-area face along that boundary.
+        let touch = box_mesh([0.0, 0.56, 0.018], [0.6, 0.568, 0.702]);
+        let left = box_mesh([0.0, 0.0, 0.018], [0.018, 0.56, 0.702]);
+        let mut remainder = shelf;
+        for cutter in [&right, &touch, &left] {
+            let (next, diagnostics) =
+                run_boolean(&remainder, cutter, BooleanOp::Difference).unwrap();
+            assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+            assert_closed(&next.mesh);
+            assert!(zero_area_faces(&next.mesh).is_empty());
+            remainder = next.mesh;
+        }
+        assert!((signed_volume(&remainder) - 0.564 * 0.56 * 0.018).abs() < 1e-8);
     }
 
     #[test]
