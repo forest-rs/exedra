@@ -31,10 +31,9 @@
 //! exporter:
 //!
 //! ```
-//! use exedra_assembly::{Assembly, PartCompiler, flatten};
+//! use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
 //! use exedra_constructive::{
 //!     ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder},
-//!     tessellate::EvalPolicy,
 //! };
 //!
 //! let mut builder = RecipeBuilder::new();
@@ -56,7 +55,7 @@
 //!     .expect("unique root key");
 //!
 //! let compiled = PartCompiler::new()
-//!     .compile_parts(&assembly, &EvalPolicy::default())
+//!     .compile_parts(&assembly, &CompilePolicy::default())
 //!     .expect("part compiles");
 //! let render_list = flatten(&assembly, &compiled);
 //!
@@ -80,9 +79,10 @@ pub use assembly::{
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{
-    CompileCounters, CompileError, CompiledBody, CompiledPart, CompiledParts, PartCompiler,
-    PartFingerprint, PolicyFingerprint, RegionRange,
+    CompileCounters, CompileError, CompilePolicy, CompiledBody, CompiledPart, CompiledParts,
+    PartCompiler, PartFingerprint, PolicyFingerprint, RegionRange,
 };
+pub use exedra_mesh::NormalsSource;
 pub use flatten::{RenderItem, RenderList, ResolvedRegion, compose, flatten};
 
 /// Narrows a validated count to `u32`.

@@ -202,7 +202,7 @@ fn transform_position(position: [f32; 3], placement: &Placement3) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::PartCompiler;
+    use crate::compile::{CompilePolicy, PartCompiler};
     use exedra_constructive::builders;
     use exedra_constructive::ir::{CapMode, NodeKind, Recipe, RecipeBuilder};
     use exedra_constructive::tessellate::EvalPolicy;
@@ -243,7 +243,7 @@ mod tests {
         }
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         assert_eq!(compiler.counters().parts_compiled, 1);
@@ -280,7 +280,7 @@ mod tests {
         )
         .unwrap();
         let compiled = PartCompiler::new()
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         let compiled_part = compiled.part(part).unwrap();
@@ -345,7 +345,7 @@ mod tests {
         let _ = child;
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         assert_eq!(list.items.len(), 2);
@@ -378,7 +378,7 @@ mod tests {
         let _ = a;
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         let front_of = |item: &RenderItem| {
@@ -400,7 +400,7 @@ mod tests {
         // Rebinding is structure-only: zero new compilations, new resolution.
         asm.bind_material(b, "front", "ash").unwrap();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         assert_eq!(front_of(&list.items[1]).as_deref(), Some("ash"));
@@ -428,7 +428,7 @@ mod tests {
             .unwrap();
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         assert_eq!(list.items.len(), 1);

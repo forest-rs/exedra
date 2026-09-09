@@ -667,14 +667,13 @@ fn both_seed_cases_lower_to_paths_derived_from_element_keys() {
 
 #[test]
 fn both_seed_cases_compile_to_valid_geometry() {
-    use exedra_assembly::PartCompiler;
-    use exedra_constructive::tessellate::EvalPolicy;
+    use exedra_assembly::{CompilePolicy, PartCompiler};
 
     for construction in [truss_heel(), window_opening()] {
         let assembly = lower(&construction).expect("lowers");
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .expect("every composed recipe evaluates");
         for part in compiled.parts() {
             for body in &part.bodies {
@@ -697,7 +696,7 @@ fn both_seed_cases_compile_to_valid_geometry() {
     let assembly = lower(&window).expect("lowers");
     let mut compiler = PartCompiler::new();
     let compiled = compiler
-        .compile_parts(&assembly, &EvalPolicy::default())
+        .compile_parts(&assembly, &CompilePolicy::default())
         .expect("compiles");
     let wall = assembly
         .part_by_key(&crate::lower::part_key("wall-north"))

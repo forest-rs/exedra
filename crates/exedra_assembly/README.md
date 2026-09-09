@@ -8,10 +8,9 @@ once-per-part, part-local geometry accounting; render lists expose placed,
 world-space accounting with instance multiplicity.
 
 ```rust
-use exedra_assembly::{Assembly, PartCompiler, flatten};
+use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::{
     ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder},
-    tessellate::EvalPolicy,
 };
 
 let mut builder = RecipeBuilder::new();
@@ -33,7 +32,7 @@ assembly
     .expect("unique root key");
 
 let compiled = PartCompiler::new()
-    .compile_parts(&assembly, &EvalPolicy::default())
+    .compile_parts(&assembly, &CompilePolicy::default())
     .expect("part compiles");
 let render_list = flatten(&assembly, &compiled);
 assert_eq!(compiled.part(part).unwrap().triangle_count(), 12);
@@ -54,6 +53,26 @@ placement and identity, not their geometry algorithms or rendering.
 
 The optional `serde` feature exposes host-side interchange. Core assembly and
 compilation remain `no_std` with `alloc`.
+
+## Compile policy migration
+
+`PartCompiler::compile_parts` and `compile::policy_fingerprint` now accept
+`CompilePolicy` in place of `EvalPolicy`. Use `CompilePolicy::default()` for
+the existing generated-normal behavior, or wrap an evaluation policy with
+`CompilePolicy::from(evaluation)`.
+
+To preserve imported corner normals alongside generated geometry, set
+`CompilePolicy::normals` to `NormalsSource::CustomOrDerived`. Missing overrides
+use derived normals, including partially authored faces. `CustomOnly` emits
+zero normals for missing overrides and is intended for callers that provide
+complete coverage. `Derived`, the default, ignores overrides. The policy
+applies to both recipe and baked parts and participates in compilation cache
+identity.
+
+Compiled baked-part fingerprints now include built-in render attributes.
+Persisted compilation content and policy fingerprints must be recomputed.
+The v1 JSON interchange still represents baked positions and faces only;
+its structural `assembly_fingerprint` is not a rendering cache key.
 
 See the [structure-head scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_assembly/docs/adr-0001-structure-head-scope.md)
 and `exedra_constructive` for the geometry side of the boundary.

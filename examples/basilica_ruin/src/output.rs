@@ -307,7 +307,7 @@ fn compile_scenario(params: &BasilicaPremises, compiler: &mut PartCompiler) -> S
     let policy = EvalPolicy::default();
     let counters_before = compiler.counters();
     let compiled = compiler
-        .compile_parts(&assembly, &policy)
+        .compile_parts(&assembly, &policy.into())
         .expect("constant basilica recipes evaluate");
     let diagnostics = compiled
         .parts()

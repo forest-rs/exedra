@@ -8,9 +8,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use exedra_assembly::{Assembly, PartCompiler, flatten};
+use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
-use exedra_constructive::tessellate::EvalPolicy;
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use serde_json::{Value, json};
 
@@ -65,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         instances.push(instance);
     }
     let mut compiler = PartCompiler::new();
-    let compiled = compiler.compile_parts(&assembly, &EvalPolicy::default())?;
+    let compiled = compiler.compile_parts(&assembly, &CompilePolicy::default())?;
     let baseline = compiler.counters();
     let options = GltfExportOptions::z_up_to_y_up();
     std::fs::create_dir_all(&output)?;
@@ -84,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(output.join(name), &export.bytes)?;
         // Recompiling after a material edit is unnecessary, but asking for it
         // here proves the compiler still reuses the part.
-        compiler.compile_parts(assembly, &EvalPolicy::default())?;
+        compiler.compile_parts(assembly, &CompilePolicy::default())?;
         assert_eq!(
             compiler.counters().parts_compiled,
             baseline.parts_compiled,
