@@ -28,8 +28,8 @@
 //! Export a placed baked mesh, then inspect the GLB semantically:
 //!
 //! ```
-//! use exedra_assembly::{Assembly, PartCompiler, flatten};
-//! use exedra_constructive::{ir::Placement3, tessellate::EvalPolicy};
+//! use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
+//! use exedra_constructive::ir::Placement3;
 //! use exedra_gltf::{GlbDocument, export_glb};
 //! use exedra_mesh::{BuildParams, Mesh};
 //!
@@ -42,7 +42,7 @@
 //! let part = assembly.add_baked_part("triangle", mesh, &[])?;
 //! assembly.add_instance(None, "placed", part, Placement3::IDENTITY)?;
 //!
-//! let compiled = PartCompiler::new().compile_parts(&assembly, &EvalPolicy::default())?;
+//! let compiled = PartCompiler::new().compile_parts(&assembly, &CompilePolicy::default())?;
 //! let list = flatten(&assembly, &compiled);
 //! let export = export_glb(&assembly, &compiled, &list)?;
 //! let document = GlbDocument::parse(&export.bytes)?;
@@ -56,6 +56,9 @@ mod inspect;
 mod materials;
 #[cfg(test)]
 mod slot_tests;
+
+#[cfg(test)]
+mod normal_tests;
 
 pub use inspect::GlbDocument;
 pub use materials::MaterialResolver;
@@ -792,10 +795,9 @@ fn fnv64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exedra_assembly::{PartCompiler, flatten};
+    use exedra_assembly::{CompilePolicy, PartCompiler, flatten};
     use exedra_constructive::builders;
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
-    use exedra_constructive::tessellate::EvalPolicy;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -830,7 +832,7 @@ mod tests {
 
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let list = flatten(&asm, &compiled);
         (asm, compiled, list)
@@ -845,7 +847,7 @@ mod tests {
             .unwrap();
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         let counters = compiler.counters();
         let list = flatten(&assembly, &compiled);
@@ -936,7 +938,7 @@ mod tests {
         let (mut assembly, _, _) = example();
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         let part = assembly.part_by_key("panel").unwrap();
         let tri_before = compiled.part(part).unwrap().bodies[0].tri.clone();
@@ -988,7 +990,7 @@ mod tests {
         assert_eq!(rebound_export.stats.meshes, 1);
         assert_eq!(before.stats.buffer_bytes, rebound_export.stats.buffer_bytes);
         let reused = compiler
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         assert!(std::rc::Rc::ptr_eq(
             compiled.part(part).unwrap(),
@@ -1047,7 +1049,7 @@ mod tests {
     fn empty_scene_omits_optional_arrays_and_binary_payload() {
         let assembly = Assembly::new();
         let compiled = PartCompiler::new()
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .expect("empty assembly compiles");
         let list = flatten(&assembly, &compiled);
         for options in [
@@ -1107,7 +1109,7 @@ mod tests {
             .add_instance(None, "empty-instance", part, Placement3::IDENTITY)
             .expect("instance");
         let compiled = PartCompiler::new()
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .expect("exact empty part compiles");
         let report = compiled.report(part).expect("evaluation report");
         assert_eq!(report.fidelity_of(root), Some(Fidelity::Exact));

@@ -5,10 +5,9 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use exedra_assembly::{Assembly, CompiledParts, PartCompiler, RenderList, flatten};
+use exedra_assembly::{Assembly, CompilePolicy, CompiledParts, PartCompiler, RenderList, flatten};
 use exedra_constructive::builders;
 use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
-use exedra_constructive::tessellate::EvalPolicy;
 use joiner::{
     Construction, OrientedBox, TransferKind, TransferTarget, instance_path, lower_selected,
 };
@@ -150,7 +149,7 @@ pub(crate) fn emit(construction: &Construction, layer: Layer) -> Result<EmittedS
 
     let mut compiler = PartCompiler::new();
     let compiled = compiler
-        .compile_parts(&assembly, &EvalPolicy::default())
+        .compile_parts(&assembly, &CompilePolicy::default())
         .map_err(|error| format!("compile structural assembly: {error}"))?;
     let render_list = flatten(&assembly, &compiled);
     Ok(EmittedScene {

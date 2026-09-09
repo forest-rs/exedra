@@ -7,8 +7,8 @@ base64 buffer or a standard binary GLB container; both are deterministic
 byte-for-byte.
 
 ```rust
-use exedra_assembly::{Assembly, PartCompiler, flatten};
-use exedra_constructive::{ir::Placement3, tessellate::EvalPolicy};
+use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
+use exedra_constructive::ir::Placement3;
 use exedra_gltf::{GlbDocument, export_glb};
 use exedra_mesh::{BuildParams, Mesh};
 
@@ -27,7 +27,7 @@ assembly
     .expect("unique root key");
 
 let compiled = PartCompiler::new()
-    .compile_parts(&assembly, &EvalPolicy::default())
+    .compile_parts(&assembly, &CompilePolicy::default())
     .expect("part compiles");
 let list = flatten(&assembly, &compiled);
 let export = export_glb(&assembly, &compiled, &list).expect("GLB export");

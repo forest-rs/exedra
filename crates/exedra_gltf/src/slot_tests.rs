@@ -4,9 +4,8 @@
 //! Regression coverage for authored slots across the complete export pipeline.
 
 use super::*;
-use exedra_assembly::{PartCompiler, flatten};
+use exedra_assembly::{CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
-use exedra_constructive::tessellate::EvalPolicy;
 
 #[test]
 fn authored_slots_survive_overlapping_body_regions() {
@@ -37,7 +36,7 @@ fn authored_slots_survive_overlapping_body_regions() {
         .add_instance(None, "a", part, Placement3::IDENTITY)
         .unwrap();
     let compiled = PartCompiler::new()
-        .compile_parts(&assembly, &EvalPolicy::default())
+        .compile_parts(&assembly, &CompilePolicy::default())
         .unwrap();
     let list = flatten(&assembly, &compiled);
     assert_eq!(list.items.len(), 2);
@@ -167,7 +166,7 @@ fn inherited_slots_child_overrides_and_unassigned_siblings_reach_both_export_pat
             .unwrap();
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         let back_first = if single_slot { "red" } else { "blue" };
         let back_second = if single_slot { "green" } else { "blue" };
@@ -188,7 +187,7 @@ fn inherited_slots_child_overrides_and_unassigned_siblings_reach_both_export_pat
             .bind_material(first_instance, "shell", "purple")
             .unwrap();
         let reused = compiler
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         assert!(std::rc::Rc::ptr_eq(
             compiled.part(part).unwrap(),

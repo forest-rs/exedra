@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 use exedra_constructive::EVAL_SCHEMA_VERSION;
 use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
-use exedra_mesh::{ExtractParams, FaceTriangulation, TriMesh};
+use exedra_mesh::{ExtractParams, FaceTriangulation, NormalsSource, TriMesh};
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
 
@@ -32,29 +32,58 @@ use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
 /// The single invalidation channel this layer uses: part content.
 const PARTS_CHANNEL: Channel = Channel::new(0);
 
+/// Evaluation and render extraction policy for recipe and baked parts.
+///
+/// Defaults to derived normals. Select [`NormalsSource::CustomOrDerived`]
+/// to preserve authored corner normals and derive any missing overrides.
+/// Every output-affecting setting participates in [`policy_fingerprint`].
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct CompilePolicy {
+    /// Constructive evaluation settings; baked parts skip evaluation.
+    pub evaluation: EvalPolicy,
+    /// Normal selection for every emitted body, including imported meshes.
+    ///
+    /// [`NormalsSource::CustomOnly`] emits zero normals for missing overrides.
+    /// Use [`NormalsSource::CustomOrDerived`] for partially authored meshes or
+    /// parts that combine imported and generated geometry.
+    pub normals: NormalsSource,
+}
+
+impl From<EvalPolicy> for CompilePolicy {
+    fn from(evaluation: EvalPolicy) -> Self {
+        Self {
+            evaluation,
+            ..Self::default()
+        }
+    }
+}
+
 /// Content identity of a compiled part (recipe fingerprint, or canonical
 /// mesh bytes for baked parts).
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PartFingerprint(pub u128);
 
-/// Identity of everything in the evaluation policy that can change
-/// tessellation output, folded with [`EVAL_SCHEMA_VERSION`].
+/// Identity of evaluation and extraction settings that can change compiled
+/// output, including [`EVAL_SCHEMA_VERSION`].
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PolicyFingerprint(pub u64);
 
 /// Computes the policy fingerprint for `policy`.
 ///
-/// Folds every policy field's exact bits plus [`EVAL_SCHEMA_VERSION`], so
-/// schema bumps invalidate compiled caches explicitly. Must be extended
-/// whenever [`EvalPolicy`] grows a field.
+/// Combines the constructive policy fingerprint with the normal source.
+/// Constructive evaluation owns fingerprinting its settings, including
+/// refinement budgets and [`EVAL_SCHEMA_VERSION`].
 #[must_use]
-pub fn policy_fingerprint(policy: &EvalPolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::with_capacity(64);
-    bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&policy.discretize.chord_tolerance.to_bits().to_le_bytes());
-    bytes.extend_from_slice(&policy.discretize.max_segment_edges.to_le_bytes());
-    bytes.extend_from_slice(&policy.discretize.min_arc_edges.to_le_bytes());
-    bytes.extend_from_slice(&policy.sharp_sin_threshold.to_bits().to_le_bytes());
+pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
+    let mut bytes = Vec::from(&b"assembly-compile-v1"[..]);
+    bytes.extend_from_slice(
+        &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
+    );
+    bytes.push(match policy.normals {
+        NormalsSource::Derived => 0,
+        NormalsSource::CustomOrDerived => 1,
+        NormalsSource::CustomOnly => 2,
+    });
     let h = fnv128(&bytes);
     #[expect(
         clippy::cast_possible_truncation,
@@ -290,9 +319,6 @@ pub struct PartCompiler {
     /// Cache keys last produced for each part, so channel-driven eviction
     /// can find them without scanning.
     part_keys: HashMap<PartId, Vec<(PartFingerprint, PolicyFingerprint)>>,
-    /// Baked-mesh content fingerprints, valid for `baked_generation`.
-    baked_fingerprints: HashMap<PartId, PartFingerprint>,
-    baked_generation: u64,
     dirty: InvalidationSet<PartId>,
     counters: CompileCounters,
 }
@@ -337,19 +363,15 @@ impl PartCompiler {
     pub fn compile_parts(
         &mut self,
         assembly: &Assembly,
-        policy: &EvalPolicy,
+        policy: &CompilePolicy,
     ) -> Result<CompiledParts, CompileError> {
         self.drain_dirty();
-        if self.baked_generation != assembly.content_generation() {
-            self.baked_fingerprints.clear();
-            self.baked_generation = assembly.content_generation();
-        }
         let policy_fp = policy_fingerprint(policy);
         let mut out = Vec::with_capacity(assembly.parts().len());
         let mut reports = Vec::with_capacity(assembly.parts().len());
         for (index, def) in assembly.parts().iter().enumerate() {
             let id = PartId(crate::len_u32(index));
-            let content_fp = self.part_fingerprint(id, def.source());
+            let content_fp = part_fingerprint(def.source());
             let key = (content_fp, policy_fp);
             if let Some(hit) = self.cache.get(&key) {
                 self.counters.cache_hits += 1;
@@ -384,7 +406,6 @@ impl PartCompiler {
         let mut marked: Vec<PartId> = self.dirty.drain(PARTS_CHANNEL).collect();
         marked.sort_unstable();
         for part in marked {
-            self.baked_fingerprints.remove(&part);
             if let Some(keys) = self.part_keys.remove(&part) {
                 for key in keys {
                     if self.cache.remove(&key).is_some() {
@@ -394,32 +415,27 @@ impl PartCompiler {
             }
         }
     }
+}
 
-    fn part_fingerprint(&mut self, id: PartId, source: &PartSource) -> PartFingerprint {
-        match source {
-            PartSource::Recipe(recipe) => PartFingerprint(recipe.recipe_fingerprint().0),
-            PartSource::Baked(mesh) => {
-                if let Some(fp) = self.baked_fingerprints.get(&id) {
-                    return *fp;
-                }
-                let fp = baked_mesh_fingerprint(mesh);
-                self.baked_fingerprints.insert(id, fp);
-                fp
-            }
-        }
+fn part_fingerprint(source: &PartSource) -> PartFingerprint {
+    match source {
+        PartSource::Recipe(recipe) => PartFingerprint(recipe.recipe_fingerprint().0),
+        // Assemblies can be rebuilt with the same local ids and generation.
+        // Recompute content identity; those counters cannot identify a mesh.
+        PartSource::Baked(mesh) => baked_mesh_fingerprint(mesh),
     }
 }
 
 fn compile_source(
     part: PartId,
     source: &PartSource,
-    policy: &EvalPolicy,
+    policy: &CompilePolicy,
     fingerprint: PartFingerprint,
 ) -> Result<(CompiledPart, Option<GeometryReport>), CompileError> {
     let (bodies, report) = match source {
         PartSource::Recipe(recipe) => {
-            let evaluation =
-                evaluate(recipe, policy).map_err(|error| CompileError::Evaluate { part, error })?;
+            let evaluation = evaluate(recipe, &policy.evaluation)
+                .map_err(|error| CompileError::Evaluate { part, error })?;
             // Constructive refusals are represented as reports rather than
             // `EvalError`s. Reject only when an Error leaves the entire part
             // empty: partial geometry stays usable, but its complete report is
@@ -437,12 +453,13 @@ fn compile_source(
                     compile_body(
                         &placed.body.mesh,
                         placed.material.map(|slot| SlotIndex(slot.0)),
+                        policy.normals,
                     )
                 })
                 .collect();
             (bodies, Some(evaluation.report))
         }
-        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh, None)], None),
+        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh, None, policy.normals)], None),
     };
     Ok((
         CompiledPart {
@@ -455,8 +472,13 @@ fn compile_source(
 
 /// Extracts render buffers and regroups the index buffer so each
 /// `FACE_REGION` value is one contiguous range.
-fn compile_body(mesh: &exedra_mesh::Mesh, material_slot: Option<SlotIndex>) -> CompiledBody {
+fn compile_body(
+    mesh: &exedra_mesh::Mesh,
+    material_slot: Option<SlotIndex>,
+    normals: NormalsSource,
+) -> CompiledBody {
     let params = ExtractParams {
+        normals,
         face_triangulation: FaceTriangulation::Robust,
         ..ExtractParams::default()
     };
@@ -506,9 +528,84 @@ fn compile_body(mesh: &exedra_mesh::Mesh, material_slot: Option<SlotIndex>) -> C
     }
 }
 
-/// Canonical content fingerprint of a baked mesh: vertex positions in id
-/// order plus face loops rotated to their minimum vertex index.
+/// Canonical baked-mesh identity including the built-in render attributes.
+/// Corner attributes rotate together with their owning face loop.
 fn baked_mesh_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
+    bytes.extend_from_slice(b"baked-mesh-v2");
+    bytes.extend_from_slice(&crate::len_u32(mesh.vertices().count()).to_le_bytes());
+    for vertex in mesh.vertices() {
+        // Face loops reference slot indices, which need not be contiguous.
+        bytes.extend_from_slice(&vertex.index().to_le_bytes());
+        let p = mesh.vertex_position(vertex).copied().unwrap_or([0.0; 3]);
+        for c in p {
+            bytes.extend_from_slice(&c.to_bits().to_le_bytes());
+        }
+        put_optional_floats(&mut bytes, mesh.vertex_sharpness(vertex).map(|v| [v]));
+    }
+    bytes.extend_from_slice(&crate::len_u32(mesh.faces().count()).to_le_bytes());
+    for face in mesh.faces() {
+        let mut corners: Vec<_> = mesh.face_loop(face).collect();
+        if let Some(min_pos) = corners
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, he)| mesh.to_vertex(**he).map(exedra_mesh::VertexId::index))
+            .map(|(i, _)| i)
+        {
+            corners.rotate_left(min_pos);
+        }
+        bytes.extend_from_slice(&crate::len_u32(corners.len()).to_le_bytes());
+        let region = mesh
+            .attrs()
+            .dense(exedra_mesh::attr::FACE_REGION)
+            .and_then(|layer| layer.get(face.into()))
+            .copied()
+            .unwrap_or(0);
+        bytes.extend_from_slice(&region.to_le_bytes());
+        for he in corners {
+            bytes.extend_from_slice(
+                &mesh
+                    .to_vertex(he)
+                    .expect("live face corner")
+                    .index()
+                    .to_le_bytes(),
+            );
+            let uv = mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_UV)
+                .and_then(|layer| layer.get(he.into()))
+                .copied();
+            let normal = mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                .and_then(|layer| layer.get(he.into()))
+                .copied();
+            put_optional_floats(&mut bytes, uv);
+            put_optional_floats(&mut bytes, normal);
+            put_optional_floats(&mut bytes, mesh.edge_sharpness(he).map(|v| [v]));
+            bytes.push(match mesh.edge_seam(he) {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            });
+        }
+    }
+    PartFingerprint(fnv128(&bytes))
+}
+
+fn put_optional_floats<const N: usize>(bytes: &mut Vec<u8>, values: Option<[f32; N]>) {
+    bytes.push(u8::from(values.is_some()));
+    if let Some(values) = values {
+        for value in values {
+            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+        }
+    }
+}
+
+// The v1 assembly interchange encodes baked geometry without its attributes.
+// Keep its existing structural identity separate from compilation identity.
+fn baked_geometry_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
     bytes.extend_from_slice(b"baked-mesh");
@@ -541,8 +638,12 @@ fn baked_mesh_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
     PartFingerprint(fnv128(&bytes))
 }
 
-/// Structural fingerprint of an assembly: part contents, slot tables and
-/// mappings, the instance tree with placements, bindings, and metadata.
+/// Structural fingerprint of an assembly: recipe contents, baked geometry,
+/// slot tables and mappings, placements, bindings, and metadata.
+///
+/// Baked attributes are absent from the v1 JSON interchange and are excluded
+/// here. Rendering caches must use [`CompiledPart::fingerprint`] together with
+/// [`policy_fingerprint`], which include the consumed attributes and settings.
 ///
 /// This is the round-trip oracle for the `exedra-assembly-v1` interchange:
 /// serialize, rebuild, and the fingerprints must match bit-for-bit.
@@ -560,7 +661,7 @@ pub fn assembly_fingerprint(assembly: &Assembly) -> u128 {
         push_str(&mut bytes, def.key());
         let content = match def.source() {
             PartSource::Recipe(recipe) => recipe.recipe_fingerprint().0,
-            PartSource::Baked(mesh) => baked_mesh_fingerprint(mesh).0,
+            PartSource::Baked(mesh) => baked_geometry_fingerprint(mesh).0,
         };
         bytes.extend_from_slice(&content.to_le_bytes());
         bytes.extend_from_slice(&crate::len_u32(def.slots().len()).to_le_bytes());
@@ -614,6 +715,10 @@ fn fnv128(bytes: &[u8]) -> u128 {
     }
     hash
 }
+
+#[cfg(test)]
+#[path = "normal_tests.rs"]
+mod normal_tests;
 
 #[cfg(test)]
 mod tests {
@@ -742,14 +847,14 @@ mod tests {
         let asm = n_instance_assembly(8);
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         assert_eq!(compiled.parts().len(), 1);
         assert_eq!(compiler.counters().parts_compiled, 1);
         assert_eq!(compiler.counters().cache_hits, 0);
         // Re-compiling the same assembly is a pure hit.
         let again = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, 1);
         assert_eq!(compiler.counters().cache_hits, 1);
@@ -769,7 +874,7 @@ mod tests {
             .add_recipe_part("two-bodies", two_body_recipe())
             .unwrap();
         let compiled = PartCompiler::new()
-            .compile_parts(&assembly, &EvalPolicy::default())
+            .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         let compiled = compiled.part(part).unwrap();
 
@@ -817,7 +922,7 @@ mod tests {
             .unwrap();
 
         let error = PartCompiler::new()
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .expect_err("an error diagnostic with no geometry must fail compilation");
         let CompileError::NoGeometry {
             part: rejected,
@@ -872,7 +977,7 @@ mod tests {
                 .unwrap();
             let mut compiler = PartCompiler::new();
             for _ in 0..2 {
-                let result = compiler.compile_parts(&assembly, &EvalPolicy::default());
+                let result = compiler.compile_parts(&assembly, &CompilePolicy::default());
                 let report = if partial {
                     let compiled = result.unwrap();
                     assert_eq!(compiled.part(part).unwrap().bodies.len(), 1);
@@ -921,7 +1026,7 @@ mod tests {
         };
 
         let error = PartCompiler::new()
-            .compile_parts(&assembly, &policy)
+            .compile_parts(&assembly, &policy.into())
             .expect_err("insufficient tolerance budget must fail compilation");
         assert!(matches!(
             error,
@@ -955,7 +1060,7 @@ mod tests {
         let mut compiler = PartCompiler::new();
 
         let first = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         assert_eq!(first.part(part).unwrap().bodies.len(), 1);
         let first_report = first.report(part).expect("recipe report");
@@ -967,7 +1072,7 @@ mod tests {
         );
 
         let again = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let cached_report = again.report(part).expect("cached recipe report");
         assert_eq!(cached_report, first_report);
@@ -982,8 +1087,8 @@ mod tests {
         let asm = n_instance_assembly(2);
         let mut c1 = PartCompiler::new();
         let mut c2 = PartCompiler::new();
-        let a = c1.compile_parts(&asm, &EvalPolicy::default()).unwrap();
-        let b = c2.compile_parts(&asm, &EvalPolicy::default()).unwrap();
+        let a = c1.compile_parts(&asm, &CompilePolicy::default()).unwrap();
+        let b = c2.compile_parts(&asm, &CompilePolicy::default()).unwrap();
         let (pa, pb) = (a.part(PartId(0)).unwrap(), b.part(PartId(0)).unwrap());
         assert_eq!(pa.fingerprint, pb.fingerprint);
         assert_eq!(pa.bodies.len(), pb.bodies.len());
@@ -998,7 +1103,7 @@ mod tests {
         let asm = n_instance_assembly(1);
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let body = &compiled.part(PartId(0)).unwrap().bodies[0];
         let mut cursor = 0;
@@ -1022,15 +1127,15 @@ mod tests {
         let asm = n_instance_assembly(1);
         let mut compiler = PartCompiler::new();
         compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let mut coarse = EvalPolicy::default();
         coarse.discretize.chord_tolerance = 0.5;
-        compiler.compile_parts(&asm, &coarse).unwrap();
+        compiler.compile_parts(&asm, &coarse.into()).unwrap();
         assert_eq!(compiler.counters().parts_compiled, 2);
         assert_ne!(
-            policy_fingerprint(&EvalPolicy::default()),
-            policy_fingerprint(&coarse)
+            policy_fingerprint(&CompilePolicy::default()),
+            policy_fingerprint(&coarse.into())
         );
     }
 
@@ -1039,7 +1144,7 @@ mod tests {
         let mut asm = n_instance_assembly(3);
         let mut compiler = PartCompiler::new();
         compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let compiled_before = compiler.counters().parts_compiled;
         // Rebind materials on every instance: pure structure.
@@ -1052,7 +1157,7 @@ mod tests {
             asm.set_metadata(InstanceId(id), "note", "edited").unwrap();
         }
         compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, compiled_before);
         assert_eq!(compiler.counters().cache_hits, 1);
@@ -1069,7 +1174,7 @@ mod tests {
             .unwrap();
         let mut compiler = PartCompiler::new();
         compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, 2);
 
@@ -1077,7 +1182,7 @@ mod tests {
             .unwrap();
         compiler.mark_part_changed(a);
         compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         // Part a: evicted + recompiled (content changed). Part b: pure hit.
         assert_eq!(compiler.counters().cache_evictions, 1);
@@ -1103,7 +1208,7 @@ mod tests {
             .unwrap();
         let mut compiler = PartCompiler::new();
         let compiled = compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         let entry = compiled.part(part).unwrap();
         assert_eq!(entry.bodies.len(), 1);
@@ -1112,9 +1217,9 @@ mod tests {
             compiled.report(part).is_none(),
             "baked parts do not have constructive reports"
         );
-        // Second run reuses the memoized baked fingerprint and hits.
+        // Second run finds the same content and reuses the compiled mesh.
         compiler
-            .compile_parts(&asm, &EvalPolicy::default())
+            .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, 1);
         assert_eq!(compiler.counters().cache_hits, 1);

@@ -333,12 +333,12 @@ fn inspect_recipe(name: &str, recipe: &Recipe) -> Result<InspectionResponse, Str
 /// the part recipe (full provenance), instances from the assembly's
 /// flattened render list.
 fn inspect_panel_trio() -> Result<InspectionResponse, String> {
-    use exedra_assembly::{PartCompiler, PartSource, flatten};
+    use exedra_assembly::{CompilePolicy, PartCompiler, PartSource, flatten};
 
     let asm = panel_trio_assembly()?;
     let mut compiler = PartCompiler::new();
     let compiled = compiler
-        .compile_parts(&asm, &EvalPolicy::default())
+        .compile_parts(&asm, &CompilePolicy::default())
         .map_err(|e| format!("{e}"))?;
     let list = flatten(&asm, &compiled);
 

@@ -272,14 +272,13 @@ pub(crate) fn matrix16(placement: &exedra_constructive::ir::Placement3) -> Vec<f
 }
 
 fn run_assembly_scenario_impl() -> Result<AssemblyResponse, String> {
-    use exedra_assembly::{PartCompiler, flatten};
-    use exedra_constructive::tessellate::EvalPolicy;
+    use exedra_assembly::{CompilePolicy, PartCompiler, flatten};
 
     let asm = panel_trio_assembly()?;
 
     let mut compiler = PartCompiler::new();
     let compiled = compiler
-        .compile_parts(&asm, &EvalPolicy::default())
+        .compile_parts(&asm, &CompilePolicy::default())
         .map_err(|e| format!("{e}"))?;
     let list = flatten(&asm, &compiled);
 

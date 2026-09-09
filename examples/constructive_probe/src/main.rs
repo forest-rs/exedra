@@ -1024,7 +1024,7 @@ fn check(probe: &Probe, policy: &EvalPolicy) -> (Option<Evaluation>, Outcome) {
 fn export(assembly: &Assembly, policy: &EvalPolicy, path: &Path) -> Result<String, String> {
     let mut compiler = PartCompiler::new();
     let compiled = compiler
-        .compile_parts(assembly, policy)
+        .compile_parts(assembly, &(*policy).into())
         .map_err(|e| format!("compile: {e}"))?;
     let list = flatten(assembly, &compiled);
     let glb = export_glb_with_options(
