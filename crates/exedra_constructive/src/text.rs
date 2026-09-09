@@ -21,6 +21,7 @@ use core::fmt::Write as _;
 
 use kurbo::Point;
 
+use crate::edge_finish::{EdgeSelection, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, NodeId, NodeKind, Path3, Placement3, Plane3,
     PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
@@ -317,6 +318,41 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
         NodeKind::MeshImport { import, placement } => {
             let _ = write!(line, "mesh_import {} placement", import.0);
             put_placement(line, placement);
+        }
+        NodeKind::EdgeFinish {
+            child,
+            selection,
+            policy,
+        } => {
+            let _ = write!(line, "edge_finish child {} ", child.0);
+            match selection {
+                EdgeSelection::SharpEdges => line.push_str("sharp"),
+                EdgeSelection::RegionBoundaries(pairs) => {
+                    let _ = write!(line, "boundaries {}", pairs.len());
+                    for pair in pairs {
+                        let _ = write!(line, " {} {}", pair[0], pair[1]);
+                    }
+                }
+            }
+            let (kind, offset) = match policy.kind {
+                RoundKind::Fillet { radius } => ("fillet", radius),
+                RoundKind::Chamfer { setback } => ("chamfer", setback),
+            };
+            let segments = policy
+                .segments
+                .map_or_else(|| String::from("-"), |n| format!("{n}"));
+            let region = policy
+                .region
+                .map_or_else(|| String::from("-"), |n| format!("{n}"));
+            let _ = write!(
+                line,
+                " {kind} {} segments {segments} tolerance {} sharpness {} region {region} planar {} turn {}",
+                hex(offset),
+                hex(policy.chord_tolerance),
+                policy.sharpness_threshold.to_bits(),
+                hex(policy.max_planar_deviation),
+                hex(policy.max_tangent_turn)
+            );
         }
         NodeKind::Stretch {
             child,
@@ -885,6 +921,63 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             let placement = parse_placement(&mut tokens, line)?;
             NodeKind::MeshImport { import, placement }
         }
+        "edge_finish" => {
+            expect(&mut tokens, "child", line)?;
+            let child = NodeId(next_u32(&mut tokens, line)?);
+            let selection = match tokens.next() {
+                Some("sharp") => EdgeSelection::SharpEdges,
+                Some("boundaries") => {
+                    let count = next_u32(&mut tokens, line)?;
+                    let pairs = (0..count)
+                        .map(|_| Ok([next_u32(&mut tokens, line)?, next_u32(&mut tokens, line)?]))
+                        .collect::<Result<Vec<_>, TextError>>()?;
+                    EdgeSelection::RegionBoundaries(pairs)
+                }
+                _ => return Err(TextError::Malformed { line }),
+            };
+            let kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+            let offset = next_f64(&mut tokens, line)?;
+            let kind = match kind_name {
+                "fillet" => RoundKind::Fillet { radius: offset },
+                "chamfer" => RoundKind::Chamfer { setback: offset },
+                _ => return Err(TextError::Malformed { line }),
+            };
+            expect(&mut tokens, "segments", line)?;
+            let value = tokens.next().ok_or(TextError::Malformed { line })?;
+            let segments = if value == "-" {
+                None
+            } else {
+                Some(parse_u32(value, line)?)
+            };
+            expect(&mut tokens, "tolerance", line)?;
+            let chord_tolerance = next_f64(&mut tokens, line)?;
+            expect(&mut tokens, "sharpness", line)?;
+            let sharpness_threshold = f32::from_bits(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "region", line)?;
+            let value = tokens.next().ok_or(TextError::Malformed { line })?;
+            let region = if value == "-" {
+                None
+            } else {
+                Some(parse_u32(value, line)?)
+            };
+            expect(&mut tokens, "planar", line)?;
+            let max_planar_deviation = next_f64(&mut tokens, line)?;
+            expect(&mut tokens, "turn", line)?;
+            let max_tangent_turn = next_f64(&mut tokens, line)?;
+            NodeKind::EdgeFinish {
+                child,
+                selection,
+                policy: RoundPolicy {
+                    kind,
+                    segments,
+                    chord_tolerance,
+                    sharpness_threshold,
+                    region,
+                    max_planar_deviation,
+                    max_tangent_turn,
+                },
+            }
+        }
         "stretch" => {
             expect(&mut tokens, "child", line)?;
             let child = NodeId(next_u32(&mut tokens, line)?);
@@ -1142,14 +1235,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 17\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 18\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 17\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 18\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

@@ -23,7 +23,9 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use exedra_mesh::{RoundKind, RoundPolicy};
 
+use crate::edge_finish::EdgeSelection;
 use crate::len_u32;
 use crate::profile::{CanonBytes, Profile2};
 
@@ -367,6 +369,20 @@ pub enum CsgOp {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum NodeKind {
+    /// Fillet or chamfer selected edges of one evaluated child body.
+    ///
+    /// Finishing happens in child-local space before outer transforms or
+    /// assembly placement. Unsupported targets produce an error diagnostic
+    /// and no finished body. New faces inherit deterministic source ownership;
+    /// see [`crate::edge_finish::finish_edges`] for material, normal and UV rules.
+    EdgeFinish {
+        /// Body to finish; groups producing several bodies are refused.
+        child: NodeId,
+        /// Stable region boundaries or all authored sharp edges.
+        selection: EdgeSelection,
+        /// Convex rounding profile and geometric tolerances.
+        policy: RoundPolicy,
+    },
     /// Extrude a profile from its local XY plane along local +Z.
     Extrude {
         /// The profile to extrude.
@@ -996,7 +1012,10 @@ impl RecipeBuilder {
     /// # Errors
     ///
     /// Returns a typed [`RecipeError`]; the builder is unchanged on error.
-    pub fn add(&mut self, kind: NodeKind) -> Result<NodeId, RecipeError> {
+    pub fn add(&mut self, mut kind: NodeKind) -> Result<NodeId, RecipeError> {
+        if let NodeKind::EdgeFinish { selection, .. } = &mut kind {
+            selection.canonicalize();
+        }
         self.validate_kind(&kind)?;
         // Pending bindings must reference interned entries: hostile ids are
         // typed errors here, never a downstream index panic. Taken even on
@@ -1195,6 +1214,23 @@ impl RecipeBuilder {
                         }
                     }
                 }
+            }
+            NodeKind::EdgeFinish {
+                child,
+                selection,
+                policy,
+            } => {
+                self.check_node(*child)?;
+                if !selection.valid() {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "edge finish selection",
+                    });
+                }
+                policy
+                    .validate()
+                    .map_err(|_| RecipeError::InvalidParameter {
+                        what: "edge finish policy",
+                    })
             }
             NodeKind::Csg { op: _, operands } => {
                 if operands.len() < 2 {
@@ -1666,6 +1702,48 @@ fn node_canon_bytes(
                 }
             }
             put_placement(out, placement);
+        }
+        NodeKind::EdgeFinish {
+            child: c,
+            selection,
+            policy,
+        } => {
+            out.push(14);
+            child(out, *c);
+            match selection {
+                EdgeSelection::SharpEdges => out.push(0),
+                EdgeSelection::RegionBoundaries(pairs) => {
+                    out.push(1);
+                    put_u32(out, len_u32(pairs.len()));
+                    for pair in pairs {
+                        for &region in pair {
+                            put_u32(out, region);
+                        }
+                    }
+                }
+            }
+            match policy.kind {
+                RoundKind::Fillet { radius } => {
+                    out.push(0);
+                    put_f64(out, radius);
+                }
+                RoundKind::Chamfer { setback } => {
+                    out.push(1);
+                    put_f64(out, setback);
+                }
+            }
+            out.push(u8::from(policy.segments.is_some()));
+            if let Some(n) = policy.segments {
+                put_u32(out, n);
+            }
+            put_f64(out, policy.chord_tolerance);
+            out.extend_from_slice(&policy.sharpness_threshold.to_bits().to_le_bytes());
+            out.push(u8::from(policy.region.is_some()));
+            if let Some(region) = policy.region {
+                put_u32(out, region);
+            }
+            put_f64(out, policy.max_planar_deviation);
+            put_f64(out, policy.max_tangent_turn);
         }
         NodeKind::Csg { op, operands } => {
             out.push(6);
@@ -2338,7 +2416,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x732E_F71D_29C1_18AC_74E5_8ED1_B751_CE30,
+            0x6950_2F1D_0706_0BD8_74EC_2215_960E_64DF,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

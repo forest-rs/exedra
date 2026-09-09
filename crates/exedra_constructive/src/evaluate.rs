@@ -17,11 +17,12 @@ use alloc::vec::Vec;
 use exedra_mesh::boolean::{
     BooleanDiagnostics, BooleanError, BooleanOp, BooleanScratch, MeshSide, boolean_mesh,
 };
-use exedra_mesh::{FaceId, FaceTriangulation, Mesh};
+use exedra_mesh::{FaceId, FaceTriangulation, Mesh, RoundPolicy};
 use exedra_triangulate::RefineStats;
 use hashbrown::HashMap;
 
 use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
+use crate::edge_finish::{EdgeSelection, finish_edges};
 use crate::ir::{
     CsgOp, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SlotId, SourceId,
 };
@@ -158,6 +159,12 @@ pub struct EvalCounters {
     pub stretch_uv_unmapped_faces: u64,
     /// Stretch nodes refused because their topology was not safely evaluable.
     pub stretch_refusals: u32,
+    /// Edge-finish topology passes performed (cache hits perform no pass).
+    pub edge_finish_passes: u32,
+    /// New fillet/chamfer strip and corner faces emitted by those passes.
+    pub edge_finish_faces: u64,
+    /// Edge-finish nodes refused without emitting a finished body.
+    pub edge_finish_refusals: u32,
     /// CSG operand faces where robust triangulation fell back to an unsafe
     /// fan cover; see `eval.csg.fan_unsafe_faces`.
     pub csg_fan_unsafe_faces: u64,
@@ -642,6 +649,13 @@ impl EvalCx<'_> {
                 let child = *child;
                 self.walk(child, &combined, emit, material)
             }
+            NodeKind::EdgeFinish {
+                child,
+                selection,
+                policy,
+            } => {
+                self.evaluate_edge_finish(node_id, *child, selection, policy, world, emit, material)
+            }
             NodeKind::Csg { op, operands } => {
                 let op = *op;
                 let operands = operands.clone();
@@ -753,6 +767,124 @@ impl EvalCx<'_> {
                 Ok(bounds)
             }
         }
+    }
+
+    fn evaluate_edge_finish(
+        &mut self,
+        node_id: NodeId,
+        child: NodeId,
+        selection: &EdgeSelection,
+        policy: &RoundPolicy,
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+    ) -> Result<Aabb3, EvalError> {
+        let taken = core::mem::take(&mut self.bodies);
+        let errors_before = self.error_count();
+        // Finishing owns local geometry. Ancestor defaults are resolved only
+        // after cache lookup, and ancestor placement applies after rounding.
+        let child_result = self.walk(child, &Placement3::IDENTITY, true, None);
+        let collected = core::mem::replace(&mut self.bodies, taken);
+        let local_bounds = child_result?;
+        let mut bounds = Aabb3::EMPTY;
+        if !local_bounds.is_empty() {
+            for x in [local_bounds.min[0], local_bounds.max[0]] {
+                for y in [local_bounds.min[1], local_bounds.max[1]] {
+                    for z in [local_bounds.min[2], local_bounds.max[2]] {
+                        bounds.include(
+                            world
+                                .rows
+                                .map(|row| row[0] * x + row[1] * y + row[2] * z + row[3]),
+                        );
+                    }
+                }
+            }
+        }
+        if self.error_count() != errors_before || collected.len() != 1 {
+            return Ok(self.record_edge_finish_refusal(
+                node_id,
+                bounds,
+                "eval.edge_finish.incomplete_child",
+                String::from("edge finishing requires exactly one completely evaluated child body"),
+            ));
+        }
+        let key = self.cache_key(node_id, &Placement3::IDENTITY);
+        let cached = if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
+            let hit = cache.get(key);
+            if hit.is_some() {
+                self.report.counters.cache_hits += 1;
+            } else {
+                self.report.counters.cache_misses += 1;
+            }
+            hit
+        } else {
+            None
+        };
+        let body = if let Some(body) = cached {
+            body
+        } else {
+            let placed = &collected[0];
+            let (mut body, stats) = match finish_edges(&placed.body, selection, policy) {
+                Ok(result) => result,
+                Err(error) => {
+                    return Ok(self.record_edge_finish_refusal(
+                        node_id,
+                        bounds,
+                        error.code(),
+                        alloc::format!("{error}"),
+                    ));
+                }
+            };
+            if let Some(slot) = placed.material {
+                for face in body.mesh.faces() {
+                    body.face_materials.entry(face).or_insert(slot);
+                }
+            }
+            self.report.counters.edge_finish_passes += 1;
+            self.report.counters.edge_finish_faces +=
+                u64::from(stats.strip_faces) + u64::from(stats.patch_faces);
+            self.report.counters.tessellations += 1;
+            let body = Rc::new(body);
+            if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key) {
+                cache.insert(key, Rc::clone(&body));
+            }
+            body
+        };
+        // This contract also applies on cache hits; UV absence must not become
+        // invisible merely because geometry was already compiled.
+        self.push_diagnostic(
+            node_id,
+            Severity::Note,
+            "eval.edge_finish.uv_deferred",
+            String::from("UV generation is deferred for new and rewritten edge-finish faces"),
+        );
+        let body = if *world == Placement3::IDENTITY {
+            body
+        } else {
+            Rc::new(instantiate(&body, world).map_err(|error| EvalError {
+                node: node_id,
+                error,
+            })?)
+        };
+        let fidelity = self.body_fidelity(node_id, &[]);
+        Ok(self.finish_body(node_id, body, emit, fidelity, material))
+    }
+
+    fn record_edge_finish_refusal(
+        &mut self,
+        node: NodeId,
+        bounds: Aabb3,
+        code: &'static str,
+        message: String,
+    ) -> Aabb3 {
+        self.report.counters.edge_finish_refusals += 1;
+        self.report.counters.envelope_only += 1;
+        self.report.fidelity.push((node, Fidelity::EnvelopeOnly));
+        if !bounds.is_empty() {
+            self.report.envelopes.push((node, bounds));
+        }
+        self.push_diagnostic(node, Severity::Error, code, message);
+        bounds
     }
 
     fn evaluate_stretch(

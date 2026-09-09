@@ -30,6 +30,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
+use crate::edge_finish::{EdgeSelection, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, NodeId, NodeKind, Path3, Placement3, Plane3,
     PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId, SourceId,
@@ -182,6 +183,29 @@ pub type PlaneDto = [f64; 4];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeKindDto {
+    /// Convex edge finishing in child-local space.
+    EdgeFinish {
+        /// Child node index.
+        child: u32,
+        /// Region pairs; absent means all sharp edges.
+        boundaries: Option<Vec<[u32; 2]>>,
+        /// "fillet" or "chamfer".
+        kind: String,
+        /// Fillet radius or chamfer setback.
+        offset: f64,
+        /// Explicit band count, or chord-tolerance sampling.
+        segments: Option<u32>,
+        /// Maximum arc chord deviation.
+        chord_tolerance: f64,
+        /// Threshold used for whole-body sharp-edge selection.
+        sharpness_threshold: f32,
+        /// Optional region for new bands and patches.
+        region: Option<u32>,
+        /// Planarity and end-containment tolerance.
+        max_planar_deviation: f64,
+        /// Maximum chain turn in radians.
+        max_tangent_turn: f64,
+    },
     /// Extrusion along local +Z.
     Extrude {
         /// Profile index.
@@ -612,6 +636,31 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             import: import.0,
             placement: placement_dto(placement),
         },
+        NodeKind::EdgeFinish {
+            child,
+            selection,
+            policy,
+        } => {
+            let (kind, offset) = match policy.kind {
+                RoundKind::Fillet { radius } => ("fillet", radius),
+                RoundKind::Chamfer { setback } => ("chamfer", setback),
+            };
+            NodeKindDto::EdgeFinish {
+                child: child.0,
+                boundaries: match selection {
+                    EdgeSelection::SharpEdges => None,
+                    EdgeSelection::RegionBoundaries(pairs) => Some(pairs.clone()),
+                },
+                kind: String::from(kind),
+                offset,
+                segments: policy.segments,
+                chord_tolerance: policy.chord_tolerance,
+                sharpness_threshold: policy.sharpness_threshold,
+                region: policy.region,
+                max_planar_deviation: policy.max_planar_deviation,
+                max_tangent_turn: policy.max_tangent_turn,
+            }
+        }
         NodeKind::Stretch {
             child,
             plane,
@@ -798,6 +847,40 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
         NodeKindDto::MeshImport { import, placement } => NodeKind::MeshImport {
             import: crate::ir::ImportId(*import),
             placement: placement_value(*placement),
+        },
+        NodeKindDto::EdgeFinish {
+            child,
+            boundaries,
+            kind,
+            offset,
+            segments,
+            chord_tolerance,
+            sharpness_threshold,
+            region,
+            max_planar_deviation,
+            max_tangent_turn,
+        } => NodeKind::EdgeFinish {
+            child: NodeId(*child),
+            selection: boundaries
+                .clone()
+                .map_or(EdgeSelection::SharpEdges, EdgeSelection::RegionBoundaries),
+            policy: RoundPolicy {
+                kind: match kind.as_str() {
+                    "fillet" => RoundKind::Fillet { radius: *offset },
+                    "chamfer" => RoundKind::Chamfer { setback: *offset },
+                    _ => {
+                        return Err(InterchangeError::UnknownValue {
+                            field: "edge finish kind",
+                        });
+                    }
+                },
+                segments: *segments,
+                chord_tolerance: *chord_tolerance,
+                sharpness_threshold: *sharpness_threshold,
+                region: *region,
+                max_planar_deviation: *max_planar_deviation,
+                max_tangent_turn: *max_tangent_turn,
+            },
         },
         NodeKindDto::Stretch {
             child,
