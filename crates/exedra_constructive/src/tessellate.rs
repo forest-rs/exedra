@@ -582,13 +582,23 @@ fn rebuild_placed_primitive(
                 local_index
             })
             .collect();
+        // Corners use each source half-edge's destination, so the rebuilt
+        // outgoing edge is the next source half-edge.
         let seams: Vec<bool> = loop_edges
             .iter()
-            .map(|&half_edge| source.edge_seam(half_edge).unwrap_or(false))
+            .map(|&half_edge| {
+                source
+                    .edge_seam(source.next(half_edge).expect("live face loop"))
+                    .unwrap_or(false)
+            })
             .collect();
         let sharpness: Vec<f32> = loop_edges
             .iter()
-            .map(|&half_edge| source.edge_sharpness(half_edge).unwrap_or(0.0))
+            .map(|&half_edge| {
+                source
+                    .edge_sharpness(source.next(half_edge).expect("live face loop"))
+                    .unwrap_or(0.0)
+            })
             .collect();
         builder.add_face_with_attrs(
             &corners,
@@ -2876,6 +2886,189 @@ mod tests {
                 .any(|(x, feature)| *x == 8.75 && *feature == wall(2)),
             "generated x=8.75 must move to authored segment 2: {bottom:?}"
         );
+    }
+
+    fn primitive_test_placements() -> [Placement3; 3] {
+        [
+            Placement3::IDENTITY,
+            Placement3 {
+                rows: [
+                    [0.0, 0.0, 1.0, 2.0],
+                    [1.0, 0.0, 0.0, 3.0],
+                    [0.0, 1.0, 0.0, 4.0],
+                ],
+            },
+            Placement3 {
+                rows: [
+                    [-1.0, 0.0, 0.0, 2.0],
+                    [0.0, 1.0, 0.0, 3.0],
+                    [0.0, 0.0, 1.0, 4.0],
+                ],
+            },
+        ]
+    }
+
+    #[test]
+    fn primitive_cylinder_normals_are_radial_with_sharp_cap_rims() {
+        for radius in [0.045, 0.095] {
+            for segments in [24, 32] {
+                for placement in primitive_test_placements() {
+                    let body = tessellate_primitive(
+                        PrimitiveSpec::Cylinder {
+                            radius,
+                            height: 1.0,
+                            segments,
+                        },
+                        &placement,
+                        &EvalPolicy::default(),
+                    )
+                    .expect("roller cylinder");
+                    assert_clean(&body);
+                    let mesh = &body.mesh;
+                    let normals = mesh.derive_corner_normals(&exedra_mesh::NormalParams::default());
+                    // All placements are orthogonal: transpose takes positions
+                    // and normals back into cylinder-local coordinates.
+                    let inverse = |p: [f32; 3], point: bool| -> [f64; 3] {
+                        core::array::from_fn(|axis| {
+                            (0..3)
+                                .map(|row| {
+                                    let translation =
+                                        if point { placement.rows[row][3] } else { 0.0 };
+                                    placement.rows[row][axis] * (f64::from(p[row]) - translation)
+                                })
+                                .sum()
+                        })
+                    };
+                    for face in mesh.faces() {
+                        let Some(Feature::PrimitiveRegion { region }) =
+                            body.source_map.face_feature(face)
+                        else {
+                            panic!("missing primitive region");
+                        };
+                        for edge in mesh.face_loop(face) {
+                            let p = inverse(
+                                *mesh.vertex_position(mesh.to_vertex(edge).unwrap()).unwrap(),
+                                true,
+                            );
+                            let n = inverse(normals.get(edge).unwrap(), false);
+                            if region == exedra_primitives::REGION_SIDE.0 {
+                                let radial = libm::sqrt(p[0] * p[0] + p[1] * p[1]);
+                                let dot = (p[0] * n[0] + p[1] * n[1]) / radial;
+                                assert!(
+                                    dot > 0.99999 && n[2].abs() < 1.0e-5,
+                                    "side normal {n:?} at {p:?}, radial dot {dot}"
+                                );
+                            } else {
+                                let sign = if region == exedra_primitives::REGION_CAP_TOP.0 {
+                                    1.0
+                                } else {
+                                    -1.0
+                                };
+                                assert!(
+                                    n[2] * sign > 0.99999
+                                        && n[0].abs() < 1.0e-5
+                                        && n[1].abs() < 1.0e-5,
+                                    "cap normal {n:?}"
+                                );
+                            }
+                            let q = inverse(
+                                *mesh
+                                    .vertex_position(mesh.from_vertex(edge).unwrap())
+                                    .unwrap(),
+                                true,
+                            );
+                            let is_rim = (p[2] - q[2]).abs() < 1.0e-6;
+                            assert_eq!(
+                                mesh.edge_sharpness(edge),
+                                Some(if is_rim { 1.0 } else { 0.0 })
+                            );
+                        }
+                    }
+                    let (render, _) = mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
+                    let mut splits = BTreeMap::<_, Vec<_>>::new();
+                    for (position, normal) in render.positions.iter().zip(&render.normals) {
+                        splits
+                            .entry(position.map(f32::to_bits))
+                            .or_default()
+                            .push(inverse(*normal, false));
+                    }
+                    assert_eq!(splits.len(), 2 * segments as usize);
+                    for normals in splits.values() {
+                        assert!(
+                            normals.iter().any(|n| n[2].abs() < 1.0e-5),
+                            "missing rim side normal"
+                        );
+                        assert!(
+                            normals.iter().any(|n| n[2].abs() > 0.99999),
+                            "missing rim cap normal"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn primitive_rebuild_keeps_asymmetric_edge_attributes_on_their_endpoints() {
+        for placement in primitive_test_placements() {
+            let mut primitive = exedra_primitives::box_primitive(&exedra_primitives::BoxParams {
+                size: [2.0, 3.0, 4.0],
+                centered: false,
+                segments: [1, 1, 1],
+            });
+            let mesh = &mut primitive.mesh;
+            let edges: Vec<_> = mesh
+                .faces()
+                .flat_map(|face| mesh.face_loop(face))
+                .filter(|&edge| edge < mesh.twin(edge).unwrap())
+                .collect();
+            let mut edit = mesh.edit_with(exedra_mesh::ChangeSetBuilder::new());
+            for (index, &edge) in edges.iter().enumerate() {
+                // A distinct value per edge catches rotations that uniform
+                // sharpness on an ordinary box would conceal.
+                let sharpness = f32::from(u16::try_from(index + 1).unwrap()) / 16.0;
+                exedra_mesh::op::set_edge_sharpness(&mut edit, edge, sharpness).unwrap();
+                exedra_mesh::op::set_edge_seam(&mut edit, edge, index == 0).unwrap();
+            }
+            let _ = edit.finish();
+            let attributes = |mesh: &exedra_mesh::Mesh, placement: &Placement3| {
+                mesh.faces()
+                    .flat_map(|face| mesh.face_loop(face))
+                    .map(|edge| {
+                        let mut endpoints = [
+                            mesh.from_vertex(edge).unwrap(),
+                            mesh.to_vertex(edge).unwrap(),
+                        ]
+                        .map(|vertex| {
+                            narrow(apply_placement(
+                                placement,
+                                mesh.vertex_position(vertex).unwrap().map(f64::from),
+                            ))
+                            .map(f32::to_bits)
+                        });
+                        endpoints.sort_unstable();
+                        (
+                            endpoints,
+                            (
+                                mesh.edge_seam(edge).unwrap_or(false),
+                                mesh.edge_sharpness(edge).unwrap_or(0.0),
+                            ),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            };
+            let expected = attributes(mesh, &placement);
+            let body = rebuild_placed_primitive(
+                primitive,
+                PrimitiveCoordinates::Box {
+                    size: [2.0, 3.0, 4.0],
+                },
+                &placement,
+            )
+            .unwrap();
+            assert_clean(&body);
+            assert_eq!(attributes(&body.mesh, &Placement3::IDENTITY), expected);
+        }
     }
 
     #[test]
