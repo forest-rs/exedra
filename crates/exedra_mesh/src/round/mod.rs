@@ -47,13 +47,15 @@ use core::fmt;
 
 use crate::math::FloatExt;
 use crate::op::{
-    AddFaceError, add_face, add_vertex, delete_faces, delete_vertices, set_edge_seam,
-    set_edge_sharpness, set_face_region,
+    AddFaceError, add_face, add_vertex, delete_faces, delete_vertices, set_corner_normal_override,
+    set_edge_seam, set_edge_sharpness, set_face_region,
 };
 use crate::{DeletePolicy, FaceId, HalfEdgeId, Mesh, VertexId, attr};
 
 use exedra_math::{add, cross, dot, narrow, norm, normalize, promote, scale, sub};
-use geom::{Plane, arc_points, line_intersection, newell, solve3};
+use geom::{
+    Plane, arc_points, corner_quad, line_intersection, newell, solve3, spherical_triangle_error,
+};
 
 /// The rounding profile applied along each sharp chain.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -75,14 +77,18 @@ pub enum RoundKind {
 pub struct RoundPolicy {
     /// Fillet or chamfer profile.
     pub kind: RoundKind,
-    /// Explicit fillet band count; `None` derives one from
-    /// [`RoundPolicy::chord_tolerance`]. Chamfers always use one band.
+    /// Explicit fillet band count and corner radial-layer count; `None`
+    /// derives them from [`RoundPolicy::chord_tolerance`]. Explicit counts
+    /// must be in `1..=256`; derived counts exceeding 256 are refused.
+    /// Chamfers always use one band.
     pub segments: Option<u32>,
-    /// Maximum chord deviation used to derive fillet band counts.
+    /// Maximum chord deviation for fillet bands and spherical corner patches
+    /// when `segments` is `None`, before the final f32 coordinate rounding.
     pub chord_tolerance: f64,
     /// Edges with [`attr::EDGE_SHARPNESS`] at or above this value round.
     pub sharpness_threshold: f32,
-    /// [`attr::FACE_REGION`] assigned to new strip and patch faces.
+    /// [`attr::FACE_REGION`] assigned to new strip and patch faces, or the
+    /// first source face's region when absent.
     pub region: Option<u32>,
     /// Maximum absolute deviation for affected-face planarity and end-face
     /// containment checks.
@@ -92,6 +98,14 @@ pub struct RoundPolicy {
 }
 
 impl RoundPolicy {
+    /// Checks scalar parameters before an operation is planned.
+    ///
+    /// # Errors
+    /// Returns [`RoundError::InvalidPolicy`] for non-finite or out-of-range
+    /// values. Geometric clearance and required band counts are checked later.
+    pub fn validate(&self) -> Result<(), RoundError> {
+        validate_policy(self)
+    }
     /// A fillet policy with default selection and tolerance settings.
     #[must_use]
     pub fn fillet(radius: f64) -> Self {
@@ -134,6 +148,11 @@ impl RoundPolicy {
 /// failed pass leaves the mesh byte-identical.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RoundError {
+    /// An explicitly selected half-edge is not live in the input mesh.
+    InvalidEdge {
+        /// The rejected identifier.
+        edge: HalfEdgeId,
+    },
     /// The policy carries a non-positive or non-finite parameter.
     InvalidPolicy {
         /// Which parameter was rejected.
@@ -168,7 +187,8 @@ pub enum RoundError {
         /// Larger endpoint index.
         b: u32,
     },
-    /// The offset would invert or degenerate a rewritten face.
+    /// The offset would collapse a face, reverse a rewritten face, or make
+    /// the ends of a rounded edge cross.
     ClearanceExceeded {
         /// The offending face index.
         face: u32,
@@ -205,6 +225,7 @@ pub enum RoundError {
 impl fmt::Display for RoundError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidEdge { edge } => write!(f, "selected edge {edge:?} is not live"),
             Self::InvalidPolicy { detail } => write!(f, "invalid rounding policy: {detail}"),
             Self::BoundaryEdge { a, b } => {
                 write!(f, "sharp edge ({a}, {b}) borders the outside")
@@ -258,10 +279,54 @@ pub struct RoundStats {
     pub max_segments: u32,
 }
 
+/// Input faces responsible for one replacement or generated face.
+///
+/// Identifiers refer to the mesh before the operation. Retain any source
+/// attributes needed for remapping before calling [`round_edges`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RoundFaceSource {
+    /// A trimmed or extended input face.
+    Face(FaceId),
+    /// A band along the boundary of these two input faces, in ascending ID order.
+    Edge([FaceId; 2]),
+    /// A patch at a trihedral corner, with input faces in ascending ID order.
+    Corner([FaceId; 3]),
+}
+
+impl RoundFaceSource {
+    /// Input faces in deterministic ownership order.
+    #[must_use]
+    pub fn faces(&self) -> &[FaceId] {
+        match self {
+            Self::Face(face) => core::slice::from_ref(face),
+            Self::Edge(faces) => faces,
+            Self::Corner(faces) => faces,
+        }
+    }
+
+    /// Whether this face is a new band or corner patch.
+    #[must_use]
+    pub fn is_generated(self) -> bool {
+        !matches!(self, Self::Face(_))
+    }
+}
+
+/// Work and source-face mapping from an explicit rounding pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RoundResult {
+    /// Work performed by the pass.
+    pub stats: RoundStats,
+    /// New and replacement face IDs paired with their input ownership.
+    /// Unchanged faces retain their IDs and are absent from this list.
+    pub face_provenance: Vec<(FaceId, RoundFaceSource)>,
+}
+
 /// Rounds every edge whose sharpness meets the policy threshold.
 ///
 /// Returns work counters; a pass that selects no edges is a successful
-/// no-op with zeroed counters.
+/// no-op with zeroed counters. Attribute and normal behavior matches
+/// [`round_edges`].
 ///
 /// # Errors
 ///
@@ -269,8 +334,45 @@ pub struct RoundStats {
 /// the mesh left byte-identical; see [`RoundError`].
 pub fn round_sharp_edges(mesh: &mut Mesh, policy: &RoundPolicy) -> Result<RoundStats, RoundError> {
     validate_policy(policy)?;
-    let Some(plan) = plan(mesh, policy)? else {
+    let Some(plan) = plan(mesh, policy, None)? else {
         return Ok(RoundStats::default());
+    };
+    apply(mesh, plan).map(|result| result.stats)
+}
+
+/// Rounds the explicit input edges, independently of their sharpness values.
+///
+/// Twins and duplicate IDs denote the same target. Targets are processed in
+/// canonical mesh order, so input order does not affect the result. Empty
+/// selection is a no-op. Untargeted sharpness and seam attributes survive.
+///
+/// Fillets author radial corner normals; chamfers and trimmed planar faces
+/// retain flat boundaries. Use [`crate::NormalsSource::CustomOrDerived`] for
+/// those normals. Valid normal overrides at unchanged corners of rewritten
+/// faces survive. UVs on new and rewritten faces are unset; callers must map
+/// those faces explicitly. Unchanged faces retain all their attributes.
+/// New bands and patches use `policy.region`, or their first source face's
+/// region when it is absent.
+///
+/// # Errors
+///
+/// A stale edge or any configuration outside the documented rounding envelope
+/// fails before commit. The input mesh remains byte-identical on every error.
+pub fn round_edges(
+    mesh: &mut Mesh,
+    edges: &[HalfEdgeId],
+    policy: &RoundPolicy,
+) -> Result<RoundResult, RoundError> {
+    validate_policy(policy)?;
+    let mut selected = BTreeSet::new();
+    for &edge in edges {
+        selected.insert(
+            mesh.canonical_edge(edge)
+                .ok_or(RoundError::InvalidEdge { edge })?,
+        );
+    }
+    let Some(plan) = plan(mesh, policy, Some(&selected))? else {
+        return Ok(RoundResult::default());
     };
     apply(mesh, plan)
 }
@@ -297,9 +399,14 @@ fn validate_policy(policy: &RoundPolicy) -> Result<(), RoundError> {
             detail: "max_tangent_turn must be positive and finite",
         });
     }
-    if policy.segments == Some(0) {
+    if policy.segments.is_some_and(|n| !(1..=256).contains(&n)) {
         return Err(RoundError::InvalidPolicy {
-            detail: "segments must be at least one",
+            detail: "segments must be in 1..=256",
+        });
+    }
+    if !policy.sharpness_threshold.is_finite() {
+        return Err(RoundError::InvalidPolicy {
+            detail: "sharpness_threshold must be finite",
         });
     }
     Ok(())
@@ -381,6 +488,8 @@ enum VertexKind {
 struct NewFace {
     entries: Vec<Tok>,
     region: Option<u32>,
+    source: RoundFaceSource,
+    normals: Vec<[f32; 3]>,
 }
 
 #[derive(Clone, Debug)]
@@ -411,6 +520,7 @@ struct Planner<'a> {
     half_edge_of: BTreeMap<(VertexId, VertexId), HalfEdgeId>,
     planes: BTreeMap<FaceId, Plane>,
     points: Vec<[f64; 3]>,
+    point_normals: Vec<Option<[f64; 3]>>,
     subst: BTreeMap<(FaceId, VertexId), Subst>,
     faces: Vec<NewFace>,
     stats: RoundStats,
@@ -423,7 +533,11 @@ struct Planner<'a> {
 /// plane instead.
 const SLIVER_NEWELL_FLOOR: f64 = 1e-4;
 
-fn plan(mesh: &Mesh, policy: &RoundPolicy) -> Result<Option<Plan>, RoundError> {
+fn plan(
+    mesh: &Mesh,
+    policy: &RoundPolicy,
+    explicit: Option<&BTreeSet<HalfEdgeId>>,
+) -> Result<Option<Plan>, RoundError> {
     // Directed half-edge lookup over interior faces.
     let mut half_edge_of = BTreeMap::new();
     for face in mesh.faces() {
@@ -448,7 +562,9 @@ fn plan(mesh: &Mesh, policy: &RoundPolicy) -> Result<Option<Plan>, RoundError> {
                 continue;
             }
             let sharpness = mesh.edge_sharpness(canonical).unwrap_or(0.0);
-            if sharpness < policy.sharpness_threshold {
+            if !explicit.map_or(sharpness >= policy.sharpness_threshold, |targets| {
+                targets.contains(&canonical)
+            }) {
                 continue;
             }
             let (Some(a), Some(b)) = (mesh.from_vertex(canonical), mesh.to_vertex(canonical))
@@ -484,6 +600,7 @@ fn plan(mesh: &Mesh, policy: &RoundPolicy) -> Result<Option<Plan>, RoundError> {
         half_edge_of,
         planes: BTreeMap::new(),
         points: Vec::new(),
+        point_normals: Vec::new(),
         subst: BTreeMap::new(),
         faces: Vec::new(),
         stats: RoundStats::default(),
@@ -684,16 +801,37 @@ impl Planner<'_> {
             for index in 0..chain.edges.len() {
                 let section_a = &chain.sections[index];
                 let section_b = &chain.sections[(index + 1) % chain.vertex_count()];
+                let direction = sub(
+                    self.position(chain.verts[(index + 1) % chain.vertex_count()]),
+                    self.position(chain.verts[index]),
+                );
+                // Opposite corner trims can cross while every face retains
+                // its winding (a cube inset past half its width does this).
+                // Every band rail must still advance along its source edge.
+                for (&a, &b) in section_a.iter().zip(section_b) {
+                    let advance = sub(
+                        promote(narrow(self.points[b as usize])),
+                        promote(narrow(self.points[a as usize])),
+                    );
+                    if dot(direction, advance) <= 0.0 {
+                        return Err(RoundError::ClearanceExceeded {
+                            face: chain.edges[index].left.index(),
+                        });
+                    }
+                }
                 for band in 0..chain.segments as usize {
-                    self.faces.push(NewFace {
-                        entries: alloc::vec![
+                    let edge = chain.edges[index];
+                    let mut sources = [edge.left, edge.right];
+                    sources.sort_unstable();
+                    self.emit_face(
+                        alloc::vec![
                             Tok::New(section_b[band]),
                             Tok::New(section_a[band]),
                             Tok::New(section_a[band + 1]),
                             Tok::New(section_b[band + 1]),
                         ],
-                        region: self.policy.region,
-                    });
+                        RoundFaceSource::Edge(sources),
+                    )?;
                     self.stats.strip_faces += 1;
                 }
             }
@@ -987,18 +1125,24 @@ impl Planner<'_> {
             RoundKind::Chamfer { .. } => Ok(1),
             RoundKind::Fillet { radius } => {
                 if let Some(explicit) = self.policy.segments {
-                    return Ok(explicit.clamp(1, 256));
+                    return Ok(explicit);
                 }
                 let ratio = (1.0 - self.policy.chord_tolerance / radius).clamp(-1.0, 1.0);
-                let theta = (2.0 * ratio.acos_ext()).max(1e-3);
+                let theta = 2.0 * ratio.acos_ext();
                 let max_sweep = edges.iter().fold(0.0_f64, |acc, e| acc.max(e.sweep));
+                let required = (max_sweep / theta).ceil_ext();
+                if !required.is_finite() || required > 256.0 {
+                    return Err(RoundError::InvalidPolicy {
+                        detail: "chord tolerance needs more than 256 bands",
+                    });
+                }
                 #[expect(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
                     reason = "ceiling of a small positive ratio"
                 )]
-                let bands = (max_sweep / theta).ceil_ext() as u32;
-                Ok(bands.clamp(1, 256))
+                let bands = required as u32;
+                Ok(bands.max(1))
             }
         }
     }
@@ -1006,7 +1150,93 @@ impl Planner<'_> {
     fn push_point(&mut self, point: [f64; 3]) -> u32 {
         let id = u32::try_from(self.points.len()).expect("point count fits u32");
         self.points.push(point);
+        self.point_normals.push(None);
         id
+    }
+
+    fn push_round_point(&mut self, point: [f64; 3], center: Option<[f64; 3]>) -> u32 {
+        let id = self.push_point(point);
+        self.point_normals[id as usize] = center.and_then(|c| normalize(sub(point, c)));
+        id
+    }
+
+    fn emit_face(&mut self, entries: Vec<Tok>, source: RoundFaceSource) -> Result<(), RoundError> {
+        let region = if source.is_generated() {
+            self.policy.region
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.mesh
+                .attrs()
+                .dense(attr::FACE_REGION)
+                .and_then(|layer| layer.get(source.faces()[0].as_id()).copied())
+        });
+        let normals = if let RoundFaceSource::Face(face) = source {
+            let normal = narrow(self.plane(face)?.normal);
+            entries
+                .iter()
+                .map(|entry| {
+                    if let Tok::Old(vertex) = entry {
+                        self.mesh
+                            .face_loop(face)
+                            .find(|&edge| self.mesh.to_vertex(edge) == Some(*vertex))
+                            .and_then(|edge| {
+                                self.mesh
+                                    .attrs()
+                                    .sparse(attr::CORNER_NORMAL_OVERRIDE)
+                                    .and_then(|layer| layer.get(edge.as_id()).copied())
+                            })
+                            .unwrap_or(normal)
+                    } else {
+                        normal
+                    }
+                })
+                .collect()
+        } else {
+            // Check the emitted precision as well as the construction
+            // geometry: a positive radius can still collapse a band at f32.
+            let points: Vec<_> = entries
+                .iter()
+                .map(|entry| match entry {
+                    Tok::Old(v) => self.position(*v),
+                    Tok::New(p) => promote(narrow(self.points[*p as usize])),
+                })
+                .collect();
+            let clearance = RoundError::ClearanceExceeded {
+                face: source.faces()[0].index(),
+            };
+            if points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .any(|(a, b)| a == b)
+            {
+                return Err(clearance);
+            }
+            let normal = normalize(newell(&points)).ok_or(clearance)?;
+            if matches!(self.policy.kind, RoundKind::Fillet { .. }) {
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let Tok::New(point) = entry else {
+                            unreachable!("generated faces use generated points")
+                        };
+                        self.point_normals[*point as usize]
+                            .map(narrow)
+                            .ok_or(clearance)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                alloc::vec![narrow(normal); entries.len()]
+            }
+        };
+        self.faces.push(NewFace {
+            entries,
+            region,
+            source,
+            normals,
+        });
+        Ok(())
     }
 
     /// Builds interior and open-end cross-sections for one chain.
@@ -1070,22 +1300,24 @@ impl Planner<'_> {
             let anchor = self.position(vertex);
             let left_point = add(anchor, scale(left_dir, offset));
             let right_point = add(anchor, scale(right_dir, offset));
-            let section_points = match self.policy.kind {
-                RoundKind::Chamfer { .. } => alloc::vec![left_point, right_point],
-                RoundKind::Fillet { radius } => {
-                    let center = scale(
-                        add(
-                            sub(left_point, scale(left_normal, radius)),
-                            sub(right_point, scale(right_normal, radius)),
-                        ),
-                        0.5,
-                    );
-                    arc_points(center, left_point, right_point, chain.segments).ok_or(degenerate)?
-                }
+            let center = match self.policy.kind {
+                RoundKind::Chamfer { .. } => None,
+                RoundKind::Fillet { radius } => Some(scale(
+                    add(
+                        sub(left_point, scale(left_normal, radius)),
+                        sub(right_point, scale(right_normal, radius)),
+                    ),
+                    0.5,
+                )),
+            };
+            let section_points = if let Some(center) = center {
+                arc_points(center, left_point, right_point, chain.segments).ok_or(degenerate)?
+            } else {
+                alloc::vec![left_point, right_point]
             };
             sections[index] = section_points
                 .into_iter()
-                .map(|p| self.push_point(p))
+                .map(|p| self.push_round_point(p, center))
                 .collect();
             frames[index] = Some((left_normal, right_normal));
         }
@@ -1147,7 +1379,7 @@ impl Planner<'_> {
                     )?;
                     for (face, normal) in faces.iter().zip(normals) {
                         let point = add(center, scale(normal, radius));
-                        let id = self.push_point(point);
+                        let id = self.push_round_point(point, Some(center));
                         q.insert(*face, id);
                     }
                     Some(center)
@@ -1189,7 +1421,7 @@ impl Planner<'_> {
                         let mut ids = Vec::with_capacity(arc.len());
                         ids.push(left_q);
                         for point in &arc[1..arc.len() - 1] {
-                            ids.push(self.push_point(*point));
+                            ids.push(self.push_round_point(*point, Some(center)));
                         }
                         ids.push(right_q);
                         ids
@@ -1348,13 +1580,14 @@ impl Planner<'_> {
             .iter()
             .map(|tok| match tok {
                 Tok::Old(v) => self.position(*v),
-                Tok::New(p) => self.points[*p as usize],
+                Tok::New(p) => promote(narrow(self.points[*p as usize])),
             })
             .collect();
         let old_normal = newell(&old_points);
         let new_normal = newell(&new_points);
-        if let (Some(old_unit), Some(new_unit)) = (normalize(old_normal), normalize(new_normal))
-            && dot(old_unit, new_unit) < -0.5
+        if normalize(old_normal)
+            .zip(normalize(new_normal))
+            .is_none_or(|(old_unit, new_unit)| dot(old_unit, new_unit) <= 0.0)
         {
             return Err(RoundError::ClearanceExceeded { face: face.index() });
         }
@@ -1391,13 +1624,7 @@ impl Planner<'_> {
             }
         }
 
-        let region = self
-            .mesh
-            .attrs()
-            .dense(attr::FACE_REGION)
-            .and_then(|layer| layer.get(face.as_id()).copied());
-        self.faces.push(NewFace { entries, region });
-        Ok(())
+        self.emit_face(entries, RoundFaceSource::Face(face))
     }
 
     /// Emits corner patches by walking each corner's boundary ring.
@@ -1407,6 +1634,16 @@ impl Planner<'_> {
         corners: &[CornerPlan],
     ) -> Result<(), RoundError> {
         for (vertex, center, ends) in corners {
+            let mut faces: Vec<_> = ends
+                .iter()
+                .flat_map(|&(index, at_end)| {
+                    let edge = chains[index].end_edge(at_end);
+                    [edge.left, edge.right]
+                })
+                .collect();
+            faces.sort_unstable();
+            faces.dedup();
+            let source = RoundFaceSource::Corner(faces.try_into().expect("trihedral corner"));
             // Directed ring edges are the twins of the adjoining strip
             // edges: strips traverse an end section descending and a start
             // section ascending, so the ring runs the other way.
@@ -1458,37 +1695,109 @@ impl Planner<'_> {
                 });
             }
 
-            if ring.len() == 3 {
-                self.faces.push(NewFace {
-                    entries: ring.iter().map(|&p| Tok::New(p)).collect(),
-                    region: self.policy.region,
-                });
-                self.stats.patch_faces += 1;
+            if let (RoundKind::Fillet { radius }, Some(center)) = (self.policy.kind, center) {
+                self.emit_fillet_corner(&ring, *center, radius, source)?;
                 continue;
             }
 
-            // Fan from the ring centroid; fillet corners push it onto the
-            // corner sphere for a rounder patch.
-            let inv = 1.0 / ring.len() as f64;
-            let mut centroid = [0.0_f64; 3];
-            for &point in &ring {
-                centroid = add(centroid, scale(self.points[point as usize], inv));
+            self.emit_face(ring.iter().map(|&p| Tok::New(p)).collect(), source)?;
+            self.stats.patch_faces += 1;
+        }
+        Ok(())
+    }
+
+    /// Fill a spherical corner without changing the strip's boundary samples.
+    /// Increasing only that boundary's density leaves the old center fan's
+    /// long radial edges unchanged, so its surface error never converges.
+    fn emit_fillet_corner(
+        &mut self,
+        ring: &[u32],
+        center: [f64; 3],
+        radius: f64,
+        source: RoundFaceSource,
+    ) -> Result<(), RoundError> {
+        let clearance = RoundError::ClearanceExceeded {
+            face: source.faces()[0].index(),
+        };
+        let boundary: Vec<_> = ring.iter().map(|&p| self.points[p as usize]).collect();
+        let mean = scale(
+            boundary
+                .iter()
+                .fold([0.0; 3], |sum, &p| add(sum, sub(p, center))),
+            1.0 / ring.len() as f64,
+        );
+        let apex = add(center, scale(normalize(mean).ok_or(clearance)?, radius));
+        // Explicit sampling controls both the strips and interior layers.
+        // Otherwise refine radial layers until every triangle bounds
+        // the sphere deviation; edge and vertex samples alone are insufficient.
+        let mut layers = self.policy.segments.unwrap_or(1);
+        let rays = loop {
+            let rays: Vec<_> = boundary
+                .iter()
+                .map(|&point| arc_points(center, apex, point, layers).ok_or(clearance))
+                .collect::<Result<_, _>>()?;
+            if self.policy.segments.is_some() {
+                break rays;
             }
-            if let (RoundKind::Fillet { radius }, Some(center)) = (self.policy.kind, center)
-                && let Some(direction) = normalize(sub(centroid, *center))
-            {
-                centroid = add(*center, scale(direction, radius));
+            let within_tolerance = |triangle: [[f64; 3]; 3]| {
+                spherical_triangle_error(triangle.map(|p| sub(p, center)), radius)
+                    .is_some_and(|error| error <= self.policy.chord_tolerance)
+            };
+            let mut acceptable = true;
+            for i in 0..ring.len() {
+                let next = (i + 1) % ring.len();
+                acceptable &= within_tolerance([apex, rays[i][1], rays[next][1]]);
+                for layer in 1..layers as usize {
+                    let quad = [
+                        rays[i][layer],
+                        rays[i][layer + 1],
+                        rays[next][layer + 1],
+                        rays[next][layer],
+                    ];
+                    acceptable &= corner_quad(quad)
+                        .iter()
+                        .all(|indices| within_tolerance(indices.map(|i| quad[i])));
+                }
             }
-            let apex = self.push_point(centroid);
-            for index in 0..ring.len() {
-                let from = ring[index];
-                let to = ring[(index + 1) % ring.len()];
-                self.faces.push(NewFace {
-                    entries: alloc::vec![Tok::New(apex), Tok::New(from), Tok::New(to)],
-                    region: self.policy.region,
+            if acceptable {
+                break rays;
+            }
+            if layers == 256 {
+                return Err(RoundError::InvalidPolicy {
+                    detail: "corner tolerance needs more than 256 radial layers",
                 });
-                self.stats.patch_faces += 1;
             }
+            layers *= 2;
+        };
+        let apex = self.push_round_point(apex, Some(center));
+        // Grow inward from the existing strip boundary so every insertion
+        // shares an edge with the mesh, never just an isolated boundary vertex.
+        let mut outer = ring.to_vec();
+        for layer in (1..=layers as usize).rev() {
+            let inner = if layer == 1 {
+                alloc::vec![apex; ring.len()]
+            } else {
+                rays.iter()
+                    .map(|ray| self.push_round_point(ray[layer - 1], Some(center)))
+                    .collect()
+            };
+            for i in 0..ring.len() {
+                let next = (i + 1) % ring.len();
+                if layer == 1 {
+                    self.emit_face(
+                        alloc::vec![Tok::New(apex), Tok::New(outer[i]), Tok::New(outer[next])],
+                        source,
+                    )?;
+                    self.stats.patch_faces += 1;
+                } else {
+                    let quad = [inner[i], outer[i], outer[next], inner[next]];
+                    for triangle in corner_quad(quad.map(|p| self.points[p as usize])) {
+                        self.emit_face(triangle.map(|i| Tok::New(quad[i])).to_vec(), source)?;
+                        self.stats.patch_faces += 1;
+                    }
+                }
+            }
+            outer = inner;
         }
         Ok(())
     }
@@ -1584,14 +1893,14 @@ fn vertex_side_points(
     None
 }
 
-fn apply(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
+fn apply(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> {
     let mut staged = mesh.clone();
     let stats = apply_staged(&mut staged, plan)?;
     *mesh = staged;
     Ok(stats)
 }
 
-fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
+fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> {
     let mut session = mesh.edit();
     if delete_faces(&mut session, &plan.affected, DeletePolicy::KeepIsolated).is_err() {
         return Err(RoundError::Internal {
@@ -1634,6 +1943,16 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
         if let Some(region) = planned.region {
             let _ = set_face_region(&mut session, face, region);
         }
+        let normals: BTreeMap<_, _> = loop_vertices
+            .iter()
+            .copied()
+            .zip(planned.normals.iter().copied())
+            .collect();
+        let corners: Vec<_> = session.mesh().face_loop(face).collect();
+        for corner in corners {
+            let vertex = session.mesh().to_vertex(corner).expect("live new corner");
+            let _ = set_corner_normal_override(&mut session, corner, Some(normals[&vertex]));
+        }
         added.push(face);
     }
 
@@ -1669,6 +1988,41 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
         }
     }
 
+    // Tangent fillet joins remain smooth. Chamfer boundaries and fillet end
+    // rims stay hard, including edges introduced by a transverse-face splice.
+    let generated: BTreeSet<_> = added
+        .iter()
+        .zip(&plan.faces)
+        .filter_map(|(&face, planned)| planned.source.is_generated().then_some(face))
+        .collect();
+    for &edge in new_half_edges.values() {
+        let twin = session.mesh().twin(edge).expect("new edge has a twin");
+        if !session
+            .mesh()
+            .face(edge)
+            .is_some_and(|f| generated.contains(&f))
+        {
+            continue;
+        }
+        let corners = [
+            edge,
+            session.mesh().prev(edge).expect("live loop"),
+            twin,
+            session.mesh().prev(twin).expect("live twin loop"),
+        ];
+        let normals = corners.map(|corner| session.corner_normal_override(corner));
+        let continuous = match normals {
+            [Some(b), Some(a), Some(other_a), Some(other_b)] => {
+                dot(promote(a), promote(other_a)) > 0.99999
+                    && dot(promote(b), promote(other_b)) > 0.99999
+            }
+            _ => false,
+        };
+        if !continuous {
+            let _ = set_edge_sharpness(&mut session, edge, 1.0);
+        }
+    }
+
     if delete_vertices(&mut session, &plan.consumed).is_err() {
         #[expect(unused_must_use, reason = "discard sink output")]
         {
@@ -1682,5 +2036,11 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundStats, RoundError> {
     {
         session.finish();
     }
-    Ok(plan.stats)
+    Ok(RoundResult {
+        stats: plan.stats,
+        face_provenance: added
+            .into_iter()
+            .zip(plan.faces.into_iter().map(|f| f.source))
+            .collect(),
+    })
 }

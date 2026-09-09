@@ -19,6 +19,39 @@ Exedra Mesh does not own scene graphs, materials, units, UI workflows, or exact
 CAD surfaces. It also does not compact IDs implicitly; call `Mesh::compact`
 when a tombstone-free copy and `Remap` are needed.
 
+## Convex edge finishing
+
+`round_sharp_edges` selects authored sharp edges. `round_edges` accepts an
+explicit transient edge set and returns `RoundResult`: work counters and the
+input faces responsible for each replacement, strip, or corner patch. Twins
+and duplicate targets are canonicalized; failures leave the input mesh
+byte-identical. Stable construction targets belong in the caller, not in mesh IDs.
+
+Both operations author radial fillet normals and retain hard chamfer/end
+boundaries. Extract with `NormalsSource::CustomOrDerived`. Unchanged faces keep
+all attributes; rewritten faces preserve their regions and valid authored
+normals at surviving corners. New faces use the requested region or the first
+source face's region. UVs on new and rewritten faces are unset and require
+caller mapping. Source faces are listed in ascending input-ID order.
+
+Explicit segments must be in `1..=256` and control both strip bands and corner
+radial layers. Otherwise chord tolerance controls the arc and triangle surfaces,
+including corner interiors. A tolerance requiring more than 256 bands or layers
+is an error. Finer spherical patches cost more triangles; use an explicit count
+or a coarser tolerance when that tradeoff suits the caller.
+
+Radius and clearance decisions use the stored mesh coordinates. Faces that
+collapse at final f32 precision, rewritten faces that reverse orientation, and
+edge trims that cross are refused. Convex trihedral corners
+and gently turning chains are supported; concave edges and unsupported
+junctions remain typed failures.
+
+Migration: existing `round_sharp_edges` calls retain their return type. Use
+`round_edges` when selection or provenance is needed, and choose
+`CustomOrDerived` to consume the new normal overrides. Callers that relied on
+silently clamped band counts must choose a supported count or tolerance.
+Exhaustive `RoundError` matches must handle the new `InvalidEdge` variant.
+
 ## Core Concepts
 
 - **Half-edge topology**: every edge has two directed half-edges. Boundary
