@@ -7,7 +7,10 @@ use super::*;
 use crate::boolean::{
     BooleanDiagnostics, BooleanOp, BooleanScratch, SeamCleanupPolicy, boolean_mesh, cleanup_seams,
 };
-use crate::{FaceTriangulation, MeshBuilder, op};
+use crate::{
+    ChangeSetBuilder, ExtractParams, FaceTriangulation, MeshBuilder, NormalParams, NormalsSource,
+    op,
+};
 
 fn box_mesh(length: f64, width: f64, height: f64) -> Mesh {
     #[expect(clippy::cast_possible_truncation, reason = "test geometry narrowing")]
@@ -180,6 +183,271 @@ fn rounded_box_volume(l: f64, w: f64, h: f64, r: f64) -> f64 {
 }
 
 #[test]
+fn construction_rail_fillet_samples_match_radius_and_tangent_normals() {
+    let size = [0.09, 0.2, 2.0];
+    let radius = 0.006;
+    let mut mesh = box_mesh(size[0], size[1], size[2]);
+    tag_sharp(&mut mesh, |_, _| true);
+    let mut policy = RoundPolicy::fillet(radius);
+    policy.segments = Some(8);
+    round_sharp_edges(&mut mesh, &policy).expect("construction rail fillet");
+    assert_clean(&mesh);
+    let (render, _) = mesh.to_trimesh(&ExtractParams {
+        normals: NormalsSource::CustomOrDerived,
+        ..ExtractParams::default()
+    });
+    let mut curved = 0;
+    for (point, normal) in render.positions.iter().zip(&render.normals) {
+        let point = point.map(f64::from);
+        let center = core::array::from_fn(|axis| point[axis].clamp(radius, size[axis] - radius));
+        let ray = sub(point, center);
+        let distance = norm(ray);
+        assert!(
+            (distance - radius).abs() < 2e-7,
+            "radius at {point:?}: {distance}"
+        );
+        let expected = scale(ray, 1.0 / distance);
+        let actual = normal.map(f64::from);
+        assert!(
+            dot(expected, actual) > 0.99999,
+            "normal at {point:?}: {actual:?}, expected {expected:?}"
+        );
+        if expected.iter().filter(|v| v.abs() > 1e-5).count() > 1 {
+            curved += 1;
+        }
+    }
+    assert!(curved > 100, "sample the strips and spherical corners");
+}
+
+#[test]
+fn construction_rail_clearance_is_refused_atomically_at_the_limit() {
+    let limit = f64::from(0.09_f32) * 0.5;
+    for radius in [limit - 0.0001, limit, limit + 0.0001] {
+        let mut mesh = box_mesh(0.09, 0.2, 2.0);
+        tag_sharp(&mut mesh, |_, _| true);
+        let before = exact_snapshot(&mesh);
+        let result = round_sharp_edges(&mut mesh, &RoundPolicy::fillet(radius));
+        if radius < limit {
+            result.expect("radius below half the rail width");
+            assert_clean(&mesh);
+        } else {
+            assert!(
+                matches!(result, Err(RoundError::ClearanceExceeded { .. })),
+                "{radius}: {result:?}"
+            );
+            assert_eq!(exact_snapshot(&mesh), before);
+        }
+    }
+}
+
+#[test]
+fn oversized_cube_finish_is_refused_even_when_face_winding_stays_positive() {
+    for offset in [0.49, 0.5, 0.6, 2.0] {
+        for policy in [RoundPolicy::fillet(offset), RoundPolicy::chamfer(offset)] {
+            let mut mesh = box_mesh(1.0, 1.0, 1.0);
+            tag_sharp(&mut mesh, |_, _| true);
+            let before = exact_snapshot(&mesh);
+            let result = round_sharp_edges(&mut mesh, &policy);
+            if offset < 0.5 {
+                result.expect("offset just below clearance");
+                assert_clean(&mesh);
+            } else {
+                assert!(
+                    matches!(result, Err(RoundError::ClearanceExceeded { .. })),
+                    "{policy:?}: {result:?}"
+                );
+                assert_eq!(exact_snapshot(&mesh), before);
+            }
+        }
+    }
+}
+
+#[test]
+fn corner_patch_surfaces_follow_requested_chord_tolerance() {
+    let radius = 0.006;
+    for tolerance in [0.0002, 0.00002] {
+        let mut policy = RoundPolicy::fillet(radius);
+        policy.chord_tolerance = tolerance;
+        let mut mesh = box_mesh(0.09, 0.2, 2.0);
+        tag_sharp(&mut mesh, |_, _| true);
+        let edges: Vec<_> = mesh.faces().flat_map(|f| mesh.face_loop(f)).collect();
+        let result = round_edges(&mut mesh, &edges, &policy).unwrap();
+        assert_clean(&mesh);
+        assert_eq!(euler_characteristic(&mesh), 2);
+        let mut worst = 0.0_f64;
+        let mut samples = 0;
+        for (face, source) in result.face_provenance {
+            if !matches!(source, RoundFaceSource::Corner(_)) {
+                continue;
+            }
+            for triangle in mesh.face_triangles(face, FaceTriangulation::Fan) {
+                let p = triangle
+                    .map(|e| promote(*mesh.vertex_position(mesh.to_vertex(e).unwrap()).unwrap()));
+                // An independent barycentric grid samples the triangle interior
+                // and its edges, including where vertex-only radius checks miss.
+                for i in 0..=8 {
+                    for j in 0..=8 - i {
+                        let u = f64::from(i) / 8.0;
+                        let v = f64::from(j) / 8.0;
+                        let point = add(
+                            add(scale(p[0], u), scale(p[1], v)),
+                            scale(p[2], 1.0 - u - v),
+                        );
+                        let center = [
+                            point[0].clamp(radius, 0.09 - radius),
+                            point[1].clamp(radius, 0.2 - radius),
+                            point[2].clamp(radius, 2.0 - radius),
+                        ];
+                        worst = worst.max((radius - norm(sub(point, center))).abs());
+                        samples += 1;
+                    }
+                }
+            }
+        }
+        assert!(samples > 100);
+        assert!(
+            worst <= tolerance + 2e-7,
+            "corner deviation {worst}, requested {tolerance}"
+        );
+    }
+}
+
+#[test]
+fn explicit_foot_chamfer_preserves_untargeted_edges_and_reports_face_sources() {
+    let mut original = box_mesh(0.09, 0.2, 0.1);
+    tag_sharp(&mut original, |_, _| true);
+    let target = original
+        .faces()
+        .flat_map(|f| original.face_loop(f))
+        .find(|&e| is_edge_between(&original, e, [0.09, 0.2, 0.0], [0.09, 0.2, 0.1]))
+        .unwrap();
+    let twin = original.twin(target).unwrap();
+    let source_regions: BTreeMap<_, _> = original.faces().map(|f| (f, f.index() + 10)).collect();
+    let normals = original.derive_corner_normals(&NormalParams::default());
+    let corners: Vec<_> = original
+        .faces()
+        .flat_map(|f| original.face_loop(f))
+        .collect();
+    let mut edit = original.edit_with(ChangeSetBuilder::new());
+    for (&face, &region) in &source_regions {
+        set_face_region(&mut edit, face, region).unwrap();
+    }
+    for corner in corners {
+        op::set_corner_uv(&mut edit, corner, [0.25, 0.75]).unwrap();
+        set_corner_normal_override(&mut edit, corner, normals.get(corner)).unwrap();
+    }
+    let _ = edit.finish();
+    let mut mesh = original.clone();
+    let policy = RoundPolicy::chamfer(0.005);
+    let result = round_edges(&mut mesh, &[target, twin, target], &policy).unwrap();
+    assert_eq!(
+        result.stats.chains, 1,
+        "explicit selection must not round the other sharp edges"
+    );
+    assert_eq!(result.stats.strip_faces, 1);
+    assert_clean(&mesh);
+    let sources: BTreeMap<_, _> = result.face_provenance.iter().copied().collect();
+    for face in mesh.faces() {
+        let region = mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .unwrap()
+            .get(face.as_id())
+            .copied();
+        if let Some(source) = sources.get(&face) {
+            assert_eq!(region, Some(source_regions[&source.faces()[0]]));
+            for corner in mesh.face_loop(face) {
+                assert!(
+                    mesh.attrs()
+                        .sparse(attr::CORNER_UV)
+                        .and_then(|uv| uv.get(corner.as_id()))
+                        .is_none()
+                );
+            }
+        } else {
+            assert_eq!(region, Some(source_regions[&face]));
+            let old: Vec<_> = original
+                .face_loop(face)
+                .map(|e| (original.to_vertex(e), original.edge_sharpness(e)))
+                .collect();
+            let new: Vec<_> = mesh
+                .face_loop(face)
+                .map(|e| (mesh.to_vertex(e), mesh.edge_sharpness(e)))
+                .collect();
+            assert_eq!(old, new);
+            for corner in mesh.face_loop(face) {
+                assert_eq!(
+                    mesh.attrs()
+                        .sparse(attr::CORNER_UV)
+                        .unwrap()
+                        .get(corner.as_id()),
+                    Some(&[0.25, 0.75])
+                );
+            }
+        }
+    }
+    let band = sources
+        .iter()
+        .find_map(|(&face, source)| source.is_generated().then_some(face))
+        .unwrap();
+    for edge in mesh.face_loop(band) {
+        assert_eq!(
+            mesh.edge_sharpness(edge),
+            Some(1.0),
+            "flat chamfer must have hard boundaries"
+        );
+    }
+    let mut repeated = original;
+    assert_eq!(
+        round_edges(&mut repeated, &[twin], &policy).unwrap(),
+        result
+    );
+    assert_eq!(exact_snapshot(&mesh), exact_snapshot(&repeated));
+    let before = exact_snapshot(&mesh);
+    assert_eq!(
+        round_edges(&mut mesh, &[target], &policy),
+        Err(RoundError::InvalidEdge { edge: target })
+    );
+    assert_eq!(exact_snapshot(&mesh), before);
+    assert_eq!(
+        round_edges(&mut mesh, &[], &policy).unwrap(),
+        RoundResult::default()
+    );
+    assert_eq!(exact_snapshot(&mesh), before);
+}
+
+#[test]
+fn sub_precision_finishes_are_refused_atomically() {
+    for offset in [1e-9, 1e-30] {
+        for policy in [RoundPolicy::fillet(offset), RoundPolicy::chamfer(offset)] {
+            let mut mesh = box_mesh(1.0, 1.0, 1.0);
+            tag_sharp(&mut mesh, |_, _| true);
+            let before = exact_snapshot(&mesh);
+            let result = round_sharp_edges(&mut mesh, &policy);
+            assert!(result.is_err(), "{policy:?}: {result:?}");
+            assert_eq!(exact_snapshot(&mesh), before);
+        }
+    }
+}
+
+#[test]
+fn unachievable_rounding_resolution_is_an_atomic_error() {
+    let mut mesh = box_mesh(1.0, 1.0, 1.0);
+    tag_sharp(&mut mesh, |_, _| true);
+    for (segments, tolerance) in [(Some(0), 0.001), (Some(257), 0.001), (None, 1e-20)] {
+        let before = exact_snapshot(&mesh);
+        let mut policy = RoundPolicy::fillet(0.1);
+        policy.segments = segments;
+        policy.chord_tolerance = tolerance;
+        assert!(matches!(
+            round_sharp_edges(&mut mesh, &policy),
+            Err(RoundError::InvalidPolicy { .. })
+        ));
+        assert_eq!(exact_snapshot(&mesh), before);
+    }
+}
+
+#[test]
 fn fillet_of_every_box_edge_is_watertight_and_volume_close() {
     let (l, w, h, r) = (2.0, 1.5, 1.0, 0.2);
     let mut mesh = box_mesh(l, w, h);
@@ -194,8 +462,10 @@ fn fillet_of_every_box_edge_is_watertight_and_volume_close() {
     assert_eq!(stats.corners, 8);
     assert_eq!(stats.closed_chains, 0);
     assert_eq!(stats.strip_faces, 12 * 4);
-    // Each corner ring has 3 * 4 edges, fanned around an apex.
-    assert_eq!(stats.patch_faces, 8 * 12);
+    assert!(
+        stats.patch_faces > 8 * 12,
+        "corner interiors need their own samples"
+    );
     assert_eq!(stats.rewritten_faces, 6);
     assert_clean(&mesh);
     assert_eq!(euler_characteristic(&mesh), 2);

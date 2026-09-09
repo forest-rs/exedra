@@ -141,7 +141,10 @@ pub use mesh::{
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
 pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh, TrimeshCache};
-pub use round::{RoundError, RoundKind, RoundPolicy, RoundStats, round_sharp_edges};
+pub use round::{
+    RoundError, RoundFaceSource, RoundKind, RoundPolicy, RoundResult, RoundStats, round_edges,
+    round_sharp_edges,
+};
 pub use session::{
     ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,
     EdgeAttrPropagation, EditSession, FaceAttrPropagation, NormalOverridePropagation,

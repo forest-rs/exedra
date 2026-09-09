@@ -12,7 +12,7 @@
 
 use alloc::vec::Vec;
 
-use exedra_math::{add, cross, dot, norm, normalize, scale, sub};
+use exedra_math::{add, cross, distance_squared, dot, norm, normalize, scale, sub};
 
 use crate::math::FloatExt;
 
@@ -27,6 +27,41 @@ pub(super) fn newell(points: &[[f64; 3]]) -> [f64; 3] {
         normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
     }
     normal
+}
+
+/// Maximum radial deficit of a triangle inscribed in a sphere at the origin.
+/// The closest point is the plane projection when it lies inside the triangle,
+/// or a point on one of its edges otherwise. A plane-only bound is too strict
+/// for obtuse triangles and does not converge when a boundary edge is fixed.
+pub(super) fn spherical_triangle_error(points: [[f64; 3]; 3], radius: f64) -> Option<f64> {
+    let [a, b, c] = points;
+    let normal = normalize(cross(sub(b, a), sub(c, a)))?;
+    let height = dot(normal, a);
+    let projection = scale(normal, height);
+    let sides = [(a, b), (b, c), (c, a)];
+    let inside = sides
+        .iter()
+        .all(|&(from, to)| dot(cross(sub(to, from), sub(projection, from)), normal) >= 0.0);
+    let distance = if inside {
+        height.abs()
+    } else {
+        sides.iter().fold(f64::INFINITY, |distance, &(from, to)| {
+            let direction = sub(to, from);
+            let t = (-dot(from, direction) / dot(direction, direction)).clamp(0.0, 1.0);
+            distance.min(norm(add(from, scale(direction, t))))
+        })
+    };
+    Some(radius - distance)
+}
+
+/// Split a corner-layer quad along its shorter diagonal, visiting the triangle
+/// incident to the existing outer boundary (indices 1 and 2) first.
+pub(super) fn corner_quad(points: [[f64; 3]; 4]) -> [[usize; 3]; 2] {
+    if distance_squared(points[0], points[2]) <= distance_squared(points[1], points[3]) {
+        [[0, 1, 2], [0, 2, 3]]
+    } else {
+        [[3, 1, 2], [0, 1, 3]]
+    }
 }
 
 /// A fitted face plane: unit normal plus the maximum absolute deviation of
