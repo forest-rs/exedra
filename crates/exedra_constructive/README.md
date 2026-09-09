@@ -107,6 +107,75 @@ Design commitments (see the [constructive-domain scope](https://github.com/fores
   assembly placements stay proper-rigid and mesh winding is repaired during
   constructive evaluation.
 
+## Convex edge finishes
+
+`NodeKind::EdgeFinish` applies a `RoundPolicy` to one completely evaluated
+child body. Use `EdgeSelection::SharpEdges` for every authored sharp edge, or
+`RegionBoundaries(vec![[a, b]])` for an explicit boundary between stable face
+regions. Region pairs are sorted and deduplicated before fingerprinting.
+Each pair must identify one connected boundary with one source feature per
+side; missing and ambiguous targets are errors.
+
+```rust
+use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
+use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+
+let mut recipe = RecipeBuilder::new();
+let rail = recipe.add(NodeKind::Primitive {
+    spec: PrimitiveSpec::Box { size: [0.09, 0.2, 2.0] },
+    placement: Placement3::IDENTITY,
+}).unwrap();
+let mut policy = RoundPolicy::fillet(0.006);
+policy.chord_tolerance = 0.00002;
+let finished = recipe.add(NodeKind::EdgeFinish {
+    child: rail,
+    selection: EdgeSelection::SharpEdges,
+    policy,
+}).unwrap();
+let recipe = recipe.finish(finished).unwrap();
+```
+
+Dimensions use the recipe's units. Finishing happens in the child's coordinate
+space before outer transforms or assembly placement. A scale outside the
+finish scales the finished shape; a scale inside changes the input geometry
+before the radius is applied. Finished bodies are cached independently of
+ancestor material defaults. All target and policy fields participate in the
+recipe fingerprint.
+
+Replacement faces retain their source feature, region and material slot. New
+bands and corner patches inherit the first contributing face in ascending
+input-ID order; an explicit `RoundPolicy::region` overrides only their region.
+Opaque slots still resolve through the existing per-face material API. Source
+features refer to the child body, while the finish node can carry its own
+`with_source` identity. Generated vertices take the first incident source
+feature in feature order; surviving vertices retain their previous feature.
+
+Fillet normals follow the sampled circular/spherical surfaces; chamfers and
+transverse end rims remain hard. Set assembly `CompilePolicy::normals` to
+`NormalsSource::CustomOrDerived`. UV generation for new and rewritten faces is
+deferred, with an `eval.edge_finish.uv_deferred` note on cold and warm runs.
+Unchanged faces retain their UVs. `finish_edges` exposes the same operation for
+a standalone tessellated body and returns typed failures without changing it.
+
+The supported examples are a box rail with all convex edges filleted and a
+box-like foot with a selected exposed edge chamfered. A rounded 2D profile
+extruded along the rail remains a different operation: its end perimeters
+stay sharp. Concave targets, oversized radii, boundary edges, affected
+non-planar faces and unsupported junctions are refused. Open chain ends must
+meet one end face; CSG can split that face and make the end unsupported.
+Closed rims with distinct operand regions avoid these selection and end-face
+limitations. A square rim's
+90-degree chain turns are outside the default rounder's envelope. Recessed
+panel Booleans can also reuse region numbers across operands; ambiguous rim
+selection is explicitly refused. This slice does not promise general panel-rim
+fillets or repair self-intersecting offset strips.
+
+Migration: the new node and text/JSON payload are additive. Evaluation schema
+18 invalidates cached output; regenerate persisted schema-17 constructive
+text. Existing recipes need no field changes. The runnable comparison is
+`cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes`.
+Exhaustive `NodeKindDto` matches must handle its new `EdgeFinish` variant.
+
 ## License
 
 Apache-2.0 OR MIT

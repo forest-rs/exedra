@@ -77,6 +77,7 @@ pub mod cache;
 pub mod discretize;
 #[cfg(test)]
 mod door_boolean_tests;
+pub mod edge_finish;
 pub mod evaluate;
 #[cfg(test)]
 mod goldens;
@@ -116,4 +117,4 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// recipe: a kurbo upgrade, a discretization-rule change, a canonical
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
-pub const EVAL_SCHEMA_VERSION: u32 = 17;
+pub const EVAL_SCHEMA_VERSION: u32 = 18;

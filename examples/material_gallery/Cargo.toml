@@ -1,5 +1,6 @@
 [package]
 name = "material_gallery"
+default-run = "material_gallery"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
