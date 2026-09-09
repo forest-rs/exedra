@@ -262,7 +262,7 @@ impl core::fmt::Debug for EvalCache {
 }
 
 /// Rough retained-size estimate: positions plus half-edge topology plus
-/// the source map's own approximation.
+/// the source map's own approximation and authored face-slot payload.
 fn approx_body_bytes(body: &TessellatedBody) -> u64 {
     let vertices = body.mesh.vertices().count() as u64;
     let faces = body.mesh.faces().count() as u64;
@@ -271,7 +271,13 @@ fn approx_body_bytes(body: &TessellatedBody) -> u64 {
         .faces()
         .map(|face| body.mesh.face_loop(face).count() as u64)
         .sum();
-    vertices * 16 + faces * 8 + corners * 16 + body.source_map.stats().approx_bytes as u64
+    let materials = body.face_materials.len() as u64
+        * size_of::<(exedra_mesh::FaceId, crate::ir::SlotId)>() as u64;
+    vertices * 16
+        + faces * 8
+        + corners * 16
+        + body.source_map.stats().approx_bytes as u64
+        + materials
 }
 
 #[cfg(test)]

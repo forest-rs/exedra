@@ -85,7 +85,13 @@ fn rounded_recesses_and_drilled_holes_preserve_solid_geometry() {
                     result.report.diagnostics
                 );
                 assert_eq!(result.bodies.len(), 1);
-                assert_eq!(result.bodies[0].material, Some(SlotId(0)));
+                assert!(
+                    result.bodies[0]
+                        .body
+                        .mesh
+                        .faces()
+                        .all(|face| result.bodies[0].material_for_face(face) == Some(SlotId(0)))
+                );
                 let body = &result.bodies[0].body;
                 let mesh = &body.mesh;
                 assert!(mesh.validate_deep().is_empty());

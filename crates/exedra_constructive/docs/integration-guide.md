@@ -212,13 +212,15 @@ Before shipping a compiler against this crate:
 
 Declaring a material slot does not assign geometry. Apply `with_material(slot)`
 to a leaf or ancestor; descendants inherit it unless they have their own slot.
-Evaluation and compilation retain the effective assignment per body, separately
-from geometric region IDs. Bind those slots to opaque material IDs in assembly.
-`PlacedBody` and `CompiledBody` literals need their new optional slot fields.
-Use `set_default_slot` only for deliberate assembly fallback; declaring one slot
-no longer assigns unrelated geometry. Mixed-slot Booleans report
-`eval.csg.material_slots_unsupported`. Evaluation schema 14 invalidates older
-fingerprints and caches.
+Use `PlacedBody::material_for_face` to resolve each surface's assignment,
+independently of geometric region IDs. Bind those slots to opaque material IDs
+in assembly. Compilation carries the slot on each `RegionRange`, and a region
+may have several ranges with different slots. `set_default_slot` provides an
+explicit assembly fallback for unassigned surfaces.
+
+Mixed-slot CSG now preserves source-face assignments through difference, union,
+intersection and transforms. See the [material contract and schema-16 migration](../README.md#materials-through-booleans)
+for cut-face ownership, coincident-surface ordering and cache semantics.
 
 ## Evaluation schema 15
 

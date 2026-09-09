@@ -41,6 +41,50 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+## Materials through Booleans
+
+Slots are opaque recipe-local IDs. CSG preserves the slot of each surviving
+source face independently of its geometric `FACE_REGION`:
+
+- **Difference:** retained minuend surfaces keep the minuend's assignment;
+  exposed cutter surfaces keep the cutter's assignment, with winding reversed.
+  Several cutters are unioned in operand order before subtraction.
+- **Union:** exterior pieces keep their source assignments; internal surfaces
+  disappear. Where equally oriented surfaces coincide, the earlier operand wins.
+- **Intersection:** each retained boundary piece keeps its source assignment.
+  Equally oriented coincident surfaces again use the earlier operand.
+- Oppositely oriented contact surfaces disappear in union/intersection;
+  difference retains the minuend's touching surface and its assignment.
+
+CSG does not create a separate cap material: a newly exposed closing surface
+comes from an operand face, including an extrusion's cap, and carries that
+face's slot. Groups used as operands are unioned in child order. Nested CSG,
+mirrors, transforms, instances and mesh stretch preserve face assignments;
+stretch bands inherit the surface they extend. Unsupported geometry still
+produces typed diagnostics and an envelope-only result.
+
+Read `PlacedBody::material_for_face(face)` for the effective slot. The sparse
+`TessellatedBody::face_materials` map stores authored face overrides;
+`PlacedBody::material` is the occurrence's default for missing entries.
+An unassigned surface inherits the nearest ancestor assignment, or remains
+unassigned for assembly region/default binding. Ancestor defaults are resolved
+after geometry caching, so changing them cannot reuse another occurrence's slot.
+
+`RecipeBuilder::material_slot` interns equal names in first-registration order.
+CSG neither renumbers that table nor merges distinct IDs; unused declarations
+remain in the recipe. Only surviving faces have output assignments. Assembly
+compilation emits ranges in `(region, slot)` order, unassigned first. GLB export
+deduplicates resolved material keys in first-use order; callers may deliberately
+bind several slots to the same key.
+
+Migration: callers that read `PlacedBody::material` as a whole-body assignment
+must resolve each face instead. Evaluation schema 16 invalidates cached
+fingerprints because mixed-slot CSG now emits geometry. Exporting a bare `Mesh`
+discards this constructive slot map; use assembly compilation to retain it.
+`SourceMap::new` and `face_features()` use live element iteration order, not
+arena slot indices. Lookup by ID handles deleted slots through a sorted live-ID
+table (O(log n)); use the lookup methods rather than indexing the feature slice.
+
 Design commitments (see the [constructive-domain scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_constructive/docs/adr-0001-constructive-domain-scope.md)):
 
 - **f64 construction, f32 emission.** All construction and evaluation happen

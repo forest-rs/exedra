@@ -92,11 +92,14 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
     PolicyFingerprint((h ^ (h >> 64)) as u64)
 }
 
-/// One contiguous run of triangle indices sharing a `FACE_REGION` value.
+/// One contiguous run of triangle indices sharing a geometric region and slot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RegionRange {
     /// The `FACE_REGION` value.
     pub region: u32,
+    /// Authored slot for these triangles, independent of their region ID.
+    /// `None` permits assembly region/default mappings as fallback.
+    pub material_slot: Option<SlotIndex>,
     /// First index (multiple of 3) in the body's index buffer.
     pub start: u32,
     /// Number of indices (multiple of 3).
@@ -105,18 +108,14 @@ pub struct RegionRange {
 
 /// One tessellated body of a compiled part, region-grouped for rendering.
 ///
-/// The index buffer is reordered so that each distinct `FACE_REGION`
-/// value occupies exactly one contiguous range; triangle order within a
-/// region preserves extraction order, so output is deterministic.
+/// Ranges are ordered by `(region, material_slot)` with unassigned first;
+/// triangle order within each range preserves extraction order. One region
+/// may occur in several ranges when Boolean operands use different slots.
 #[derive(Clone, Debug)]
 pub struct CompiledBody {
-    /// Authored body-local slot in the owning part, independent of region IDs.
-    /// `None` permits explicit assembly region/default mappings as fallback.
-    pub material_slot: Option<SlotIndex>,
     /// Extracted render buffers (indices region-grouped).
     pub tri: TriMesh,
-    /// Contiguous per-region ranges covering the whole index buffer, in
-    /// ascending region order.
+    /// Contiguous region/slot ranges covering the whole index buffer.
     pub regions: Vec<RegionRange>,
 }
 
@@ -136,7 +135,6 @@ impl CompiledBody {
     /// use exedra_assembly::CompiledBody;
     ///
     /// let body = CompiledBody {
-    ///     material_slot: None,
     ///     tri: TriMesh {
     ///         positions: vec![[-2.0, 1.0, 4.0], [3.0, 5.0, -1.0]],
     ///         ..TriMesh::default()
@@ -452,14 +450,17 @@ fn compile_source(
                 .map(|placed| {
                     compile_body(
                         &placed.body.mesh,
-                        placed.material.map(|slot| SlotIndex(slot.0)),
+                        |face| placed.material_for_face(face).map(|slot| SlotIndex(slot.0)),
                         policy.normals,
                     )
                 })
                 .collect();
             (bodies, Some(evaluation.report))
         }
-        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh, None, policy.normals)], None),
+        PartSource::Baked(mesh) => (
+            alloc::vec![compile_body(mesh, |_| None, policy.normals)],
+            None,
+        ),
     };
     Ok((
         CompiledPart {
@@ -471,10 +472,10 @@ fn compile_source(
 }
 
 /// Extracts render buffers and regroups the index buffer so each
-/// `FACE_REGION` value is one contiguous range.
+/// `(FACE_REGION, material slot)` pair is one contiguous range.
 fn compile_body(
     mesh: &exedra_mesh::Mesh,
-    material_slot: Option<SlotIndex>,
+    material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
     normals: NormalsSource,
 ) -> CompiledBody {
     let params = ExtractParams {
@@ -493,8 +494,9 @@ fn compile_body(
         let region = regions_layer
             .and_then(|layer| layer.get(face.as_id()).copied())
             .unwrap_or(0);
+        let slot = material_for_face(face);
         for _ in 0..triangles.len() {
-            tri_regions.push(region);
+            tri_regions.push((region, slot));
         }
     }
     debug_assert_eq!(
@@ -502,18 +504,21 @@ fn compile_body(
         triangle_count,
         "per-face counts must match extraction emission"
     );
-    // Stable regroup: order triangles by (region, extraction order).
+    // Stable regroup: order triangles by (region, slot, extraction order).
     let mut order: Vec<u32> = (0..crate::len_u32(triangle_count)).collect();
     order.sort_by_key(|&t| (tri_regions[t as usize], t));
     let mut indices = Vec::with_capacity(tri.indices.len());
     let mut regions: Vec<RegionRange> = Vec::new();
     for &t in &order {
-        let region = tri_regions[t as usize];
+        let (region, material_slot) = tri_regions[t as usize];
         let start = crate::len_u32(indices.len());
         match regions.last_mut() {
-            Some(last) if last.region == region => last.count += 3,
+            Some(last) if last.region == region && last.material_slot == material_slot => {
+                last.count += 3;
+            }
             _ => regions.push(RegionRange {
                 region,
+                material_slot,
                 start,
                 count: 3,
             }),
@@ -522,7 +527,6 @@ fn compile_body(
         indices.extend_from_slice(&tri.indices[base..base + 3]);
     }
     CompiledBody {
-        material_slot,
         tri: TriMesh { indices, ..tri },
         regions,
     }
@@ -901,7 +905,6 @@ mod tests {
         );
 
         let empty = CompiledBody {
-            material_slot: None,
             tri: TriMesh::default(),
             regions: Vec::new(),
         };
@@ -941,21 +944,29 @@ mod tests {
     }
 
     #[test]
-    fn mixed_slot_boolean_refusal_survives_compilation_and_cache_reuse() {
+    fn topology_boolean_refusal_survives_compilation_and_cache_reuse() {
         use exedra_constructive::ir::{CsgOp, PrimitiveSpec};
 
         for partial in [false, true] {
             let mut builder = RecipeBuilder::new();
             let slots = [builder.material_slot("a"), builder.material_slot("b")];
-            let boxes = slots.map(|slot| {
-                builder
-                    .with_material(slot)
-                    .add(NodeKind::Primitive {
-                        spec: PrimitiveSpec::Box { size: [1.0; 3] },
-                        placement: Placement3::IDENTITY,
-                    })
-                    .unwrap()
-            });
+            let boxes: Vec<_> = slots
+                .into_iter()
+                .enumerate()
+                .map(|(index, slot)| {
+                    builder
+                        .with_material(slot)
+                        .add(NodeKind::Primitive {
+                            spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                            placement: if index == 0 {
+                                Placement3::IDENTITY
+                            } else {
+                                Placement3::translate(1.0, 1.0, 0.0)
+                            },
+                        })
+                        .unwrap()
+                })
+                .collect();
             let boolean = builder
                 .add(NodeKind::Csg {
                     op: CsgOp::Union,
@@ -992,7 +1003,7 @@ mod tests {
                     report
                         .diagnostics
                         .iter()
-                        .any(|diagnostic| diagnostic.code == "eval.csg.material_slots_unsupported")
+                        .any(|diagnostic| diagnostic.code == "eval.csg.unsupported")
                 );
             }
         }

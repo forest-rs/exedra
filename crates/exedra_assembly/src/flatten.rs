@@ -5,7 +5,7 @@
 //!
 //! [`flatten`] walks the instance tree depth-first in insertion order,
 //! composes f64 world placements down the tree, and resolves every
-//! region's material key from its body's authored slot or explicit part fallback
+//! range's material key from its authored slot or explicit part fallback
 //! through the binding chain (instance binding wins
 //! over part default). The result is a flat, deterministic list that
 //! renderers and exporters consume; it carries no geometry of its own —
@@ -22,7 +22,8 @@ use exedra_constructive::ir::Placement3;
 use crate::assembly::{Assembly, InstanceId, InstancePath, PartId};
 use crate::compile::CompiledParts;
 
-/// One region of a rendered body with its resolved material key.
+/// One index range of a rendered body with its resolved material key.
+/// Several ranges may share a region ID when their authored slots differ.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedRegion {
     /// The `FACE_REGION` value.
@@ -54,8 +55,8 @@ pub struct RenderItem {
     /// the part-local AABB, so rotations and general affine placements do not
     /// make this an overestimate. An empty body has no bounds.
     pub world_bounds: Option<Aabb3>,
-    /// Per-region index ranges with resolved material keys, ascending by
-    /// region and covering the whole index buffer.
+    /// Index ranges with resolved material keys, in compiled region/slot order
+    /// and covering the whole index buffer. Region IDs need not be unique.
     pub regions: Vec<ResolvedRegion>,
 }
 
@@ -148,7 +149,7 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
                         region: range.region,
                         start: range.start,
                         count: range.count,
-                        material: body
+                        material: range
                             .material_slot
                             .or_else(|| def.region_slot(range.region))
                             .and_then(|slot| assembly.resolved_material(id, slot))

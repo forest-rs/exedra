@@ -153,7 +153,14 @@ fn coplanar_panel_differences_are_exact() {
                     ));
                 } else {
                     let mesh = &result.bodies[0].body.mesh;
-                    assert_eq!(result.bodies[0].material, Some(crate::ir::SlotId(0)));
+                    assert!(
+                        result.bodies[0]
+                            .body
+                            .mesh
+                            .faces()
+                            .all(|face| result.bodies[0].material_for_face(face)
+                                == Some(crate::ir::SlotId(0)))
+                    );
                     assert!(mesh.validate_deep().is_empty());
                     assert!(
                         mesh.faces().all(|face| mesh
@@ -235,7 +242,14 @@ fn shaped_fronts_survive_panel_cuts() {
                     result.report.diagnostics
                 );
                 assert_eq!(result.bodies.len(), 1);
-                assert_eq!(result.bodies[0].material, Some(crate::ir::SlotId(0)));
+                assert!(
+                    result.bodies[0]
+                        .body
+                        .mesh
+                        .faces()
+                        .all(|face| result.bodies[0].material_for_face(face)
+                            == Some(crate::ir::SlotId(0)))
+                );
                 let mesh = &result.bodies[0].body.mesh;
                 assert!(mesh.validate_deep().is_empty());
                 assert!(

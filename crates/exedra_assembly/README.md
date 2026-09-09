@@ -74,6 +74,13 @@ Persisted compilation content and policy fingerprints must be recomputed.
 The v1 JSON interchange still represents baked positions and faces only;
 its structural `assembly_fingerprint` is not a rendering cache key.
 
+For mixed-material CSG, `CompiledBody::material_slot` moves to
+`RegionRange::material_slot`. A geometric region may now have several ranges,
+one for each effective slot. Ranges sort by `(region, slot)`, unassigned first,
+and preserve triangle order within each pair. `flatten` resolves each range's
+authored slot before considering the part's region/default mappings. Consumers
+must iterate all ranges rather than treating a region ID as a unique range key.
+
 See the [structure-head scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_assembly/docs/adr-0001-structure-head-scope.md)
 and `exedra_constructive` for the geometry side of the boundary.
 

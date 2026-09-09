@@ -11,6 +11,7 @@
 //! The f64 construction domain narrows to f32 exactly once, here, at vertex
 //! emission (`as f32`, round-to-nearest-even).
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
@@ -23,7 +24,7 @@ use crate::discretize::{
     CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
     DiscretizedProfile, circular_edge_count, discretize_profile,
 };
-use crate::ir::{CapMode, Placement3, PrimitiveSpec};
+use crate::ir::{CapMode, Placement3, PrimitiveSpec, SlotId};
 use crate::len_u32;
 use crate::profile::Profile2;
 use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
@@ -178,6 +179,13 @@ pub struct TessellatedBody {
     pub mesh: exedra_mesh::Mesh,
     /// Element provenance, pinned to the mesh's revision.
     pub source_map: crate::source_map::SourceMap,
+    /// Authored slot overrides keyed by this mesh's live face IDs.
+    ///
+    /// Missing entries inherit the occurrence's [`crate::evaluate::PlacedBody::material`].
+    /// These overrides preserve operand assignments through CSG without
+    /// changing geometric regions or baking an ancestor's material into caches.
+    /// Use [`crate::evaluate::PlacedBody::material_for_face`] to resolve a face.
+    pub face_materials: BTreeMap<exedra_mesh::FaceId, SlotId>,
     /// Refinement work and stopping outcome, when planar or cap refinement
     /// was requested by the evaluation policy. This belongs to tessellation
     /// rather than provenance, and is preserved by cache and rigid-instance
@@ -610,6 +618,7 @@ fn rebuild_placed_primitive(
     Ok(TessellatedBody {
         mesh: build.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: None,
     })
 }
@@ -761,6 +770,7 @@ pub fn tessellate_planar_face(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: refinement_stats,
     })
 }
@@ -1026,6 +1036,7 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: refinement_stats,
     })
 }
@@ -1621,6 +1632,7 @@ pub fn tessellate_revolve(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: None,
     })
 }
@@ -1853,6 +1865,7 @@ pub fn tessellate_loft(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: None,
     })
 }
@@ -2164,6 +2177,7 @@ pub fn tessellate_sweep(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: None,
     })
 }
@@ -2417,6 +2431,7 @@ pub fn tessellate_grid(
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
+        face_materials: BTreeMap::new(),
         refinement: None,
     })
 }

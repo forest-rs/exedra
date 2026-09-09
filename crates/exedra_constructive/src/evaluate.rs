@@ -9,7 +9,7 @@
 //! including what could *not* be evaluated — lands in the report as typed
 //! fidelity and diagnostics rather than silent approximation.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -232,8 +232,9 @@ impl GeometryReport {
 pub struct PlacedBody {
     /// The producing node.
     pub node: NodeId,
-    /// Effective authored slot in this recipe, or no assignment.
-    /// Inherited per occurrence; independent of geometric region numbers.
+    /// Default slot for faces without an authored override.
+    /// Inherited per occurrence; use [`Self::material_for_face`] for surfaces
+    /// of mixed-material bodies. Independent of geometric region numbers.
     pub material: Option<SlotId>,
     /// The tessellated body (already placed in world space).
     pub body: Rc<TessellatedBody>,
@@ -246,6 +247,20 @@ pub struct Evaluation {
     pub bodies: Vec<PlacedBody>,
     /// The evaluation report.
     pub report: GeometryReport,
+}
+
+impl PlacedBody {
+    /// Effective slot of a live face: its authored override, then this
+    /// occurrence's default. `None` leaves assembly region/default binding
+    /// available as fallback.
+    #[must_use]
+    pub fn material_for_face(&self, face: FaceId) -> Option<SlotId> {
+        self.body
+            .face_materials
+            .get(&face)
+            .copied()
+            .or(self.material)
+    }
 }
 
 /// Hard evaluation failure: a body that should tessellate, did not.
@@ -372,6 +387,7 @@ const CSG_TRIANGULATION: FaceTriangulation = FaceTriangulation::Robust;
 struct CsgMesh {
     mesh: Mesh,
     face_operands: HashMap<FaceId, u16>,
+    face_materials: BTreeMap<FaceId, SlotId>,
 }
 
 impl CsgMesh {
@@ -379,6 +395,7 @@ impl CsgMesh {
         let operand = u16::try_from(index).expect("IR validation bounds CSG operand counts");
         Self {
             face_operands: mesh.faces().map(|face| (face, operand)).collect(),
+            face_materials: BTreeMap::new(),
             mesh,
         }
     }
@@ -399,19 +416,25 @@ impl CsgMesh {
             diagnostics,
         )?;
         let mut face_operands = HashMap::with_capacity(output.mesh.faces().count());
+        let mut face_materials = BTreeMap::new();
         for &(face, side, source_face) in &output.face_provenance {
-            let operands = match side {
-                MeshSide::A => &self.face_operands,
-                MeshSide::B => &other.face_operands,
+            let source = match side {
+                MeshSide::A => &self,
+                MeshSide::B => &other,
             };
-            let operand = *operands
+            let operand = *source
+                .face_operands
                 .get(&source_face)
                 .expect("boolean provenance references an input face");
             face_operands.insert(face, operand);
+            if let Some(slot) = source.face_materials.get(&source_face) {
+                face_materials.insert(face, *slot);
+            }
         }
         Ok(Self {
             mesh: output.mesh,
             face_operands,
+            face_materials,
         })
     }
 }
@@ -420,15 +443,13 @@ impl CsgMesh {
 struct CsgOperand {
     /// The folded operand mesh; `None` when the subtree emitted no bodies
     /// or its multi-body fold was refused.
-    mesh: Option<Mesh>,
+    mesh: Option<CsgMesh>,
     /// World bounds of everything the subtree evaluated.
     bounds: Aabb3,
     /// Whether the subtree evaluated without any refusal below it. A
     /// partial subtree is still useful for inspection, but it is never a
     /// complete solid.
     complete: bool,
-    /// Distinct effective slots on nonempty bodies, including unassigned.
-    materials: BTreeSet<Option<u32>>,
 }
 
 impl EvalCx<'_> {
@@ -670,6 +691,7 @@ impl EvalCx<'_> {
                     Ok(TessellatedBody {
                         mesh,
                         source_map,
+                        face_materials: BTreeMap::new(),
                         refinement: None,
                     })
                 })?;
@@ -981,34 +1003,42 @@ impl EvalCx<'_> {
         index: usize,
         operand: NodeId,
         world: &Placement3,
-        material: Option<SlotId>,
         scratch: &mut BooleanScratch,
         diagnostics: &mut BooleanDiagnostics,
     ) -> Result<CsgOperand, EvalError> {
         let taken = core::mem::take(&mut self.bodies);
         let errors_before = self.error_count();
-        let bounds = self.walk(operand, world, true, material)?;
+        // Resolve only assignments inside this subtree. The CSG occurrence's
+        // default is applied after the cache lookup, so sharing its geometry
+        // under different ancestor materials cannot retain a stale default.
+        let bounds = self.walk(operand, world, true, None)?;
         let collected: Vec<PlacedBody> = core::mem::replace(&mut self.bodies, taken);
         // Every refusal below this operand is reported at `Error` severity;
         // none may have appeared for the subtree to count as complete.
         let complete = self.error_count() == errors_before;
-        let materials = collected
-            .iter()
-            .filter(|placed| placed.body.mesh.faces().next().is_some())
-            .map(|placed| placed.material.map(|slot| slot.0))
-            .collect();
         // Shared (cached) bodies clone their mesh for consumption; unshared
         // ones move it out without copying.
-        let meshes: Vec<Mesh> = collected
+        let meshes: Vec<CsgMesh> = collected
             .into_iter()
-            .map(|placed| match Rc::try_unwrap(placed.body) {
-                Ok(body) => body.mesh,
-                Err(shared) => shared.mesh.clone(),
+            .map(|placed| {
+                let face_materials = placed
+                    .body
+                    .mesh
+                    .faces()
+                    .filter_map(|face| placed.material_for_face(face).map(|slot| (face, slot)))
+                    .collect();
+                let mesh = match Rc::try_unwrap(placed.body) {
+                    Ok(body) => body.mesh,
+                    Err(shared) => shared.mesh.clone(),
+                };
+                let mut mesh = CsgMesh::operand(mesh, index);
+                mesh.face_materials = face_materials;
+                mesh
             })
             .collect();
         let fan_unsafe: u64 = meshes
             .iter()
-            .map(|mesh| fan_unsafe_faces(mesh, CSG_TRIANGULATION))
+            .map(|mesh| fan_unsafe_faces(&mesh.mesh, CSG_TRIANGULATION))
             .sum();
         if fan_unsafe > 0 {
             self.report.counters.csg_fan_unsafe_faces += fan_unsafe;
@@ -1026,23 +1056,15 @@ impl EvalCx<'_> {
         let mut meshes = meshes.into_iter();
         let mut mesh = meshes.next();
         for next in meshes {
-            let Some(folded) = mesh.as_ref() else { break };
-            mesh = boolean_mesh(
-                folded,
-                &next,
-                BooleanOp::Union,
-                CSG_TRIANGULATION,
-                scratch,
-                diagnostics,
-            )
-            .ok()
-            .map(|output| output.mesh);
+            let Some(folded) = mesh else { break };
+            mesh = folded
+                .combine(next, BooleanOp::Union, scratch, diagnostics)
+                .ok();
         }
         Ok(CsgOperand {
             mesh,
             bounds,
             complete,
-            materials,
         })
     }
 
@@ -1077,35 +1099,25 @@ impl EvalCx<'_> {
         let mut incomplete: Vec<usize> = Vec::new();
         let mut all_present = true;
         let mut bounds = Aabb3::EMPTY;
-        let mut materials = BTreeSet::new();
         for (index, operand) in operands.iter().enumerate() {
             let collected = self.collect_operand_mesh(
                 node_id,
                 index,
                 *operand,
                 world,
-                material,
                 &mut scratch,
                 &mut diagnostics,
             )?;
             bounds.union(&collected.bounds);
-            materials.extend(collected.materials);
             if !collected.complete {
                 incomplete.push(index);
             }
             match collected.mesh {
-                Some(mesh) => meshes.push(CsgMesh::operand(mesh, index)),
+                Some(mesh) => meshes.push(mesh),
                 None => all_present = false,
             }
         }
-        let slots_supported = materials.len() <= 1;
-        if !slots_supported {
-            self.push_diagnostic(node_id, Severity::Error,
-                "eval.csg.material_slots_unsupported",
-                String::from("Boolean operands have different effective material slots; face-level slot propagation is not supported"));
-        }
-        let material = materials.first().copied().flatten().map(SlotId);
-        let operands_complete = incomplete.is_empty() && slots_supported;
+        let operands_complete = incomplete.is_empty();
 
         // Cache lookup happens after the operand walks so the report is
         // identical either way; the key is content-addressed, so a hit is
@@ -1222,6 +1234,7 @@ impl EvalCx<'_> {
                 let body = Rc::new(TessellatedBody {
                     mesh,
                     source_map,
+                    face_materials: output.face_materials,
                     refinement: None,
                 });
                 self.report.counters.tessellations += 1;
@@ -1564,9 +1577,16 @@ fn instantiate(
     } else {
         source.source_map.repinned(&mesh)
     };
+    let face_materials = source
+        .mesh
+        .faces()
+        .zip(mesh.faces())
+        .filter_map(|(old, new)| source.face_materials.get(&old).map(|slot| (new, *slot)))
+        .collect();
     Ok(TessellatedBody {
         mesh,
         source_map,
+        face_materials,
         refinement: source.refinement,
     })
 }
