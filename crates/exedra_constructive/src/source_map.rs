@@ -6,10 +6,10 @@
 //!
 //! A [`SourceMap`] is built alongside tessellation and pinned to the mesh's
 //! [`exedra_mesh::MeshRevision`]: editing the mesh afterwards invalidates the map
-//! *explicitly* — lookups fail with [`StaleSourceMap`] instead of silently
-//! describing geometry that no longer exists.
+//! *explicitly*: [`SourceMap::check`] returns [`StaleSourceMap`]. Check the map
+//! before using its lookups after a mesh edit.
 //!
-//! Forward lookups are O(1) (dense by element index); the reverse index
+//! Forward lookups are O(log n) by live element ID; the reverse index
 //! (feature → faces) is built once at construction and queried by binary
 //! search.
 
@@ -56,7 +56,9 @@ pub struct SourceMapStats {
 /// Per-element provenance for one tessellated body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceMap {
+    face_ids: Vec<FaceId>,
     face_features: Vec<Feature>,
+    vertex_ids: Vec<VertexId>,
     vertex_features: Vec<Feature>,
     /// `(feature, face index)` sorted by feature then index: the reverse
     /// lookup table.
@@ -65,18 +67,36 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
-    /// Builds a map from dense per-element features, pinned to `mesh`'s
-    /// current revision.
+    /// Builds a map from features in live face/vertex iteration order,
+    /// pinned to `mesh`'s current revision. Element IDs may contain gaps.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless each feature vector has one entry per live element.
     #[must_use]
     pub fn new(mesh: &Mesh, face_features: Vec<Feature>, vertex_features: Vec<Feature>) -> Self {
+        let face_ids: Vec<_> = mesh.faces().collect();
+        let vertex_ids: Vec<_> = mesh.vertices().collect();
+        assert_eq!(
+            face_ids.len(),
+            face_features.len(),
+            "one feature per live face"
+        );
+        assert_eq!(
+            vertex_ids.len(),
+            vertex_features.len(),
+            "one feature per live vertex"
+        );
         let mut by_feature: Vec<(Feature, u32)> = face_features
             .iter()
-            .enumerate()
-            .map(|(i, &f)| (f, crate::len_u32(i + 1) - 1))
+            .zip(&face_ids)
+            .map(|(&feature, face)| (feature, face.index()))
             .collect();
         by_feature.sort_unstable();
         Self {
+            face_ids,
             face_features,
+            vertex_ids,
             vertex_features,
             by_feature,
             revision: mesh.revision(),
@@ -107,20 +127,28 @@ impl SourceMap {
         self.revision
     }
 
-    /// The feature that produced a face (O(1)).
+    /// The feature that produced a live face (O(log n)).
     #[must_use]
     pub fn face_feature(&self, face: FaceId) -> Option<Feature> {
-        self.face_features.get(face.index() as usize).copied()
+        let index = self
+            .face_ids
+            .binary_search_by_key(&face.index(), |id| id.index())
+            .ok()?;
+        (self.face_ids[index] == face).then(|| self.face_features[index])
     }
 
-    /// The feature whose surface a vertex lies on (O(1)).
+    /// The feature whose surface a live vertex lies on (O(log n)).
     ///
     /// A vertex generally borders several features; the recorded one is the
     /// deterministic generating feature chosen by its tessellator. Consumers
     /// must not interpret that choice as exclusive ownership at boundaries.
     #[must_use]
     pub fn vertex_feature(&self, vertex: VertexId) -> Option<Feature> {
-        self.vertex_features.get(vertex.index() as usize).copied()
+        let index = self
+            .vertex_ids
+            .binary_search_by_key(&vertex.index(), |id| id.index())
+            .ok()?;
+        (self.vertex_ids[index] == vertex).then(|| self.vertex_features[index])
     }
 
     /// All face indices produced by `feature`, ascending (O(log n) + k).
@@ -140,7 +168,8 @@ impl SourceMap {
         self.face_features.len()
     }
 
-    /// The dense per-face feature table, indexed by face index.
+    /// The per-face feature table in live mesh-face iteration order.
+    /// Use [`Self::face_feature`] for lookup by an element ID.
     #[must_use]
     pub fn face_features(&self) -> &[Feature] {
         &self.face_features
@@ -157,6 +186,8 @@ impl SourceMap {
             reverse_entries: self.by_feature.len(),
             approx_bytes: self.face_features.len() * entry
                 + self.vertex_features.len() * entry
+                + self.face_ids.len() * size_of::<FaceId>()
+                + self.vertex_ids.len() * size_of::<VertexId>()
                 + self.by_feature.len() * reverse,
         }
     }
@@ -169,7 +200,9 @@ impl SourceMap {
     #[must_use]
     pub fn repinned(&self, mesh: &Mesh) -> Self {
         Self {
+            face_ids: self.face_ids.clone(),
             face_features: self.face_features.clone(),
+            vertex_ids: self.vertex_ids.clone(),
             vertex_features: self.vertex_features.clone(),
             by_feature: self.by_feature.clone(),
             revision: mesh.revision(),
@@ -182,8 +215,8 @@ impl SourceMap {
     pub fn dump(&self) -> alloc::string::String {
         use core::fmt::Write;
         let mut out = alloc::string::String::new();
-        for (i, feature) in self.face_features.iter().enumerate() {
-            let _ = writeln!(out, "face {i} {}", FeatureLabel(*feature));
+        for (face, feature) in self.face_ids.iter().zip(&self.face_features) {
+            let _ = writeln!(out, "face {} {}", face.index(), FeatureLabel(*feature));
         }
         out
     }
@@ -224,6 +257,49 @@ mod tests {
     use crate::builders;
     use crate::ir::{CapMode, Placement3};
     use crate::tessellate::{EvalPolicy, tessellate_extrude};
+
+    #[test]
+    fn sparse_live_ids_keep_forward_reverse_and_dump_lookups_attached() {
+        let mut builder = exedra_mesh::MeshBuilder::new();
+        for point in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+        ] {
+            builder.push_vertex(point);
+        }
+        builder.add_face(&[0, 1, 2]).unwrap();
+        builder.add_face(&[3, 4, 5]).unwrap();
+        let mut mesh = builder.build().unwrap().mesh;
+        let deleted_face = mesh.faces().next().unwrap();
+        let deleted_vertex = mesh.vertices().next().unwrap();
+        let mut edit = mesh.edit();
+        exedra_mesh::op::delete_faces(
+            &mut edit,
+            &[deleted_face],
+            exedra_mesh::DeletePolicy::CleanupIsolated,
+        )
+        .unwrap();
+        let _: () = edit.finish();
+        let features = [Feature::Imported, Feature::CapStart, Feature::BooleanSeam];
+        let map = SourceMap::new(&mesh, alloc::vec![Feature::CapEnd], features.to_vec());
+        let face = mesh.faces().next().unwrap();
+        assert_eq!(face.index(), 1);
+        assert_eq!(map.face_feature(face), Some(Feature::CapEnd));
+        assert_eq!(
+            map.faces_for(Feature::CapEnd),
+            [(Feature::CapEnd, face.index())]
+        );
+        assert_eq!(map.dump(), "face 1 cap_end\n");
+        assert_eq!(map.face_feature(deleted_face), None);
+        assert_eq!(map.vertex_feature(deleted_vertex), None);
+        for (vertex, feature) in mesh.vertices().zip(features) {
+            assert_eq!(map.vertex_feature(vertex), Some(feature));
+        }
+    }
 
     #[test]
     fn forward_and_reverse_agree() {

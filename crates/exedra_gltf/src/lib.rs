@@ -10,8 +10,8 @@
 //! - every render item becomes a glTF *node* carrying the item's world
 //!   matrix, with the instance path, part key, and opaque instance metadata
 //!   in `extras`;
-//! - every per-region index range becomes a mesh *primitive*, so region
-//!   materials survive as real material bindings;
+//! - every region/slot index range becomes a mesh *primitive*, preserving
+//!   distinct materials even when their geometric region IDs match;
 //! - [`export_glb_with_materials`] and [`export_gltf_with_materials`] resolve
 //!   material keys to caller-provided glTF material data; the original
 //!   entry points produce deterministic preview colors derived from keys;

@@ -178,6 +178,7 @@ enum OutputKey {
 struct FaceSource {
     feature: Feature,
     region: u32,
+    material: Option<crate::ir::SlotId>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -238,6 +239,7 @@ struct OutputMesh {
     vertex_features: Vec<Feature>,
     vertex_sharpness: Vec<Option<f32>>,
     face_features: Vec<Feature>,
+    face_materials: Vec<Option<crate::ir::SlotId>>,
     face_uvs: Vec<Vec<Option<[f32; 2]>>>,
     face_normal_overrides: Vec<Vec<Option<[f32; 3]>>>,
 }
@@ -278,6 +280,7 @@ impl OutputMesh {
             vertex_features: Vec::new(),
             vertex_sharpness: Vec::new(),
             face_features: Vec::new(),
+            face_materials: Vec::new(),
             face_uvs: Vec::new(),
             face_normal_overrides: Vec::new(),
         }
@@ -349,6 +352,7 @@ impl OutputMesh {
             )
             .map_err(|_| StretchRefusal::BuildFailed)?;
         self.face_features.push(source.feature);
+        self.face_materials.push(source.material);
         #[expect(
             clippy::cast_possible_truncation,
             reason = "corner UVs cross the documented f64-to-f32 mesh emission boundary"
@@ -424,6 +428,12 @@ impl OutputMesh {
             self.vertex_features,
         );
         Ok(TessellatedBody {
+            face_materials: built
+                .face_ids
+                .iter()
+                .zip(self.face_materials)
+                .filter_map(|(face, slot)| slot.map(|slot| (*face, slot)))
+                .collect(),
             mesh: built.mesh,
             source_map,
             // The child tessellation records its own refinement outcome
@@ -481,6 +491,7 @@ fn stretch_mesh_expansion(
             TessellatedBody {
                 mesh,
                 source_map,
+                face_materials: source.face_materials.clone(),
                 refinement: None,
             },
             MeshStretchStats::default(),
@@ -510,6 +521,7 @@ fn stretch_mesh_expansion(
     let mut stats = MeshStretchStats::default();
     for face in mesh.faces() {
         let source_face = FaceSource {
+            material: source.face_materials.get(&face).copied(),
             feature: source
                 .source_map
                 .face_feature(face)
@@ -700,6 +712,7 @@ fn stretch_mesh_contraction(
             TessellatedBody {
                 mesh,
                 source_map,
+                face_materials: source.face_materials.clone(),
                 refinement: None,
             },
             MeshStretchStats::default(),
@@ -733,6 +746,7 @@ fn stretch_mesh_contraction(
     let mut stats = MeshStretchStats::default();
     for face in mesh.faces() {
         let source_face = FaceSource {
+            material: source.face_materials.get(&face).copied(),
             feature: source
                 .source_map
                 .face_feature(face)
@@ -1152,6 +1166,7 @@ fn translate_body(source: &TessellatedBody, displacement: [f64; 3]) -> Tessellat
     TessellatedBody {
         mesh,
         source_map,
+        face_materials: source.face_materials.clone(),
         refinement: None,
     }
 }

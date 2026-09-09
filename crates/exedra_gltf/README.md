@@ -1,7 +1,7 @@
 # `exedra_gltf`
 
 glTF 2.0 export for Exedra assembly render lists: instances become nodes,
-per-region index ranges become primitives with real material bindings, and
+region/slot index ranges become primitives with real material bindings, and
 instance paths ride in `extras`. Single-file output uses either an embedded
 base64 buffer or a standard binary GLB container; both are deterministic
 byte-for-byte.

@@ -50,7 +50,11 @@ fn authored_quad(partial: bool) -> Mesh {
     mesh
 }
 
-fn read_floats<const N: usize>(document: &GlbDocument, accessor: &Value, index: usize) -> [f32; N] {
+pub(super) fn read_floats<const N: usize>(
+    document: &GlbDocument,
+    accessor: &Value,
+    index: usize,
+) -> [f32; N] {
     assert_eq!(accessor["componentType"], 5126);
     let view = &document.json()["bufferViews"]
         [usize::try_from(accessor["bufferView"].as_u64().unwrap()).unwrap()];
@@ -66,7 +70,7 @@ fn read_floats<const N: usize>(document: &GlbDocument, accessor: &Value, index: 
     })
 }
 
-fn read_indices(document: &GlbDocument, primitive: &Value) -> Vec<usize> {
+pub(super) fn read_indices(document: &GlbDocument, primitive: &Value) -> Vec<usize> {
     let accessor = &document.json()["accessors"]
         [usize::try_from(primitive["indices"].as_u64().unwrap()).unwrap()];
     assert_eq!(accessor["componentType"], 5125);
@@ -85,7 +89,7 @@ fn read_indices(document: &GlbDocument, primitive: &Value) -> Vec<usize> {
         .collect()
 }
 
-fn attribute<'a>(document: &'a GlbDocument, primitive: &Value, name: &str) -> &'a Value {
+pub(super) fn attribute<'a>(document: &'a GlbDocument, primitive: &Value, name: &str) -> &'a Value {
     &document.json()["accessors"]
         [usize::try_from(primitive["attributes"][name].as_u64().unwrap()).unwrap()]
 }
