@@ -265,7 +265,7 @@ fn oversized_cube_finish_is_refused_even_when_face_winding_stays_positive() {
 #[test]
 fn corner_patch_surfaces_follow_requested_chord_tolerance() {
     let radius = 0.006;
-    for tolerance in [0.0002, 0.00002] {
+    for (tolerance, triangle_budget) in [(0.0002, 300), (0.00005, 1200), (0.00002, 4200)] {
         let mut policy = RoundPolicy::fillet(radius);
         policy.chord_tolerance = tolerance;
         let mut mesh = box_mesh(0.09, 0.2, 2.0);
@@ -274,6 +274,10 @@ fn corner_patch_surfaces_follow_requested_chord_tolerance() {
         let result = round_edges(&mut mesh, &edges, &policy).unwrap();
         assert_clean(&mesh);
         assert_eq!(euler_characteristic(&mesh), 2);
+        // The fine case used to emit 7,440 corner triangles by rounding its
+        // radial layer count up to 16. Leave room for tessellation changes
+        // while keeping that oversampling from returning.
+        assert!(result.stats.patch_faces <= triangle_budget);
         let mut worst = 0.0_f64;
         let mut samples = 0;
         for (face, source) in result.face_provenance {
@@ -283,6 +287,13 @@ fn corner_patch_surfaces_follow_requested_chord_tolerance() {
             for triangle in mesh.face_triangles(face, FaceTriangulation::Fan) {
                 let p = triangle
                     .map(|e| promote(*mesh.vertex_position(mesh.to_vertex(e).unwrap()).unwrap()));
+                let centroid = scale(add(add(p[0], p[1]), p[2]), 1.0 / 3.0);
+                let center = [
+                    centroid[0].clamp(radius, 0.09 - radius),
+                    centroid[1].clamp(radius, 0.2 - radius),
+                    centroid[2].clamp(radius, 2.0 - radius),
+                ];
+                assert!(dot(newell(&p), sub(centroid, center)) > 0.0);
                 // An independent barycentric grid samples the triangle interior
                 // and its edges, including where vertex-only radius checks miss.
                 for i in 0..=8 {

@@ -171,8 +171,10 @@ selection is explicitly refused. This slice does not promise general panel-rim
 fillets or repair self-intersecting offset strips.
 
 Migration: the new node and text/JSON payload are additive. Evaluation schema
-18 invalidates cached output; regenerate persisted schema-17 constructive
-text. Existing recipes need no field changes. The runnable comparison is
+19 invalidates cached output, including schema-18 edge finishes whose spherical
+corners now use fewer radial layers at the same tolerance. Regenerate persisted
+constructive text with the current schema. Existing recipes need no field changes.
+The runnable comparison is
 `cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes`.
 Exhaustive `NodeKindDto` matches must handle its new `EdgeFinish` variant.
 

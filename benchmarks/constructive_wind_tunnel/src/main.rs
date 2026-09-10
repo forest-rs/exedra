@@ -6,7 +6,8 @@
 //! regeneration: a one-parameter edit re-tessellates exactly one body,
 //! bit-identical to a full rebuild), and CT-3 (the gallery's direct
 //! Boolean-plus-rounding card, timed by phase), and CT-4 (constructive
-//! stretch exact rewrites versus the general imported-mesh path).
+//! stretch exact rewrites versus the general imported-mesh path), and CT-5
+//! (spherical corner triangle count, memory and rounding time).
 //!
 //! Run the quick profile (the default):
 //! `cargo run --release -p constructive_wind_tunnel -- --quick`
@@ -32,17 +33,19 @@ use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
 use exedra_constructive::ir::{
     CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
-use exedra_constructive::tessellate::EvalPolicy;
+use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
 use exedra_mesh::boolean::{
     BooleanDiagnostics, BooleanOp, BooleanScratch, BooleanStats, boolean_mesh,
 };
 use exedra_mesh::round::{RoundPolicy, RoundStats, round_sharp_edges};
-use exedra_mesh::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder};
+use exedra_mesh::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder, NormalsSource};
 use exedra_testkit::trimesh_signature;
 
 fn main() {
     let config = Config::from_args(std::env::args().skip(1));
-    if config.stretch_only {
+    if config.corners_only {
+        run_ct5(config.profile);
+    } else if config.stretch_only {
         run_ct4(config.profile);
     } else if config.gallery_only {
         run_ct3(config.profile);
@@ -51,6 +54,7 @@ fn main() {
         run_ct2(config.profile);
         run_ct3(config.profile);
         run_ct4(config.profile);
+        run_ct5(config.profile);
     }
 }
 
@@ -59,6 +63,7 @@ struct Config {
     profile: Profile,
     gallery_only: bool,
     stretch_only: bool,
+    corners_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -140,6 +145,7 @@ impl Config {
             profile: Profile::Quick,
             gallery_only: false,
             stretch_only: false,
+            corners_only: false,
         };
         for arg in args {
             match arg.as_str() {
@@ -155,6 +161,7 @@ impl Config {
                     config.gallery_only = true;
                 }
                 "--stretch" => config.stretch_only = true,
+                "--corners" => config.corners_only = true,
                 "--stretch-stress" => {
                     config.profile = Profile::Stress;
                     config.stretch_only = true;
@@ -176,7 +183,7 @@ impl Config {
 
 fn print_help() {
     eprintln!(
-        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress]"
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners]"
     );
 }
 
@@ -837,6 +844,78 @@ fn run_ct4(profile: Profile) {
         signatures[1],
         signatures[2],
     );
+}
+
+/// CT-5 separates tessellation density from rounding and extraction cost.
+fn run_ct5(profile: Profile) {
+    for (shape, placement) in [
+        ("rail", Placement3::IDENTITY),
+        (
+            "skewed",
+            Placement3 {
+                rows: [
+                    [1.0, 0.25, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
+            },
+        ),
+    ] {
+        let original = tessellate_primitive(
+            PrimitiveSpec::Box {
+                size: [0.09, 0.2, 2.0],
+            },
+            &placement,
+            &EvalPolicy::default(),
+        )
+        .expect("CT-5 input")
+        .mesh;
+        for tolerance in [0.0002, 0.00005, 0.00002] {
+            let mut policy = RoundPolicy::fillet(0.006);
+            policy.chord_tolerance = tolerance;
+            let build = || {
+                let mut mesh = original.clone();
+                let stats = round_sharp_edges(&mut mesh, &policy).expect("CT-5 rounds");
+                (mesh, stats)
+            };
+            let (mesh, stats) = build();
+            let (repeat, repeat_stats) = build();
+            let errors = mesh.validate_deep();
+            assert!(errors.is_empty(), "CT-5 {shape}: {errors:?}");
+            assert_eq!(stats, repeat_stats, "CT-5 rounding work must repeat");
+            let signature = fold_mesh_signature(&mesh);
+            assert_eq!(
+                signature,
+                fold_mesh_signature(&repeat),
+                "CT-5 rounded geometry must repeat"
+            );
+            let params = ExtractParams {
+                normals: NormalsSource::CustomOrDerived,
+                ..ExtractParams::default()
+            };
+            let (render, _) = mesh.to_trimesh(&params);
+            let buffer_bytes = size_of_val(render.positions.as_slice())
+                + size_of_val(render.normals.as_slice())
+                + size_of_val(render.indices.as_slice());
+            let iterations = profile.gallery_iterations();
+            let (best, avg) = time_phase(iterations, || {
+                black_box(build());
+            });
+            let (extract_best, extract_avg) = time_phase(iterations, || {
+                black_box(mesh.to_trimesh(&params));
+            });
+            println!(
+                "scenario=CT-5 shape={shape} tolerance={tolerance} iterations={iterations} patch_triangles={} triangles={} vertices={} render_bytes={buffer_bytes} round_best_ns={} round_avg_ns={} extract_best_ns={} extract_avg_ns={} signature={signature:016x}",
+                stats.patch_faces,
+                render.indices.len() / 3,
+                mesh.vertices().count(),
+                best.as_nanos(),
+                avg.as_nanos(),
+                extract_best.as_nanos(),
+                extract_avg.as_nanos()
+            );
+        }
+    }
 }
 
 #[cfg(test)]

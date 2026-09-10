@@ -1728,9 +1728,14 @@ impl Planner<'_> {
         );
         let apex = add(center, scale(normalize(mean).ok_or(clearance)?, radius));
         // Explicit sampling controls both the strips and interior layers.
-        // Otherwise refine radial layers until every triangle bounds
-        // the sphere deviation; edge and vertex samples alone are insufficient.
+        // Otherwise bracket a passing layer count, then bisect the bracket to
+        // avoid rounding the whole patch up to a power of two. Keep the last
+        // passing rays: every accepted triangle must bound the sphere deviation,
+        // even if numerical error makes acceptance non-monotonic.
         let mut layers = self.policy.segments.unwrap_or(1);
+        let mut coarse_layers = 0;
+        let mut fine_layers = 256;
+        let mut accepted_rays = None;
         let rays = loop {
             let rays: Vec<_> = boundary
                 .iter()
@@ -1760,15 +1765,25 @@ impl Planner<'_> {
                 }
             }
             if acceptable {
-                break rays;
+                fine_layers = layers;
+                accepted_rays = Some(rays);
+            } else {
+                coarse_layers = layers;
             }
-            if layers == 256 {
-                return Err(RoundError::InvalidPolicy {
+            if fine_layers - coarse_layers <= 1 {
+                break accepted_rays.ok_or(RoundError::InvalidPolicy {
                     detail: "corner tolerance needs more than 256 radial layers",
-                });
+                })?;
             }
-            layers *= 2;
+            layers = if accepted_rays.is_some() {
+                coarse_layers + (fine_layers - coarse_layers) / 2
+            } else {
+                (layers * 2).min(256)
+            };
         };
+        // The final probe may have failed; emission uses the retained passing
+        // sample count, or the caller's explicit count.
+        let layers = self.policy.segments.unwrap_or(fine_layers);
         let apex = self.push_round_point(apex, Some(center));
         // Grow inward from the existing strip boundary so every insertion
         // shares an edge with the mesh, never just an isolated boundary vertex.
