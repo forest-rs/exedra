@@ -35,6 +35,11 @@ vertex counts, position/normal/index buffer bytes, and rounding/extraction times
 Deep validity and repeatability of geometry and authored render normals are
 checked before timing.
 
+**CT-6** repeats the CT-3 constructive through-drill with distinct panel and
+cutter material slots. It checks geometry and ordered face-to-slot signatures,
+requires both materials to survive, and reports evaluation time and face counts
+per slot.
+
 ```sh
 cargo run --release -p constructive_wind_tunnel -- --quick
 cargo run --release -p constructive_wind_tunnel -- --ct1-stress
@@ -45,11 +50,15 @@ cargo run --release -p constructive_wind_tunnel -- --stretch
 cargo run --release -p constructive_wind_tunnel -- --stretch-stress
 cargo run --release -p constructive_wind_tunnel -- --corners
 cargo run --release -p constructive_wind_tunnel -- --corners-sample
+cargo run --release -p constructive_wind_tunnel -- --materials
+cargo run --release -p constructive_wind_tunnel -- --materials --ct1-stress
+cargo run --release -p constructive_wind_tunnel -- --materials-sample
 ```
 
 `--gallery-sample` repeats the unchanged CT-3 workload long enough for an
 external sampling profiler to attach; it is not a distinct benchmark case.
 `--corners-sample` does the same for CT-5.
+`--materials-sample` does the same for CT-6.
 
 ## License
 
