@@ -11,7 +11,8 @@ use hashbrown::HashMap;
 
 use crate::attributes::SparseLayer;
 use crate::{
-    CornerId, FaceId, FaceTriangulation, Mesh, NormalParams, NormalsSource, VertexId, attr,
+    CornerId, DerivedCornerNormals, FaceId, FaceTriangulation, Mesh, NormalParams, NormalsSource,
+    VertexId, attr,
 };
 
 /// Triangle mesh suitable for GPU upload.
@@ -281,8 +282,24 @@ impl Mesh {
     /// Unconditional full extraction (shared by both entry points).
     fn extract_full(&self, params: &ExtractParams) -> (TriMesh, ExtractStats) {
         let corner_uvs = self.attrs().sparse(attr::CORNER_UV);
-        let derived_normals = self.derive_corner_normals(&params.normal_params);
         let normal_overrides = self.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
+        // Authored meshes need no geometric normals unless a live face corner
+        // actually falls back to them. Sparse-layer length is insufficient:
+        // it can include boundary corners or stale IDs.
+        let needs_derived = match params.normals {
+            NormalsSource::Derived => true,
+            NormalsSource::CustomOnly => false,
+            NormalsSource::CustomOrDerived => self.faces().any(|face| {
+                self.face_loop(face).any(|corner| {
+                    normal_overrides.is_none_or(|layer| layer.get(corner.as_id()).is_none())
+                })
+            }),
+        };
+        let derived_normals = if needs_derived {
+            self.derive_corner_normals(&params.normal_params)
+        } else {
+            DerivedCornerNormals::default()
+        };
 
         let mut mesh = TriMesh::default();
         let mut stats = ExtractStats::default();
@@ -320,7 +337,7 @@ fn emit_face(
     strategy: FaceTriangulation,
     corner_uvs: Option<&SparseLayer<[f32; 2]>>,
     normal_overrides: Option<&SparseLayer<[f32; 3]>>,
-    derived_normals: &crate::DerivedCornerNormals,
+    derived_normals: &DerivedCornerNormals,
     normals_source: NormalsSource,
     mesh: &mut TriMesh,
     key_to_index: &mut HashMap<RenderVertexKey, u32>,
@@ -356,7 +373,7 @@ fn resolve_render_vertex(
     corner: CornerId,
     corner_uvs: Option<&SparseLayer<[f32; 2]>>,
     normal_overrides: Option<&SparseLayer<[f32; 3]>>,
-    derived_normals: &crate::DerivedCornerNormals,
+    derived_normals: &DerivedCornerNormals,
     normals_source: NormalsSource,
     mesh: &mut TriMesh,
     key_to_index: &mut HashMap<RenderVertexKey, u32>,
@@ -412,7 +429,7 @@ fn resolve_render_vertex(
 fn effective_corner_normal(
     corner: CornerId,
     normal_overrides: Option<&SparseLayer<[f32; 3]>>,
-    derived_normals: &crate::DerivedCornerNormals,
+    derived_normals: &DerivedCornerNormals,
     source: NormalsSource,
 ) -> [f32; 3] {
     let override_normal = normal_overrides.and_then(|layer| layer.get(corner.as_id()).copied());
@@ -679,6 +696,58 @@ mod tests {
             ..ExtractParams::default()
         });
         assert_eq!(mesh.normals[0], [1.0, 0.0, 0.0]);
+        assert_eq!(&mesh.normals[1..], &[[0.0; 3]; 2]);
+    }
+
+    #[test]
+    fn authored_normal_coverage_uses_live_face_corners() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.add_face(&[0, 1, 2]).expect("triangle");
+        let mut mesh = builder.build().expect("build").mesh;
+        let corners: Vec<_> = mesh.faces().flat_map(|face| mesh.face_loop(face)).collect();
+        let params = ExtractParams {
+            normals: NormalsSource::CustomOrDerived,
+            ..ExtractParams::default()
+        };
+        let derived = mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(mesh.to_trimesh(&params), derived);
+
+        let mut edit = mesh.edit();
+        for &corner in &corners {
+            op::set_corner_normal_override(&mut edit, corner, Some([1.0, 0.0, 0.0]))
+                .expect("authored normal");
+        }
+        let _: () = edit.finish();
+        let authored = mesh.to_trimesh(&params);
+        assert_eq!(authored.0.normals, vec![[1.0, 0.0, 0.0]; 3]);
+        assert_eq!(mesh.to_trimesh(&ExtractParams::default()), derived);
+        assert_eq!(
+            mesh.to_trimesh(&ExtractParams {
+                normals: NormalsSource::CustomOnly,
+                ..params
+            }),
+            authored
+        );
+
+        // Keep the same number of overrides, but move one to an OUTSIDE
+        // half-edge. The now-missing face corner must still derive its normal.
+        let missing = corners[2];
+        let boundary = mesh.twin(missing).expect("boundary twin");
+        let mut edit = mesh.edit();
+        op::set_corner_normal_override(&mut edit, missing, None).expect("clear normal");
+        op::set_corner_normal_override(&mut edit, boundary, Some([0.0, 1.0, 0.0]))
+            .expect("boundary normal");
+        let _: () = edit.finish();
+        let (mixed, _) = mesh.to_trimesh(&params);
+        assert_eq!(mixed.positions, authored.0.positions);
+        assert_eq!(mixed.indices, authored.0.indices);
+        assert_eq!(
+            mixed.normals,
+            vec![[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], derived.0.normals[2]]
+        );
     }
 
     #[test]

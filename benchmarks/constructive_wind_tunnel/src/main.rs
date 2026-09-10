@@ -162,6 +162,10 @@ impl Config {
                 }
                 "--stretch" => config.stretch_only = true,
                 "--corners" => config.corners_only = true,
+                "--corners-sample" => {
+                    config.profile = Profile::Sample;
+                    config.corners_only = true;
+                }
                 "--stretch-stress" => {
                     config.profile = Profile::Stress;
                     config.stretch_only = true;
@@ -183,7 +187,7 @@ impl Config {
 
 fn print_help() {
     eprintln!(
-        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners]"
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners | --corners-sample]"
     );
 }
 
@@ -870,7 +874,7 @@ fn run_ct5(profile: Profile) {
         )
         .expect("CT-5 input")
         .mesh;
-        for tolerance in [0.0002, 0.00005, 0.00002] {
+        for tolerance in [0.001, 0.0002, 0.00005, 0.00002] {
             let mut policy = RoundPolicy::fillet(0.006);
             policy.chord_tolerance = tolerance;
             let build = || {
@@ -894,6 +898,12 @@ fn run_ct5(profile: Profile) {
                 ..ExtractParams::default()
             };
             let (render, _) = mesh.to_trimesh(&params);
+            let render_signature = trimesh_signature(&render);
+            assert_eq!(
+                render_signature,
+                trimesh_signature(&repeat.to_trimesh(&params).0),
+                "CT-5 authored render normals must repeat"
+            );
             let buffer_bytes = size_of_val(render.positions.as_slice())
                 + size_of_val(render.normals.as_slice())
                 + size_of_val(render.indices.as_slice());
@@ -905,7 +915,7 @@ fn run_ct5(profile: Profile) {
                 black_box(mesh.to_trimesh(&params));
             });
             println!(
-                "scenario=CT-5 shape={shape} tolerance={tolerance} iterations={iterations} patch_triangles={} triangles={} vertices={} render_bytes={buffer_bytes} round_best_ns={} round_avg_ns={} extract_best_ns={} extract_avg_ns={} signature={signature:016x}",
+                "scenario=CT-5 shape={shape} tolerance={tolerance} iterations={iterations} patch_triangles={} triangles={} vertices={} render_bytes={buffer_bytes} round_best_ns={} round_avg_ns={} extract_best_ns={} extract_avg_ns={} signature={signature:016x} render_signature={render_signature:016x}",
                 stats.patch_faces,
                 render.indices.len() / 3,
                 mesh.vertices().count(),
