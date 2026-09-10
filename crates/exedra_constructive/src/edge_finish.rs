@@ -203,7 +203,9 @@ fn targets(
 /// can override their geometric region. An occurrence's default material
 /// remains external to this sparse face-slot map.
 ///
-/// New and rewritten faces have no UVs. Unchanged faces retain theirs. Fillet
+/// UVs follow [`round_edges`]: trimmed faces interpolate their source charts,
+/// and bands and corners project onto the first source face's chart. Incomplete
+/// charts supply no new UVs; surviving corner values are retained. Fillet
 /// bands and corners author radial normals for `CustomOrDerived` extraction;
 /// chamfers and transverse end boundaries remain hard.
 ///

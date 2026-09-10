@@ -152,9 +152,13 @@ feature in feature order; surviving vertices retain their previous feature.
 
 Fillet normals follow the sampled circular/spherical surfaces; chamfers and
 transverse end rims remain hard. Set assembly `CompilePolicy::normals` to
-`NormalsSource::CustomOrDerived`. UV generation for new and rewritten faces is
-deferred, with an `eval.edge_finish.uv_deferred` note on cold and warm runs.
-Unchanged faces retain their UVs. `finish_edges` exposes the same operation for
+`NormalsSource::CustomOrDerived`. Surviving corners retain their exact UVs, and
+trimmed faces interpolate their source charts. Bands and patches project onto
+the first source face's UV chart, matching material ownership; chart boundaries
+are marked as seams. Projection stretches textures toward perpendicular
+tangencies and can fold beyond them; it does not provide an arc-length unwrap.
+Incomplete or non-finite charts supply no new UVs; untextured inputs remain untextured.
+`finish_edges` exposes the same operation for
 a standalone tessellated body and returns typed failures without changing it.
 
 The supported examples are a box rail with all convex edges filleted and a
@@ -170,10 +174,11 @@ panel Booleans can also reuse region numbers across operands; ambiguous rim
 selection is explicitly refused. This slice does not promise general panel-rim
 fillets or repair self-intersecting offset strips.
 
-Migration: the new node and text/JSON payload are additive. Evaluation schema
-19 invalidates cached output, including schema-18 edge finishes whose spherical
-corners now use fewer radial layers at the same tolerance. Regenerate persisted
-constructive text with the current schema. Existing recipes need no field changes.
+Migration: evaluation schema 20 invalidates cached output for UV transfer and
+removes the unconditional `eval.edge_finish.uv_deferred` note. Regenerate
+persisted constructive text with the current schema. Existing recipes need no
+field changes. Callers that supply their own unwrap can continue overwriting
+the finished faces' UVs; new faces no longer necessarily have missing UVs.
 The runnable comparison is
 `cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes`.
 Exhaustive `NodeKindDto` matches must handle its new `EdgeFinish` variant.

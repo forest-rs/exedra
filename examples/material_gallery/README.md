@@ -40,5 +40,23 @@ cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes
 
 These synthetic dimensions use metres in the recipe. The example preserves
 fillet normal overrides through assembly compilation and supplies its own
-preview material. UV generation for finished faces is deferred; no textures
-are used. Recessed-panel rim fillets are outside this example's supported scope.
+preview material. These inputs have no UVs and use no textures. Recessed-panel
+rim fillets are outside this example's supported scope.
+
+## Textured edge finishes
+
+```sh
+cargo run -p material_gallery --bin textured_finishes -- target/textured-finishes
+blender --background --python examples/material_gallery/tools/render_textured_finishes.py -- target/textured-finishes
+```
+
+The example exports a 450 × 24 × 700 mm slab door with caller-authored UVs,
+then a 4 mm chamfer and a 4 mm fillet of the same door. The finish happens inside
+the constructive recipe, before assembly compilation and GLB export.
+
+The Blender script renders checkerboard and woodgrain views using only the
+exported UVs; it never unwraps or repairs the imported mesh. Textures are supplied
+by the script because the Exedra material resolver currently supports untextured
+materials. Fillet and chamfer mapping projects the owning source face's chart:
+the close views show both texture continuity on that side and stretching toward
+the other tangency. Source-chart changes at bands and corner patches are seams.

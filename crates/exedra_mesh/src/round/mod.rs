@@ -40,6 +40,7 @@
 mod geom;
 #[cfg(test)]
 mod tests;
+mod uv;
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -48,7 +49,7 @@ use core::fmt;
 use crate::math::FloatExt;
 use crate::op::{
     AddFaceError, add_face, add_vertex, delete_faces, delete_vertices, set_corner_normal_override,
-    set_edge_seam, set_edge_sharpness, set_face_region,
+    set_corner_uv, set_edge_seam, set_edge_sharpness, set_face_region,
 };
 use crate::{DeletePolicy, FaceId, HalfEdgeId, Mesh, VertexId, attr};
 
@@ -349,10 +350,26 @@ pub fn round_sharp_edges(mesh: &mut Mesh, policy: &RoundPolicy) -> Result<RoundS
 /// Fillets author radial corner normals; chamfers and trimmed planar faces
 /// retain flat boundaries. Use [`crate::NormalsSource::CustomOrDerived`] for
 /// those normals. Valid normal overrides at unchanged corners of rewritten
-/// faces survive. UVs on new and rewritten faces are unset; callers must map
-/// those faces explicitly. Unchanged faces retain all their attributes.
+/// faces survive. Unchanged faces retain all their attributes.
 /// New bands and patches use `policy.region`, or their first source face's
 /// region when it is absent.
+///
+/// # UVs
+///
+/// Surviving corners keep their exact UVs. New corners interpolate the input
+/// face's robust triangulation; bands and patches project onto the first source
+/// face's chart, matching material ownership. Projection uses the source chart's
+/// coordinates: textures stretch toward perpendicular tangencies and can fold
+/// on surfaces turning beyond them. It is not an arc-length unwrap.
+/// Outside the source polygon, the closest triangle's mapping is extended.
+/// Different source charts can meet at seams,
+/// which are marked on changed edges without clearing authored seams.
+///
+/// A source face with missing or non-finite UVs, or a failed triangulation,
+/// supplies no interpolated UVs. Surviving corner values still remain intact.
+/// Non-finite interpolation results are left unset. No default mapping or
+/// texture scale is invented for untextured inputs; callers can remap faces
+/// using [`RoundResult::face_provenance`].
 ///
 /// # Errors
 ///
@@ -490,6 +507,7 @@ struct NewFace {
     region: Option<u32>,
     source: RoundFaceSource,
     normals: Vec<[f32; 3]>,
+    uvs: Vec<Option<[f32; 2]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -844,6 +862,8 @@ impl Planner<'_> {
 
         // Corner patches.
         self.emit_corner_patches(&chains, &corners)?;
+
+        uv::transfer(self.mesh, &self.points, &mut self.faces);
 
         // Capture edge attributes worth re-keying. The chain edges
         // themselves are consumed — their sharpness must NOT transfer onto
@@ -1235,6 +1255,7 @@ impl Planner<'_> {
             region,
             source,
             normals,
+            uvs: Vec::new(),
         });
         Ok(())
     }
@@ -1958,15 +1979,25 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
         if let Some(region) = planned.region {
             let _ = set_face_region(&mut session, face, region);
         }
-        let normals: BTreeMap<_, _> = loop_vertices
+        let attributes: BTreeMap<_, _> = loop_vertices
             .iter()
             .copied()
-            .zip(planned.normals.iter().copied())
+            .enumerate()
+            .map(|(i, vertex)| {
+                (
+                    vertex,
+                    (planned.normals[i], planned.uvs.get(i).copied().flatten()),
+                )
+            })
             .collect();
         let corners: Vec<_> = session.mesh().face_loop(face).collect();
         for corner in corners {
             let vertex = session.mesh().to_vertex(corner).expect("live new corner");
-            let _ = set_corner_normal_override(&mut session, corner, Some(normals[&vertex]));
+            let (normal, uv) = attributes[&vertex];
+            let _ = set_corner_normal_override(&mut session, corner, Some(normal));
+            if let Some(uv) = uv {
+                let _ = set_corner_uv(&mut session, corner, uv);
+            }
         }
         added.push(face);
     }
@@ -2000,6 +2031,21 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
         }
         if let Some(seam) = seam {
             let _ = set_edge_seam(&mut session, half_edge, seam);
+        }
+    }
+
+    // UV corners belong to each half-edge's destination vertex. Compare both
+    // endpoints using the preceding corner in the opposite loop. Preserve
+    // authored seams even when their UVs happen to agree.
+    if session.mesh().attrs().sparse(attr::CORNER_UV).is_some() {
+        for &edge in new_half_edges.values() {
+            let twin = session.mesh().twin(edge).expect("new edge has a twin");
+            let previous = session.mesh().prev(edge).expect("live loop");
+            let twin_previous = session.mesh().prev(twin).expect("live twin loop");
+            let bits = |corner| session.corner_uv(corner).map(|uv| uv.map(f32::to_bits));
+            if bits(edge) != bits(twin_previous) || bits(previous) != bits(twin) {
+                let _ = set_edge_seam(&mut session, edge, true);
+            }
         }
     }
 

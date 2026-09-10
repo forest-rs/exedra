@@ -16,4 +16,5 @@ workspace = true
 exedra_assembly = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_gltf.workspace = true
+exedra_mesh = { features = ["std"], workspace = true }
 serde_json.workspace = true

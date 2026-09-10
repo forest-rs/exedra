@@ -850,14 +850,6 @@ impl EvalCx<'_> {
             }
             body
         };
-        // This contract also applies on cache hits; UV absence must not become
-        // invisible merely because geometry was already compiled.
-        self.push_diagnostic(
-            node_id,
-            Severity::Note,
-            "eval.edge_finish.uv_deferred",
-            String::from("UV generation is deferred for new and rewritten edge-finish faces"),
-        );
         let body = if *world == Placement3::IDENTITY {
             body
         } else {
