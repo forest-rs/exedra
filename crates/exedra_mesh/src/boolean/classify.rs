@@ -882,7 +882,7 @@ fn prepare_ray_triangles(
 ///
 /// Casts a segment from `point` to a far point beyond the mesh bounds and
 /// counts strict triangle crossings with exact [`orient3d`] signs. Any
-/// coplanar sign anywhere retries with the next direction; `None` when
+/// touch or coplanar overlap retries with the next direction; `None` when
 /// every direction degenerates.
 fn ray_parity(
     point: [f64; 3],
@@ -942,6 +942,7 @@ fn triangle_is_flat(t: [[f64; 3]; 3]) -> bool {
     cross == [0.0, 0.0, 0.0]
 }
 
+#[derive(Debug, Eq, PartialEq)]
 enum Crossing {
     Crosses,
     Misses,
@@ -957,13 +958,20 @@ enum Crossing {
 /// every ray direction. When exactly one endpoint is coplanar and lies
 /// strictly outside the triangle (exact in-plane test), the segment only
 /// touches the plane where the triangle is not — a miss. An endpoint
-/// inside or on the triangle, or a segment lying in the plane, is a
-/// genuine degeneracy (the caller retries a different ray).
+/// inside or on the triangle, or a coplanar segment touching it, is a
+/// genuine degeneracy (the caller retries a different ray). Strict separation
+/// from the triangle remains a miss, including in its supporting plane.
 fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Crossing {
     let sp = orient3d(t[0], t[1], t[2], p);
     let sq = orient3d(t[0], t[1], t[2], q);
     match (sp == Orientation3d::Coplanar, sq == Orientation3d::Coplanar) {
-        (true, true) => return Crossing::Degenerate,
+        (true, true) => {
+            return if coplanar_segment_misses_triangle(p, q, t) {
+                Crossing::Misses
+            } else {
+                Crossing::Degenerate
+            };
+        }
         (true, false) => {
             return if point_strictly_outside_triangle(p, t) {
                 Crossing::Misses
@@ -986,17 +994,35 @@ fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Cross
     let s1 = orient3d(p, q, t[0], t[1]);
     let s2 = orient3d(p, q, t[1], t[2]);
     let s3 = orient3d(p, q, t[2], t[0]);
-    if s1 == Orientation3d::Coplanar
-        || s2 == Orientation3d::Coplanar
-        || s3 == Orientation3d::Coplanar
-    {
-        return Crossing::Degenerate;
-    }
-    if s1 == s2 && s2 == s3 {
-        Crossing::Crosses
-    } else {
+    let signs = [s1, s2, s3];
+    // Opposing strict signs put the plane intersection outside the triangle,
+    // even when another sign is zero on an edge's infinite extension.
+    if signs.contains(&Orientation3d::Above) && signs.contains(&Orientation3d::Below) {
         Crossing::Misses
+    } else if signs.contains(&Orientation3d::Coplanar) {
+        Crossing::Degenerate
+    } else {
+        Crossing::Crosses
     }
+}
+
+/// Exact separating-axis test in the triangle's plane. A segment misses
+/// when both endpoints lie beyond one triangle edge, or all three corners
+/// lie strictly on one side of the segment's line. Touching is not separation.
+fn coplanar_segment_misses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> bool {
+    let (axis, corners) = project_triangle(t);
+    let p = project_point(p, axis);
+    let q = project_point(q, axis);
+    let interior = orient2d(corners[0], corners[1], corners[2]);
+    for i in 0..3 {
+        let a = orient2d(corners[i], corners[(i + 1) % 3], p);
+        let b = orient2d(corners[i], corners[(i + 1) % 3], q);
+        if a != Orientation::Collinear && a != interior && b == a {
+            return true;
+        }
+    }
+    let signs = corners.map(|corner| orient2d(p, q, corner));
+    signs[0] != Orientation::Collinear && signs[0] == signs[1] && signs[1] == signs[2]
 }
 
 /// Exact test that a point in a (non-flat) triangle's plane lies strictly
@@ -1004,6 +1030,18 @@ fn segment_crosses_triangle(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3]) -> Cross
 /// projection: strictly outside means on the opposite side of some edge
 /// from the triangle's interior.
 fn point_strictly_outside_triangle(p: [f64; 3], t: [[f64; 3]; 3]) -> bool {
+    let (axis, corners) = project_triangle(t);
+    let interior = orient2d(corners[0], corners[1], corners[2]);
+    if interior == Orientation::Collinear {
+        return false; // Flat in projection; the caller filtered flats.
+    }
+    (0..3).any(|i| {
+        let side = orient2d(corners[i], corners[(i + 1) % 3], project_point(p, axis));
+        side != Orientation::Collinear && side != interior
+    })
+}
+
+fn project_triangle(t: [[f64; 3]; 3]) -> (usize, [[f64; 2]; 3]) {
     let u = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
     let v = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
     let normal = [
@@ -1017,14 +1055,7 @@ fn point_strictly_outside_triangle(p: [f64; 3], t: [[f64; 3]; 3]) -> bool {
         project_point(t[1], axis),
         project_point(t[2], axis),
     ];
-    let interior = orient2d(corners[0], corners[1], corners[2]);
-    if interior == Orientation::Collinear {
-        return false; // Flat in projection; the caller filtered flats.
-    }
-    (0..3).any(|i| {
-        let side = orient2d(corners[i], corners[(i + 1) % 3], project_point(p, axis));
-        side != Orientation::Collinear && side != interior
-    })
+    (axis, corners)
 }
 
 #[cfg(test)]
@@ -1034,6 +1065,76 @@ mod tests {
     use crate::boolean::{
         BooleanBvh, BooleanScratch, build_intersection_graph, narrow_phase, split_mesh_along_graph,
     };
+
+    fn assert_crossing(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3], expected: Crossing) {
+        // Endpoint order, winding and dominant projection axis must not change
+        // whether a finite segment actually touches the triangle.
+        for axis in 0..3 {
+            let rotate = |v: [f64; 3]| [v[axis], v[(axis + 1) % 3], v[(axis + 2) % 3]];
+            let [a, b, c] = t.map(rotate);
+            for triangle in [
+                [a, b, c],
+                [b, c, a],
+                [c, a, b],
+                [c, b, a],
+                [b, a, c],
+                [a, c, b],
+            ] {
+                for (p, q) in [(rotate(p), rotate(q)), (rotate(q), rotate(p))] {
+                    assert_eq!(
+                        segment_crosses_triangle(p, q, triangle),
+                        expected,
+                        "{p:?} -> {q:?}, {triangle:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rays_miss_remote_planes_and_edge_extensions() {
+        let triangle = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        for (p, q) in [
+            ([2.0, 0.0, -1.0], [2.0, 0.0, 1.0]),
+            ([2.0, 2.0, 0.0], [3.0, 3.0, 0.0]),
+            ([-1.0, 0.25, 0.0], [0.25, -1.0, 0.0]),
+            ([2.0, 0.0, 0.0], [3.0, 0.0, 0.0]),
+            ([2.0, 2.0, 0.0], [2.0, 2.0, 0.0]),
+        ] {
+            assert_crossing(p, q, triangle, Crossing::Misses);
+        }
+        for (p, q) in [
+            ([0.5, 0.0, -1.0], [0.5, 0.0, 1.0]),
+            ([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]),
+            ([-1.0, 0.25, 0.0], [1.0, 0.25, 0.0]),
+            ([-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            ([0.25, 0.25, 0.0], [0.25, 0.25, 0.0]),
+            ([0.25, 0.25, 0.0], [0.25, 0.25, 1.0]),
+        ] {
+            assert_crossing(p, q, triangle, Crossing::Degenerate);
+        }
+    }
+
+    #[test]
+    fn rays_distinguish_near_edge_crossings_from_misses() {
+        // One representable f32 step to either side of an edge is strict
+        // geometry, not an epsilon-based graze. Scale across the f32 range.
+        for scale in [f64::from(f32::MIN_POSITIVE), 1.0, f64::from(f32::MAX) / 4.0] {
+            let triangle = [[0.0; 3], [scale, 0.0, 0.0], [0.0, scale, 0.0]];
+            for (x, expected) in [
+                (-f64::from(f32::from_bits(1)), Crossing::Misses),
+                (0.0, Crossing::Degenerate),
+                (f64::from(f32::from_bits(1)), Crossing::Crosses),
+            ] {
+                assert_crossing(
+                    [x, scale / 4.0, -scale],
+                    [x, scale / 4.0, scale],
+                    triangle,
+                    expected,
+                );
+            }
+        }
+    }
 
     #[test]
     fn contact_boundaries_join_only_one_simple_region() {
