@@ -21,6 +21,9 @@ pub const VERTEX_POSITION: AttrKey<[f32; 3]> = AttrKey::new(Domain::Vertex, "ver
 pub const VERTEX_SHARPNESS: AttrKey<f32> = AttrKey::new(Domain::Vertex, "vertex.sharpness");
 
 /// Optional corner UV coordinates.
+///
+/// Each corner belongs to the half-edge's destination vertex within its face;
+/// use [`crate::Mesh::to_vertex`] to obtain the corresponding position.
 pub const CORNER_UV: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.uv");
 
 /// Optional authored corner normal overrides.

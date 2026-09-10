@@ -10,7 +10,7 @@ use exedra_mesh::{CornerId, FaceId};
 use crate::{
     Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, FaceSet, OpContext,
     OpError, OpReport,
-    uv_common::{face_normal, select_faces, stale_face_error},
+    uv_common::{corner_position, face_normal, select_faces, stale_face_error},
 };
 
 /// Face selection scope for UV projection.
@@ -195,12 +195,7 @@ fn project_corner(
     scale: f32,
     offset: [f32; 2],
 ) -> [f32; 2] {
-    let vertex = mesh
-        .from_vertex(corner)
-        .expect("face loop corner must have source vertex");
-    let position = mesh
-        .vertex_position(vertex)
-        .expect("live vertex must have builtin position");
+    let position = corner_position(mesh, corner);
     let base = match plane {
         UvPlane::WorldXY => [position[0], position[1]],
         UvPlane::WorldXZ => [position[0], position[2]],
@@ -274,6 +269,9 @@ mod tests {
         assert_eq!(tri.indices.len(), 6);
         assert!(tri.uvs.contains(&[0.5, 1.0]));
         assert!(tri.uvs.contains(&[2.5, 3.0]));
+        for (position, uv) in tri.positions.iter().zip(&tri.uvs) {
+            assert_eq!(*uv, [2.0 * position[0] + 0.5, 2.0 * position[1] + 1.0]);
+        }
     }
 
     #[test]

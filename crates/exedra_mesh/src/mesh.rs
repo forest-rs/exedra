@@ -1495,8 +1495,8 @@ impl Mesh {
     #[must_use]
     pub fn is_uv_discontinuous(&self, half_edge: HalfEdgeId) -> Option<bool> {
         let twin = self.twin(half_edge)?;
-        let next = self.next(half_edge)?;
-        let twin_next = self.next(twin)?;
+        let previous = self.prev(half_edge)?;
+        let twin_previous = self.prev(twin)?;
         let layer = self.attrs.sparse(attr::CORNER_UV);
         let uv = |corner: HalfEdgeId| {
             layer
@@ -1504,8 +1504,9 @@ impl Mesh {
                 .unwrap_or([0.0, 0.0])
         };
 
-        let endpoint_a_diff = uv(half_edge).map(f32::to_bits) != uv(twin_next).map(f32::to_bits);
-        let endpoint_b_diff = uv(twin).map(f32::to_bits) != uv(next).map(f32::to_bits);
+        let endpoint_a_diff =
+            uv(half_edge).map(f32::to_bits) != uv(twin_previous).map(f32::to_bits);
+        let endpoint_b_diff = uv(twin).map(f32::to_bits) != uv(previous).map(f32::to_bits);
         Some(endpoint_a_diff || endpoint_b_diff)
     }
 
@@ -3062,6 +3063,50 @@ mod tests {
         let twin = mesh.twin(h0).expect("twin exists");
         assert_eq!(mesh.face(twin), Some(FaceId::OUTSIDE));
         assert_ne!(mesh.from_vertex(h0), mesh.to_vertex(h0));
+    }
+
+    #[test]
+    fn uv_continuity_compares_the_same_destination_vertices() {
+        let mut builder = MeshBuilder::new();
+        for p in [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 3.0, 0.0],
+            [0.0, 3.0, 0.0],
+        ] {
+            builder.push_vertex(p);
+        }
+        builder.add_face(&[0, 1, 2]).unwrap();
+        builder.add_face(&[0, 2, 3]).unwrap();
+        let mut mesh = builder.build().unwrap().mesh;
+        let values: Vec<_> = mesh
+            .faces()
+            .flat_map(|f| mesh.face_loop(f))
+            .map(|corner| {
+                let p = mesh
+                    .vertex_position(mesh.to_vertex(corner).unwrap())
+                    .unwrap();
+                (corner, [p[0], p[1]])
+            })
+            .collect();
+        let diagonal = values
+            .iter()
+            .map(|&(corner, _)| corner)
+            .find(|&corner| mesh.face(mesh.twin(corner).unwrap()) != Some(FaceId::OUTSIDE))
+            .unwrap();
+        let mut edit = mesh.edit();
+        for (corner, uv) in values {
+            op::set_corner_uv(&mut edit, corner, uv).unwrap();
+        }
+        let _: () = edit.finish();
+        let twin = mesh.twin(diagonal).unwrap();
+        assert_eq!(mesh.is_uv_discontinuous(diagonal), Some(false));
+        assert_eq!(mesh.is_uv_discontinuous(twin), Some(false));
+        let mut edit = mesh.edit();
+        op::set_corner_uv(&mut edit, diagonal, [20.0, 30.0]).unwrap();
+        let _: () = edit.finish();
+        assert_eq!(mesh.is_uv_discontinuous(diagonal), Some(true));
+        assert_eq!(mesh.is_uv_discontinuous(twin), Some(true));
     }
 
     #[test]

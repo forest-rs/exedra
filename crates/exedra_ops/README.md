@@ -61,6 +61,10 @@ independently and are forwarded only to enabled adapters.
 - **Boolean orchestration**: preview/commit staging over Exedra Mesh's Boolean
   pipeline.
 
+UV projection uses each corner's destination vertex, matching render extraction.
+Migration: regenerate mappings authored by the earlier projection operators,
+which shifted UVs by one corner around each face. Operator parameters are unchanged.
+
 ## Design
 
 - [SDK boundary](https://github.com/forest-rs/exedra/blob/main/crates/exedra_ops/docs/adr-0001-operator-sdk-surface.md) — the mesh workflow

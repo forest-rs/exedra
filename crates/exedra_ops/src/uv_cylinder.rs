@@ -10,7 +10,7 @@ use exedra_mesh::CornerId;
 use crate::{
     Artifact, Artifacts, EditOperator, OpContext, OpError, OpReport, UvScope,
     math::FloatExt,
-    uv_common::{select_faces, stale_face_error},
+    uv_common::{corner_position, select_faces, stale_face_error},
 };
 
 const TAU: f32 = core::f32::consts::PI * 2.0;
@@ -163,12 +163,7 @@ fn project_corner_cylinder(
     corner: CornerId,
     params: &UvCylinderParams,
 ) -> [f32; 2] {
-    let vertex = mesh
-        .from_vertex(corner)
-        .expect("face loop corner must have source vertex");
-    let p = *mesh
-        .vertex_position(vertex)
-        .expect("live vertex must have builtin position");
+    let p = corner_position(mesh, corner);
 
     let (radial_a, radial_b, axial) = match params.axis {
         CylinderAxis::X => (p[1], p[2], p[0]),
@@ -186,7 +181,7 @@ fn project_corner_cylinder(
 
 #[cfg(test)]
 mod tests {
-    use exedra_mesh::MeshBuilder;
+    use exedra_mesh::{ExtractParams, MeshBuilder};
 
     use super::{CylinderAxis, UvCylinder, UvCylinderParams};
     use crate::{OperatorRunner, UvScope, test_support::commit};
@@ -223,6 +218,15 @@ mod tests {
         .expect("uv.cylinder should succeed");
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.corners_written, 4);
+        let (tri, _) = mesh.to_trimesh(&ExtractParams::default());
+        for (position, uv) in tri.positions.iter().zip(&tri.uvs) {
+            assert_eq!(
+                uv[1], position[1],
+                "Y-axis projection must retain the vertex's height"
+            );
+            let expected_u = if position[2] == 1.0 { 0.25 } else { 0.0 };
+            assert_eq!(uv[0], expected_u);
+        }
     }
 
     #[test]
@@ -245,8 +249,8 @@ mod tests {
         let _ =
             commit(&mut runner_b, &mut mesh_b, &UvCylinder, &params).expect("run should succeed");
 
-        let (tri_a, _) = mesh_a.to_trimesh(&exedra_mesh::ExtractParams::default());
-        let (tri_b, _) = mesh_b.to_trimesh(&exedra_mesh::ExtractParams::default());
+        let (tri_a, _) = mesh_a.to_trimesh(&ExtractParams::default());
+        let (tri_b, _) = mesh_b.to_trimesh(&ExtractParams::default());
         assert_eq!(tri_a.uvs, tri_b.uvs);
         assert!(tri_a.uvs.iter().all(|uv| uv[0] >= 0.0 && uv[0] < 1.0));
     }

@@ -10,7 +10,7 @@ use exedra_mesh::{CornerId, FaceId};
 use crate::{
     Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError,
     OpReport, UvScope,
-    uv_common::{face_normal, select_faces, stale_face_error},
+    uv_common::{corner_position, face_normal, select_faces, stale_face_error},
 };
 
 /// Parameters for [`UvBox`].
@@ -170,12 +170,7 @@ fn project_corner_box(
     scale: f32,
     offset: [f32; 2],
 ) -> [f32; 2] {
-    let vertex = mesh
-        .from_vertex(corner)
-        .expect("face loop corner must have source vertex");
-    let p = *mesh
-        .vertex_position(vertex)
-        .expect("live vertex must have builtin position");
+    let p = corner_position(mesh, corner);
     let base = match plane {
         BoxPlane::PosX => [-p[2], p[1]],
         BoxPlane::NegX => [p[2], p[1]],
@@ -230,7 +225,7 @@ fn dominant_box_plane(mesh: &exedra_mesh::Mesh, face: FaceId, epsilon: f32) -> (
 
 #[cfg(test)]
 mod tests {
-    use exedra_mesh::MeshBuilder;
+    use exedra_mesh::{ExtractParams, MeshBuilder};
 
     use super::{UvBox, UvBoxParams};
     use crate::{OperatorRunner, UvScope, test_support::commit};
@@ -263,6 +258,10 @@ mod tests {
         .expect("uv.box should succeed");
         assert_eq!(result.report.stats.counters.faces_processed, 1);
         assert_eq!(result.report.stats.counters.corners_written, 4);
+        let (tri, _) = mesh.to_trimesh(&ExtractParams::default());
+        for (position, uv) in tri.positions.iter().zip(&tri.uvs) {
+            assert_eq!(*uv, [position[0], position[1]]);
+        }
     }
 
     #[test]
@@ -292,8 +291,8 @@ mod tests {
         let _ = commit(&mut runner_a, &mut mesh_a, &UvBox, &params).expect("run");
         let _ = commit(&mut runner_b, &mut mesh_b, &UvBox, &params).expect("run");
 
-        let (tri_a, stats_a) = mesh_a.to_trimesh(&exedra_mesh::ExtractParams::default());
-        let (tri_b, stats_b) = mesh_b.to_trimesh(&exedra_mesh::ExtractParams::default());
+        let (tri_a, stats_a) = mesh_a.to_trimesh(&ExtractParams::default());
+        let (tri_b, stats_b) = mesh_b.to_trimesh(&ExtractParams::default());
         assert_eq!(stats_a, stats_b);
         assert_eq!(tri_a.indices, tri_b.indices);
         assert_eq!(tri_a.uvs, tri_b.uvs);

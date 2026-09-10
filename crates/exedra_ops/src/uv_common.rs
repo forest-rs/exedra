@@ -36,8 +36,8 @@ pub(crate) fn select_faces(mesh: &Mesh, scope: &UvScope) -> SelectedFaces {
 
 pub(crate) fn corner_position(mesh: &Mesh, corner: CornerId) -> [f32; 3] {
     let vertex = mesh
-        .from_vertex(corner)
-        .expect("face loop corner must have source vertex");
+        .to_vertex(corner)
+        .expect("face loop corner must have destination vertex");
     *mesh
         .vertex_position(vertex)
         .expect("live vertex must have builtin position")
