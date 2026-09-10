@@ -12,7 +12,7 @@ use crate::tessellate::{EvalPolicy, tessellate_extrude, tessellate_primitive};
 use crate::text;
 use alloc::{format, rc::Rc, vec};
 use exedra_mesh::ChangeSetBuilder;
-use exedra_mesh::op::set_face_region;
+use exedra_mesh::op::{set_corner_uv, set_face_region};
 
 fn box_node(b: &mut RecipeBuilder, size: [f64; 3]) -> NodeId {
     b.add(NodeKind::Primitive {
@@ -36,11 +36,41 @@ fn rail_recipe(selection: EdgeSelection, policy: RoundPolicy) -> Recipe {
 }
 
 #[test]
-fn finished_geometry_and_uv_diagnostics_replay_from_cache_without_capturing_defaults() {
+fn finished_geometry_and_uvs_replay_from_cache_without_capturing_defaults() {
     let mut b = RecipeBuilder::new();
     let red = b.material_slot("red");
     let blue = b.material_slot("blue");
-    let child = box_node(&mut b, [0.09, 0.2, 2.0]);
+    let mut mesh = tessellate_primitive(
+        PrimitiveSpec::Box {
+            size: [0.09, 0.2, 2.0],
+        },
+        &Placement3::IDENTITY,
+        &EvalPolicy::default(),
+    )
+    .unwrap()
+    .mesh;
+    let values: Vec<_> = mesh
+        .faces()
+        .flat_map(|f| mesh.face_loop(f))
+        .map(|corner| {
+            let p = mesh
+                .vertex_position(mesh.to_vertex(corner).unwrap())
+                .unwrap();
+            (corner, [p[0] + p[1] + 0.25, p[1] + p[2] + 0.75])
+        })
+        .collect();
+    let mut edit = mesh.edit();
+    for (corner, uv) in values {
+        set_corner_uv(&mut edit, corner, uv).unwrap();
+    }
+    let _: () = edit.finish();
+    let import = b.add_import(mesh).unwrap();
+    let child = b
+        .add(NodeKind::MeshImport {
+            import,
+            placement: Placement3::IDENTITY,
+        })
+        .unwrap();
     let finish = b
         .add(NodeKind::EdgeFinish {
             child,
@@ -84,7 +114,7 @@ fn finished_geometry_and_uv_diagnostics_replay_from_cache_without_capturing_defa
             .iter()
             .filter(|d| d.code == "eval.edge_finish.uv_deferred")
             .count(),
-        2
+        0
     );
     for result in [&cold, &warm] {
         assert!(
@@ -95,6 +125,16 @@ fn finished_geometry_and_uv_diagnostics_replay_from_cache_without_capturing_defa
                 .all(|d| d.severity != Severity::Error)
         );
         for (placed, slot) in result.bodies.iter().zip([red, blue]) {
+            let mesh = &placed.body.mesh;
+            for corner in mesh.faces().flat_map(|f| mesh.face_loop(f)) {
+                let uv = mesh
+                    .attrs()
+                    .sparse(attr::CORNER_UV)
+                    .unwrap()
+                    .get(corner.as_id())
+                    .unwrap();
+                assert!(uv.iter().all(|v| v.is_finite()));
+            }
             assert!(
                 placed
                     .body

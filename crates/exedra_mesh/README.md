@@ -31,8 +31,15 @@ Both operations author radial fillet normals and retain hard chamfer/end
 boundaries. Extract with `NormalsSource::CustomOrDerived`. Unchanged faces keep
 all attributes; rewritten faces preserve their regions and valid authored
 normals at surviving corners. New faces use the requested region or the first
-source face's region. UVs on new and rewritten faces are unset and require
-caller mapping. Source faces are listed in ascending input-ID order.
+source face's region. Source faces are listed in ascending input-ID order.
+
+Surviving corners keep their exact UVs. New corners interpolate the source
+face's robust triangulation; bands and patches project onto the first source
+face's chart, matching material ownership. Textures stretch toward perpendicular
+tangencies and can fold on surfaces turning beyond them.
+Different charts meet at explicit edge seams. Incomplete or non-finite source
+charts supply no new UVs. Untextured inputs remain untextured; callers can use
+the face provenance to apply a different mapping after finishing.
 
 Explicit segments must be in `1..=256` and control both strip bands and corner
 radial layers. Otherwise chord tolerance controls the arc and triangle surfaces,

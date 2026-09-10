@@ -344,7 +344,7 @@ fn explicit_foot_chamfer_preserves_untargeted_edges_and_reports_face_sources() {
         set_face_region(&mut edit, face, region).unwrap();
     }
     for corner in corners {
-        op::set_corner_uv(&mut edit, corner, [0.25, 0.75]).unwrap();
+        set_corner_uv(&mut edit, corner, [0.25, 0.75]).unwrap();
         set_corner_normal_override(&mut edit, corner, normals.get(corner)).unwrap();
     }
     let _ = edit.finish();
@@ -368,11 +368,11 @@ fn explicit_foot_chamfer_preserves_untargeted_edges_and_reports_face_sources() {
         if let Some(source) = sources.get(&face) {
             assert_eq!(region, Some(source_regions[&source.faces()[0]]));
             for corner in mesh.face_loop(face) {
-                assert!(
+                assert_eq!(
                     mesh.attrs()
                         .sparse(attr::CORNER_UV)
-                        .and_then(|uv| uv.get(corner.as_id()))
-                        .is_none()
+                        .and_then(|uv| uv.get(corner.as_id())),
+                    Some(&[0.25, 0.75])
                 );
             }
         } else {
@@ -425,6 +425,146 @@ fn explicit_foot_chamfer_preserves_untargeted_edges_and_reports_face_sources() {
         RoundResult::default()
     );
     assert_eq!(exact_snapshot(&mesh), before);
+}
+
+/// Deliberately asymmetric charts catch a one-corner rotation as well as lost
+/// scale, translation, reflection, or source-face ownership.
+fn box_uv(face: FaceId, p: [f32; 3]) -> [f32; 2] {
+    let [u, v] = match face.index() {
+        0 | 1 => [p[0], p[1]],
+        2 | 4 => [p[0], p[2]],
+        3 | 5 => [p[1], p[2]],
+        _ => unreachable!("input box face"),
+    };
+    [2.0 * u + 0.5 * v - 3.0, -0.25 * u + 3.0 * v + 7.0]
+}
+
+#[test]
+fn finishing_preserves_source_uv_charts_on_trims_bands_and_corners() {
+    for policy in [RoundPolicy::chamfer(0.2), RoundPolicy::fillet(0.2)] {
+        let mut mesh = box_mesh(2.0, 3.0, 4.0);
+        let values: Vec<_> = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face).map(move |corner| (face, corner)))
+            .map(|(face, corner)| {
+                let p = *mesh
+                    .vertex_position(mesh.to_vertex(corner).unwrap())
+                    .unwrap();
+                (corner, box_uv(face, p))
+            })
+            .collect();
+        let mut edit = mesh.edit();
+        for (corner, uv) in values {
+            set_corner_uv(&mut edit, corner, uv).unwrap();
+        }
+        let _: () = edit.finish();
+        let edges: Vec<_> = mesh.faces().flat_map(|f| mesh.face_loop(f)).collect();
+        let result = round_edges(&mut mesh, &edges, &policy).unwrap();
+        assert_eq!(result.stats.corners, 8);
+        let sources: BTreeMap<_, _> = result.face_provenance.iter().copied().collect();
+        for (face, source) in result.face_provenance {
+            for corner in mesh.face_loop(face) {
+                let p = *mesh
+                    .vertex_position(mesh.to_vertex(corner).unwrap())
+                    .unwrap();
+                let expected = box_uv(source.faces()[0], p);
+                let uv = mesh
+                    .attrs()
+                    .sparse(attr::CORNER_UV)
+                    .and_then(|layer| layer.get(corner.as_id()))
+                    .expect("finished corner must keep its source chart");
+                for axis in 0..2 {
+                    assert!(
+                        (uv[axis] - expected[axis]).abs() < 2e-6,
+                        "{source:?} at {p:?}: {uv:?} != {expected:?}"
+                    );
+                }
+            }
+            for edge in mesh.face_loop(face) {
+                let twin = mesh.twin(edge).unwrap();
+                let other = mesh.face(twin).unwrap();
+                let uv = |corner: HalfEdgeId| {
+                    mesh.attrs()
+                        .sparse(attr::CORNER_UV)
+                        .unwrap()
+                        .get(corner.as_id())
+                        .unwrap()
+                        .map(f32::to_bits)
+                };
+                let differs = uv(edge) != uv(mesh.prev(twin).unwrap())
+                    || uv(mesh.prev(edge).unwrap()) != uv(twin);
+                if differs {
+                    assert_eq!(mesh.edge_seam(edge), Some(true));
+                }
+                if source.faces()[0] == sources[&other].faces()[0] {
+                    assert!(
+                        !differs,
+                        "one source chart must meet exactly across its generated faces"
+                    );
+                    assert!(!mesh.edge_seam(edge).unwrap_or(false));
+                }
+            }
+        }
+        assert_clean(&mesh);
+    }
+}
+
+#[test]
+fn partial_uv_charts_keep_surviving_corners_without_inventing_a_mapping() {
+    let mut mesh = box_mesh(2.0, 3.0, 4.0);
+    let target = mesh
+        .faces()
+        .flat_map(|f| mesh.face_loop(f))
+        .find(|&edge| is_edge_between(&mesh, edge, [2.0, 3.0, 0.0], [2.0, 3.0, 4.0]))
+        .unwrap();
+    // One surviving corner on each source face; none is a complete chart.
+    let mut original = BTreeMap::new();
+    for face in mesh.faces() {
+        let corner = mesh
+            .face_loop(face)
+            .find(|&corner| {
+                let p = mesh
+                    .vertex_position(mesh.to_vertex(corner).unwrap())
+                    .unwrap();
+                p[0] == 0.0 || p[1] == 0.0
+            })
+            .unwrap();
+        original.insert(
+            (face, mesh.to_vertex(corner).unwrap()),
+            (corner, [-0.0, 0.75]),
+        );
+    }
+    let mut edit = mesh.edit();
+    for &(corner, uv) in original.values() {
+        set_corner_uv(&mut edit, corner, uv).unwrap();
+    }
+    let _: () = edit.finish();
+    let result = round_edges(&mut mesh, &[target], &RoundPolicy::fillet(0.2)).unwrap();
+    let sources: BTreeMap<_, _> = result.face_provenance.into_iter().collect();
+    let mut retained = 0;
+    for face in mesh.faces() {
+        let source = sources
+            .get(&face)
+            .copied()
+            .unwrap_or(RoundFaceSource::Face(face));
+        for corner in mesh.face_loop(face) {
+            let uv = mesh
+                .attrs()
+                .sparse(attr::CORNER_UV)
+                .unwrap()
+                .get(corner.as_id())
+                .copied();
+            let expected = original
+                .get(&(source.faces()[0], mesh.to_vertex(corner).unwrap()))
+                .map(|&(_, uv)| uv);
+            assert_eq!(
+                uv.map(|uv| uv.map(f32::to_bits)),
+                expected.map(|uv| uv.map(f32::to_bits))
+            );
+            retained += usize::from(uv.is_some());
+        }
+    }
+    assert_eq!(retained, original.len());
 }
 
 #[test]

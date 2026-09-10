@@ -867,6 +867,7 @@ dependencies = [
  "exedra_assembly",
  "exedra_constructive",
  "exedra_gltf",
+ "exedra_mesh",
  "serde_json",
 ]
 
