@@ -803,7 +803,7 @@ impl core::error::Error for AddFaceError {}
 #[derive(Debug)]
 pub struct EditSession<'a, S: ChangeSink = DiscardChanges> {
     mesh: &'a mut Mesh,
-    outgoing_index: Vec<OutgoingAdj>,
+    outgoing_index: Vec<Vec<OutgoingAdj>>,
     boundary_index: Vec<BoundaryAdj>,
     outgoing_index_valid: bool,
     sink: S,
@@ -841,7 +841,7 @@ impl Mesh {
 }
 
 impl<S: ChangeSink> EditSession<'_, S> {
-    pub(crate) fn ensure_outgoing_index(&mut self) -> &[OutgoingAdj] {
+    pub(crate) fn ensure_outgoing_index(&mut self) -> &[Vec<OutgoingAdj>] {
         if !self.outgoing_index_valid {
             self.outgoing_index = build_outgoing_index(self.mesh);
             self.boundary_index = build_boundary_index(self.mesh, &self.outgoing_index);
@@ -867,7 +867,8 @@ impl<S: ChangeSink> EditSession<'_, S> {
             self.outgoing_index_valid,
             "add_face must preflight through the outgoing index before refreshing it"
         );
-        self.outgoing_index.reserve(changed.len());
+        self.outgoing_index
+            .resize_with(self.mesh.vertices.slot_count(), Vec::new);
         self.boundary_index
             .resize(self.mesh.vertices.slot_count(), BoundaryAdj::default());
 
@@ -889,15 +890,12 @@ impl<S: ChangeSink> EditSession<'_, S> {
                     })
                 })
                 .expect("add_face index refresh receives live half-edges");
-            let key = (replacement.from, replacement.half_edge);
-            match self
-                .outgoing_index
-                .binary_search_by_key(&key, |candidate| (candidate.from, candidate.half_edge))
-            {
+            let outgoing = &mut self.outgoing_index[replacement.from.index() as usize];
+            match outgoing.binary_search_by_key(&half_edge, |candidate| candidate.half_edge) {
                 Ok(position) => {
                     // Reused boundary edges keep their ordered key; only the
                     // face classification changes from OUTSIDE to interior.
-                    let previous = self.outgoing_index[position];
+                    let previous = outgoing[position];
                     if previous.face == FaceId::OUTSIDE {
                         let incoming_slot = previous.to.index() as usize;
                         let outgoing_slot = previous.from.index() as usize;
@@ -914,13 +912,13 @@ impl<S: ChangeSink> EditSession<'_, S> {
                         self.boundary_index[incoming_slot].incoming = None;
                         self.boundary_index[outgoing_slot].outgoing = None;
                     }
-                    self.outgoing_index[position] = replacement;
+                    outgoing[position] = replacement;
                 }
                 Err(position) => {
                     // Newly allocated half-edges have no existing entry. The
-                    // insertion point retains deterministic `(from, id)` order
-                    // without searching the whole vector by half-edge ID.
-                    self.outgoing_index.insert(position, replacement);
+                    // insertion point retains deterministic half-edge order
+                    // while moving only this vertex's incident edges.
+                    outgoing.insert(position, replacement);
                 }
             }
         }
@@ -1006,8 +1004,8 @@ impl<S: ChangeSink> EditSession<'_, S> {
         // Building the outgoing index also builds `boundary_index`. Valid
         // manifold topology has either no boundary edge at a vertex or one
         // incoming/outgoing pair, so that slot is the complete initial count.
-        // Reusing it avoids two binary searches through all half-edges for
-        // every corner of every face added by Boolean reconstruction.
+        // Reusing it avoids scanning incident edges at every corner of every
+        // face added by Boolean reconstruction.
         let _ = self.ensure_outgoing_index();
         for i in 0..loop_vertices.len() {
             let vertex = loop_vertices[i];
@@ -1053,10 +1051,16 @@ impl<S: ChangeSink> EditSession<'_, S> {
 
     #[cfg(test)]
     fn assert_outgoing_index_consistent(&mut self) {
-        let actual = self.ensure_outgoing_index().to_vec();
+        let actual: Vec<_> = self
+            .ensure_outgoing_index()
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
         let expected = build_outgoing_index(self.mesh);
         let actual_boundary_index = self.boundary_index.clone();
         let expected_boundary_index = build_boundary_index(self.mesh, &expected);
+        let expected: Vec<_> = expected.into_iter().flatten().collect();
 
         assert_eq!(
             actual.len(),
@@ -1144,21 +1148,23 @@ fn half_edge_vertices(mesh: &Mesh, half_edge: HalfEdgeId) -> Option<(VertexId, V
 }
 
 fn vertex_has_incident_half_edge_in_index(
-    outgoing_index: &[OutgoingAdj],
+    outgoing_index: &[Vec<OutgoingAdj>],
     vertex: VertexId,
 ) -> bool {
-    !equal_range_in_outgoing(outgoing_index, vertex).is_empty()
+    !outgoing_for_vertex(outgoing_index, vertex).is_empty()
 }
 
-fn has_undirected_edge_in_index(outgoing_index: &[OutgoingAdj], a: VertexId, b: VertexId) -> bool {
-    let a_range = equal_range_in_outgoing(outgoing_index, a);
-    for entry in &outgoing_index[a_range] {
+fn has_undirected_edge_in_index(
+    outgoing_index: &[Vec<OutgoingAdj>],
+    a: VertexId,
+    b: VertexId,
+) -> bool {
+    for entry in outgoing_for_vertex(outgoing_index, a) {
         if entry.to == b {
             return true;
         }
     }
-    let b_range = equal_range_in_outgoing(outgoing_index, b);
-    for entry in &outgoing_index[b_range] {
+    for entry in outgoing_for_vertex(outgoing_index, b) {
         if entry.to == a {
             return true;
         }
@@ -1168,24 +1174,24 @@ fn has_undirected_edge_in_index(outgoing_index: &[OutgoingAdj], a: VertexId, b: 
 
 #[cfg(test)]
 fn find_boundary_half_edge_in_index(
-    outgoing_index: &[OutgoingAdj],
+    outgoing_index: &[Vec<OutgoingAdj>],
     from: VertexId,
     to: VertexId,
 ) -> Option<HalfEdgeId> {
-    let range = equal_range_in_outgoing(outgoing_index, from);
-    outgoing_index[range].iter().find_map(|entry| {
-        (entry.face == FaceId::OUTSIDE && entry.to == to).then_some(entry.half_edge)
-    })
+    outgoing_for_vertex(outgoing_index, from)
+        .iter()
+        .find_map(|entry| {
+            (entry.face == FaceId::OUTSIDE && entry.to == to).then_some(entry.half_edge)
+        })
 }
 
 #[inline]
 fn face_edge_use_in_index(
-    outgoing_index: &[OutgoingAdj],
+    outgoing_index: &[Vec<OutgoingAdj>],
     from: VertexId,
     to: VertexId,
 ) -> FaceEdgeUse {
-    let forward = equal_range_in_outgoing(outgoing_index, from);
-    for entry in &outgoing_index[forward] {
+    for entry in outgoing_for_vertex(outgoing_index, from) {
         if entry.to != to {
             continue;
         }
@@ -1195,8 +1201,10 @@ fn face_edge_use_in_index(
             FaceEdgeUse::Occupied
         };
     }
-    let reverse = equal_range_in_outgoing(outgoing_index, to);
-    if outgoing_index[reverse].iter().any(|entry| entry.to == from) {
+    if outgoing_for_vertex(outgoing_index, to)
+        .iter()
+        .any(|entry| entry.to == from)
+    {
         FaceEdgeUse::Occupied
     } else {
         FaceEdgeUse::Vacant
@@ -1204,75 +1212,43 @@ fn face_edge_use_in_index(
 }
 
 fn find_half_edge_in_index(
-    outgoing_index: &[OutgoingAdj],
+    outgoing_index: &[Vec<OutgoingAdj>],
     from: VertexId,
     to: VertexId,
 ) -> Option<HalfEdgeId> {
-    let forward = equal_range_in_outgoing(outgoing_index, from);
-    if let Some(half_edge) = outgoing_index[forward]
+    if let Some(half_edge) = outgoing_for_vertex(outgoing_index, from)
         .iter()
         .find_map(|entry| (entry.to == to).then_some(entry.half_edge))
     {
         return Some(half_edge);
     }
-    let reverse = equal_range_in_outgoing(outgoing_index, to);
-    outgoing_index[reverse]
+    outgoing_for_vertex(outgoing_index, to)
         .iter()
         .find_map(|entry| (entry.to == from).then_some(entry.half_edge))
 }
 
-fn build_outgoing_index(mesh: &Mesh) -> Vec<OutgoingAdj> {
-    let mut pairs = mesh
-        .half_edges
-        .iter()
-        .filter_map(|(id, edge)| {
-            let half_edge = HalfEdgeId::from(id);
-            half_edge_vertices(mesh, half_edge).map(|(from, to)| OutgoingAdj {
+fn build_outgoing_index(mesh: &Mesh) -> Vec<Vec<OutgoingAdj>> {
+    // Keep updates local to one vertex. A globally sorted edge vector requires
+    // shifting most of the mesh whenever rounding inserts an interior edge.
+    let mut outgoing = alloc::vec![Vec::new(); mesh.vertices.slot_count()];
+    for (id, edge) in mesh.half_edges.iter() {
+        let half_edge = HalfEdgeId::from(id);
+        if let Some((from, to)) = half_edge_vertices(mesh, half_edge) {
+            outgoing[from.index() as usize].push(OutgoingAdj {
                 from,
                 to,
                 half_edge,
                 face: edge.face,
-            })
-        })
-        .collect::<Vec<_>>();
-    if pairs.len() < 2 {
-        return pairs;
+            });
+        }
     }
-
-    let vertex_slots = mesh.vertices.slot_count();
-    if vertex_slots > pairs.len().saturating_mul(8) {
-        // A heavily tombstoned arena would make a slot-indexed count table
-        // larger than the adjacency itself. Stable comparison sorting keeps
-        // this unusual sparse case proportional to live topology.
-        pairs.sort_by_key(|entry| entry.from);
-        return pairs;
-    }
-
-    // Vertex IDs are arena-slot IDs. Stable counting placement is therefore
-    // linear for the compact meshes produced during Boolean construction and
-    // preserves the input's ascending half-edge order within each origin.
-    // That yields the same deterministic `(from, half_edge)` index as a stable
-    // comparison sort, without spending the rebuild path in driftsort.
-    let mut next = alloc::vec![0_usize; vertex_slots + 1];
-    for entry in &pairs {
-        next[entry.from.index() as usize + 1] += 1;
-    }
-    for index in 1..next.len() {
-        next[index] += next[index - 1];
-    }
-    let mut ordered = Vec::with_capacity(pairs.len());
-    ordered.resize(pairs.len(), pairs[0]);
-    for entry in pairs {
-        let bucket = entry.from.index() as usize;
-        ordered[next[bucket]] = entry;
-        next[bucket] += 1;
-    }
-    ordered
+    // Arena iteration already orders half-edge IDs within each vertex.
+    outgoing
 }
 
-fn build_boundary_index(mesh: &Mesh, outgoing_index: &[OutgoingAdj]) -> Vec<BoundaryAdj> {
+fn build_boundary_index(mesh: &Mesh, outgoing_index: &[Vec<OutgoingAdj>]) -> Vec<BoundaryAdj> {
     let mut boundary = alloc::vec![BoundaryAdj::default(); mesh.vertices.slot_count()];
-    for entry in outgoing_index {
+    for entry in outgoing_index.iter().flatten() {
         if entry.face != FaceId::OUTSIDE {
             continue;
         }
@@ -1306,27 +1282,25 @@ pub(crate) fn find_outgoing_half_edge_linear_scan(
 }
 
 pub(crate) fn find_outgoing_half_edge(
-    outgoing_index: &[OutgoingAdj],
+    outgoing_index: &[Vec<OutgoingAdj>],
     vertex: VertexId,
 ) -> Option<HalfEdgeId> {
-    let range = equal_range_in_outgoing(outgoing_index, vertex);
-    if range.is_empty() {
-        // An empty range still has a valid start index pointing at the
-        // next vertex's first entry; returning it would hand this vertex
-        // a foreign outgoing half-edge.
-        return None;
-    }
-    outgoing_index.get(range.start).map(|entry| entry.half_edge)
+    outgoing_for_vertex(outgoing_index, vertex)
+        .first()
+        .map(|entry| entry.half_edge)
 }
 
 #[inline]
-fn equal_range_in_outgoing(
-    outgoing_index: &[OutgoingAdj],
-    vertex: VertexId,
-) -> core::ops::Range<usize> {
-    let lower = outgoing_index.partition_point(|entry| entry.from < vertex);
-    let upper = outgoing_index.partition_point(|entry| entry.from <= vertex);
-    lower..upper
+fn outgoing_for_vertex(outgoing_index: &[Vec<OutgoingAdj>], vertex: VertexId) -> &[OutgoingAdj] {
+    let Some(outgoing) = outgoing_index.get(vertex.index() as usize) else {
+        return &[];
+    };
+    // Buckets use arena slots; queries still compare the full generational ID.
+    if outgoing.first().is_some_and(|entry| entry.from == vertex) {
+        outgoing
+    } else {
+        &[]
+    }
 }
 
 pub(crate) fn corner_uv_for_face_to_vertex(
@@ -1464,10 +1438,8 @@ pub(crate) fn stitch_outside_loops_for_vertices<S: ChangeSink>(
     for &vertex in affected_vertices {
         let boundary = {
             session.ensure_outgoing_index();
-            // Both directions are cached by vertex because local stitching is
-            // on every reconstructed face's hot path. The full origin-sorted
-            // index remains necessary for arbitrary edge queries, but a binary
-            // search there would be repeated three times per triangle.
+            // Both boundary directions are cached by vertex so stitching needs
+            // no incident-edge scan for each corner of a reconstructed face.
             session.boundary_index[vertex.index() as usize]
         };
         if boundary.incoming.is_none() != boundary.outgoing.is_none() {
@@ -2879,6 +2851,66 @@ mod tests {
             .expect("split should succeed");
         txn.assert_outgoing_index_consistent();
         assert!(!txn.has_undirected_edge(from, to));
+    }
+
+    #[test]
+    fn outgoing_index_tracks_growing_and_closing_vertex_fan() {
+        use crate::math::FloatExt;
+
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        let center = txn.add_vertex([0.0, 0.0, 0.0]);
+        let start = txn.add_vertex([1.0, 0.0, 0.0]);
+        txn.assert_outgoing_index_consistent();
+        let mut previous = start;
+        for i in 1..32 {
+            let angle = core::f32::consts::TAU * i as f32 / 32.0;
+            let next = txn.add_vertex([angle.cos_ext(), angle.sin_ext(), 0.0]);
+            txn.add_face(&[center, previous, next]).expect("grow fan");
+            txn.assert_outgoing_index_consistent();
+            assert!(txn.mesh().validate_deep().is_empty());
+            previous = next;
+        }
+        let closing = txn.add_face(&[center, previous, start]).expect("close fan");
+        txn.assert_outgoing_index_consistent();
+        assert!(txn.find_boundary_half_edge(center, start).is_none());
+        assert!(txn.mesh().validate_deep().is_empty());
+
+        txn.delete_faces(&[closing], DeletePolicy::KeepIsolated)
+            .expect("reopen fan");
+        txn.add_face(&[center, previous, start])
+            .expect("close with reused slots");
+        txn.assert_outgoing_index_consistent();
+        assert!(txn.mesh().validate_deep().is_empty());
+    }
+
+    #[test]
+    fn outgoing_index_rejects_stale_vertices_after_slot_reuse() {
+        let mut mesh = Mesh::new();
+        let mut txn = mesh.edit();
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let old = positions.map(|p| txn.add_vertex(p));
+        let face = txn.add_face(&old).expect("triangle");
+        txn.delete_faces(&[face], DeletePolicy::CleanupIsolated)
+            .expect("remove triangle");
+        let fresh = positions.map(|p| txn.add_vertex(p));
+        txn.add_face(&fresh).expect("triangle with reused slots");
+        txn.assert_outgoing_index_consistent();
+        for stale in old {
+            assert!(
+                fresh
+                    .iter()
+                    .any(|v| v.index() == stale.index() && *v != stale)
+            );
+            assert!(!txn.vertex_has_incident_half_edge(stale));
+            assert_eq!(
+                find_outgoing_half_edge(txn.ensure_outgoing_index(), stale),
+                None
+            );
+            assert_eq!(txn.find_half_edge(stale, fresh[0]), None);
+        }
+        assert!(!txn.vertex_has_incident_half_edge(VertexId::INVALID));
+        assert!(txn.mesh().validate_deep().is_empty());
     }
 
     #[test]
