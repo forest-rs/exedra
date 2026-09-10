@@ -28,6 +28,11 @@ topology regressions cannot hide inside an aggregate number. The stress
 profile uses a five-digit-vertex closed prism to expose work that scales with
 the whole source mesh per output corner.
 
+**CT-5** measures spherical corner tessellation on a 6 mm rail fillet and a
+skewed rail at three chord tolerances. It reports corner/total triangle counts,
+vertex counts, position/normal/index buffer bytes, and rounding/extraction times.
+Deep validity and repeatability are checked before timing.
+
 ```sh
 cargo run --release -p constructive_wind_tunnel -- --quick
 cargo run --release -p constructive_wind_tunnel -- --ct1-stress
@@ -36,6 +41,7 @@ cargo run --release -p constructive_wind_tunnel -- --gallery-stress
 cargo run --release -p constructive_wind_tunnel -- --gallery-sample
 cargo run --release -p constructive_wind_tunnel -- --stretch
 cargo run --release -p constructive_wind_tunnel -- --stretch-stress
+cargo run --release -p constructive_wind_tunnel -- --corners
 ```
 
 `--gallery-sample` repeats the unchanged CT-3 workload long enough for an
