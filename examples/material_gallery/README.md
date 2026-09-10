@@ -37,11 +37,26 @@ cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes
   corners, extruded with sharp end perimeters.
 - `foot-chamfer.glb`: 90 × 200 × 150 mm foot with a 6 mm bevel on the boundary
   between its +X and +Y face regions.
+- `door-recess.glb`: 450 × 24 × 700 mm door with a Boolean-cut 330 × 580 mm
+  recess, 12 mm deep.
+- `door-recess-chamfer.glb` and `door-recess-fillet.glb`: the same door with
+  a 3 mm finish around the recess, joined with miters at its four corners.
 
 These synthetic dimensions use metres in the recipe. The example preserves
 fillet normal overrides through assembly compilation and supplies its own
-preview material. These inputs have no UVs and use no textures. Recessed-panel
-rim fillets are outside this example's supported scope.
+preview material. These inputs have no UVs and use no textures. The recess
+example gives the cutter distinct face regions, then selects its boundary with
+the door front through `RegionBoundaries`. Square turns explicitly opt into
+`max_tangent_turn = FRAC_PI_2`; adjoining fillets retain a miter crease.
+
+Render the exported recess geometry, materials and normals in Blender:
+
+```sh
+blender --background --python examples/material_gallery/tools/render_recessed_door.py -- target/edge-finishes
+```
+
+The script writes `recess-comparison.png` (sharp, chamfer, fillet from left to
+right), `recess-chamfer-close.png`, and `recess-fillet-close.png`.
 
 ## Textured edge finishes
 

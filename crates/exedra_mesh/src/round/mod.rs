@@ -16,15 +16,21 @@
 //!
 //! Supported: open chains ending on a single transversal face or at a
 //! convex trihedral corner of three rounded chains; closed rings (a drilled
-//! rim); gently bent chains (per-vertex averaged frames); per-edge varying
-//! flank faces (faceted walls). Everything outside that envelope is a typed
+//! rim); mitered turns sharing a planar flank and equal dihedral angles;
+//! gently bent chains (per-vertex averaged frames elsewhere); per-edge
+//! varying flank faces (faceted walls). Everything outside that envelope is a typed
 //! [`RoundError`] and the mesh is left byte-identical: concave edges,
 //! junction valence other than one, two, or three, non-trihedral corners,
 //! chain turns beyond [`RoundPolicy::max_tangent_turn`], non-planar
 //! affected faces, and rewrites that would invert or degenerate a face.
 //!
+//! Planar-flank miters preserve the requested setback or cylinder radius on
+//! both incident edges, including polygonal drill rims. Fillet miters retain
+//! a crease between cylinders; they are not spherical corner blends. Square
+//! rims require opting into a 90-degree [`RoundPolicy::max_tangent_turn`].
+//!
 //! Two quality caveats are deliberate v1 scope: averaged per-vertex frames
-//! leave faceted flank faces (a polygonal drill wall) slightly non-planar
+//! outside the planar-flank case can leave flank faces slightly non-planar
 //! after rewriting, and strips of chains curved tighter than the offset are
 //! not detected as self-overlapping — callers keep the offset small against
 //! the local curvature radius.
@@ -83,8 +89,9 @@ pub struct RoundPolicy {
     /// must be in `1..=256`; derived counts exceeding 256 are refused.
     /// Chamfers always use one band.
     pub segments: Option<u32>,
-    /// Maximum chord deviation for fillet bands and spherical corner patches
-    /// when `segments` is `None`, before the final f32 coordinate rounding.
+    /// Maximum chord deviation for fillet bands, elliptical miter seams, and
+    /// spherical corner patches when `segments` is `None`, before the final
+    /// f32 coordinate rounding.
     pub chord_tolerance: f64,
     /// Edges with [`attr::EDGE_SHARPNESS`] at or above this value round.
     pub sharpness_threshold: f32,
@@ -95,6 +102,8 @@ pub struct RoundPolicy {
     /// containment checks.
     pub max_planar_deviation: f64,
     /// Maximum turn angle (radians) between consecutive chain edges.
+    /// Defaults to 0.7; use [`core::f64::consts::FRAC_PI_2`] for square rims.
+    /// Angle comparisons allow 1e-6 radians for stored-coordinate rounding.
     pub max_tangent_turn: f64,
 }
 
@@ -347,7 +356,8 @@ pub fn round_sharp_edges(mesh: &mut Mesh, policy: &RoundPolicy) -> Result<RoundS
 /// canonical mesh order, so input order does not affect the result. Empty
 /// selection is a no-op. Untargeted sharpness and seam attributes survive.
 ///
-/// Fillets author radial corner normals; chamfers and trimmed planar faces
+/// Fillets author radial corner normals, with separate cylindrical normals
+/// across miter creases; chamfers and trimmed planar faces
 /// retain flat boundaries. Use [`crate::NormalsSource::CustomOrDerived`] for
 /// those normals. Valid normal overrides at unchanged corners of rewritten
 /// faces survive. Unchanged faces retain all their attributes.
@@ -469,6 +479,9 @@ struct Chain {
     /// Averaged (left, right) flank normals per chain vertex, where the
     /// vertex owns a per-vertex frame (interior and open-end vertices).
     frames: Vec<Option<([f64; 3], [f64; 3])>>,
+    /// Shared miter sections have a different radial normal on each incident
+    /// strip, rather than one normal attached to the section point.
+    miters: Vec<bool>,
 }
 
 impl Chain {
@@ -499,6 +512,62 @@ enum VertexKind {
     Interior,
     OpenEnd,
     Corner,
+}
+
+/// Linear map from profile plane offsets to a shared miter section.
+struct Miter {
+    common: [f64; 3],
+    sides: [f64; 3],
+    sweep: f64,
+    reversed: bool,
+}
+
+impl Miter {
+    /// A circular profile becomes an ellipse at a miter. Its largest stretch
+    /// bounds 3D chord error, including the seam curve between the cylinders.
+    fn radius_scale(&self) -> f64 {
+        let a = add(self.common, scale(self.sides, self.sweep.cos_ext()));
+        let b = scale(self.sides, self.sweep.sin_ext());
+        let aa = dot(a, a);
+        let bb = dot(b, b);
+        let ab = dot(a, b);
+        // Largest eigenvalue of the two-dimensional Gram matrix.
+        ((aa + bb + ((aa - bb) * (aa - bb) + 4.0 * ab * ab).sqrt_ext()) * 0.5).sqrt_ext()
+    }
+
+    fn points(&self, anchor: [f64; 3], kind: RoundKind, segments: u32) -> Vec<[f64; 3]> {
+        let mut points = Vec::with_capacity(segments as usize + 1);
+        for band in 0..=segments {
+            let (common_height, side_height) = match kind {
+                RoundKind::Chamfer { setback } => {
+                    let height = -setback * self.sweep.sin_ext();
+                    if band == 0 {
+                        (0.0, height)
+                    } else {
+                        (height, 0.0)
+                    }
+                }
+                RoundKind::Fillet { radius } => {
+                    let theta = self.sweep * f64::from(band) / f64::from(segments);
+                    (
+                        radius * (theta.cos_ext() - 1.0),
+                        radius * ((self.sweep - theta).cos_ext() - 1.0),
+                    )
+                }
+            };
+            points.push(add(
+                anchor,
+                add(
+                    scale(self.common, common_height),
+                    scale(self.sides, side_height),
+                ),
+            ));
+        }
+        if self.reversed {
+            points.reverse();
+        }
+        points
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -841,14 +910,20 @@ impl Planner<'_> {
                     let edge = chain.edges[index];
                     let mut sources = [edge.left, edge.right];
                     sources.sort_unstable();
-                    self.emit_face(
-                        alloc::vec![
-                            Tok::New(section_b[band]),
-                            Tok::New(section_a[band]),
-                            Tok::New(section_a[band + 1]),
-                            Tok::New(section_b[band + 1]),
-                        ],
+                    let points = [
+                        section_b[band],
+                        section_a[band],
+                        section_a[band + 1],
+                        section_b[band + 1],
+                    ];
+                    let miter_a = chain.miters[index];
+                    let miter_b = chain.miters[(index + 1) % chain.vertex_count()];
+                    let normals =
+                        self.strip_normals(edge, points, [miter_b, miter_a, miter_a, miter_b])?;
+                    self.emit_face_with_normals(
+                        points.map(Tok::New).to_vec(),
                         RoundFaceSource::Edge(sources),
+                        normals,
                     )?;
                     self.stats.strip_faces += 1;
                 }
@@ -1126,7 +1201,7 @@ impl Planner<'_> {
 
         let mut chains = Vec::with_capacity(raw.len());
         for (verts, edges, closed) in raw {
-            let segments = self.chain_segments(&edges)?;
+            let segments = self.chain_segments(&edges, closed)?;
             let count = verts.len();
             chains.push(Chain {
                 verts,
@@ -1135,19 +1210,31 @@ impl Planner<'_> {
                 segments,
                 sections: alloc::vec![Vec::new(); count],
                 frames: alloc::vec![None; count],
+                miters: alloc::vec![false; count],
             });
         }
         Ok(chains)
     }
 
-    fn chain_segments(&self, edges: &[DirEdge]) -> Result<u32, RoundError> {
+    fn chain_segments(&self, edges: &[DirEdge], closed: bool) -> Result<u32, RoundError> {
         match self.policy.kind {
             RoundKind::Chamfer { .. } => Ok(1),
             RoundKind::Fillet { radius } => {
                 if let Some(explicit) = self.policy.segments {
                     return Ok(explicit);
                 }
-                let ratio = (1.0 - self.policy.chord_tolerance / radius).clamp(-1.0, 1.0);
+                let mut radius_scale = 1.0_f64;
+                for i in 0..edges.len() {
+                    if i == 0 && !closed {
+                        continue;
+                    }
+                    let previous = edges[(i + edges.len() - 1) % edges.len()];
+                    if let Some(miter) = self.miter(previous, edges[i], edges[i].a)? {
+                        radius_scale = radius_scale.max(miter.radius_scale());
+                    }
+                }
+                let ratio =
+                    (1.0 - self.policy.chord_tolerance / (radius * radius_scale)).clamp(-1.0, 1.0);
                 let theta = 2.0 * ratio.acos_ext();
                 let max_sweep = edges.iter().fold(0.0_f64, |acc, e| acc.max(e.sweep));
                 let required = (max_sweep / theta).ceil_ext();
@@ -1181,6 +1268,15 @@ impl Planner<'_> {
     }
 
     fn emit_face(&mut self, entries: Vec<Tok>, source: RoundFaceSource) -> Result<(), RoundError> {
+        self.emit_face_with_normals(entries, source, None)
+    }
+
+    fn emit_face_with_normals(
+        &mut self,
+        entries: Vec<Tok>,
+        source: RoundFaceSource,
+        fillet_normals: Option<Vec<[f32; 3]>>,
+    ) -> Result<(), RoundError> {
         let region = if source.is_generated() {
             self.policy.region
         } else {
@@ -1234,7 +1330,9 @@ impl Planner<'_> {
                 return Err(clearance);
             }
             let normal = normalize(newell(&points)).ok_or(clearance)?;
-            if matches!(self.policy.kind, RoundKind::Fillet { .. }) {
+            if let Some(normals) = fillet_normals {
+                normals
+            } else if matches!(self.policy.kind, RoundKind::Fillet { .. }) {
                 entries
                     .iter()
                     .map(|entry| {
@@ -1258,6 +1356,97 @@ impl Planner<'_> {
             uvs: Vec::new(),
         });
         Ok(())
+    }
+
+    /// A miter lies on two cylinders. Each adjoining strip must use its own
+    /// cylinder's radial normals, leaving a crease where those surfaces meet.
+    fn strip_normals(
+        &mut self,
+        edge: DirEdge,
+        points: [u32; 4],
+        miters: [bool; 4],
+    ) -> Result<Option<Vec<[f32; 3]>>, RoundError> {
+        let RoundKind::Fillet { radius } = self.policy.kind else {
+            return Ok(None);
+        };
+        if !miters.iter().any(|&miter| miter) {
+            return Ok(None);
+        }
+        let degenerate = RoundError::DegenerateEdge {
+            a: edge.a.index(),
+            b: edge.b.index(),
+        };
+        let anchor = self.position(edge.a);
+        let direction = normalize(sub(self.position(edge.b), anchor)).ok_or(degenerate)?;
+        let rows = [
+            self.plane(edge.left)?.normal,
+            self.plane(edge.right)?.normal,
+            direction,
+        ];
+        let center = add(
+            anchor,
+            solve3(rows, [-radius, -radius, 0.0]).ok_or(degenerate)?,
+        );
+        points
+            .into_iter()
+            .zip(miters)
+            .map(|(point, miter)| {
+                let normal = if miter {
+                    let offset = sub(self.points[point as usize], center);
+                    normalize(sub(offset, scale(direction, dot(offset, direction))))
+                } else {
+                    self.point_normals[point as usize]
+                };
+                normal.map(narrow).ok_or(degenerate)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    /// Two edges on a common flank plane with equal dihedral angles meet at
+    /// a miter. Intersect their offset planes at each profile sample instead
+    /// of shrinking the setback by averaging the chain's turn directions.
+    fn miter(
+        &self,
+        previous: DirEdge,
+        next: DirEdge,
+        vertex: VertexId,
+    ) -> Result<Option<Miter>, RoundError> {
+        // Every selected edge's planes were prepared by edge_sweep before
+        // chains or their sampling density are planned.
+        let left = [
+            self.planes[&previous.left].normal,
+            self.planes[&next.left].normal,
+        ];
+        let right = [
+            self.planes[&previous.right].normal,
+            self.planes[&next.right].normal,
+        ];
+        // Faces may be separate coplanar fragments. Their planes meet at the
+        // shared vertex; the angular allowance covers normals from stored f32
+        // coordinates, without treating an ordinary faceted turn as coplanar.
+        let shared_left = dot(left[0], left[1]) > 1.0 - 1e-12;
+        let shared_right = dot(right[0], right[1]) > 1.0 - 1e-12;
+        if shared_left == shared_right || (previous.sweep - next.sweep).abs() > 1e-6 {
+            return Ok(None);
+        }
+        let rows = if shared_left {
+            [left[0], right[0], right[1]]
+        } else {
+            [right[0], left[0], left[1]]
+        };
+        let unsupported = RoundError::UnsupportedJunction {
+            vertex: vertex.index(),
+        };
+        let common = solve3(rows, [1.0, 0.0, 0.0]).ok_or(unsupported)?;
+        let sides = solve3(rows, [0.0, 1.0, 1.0]).ok_or(unsupported)?;
+        let sweep = (previous.sweep + next.sweep) * 0.5;
+        Ok(Some(Miter {
+            common,
+            sides,
+            sweep,
+            reversed: shared_right,
+        }))
     }
 
     /// Builds interior and open-end cross-sections for one chain.
@@ -1294,8 +1483,13 @@ impl Planner<'_> {
                 left_normal = add(left_normal, self.plane(edge.left)?.normal);
                 right_normal = add(right_normal, self.plane(edge.right)?.normal);
             }
+            // Stored f32 positions can put a rotated right angle fractionally
+            // above its exact policy boundary.
             if directions.len() == 2
-                && dot(directions[0], directions[1]) < self.policy.max_tangent_turn.cos_ext()
+                && dot(directions[0], directions[1])
+                    .clamp(-1.0, 1.0)
+                    .acos_ext()
+                    > self.policy.max_tangent_turn + 1e-6
             {
                 return Err(RoundError::UnsupportedJunction {
                     vertex: vertex.index(),
@@ -1304,6 +1498,18 @@ impl Planner<'_> {
             let tangent = normalize(tangent).ok_or(degenerate)?;
             let left_normal = normalize(left_normal).ok_or(degenerate)?;
             let right_normal = normalize(right_normal).ok_or(degenerate)?;
+            if let (Some(previous), Some(next)) = (prev, next)
+                && let Some(miter) = self.miter(chain.edges[previous], chain.edges[next], vertex)?
+            {
+                sections[index] = miter
+                    .points(self.position(vertex), self.policy.kind, chain.segments)
+                    .into_iter()
+                    .map(|point| self.push_point(point))
+                    .collect();
+                frames[index] = Some((left_normal, right_normal));
+                chains[chain_index].miters[index] = true;
+                continue;
+            }
             let cos_sweep = dot(left_normal, right_normal).clamp(-1.0, 1.0);
             let sweep = cos_sweep.acos_ext();
             if !(1e-6..=core::f64::consts::PI - 1e-6).contains(&sweep) {

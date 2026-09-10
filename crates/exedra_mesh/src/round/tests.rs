@@ -887,6 +887,404 @@ fn slab() -> Mesh {
     box_mesh(4.0, 4.0, 1.0)
 }
 
+/// A 4 x 3 x 1 panel with a 2 x 1.5 rectangular pocket, 0.6 deep.
+/// Separate coplanar top faces also exercise a rim whose common flank has
+/// been split into several faces by a previous modeling operation.
+fn recessed_panel() -> Mesh {
+    let mut builder = MeshBuilder::new();
+    for z in [0.0, 1.0] {
+        for [x, y] in [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]] {
+            builder.push_vertex([x, y, z]);
+        }
+    }
+    for z in [1.0, 0.4] {
+        for [x, y] in [[1.0, 0.75], [3.0, 0.75], [3.0, 2.25], [1.0, 2.25]] {
+            builder.push_vertex([x, y, z]);
+        }
+    }
+    builder.add_face(&[3, 2, 1, 0]).unwrap();
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        builder.add_face(&[i, j, j + 4, i + 4]).unwrap();
+        builder.add_face(&[i + 4, j + 4, j + 8, i + 8]).unwrap();
+        builder.add_face(&[i + 8, j + 8, j + 12, i + 12]).unwrap();
+    }
+    builder.add_face(&[12, 13, 14, 15]).unwrap();
+    builder.build().unwrap().mesh
+}
+
+fn square_rim(mesh: &Mesh, recessed: bool) -> Vec<HalfEdgeId> {
+    mesh.faces()
+        .flat_map(|f| mesh.face_loop(f))
+        .filter(|&edge| {
+            let (a, b) = edge_endpoints(mesh, edge);
+            a[2] == 1.0
+                && b[2] == 1.0
+                && (!recessed
+                    || [a, b]
+                        .iter()
+                        .all(|p| (1.0..=3.0).contains(&p[0]) && (0.75..=2.25).contains(&p[1])))
+        })
+        .collect()
+}
+
+#[test]
+fn square_rim_chamfers_keep_the_requested_setback_through_miters() {
+    let setback = 0.2;
+    for recessed in [false, true] {
+        let mut mesh = if recessed {
+            recessed_panel()
+        } else {
+            box_mesh(4.0, 3.0, 1.0)
+        };
+        assert_clean(&mesh);
+        let before = signed_volume(&mesh);
+        let edges = square_rim(&mesh, recessed);
+        let mut policy = RoundPolicy::chamfer(setback);
+        policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+        let result = round_edges(&mut mesh, &edges, &policy).expect("square rim chamfer");
+        assert_clean(&mesh);
+        assert_eq!(result.stats.closed_chains, 1);
+        assert_eq!(result.stats.strip_faces, 4);
+        let expected = if recessed {
+            (2.0 + 1.5) * setback * setback + 4.0 / 3.0 * setback.powi(3)
+        } else {
+            (4.0 + 3.0) * setback * setback - 4.0 / 3.0 * setback.powi(3)
+        };
+        let removed = before - signed_volume(&mesh);
+        assert!(
+            (removed - expected).abs() < 1e-6,
+            "recessed={recessed}: removed {removed}, expected {expected}"
+        );
+        // At the top, a miter must keep the full setback on both axes.
+        let expected_corner = if recessed {
+            [0.8, 0.55, 1.0]
+        } else {
+            [0.2, 0.2, 1.0]
+        };
+        assert!(
+            mesh.vertices().any(|v| {
+                mesh.vertex_position(v)
+                    .unwrap()
+                    .iter()
+                    .zip(expected_corner)
+                    .all(|(&a, b)| (a - b).abs() < 1e-6)
+            }),
+            "missing miter tangency {expected_corner:?}"
+        );
+    }
+}
+
+#[test]
+fn square_rim_fillets_follow_both_cylinders_and_keep_miter_creases() {
+    let radius = 0.2;
+    for recessed in [false, true] {
+        let mut mesh = if recessed {
+            recessed_panel()
+        } else {
+            box_mesh(4.0, 3.0, 1.0)
+        };
+        let edges = square_rim(&mesh, recessed);
+        let planes: BTreeMap<_, _> = mesh
+            .faces()
+            .map(|face| {
+                let points: Vec<_> = mesh
+                    .face_loop(face)
+                    .map(|corner| {
+                        promote(
+                            *mesh
+                                .vertex_position(mesh.to_vertex(corner).unwrap())
+                                .unwrap(),
+                        )
+                    })
+                    .collect();
+                (face, (normalize(newell(&points)).unwrap(), points[0]))
+            })
+            .collect();
+        let before = signed_volume(&mesh);
+        let mut policy = RoundPolicy::fillet(radius);
+        policy.segments = Some(16);
+        policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+        let result = round_edges(&mut mesh, &edges, &policy).expect("square rim fillet");
+        assert_clean(&mesh);
+        assert_eq!(result.stats.closed_chains, 1);
+        assert_eq!(result.stats.strip_faces, 64);
+        let sources: BTreeMap<_, _> = result.face_provenance.iter().copied().collect();
+        let mut creases = BTreeSet::new();
+        for &(face, source) in &result.face_provenance {
+            let RoundFaceSource::Edge(pair) = source else {
+                continue;
+            };
+            let (normal, anchor) = pair
+                .into_iter()
+                .map(|f| planes[&f])
+                .find(|(n, _)| n[2] == 0.0)
+                .unwrap();
+            let axis_height = dot(normal, anchor) - radius;
+            for corner in mesh.face_loop(face) {
+                let point = promote(
+                    *mesh
+                        .vertex_position(mesh.to_vertex(corner).unwrap())
+                        .unwrap(),
+                );
+                let horizontal = dot(normal, point) - axis_height;
+                let vertical = point[2] - (1.0 - radius);
+                let distance = (horizontal * horizontal + vertical * vertical).sqrt();
+                assert!(
+                    (distance - radius).abs() < 5e-7,
+                    "recessed={recessed} radius at {point:?}: {distance}"
+                );
+                let expected = add(
+                    scale(normal, horizontal / distance),
+                    [0.0, 0.0, vertical / distance],
+                );
+                let actual = mesh
+                    .attrs()
+                    .sparse(attr::CORNER_NORMAL_OVERRIDE)
+                    .unwrap()
+                    .get(corner.as_id())
+                    .unwrap();
+                assert!(norm(sub(promote(*actual), expected)) < 2e-6);
+                let other = mesh.face(mesh.twin(corner).unwrap()).unwrap();
+                if matches!(sources.get(&other), Some(RoundFaceSource::Edge(other_pair)) if *other_pair != pair)
+                {
+                    assert_eq!(mesh.edge_sharpness(corner), Some(1.0));
+                    creases.insert(mesh.canonical_edge(corner).unwrap());
+                }
+            }
+        }
+        assert_eq!(
+            creases.len(),
+            64,
+            "four miter creases, each split into 16 bands"
+        );
+        let straight = 2.0
+            * (if recessed { 2.0 + 1.5 } else { 4.0 + 3.0 })
+            * radius.powi(2)
+            * (1.0 - core::f64::consts::PI / 4.0);
+        let corners = 4.0 * radius.powi(3) * (5.0 / 3.0 - core::f64::consts::FRAC_PI_2);
+        let expected = straight + if recessed { corners } else { -corners };
+        let removed = before - signed_volume(&mesh);
+        assert!(
+            (removed / expected - 1.0).abs() < 0.01,
+            "recessed={recessed}: removed {removed}, expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn boolean_recess_rim_finishes_and_oversized_offsets_refuse_atomically() {
+    let panel = box_mesh(4.0, 3.0, 1.0);
+    let mut cutter = box_mesh(2.0, 1.5, 0.8);
+    let positions: Vec<_> = cutter
+        .vertices()
+        .map(|v| {
+            let p = *cutter.vertex_position(v).unwrap();
+            (v, [p[0] + 1.0, p[1] + 0.75, p[2] + 0.4])
+        })
+        .collect();
+    let mut edit = cutter.edit();
+    for (vertex, point) in positions {
+        op::set_vertex_position(&mut edit, vertex, point).unwrap();
+    }
+    let _: () = edit.finish();
+    let mut scratch = BooleanScratch::new();
+    let mut diagnostics = BooleanDiagnostics::default();
+    let input = boolean_mesh(
+        &panel,
+        &cutter,
+        BooleanOp::Difference,
+        FaceTriangulation::Robust,
+        &mut scratch,
+        &mut diagnostics,
+    )
+    .unwrap()
+    .mesh;
+    assert_clean(&input);
+    let edges = square_rim(&input, true);
+    assert!(!edges.is_empty());
+    for mut policy in [RoundPolicy::chamfer(0.2), RoundPolicy::fillet(0.2)] {
+        policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+        let mut mesh = input.clone();
+        round_edges(&mut mesh, &edges, &policy).expect("Boolean recess rim");
+        assert_clean(&mesh);
+        assert!(signed_volume(&mesh) < signed_volume(&input));
+        let mut repeat = input.clone();
+        let mut reversed = edges.clone();
+        reversed.reverse();
+        round_edges(&mut repeat, &reversed, &policy).unwrap();
+        assert_eq!(exact_snapshot(&mesh), exact_snapshot(&repeat));
+    }
+    for mut policy in [RoundPolicy::chamfer(0.7), RoundPolicy::fillet(0.7)] {
+        policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+        let mut mesh = input.clone();
+        assert!(
+            round_edges(&mut mesh, &edges, &policy).is_err(),
+            "offset crosses the pocket floor"
+        );
+        assert_eq!(exact_snapshot(&mesh), exact_snapshot(&input));
+    }
+}
+
+#[test]
+fn planar_miters_preserve_profiles_on_sloped_flanks() {
+    let mut input = box_mesh(4.0, 4.0, 1.0);
+    let edges = square_rim(&input, false);
+    let positions: Vec<_> = input
+        .vertices()
+        .map(|v| {
+            let [x, y, z] = *input.vertex_position(v).unwrap();
+            let scale = 1.0 + (1.0 - z) * 0.5;
+            (v, [(x - 2.0) * scale + 2.0, (y - 2.0) * scale + 2.0, z])
+        })
+        .collect();
+    let mut edit = input.edit();
+    for (vertex, point) in positions {
+        op::set_vertex_position(&mut edit, vertex, point).unwrap();
+    }
+    let _: () = edit.finish();
+    for mut policy in [RoundPolicy::chamfer(0.2), RoundPolicy::fillet(0.2)] {
+        policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+        policy.segments = Some(8);
+        let mut mesh = input.clone();
+        let result = round_edges(&mut mesh, &edges, &policy).unwrap();
+        assert_clean(&mesh);
+        let tangent = match policy.kind {
+            RoundKind::Chamfer { setback } => setback,
+            RoundKind::Fillet { radius } => radius * (2.0_f64.sqrt() - 1.0),
+        };
+        let expected = [tangent, tangent, 1.0];
+        assert!(
+            mesh.vertices().any(|v| {
+                norm(sub(promote(*mesh.vertex_position(v).unwrap()), expected)) < 1e-6
+            })
+        );
+        if let RoundKind::Fillet { radius } = policy.kind {
+            for (face, source) in result.face_provenance {
+                if !matches!(source, RoundFaceSource::Edge(_)) {
+                    continue;
+                }
+                let points: Vec<_> = mesh
+                    .face_loop(face)
+                    .map(|corner| {
+                        promote(
+                            *mesh
+                                .vertex_position(mesh.to_vertex(corner).unwrap())
+                                .unwrap(),
+                        )
+                    })
+                    .collect();
+                // The 45-degree flanks put each cylinder axis at a known
+                // distance from the top perimeter. One cylinder must contain
+                // every corner of the strip, including its miter endpoints.
+                assert!([0, 1].into_iter().any(|axis| {
+                    [tangent, 4.0 - tangent].into_iter().any(|center| {
+                        points.iter().all(|p| {
+                            let a = p[axis] - center;
+                            let b = p[2] - (1.0 - radius);
+                            ((a * a + b * b).sqrt() - radius).abs() < 1e-6
+                        })
+                    })
+                }));
+            }
+        }
+    }
+}
+
+#[test]
+fn planar_rim_finishing_commutes_with_rigid_placement() {
+    // Rotate around an oblique axis so no face remains axis-aligned. Shared
+    // flank fragments then acquire slightly different normals in stored f32.
+    let rotate = |p: [f64; 3]| {
+        let axis = normalize([1.0, 2.0, 3.0]).unwrap();
+        let angle = 0.7_f64;
+        add(
+            add(scale(p, angle.cos()), scale(cross(axis, p), angle.sin())),
+            scale(axis, dot(axis, p) * (1.0 - angle.cos())),
+        )
+    };
+    let place = |p| add(rotate(p), [0.3, -0.7, 1.2]);
+    for recessed in [false, true] {
+        let input = if recessed {
+            recessed_panel()
+        } else {
+            box_mesh(4.0, 3.0, 1.0)
+        };
+        let edges = square_rim(&input, recessed);
+        let mut placed = input.clone();
+        let positions: Vec<_> = placed
+            .vertices()
+            .map(|v| {
+                (
+                    v,
+                    narrow(place(promote(*placed.vertex_position(v).unwrap()))),
+                )
+            })
+            .collect();
+        let mut edit = placed.edit();
+        for (vertex, point) in positions {
+            op::set_vertex_position(&mut edit, vertex, point).unwrap();
+        }
+        let _: () = edit.finish();
+        for mut policy in [RoundPolicy::chamfer(0.2), RoundPolicy::fillet(0.2)] {
+            policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+            policy.segments = Some(8);
+            let mut reference = input.clone();
+            let mut actual = placed.clone();
+            round_edges(&mut reference, &edges, &policy).unwrap();
+            round_edges(&mut actual, &edges, &policy).expect("placed planar rim");
+            assert_clean(&actual);
+            assert_eq!(reference.vertices().count(), actual.vertices().count());
+            for vertex in reference.vertices() {
+                let expected = place(promote(*reference.vertex_position(vertex).unwrap()));
+                assert!(
+                    actual.vertices().any(|v| {
+                        norm(sub(promote(*actual.vertex_position(v).unwrap()), expected)) < 3e-6
+                    }),
+                    "missing placed point {expected:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn derived_bands_bound_the_miter_curve_chord_error() {
+    let mut mesh = box_mesh(4.0, 3.0, 1.0);
+    let edges = square_rim(&mesh, false);
+    let radius = 0.2;
+    let mut policy = RoundPolicy::fillet(radius);
+    policy.chord_tolerance = 0.007;
+    policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+    round_edges(&mut mesh, &edges, &policy).unwrap();
+    let mut samples = 0;
+    for edge in mesh.faces().flat_map(|f| mesh.face_loop(f)) {
+        let (a, b) = edge_endpoints(&mesh, edge);
+        let on_miter = |p: [f32; 3]| {
+            (p[0] - p[1]).abs() < 1e-7 && p[0] >= 0.0 && p[0] <= 0.200001 && p[2] >= 0.799999
+        };
+        if !on_miter(a) || !on_miter(b) {
+            continue;
+        }
+        let [a, b] = [a, b].map(promote);
+        let theta = [a, b].map(|p| (radius - p[0]).atan2(p[2] - (1.0 - radius)));
+        let middle = (theta[0] + theta[1]) * 0.5;
+        let curve = [
+            radius * (1.0 - middle.sin()),
+            radius * (1.0 - middle.sin()),
+            1.0 - radius + radius * middle.cos(),
+        ];
+        let deviation = norm(sub(scale(add(a, b), 0.5), curve));
+        assert!(
+            deviation <= policy.chord_tolerance + 1e-6,
+            "miter chord deviation {deviation} exceeds {}",
+            policy.chord_tolerance
+        );
+        samples += 1;
+    }
+    assert!(samples >= 6);
+}
+
 fn drill_prism() -> Mesh {
     let n = 16_u32;
     let mut builder = MeshBuilder::new();

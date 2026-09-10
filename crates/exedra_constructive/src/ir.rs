@@ -2416,7 +2416,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xe6d8_49d5_58e4_2d15_3d4a_8779_0fa6_91cd,
+            0x4d96_9961_79b9_96f8_da72_1238_8f2a_8f63,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

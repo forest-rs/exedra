@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Compare a true 3D rail fillet, rounded-profile extrusion, and selected foot chamfer.
+//! Compare rail, foot, and recessed-door edge finishes.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -10,9 +10,11 @@ use exedra_assembly::{Assembly, CompilePolicy, NormalsSource, PartCompiler, flat
 use exedra_constructive::builders;
 use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
 use exedra_constructive::ir::{
-    CapMode, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
+use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
+use exedra_mesh::{attr, op::set_face_region};
 use serde_json::json;
 
 fn rail(profile_rounding: bool) -> Result<Recipe, Box<dyn Error>> {
@@ -71,6 +73,75 @@ fn compile_policy() -> CompilePolicy {
     policy
 }
 
+fn recessed_door(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
+    let mut b = RecipeBuilder::new();
+    let surface = b.material_slot("surface");
+    let panel = b.with_material(surface).add(NodeKind::Primitive {
+        spec: PrimitiveSpec::Box {
+            size: [0.45, 0.024, 0.7],
+        },
+        placement: Placement3::IDENTITY,
+    })?;
+    // Give the cutter distinct geometric regions before the Boolean. Its
+    // four rim walls can then be selected without colliding with panel regions.
+    let mut cutter = tessellate_primitive(
+        PrimitiveSpec::Box {
+            size: [0.33, 0.02, 0.58],
+        },
+        &Placement3::IDENTITY,
+        &EvalPolicy::default(),
+    )?
+    .mesh;
+    let regions: Vec<_> = cutter
+        .faces()
+        .map(|face| {
+            (
+                face,
+                *cutter
+                    .attrs()
+                    .dense(attr::FACE_REGION)
+                    .unwrap()
+                    .get(face.as_id())
+                    .unwrap()
+                    + 100,
+            )
+        })
+        .collect();
+    let mut edit = cutter.edit();
+    for (face, region) in regions {
+        set_face_region(&mut edit, face, region)?;
+    }
+    let _: () = edit.finish();
+    let import = b.add_import(cutter)?;
+    let cutter = b.with_material(surface).add(NodeKind::MeshImport {
+        import,
+        placement: Placement3::translate(0.06, -0.008, 0.06),
+    })?;
+    let child = b.add(NodeKind::Csg {
+        op: CsgOp::Difference,
+        operands: vec![panel, cutter],
+    })?;
+    let root = if let Some(mut policy) = finish {
+        policy.max_tangent_turn = std::f64::consts::FRAC_PI_2;
+        policy.chord_tolerance = 0.00002;
+        b.add(NodeKind::EdgeFinish {
+            child,
+            // Box region 4 is the -Y front; cutter regions 101/102 and
+            // 105/106 are the four walls meeting that front.
+            selection: EdgeSelection::RegionBoundaries(vec![
+                [4, 101],
+                [4, 102],
+                [4, 105],
+                [4, 106],
+            ]),
+            policy,
+        })?
+    } else {
+        child
+    };
+    Ok(b.finish(root)?)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os()
         .nth(1)
@@ -81,6 +152,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("rail-fillet", rail(false)?),
         ("rail-profile", rail(true)?),
         ("foot-chamfer", foot()?),
+        ("door-recess", recessed_door(None)?),
+        (
+            "door-recess-chamfer",
+            recessed_door(Some(RoundPolicy::chamfer(0.003)))?,
+        ),
+        (
+            "door-recess-fillet",
+            recessed_door(Some(RoundPolicy::fillet(0.003)))?,
+        ),
     ] {
         let mut assembly = Assembly::new();
         let part = assembly.add_recipe_part(name, recipe)?;
@@ -116,6 +196,33 @@ mod tests {
     use exedra_constructive::evaluate::evaluate;
     use exedra_constructive::tessellate::Feature;
     use std::rc::Rc;
+
+    #[test]
+    fn boolean_door_rim_finishes_through_semantic_region_selection() {
+        for policy in [RoundPolicy::chamfer(0.003), RoundPolicy::fillet(0.003)] {
+            let evaluated = evaluate(
+                &recessed_door(Some(policy)).unwrap(),
+                &compile_policy().evaluation,
+            )
+            .unwrap();
+            assert_eq!(
+                evaluated.bodies.len(),
+                1,
+                "{:?}",
+                evaluated.report.diagnostics
+            );
+            assert_eq!(evaluated.report.counters.edge_finish_passes, 1);
+            assert_eq!(evaluated.report.counters.edge_finish_refusals, 0);
+            assert!(evaluated.bodies[0].body.mesh.validate_deep().is_empty());
+            assert!(
+                evaluated.bodies[0]
+                    .body
+                    .mesh
+                    .faces()
+                    .all(|face| evaluated.bodies[0].material_for_face(face).is_some())
+            );
+        }
+    }
 
     #[test]
     fn finished_rail_geometry_is_shared_across_placements_and_material_edits() {
