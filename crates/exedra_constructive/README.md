@@ -161,21 +161,27 @@ Incomplete or non-finite charts supply no new UVs; untextured inputs remain unte
 `finish_edges` exposes the same operation for
 a standalone tessellated body and returns typed failures without changing it.
 
-The supported examples are a box rail with all convex edges filleted and a
-box-like foot with a selected exposed edge chamfered. A rounded 2D profile
+The supported examples include a box rail with all convex edges filleted, a
+box-like foot with a selected exposed edge chamfered, and the square rim of a
+Boolean-cut door recess. A rounded 2D profile
 extruded along the rail remains a different operation: its end perimeters
 stay sharp. Concave targets, oversized radii, boundary edges, affected
 non-planar faces and unsupported junctions are refused. Open chain ends must
 meet one end face; CSG can split that face and make the end unsupported.
 Closed rims with distinct operand regions avoid these selection and end-face
-limitations. A square rim's
-90-degree chain turns are outside the default rounder's envelope. Recessed
-panel Booleans can also reuse region numbers across operands; ambiguous rim
-selection is explicitly refused. This slice does not promise general panel-rim
-fillets or repair self-intersecting offset strips.
+limitations. For a square rim, set `policy.max_tangent_turn` to `FRAC_PI_2`;
+the default remains 0.7 radians. Consecutive edges with a shared planar flank
+and equal dihedral angles receive exact miters. Fillet normals retain the
+crease between adjoining cylinders, and automatic band counts also bound
+chord error along the elliptical miter seam. Recessed-panel Booleans can reuse
+region numbers across operands; ambiguous rim selection is explicitly refused.
+The door example assigns distinct cutter regions before the Boolean. General
+concave-edge blends and self-intersecting offset strips remain outside this scope.
 
-Migration: evaluation schema 20 invalidates cached output for UV transfer and
-removes the unconditional `eval.edge_finish.uv_deferred` note. Regenerate
+Migration: evaluation schema 21 invalidates cached output for planar-flank
+miters, including existing polygonal drill rims. It follows schema 20's UV
+transfer change, which removed the unconditional `eval.edge_finish.uv_deferred`
+note. Regenerate
 persisted constructive text with the current schema. Existing recipes need no
 field changes. Callers that supply their own unwrap can continue overwriting
 the finished faces' UVs; new faces no longer necessarily have missing UVs.

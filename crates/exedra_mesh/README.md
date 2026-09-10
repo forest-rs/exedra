@@ -50,8 +50,12 @@ or a coarser tolerance when that tradeoff suits the caller.
 Radius and clearance decisions use the stored mesh coordinates. Faces that
 collapse at final f32 precision, rewritten faces that reverse orientation, and
 edge trims that cross are refused. Convex trihedral corners
-and gently turning chains are supported; concave edges and unsupported
-junctions remain typed failures.
+and gently turning chains are supported. Adjacent edges sharing a planar
+flank and equal dihedral angles meet at an exact miter, preserving the setback
+or radius on both edges. Set `max_tangent_turn` to `FRAC_PI_2` for square rims;
+the default remains 0.7 radians. Fillet miters keep a crease between cylinders,
+and automatic band counts account for their elliptical seam curves. Concave
+edges and unsupported junctions remain typed failures.
 
 Migration: existing `round_sharp_edges` calls retain their return type. Use
 `round_edges` when selection or provenance is needed, and choose
