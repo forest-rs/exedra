@@ -149,19 +149,19 @@ pub fn classify_patches(
     let mut classification = PatchClassification::default();
     let mut buffer = core::mem::take(&mut scratch.narrow_face_a);
 
-    for (side, mesh, other, outcome) in [
-        (MeshSide::A, mesh_a, mesh_b, outcome_a),
-        (MeshSide::B, mesh_b, mesh_a, outcome_b),
+    let geometry_a = ClassificationGeometry::new(mesh_a, strategy, &mut buffer);
+    let geometry_b = ClassificationGeometry::new(mesh_b, strategy, &mut buffer);
+    for (side, geometry, other, outcome) in [
+        (MeshSide::A, &geometry_a, &geometry_b, outcome_a),
+        (MeshSide::B, &geometry_b, &geometry_a, outcome_b),
     ] {
         let patches = classify_one_side(
             side,
-            mesh,
+            geometry,
             other,
             graph,
             outcome,
             contacts,
-            strategy,
-            &mut buffer,
             &mut classification.stats,
             diagnostics,
         );
@@ -187,16 +187,15 @@ pub fn classify_patches(
 )]
 fn classify_one_side(
     side: MeshSide,
-    mesh: &Mesh,
-    other: &Mesh,
+    geometry: &ClassificationGeometry<'_>,
+    other: &ClassificationGeometry<'_>,
     graph: &IntersectionGraph,
     outcome: &MeshSplitOutcome,
     contacts: &[CoplanarContact],
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
     stats: &mut ClassifyStats,
     diagnostics: &mut BooleanDiagnostics,
 ) -> Vec<Patch> {
+    let mesh = geometry.mesh;
     // --- Coplanar contacts keyed by this side's pre-split face, with the
     // split stage's origin mapping to reach post-split faces.
     let mut contacts_by_face: HashMap<FaceId, Vec<u32>> = HashMap::new();
@@ -289,19 +288,19 @@ fn classify_one_side(
     // intersection graph contributes no cut edge there. Classify each face
     // before flooding so contact faces cannot merge with adjacent clear
     // surface faces across that existing edge.
-    let faces: Vec<FaceId> = mesh.faces().collect();
+    let faces = &geometry.faces;
     let zero_area_faces: Vec<FaceId> = faces
         .iter()
         .copied()
-        .filter(|&face| !face_has_area(mesh, face, strategy, buffer))
+        .filter(|&face| geometry.face_triangles(face).all(triangle_is_flat))
         .collect();
     let mut face_contacts: HashMap<FaceId, PatchContact> = HashMap::new();
-    for &face in &faces {
+    for &face in faces {
         let origin = origins.get(&face).copied().unwrap_or(face);
         let membership = contacts_by_face
             .get(&origin)
             .map_or(PatchContact::Clear, |indices| {
-                face_contact(mesh, face, contacts, indices, side, strategy, buffer)
+                face_contact(geometry, face, contacts, indices, side)
             });
         face_contacts.insert(face, membership);
     }
@@ -355,7 +354,7 @@ fn classify_one_side(
         }
     }
     let mut contact_edges: HashSet<(VertexId, VertexId)> = HashSet::new();
-    for &face in &faces {
+    for &face in faces {
         for half_edge in mesh.face_loop(face) {
             let (Some(from), Some(to), Some(twin)) = (
                 mesh.from_vertex(half_edge),
@@ -383,7 +382,7 @@ fn classify_one_side(
     let mut assigned: HashMap<FaceId, usize> = HashMap::new();
     let mut patches: Vec<Patch> = Vec::new();
 
-    for &seed in &faces {
+    for &seed in faces {
         if assigned.contains_key(&seed) {
             continue;
         }
@@ -424,8 +423,7 @@ fn classify_one_side(
         });
     }
 
-    // Prepare the other operand only if a clear patch needs ray parity.
-    // Its geometry stays fixed across this side's patches and ray retries.
+    // Promote the opposing corners only when a clear patch needs rays.
     let mut ray_triangles = None;
     // --- Classify each patch.
     for patch in &mut patches {
@@ -461,11 +459,10 @@ fn classify_one_side(
                 continue;
             }
         }
-        let sample = sample_point(mesh, patch, &cut_vertices, strategy, buffer);
+        let sample = sample_point(geometry, patch, &cut_vertices);
         stats.ray_tests += 1;
-        let triangles =
-            ray_triangles.get_or_insert_with(|| prepare_ray_triangles(other, strategy, buffer));
-        match ray_parity(sample, other, triangles, &mut stats.ray_retries) {
+        let triangles = ray_triangles.get_or_insert_with(|| other.ray_triangles());
+        match ray_parity(sample, other.mesh, triangles, &mut stats.ray_retries) {
             Some(true) => patch.side = PatchSide::Inside,
             Some(false) => patch.side = PatchSide::Outside,
             None => {
@@ -489,32 +486,6 @@ fn sorted_pair(a: VertexId, b: VertexId) -> (VertexId, VertexId) {
     } else {
         (b, a)
     }
-}
-
-/// True when the face contributes positive-area surface geometry under the
-/// pipeline's triangulation strategy. Split operations can leave collinear
-/// bookkeeping faces where an intersection follows an existing edge; those
-/// faces bound no volume and must not become classifiable surface patches.
-fn face_has_area(
-    mesh: &Mesh,
-    face: FaceId,
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
-) -> bool {
-    let _ = mesh.face_triangles_into(face, strategy, buffer);
-    buffer.iter().any(|triangle| {
-        let mut corners = [[0.0_f64; 3]; 3];
-        for (slot, corner) in corners.iter_mut().zip(triangle) {
-            let Some(position) = mesh
-                .to_vertex(*corner)
-                .and_then(|vertex| mesh.vertex_position(vertex))
-            else {
-                return false;
-            };
-            *slot = promote(*position);
-        }
-        !triangle_is_flat(corners)
-    })
 }
 
 /// Whether a patch is a coplanar contact region.
@@ -569,13 +540,11 @@ fn patch_contact(patch: &Patch, face_contacts: &HashMap<FaceId, PatchContact>) -
 /// face's own triangulation decides — after an exact check that the
 /// sample really is interior to the face.
 fn face_contact(
-    mesh: &Mesh,
+    geometry: &ClassificationGeometry<'_>,
     face: FaceId,
     contacts: &[CoplanarContact],
     indices: &[u32],
     side: MeshSide,
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
 ) -> PatchContact {
     let first = &contacts[indices[0] as usize];
     let counterpart = |index: u32| match side {
@@ -598,8 +567,7 @@ fn face_contact(
     {
         let entry = &contacts[index as usize];
         let polygon = combined.as_deref().unwrap_or_else(|| counterpart(index));
-        let Some(inside) = face_inside_contact(mesh, face, entry.axis, polygon, strategy, buffer)
-        else {
+        let Some(inside) = face_inside_contact(geometry, face, entry.axis, polygon) else {
             return PatchContact::Ambiguous;
         };
         if inside {
@@ -650,13 +618,12 @@ fn joined_contact_boundary<'a>(
 }
 
 fn face_inside_contact(
-    mesh: &Mesh,
+    geometry: &ClassificationGeometry<'_>,
     face: FaceId,
     axis: usize,
     counterpart: &[[f64; 2]],
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
 ) -> Option<bool> {
+    let mesh = geometry.mesh;
     let mut strictly_inside = 0;
     let mut strictly_outside = 0;
     let mut own_polygon = Vec::new();
@@ -678,15 +645,7 @@ fn face_inside_contact(
     } else if strictly_outside > 0 {
         Some(false)
     } else {
-        match interior_sample_placement(
-            mesh,
-            face,
-            axis,
-            &own_polygon,
-            counterpart,
-            strategy,
-            buffer,
-        ) {
+        match interior_sample_placement(geometry, face, axis, &own_polygon, counterpart) {
             Some(Placement::Inside) => Some(true),
             Some(Placement::Outside) => Some(false),
             _ => None,
@@ -703,28 +662,14 @@ fn face_inside_contact(
 /// inside the face's own projected polygon (exact test); otherwise the
 /// configuration is reported as undecidable rather than guessed.
 fn interior_sample_placement(
-    mesh: &Mesh,
+    geometry: &ClassificationGeometry<'_>,
     face: FaceId,
     axis: usize,
     own_polygon: &[[f64; 2]],
     counterpart: &[[f64; 2]],
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
 ) -> Option<Placement> {
-    let _ = mesh.face_triangles_into(face, strategy, buffer);
-    for triangle in buffer.iter() {
-        let mut corners = [[0.0_f64; 3]; 3];
-        let mut live = true;
-        for (slot, corner) in corners.iter_mut().zip(triangle) {
-            match mesh
-                .to_vertex(*corner)
-                .and_then(|v| mesh.vertex_position(v))
-            {
-                Some(p) => *slot = promote(*p),
-                None => live = false,
-            }
-        }
-        if !live || triangle_is_flat(corners) {
+    for corners in geometry.face_triangles(face) {
+        if triangle_is_flat(corners) {
             continue;
         }
         let centroid = project_point(
@@ -757,12 +702,11 @@ fn interior_sample_placement(
 /// areas compare in f64 over exactly promoted coordinates, ties keep the
 /// first (lowest face, earliest triangle).
 fn sample_point(
-    mesh: &Mesh,
+    geometry: &ClassificationGeometry<'_>,
     patch: &Patch,
     cut_vertices: &HashSet<VertexId>,
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
 ) -> [f64; 3] {
+    let mesh = geometry.mesh;
     let mut best: Option<VertexId> = None;
     for &face in &patch.faces {
         for half_edge in mesh.face_loop(face) {
@@ -787,22 +731,7 @@ fn sample_point(
     let mut best_area = -1.0_f64;
     let mut best_centroid = [0.0_f64; 3];
     for &face in &patch.faces {
-        let _ = mesh.face_triangles_into(face, strategy, buffer);
-        for triangle in buffer.iter() {
-            let mut corners = [[0.0_f64; 3]; 3];
-            let mut live = true;
-            for (slot, corner) in corners.iter_mut().zip(triangle) {
-                match mesh
-                    .to_vertex(*corner)
-                    .and_then(|v| mesh.vertex_position(v))
-                {
-                    Some(p) => *slot = promote(*p),
-                    None => live = false,
-                }
-            }
-            if !live {
-                continue;
-            }
+        for corners in geometry.face_triangles(face) {
             let u = [
                 corners[1][0] - corners[0][0],
                 corners[1][1] - corners[0][1],
@@ -846,36 +775,65 @@ const RAY_DIRECTIONS: [[f64; 3]; 8] = [
     [0.0, 0.0, 1.0],
 ];
 
-/// Prepare immutable ray geometry once per opposing operand, preserving face
-/// and triangle order so exact crossing and retry decisions stay unchanged.
-fn prepare_ray_triangles(
-    mesh: &Mesh,
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[CornerId; 3]>,
-) -> Vec<[[f64; 3]; 3]> {
-    let mut triangles = Vec::new();
-    for face in mesh.faces() {
-        let _ = mesh.face_triangles_into(face, strategy, buffer);
-        for triangle in buffer.iter() {
-            let mut corners = [[0.0_f64; 3]; 3];
-            let mut live = true;
-            for (slot, corner) in corners.iter_mut().zip(triangle) {
-                match mesh
-                    .to_vertex(*corner)
-                    .and_then(|v| mesh.vertex_position(v))
-                {
-                    Some(p) => *slot = promote(*p),
-                    None => live = false,
-                }
-            }
-            // Flat triangles contribute nothing to parity. Test exactly over
-            // promoted f32 coordinates, as in the crossing loop.
-            if live && !triangle_is_flat(corners) {
-                triangles.push(corners);
-            }
+/// Authoritative face triangulations shared by the classification consumers
+/// of one immutable, post-split operand. Corner IDs keep this cache small;
+/// promoted ray coordinates remain lazy. Preserve enumeration order and flat
+/// triangles because sampling keeps the first triangle even on zero-area ties.
+struct ClassificationGeometry<'a> {
+    mesh: &'a Mesh,
+    faces: Vec<FaceId>,
+    offsets: Vec<usize>,
+    triangles: Vec<[CornerId; 3]>,
+}
+
+impl<'a> ClassificationGeometry<'a> {
+    fn new(mesh: &'a Mesh, strategy: FaceTriangulation, buffer: &mut Vec<[CornerId; 3]>) -> Self {
+        let faces: Vec<_> = mesh.faces().collect();
+        let mut offsets = Vec::with_capacity(faces.len() + 1);
+        let mut triangles = Vec::new();
+        offsets.push(0);
+        for &face in &faces {
+            let _ = mesh.face_triangles_into(face, strategy, buffer);
+            triangles.extend_from_slice(buffer);
+            offsets.push(triangles.len());
+        }
+        Self {
+            mesh,
+            faces,
+            offsets,
+            triangles,
         }
     }
-    triangles
+
+    fn face_triangles(&self, face: FaceId) -> impl Iterator<Item = [[f64; 3]; 3]> + '_ {
+        // Live faces enumerate in slot order. Compare the full ID as well so
+        // a stale generation never aliases the triangles of a reused slot.
+        let range = self
+            .faces
+            .binary_search_by_key(&face.index(), |face| face.index())
+            .ok()
+            .filter(|&index| self.faces[index] == face)
+            .map_or(0..0, |index| self.offsets[index]..self.offsets[index + 1]);
+        self.triangles[range]
+            .iter()
+            .filter_map(|&triangle| self.positions(triangle))
+    }
+
+    fn positions(&self, triangle: [CornerId; 3]) -> Option<[[f64; 3]; 3]> {
+        let mut corners = [[0.0; 3]; 3];
+        for (slot, corner) in corners.iter_mut().zip(triangle) {
+            *slot = promote(*self.mesh.vertex_position(self.mesh.to_vertex(corner)?)?);
+        }
+        Some(corners)
+    }
+
+    fn ray_triangles(&self) -> Vec<[[f64; 3]; 3]> {
+        self.triangles
+            .iter()
+            .filter_map(|&triangle| self.positions(triangle))
+            .filter(|&corners| !triangle_is_flat(corners))
+            .collect()
+    }
 }
 
 /// Exact ray parity of `point` against `mesh`: `Some(true)` when inside.
@@ -1063,7 +1021,8 @@ mod tests {
     use super::*;
     use crate::MeshBuilder;
     use crate::boolean::{
-        BooleanBvh, BooleanScratch, build_intersection_graph, narrow_phase, split_mesh_along_graph,
+        BooleanBvh, BooleanScratch, build_intersection_graph, collect_coplanar_contacts,
+        narrow_phase, split_mesh_along_graph,
     };
 
     fn assert_crossing(p: [f64; 3], q: [f64; 3], t: [[f64; 3]; 3], expected: Crossing) {
@@ -1180,10 +1139,101 @@ mod tests {
     }
 
     #[test]
+    fn prepared_face_samples_keep_triangle_order_on_area_ties() {
+        for origin in [[0.0; 3], [8.0, -4.0, 2.0]] {
+            let mesh = cube(origin);
+            let face = mesh.faces().next().expect("cube face");
+            let patch = Patch {
+                mesh: MeshSide::A,
+                faces: alloc::vec![face],
+                side: PatchSide::Suspect,
+            };
+            let cut_vertices = mesh.vertices().collect();
+            for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+                // Both triangles of this square have equal area. The kernel's
+                // first triangle supplies the sample, independently per mesh.
+                let triangles = mesh.face_triangles(face, strategy);
+                assert_eq!(triangles.len(), 2);
+                let corners = triangles[0].map(|corner| {
+                    promote(
+                        *mesh
+                            .vertex_position(mesh.to_vertex(corner).expect("live corner"))
+                            .expect("live vertex"),
+                    )
+                });
+                let expected = [0, 1, 2]
+                    .map(|axis| (corners[0][axis] + corners[1][axis] + corners[2][axis]) / 3.0);
+                let geometry = ClassificationGeometry::new(&mesh, strategy, &mut Vec::new());
+                assert_eq!(sample_point(&geometry, &patch, &cut_vertices), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_faces_reject_sentinel_and_stale_generations() {
+        let mesh = cube([0.0; 3]);
+        let face = mesh.faces().next().expect("cube face");
+        let stale = FaceId::new(
+            face.index(),
+            face.generation().checked_add(1).expect("next generation"),
+        );
+        let geometry =
+            ClassificationGeometry::new(&mesh, FaceTriangulation::Robust, &mut Vec::new());
+        assert_eq!(geometry.face_triangles(face).count(), 2);
+        assert_eq!(geometry.face_triangles(stale).count(), 0);
+        assert_eq!(geometry.face_triangles(FaceId::OUTSIDE).count(), 0);
+    }
+
+    #[test]
+    fn coincident_cubes_classify_contacts_without_rays() {
+        let mesh_a = cube([0.0; 3]);
+        let mesh_b = cube([0.0; 3]);
+        for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+            let mut scratch = BooleanScratch::new();
+            let bvh = BooleanBvh::build(&mesh_a, strategy, &mut scratch);
+            let mut pairs = Vec::new();
+            bvh.query_overlaps(&bvh, &mut scratch, &mut pairs);
+            let mut contacts = Vec::new();
+            let mut diagnostics = BooleanDiagnostics::default();
+            collect_coplanar_contacts(
+                &mesh_a,
+                &mesh_b,
+                &pairs,
+                strategy,
+                &mut scratch,
+                &mut contacts,
+                &mut diagnostics,
+            );
+            let classification = classify_patches(
+                &mesh_a,
+                &mesh_b,
+                &IntersectionGraph::default(),
+                &MeshSplitOutcome::default(),
+                &MeshSplitOutcome::default(),
+                &contacts,
+                strategy,
+                &mut scratch,
+                &mut diagnostics,
+            );
+            assert!(diagnostics.is_clean(), "{:?}", diagnostics.entries());
+            assert_eq!(classification.patches.len(), 2);
+            assert!(
+                classification
+                    .patches
+                    .iter()
+                    .all(|patch| patch.side == PatchSide::Boundary { opposed: false })
+            );
+            assert_eq!(classification.stats.ray_tests, 0);
+            assert_eq!(classification.stats.ray_retries, 0);
+        }
+    }
+
+    #[test]
     fn prepared_rays_preserve_membership_and_surface_refusal() {
         let mesh = cube([0.0; 3]);
         for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
-            let triangles = prepare_ray_triangles(&mesh, strategy, &mut Vec::new());
+            let geometry = ClassificationGeometry::new(&mesh, strategy, &mut Vec::new());
+            let triangles = geometry.ray_triangles();
             for (point, expected, expected_retries) in [
                 ([0.5, 0.5, 0.5], Some(true), 0),
                 ([2.0, 0.5, 0.5], Some(false), 0),
@@ -1210,8 +1260,23 @@ mod tests {
         let flat = builder.build().expect("flat triangle").mesh;
         for mesh in [flat, Mesh::new()] {
             for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
-                let triangles = prepare_ray_triangles(&mesh, strategy, &mut Vec::new());
+                let geometry = ClassificationGeometry::new(&mesh, strategy, &mut Vec::new());
+                let triangles = geometry.ray_triangles();
                 assert!(triangles.is_empty());
+                if let Some(face) = mesh.faces().next() {
+                    let patch = Patch {
+                        mesh: MeshSide::A,
+                        faces: alloc::vec![face],
+                        side: PatchSide::Suspect,
+                    };
+                    // Area eligibility and rays skip the flat face, but a
+                    // fallback sample still uses its first zero-area triangle.
+                    assert!(geometry.face_triangles(face).all(triangle_is_flat));
+                    assert_eq!(
+                        sample_point(&geometry, &patch, &mesh.vertices().collect()),
+                        [1.0, 0.0, 0.0]
+                    );
+                }
                 let mut retries = 0;
                 assert_eq!(
                     ray_parity([0.0; 3], &mesh, &triangles, &mut retries),
