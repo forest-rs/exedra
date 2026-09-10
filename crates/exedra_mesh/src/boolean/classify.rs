@@ -49,7 +49,7 @@ use super::coplanar::{
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::graph::IntersectionGraph;
 use super::split::{MeshSide, MeshSplitOutcome};
-use crate::{FaceId, FaceTriangulation, Mesh, VertexId};
+use crate::{CornerId, FaceId, FaceTriangulation, Mesh, VertexId};
 use exedra_math::promote;
 
 /// Which side of the other mesh a patch lies on.
@@ -193,7 +193,7 @@ fn classify_one_side(
     outcome: &MeshSplitOutcome,
     contacts: &[CoplanarContact],
     strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    buffer: &mut Vec<[CornerId; 3]>,
     stats: &mut ClassifyStats,
     diagnostics: &mut BooleanDiagnostics,
 ) -> Vec<Patch> {
@@ -424,6 +424,9 @@ fn classify_one_side(
         });
     }
 
+    // Prepare the other operand only if a clear patch needs ray parity.
+    // Its geometry stays fixed across this side's patches and ray retries.
+    let mut ray_triangles = None;
     // --- Classify each patch.
     for patch in &mut patches {
         if patch.faces.iter().any(|f| suspect_faces.contains(f)) {
@@ -460,7 +463,9 @@ fn classify_one_side(
         }
         let sample = sample_point(mesh, patch, &cut_vertices, strategy, buffer);
         stats.ray_tests += 1;
-        match ray_parity(sample, other, strategy, buffer, &mut stats.ray_retries) {
+        let triangles =
+            ray_triangles.get_or_insert_with(|| prepare_ray_triangles(other, strategy, buffer));
+        match ray_parity(sample, other, triangles, &mut stats.ray_retries) {
             Some(true) => patch.side = PatchSide::Inside,
             Some(false) => patch.side = PatchSide::Outside,
             None => {
@@ -494,7 +499,7 @@ fn face_has_area(
     mesh: &Mesh,
     face: FaceId,
     strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    buffer: &mut Vec<[CornerId; 3]>,
 ) -> bool {
     let _ = mesh.face_triangles_into(face, strategy, buffer);
     buffer.iter().any(|triangle| {
@@ -570,7 +575,7 @@ fn face_contact(
     indices: &[u32],
     side: MeshSide,
     strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    buffer: &mut Vec<[CornerId; 3]>,
 ) -> PatchContact {
     let first = &contacts[indices[0] as usize];
     let counterpart = |index: u32| match side {
@@ -650,7 +655,7 @@ fn face_inside_contact(
     axis: usize,
     counterpart: &[[f64; 2]],
     strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    buffer: &mut Vec<[CornerId; 3]>,
 ) -> Option<bool> {
     let mut strictly_inside = 0;
     let mut strictly_outside = 0;
@@ -704,7 +709,7 @@ fn interior_sample_placement(
     own_polygon: &[[f64; 2]],
     counterpart: &[[f64; 2]],
     strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    buffer: &mut Vec<[CornerId; 3]>,
 ) -> Option<Placement> {
     let _ = mesh.face_triangles_into(face, strategy, buffer);
     for triangle in buffer.iter() {
@@ -756,7 +761,7 @@ fn sample_point(
     patch: &Patch,
     cut_vertices: &HashSet<VertexId>,
     strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    buffer: &mut Vec<[CornerId; 3]>,
 ) -> [f64; 3] {
     let mut best: Option<VertexId> = None;
     for &face in &patch.faces {
@@ -841,6 +846,38 @@ const RAY_DIRECTIONS: [[f64; 3]; 8] = [
     [0.0, 0.0, 1.0],
 ];
 
+/// Prepare immutable ray geometry once per opposing operand, preserving face
+/// and triangle order so exact crossing and retry decisions stay unchanged.
+fn prepare_ray_triangles(
+    mesh: &Mesh,
+    strategy: FaceTriangulation,
+    buffer: &mut Vec<[CornerId; 3]>,
+) -> Vec<[[f64; 3]; 3]> {
+    let mut triangles = Vec::new();
+    for face in mesh.faces() {
+        let _ = mesh.face_triangles_into(face, strategy, buffer);
+        for triangle in buffer.iter() {
+            let mut corners = [[0.0_f64; 3]; 3];
+            let mut live = true;
+            for (slot, corner) in corners.iter_mut().zip(triangle) {
+                match mesh
+                    .to_vertex(*corner)
+                    .and_then(|v| mesh.vertex_position(v))
+                {
+                    Some(p) => *slot = promote(*p),
+                    None => live = false,
+                }
+            }
+            // Flat triangles contribute nothing to parity. Test exactly over
+            // promoted f32 coordinates, as in the crossing loop.
+            if live && !triangle_is_flat(corners) {
+                triangles.push(corners);
+            }
+        }
+    }
+    triangles
+}
+
 /// Exact ray parity of `point` against `mesh`: `Some(true)` when inside.
 ///
 /// Casts a segment from `point` to a far point beyond the mesh bounds and
@@ -850,8 +887,7 @@ const RAY_DIRECTIONS: [[f64; 3]; 8] = [
 fn ray_parity(
     point: [f64; 3],
     mesh: &Mesh,
-    strategy: FaceTriangulation,
-    buffer: &mut Vec<[crate::CornerId; 3]>,
+    triangles: &[[[f64; 3]; 3]],
     retries: &mut u64,
 ) -> Option<bool> {
     // Far-point scale from the mesh bounds plus the sample point.
@@ -876,37 +912,13 @@ fn ray_parity(
             point[2] + direction[2] * scale,
         ];
         let mut crossings = 0_u64;
-        for face in mesh.faces() {
-            let _ = mesh.face_triangles_into(face, strategy, buffer);
-            for triangle in buffer.iter() {
-                let mut corners = [[0.0_f64; 3]; 3];
-                let mut live = true;
-                for (slot, corner) in corners.iter_mut().zip(triangle) {
-                    match mesh
-                        .to_vertex(*corner)
-                        .and_then(|v| mesh.vertex_position(v))
-                    {
-                        Some(p) => *slot = promote(*p),
-                        None => live = false,
-                    }
-                }
-                if !live {
-                    continue;
-                }
-                // Zero-area triangles (fan output over loops with repeated
-                // positions or collinear runs after splitting) contribute
-                // nothing to parity; the cross product of f32-promoted
-                // coordinates is exact enough for an exact-zero test.
-                if triangle_is_flat(corners) {
-                    continue;
-                }
-                match segment_crosses_triangle(point, far, corners) {
-                    Crossing::Crosses => crossings += 1,
-                    Crossing::Misses => {}
-                    Crossing::Degenerate => {
-                        *retries += 1;
-                        continue 'directions;
-                    }
+        for &corners in triangles {
+            match segment_crosses_triangle(point, far, corners) {
+                Crossing::Crosses => crossings += 1,
+                Crossing::Misses => {}
+                Crossing::Degenerate => {
+                    *retries += 1;
+                    continue 'directions;
                 }
             }
         }
@@ -1064,6 +1076,49 @@ mod tests {
             builder.add_face(&face).expect("valid cube face");
         }
         builder.build().expect("valid cube").mesh
+    }
+
+    #[test]
+    fn prepared_rays_preserve_membership_and_surface_refusal() {
+        let mesh = cube([0.0; 3]);
+        for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+            let triangles = prepare_ray_triangles(&mesh, strategy, &mut Vec::new());
+            for (point, expected, expected_retries) in [
+                ([0.5, 0.5, 0.5], Some(true), 0),
+                ([2.0, 0.5, 0.5], Some(false), 0),
+                ([0.0, 0.25, 0.25], None, 8),
+                ([0.0, 0.0, 0.0], None, 8),
+                ([0.25, 0.75, 0.5], Some(true), 0),
+            ] {
+                let mut retries = 0;
+                assert_eq!(ray_parity(point, &mesh, &triangles, &mut retries), expected);
+                assert_eq!(retries, expected_retries);
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_rays_ignore_flat_faces_and_handle_empty_meshes() {
+        let mut builder = MeshBuilder::new();
+        for point in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]] {
+            builder.push_vertex(point);
+        }
+        builder
+            .add_face(&[0, 1, 2])
+            .expect("topologically valid flat face");
+        let flat = builder.build().expect("flat triangle").mesh;
+        for mesh in [flat, Mesh::new()] {
+            for strategy in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+                let triangles = prepare_ray_triangles(&mesh, strategy, &mut Vec::new());
+                assert!(triangles.is_empty());
+                let mut retries = 0;
+                assert_eq!(
+                    ray_parity([0.0; 3], &mesh, &triangles, &mut retries),
+                    Some(false)
+                );
+                assert_eq!(retries, 0);
+            }
+        }
     }
 
     fn classify_two_cubes() -> (PatchClassification, BooleanDiagnostics) {

@@ -7,7 +7,8 @@
 //! bit-identical to a full rebuild), and CT-3 (the gallery's direct
 //! Boolean-plus-rounding card, timed by phase), and CT-4 (constructive
 //! stretch exact rewrites versus the general imported-mesh path), and CT-5
-//! (spherical corner triangle count, memory and rounding time).
+//! (spherical corner triangle count, memory and rounding time), and CT-6
+//! (a through-drill with distinct body and cutter material slots).
 //!
 //! Run the quick profile (the default):
 //! `cargo run --release -p constructive_wind_tunnel -- --quick`
@@ -43,7 +44,9 @@ use exedra_testkit::trimesh_signature;
 
 fn main() {
     let config = Config::from_args(std::env::args().skip(1));
-    if config.corners_only {
+    if config.materials_only {
+        run_ct6(config.profile);
+    } else if config.corners_only {
         run_ct5(config.profile);
     } else if config.stretch_only {
         run_ct4(config.profile);
@@ -55,6 +58,7 @@ fn main() {
         run_ct3(config.profile);
         run_ct4(config.profile);
         run_ct5(config.profile);
+        run_ct6(config.profile);
     }
 }
 
@@ -64,6 +68,7 @@ struct Config {
     gallery_only: bool,
     stretch_only: bool,
     corners_only: bool,
+    materials_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -146,6 +151,7 @@ impl Config {
             gallery_only: false,
             stretch_only: false,
             corners_only: false,
+            materials_only: false,
         };
         for arg in args {
             match arg.as_str() {
@@ -162,6 +168,11 @@ impl Config {
                 }
                 "--stretch" => config.stretch_only = true,
                 "--corners" => config.corners_only = true,
+                "--materials" => config.materials_only = true,
+                "--materials-sample" => {
+                    config.profile = Profile::Sample;
+                    config.materials_only = true;
+                }
                 "--corners-sample" => {
                     config.profile = Profile::Sample;
                     config.corners_only = true;
@@ -187,7 +198,7 @@ impl Config {
 
 fn print_help() {
     eprintln!(
-        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners | --corners-sample]"
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners | --corners-sample | --materials | --materials-sample]"
     );
 }
 
@@ -492,10 +503,14 @@ fn build_gallery_drill_operands() -> (Mesh, Mesh) {
 /// rounding fixture, this uses the default circle discretization and therefore
 /// exercises the higher-resolution face-splitting path seen in the gallery
 /// process sample.
-fn build_gallery_csg_recipe() -> Recipe {
+fn build_gallery_csg_recipe(mixed_materials: bool) -> Recipe {
     let mut builder = RecipeBuilder::new();
     let block = builder.add_profile(builders::rect(200.0, 100.0).expect("valid block profile"));
     let drill = builder.add_profile(builders::circle(30.0).expect("valid drill profile"));
+    if mixed_materials {
+        let slot = builder.material_slot("panel");
+        builder.with_material(slot);
+    }
     let block = builder
         .add(NodeKind::Extrude {
             profile: block,
@@ -504,6 +519,10 @@ fn build_gallery_csg_recipe() -> Recipe {
             caps: CapMode::Both,
         })
         .expect("valid block extrusion");
+    if mixed_materials {
+        let slot = builder.material_slot("cut");
+        builder.with_material(slot);
+    }
     let drill = builder
         .add(NodeKind::Extrude {
             profile: drill,
@@ -577,7 +596,7 @@ fn time_phase(iterations: u32, mut phase: impl FnMut()) -> (Duration, Duration) 
 /// trade away topology, attributes, or orientation.
 fn run_ct3(profile: Profile) {
     let policy = EvalPolicy::default();
-    let recipe = build_gallery_csg_recipe();
+    let recipe = build_gallery_csg_recipe(false);
     let evaluated_a = evaluate(&recipe, &policy).expect("gallery CSG evaluates");
     let evaluated_b = evaluate(&recipe, &policy).expect("gallery CSG evaluates");
     assert_eq!(
@@ -928,6 +947,63 @@ fn run_ct5(profile: Profile) {
     }
 }
 
+/// CT-6 measures the same through-drill with a distinct material on each operand.
+fn run_ct6(profile: Profile) {
+    let recipe = build_gallery_csg_recipe(true);
+    let policy = EvalPolicy::default();
+    let first = evaluate(&recipe, &policy).expect("mixed-material CSG evaluates");
+    let second = evaluate(&recipe, &policy).expect("mixed-material CSG repeats");
+    assert_eq!(first.bodies.len(), 1, "CT-6 emits one complete body");
+    assert!(
+        first.bodies[0].body.mesh.validate_deep().is_empty(),
+        "CT-6 mesh must be deeply valid"
+    );
+    let signature = fold_signature(&first);
+    assert_eq!(
+        signature,
+        fold_signature(&second),
+        "CT-6 geometry must repeat"
+    );
+    let materials = |evaluation: &Evaluation| {
+        let mut counts = [0_usize; 2];
+        let mut signature = 14_695_981_039_346_656_037_u64;
+        for placed in &evaluation.bodies {
+            for face in placed.body.mesh.faces() {
+                let slot = placed
+                    .material_for_face(face)
+                    .expect("every face has a slot");
+                counts[slot.0 as usize] += 1;
+                for value in [face.index(), slot.0] {
+                    signature ^= u64::from(value);
+                    signature = signature.wrapping_mul(1_099_511_628_211);
+                }
+            }
+        }
+        (signature, counts)
+    };
+    let (material_signature, counts) = materials(&first);
+    assert!(
+        counts.iter().all(|&count| count > 0),
+        "both materials survive"
+    );
+    assert_eq!(
+        (material_signature, counts),
+        materials(&second),
+        "CT-6 face material assignments must repeat"
+    );
+    let iterations = profile.gallery_iterations();
+    let (best, avg) = time_phase(iterations, || {
+        black_box(evaluate(black_box(&recipe), black_box(&policy)).expect("mixed-material CSG"));
+    });
+    println!(
+        "scenario=CT-6 iterations={iterations} panel_faces={} cut_faces={} best_ns={} avg_ns={} signature={signature:016x} material_signature={material_signature:016x}",
+        counts[0],
+        counts[1],
+        best.as_nanos(),
+        avg.as_nanos()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,7 +1031,7 @@ mod tests {
         // The profiling fixtures must remain the gallery's two through-drill
         // paths: public constructive evaluation plus the direct Boolean mesh
         // used for rounding. Both must be deterministic and deeply valid.
-        let recipe = build_gallery_csg_recipe();
+        let recipe = build_gallery_csg_recipe(false);
         let policy = EvalPolicy::default();
         let evaluated_a = evaluate(&recipe, &policy).expect("evaluates");
         let evaluated_b = evaluate(&recipe, &policy).expect("evaluates");
