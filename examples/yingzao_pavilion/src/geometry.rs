@@ -62,6 +62,15 @@ pub(crate) fn extrude(profile: Profile2, height: f64, placement: Placement3) -> 
     Ok(recipe.finish(root)?)
 }
 
+pub(crate) fn polygon(points: &[[f64; 2]]) -> Result<Profile2> {
+    let outline = Loop2::new(points.iter().map(|p| Seg2::line((p[0], p[1]))).collect())?;
+    Ok(Profile2::simple(if outline.signed_area() < 0.0 {
+        outline.reversed()
+    } else {
+        outline
+    })?)
+}
+
 /// A bracket arm with a deep central bearing and rising, curved undersides.
 pub(crate) fn arm(length: f64, width: f64, depth: f64) -> Result<Recipe> {
     let l = length * 0.5;

@@ -48,7 +48,7 @@ def main():
     fill.data.size = 8
     aim(fill, (0, 0, 2))
     metrics = json.loads((root / "metrics.json").read_text())
-    dimensions = next(item for item in metrics if item["name"] == ("pavilion" if case in ["lacquered", "bracket-study", "seat-study", "concave-study"] else case))
+    dimensions = next(item for item in metrics if item["name"] == ("pavilion" if case == "lacquered" or case.endswith("-study") else case))
     width = dimensions["bays"] * dimensions["span_mm"] / 1000
     depth = dimensions["depth_mm"] / 1000
     scale = math.sqrt((width + 1.2) / 4.8)
@@ -64,7 +64,10 @@ def main():
                  ("underside", (1.1, -2.6, -0.65), (0, 0, 0.10), 58)]
     elif case == "concave-study":
         views = [("shoulders", (0.9, -1.7, 1.2), (0, 0, 0.06), 62)]
-    elif len(args) > 2:
+    elif case == "rafter-study":
+        views = [("fits", (2.8, -3.5, 2.2), (0, 0, 0.14), 58),
+                 ("underside", (2.8, -3.5, -0.8), (0, 0, 0.10), 58)]
+    if len(args) > 2:
         views = [view for view in views if view[0] == args[2]]
         if not views:
             raise ValueError(f"Unknown view: {args[2]}")

@@ -15,6 +15,8 @@ Outputs go to `target/yingzao-pavilion/`:
 - `bracket-study.glb`: assembled and exploded views of the fitted bracket.
 - `seat-study.glb`: assembled/exploded purlin seat, with its nominal bearing
   rectangle marked in green.
+- `rafter-study.glb`: two neighboring rafters assembled over their purlins,
+  alongside an exploded view of their side lap, bearing cuts, and wooden pin.
 - `concave-study.glb`: sharp, chamfered, and filleted internal shoulders, left
   to right. These isolated shapes illustrate the available finishing behavior.
 - `span-4500.glb` and `three-bay.glb`: span and repetition comparisons when
@@ -22,7 +24,7 @@ Outputs go to `target/yingzao-pavilion/`:
 - `metrics.json`: setting-out/assembly time, cold geometry compilation time,
   export time, part and instance counts, unique and placed triangles, geometry
   buffer bytes, GLB bytes, material-edit cache work, and measured roof-bearing
-  count, checked area, and verification time. Times exclude file IO
+  count, side-fit count, checked contact area, and verification time. Times exclude file IO
   and are individual observations, not benchmark distributions.
 
 Set dimensions directly with `--bays`, `--span-mm`, and `--depth-mm`; use
@@ -41,6 +43,7 @@ blender --background --python examples/yingzao_pavilion/tools/render.py -- targe
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion three-bay eye-level
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion bracket-study
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion seat-study
+blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion rafter-study
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion concave-study
 ```
 
@@ -79,7 +82,22 @@ bearing rectangle to cover the sideways chord error of coarse circle
 sampling; metrics report that checked area. This does not prove contact over
 the excluded boundary strip or discover collisions elsewhere in the frame.
 
-`scene.rs` places shared timber, bracket, and tile parts. Curves use a 1 mm
+`roof_section.rs` turns the setout datums into one piecewise roof section.
+Rafters and continuous decking share its slopes. Layer thickness
+is measured normal to the roof; adjacent offsets meet at mitres and the two
+roof halves meet on the ridge plane.
+
+`rafters.rs` adds eight short rafter shapes, repeated across the building.
+Each end bears on a shallow flat cut in its circular purlin. At every pitch
+change, including the ridge, half-width tongues form a 100 mm supported side
+lap with a 12 mm wooden pin through matching bores. The top purlin cuts run
+continuously along the timber. These scene-specific fits use ordinary
+`joiner::RuleOutput` edits, contacts and generated pins; they add no public rule
+API. Contact coverage checks use the exported shared parts. Regression samples
+also check pin clearance and interference between neighboring timbers; finite
+sampling is not a general collision certificate or a pin-bearing calculation.
+
+`scene.rs` places shared timber and studies. Curves use a 1 mm
 chord tolerance, authored cylinder sections use 32 sides, and the platform
 stones have 3 mm chamfers. `main.rs` maps opaque material IDs to untextured
 glTF factors. Reassigning the materials must compile zero new parts and emit
@@ -98,8 +116,8 @@ The roof follows the four-interval *juzhe* construction described in
 raise the ridge by one third of the half-run, then depress successive working
 lines by R/10, R/20, and R/40. The bracket outline, fits, remaining dimensions,
 and finishes are authored here. The example does not reconstruct a particular
-historical building. Sloped rafter seats, beam/post tenons, and longitudinal
-purlin splices are still future work; the isolated concave study does not
+historical building. Beam/post tenons and longitudinal purlin splices are still future work;
+the isolated concave study does not
 round the fitted mating surfaces. The example supplies no
 structural capacity analysis. Textures, LODs, and collision geometry can follow
 from an actual consuming game's requirements.

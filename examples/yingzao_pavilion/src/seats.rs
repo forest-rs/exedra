@@ -3,36 +3,26 @@
 
 //! Round purlins and their actual bearing pads/beams, fitted at setout datums.
 
-use exedra_assembly::{Assembly, CompiledParts};
 use exedra_constructive::builders::circle;
 use exedra_constructive::ir::Placement3;
-use joiner::{
-    Construction, Element, Node, OrientedBox, Part, Relation, RelationKind,
-    measure_contact_geometry,
-};
+use joiner::{Element, Node, OrientedBox, Part, Relation, RelationKind};
 use joiner_timber::{RoundPurlinSeatParams, RoundPurlinSeatRule};
 
-use crate::{Result, geometry, joinery, layout::Layout};
+use crate::layout::PURLIN_RADIUS;
+use crate::{Result, geometry, joinery, joinery::FittedConstruction, layout::Layout};
 
-pub(crate) struct RoofSeats {
-    pub(crate) construction: Construction,
-    /// Element key and shared geometry key. Roof levels with equal sections
-    /// and the same seat stations deliberately instance one fitted part.
-    pub(crate) instances: Vec<(String, String)>,
-}
-
-pub(crate) fn build(l: &Layout) -> Result<RoofSeats> {
+pub(crate) fn build(l: &Layout) -> Result<FittedConstruction> {
     build_at_stations(l, l.width + 1.2, &l.frames)
 }
 
-pub(crate) fn study(l: &Layout) -> Result<RoofSeats> {
+pub(crate) fn study(l: &Layout) -> Result<FittedConstruction> {
     build_at_stations(l, 0.65, &[0.0])
 }
 
-fn build_at_stations(l: &Layout, length: f64, stations: &[f64]) -> Result<RoofSeats> {
+fn build_at_stations(l: &Layout, length: f64, stations: &[f64]) -> Result<FittedConstruction> {
     let (mut construction, evidence) = joinery::construction()?;
     let mut instances = Vec::new();
-    let radius = 0.095;
+    let radius = PURLIN_RADIUS;
     let round = geometry::extrude(
         circle(radius)?,
         length,
@@ -122,46 +112,8 @@ fn build_at_stations(l: &Layout, length: f64, stations: &[f64]) -> Result<RoofSe
             }
         }
     }
-    Ok(RoofSeats {
+    Ok(FittedConstruction {
         construction,
         instances,
     })
-}
-
-/// Checks the same shared compiled parts that the scene exports.
-pub(crate) fn verify(
-    seats: &RoofSeats,
-    assembly: &Assembly,
-    compiled: &CompiledParts,
-) -> Result<f64> {
-    let mut area = 0.0;
-    for contact in seats.construction.contacts() {
-        let part = |key: &str| -> Result<_> {
-            let (_, family) = seats
-                .instances
-                .iter()
-                .find(|(element, _)| element == key)
-                .ok_or("missing fitted roof instance")?;
-            let id = assembly
-                .part_by_key(family)
-                .ok_or("missing fitted roof part")?;
-            Ok(compiled.part(id).ok_or("missing compiled roof part")?)
-        };
-        // The analytic chord is narrowed by 2 mm at each edge. For this
-        // 190 mm section and 15 mm seat that covers the sideways boundary
-        // error of the 1 mm chord tessellation, plus f32 output quantization.
-        // The returned area records precisely how much surface was checked.
-        let measured = measure_contact_geometry(
-            &seats.construction,
-            contact,
-            part(&contact.carried.element)?,
-            part(&contact.carrier.element)?,
-            0.002,
-        )?;
-        if !measured.is_covered() {
-            return Err(format!("{} has an uncovered bearing: {measured:?}", contact.key).into());
-        }
-        area += measured.checked_area;
-    }
-    Ok(area)
 }

@@ -7,6 +7,8 @@ mod brackets;
 mod geometry;
 mod joinery;
 mod layout;
+mod rafters;
+mod roof_section;
 mod scene;
 mod seats;
 
@@ -20,6 +22,7 @@ use exedra_assembly::{Assembly, CompilePolicy, CompiledParts, PartCompiler, Part
 use exedra_constructive::evaluate::Severity;
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use exedra_mesh::NormalsSource;
+use joiner::ContactMeaning;
 use serde_json::{Value, json};
 
 use layout::{Layout, Parameters};
@@ -78,6 +81,7 @@ fn main() -> Result<()> {
         ("bracket-study", scene::bracket_study(&layout)?),
         ("seat-study", scene::seat_study(&layout)?),
         ("concave-study", scene::concave_study()?),
+        ("rafter-study", scene::rafter_study(&layout)?),
     ] {
         write_study(&output, name, &study)?;
     }
@@ -120,8 +124,8 @@ fn generate(
 ) -> Result<Value> {
     let start = Instant::now();
     let layout = Layout::resolve(parameters)?;
-    let roof_seats = seats::build(&layout)?;
-    let mut assembly = scene::build_with_seats(&layout, &roof_seats)?;
+    let roof_frame = rafters::build(&layout)?;
+    let mut assembly = scene::build_with_roof(&layout, &roof_frame)?;
     let build_ms = start.elapsed().as_secs_f64() * 1_000.0;
     let mut compiler = PartCompiler::new();
     let policy = compile_policy();
@@ -130,7 +134,7 @@ fn generate(
     let compile_ms = start.elapsed().as_secs_f64() * 1_000.0;
     check_reports(&assembly, &compiled)?;
     let start = Instant::now();
-    let bearing_area = seats::verify(&roof_seats, &assembly, &compiled)?;
+    let contact_area = roof_frame.verify(&assembly, &compiled)?;
     let verify_ms = start.elapsed().as_secs_f64() * 1_000.0;
     let draw = flatten(&assembly, &compiled);
     let start = Instant::now();
@@ -144,8 +148,9 @@ fn generate(
     let export_ms = start.elapsed().as_secs_f64() * 1_000.0;
     std::fs::write(output.join(format!("{name}.glb")), &export.bytes)?;
     let mut metrics = json!({
-        "bearing_contacts": roof_seats.construction.contacts().len(),
-        "checked_bearing_area_m2": bearing_area, "contact_verify_ms": verify_ms,
+        "bearing_contacts": roof_frame.construction.contacts().iter().filter(|c| c.meaning == ContactMeaning::Bearing).count(),
+        "side_fit_contacts": roof_frame.construction.contacts().iter().filter(|c| c.meaning == ContactMeaning::SideFit).count(),
+        "checked_contact_area_m2": contact_area, "contact_verify_ms": verify_ms,
         "name":name, "bays":parameters.bays, "span_mm":parameters.span_mm, "depth_mm":parameters.depth_mm,
         "build_ms": build_ms, "cold_compile_ms": compile_ms, "export_ms": export_ms,
         "parts": assembly.parts().len(), "instances": assembly.instances().len(),

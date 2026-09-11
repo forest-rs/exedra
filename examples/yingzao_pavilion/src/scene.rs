@@ -3,26 +3,32 @@
 
 //! Explicit pavilion construction and shared-part placement.
 
+use crate::roof_section::RoofSection;
 use exedra_assembly::{Assembly, PartId};
 use exedra_constructive::edge_finish::RoundPolicy;
 use exedra_constructive::ir::{Placement3, Recipe};
 use joiner::compose;
 use std::collections::HashMap;
 
-use crate::{Result, brackets, geometry, layout::Layout, seats};
+use crate::{
+    Result, brackets, geometry, joinery::FittedConstruction, layout::Layout, rafters, seats,
+};
 
 #[cfg(test)]
 pub(crate) fn build(layout: &Layout) -> Result<Assembly> {
-    build_with_seats(layout, &seats::build(layout)?)
+    build_with_roof(layout, &rafters::build(layout)?)
 }
 
-pub(crate) fn build_with_seats(layout: &Layout, roof_seats: &seats::RoofSeats) -> Result<Assembly> {
+pub(crate) fn build_with_roof(
+    layout: &Layout,
+    roof_frame: &FittedConstruction,
+) -> Result<Assembly> {
     let mut scene = Scene {
         assembly: Assembly::new(),
     };
     platform(&mut scene, layout)?;
     frame(&mut scene, layout)?;
-    fitted_roof(&mut scene, roof_seats)?;
+    fitted_roof(&mut scene, roof_frame)?;
     roof(&mut scene, layout)?;
     Ok(scene.assembly)
 }
@@ -108,24 +114,67 @@ pub(crate) fn concave_study() -> Result<Assembly> {
     Ok(scene.assembly)
 }
 
-struct Scene {
+pub(crate) fn rafter_study(layout: &Layout) -> Result<Assembly> {
+    let frame = rafters::study(layout)?;
+    let mut scene = Scene {
+        assembly: Assembly::new(),
+    };
+    let center = [0.0, -layout.roof[1][0], layout.rafter_bearing_height(1)];
+    for key in [
+        "rafter-0-0",
+        "rafter-0-1",
+        "rafter-pin-0-1",
+        "roof-purlin-0--1",
+        "roof-purlin-1--1",
+        "roof-purlin-2--1",
+    ] {
+        let element = frame
+            .construction
+            .element(key)
+            .ok_or("missing roof study member")?;
+        let part = scene.part(
+            key,
+            compose(&frame.construction, element)?,
+            &element.material,
+        )?;
+        for (name, x, exploded) in [("assembled", -0.65, false), ("exploded", 0.65, true)] {
+            let [dx, dz] = if exploded {
+                match key {
+                    "rafter-0-0" => [-0.13, 0.25],
+                    "rafter-0-1" => [0.13, 0.25],
+                    "rafter-pin-0-1" => [0.33, 0.25],
+                    _ => [0.0, 0.0],
+                }
+            } else {
+                [0.0, 0.0]
+            };
+            let placed = element
+                .extent
+                .translated([x + dx, -center[1], dz - center[2]]);
+            scene.orient(&format!("{name}-{key}"), part, placed.placement())?;
+        }
+    }
+    Ok(scene.assembly)
+}
+
+pub(crate) struct Scene {
     assembly: Assembly,
 }
 
 impl Scene {
-    fn part(&mut self, key: &str, recipe: Recipe, material: &str) -> Result<PartId> {
+    pub(crate) fn part(&mut self, key: &str, recipe: Recipe, material: &str) -> Result<PartId> {
         let part = self.assembly.add_recipe_part(key, recipe)?;
         self.assembly.set_part_material(part, "surface", material)?;
         Ok(part)
     }
-    fn place(&mut self, key: &str, part: PartId, origin: [f64; 3]) -> Result<()> {
+    pub(crate) fn place(&mut self, key: &str, part: PartId, origin: [f64; 3]) -> Result<()> {
         self.orient(
             key,
             part,
             Placement3::translate(origin[0], origin[1], origin[2]),
         )
     }
-    fn orient(&mut self, key: &str, part: PartId, placement: Placement3) -> Result<()> {
+    pub(crate) fn orient(&mut self, key: &str, part: PartId, placement: Placement3) -> Result<()> {
         self.assembly.add_instance(None, key, part, placement)?;
         Ok(())
     }
@@ -297,7 +346,7 @@ fn frame(scene: &mut Scene, l: &Layout) -> Result<()> {
     Ok(())
 }
 
-fn fitted_roof(scene: &mut Scene, seats: &seats::RoofSeats) -> Result<()> {
+fn fitted_roof(scene: &mut Scene, seats: &FittedConstruction) -> Result<()> {
     let mut parts = HashMap::new();
     for (key, family) in &seats.instances {
         let element = seats
@@ -322,6 +371,11 @@ fn fitted_roof(scene: &mut Scene, seats: &seats::RoofSeats) -> Result<()> {
 
 fn roof(scene: &mut Scene, l: &Layout) -> Result<()> {
     let width = l.width + 1.2;
+    let section = RoofSection::new(l);
+    let decking = scene.part("roof-decking", section.decking(width)?, "timber.dark")?;
+    for side in [-1.0, 1.0] {
+        scene.orient(&format!("decking-{side}"), decking, section.placement(side))?;
+    }
     let cap = scene.part("cap-tile", geometry::tile(0.065, 0.34, true)?, "tile.0")?;
     let pan = scene.part("pan-tile", geometry::tile(0.14, 0.34, false)?, "tile.1")?;
     let ridge = scene.part("ridge-tile", geometry::tile(0.14, 0.40, true)?, "tile.2")?;
@@ -335,37 +389,15 @@ fn roof(scene: &mut Scene, l: &Layout) -> Result<()> {
         let c = run / length;
         let s = rise / length;
         let courses = (length / 0.26).ceil();
-        let rafter = scene.part(
-            &format!("rafter-{segment}"),
-            geometry::block([0.085, length + 0.09, 0.10])?,
-            "timber.end",
-        )?;
-        let decking = scene.part(
-            &format!("decking-{segment}"),
-            geometry::block([width, length + 0.005, 0.028])?,
-            "timber.dark",
-        )?;
         for side in [-1.0, 1.0] {
             // Local +Y runs uphill. +X flips on the back to keep a right-handed frame.
             let x_axis = [-side, 0.0, 0.0];
             let y_axis = [0.0, -side * c, s];
             let z_axis = [0.0, side * s, c];
             let placement = |x, y, z| Placement3::from_axes(x_axis, y_axis, z_axis, [x, y, z]);
-            scene.orient(
-                &format!("roof-{side}-{segment}-decking"),
-                decking,
-                placement(side * width * 0.5, side * y0, z0 + 0.10),
-            )?;
             let mut col = 0;
             while f64::from(col) <= tile_columns {
                 let x = -width * 0.5 + f64::from(col) * pitch;
-                if col % 2 == 0 {
-                    scene.orient(
-                        &format!("roof-{side}-{segment}-rafter-{col}"),
-                        rafter,
-                        placement(x + side * 0.0425, side * y0, z0),
-                    )?;
-                }
                 let mut course = 0;
                 while f64::from(course) < courses {
                     let along = f64::from(course) * length / courses;

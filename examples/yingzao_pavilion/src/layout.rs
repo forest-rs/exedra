@@ -12,6 +12,9 @@ use setout_joiner::{lower_length, lower_rational_iotas};
 
 use crate::Result;
 
+pub(crate) const PURLIN_RADIUS: f64 = 0.095;
+pub(crate) const TOP_SEAT_DEPTH: f64 = 0.015;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Parameters {
     pub(crate) bays: u32,
@@ -47,7 +50,12 @@ pub(crate) struct Layout {
 
 impl Layout {
     pub(crate) fn purlin_bottom(&self, level: usize) -> f64 {
-        self.roof[level][1] - 0.205
+        // The setting-out line is 15 mm above the uncut circular purlin.
+        self.roof[level][1] - 0.015 - 2.0 * PURLIN_RADIUS
+    }
+
+    pub(crate) fn rafter_bearing_height(&self, level: usize) -> f64 {
+        self.purlin_bottom(level) + 2.0 * PURLIN_RADIUS - TOP_SEAT_DEPTH
     }
 
     pub(crate) fn bearing_height(&self, level: usize) -> f64 {

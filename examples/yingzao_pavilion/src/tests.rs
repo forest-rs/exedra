@@ -9,6 +9,8 @@ use exedra_math::{cross, dot, norm, sub};
 
 use super::*;
 
+pub(crate) mod solid;
+
 #[test]
 fn setout_matches_successive_raise_and_depress_construction() -> Result<()> {
     let l = Layout::resolve(Parameters::default())?;
@@ -46,11 +48,11 @@ fn parameter_extremes_produce_sound_geometry_and_shared_parts() -> Result<()> {
                 depth_mm: size,
             })?;
             assert_eq!(l.frames.len(), usize::try_from(bays + 1)?);
-            let roof_seats = seats::build(&l)?;
-            let assembly = scene::build_with_seats(&l, &roof_seats)?;
+            let roof_frame = rafters::build(&l)?;
+            let assembly = scene::build_with_roof(&l, &roof_frame)?;
             let compiled = PartCompiler::new().compile_parts(&assembly, &compile_policy())?;
             check_reports(&assembly, &compiled)?;
-            assert!(seats::verify(&roof_seats, &assembly, &compiled)? > 0.0);
+            assert!(roof_frame.verify(&assembly, &compiled)? > 0.0);
             counts.push((
                 assembly.parts().len(),
                 compiled
@@ -59,7 +61,7 @@ fn parameter_extremes_produce_sound_geometry_and_shared_parts() -> Result<()> {
                     .map(|p| p.triangle_count())
                     .sum::<u64>(),
             ));
-            for part in compiled.parts() {
+            for (definition, part) in assembly.parts().iter().zip(compiled.parts()) {
                 assert!(!part.bodies.is_empty(), "no silently omitted part");
                 for body in &part.bodies {
                     let mesh = &body.tri;
@@ -75,7 +77,8 @@ fn parameter_extremes_produce_sound_geometry_and_shared_parts() -> Result<()> {
                     for normal in &mesh.normals {
                         assert!(
                             (norm(normal.map(f64::from)) - 1.0).abs() < 1.0e-5,
-                            "finite unit normals"
+                            "finite unit normals: size={size}, bays={bays}, part={}, normal={normal:?}",
+                            definition.key()
                         );
                     }
                 }
