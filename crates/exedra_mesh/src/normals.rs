@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use crate::math::FloatExt;
 use crate::{CornerId, FaceId, HalfEdgeId, Mesh};
-use exedra_math::{dot, normalize, sub};
+use exedra_math::{add, cross, dot, norm, normalize, sub};
 
 /// Weighting mode used for derived corner normals.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -132,7 +132,7 @@ impl Mesh {
                     sum[1] += face_data.unit[1] * weight;
                     sum[2] += face_data.unit[2] * weight;
                 }
-                let Some(normal) = normalize3(sum) else {
+                let Some(normal) = normalize(sum) else {
                     continue;
                 };
                 for corner in group {
@@ -167,23 +167,16 @@ fn face_normal(mesh: &Mesh, face: FaceId) -> Option<([f32; 3], f32)> {
     if corners.len() < 3 {
         return None;
     }
-    let mut nx = 0.0_f32;
-    let mut ny = 0.0_f32;
-    let mut nz = 0.0_f32;
-    for i in 0..corners.len() {
-        let current = corner_position(mesh, corners[i])?;
-        let next = corner_position(mesh, corners[(i + 1) % corners.len()])?;
-        nx += (current[1] - next[1]) * (current[2] + next[2]);
-        ny += (current[2] - next[2]) * (current[0] + next[0]);
-        nz += (current[0] - next[0]) * (current[1] + next[1]);
+    // The signed fan sum also handles concave polygons. Taking all products
+    // relative to a face vertex avoids cancellation from its world offset.
+    let origin = corner_position(mesh, corners[0])?;
+    let mut vector = [0.0_f32; 3];
+    for pair in corners[1..].windows(2) {
+        let current = sub(corner_position(mesh, pair[0])?, origin);
+        let next = sub(corner_position(mesh, pair[1])?, origin);
+        vector = add(vector, cross(current, next));
     }
-    let length_sq = nx * nx + ny * ny + nz * nz;
-    if length_sq <= 1.0e-12 {
-        return None;
-    }
-    let length = length_sq.sqrt_ext();
-    let inv_len = 1.0 / length;
-    Some(([nx * inv_len, ny * inv_len, nz * inv_len], length))
+    Some((normalize(vector)?, norm(vector)))
 }
 
 fn corner_position(mesh: &Mesh, corner: CornerId) -> Option<[f32; 3]> {
@@ -322,17 +315,11 @@ fn corner_angle(mesh: &Mesh, corner: CornerId) -> Option<f32> {
     let next = mesh.vertex_position(next_vertex)?;
     let a = sub(*prev, *center);
     let b = sub(*next, *center);
-    let a_unit = normalize3(a)?;
-    let b_unit = normalize3(b)?;
-    let dot = dot(a_unit, b_unit).clamp(-1.0, 1.0);
-    Some(dot.acos_ext())
-}
-
-fn normalize3(value: [f32; 3]) -> Option<[f32; 3]> {
-    if dot(value, value) <= 1.0e-12 {
-        return None;
-    }
-    normalize(value)
+    let a_unit = normalize(a)?;
+    let b_unit = normalize(b)?;
+    // Unlike acos(dot), atan2 retains an acute angle when the rounded dot
+    // product is exactly one. That angle must still contribute its face.
+    Some(norm(cross(a_unit, b_unit)).atan2_ext(dot(a_unit, b_unit)))
 }
 
 #[cfg(test)]
@@ -355,6 +342,47 @@ mod tests {
         for face in mesh.faces() {
             for corner in mesh.face_loop(face) {
                 assert_eq!(normals.get(corner), Some([0.0, 0.0, 1.0]));
+            }
+        }
+    }
+
+    #[test]
+    fn small_acute_faces_keep_unit_normals_under_each_weighting() {
+        // A valid bore-wall fragment from the pavilion rafter. Its small area
+        // and acute corner both used to be mistaken for a degenerate normal.
+        let points = [
+            [0.05245941, 0.085, 0.102458164],
+            [0.0, 0.085, 0.12490708],
+            [0.052487444, 0.085, 0.10244966],
+        ];
+        for scale in [0.001_f32, 1.0, 1_000.0] {
+            let mesh = Mesh::from_indexed_triangles(
+                &points.map(|p| p.map(|v| v * scale)),
+                &[[0, 1, 2]],
+                &BuildParams::default(),
+            )
+            .expect("the small triangle is not degenerate");
+            for weight_mode in [
+                NormalWeightMode::Angle,
+                NormalWeightMode::Area,
+                NormalWeightMode::AngleArea,
+            ] {
+                let normals = mesh.derive_corner_normals(&NormalParams {
+                    weight_mode,
+                    ..NormalParams::default()
+                });
+                for face in mesh.faces() {
+                    for corner in mesh.face_loop(face) {
+                        let normal = normals
+                            .get(corner)
+                            .expect("every valid corner needs a normal");
+                        assert!(
+                            (normal[1] - 1.0).abs() < 1.0e-6,
+                            "scale={scale}, mode={weight_mode:?}: {normal:?}"
+                        );
+                        assert_eq!([normal[0], normal[2]], [0.0, 0.0]);
+                    }
+                }
             }
         }
     }
