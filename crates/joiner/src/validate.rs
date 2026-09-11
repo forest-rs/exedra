@@ -34,7 +34,7 @@ use alloc::{format, vec};
 
 use hashbrown::HashSet;
 
-use exedra_math::{dot, finite, is_orthogonal_frame, is_unit, norm, sub};
+use exedra_math::{add, dot, finite, is_orthogonal_frame, is_unit, norm, scale, sub};
 
 use crate::construction::{Construction, ElementId};
 use crate::element::Element;
@@ -111,7 +111,10 @@ impl core::fmt::Display for ValidationReport {
     }
 }
 
-/// What a contact patch actually measures, in world space.
+/// What a contact patch measures against analytic extents, in world space.
+///
+/// Extents bound an element's geometry; their overlap does not establish
+/// that round, carved, or cut surfaces share a finite bearing area.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ContactMeasurement {
     /// World position of the carried anchor.
@@ -143,6 +146,7 @@ impl ContactMeasurement {
 
 /// Measures a contact patch against the two extents it names.
 ///
+/// This does not inspect generated surfaces or verify a declared footprint.
 /// Returns `None` when either anchor element is not registered.
 #[must_use]
 pub fn measure_contact(
@@ -235,7 +239,10 @@ fn joint_witness(construction: &Construction, from: &str, to: &str) -> bool {
     })
 }
 
-fn contact_is_valid_witness(construction: &Construction, contact: &ContactPatch) -> bool {
+pub(crate) fn contact_is_valid_witness(
+    construction: &Construction,
+    contact: &ContactPatch,
+) -> bool {
     let (Some(carried), Some(carrier)) = (
         construction.element(&contact.carried.element),
         construction.element(&contact.carrier.element),
@@ -256,6 +263,7 @@ fn contact_is_valid_witness(construction: &Construction, contact: &ContactPatch)
             .minimum_overlap_meters()
             .iter()
             .any(|minimum| !minimum.is_finite() || *minimum < 0.0)
+        || footprint_issue(contact, carried, carrier).is_some()
     {
         return false;
     }
@@ -268,6 +276,51 @@ fn contact_is_valid_witness(construction: &Construction, contact: &ContactPatch)
             .iter()
             .zip(contact.minimum_overlap_meters().iter())
             .all(|(overlap, minimum)| overlap + CONTACT_TOLERANCE >= *minimum)
+}
+
+fn footprint_issue(
+    contact: &ContactPatch,
+    carried: &Element,
+    carrier: &Element,
+) -> Option<(&'static str, &'static str)> {
+    let size = contact.footprint_meters()?;
+    if size.iter().any(|side| !side.is_finite() || *side <= 0.0) {
+        return Some((
+            "invalid-contact-footprint",
+            "contact footprint dimensions must be finite and positive",
+        ));
+    }
+    if size
+        .iter()
+        .zip(contact.minimum_overlap_meters())
+        .any(|(side, minimum)| *side + CONTACT_TOLERANCE < minimum)
+    {
+        return Some((
+            "insufficient-contact-footprint",
+            "declared contact footprint is smaller than the minimum overlap",
+        ));
+    }
+    for (element, local) in [
+        (carried, contact.carried.local),
+        (carrier, contact.carrier.local),
+    ] {
+        let tangents = contact
+            .tangents
+            .map(|tangent| element.extent.local_direction(tangent));
+        for signs in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
+            let point = add(
+                add(local, scale(tangents[0], signs[0] * size[0] * 0.5)),
+                scale(tangents[1], signs[1] * size[1] * 0.5),
+            );
+            if !element.extent.contains_local(point, CONTACT_TOLERANCE) {
+                return Some((
+                    "contact-footprint-out-of-bounds",
+                    "declared contact footprint extends outside a participant's extent",
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn valid_contact_frame(normal: Vec3, tangents: [Vec3; 2]) -> bool {
@@ -663,6 +716,9 @@ fn validate_contacts(construction: &Construction, report: &mut ValidationReport)
                 "minimum overlaps must be finite and nonnegative".to_string(),
             );
         }
+        if let Some((code, message)) = footprint_issue(contact, carried, carrier) {
+            report.push(code, &contact.key, message.to_string());
+        }
         if !carried.present || !carrier.present {
             report.push(
                 "missing-contact-element",
@@ -919,12 +975,61 @@ fn validate_acyclic(construction: &Construction, report: &mut ValidationReport) 
 mod tests {
     use super::*;
     use crate::{
-        Evidence, EvidenceClass, EvidenceSource, Member, Node, OrientedBox, Relation,
+        Anchor, Evidence, EvidenceClass, EvidenceSource, Member, Node, OrientedBox, Relation,
         TransferTarget,
     };
 
     fn evidence() -> Evidence {
         Evidence::new("fixture", EvidenceClass::ModernEngineeringInference)
+    }
+
+    #[test]
+    fn contact_footprint_cannot_claim_bearing_outside_its_extents_or_below_its_minimum() {
+        for (size, center, code) in [
+            ([0.2, 0.2], 0.5, None),
+            ([0.1, 0.2], 0.5, Some("insufficient-contact-footprint")),
+            ([0.2, 0.2], 0.05, Some("contact-footprint-out-of-bounds")),
+            ([f64::NAN, 0.2], 0.5, Some("invalid-contact-footprint")),
+            ([0.0, 0.2], 0.5, Some("invalid-contact-footprint")),
+        ] {
+            let mut construction = Construction::new();
+            for (key, z) in [("carried", 1.0), ("carrier", 0.0)] {
+                construction
+                    .add_element(Element::new(
+                        key,
+                        "member",
+                        "wood",
+                        OrientedBox::axis_aligned([0.0, 0.0, z], [1.0; 3]),
+                        evidence(),
+                    ))
+                    .unwrap();
+            }
+            construction
+                .add_contact(
+                    ContactPatch::new(
+                        "bearing",
+                        Anchor::new("carried", [center, 0.5, 0.0]),
+                        Anchor::new("carrier", [center, 0.5, 1.0]),
+                        [0.0, 0.0, 1.0],
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        ContactMeaning::Bearing,
+                        evidence(),
+                    )
+                    .with_minimum_overlap_meters([0.2, 0.2])
+                    .with_footprint_meters(size),
+                )
+                .unwrap();
+            let transfer = TransferEdge::new(
+                "load",
+                "carried",
+                TransferTarget::element("carrier"),
+                TransferKind::Contact,
+            );
+            if let Some(code) = code {
+                assert!(validate(&construction).has(code, "bearing"), "{code}");
+            }
+            assert_eq!(is_witnessed(&construction, &transfer), code.is_none());
+        }
     }
 
     #[test]

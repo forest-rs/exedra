@@ -606,6 +606,10 @@ impl ContactMeaning {
 /// the elements must overlap across both tangents by at least
 /// [`ContactPatch::minimum_overlap_meters`]. A patch that does not measure up is
 /// reported and stops witnessing transfers.
+///
+/// A declared [`Self::footprint_meters`] additionally limits that claim to a
+/// rectangle. These analytic checks do not establish generated surface coverage;
+/// opt into [`crate::measure_contact_geometry`] to check the compiled parts.
 #[derive(Clone, Debug)]
 pub struct ContactPatch {
     /// Stable frontend-supplied identity, unique among contacts.
@@ -619,6 +623,7 @@ pub struct ContactPatch {
     /// Two unit tangents completing an orthonormal frame with `normal`.
     pub tangents: [Vec3; 2],
     minimum_overlap: [f64; 2],
+    footprint: Option<[f64; 2]>,
     /// What the contact means structurally.
     pub meaning: ContactMeaning,
     /// Opaque frontend label for the specific fit (`"crossed-seat"`,
@@ -648,6 +653,7 @@ impl ContactPatch {
             normal,
             tangents,
             minimum_overlap: [0.0, 0.0],
+            footprint: None,
             meaning,
             detail: String::new(),
             evidence,
@@ -677,6 +683,36 @@ impl ContactPatch {
     #[must_use]
     pub const fn minimum_overlap_meters(&self) -> [f64; 2] {
         self.minimum_overlap
+    }
+
+    /// Declares a rectangular contact area, centered on each anchor, with
+    /// full side lengths along [`Self::tangents`].
+    ///
+    /// This is a geometric claim, not proof that the generated surfaces fill
+    /// it. Analytic validation checks that the rectangle fits inside both
+    /// extents and meets the minimum overlaps. Use
+    /// [`crate::measure_contact_geometry`] for compiled surface coverage.
+    #[must_use]
+    pub fn with_footprint(mut self, size: [Length; 2]) -> Self {
+        self.footprint = Some(size.map(Length::as_meters));
+        self
+    }
+
+    /// Declares a geometry-derived rectangular contact area in meters.
+    ///
+    /// The full side lengths follow [`Self::tangents`], centered on each
+    /// anchor. Validation rejects nonfinite or nonpositive dimensions.
+    /// Prefer [`Self::with_footprint`] for authored dimensions.
+    #[must_use]
+    pub fn with_footprint_meters(mut self, size: [f64; 2]) -> Self {
+        self.footprint = Some(size);
+        self
+    }
+
+    /// The declared rectangle's full side lengths in meters, if present.
+    #[must_use]
+    pub const fn footprint_meters(&self) -> Option<[f64; 2]> {
+        self.footprint
     }
 
     /// Attaches an opaque frontend label for the specific fit.

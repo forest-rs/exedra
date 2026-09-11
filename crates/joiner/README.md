@@ -5,7 +5,8 @@ related, and the rules that turn a relation into coordinated geometry.
 
 `exedra_constructive` compiles one part's recipe into meshes and
 `exedra_assembly` arranges parts as placed instances. Neither knows what a
-rafter or a window is. `joiner` does, and it knows nothing about meshes.
+rafter or a window is. `joiner` describes those elements and their fits. An
+optional adapter checks declared contact areas against already compiled parts.
 
 ```text
 elements + relations           the construction: the source of truth
@@ -43,10 +44,10 @@ Construction knowledge lives in separate rule-library crates (`joiner_timber`,
 `joiner_masonry`, …) so a consumer that needs four timber joints does not
 inherit a dependency on thirty, nor on stone.
 
-It owns none of: geometry math (`exedra_constructive`, `exedra_mesh`); site,
-massing, and plan layout; statics, finite-element analysis, capacity, or code
-compliance; rendering and export; or an erased, document-shaped parameter
-boundary.
+Shape construction stays in `exedra_constructive` and `exedra_mesh`. Joiner
+owns none of: site, massing, and plan layout; statics, finite-element analysis,
+capacity, or code compliance; rendering and export; or an erased,
+document-shaped parameter boundary.
 
 ## Identity, evidence, invalidation
 
@@ -65,10 +66,36 @@ boundary.
 
 ## What validation claims
 
-Schema and coherence, contact geometry at a documented `1e-9 m` tolerance, and
-load paths witnessed by contacts, relations, and supports. It is **not** a
-static analysis, finite-element model, capacity check, building-code result,
-or engineering certification.
+`validate` checks schema and coherence, analytic contact anchors and extents
+at a documented `1e-9 m` tolerance, and load paths witnessed by those claims,
+relations, and supports. Extent overlap alone does not prove a bearing surface:
+a round purlin can touch a beam along a line while their boxes overlap broadly.
+
+`ContactPatch::with_footprint` (or `with_footprint_meters` for derived dimensions)
+declares a rectangle centered on each anchor along the contact tangents. Analytic
+validation checks its dimensions, minimum overlap, and containment in both
+extents. `measure_contact_geometry` separately checks that both compiled parts
+cover that rectangle with outward-facing surfaces near the contact plane. The
+caller supplies the current composed parts and a mesh distance tolerance. The
+check insets the rectangle by that tolerance, detects interior holes and partial
+support, and counts duplicate triangles only once. It does not discover contacts,
+check solid interpenetration, or silently evaluate geometry during `validate`.
+
+Neither validation layer is a static analysis, finite-element model, capacity
+check, building-code result, or engineering certification.
+
+## API additions
+
+Existing contact callers keep their analytic extent checks. Add a footprint
+and opt into `measure_contact_geometry` when the generated bearing surface
+matters; a clean `validate` report alone remains an analytic claim.
+
+`Construction::apply_rule(application, relation, &rule, &params)` replaces the
+repeated context/instantiate/application sequence when the application should
+inherit the relation's evidence. It returns `ApplyRuleError`; explicit
+`RuleContext` and `RuleApplication` construction remains supported.
+`OrientedBox::{local_point, local_direction, local_placement}` convert world
+geometry into an element's orthonormal local frame, including reflected frames.
 
 See `docs/adr-0001-construction-layer-scope.md` for the scope contract, and
 `examples/basilica_structure_lab/docs/adr-0002-joiner-construction-layer.md`
