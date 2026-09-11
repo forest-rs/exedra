@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Compare rail, foot, and recessed-door edge finishes.
+//! Compare rail, foot, recessed-door, and separate pocket edge finishes.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -118,6 +118,57 @@ fn recessed_door(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> 
     Ok(b.finish(root)?)
 }
 
+fn two_pockets(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
+    let mut b = RecipeBuilder::new();
+    let surface = b.material_slot("surface");
+    let panel = b.with_material(surface).add(NodeKind::Primitive {
+        spec: PrimitiveSpec::Box {
+            size: [0.4, 0.2, 0.1],
+        },
+        placement: Placement3::IDENTITY,
+    })?;
+    let mut operands = vec![panel];
+    for x in [0.1, 0.3] {
+        operands.push(b.with_material(surface).add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Cylinder {
+                radius: 0.025,
+                height: 0.04,
+                segments: 32,
+            },
+            placement: Placement3::translate(x, 0.1, 0.08),
+        })?);
+    }
+    let child = b.add(NodeKind::Csg {
+        op: CsgOp::Difference,
+        operands,
+    })?;
+    let root = if let Some(mut policy) = finish {
+        policy.chord_tolerance = 0.00002;
+        b.add(NodeKind::EdgeFinish {
+            child,
+            // Each cutter's wall meets the panel top. The two disconnected
+            // rims are selected separately by their immediate CSG operands.
+            selection: EdgeSelection::OperandBoundaries(
+                [1, 2]
+                    .map(|operand| {
+                        [
+                            OperandRegion {
+                                operand: 0,
+                                region: 5,
+                            },
+                            OperandRegion { operand, region: 1 },
+                        ]
+                    })
+                    .to_vec(),
+            ),
+            policy,
+        })?
+    } else {
+        child
+    };
+    Ok(b.finish(root)?)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os()
         .nth(1)
@@ -136,6 +187,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         (
             "door-recess-fillet",
             recessed_door(Some(RoundPolicy::fillet(0.003)))?,
+        ),
+        ("two-pockets", two_pockets(None)?),
+        (
+            "two-pockets-chamfer",
+            two_pockets(Some(RoundPolicy::chamfer(0.001)))?,
+        ),
+        (
+            "two-pockets-fillet",
+            two_pockets(Some(RoundPolicy::fillet(0.001)))?,
         ),
     ] {
         let mut assembly = Assembly::new();

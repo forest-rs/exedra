@@ -48,7 +48,7 @@ mod geom;
 mod tests;
 mod uv;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -1052,7 +1052,7 @@ impl Planner<'_> {
     fn borrowed_normal(&self, face: FaceId, points: &[[f64; 3]]) -> Result<[f64; 3], RoundError> {
         let mut visited = BTreeSet::new();
         visited.insert(face);
-        let mut queue = alloc::collections::VecDeque::new();
+        let mut queue = VecDeque::new();
         queue.push_back(face);
         let mut expansions = 0;
         while let Some(current) = queue.pop_front() {
@@ -2158,19 +2158,22 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
         Tok::Old(v) => v,
         Tok::New(p) => vertex_ids[p as usize],
     };
-    let mut added = Vec::with_capacity(plan.faces.len());
-    for planned in &plan.faces {
+    let mut added = alloc::vec![FaceId::OUTSIDE; plan.faces.len()];
+    let mut pending: VecDeque<_> = (0..plan.faces.len()).collect();
+    let mut blocked = BTreeMap::<u32, Vec<usize>>::new();
+    while let Some(index) = pending.pop_front() {
+        let planned = &plan.faces[index];
         let loop_vertices: Vec<VertexId> = planned.entries.iter().map(|&t| resolve(t)).collect();
         let face = match add_face(&mut session, &loop_vertices) {
             Ok(face) => face,
-            Err(AddFaceError::NonManifoldVertex { .. }) => {
-                #[expect(unused_must_use, reason = "discard sink output")]
-                {
-                    session.finish();
-                }
-                return Err(RoundError::UnsupportedTopology {
-                    detail: "face rewrite would pinch an OUTSIDE boundary vertex",
-                });
+            Err(AddFaceError::NonManifoldVertex { vertex }) => {
+                // A valid replacement can temporarily meet the unfinished
+                // surface only at a vertex. Keep add_face's manifold check:
+                // retry after a neighbor fills that gap. Only additions at
+                // the blocking vertex can change this refusal, so unrelated
+                // faces do not trigger repeated scans of the pending patch.
+                blocked.entry(vertex).or_default().push(index);
+                continue;
             }
             Err(_) => {
                 #[expect(unused_must_use, reason = "discard sink output")]
@@ -2205,7 +2208,23 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
                 let _ = set_corner_uv(&mut session, corner, uv);
             }
         }
-        added.push(face);
+        for vertex in loop_vertices {
+            if let Some(waiting) = blocked.remove(&vertex.index()) {
+                pending.extend(waiting);
+            }
+        }
+        // Preserve the plan's association with attributes and provenance even
+        // when topology requires a different face insertion order.
+        added[index] = face;
+    }
+    if !blocked.is_empty() {
+        #[expect(unused_must_use, reason = "discard sink output")]
+        {
+            session.finish();
+        }
+        return Err(RoundError::UnsupportedTopology {
+            detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+        });
     }
 
     // Re-key surviving edge attributes onto the rewritten edges.

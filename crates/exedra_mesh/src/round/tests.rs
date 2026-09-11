@@ -172,6 +172,113 @@ fn assert_clean(mesh: &Mesh) {
     assert!(errors.is_empty(), "validate_deep: {errors:?}");
 }
 
+fn four_quad_rewrite() -> (Mesh, Plan) {
+    let mut builder = MeshBuilder::new();
+    for y in [0.0, 1.0, 2.0] {
+        for x in [0.0, 1.0, 2.0] {
+            builder.push_vertex([x, y, 0.0]);
+        }
+    }
+    for face in [[0, 1, 4, 3], [1, 2, 5, 4], [3, 4, 7, 6], [4, 5, 8, 7]] {
+        builder.add_face(&face).unwrap();
+    }
+    let mesh = builder.build().unwrap().mesh;
+    let affected: Vec<_> = mesh.faces().collect();
+    // Opposite quads meet only at the center vertex until a third quad joins
+    // them. Ascending source-face order need not be a valid insertion order.
+    let faces = [0, 3, 1, 2]
+        .map(|index| {
+            let face = affected[index];
+            let entries = mesh
+                .face_loop(face)
+                .map(|h| Tok::Old(mesh.to_vertex(h).unwrap()))
+                .collect();
+            NewFace {
+                entries,
+                region: Some(face.index() + 10),
+                source: RoundFaceSource::Face(face),
+                normals: alloc::vec![[0.0, 0.0, 1.0]; 4],
+                uvs: alloc::vec![Some([f32::from(u16::try_from(index).unwrap()), 0.5]); 4],
+            }
+        })
+        .to_vec();
+    let plan = Plan {
+        points: Vec::new(),
+        faces,
+        affected,
+        consumed: Vec::new(),
+        edge_attrs: Vec::new(),
+        stats: RoundStats::default(),
+    };
+    (mesh, plan)
+}
+
+#[test]
+fn deferred_rewrite_keeps_face_sources_and_corner_attributes() {
+    let (mut mesh, plan) = four_quad_rewrite();
+    let expected = plan.faces.clone();
+    let result = apply(&mut mesh, plan).unwrap();
+    assert_clean(&mesh);
+    assert_eq!(result.face_provenance.len(), expected.len());
+    for ((face, source), planned) in result.face_provenance.iter().zip(expected) {
+        assert_eq!(*source, planned.source);
+        assert_eq!(
+            mesh.attrs()
+                .dense(attr::FACE_REGION)
+                .unwrap()
+                .get(face.as_id())
+                .copied(),
+            planned.region
+        );
+        for (index, corner) in mesh.face_loop(*face).enumerate() {
+            assert_eq!(
+                mesh.attrs()
+                    .sparse(attr::CORNER_UV)
+                    .unwrap()
+                    .get(corner.as_id())
+                    .copied(),
+                planned.uvs[index]
+            );
+            assert_eq!(
+                mesh.attrs()
+                    .sparse(attr::CORNER_NORMAL_OVERRIDE)
+                    .unwrap()
+                    .get(corner.as_id()),
+                Some(&planned.normals[index])
+            );
+        }
+    }
+    for vertex in mesh.vertices() {
+        let incident = mesh
+            .half_edges
+            .iter()
+            .filter(|(id, _)| mesh.from_vertex(HalfEdgeId::from(*id)) == Some(vertex))
+            .count();
+        assert_eq!(
+            mesh.vertex_star(vertex).count(),
+            incident,
+            "single connected fan"
+        );
+    }
+}
+
+#[test]
+fn unresolved_rewrite_pinch_is_refused_atomically() {
+    let (mut mesh, mut plan) = four_quad_rewrite();
+    // With the two connecting quads missing, the center remains a real pinch.
+    plan.faces.truncate(2);
+    let before = exact_snapshot(&mesh);
+    let revision = mesh.revision();
+    assert_eq!(
+        apply(&mut mesh, plan).unwrap_err(),
+        RoundError::UnsupportedTopology {
+            detail: "face rewrite would pinch an OUTSIDE boundary vertex",
+        }
+    );
+    assert_eq!(exact_snapshot(&mesh), before);
+    assert_eq!(mesh.revision(), revision);
+}
+
 /// Closed-form volume of a box with every edge filleted at radius `r`
 /// (Minkowski sum of the shrunk box with a ball).
 fn rounded_box_volume(l: f64, w: f64, h: f64, r: f64) -> f64 {
@@ -1397,45 +1504,25 @@ fn drilled_rim_fillet_is_deterministic_and_clean() {
 }
 
 #[test]
-fn cleaned_drilled_rim_rounding_never_panics_or_partially_rewrites() {
-    // Seam cleanup may simplify collinear rim runs before rounding. Whatever
-    // valid topology it returns, an unsupported fillet must fail atomically
-    // instead of leaving a partial topology rewrite behind.
+fn cleaned_drilled_rims_round_without_temporary_boundary_pinches() {
+    // Seam cleanup changes the order in which replacement faces can attach
+    // to the surviving surface. Both rims must still round successfully.
     for angle in [0.0, core::f32::consts::FRAC_PI_4] {
         let mut mesh = drilled_slab_rotated(angle);
         let _cleanup = cleanup_seams(&mut mesh, &SeamCleanupPolicy::default());
 
-        let before = exact_snapshot(&mesh);
-        let revision = mesh.revision();
         let volume_before = signed_volume(&mesh);
-        match round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.05)) {
-            Ok(stats) => {
-                assert_eq!(stats.closed_chains, 2);
-                assert_clean(&mesh);
-                assert_eq!(euler_characteristic(&mesh), 0);
-                let volume = signed_volume(&mesh);
-                assert!(volume > 0.99 * volume_before && volume < volume_before);
-                for face in mesh.faces() {
-                    assert!(
-                        mesh.face_loop(face)
-                            .all(|h| mesh.face(mesh.twin(h).unwrap()) != Some(FaceId::OUTSIDE))
-                    );
-                }
-            }
-            Err(error) => {
-                assert_eq!(
-                    error,
-                    RoundError::UnsupportedTopology {
-                        detail: "face rewrite would pinch an OUTSIDE boundary vertex",
-                    }
-                );
-                assert_eq!(
-                    exact_snapshot(&mesh),
-                    before,
-                    "failed rounding must be atomic"
-                );
-                assert_eq!(mesh.revision(), revision, "failed rounding keeps revision");
-            }
+        let stats = round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.05)).unwrap();
+        assert_eq!(stats.closed_chains, 2);
+        assert_clean(&mesh);
+        assert_eq!(euler_characteristic(&mesh), 0);
+        let volume = signed_volume(&mesh);
+        assert!(volume > 0.99 * volume_before && volume < volume_before);
+        for face in mesh.faces() {
+            assert!(
+                mesh.face_loop(face)
+                    .all(|h| mesh.face(mesh.twin(h).unwrap()) != Some(FaceId::OUTSIDE))
+            );
         }
     }
 }

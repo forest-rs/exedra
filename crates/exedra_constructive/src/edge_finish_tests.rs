@@ -11,6 +11,8 @@ use crate::ir::{
 use crate::tessellate::{EvalPolicy, tessellate_extrude, tessellate_primitive};
 use crate::text;
 use alloc::{format, rc::Rc, vec};
+use exedra_math::{cross, dot, norm, sub};
+use exedra_mesh::FaceTriangulation;
 use exedra_mesh::op::{set_corner_uv, set_face_region};
 
 fn box_node(b: &mut RecipeBuilder, size: [f64; 3]) -> NodeId {
@@ -46,6 +48,84 @@ fn mesh_positions(body: &TessellatedBody) -> Vec<[u32; 3]> {
         .collect();
     positions.sort_unstable();
     positions
+}
+
+fn compact_body(body: &TessellatedBody) -> TessellatedBody {
+    let (mesh, remap) = body.mesh.compact();
+    let faces: BTreeMap<_, _> = body
+        .mesh
+        .faces()
+        .map(|face| {
+            (
+                remap.face(face).unwrap(),
+                body.source_map.face_feature(face).unwrap(),
+            )
+        })
+        .collect();
+    let vertices: BTreeMap<_, _> = body
+        .mesh
+        .vertices()
+        .map(|vertex| {
+            (
+                remap.vertex(vertex).unwrap(),
+                body.source_map.vertex_feature(vertex).unwrap(),
+            )
+        })
+        .collect();
+    TessellatedBody {
+        source_map: SourceMap::new(
+            &mesh,
+            mesh.faces().map(|f| faces[&f]).collect(),
+            mesh.vertices().map(|v| vertices[&v]).collect(),
+        ),
+        mesh,
+        face_materials: body
+            .face_materials
+            .iter()
+            .map(|(&face, &slot)| (remap.face(face).unwrap(), slot))
+            .collect(),
+        refinement: None,
+    }
+}
+
+fn checked_pocket_volume(body: &TessellatedBody) -> f64 {
+    let mesh = &body.mesh;
+    assert!(mesh.validate_deep().is_empty());
+    body.source_map.check(mesh).unwrap();
+    let mut incident = BTreeMap::new();
+    let mut volume = 0.0;
+    for face in mesh.faces() {
+        let Some(Feature::BooleanFace { operand }) = body.source_map.face_feature(face) else {
+            panic!("pocket lost its Boolean source");
+        };
+        assert_eq!(body.face_materials[&face], SlotId(u32::from(operand)));
+        for edge in mesh.face_loop(face) {
+            assert_ne!(mesh.face(mesh.twin(edge).unwrap()), Some(FaceId::OUTSIDE));
+            *incident.entry(mesh.from_vertex(edge).unwrap()).or_insert(0) += 1;
+        }
+        let (triangles, fallback) = mesh.face_triangles_counted(face, FaceTriangulation::Robust);
+        assert!(!fallback, "pocket face must triangulate robustly");
+        for triangle in triangles {
+            let [a, b, c] = triangle.map(|h| {
+                mesh.vertex_position(mesh.to_vertex(h).unwrap())
+                    .unwrap()
+                    .map(f64::from)
+            });
+            assert!(
+                norm(cross(sub(b, a), sub(c, a))) > 1e-12,
+                "degenerate triangle"
+            );
+            volume += dot(a, cross(b, c)) / 6.0;
+        }
+    }
+    for vertex in mesh.vertices() {
+        assert_eq!(
+            mesh.vertex_star(vertex).count(),
+            incident[&vertex],
+            "single connected fan"
+        );
+    }
+    volume
 }
 
 /// Rotate the box cutter so its region 5 is a pocket wall, meeting the
@@ -178,6 +258,71 @@ fn qualified_boundaries_follow_declared_operands_and_refuse_disconnected_matches
 }
 
 #[test]
+fn separate_pocket_rims_finish_together_and_in_sequence() {
+    let rims = [
+        [operand_region(0, 5), operand_region(2, 1)],
+        [operand_region(0, 5), operand_region(3, 1)],
+    ];
+    for segments in [16, 32] {
+        let evaluated =
+            evaluate(&two_pockets(segments, false, false), &EvalPolicy::default()).unwrap();
+        let source = &evaluated.bodies[0].body;
+        let body = Rc::new(TessellatedBody {
+            mesh: source.mesh.clone(),
+            source_map: source.source_map.clone(),
+            face_materials: source
+                .mesh
+                .faces()
+                .map(|face| {
+                    let Some(Feature::BooleanFace { operand }) =
+                        source.source_map.face_feature(face)
+                    else {
+                        panic!("Boolean source");
+                    };
+                    (face, SlotId(u32::from(operand)))
+                })
+                .collect(),
+            refinement: None,
+        });
+        let before = format!("{body:?}");
+        let original_volume = checked_pocket_volume(&body);
+        for policy in [RoundPolicy::chamfer(0.01), RoundPolicy::fillet(0.01)] {
+            let (together, stats) = finish_edges(
+                &body,
+                &EdgeSelection::OperandBoundaries(rims.to_vec()),
+                &policy,
+            )
+            .unwrap();
+            assert_eq!(stats.closed_chains, 2);
+            let volume = checked_pocket_volume(&together);
+            assert!(volume > 0.999 * original_volume && volume < original_volume);
+            for order in [rims, [rims[1], rims[0]]] {
+                for compact in [false, true] {
+                    let mut sequential = body.clone();
+                    for rim in order {
+                        let (finished, stats) = finish_edges(
+                            &sequential,
+                            &EdgeSelection::OperandBoundaries(vec![rim]),
+                            &policy,
+                        )
+                        .unwrap();
+                        assert_eq!(stats.closed_chains, 1);
+                        checked_pocket_volume(&finished);
+                        sequential = Rc::new(if compact {
+                            compact_body(&finished)
+                        } else {
+                            finished
+                        });
+                    }
+                    assert_eq!(mesh_positions(&together), mesh_positions(&sequential));
+                }
+            }
+            assert_eq!(format!("{body:?}"), before, "source remains unchanged");
+        }
+    }
+}
+
+#[test]
 fn qualified_boundaries_survive_compaction_and_tessellation_changes() {
     let policy = RoundPolicy::chamfer(0.01);
     for segments in [16, 32] {
@@ -210,37 +355,7 @@ fn qualified_boundaries_survive_compaction_and_tessellation_changes() {
         let first =
             EdgeSelection::OperandBoundaries(vec![[operand_region(0, 1), operand_region(0, 2)]]);
         let (finished, _) = finish_edges(&evaluated.bodies[0].body, &first, &policy).unwrap();
-        let (mesh, remap) = finished.mesh.compact();
-        let faces: BTreeMap<_, _> = finished
-            .mesh
-            .faces()
-            .map(|face| {
-                (
-                    remap.face(face).unwrap(),
-                    finished.source_map.face_feature(face).unwrap(),
-                )
-            })
-            .collect();
-        let vertices: BTreeMap<_, _> = finished
-            .mesh
-            .vertices()
-            .map(|vertex| {
-                (
-                    remap.vertex(vertex).unwrap(),
-                    finished.source_map.vertex_feature(vertex).unwrap(),
-                )
-            })
-            .collect();
-        let compacted = TessellatedBody {
-            source_map: SourceMap::new(
-                &mesh,
-                mesh.faces().map(|f| faces[&f]).collect(),
-                mesh.vertices().map(|v| vertices[&v]).collect(),
-            ),
-            mesh,
-            face_materials: BTreeMap::new(),
-            refinement: None,
-        };
+        let compacted = compact_body(&finished);
         let second =
             EdgeSelection::OperandBoundaries(vec![[operand_region(0, 1), operand_region(0, 3)]]);
         let selected_segments = |body: &TessellatedBody| {

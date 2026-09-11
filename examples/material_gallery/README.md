@@ -41,6 +41,9 @@ cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes
   recess, 12 mm deep.
 - `door-recess-chamfer.glb` and `door-recess-fillet.glb`: the same door with
   a 3 mm finish around the recess, joined with miters at its four corners.
+- `two-pockets.glb`, `two-pockets-chamfer.glb`, and `two-pockets-fillet.glb`:
+  a 400 × 200 × 100 mm block with two 50 mm diameter, 20 mm deep pockets.
+  Both independently selected rims receive a 1 mm finish.
 
 These synthetic dimensions use metres in the recipe. The example preserves
 fillet normal overrides through assembly compilation and supplies its own
