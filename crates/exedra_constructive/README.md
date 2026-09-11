@@ -204,8 +204,8 @@ region collisions without changing the supported rounding geometry. General
 concave-edge blends and self-intersecting offset strips remain outside this scope.
 
 Migration for qualified selection: existing `SharpEdges` and `RegionBoundaries`
-calls keep their behavior, encoding, and fingerprints; evaluation schema remains
-21. Exhaustive matches must handle `EdgeSelection::OperandBoundaries` and
+calls keep their selection behavior and encoding. Exhaustive matches must handle
+`EdgeSelection::OperandBoundaries` and
 `EdgeFinishError::AmbiguousOperandSelection`. Rust DTO callers wrap numeric
 boundary lists in `EdgeBoundariesDto::Regions`; qualified lists use `Operands`.
 The JSON `boundaries` field retains numeric pairs or accepts pairs of
@@ -213,8 +213,10 @@ The JSON `boundaries` field retains numeric pairs or accepts pairs of
 they cannot silently fall back to finishing every sharp edge. Constructive
 text uses the explicit `operand_boundaries` selector.
 
-Migration: evaluation schema 21 invalidates cached output for planar-flank
-miters, including existing polygonal drill rims. It follows schema 20's UV
+Migration: evaluation schema 22 invalidates cached output for rim finishes that
+previously refused because replacement faces temporarily pinched a boundary
+during insertion. Separate pocket rims can now finish together or in sequence.
+It follows schema 21's planar-flank miters and schema 20's UV
 transfer change, which removed the unconditional `eval.edge_finish.uv_deferred`
 note. Regenerate
 persisted constructive text with the current schema. Existing recipes need no
