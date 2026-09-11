@@ -38,6 +38,9 @@ use crate::construction::Construction;
 use crate::element::{Element, ElementOrigin};
 use crate::rule::PartEditOp;
 
+#[cfg(test)]
+mod tests;
+
 /// Typed lowering failure.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -382,6 +385,15 @@ fn remap(
         NodeKind::Transform { child, xf } => NodeKind::Transform {
             child: node(*child)?,
             xf: *xf,
+        },
+        NodeKind::EdgeFinish {
+            child,
+            selection,
+            policy,
+        } => NodeKind::EdgeFinish {
+            child: node(*child)?,
+            selection: selection.clone(),
+            policy: *policy,
         },
         NodeKind::Mirror { child, plane } => NodeKind::Mirror {
             child: node(*child)?,
