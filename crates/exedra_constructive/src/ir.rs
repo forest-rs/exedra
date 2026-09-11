@@ -1721,6 +1721,16 @@ fn node_canon_bytes(
                         }
                     }
                 }
+                EdgeSelection::OperandBoundaries(pairs) => {
+                    out.push(2);
+                    put_u32(out, len_u32(pairs.len()));
+                    for pair in pairs {
+                        for source in pair {
+                            out.extend_from_slice(&source.operand.to_le_bytes());
+                            put_u32(out, source.region);
+                        }
+                    }
+                }
             }
             match policy.kind {
                 RoundKind::Fillet { radius } => {

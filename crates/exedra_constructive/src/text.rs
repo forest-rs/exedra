@@ -21,7 +21,7 @@ use core::fmt::Write as _;
 
 use kurbo::Point;
 
-use crate::edge_finish::{EdgeSelection, RoundKind, RoundPolicy};
+use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, NodeId, NodeKind, Path3, Placement3, Plane3,
     PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
@@ -331,6 +331,14 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                     let _ = write!(line, "boundaries {}", pairs.len());
                     for pair in pairs {
                         let _ = write!(line, " {} {}", pair[0], pair[1]);
+                    }
+                }
+                EdgeSelection::OperandBoundaries(pairs) => {
+                    let _ = write!(line, "operand_boundaries {}", pairs.len());
+                    for pair in pairs {
+                        for source in pair {
+                            let _ = write!(line, " {} {}", source.operand, source.region);
+                        }
                     }
                 }
             }
@@ -932,6 +940,20 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                         .map(|_| Ok([next_u32(&mut tokens, line)?, next_u32(&mut tokens, line)?]))
                         .collect::<Result<Vec<_>, TextError>>()?;
                     EdgeSelection::RegionBoundaries(pairs)
+                }
+                Some("operand_boundaries") => {
+                    let count = next_u32(&mut tokens, line)?;
+                    let mut source = || {
+                        Ok(OperandRegion {
+                            operand: u16::try_from(next_u32(&mut tokens, line)?)
+                                .map_err(|_| TextError::Malformed { line })?,
+                            region: next_u32(&mut tokens, line)?,
+                        })
+                    };
+                    let pairs = (0..count)
+                        .map(|_| Ok([source()?, source()?]))
+                        .collect::<Result<Vec<_>, TextError>>()?;
+                    EdgeSelection::OperandBoundaries(pairs)
                 }
                 _ => return Err(TextError::Malformed { line }),
             };

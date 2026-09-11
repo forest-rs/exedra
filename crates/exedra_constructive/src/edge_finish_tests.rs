@@ -11,7 +11,6 @@ use crate::ir::{
 use crate::tessellate::{EvalPolicy, tessellate_extrude, tessellate_primitive};
 use crate::text;
 use alloc::{format, rc::Rc, vec};
-use exedra_mesh::ChangeSetBuilder;
 use exedra_mesh::op::{set_corner_uv, set_face_region};
 
 fn box_node(b: &mut RecipeBuilder, size: [f64; 3]) -> NodeId {
@@ -33,6 +32,422 @@ fn rail_recipe(selection: EdgeSelection, policy: RoundPolicy) -> Recipe {
         })
         .unwrap();
     b.finish(root).unwrap()
+}
+
+fn operand_region(operand: u16, region: u32) -> OperandRegion {
+    OperandRegion { operand, region }
+}
+
+fn mesh_positions(body: &TessellatedBody) -> Vec<[u32; 3]> {
+    let mut positions: Vec<_> = body
+        .mesh
+        .vertices()
+        .map(|v| body.mesh.vertex_position(v).unwrap().map(f32::to_bits))
+        .collect();
+    positions.sort_unstable();
+    positions
+}
+
+/// Rotate the box cutter so its region 5 is a pocket wall, meeting the
+/// panel's region 5 top face. Equal labels must still identify distinct sides.
+fn equal_region_recess() -> Recipe {
+    let mut b = RecipeBuilder::new();
+    let panel = box_node(&mut b, [1.0, 1.0, 0.1]);
+    let cutter = b
+        .add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [0.8, 0.04, 0.8],
+            },
+            placement: Placement3 {
+                rows: [
+                    [1.0, 0.0, 0.0, 0.1],
+                    [0.0, 0.0, -1.0, 0.9],
+                    [0.0, 1.0, 0.0, 0.08],
+                ],
+            },
+        })
+        .unwrap();
+    let root = b
+        .add(NodeKind::Csg {
+            op: CsgOp::Difference,
+            operands: vec![panel, cutter],
+        })
+        .unwrap();
+    b.finish(root).unwrap()
+}
+
+fn two_pockets(segments: u32, grouped: bool, nested: bool) -> Recipe {
+    let mut b = RecipeBuilder::new();
+    let panel = box_node(&mut b, [4.0, 2.0, 1.0]);
+    let outside = b
+        .add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box { size: [1.0; 3] },
+            placement: Placement3::translate(10.0, 0.0, 0.0),
+        })
+        .unwrap();
+    let mut cutters = Vec::new();
+    for x in [1.0, 3.0] {
+        cutters.push(
+            b.add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: 0.25,
+                    height: 0.4,
+                    segments,
+                },
+                placement: Placement3::translate(x, 1.0, 0.8),
+            })
+            .unwrap(),
+        );
+    }
+    if grouped {
+        cutters = vec![b.add(NodeKind::Group { children: cutters }).unwrap()];
+    }
+    // Operand 1 is excluded by the Boolean's bounds test. The live cutters
+    // must retain declared indices 2 and 3, rather than being renumbered.
+    let mut operands = vec![panel, outside];
+    operands.extend(cutters);
+    let mut root = b
+        .add(NodeKind::Csg {
+            op: CsgOp::Difference,
+            operands,
+        })
+        .unwrap();
+    if nested {
+        root = b
+            .add(NodeKind::Csg {
+                op: CsgOp::Difference,
+                operands: vec![root, outside],
+            })
+            .unwrap();
+    }
+    b.finish(root).unwrap()
+}
+
+#[test]
+fn qualified_boundaries_follow_declared_operands_and_refuse_disconnected_matches() {
+    let policy = RoundPolicy::chamfer(0.01);
+    let first = [operand_region(0, 5), operand_region(2, 1)];
+    let second = [operand_region(0, 5), operand_region(3, 1)];
+    for grouped in [false, true] {
+        let evaluated = evaluate(&two_pockets(16, grouped, false), &EvalPolicy::default()).unwrap();
+        assert_eq!(
+            evaluated.bodies.len(),
+            1,
+            "{:?}",
+            evaluated.report.diagnostics
+        );
+        let body = &evaluated.bodies[0].body;
+        let before = format!("{body:?}");
+        let selection = EdgeSelection::OperandBoundaries(vec![first, second]);
+        if grouped {
+            assert!(matches!(finish_edges(body, &selection, &policy),
+                Err(EdgeFinishError::AmbiguousOperandSelection { regions }) if regions == first));
+        } else {
+            let selected = targets(body, &selection, &policy).unwrap();
+            // Boolean triangle cuts may subdivide a source polygon edge.
+            assert!(selected.len() >= 32);
+            for edge in selected {
+                for vertex in [
+                    body.mesh.from_vertex(edge).unwrap(),
+                    body.mesh.to_vertex(edge).unwrap(),
+                ] {
+                    let p = body.mesh.vertex_position(vertex).unwrap();
+                    let x = if p[0] < 2.0 { 1.0 } else { 3.0 };
+                    assert!((p[2] - 1.0).abs() < 1e-6);
+                    let distance = (p[0] - x).hypot(p[1] - 1.0);
+                    let apothem = 0.25 * (core::f32::consts::PI / 16.0).cos();
+                    assert!((apothem - 1e-6..=0.25 + 1e-6).contains(&distance));
+                }
+            }
+        }
+        assert_eq!(format!("{body:?}"), before);
+    }
+    let nested = evaluate(&two_pockets(16, false, true), &EvalPolicy::default()).unwrap();
+    let body = &nested.bodies[0].body;
+    assert!(body.mesh.faces().all(|face| {
+        body.source_map.face_feature(face) == Some(Feature::BooleanFace { operand: 0 })
+    }));
+    assert!(matches!(
+        finish_edges(
+            body,
+            &EdgeSelection::OperandBoundaries(vec![first]),
+            &policy
+        ),
+        Err(EdgeFinishError::EmptySelection)
+    ));
+}
+
+#[test]
+fn qualified_boundaries_survive_compaction_and_tessellation_changes() {
+    let policy = RoundPolicy::chamfer(0.01);
+    for segments in [16, 32] {
+        // A disjoint cutter leaves the cylinder intact while giving its faces
+        // Boolean provenance. Both regions of each rim belong to operand 0.
+        let mut b = RecipeBuilder::new();
+        let cylinder = b
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: 0.25,
+                    height: 0.5,
+                    segments,
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .unwrap();
+        let outside = b
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                placement: Placement3::translate(10.0, 0.0, 0.0),
+            })
+            .unwrap();
+        let root = b
+            .add(NodeKind::Csg {
+                op: CsgOp::Difference,
+                operands: vec![cylinder, outside],
+            })
+            .unwrap();
+        let evaluated = evaluate(&b.finish(root).unwrap(), &EvalPolicy::default()).unwrap();
+        let first =
+            EdgeSelection::OperandBoundaries(vec![[operand_region(0, 1), operand_region(0, 2)]]);
+        let (finished, _) = finish_edges(&evaluated.bodies[0].body, &first, &policy).unwrap();
+        let (mesh, remap) = finished.mesh.compact();
+        let faces: BTreeMap<_, _> = finished
+            .mesh
+            .faces()
+            .map(|face| {
+                (
+                    remap.face(face).unwrap(),
+                    finished.source_map.face_feature(face).unwrap(),
+                )
+            })
+            .collect();
+        let vertices: BTreeMap<_, _> = finished
+            .mesh
+            .vertices()
+            .map(|vertex| {
+                (
+                    remap.vertex(vertex).unwrap(),
+                    finished.source_map.vertex_feature(vertex).unwrap(),
+                )
+            })
+            .collect();
+        let compacted = TessellatedBody {
+            source_map: SourceMap::new(
+                &mesh,
+                mesh.faces().map(|f| faces[&f]).collect(),
+                mesh.vertices().map(|v| vertices[&v]).collect(),
+            ),
+            mesh,
+            face_materials: BTreeMap::new(),
+            refinement: None,
+        };
+        let second =
+            EdgeSelection::OperandBoundaries(vec![[operand_region(0, 1), operand_region(0, 3)]]);
+        let selected_segments = |body: &TessellatedBody| {
+            let edges = targets(body, &second, &policy).unwrap();
+            assert!(edges.len() >= usize::try_from(segments).unwrap());
+            let mut positions: Vec<_> = edges
+                .into_iter()
+                .map(|edge| {
+                    let mut pair = [
+                        body.mesh.from_vertex(edge).unwrap(),
+                        body.mesh.to_vertex(edge).unwrap(),
+                    ]
+                    .map(|v| body.mesh.vertex_position(v).unwrap().map(f32::to_bits));
+                    pair.sort_unstable();
+                    pair
+                })
+                .collect();
+            positions.sort_unstable();
+            positions
+        };
+        assert_eq!(selected_segments(&finished), selected_segments(&compacted));
+        let (a, stats_a) = finish_edges(&finished, &second, &policy).unwrap();
+        let (b, stats_b) = finish_edges(&compacted, &second, &policy).unwrap();
+        assert_eq!(stats_a, stats_b);
+        assert_eq!(mesh_positions(&a), mesh_positions(&b));
+        assert!(a.mesh.validate_deep().is_empty());
+        assert!(b.mesh.validate_deep().is_empty());
+    }
+}
+
+#[test]
+fn qualified_rims_disambiguate_reused_and_equal_region_labels() {
+    let evaluated = evaluate(&equal_region_recess(), &EvalPolicy::default()).unwrap();
+    let body = &evaluated.bodies[0].body;
+    let before = format!("{body:?}");
+    let mut policy = RoundPolicy::chamfer(0.005);
+    policy.max_tangent_turn = core::f64::consts::FRAC_PI_2;
+    assert!(matches!(
+        targets(
+            body,
+            &EdgeSelection::RegionBoundaries(vec![[1, 5]]),
+            &policy
+        ),
+        Err(EdgeFinishError::AmbiguousSelection { .. })
+    ));
+    let equal =
+        EdgeSelection::OperandBoundaries(vec![[operand_region(0, 5), operand_region(1, 5)]]);
+    let edges = targets(body, &equal, &policy).unwrap();
+    assert!(!edges.is_empty());
+    for edge in edges {
+        for vertex in [
+            body.mesh.from_vertex(edge).unwrap(),
+            body.mesh.to_vertex(edge).unwrap(),
+        ] {
+            let p = body.mesh.vertex_position(vertex).unwrap();
+            assert!((p[1] - 0.1).abs() < 1e-6 && (p[2] - 0.1).abs() < 1e-6);
+        }
+    }
+
+    let walls = [1, 2, 5, 6];
+    let selection = EdgeSelection::OperandBoundaries(
+        walls
+            .map(|region| [operand_region(0, 5), operand_region(1, region)])
+            .to_vec(),
+    );
+    // Compare to the previous caller workaround on exactly the same input
+    // geometry: give operand 1 regions an artificial +100 namespace.
+    let mut renamed_mesh = body.mesh.clone();
+    let regions: Vec<_> = body
+        .mesh
+        .faces()
+        .map(|face| {
+            let Feature::BooleanFace { operand } = body.source_map.face_feature(face).unwrap()
+            else {
+                panic!("Boolean face");
+            };
+            let region = *body
+                .mesh
+                .attrs()
+                .dense(attr::FACE_REGION)
+                .unwrap()
+                .get(face.as_id())
+                .unwrap();
+            (face, region + u32::from(operand) * 100)
+        })
+        .collect();
+    let mut edit = renamed_mesh.edit();
+    for (face, region) in regions {
+        set_face_region(&mut edit, face, region).unwrap();
+    }
+    let _: () = edit.finish();
+    let renamed = TessellatedBody {
+        source_map: body.source_map.repinned(&renamed_mesh),
+        mesh: renamed_mesh,
+        face_materials: body.face_materials.clone(),
+        refinement: None,
+    };
+    let unqualified =
+        EdgeSelection::RegionBoundaries(walls.map(|region| [5, region + 100]).to_vec());
+    for kind in [
+        RoundKind::Chamfer { setback: 0.005 },
+        RoundKind::Fillet { radius: 0.005 },
+    ] {
+        policy.kind = kind;
+        let (actual, stats) = finish_edges(body, &selection, &policy).unwrap();
+        let (reference, reference_stats) = finish_edges(&renamed, &unqualified, &policy).unwrap();
+        assert_eq!(stats.closed_chains, 1);
+        assert_eq!(stats, reference_stats);
+        assert_eq!(mesh_positions(&actual), mesh_positions(&reference));
+        assert!(actual.mesh.validate_deep().is_empty());
+    }
+    assert_eq!(format!("{body:?}"), before);
+}
+
+#[test]
+fn qualified_selection_is_canonical_and_qualifiers_affect_fingerprints() {
+    let pairs = [
+        [operand_region(0, 5), operand_region(1, 1)],
+        [operand_region(0, 5), operand_region(2, 1)],
+    ];
+    let policy = RoundPolicy::chamfer(0.005);
+    let recipe = rail_recipe(EdgeSelection::OperandBoundaries(pairs.to_vec()), policy);
+    let permuted = rail_recipe(
+        EdgeSelection::OperandBoundaries(vec![
+            [pairs[1][1], pairs[1][0]],
+            pairs[0],
+            pairs[1],
+            [pairs[0][1], pairs[0][0]],
+        ]),
+        policy,
+    );
+    assert_eq!(recipe.recipe_fingerprint(), permuted.recipe_fingerprint());
+    assert_eq!(text::dump_recipe(&recipe), text::dump_recipe(&permuted));
+    for replacement in [
+        operand_region(3, 1),
+        operand_region(1, 2),
+        operand_region(u16::MAX, u32::MAX),
+    ] {
+        let mut changed = pairs;
+        changed[0][1] = replacement;
+        let variant = rail_recipe(EdgeSelection::OperandBoundaries(changed.to_vec()), policy);
+        assert_ne!(recipe.recipe_fingerprint(), variant.recipe_fingerprint());
+        let restored = text::parse_recipe(&text::dump_recipe(&variant)).unwrap();
+        assert_eq!(variant.recipe_fingerprint(), restored.recipe_fingerprint());
+    }
+    let dump = text::dump_recipe(&recipe);
+    assert_eq!(
+        text::parse_recipe(&dump).unwrap().recipe_fingerprint(),
+        recipe.recipe_fingerprint()
+    );
+    assert!(
+        text::parse_recipe(
+            &dump.replace("operand_boundaries 2 0 5", "operand_boundaries 2 65536 5")
+        )
+        .is_err()
+    );
+    assert_ne!(
+        recipe.recipe_fingerprint(),
+        rail_recipe(EdgeSelection::RegionBoundaries(vec![[5, 1]]), policy,).recipe_fingerprint()
+    );
+    #[cfg(feature = "serde")]
+    {
+        use crate::interchange::{from_dto, to_dto};
+        let json = serde_json::to_string(&to_dto(&recipe)).unwrap();
+        let restored = from_dto(&serde_json::from_str(&json).unwrap()).unwrap();
+        assert_eq!(restored.recipe_fingerprint(), recipe.recipe_fingerprint());
+        assert_eq!(json, serde_json::to_string(&to_dto(&permuted)).unwrap());
+    }
+}
+
+#[test]
+fn invalid_or_missing_qualified_pairs_refuse_the_entire_selection() {
+    let evaluated = evaluate(&equal_region_recess(), &EvalPolicy::default()).unwrap();
+    let body = &evaluated.bodies[0].body;
+    let before = format!("{body:?}");
+    let good = [operand_region(0, 5), operand_region(1, 5)];
+    let policy = RoundPolicy::chamfer(0.005);
+    for pairs in [vec![], vec![[good[0], good[0]]]] {
+        let selection = EdgeSelection::OperandBoundaries(pairs);
+        assert!(!selection.valid());
+        assert!(matches!(
+            finish_edges(body, &selection, &policy),
+            Err(EdgeFinishError::InvalidSelection)
+        ));
+    }
+    for missing in [operand_region(2, 5), operand_region(1, 99)] {
+        let selection = EdgeSelection::OperandBoundaries(vec![good, [good[0], missing]]);
+        assert!(matches!(
+            finish_edges(body, &selection, &policy),
+            Err(EdgeFinishError::EmptySelection)
+        ));
+    }
+    let primitive = tessellate_primitive(
+        PrimitiveSpec::Box { size: [1.0; 3] },
+        &Placement3::IDENTITY,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        finish_edges(
+            &primitive,
+            &EdgeSelection::OperandBoundaries(vec![good]),
+            &policy
+        ),
+        Err(EdgeFinishError::EmptySelection)
+    ));
+    assert_eq!(format!("{body:?}"), before);
 }
 
 #[test]
@@ -208,45 +623,15 @@ fn finishing_a_boolean_preserves_cut_slots_and_per_occurrence_defaults() {
     let red = b.material_slot("red");
     let blue = b.material_slot("blue");
     let block = box_node(&mut b, [1.0, 1.0, 1.0]);
-    // Imported cutter regions occupy their own namespace: the primitive
-    // side region 1 would otherwise collide with the box's +X face.
-    let mut cutter_mesh = tessellate_primitive(
-        PrimitiveSpec::Cylinder {
-            radius: 0.15,
-            height: 0.4,
-            segments: 16,
-        },
-        &Placement3::translate(0.7, 0.7, 0.8),
-        &EvalPolicy::default(),
-    )
-    .unwrap()
-    .mesh;
-    let regions: Vec<_> = cutter_mesh
-        .faces()
-        .map(|face| {
-            (
-                face,
-                *cutter_mesh
-                    .attrs()
-                    .dense(attr::FACE_REGION)
-                    .unwrap()
-                    .get(face.as_id())
-                    .unwrap()
-                    + 100,
-            )
-        })
-        .collect();
-    let mut edit = cutter_mesh.edit_with(ChangeSetBuilder::new());
-    for (face, region) in regions {
-        set_face_region(&mut edit, face, region).unwrap();
-    }
-    let _ = edit.finish();
-    let import = b.add_import(cutter_mesh).unwrap();
     let cutter = b
         .with_material(cut)
-        .add(NodeKind::MeshImport {
-            import,
-            placement: Placement3::IDENTITY,
+        .add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Cylinder {
+                radius: 0.15,
+                height: 0.4,
+                segments: 16,
+            },
+            placement: Placement3::translate(0.7, 0.7, 0.8),
         })
         .unwrap();
     let difference = b
@@ -258,7 +643,16 @@ fn finishing_a_boolean_preserves_cut_slots_and_per_occurrence_defaults() {
     let finish = b
         .add(NodeKind::EdgeFinish {
             child: difference,
-            selection: EdgeSelection::RegionBoundaries(vec![[5, 101]]),
+            selection: EdgeSelection::OperandBoundaries(vec![[
+                OperandRegion {
+                    operand: 0,
+                    region: 5,
+                },
+                OperandRegion {
+                    operand: 1,
+                    region: 1,
+                },
+            ]]),
             policy: RoundPolicy::chamfer(0.05),
         })
         .unwrap();

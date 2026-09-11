@@ -116,6 +116,32 @@ regions. Region pairs are sorted and deduplicated before fingerprinting.
 Each pair must identify one connected boundary with one source feature per
 side; missing and ambiguous targets are errors.
 
+After a Boolean, use `OperandBoundaries` to qualify each region by the operand
+that produced it. A box panel and box cutter can keep their ordinary region
+numbers. For the recessed-door example, operand 0 is the panel and operand 1
+is the cutter:
+
+```rust
+use exedra_constructive::edge_finish::{EdgeSelection, OperandRegion};
+
+let rim = EdgeSelection::OperandBoundaries(
+    [1, 2, 5, 6].map(|region| [
+        OperandRegion { operand: 0, region: 4 }, // panel front (-Y)
+        OperandRegion { operand: 1, region },   // cutter wall
+    ]).to_vec(),
+);
+```
+
+Operand indices follow the producing CSG node's declared `operands` list,
+including operands that contributed no faces. They are local to that Boolean;
+a later CSG operation assigns new operand indices. Transforms and edge finishes
+retain the attribution. This does not select leaf nodes inside grouped or
+nested operands. If one qualified pair names disconnected boundaries, selection
+still refuses; separate cutters should be separate operands when they need
+separate selection. Equal region numbers on different operands are valid.
+
+A rail with all sharp edges filleted uses the whole-body selector:
+
 ```rust
 use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
@@ -168,15 +194,24 @@ extruded along the rail remains a different operation: its end perimeters
 stay sharp. Concave targets, oversized radii, boundary edges, affected
 non-planar faces and unsupported junctions are refused. Open chain ends must
 meet one end face; CSG can split that face and make the end unsupported.
-Closed rims with distinct operand regions avoid these selection and end-face
-limitations. For a square rim, set `policy.max_tangent_turn` to `FRAC_PI_2`;
+Closed rims with unambiguous operand/region pairs avoid these selection and
+end-face limitations. For a square rim, set `policy.max_tangent_turn` to `FRAC_PI_2`;
 the default remains 0.7 radians. Consecutive edges with a shared planar flank
 and equal dihedral angles receive exact miters. Fillet normals retain the
 crease between adjoining cylinders, and automatic band counts also bound
-chord error along the elliptical miter seam. Recessed-panel Booleans can reuse
-region numbers across operands; ambiguous rim selection is explicitly refused.
-The door example assigns distinct cutter regions before the Boolean. General
+chord error along the elliptical miter seam. Operand-qualified selection avoids
+region collisions without changing the supported rounding geometry. General
 concave-edge blends and self-intersecting offset strips remain outside this scope.
+
+Migration for qualified selection: existing `SharpEdges` and `RegionBoundaries`
+calls keep their behavior, encoding, and fingerprints; evaluation schema remains
+21. Exhaustive matches must handle `EdgeSelection::OperandBoundaries` and
+`EdgeFinishError::AmbiguousOperandSelection`. Rust DTO callers wrap numeric
+boundary lists in `EdgeBoundariesDto::Regions`; qualified lists use `Operands`.
+The JSON `boundaries` field retains numeric pairs or accepts pairs of
+`{"operand": 1, "region": 5}` objects. Older readers reject these objects;
+they cannot silently fall back to finishing every sharp edge. Constructive
+text uses the explicit `operand_boundaries` selector.
 
 Migration: evaluation schema 21 invalidates cached output for planar-flank
 miters, including existing polygonal drill rims. It follows schema 20's UV
