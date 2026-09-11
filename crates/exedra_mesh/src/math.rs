@@ -5,6 +5,7 @@
 
 pub(crate) trait FloatExt {
     fn acos_ext(self) -> Self;
+    fn atan2_ext(self, other: Self) -> Self;
     fn ceil_ext(self) -> Self;
     fn cos_ext(self) -> Self;
     fn sin_ext(self) -> Self;
@@ -16,6 +17,11 @@ impl FloatExt for f32 {
     #[inline]
     fn acos_ext(self) -> Self {
         self.acos()
+    }
+
+    #[inline]
+    fn atan2_ext(self, other: Self) -> Self {
+        self.atan2(other)
     }
 
     #[inline]
@@ -47,6 +53,11 @@ impl FloatExt for f32 {
     }
 
     #[inline]
+    fn atan2_ext(self, other: Self) -> Self {
+        libm::atan2f(self, other)
+    }
+
+    #[inline]
     fn ceil_ext(self) -> Self {
         libm::ceilf(self)
     }
@@ -75,6 +86,11 @@ impl FloatExt for f64 {
     }
 
     #[inline]
+    fn atan2_ext(self, other: Self) -> Self {
+        self.atan2(other)
+    }
+
+    #[inline]
     fn ceil_ext(self) -> Self {
         self.ceil()
     }
@@ -100,6 +116,11 @@ impl FloatExt for f64 {
     #[inline]
     fn acos_ext(self) -> Self {
         libm::acos(self)
+    }
+
+    #[inline]
+    fn atan2_ext(self, other: Self) -> Self {
+        libm::atan2(self, other)
     }
 
     #[inline]
