@@ -788,6 +788,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "joiner_masonry"
+version = "0.0.0"
+dependencies = [
+ "exedra_constructive",
+ "exedra_measurements",
+ "joiner",
+ "libm",
+]
+
+[[package]]
 name = "joiner_timber"
 version = "0.0.0"
 dependencies = [
