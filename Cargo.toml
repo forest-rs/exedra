@@ -28,6 +28,7 @@ members = [
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
     "crates/joiner",
+    "crates/joiner_masonry",
     "crates/joiner_timber",
     "crates/setout",
     "crates/setout_generate",
@@ -122,6 +123,7 @@ fidget = { default-features = false, version = "0.5.0" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.17.1" }
 invalidation = "0.2.0"
 joiner = { default-features = false, path = "crates/joiner" }
+joiner_masonry = { default-features = false, path = "crates/joiner_masonry" }
 joiner_timber = { default-features = false, path = "crates/joiner_timber" }
 joto_constants = "0.2.0"
 joto_format = "0.1.0"

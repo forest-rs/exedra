@@ -75,7 +75,7 @@ Construction and extraction crates:
 
 Workspace-only construction, test, benchmark, and app crates:
 
-- **[joiner](crates/joiner/)** and related `setout`/`joiner_timber` crates -
+- **[joiner](crates/joiner/)** and related `setout`/`joiner_timber`/`joiner_masonry` crates -
   evolving construction and joinery layers kept outside the first public
   package set.
 - **[exedra_testkit](crates/exedra_testkit/)** and

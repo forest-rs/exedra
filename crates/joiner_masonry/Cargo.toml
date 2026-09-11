@@ -1,0 +1,25 @@
+[package]
+name = "joiner_masonry"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Masonry coursing rules for the joiner construction layer"
+readme = "README.md"
+keywords = ["construction", "joinery", "masonry", "no_std"]
+categories = ["graphics", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["exedra_constructive/std", "joiner/std"]
+
+[dependencies]
+exedra_constructive.workspace = true
+exedra_measurements.workspace = true
+joiner.workspace = true
+libm.workspace = true
