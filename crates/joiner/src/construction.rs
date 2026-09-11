@@ -48,7 +48,8 @@ use crate::evidence::EvidenceSource;
 use crate::geometry::OrientedBox;
 use crate::relation::{Relation, RelationKind};
 use crate::rule::{
-    AppliedRule, ContactPatch, PartEdit, RuleApplication, TransferEdge, TransferTarget,
+    AppliedRule, ContactPatch, PartEdit, Rule, RuleApplication, RuleContext, RuleError,
+    TransferEdge, TransferTarget,
 };
 
 /// The invalidation channels a construction marks on.
@@ -154,6 +155,34 @@ impl core::fmt::Display for ConstructionError {
 
 impl core::error::Error for ConstructionError {}
 
+/// Failure to instantiate a rule or atomically merge its output.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum ApplyRuleError {
+    /// The rule refused this relation or could not build its geometry.
+    Rule(RuleError),
+    /// The relation is missing or the output could not be registered.
+    Construction(ConstructionError),
+}
+
+impl core::fmt::Display for ApplyRuleError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Rule(error) => error.fmt(f),
+            Self::Construction(error) => error.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for ApplyRuleError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(match self {
+            Self::Rule(error) => error,
+            Self::Construction(error) => error,
+        })
+    }
+}
+
 /// The element graph plus every fact a rule has added to it.
 #[derive(Debug, Default)]
 pub struct Construction {
@@ -220,6 +249,44 @@ impl Construction {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Instantiates `rule` for a relation and atomically applies its output.
+    ///
+    /// The application inherits the relation's evidence. Use [`Self::apply`]
+    /// directly when authoring output or recording different evidence for the
+    /// application. This calls [`Rule::instantiate`]; use [`Rule::assess`]
+    /// separately when presenting possible fits to a caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rule's refusal, an unknown relation, or any failure from
+    /// [`Self::apply`]. On failure the construction remains unchanged.
+    pub fn apply_rule<R: Rule>(
+        &mut self,
+        application: &str,
+        relation: &str,
+        rule: &R,
+        params: &R::Params,
+    ) -> Result<(), ApplyRuleError> {
+        let context = RuleContext::new(self, relation).ok_or_else(|| {
+            ApplyRuleError::Construction(ConstructionError::UnknownReference {
+                category: "relation",
+                key: relation.to_string(),
+            })
+        })?;
+        let output = rule
+            .instantiate(&context, params)
+            .map_err(ApplyRuleError::Rule)?;
+        let application = RuleApplication::new(
+            application,
+            rule.key(),
+            relation,
+            context.relation().evidence.clone(),
+            output,
+        );
+        self.apply(application)
+            .map_err(ApplyRuleError::Construction)
     }
 
     /// Registers an evidence source.
@@ -914,6 +981,59 @@ mod tests {
             ))
             .expect("relation");
         construction
+    }
+
+    #[test]
+    fn applying_a_rule_preserves_evidence_and_rejects_without_mutation() {
+        struct FixtureRule;
+        impl Rule for FixtureRule {
+            type Params = bool;
+            fn key(&self) -> &str {
+                "fixture-rule"
+            }
+            fn assess(&self, _: &RuleContext<'_>) -> crate::Applicability {
+                crate::Applicability::Suitable(vec![])
+            }
+            fn instantiate(
+                &self,
+                _: &RuleContext<'_>,
+                refuse: &bool,
+            ) -> Result<RuleOutput, RuleError> {
+                if *refuse {
+                    return Err(RuleError::Degenerate {
+                        what: "fixture refusal",
+                    });
+                }
+                let mut output = RuleOutput::new();
+                output.generated.push(box_element("generated"));
+                Ok(output)
+            }
+        }
+        let mut construction = seeded();
+        assert!(matches!(
+            construction.apply_rule("fit", "missing", &FixtureRule, &false),
+            Err(ApplyRuleError::Construction(
+                ConstructionError::UnknownReference { .. }
+            ))
+        ));
+        assert!(matches!(
+            construction.apply_rule("fit", "window", &FixtureRule, &true),
+            Err(ApplyRuleError::Rule(RuleError::Degenerate { .. }))
+        ));
+        assert!(construction.applications().is_empty());
+        assert!(construction.element("generated").is_none());
+        construction
+            .apply_rule("fit", "window", &FixtureRule, &false)
+            .unwrap();
+        assert_eq!(construction.applications()[0].evidence, evidence());
+        assert!(construction.element("generated").is_some());
+        assert!(matches!(
+            construction.apply_rule("fit", "window", &FixtureRule, &false),
+            Err(ApplyRuleError::Construction(
+                ConstructionError::DuplicateKey { .. }
+            ))
+        ));
+        assert_eq!(construction.applications().len(), 1);
     }
 
     #[test]
