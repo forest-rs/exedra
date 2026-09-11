@@ -7,7 +7,9 @@
 //! This crate owns *how building elements fit together*. Below it,
 //! [`exedra_constructive`] compiles one part's recipe into meshes and
 //! [`exedra_assembly`] arranges parts as placed instances. Neither knows what
-//! a rafter or a window is. `joiner` does, and it knows nothing about meshes.
+//! a rafter or a window is. `joiner` describes those elements and their fits.
+//! The optional [`contact_geometry`] adapter checks declared contact areas
+//! against already compiled parts.
 //!
 //! ## The shape of the layer
 //!
@@ -36,8 +38,8 @@
 //! consumer that needs four timber joints does not inherit a dependency on
 //! thirty, nor on stone.
 //!
-//! It owns none of: geometry math (that is [`exedra_constructive`] and
-//! `exedra_mesh`); site, massing, and plan layout; statics, finite-element
+//! Shape construction stays in [`exedra_constructive`] and `exedra_mesh`.
+//! This crate owns none of: site, massing, and plan layout; statics, finite-element
 //! analysis, capacity, or code compliance; rendering and export; or an
 //! erased, document-shaped parameter boundary. See
 //! `docs/adr-0001-construction-layer-scope.md`.
@@ -167,6 +169,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod construction;
+pub mod contact_geometry;
 pub mod element;
 pub mod evidence;
 pub mod geometry;
@@ -179,6 +182,9 @@ pub mod validate;
 mod seeds;
 
 pub use construction::{ApplyRuleError, Construction, ConstructionError, ElementId, channel};
+pub use contact_geometry::{
+    ContactGeometryError, ContactGeometryMeasurement, measure_contact_geometry,
+};
 pub use element::{DEFAULT_SLOT, Element, ElementOrigin, Member, Node, Part, Restraints, Support};
 pub use evidence::{Evidence, EvidenceClass, EvidenceSource};
 pub use geometry::{FRAME_TOLERANCE, OrientedBox, Vec3};
