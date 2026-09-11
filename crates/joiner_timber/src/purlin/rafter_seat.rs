@@ -17,7 +17,7 @@ use super::crossing::{
 use super::principal_trench::PURLIN_ROLE;
 use crate::length::default_millimeters;
 use crate::participants::{ParticipantPair, resolve_pair};
-use crate::tool::{nominal_rect, profile_tool_world, receiving_profile, world_to_local};
+use crate::tool::{nominal_rect, profile_tool_world, receiving_profile};
 use crate::{FitClass, Length};
 
 /// Stable identity for a common rafter seated over a purlin.
@@ -181,8 +181,8 @@ impl Rule for CommonRafterToPurlinSeatRule {
 fn assess_common_seat(pair: &ParticipantPair<'_>) -> Result<CrossingFootprint, RuleError> {
     let footprint = crossing_footprint(pair)?;
     validate_complete_crossing(pair, &footprint)?;
-    let common_node = world_to_local(&pair.carried.extent, pair.node.point);
-    let purlin_node = world_to_local(&pair.carrier.extent, pair.node.point);
+    let common_node = pair.carried.extent.local_point(pair.node.point);
+    let purlin_node = pair.carrier.extent.local_point(pair.node.point);
     if common_node[2] <= FRAME_EPSILON
         || common_node[2] >= pair.carried.extent.size[2] - FRAME_EPSILON
     {
@@ -213,8 +213,8 @@ fn validate_common_seat(
     let footprint = assess_common_seat(pair)?;
     validate_bearing_size(&footprint, params.minimum_bearing)?;
 
-    let common_node = world_to_local(&pair.carried.extent, pair.node.point);
-    let purlin_node = world_to_local(&pair.carrier.extent, pair.node.point);
+    let common_node = pair.carried.extent.local_point(pair.node.point);
+    let purlin_node = pair.carrier.extent.local_point(pair.node.point);
     if (common_node[2] - params.seat_depth).abs() > FRAME_EPSILON {
         return Err(RuleError::InvalidParameter {
             what: "authored purlin overlap does not match common-rafter seat depth",

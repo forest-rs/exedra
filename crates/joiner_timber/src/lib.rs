@@ -20,7 +20,8 @@
 //! full-section compression bearings cut only their carrier because the strut
 //! or rafter already terminates on the authored internal shoulder. Secondary
 //! roof crossings likewise leave each full-section purlin intact and edit the
-//! principal or common rafter that receives it.
+//! principal or common rafter that receives it. [`RoundPurlinSeatRule`] instead
+//! cuts a flat underside seat in a circular purlin over a rectangular support.
 //!
 //! ```text
 //! relation + extents
@@ -62,6 +63,7 @@ pub use king_post::{KING_POST_TIE_RULE_KEY, KingPostTieParams, KingPostTieRule};
 pub use purlin::{
     COMMON_RAFTER_PURLIN_SEAT_RULE_KEY, CommonRafterPurlinSeatParams, CommonRafterToPurlinSeatRule,
     PURLIN_PRINCIPAL_TRENCH_RULE_KEY, PurlinPrincipalTrenchParams, PurlinToPrincipalTrenchRule,
+    ROUND_PURLIN_SEAT_RULE_KEY, RoundPurlinSeatParams, RoundPurlinSeatRule,
 };
 pub use strut::{
     HousedBearingParams, RAFTER_KING_POST_RULE_KEY, RafterToKingPostRule, STRUT_KING_POST_RULE_KEY,

@@ -11,7 +11,6 @@ use joiner::{
 
 use crate::FitClass;
 use crate::participants::ParticipantPair;
-use crate::tool::world_to_local;
 
 pub(super) const FRAME_EPSILON: f64 = 1.0e-9;
 
@@ -125,7 +124,7 @@ pub(super) fn validate_cut_depth(
     if cut_depth >= receiver_depth {
         return Err(RuleError::InvalidParameter { what: cut_name });
     }
-    if receiver_depth - cut_depth < minimum_remaining_depth {
+    if receiver_depth - cut_depth + FRAME_EPSILON < minimum_remaining_depth {
         return Err(RuleError::Degenerate {
             what: "cut leaves insufficient receiver depth",
         });
@@ -137,7 +136,11 @@ pub(super) fn validate_bearing_size(
     footprint: &CrossingFootprint,
     minimum: f64,
 ) -> Result<(), RuleError> {
-    if footprint.size.into_iter().any(|size| size < minimum) {
+    if footprint
+        .size
+        .into_iter()
+        .any(|size| size + FRAME_EPSILON < minimum)
+    {
         return Err(RuleError::Degenerate {
             what: "crossing bearing is smaller than the requested minimum",
         });
@@ -156,11 +159,11 @@ pub(super) fn bearing_contact(
         &alloc::format!("contact-{relation}"),
         Anchor::new(
             &pair.carried.key,
-            world_to_local(&pair.carried.extent, pair.node.point),
+            pair.carried.extent.local_point(pair.node.point),
         ),
         Anchor::new(
             &pair.carrier.key,
-            world_to_local(&pair.carrier.extent, pair.node.point),
+            pair.carrier.extent.local_point(pair.node.point),
         ),
         footprint.normal,
         footprint.tangents,
