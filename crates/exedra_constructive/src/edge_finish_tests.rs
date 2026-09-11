@@ -961,6 +961,140 @@ fn unsupported_geometry_is_explicit_and_does_not_emit_a_partial_finish() {
 }
 
 #[test]
+fn concave_shoulder_finishing_preserves_face_ownership_and_uvs() {
+    let mut body = tessellate_extrude(
+        &builders::l_profile(0.2, 0.2, 0.1, 0.1).unwrap(),
+        &Placement3::IDENTITY,
+        0.3,
+        CapMode::Both,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    let source_uv = |feature, p: [f32; 3]| match feature {
+        Feature::Wall { seg: 0 | 2 | 4, .. } => [p[0], p[2]],
+        Feature::Wall { .. } => [p[1], p[2]],
+        _ => [p[0], p[1]],
+    };
+    let source_slot = |feature| match feature {
+        Feature::Wall { seg, .. } => SlotId(seg + 2),
+        Feature::CapStart => SlotId(0),
+        Feature::CapEnd => SlotId(1),
+        _ => panic!("extruded profile"),
+    };
+    let mut uv_values = Vec::new();
+    for face in body.mesh.faces() {
+        let feature = body.source_map.face_feature(face).unwrap();
+        body.face_materials.insert(face, source_slot(feature));
+        for corner in body.mesh.face_loop(face) {
+            let p = *body
+                .mesh
+                .vertex_position(body.mesh.to_vertex(corner).unwrap())
+                .unwrap();
+            uv_values.push((corner, source_uv(feature, p)));
+        }
+    }
+    let mut edit = body.mesh.edit();
+    for (corner, uv) in uv_values {
+        set_corner_uv(&mut edit, corner, uv).unwrap();
+    }
+    let _: () = edit.finish();
+    body.source_map = body.source_map.repinned(&body.mesh);
+    let before = format!("{:?}", body.mesh);
+    let mut policy = RoundPolicy::fillet(0.01);
+    policy.region = Some(99);
+    let selection = EdgeSelection::RegionBoundaries(vec![[4, 5]]);
+    let (finished, stats) = finish_edges(&body, &selection, &policy).unwrap();
+    assert_eq!(stats.chains, 1);
+    assert_eq!(format!("{:?}", body.mesh), before);
+    assert!(finished.mesh.validate_deep().is_empty());
+    finished.source_map.check(&finished.mesh).unwrap();
+    let mut strips = 0;
+    for face in finished.mesh.faces() {
+        let feature = finished.source_map.face_feature(face).unwrap();
+        assert_eq!(finished.face_materials[&face], source_slot(feature));
+        if finished
+            .mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .unwrap()
+            .get(face.as_id())
+            == Some(&99)
+        {
+            assert_eq!(
+                feature,
+                Feature::Wall {
+                    loop_index: 0,
+                    seg: 2
+                }
+            );
+            strips += 1;
+        }
+        let (_, fallback) = finished
+            .mesh
+            .face_triangles_counted(face, FaceTriangulation::Robust);
+        assert!(!fallback);
+        for corner in finished.mesh.face_loop(face) {
+            let p = *finished
+                .mesh
+                .vertex_position(finished.mesh.to_vertex(corner).unwrap())
+                .unwrap();
+            let expected = source_uv(feature, p);
+            let uv = finished
+                .mesh
+                .attrs()
+                .sparse(attr::CORNER_UV)
+                .unwrap()
+                .get(corner.as_id())
+                .unwrap();
+            for axis in 0..2 {
+                assert!((uv[axis] - expected[axis]).abs() < 1e-6);
+            }
+        }
+    }
+    assert_eq!(strips, stats.strip_faces);
+    let mut b = RecipeBuilder::new();
+    let slot = b.material_slot("timber");
+    let profile = b.add_profile(builders::l_profile(0.2, 0.2, 0.1, 0.1).unwrap());
+    let child = b
+        .with_material(slot)
+        .add(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height: 0.3,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let root = b
+        .add(NodeKind::EdgeFinish {
+            child,
+            selection,
+            policy,
+        })
+        .unwrap();
+    let recipe = b.finish(root).unwrap();
+    let mut cache = EvalCache::new();
+    let cold = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache).unwrap();
+    let warm = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache).unwrap();
+    assert_eq!(cold.bodies.len(), 1);
+    assert_eq!(cold.report.counters.edge_finish_passes, 1);
+    assert_eq!(warm.report.counters.edge_finish_passes, 0);
+    assert!(Rc::ptr_eq(&cold.bodies[0].body, &warm.bodies[0].body));
+    assert!(
+        cold.report
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error)
+    );
+    assert!(
+        cold.bodies[0]
+            .body
+            .mesh
+            .faces()
+            .all(|face| cold.bodies[0].material_for_face(face) == Some(slot))
+    );
+}
+
+#[test]
 fn recessed_panel_region_collisions_are_refused_as_ambiguous() {
     let mut b = RecipeBuilder::new();
     let panel = box_node(&mut b, [1.0, 1.0, 0.1]);
