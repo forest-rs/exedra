@@ -191,9 +191,9 @@ The supported examples include a box rail with all convex edges filleted, a
 box-like foot with a selected exposed edge chamfered, and the square rim of a
 Boolean-cut door recess. A rounded 2D profile
 extruded along the rail remains a different operation: its end perimeters
-stay sharp. Concave targets, oversized radii, boundary edges, affected
-non-planar faces and unsupported junctions are refused. Open chain ends must
-meet one end face; CSG can split that face and make the end unsupported.
+stay sharp. Oversized radii, boundary edges, affected non-planar faces and
+unsupported junctions are refused. Convex open chain ends must meet one end
+face; CSG can split that face and make the end unsupported.
 Closed rims with unambiguous operand/region pairs avoid these selection and
 end-face limitations. For a square rim, set `policy.max_tangent_turn` to `FRAC_PI_2`;
 the default remains 0.7 radians. Consecutive edges with a shared planar flank
@@ -201,7 +201,22 @@ and equal dihedral angles receive exact miters. Fillet normals retain the
 crease between adjoining cylinders, and automatic band counts also bound
 chord error along the elliptical miter seam. Operand-qualified selection avoids
 region collisions without changing the supported rounding geometry. General
-concave-edge blends and self-intersecting offset strips remain outside this scope.
+concave corner blends and self-intersecting curved strips remain outside this scope.
+
+Straight concave shoulders of through housings and notches can be filleted or
+chamfered using the same selections. They add material into the internal corner,
+with the fillet's cylinder center on the void side. Collinear chain subdivisions
+and triangulated end caps perpendicular to the chain are supported; existing cap
+materials and UVs are retained, and new cap triangles inherit the first incident
+cap face's chart and material. Concave bends, closed rings, and mixed corner junctions remain
+explicit refusals. Separate convex and concave chains can finish in one pass.
+The setback must fit before the next existing end-cap boundary vertex. Nearby
+geometry entering the swept triangle enclosing the added arc is conservatively
+refused, even if it lies just beyond the arc itself.
+
+Migration for concave finishing: selections and recipe encoding are unchanged,
+but straight concave targets that previously refused now add material.
+Evaluation schema 23 invalidates cached geometry and older text dumps.
 
 Migration for qualified selection: existing `SharpEdges` and `RegionBoundaries`
 calls keep their selection behavior and encoding. Exhaustive matches must handle

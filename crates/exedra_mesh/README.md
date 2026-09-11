@@ -19,7 +19,7 @@ Exedra Mesh does not own scene graphs, materials, units, UI workflows, or exact
 CAD surfaces. It also does not compact IDs implicitly; call `Mesh::compact`
 when a tombstone-free copy and `Remap` are needed.
 
-## Convex edge finishing
+## Edge finishing
 
 `round_sharp_edges` selects authored sharp edges. `round_edges` accepts an
 explicit transient edge set and returns `RoundResult`: work counters and the
@@ -54,8 +54,25 @@ and gently turning chains are supported. Adjacent edges sharing a planar
 flank and equal dihedral angles meet at an exact miter, preserving the setback
 or radius on both edges. Set `max_tangent_turn` to `FRAC_PI_2` for square rims;
 the default remains 0.7 radians. Fillet miters keep a crease between cylinders,
-and automatic band counts account for their elliptical seam curves. Concave
-edges and unsupported junctions remain typed failures.
+and automatic band counts account for their elliptical seam curves.
+
+Straight concave chains between planar flanks and perpendicular planar end caps
+also support fillets and chamfers.
+These fill an internal corner with material; fillet normals point toward the
+cylinder center in the void. Collinear chain subdivisions and triangulated end
+caps are supported. The existing cap faces retain their ownership and UVs; added
+cap triangles extend the first incident cap face's chart and material. Concave
+turns, closed rings, and junctions with other selected chains are refused.
+Separate convex and concave chains can finish together in one atomic pass.
+
+Concave clearance uses the swept triangle between the original corner and its
+two tangencies. It conservatively refuses obstructions even just beyond the
+fillet arc. End tangencies must fit before the next existing cap-boundary vertex;
+finishing does not dissolve collinear Boolean subdivisions to gain clearance.
+
+Migration for concave finishing: call signatures and policy encoding are
+unchanged. Previously refused straight concave selections now add material;
+`ConcaveEdge` identifies the remaining unsupported turns and junctions.
 
 Migration: existing `round_sharp_edges` calls retain their return type. Use
 `round_edges` when selection or provenance is needed, and choose
