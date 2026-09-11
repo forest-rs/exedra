@@ -11,7 +11,7 @@ use joiner::{
 
 use crate::length::default_millimeters;
 use crate::participants::{ParticipantPair, resolve_pair};
-use crate::tool::{nominal_rect, profile_tool_world, receiving_profile, world_to_local};
+use crate::tool::{nominal_rect, profile_tool_world, receiving_profile};
 use crate::{FitClass, Length};
 
 /// Stable identity recorded on housed-heel rule applications.
@@ -234,11 +234,11 @@ impl Rule for HeelRule {
             &alloc::format!("contact-{relation}"),
             Anchor::new(
                 &pair.carried.key,
-                world_to_local(&pair.carried.extent, contact_point),
+                pair.carried.extent.local_point(contact_point),
             ),
             Anchor::new(
                 &pair.carrier.key,
-                world_to_local(&pair.carrier.extent, contact_point),
+                pair.carrier.extent.local_point(contact_point),
             ),
             interface.normal,
             [interface.across, interface.along_seat],
@@ -276,7 +276,7 @@ fn derive_interface(
     pair: &ParticipantPair<'_>,
     housing_depth: f64,
 ) -> Result<HeelInterface, &'static str> {
-    let local_node = world_to_local(&pair.carried.extent, pair.node.point);
+    let local_node = pair.carried.extent.local_point(pair.node.point);
     let expected = [
         0.0,
         pair.carried.extent.size[1] * 0.5,
@@ -310,7 +310,7 @@ fn derive_interface(
     if dot(across, along_seat).abs() > FRAME_EPSILON {
         return Err("rafter width and seat-run axes are not orthogonal");
     }
-    let carrier_node = world_to_local(&pair.carrier.extent, pair.node.point);
+    let carrier_node = pair.carrier.extent.local_point(pair.node.point);
     let top_distance = if dot(normal, pair.carrier.extent.axes[2]) >= 0.0 {
         pair.carrier.extent.size[2] - carrier_node[2]
     } else {

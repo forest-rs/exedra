@@ -7,7 +7,6 @@ use exedra_constructive::builders;
 use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
 use exedra_constructive::offset::CornerPolicy;
 use exedra_constructive::profile::Profile2;
-use exedra_math::{dot, sub};
 use joiner::{OrientedBox, RuleError, ToolSolid, Vec3};
 
 use crate::FitClass;
@@ -57,44 +56,6 @@ pub(crate) fn profile_tool_world(
     Ok(ToolSolid::new(
         key,
         recipe,
-        world_frame_in_target(origin, axes, target),
+        target.local_placement(Placement3::from_axes(axes[0], axes[1], axes[2], origin)),
     ))
-}
-
-/// Converts a world point into an orthonormal extent's local coordinates.
-pub(crate) fn world_to_local(extent: &OrientedBox, point: Vec3) -> Vec3 {
-    let delta = sub(point, extent.origin);
-    [
-        dot(delta, extent.axes[0]),
-        dot(delta, extent.axes[1]),
-        dot(delta, extent.axes[2]),
-    ]
-}
-
-fn direction_to_local(extent: &OrientedBox, direction: Vec3) -> Vec3 {
-    [
-        dot(direction, extent.axes[0]),
-        dot(direction, extent.axes[1]),
-        dot(direction, extent.axes[2]),
-    ]
-}
-
-/// An orthonormal frame in world coordinates, expressed relative to a target
-/// extent. The transpose is the inverse for both right- and left-handed
-/// orthonormal frames, so reflected extents need no special case here.
-fn world_frame_in_target(origin: Vec3, axes: [Vec3; 3], target: &OrientedBox) -> Placement3 {
-    let mut placement = Placement3::from_axes(
-        direction_to_local(target, axes[0]),
-        direction_to_local(target, axes[1]),
-        direction_to_local(target, axes[2]),
-        world_to_local(target, origin),
-    );
-    // Fingerprints distinguish -0.0 even though placements do not. Normalize
-    // signed zero at this sole world-to-local lowering boundary.
-    for value in placement.rows.iter_mut().flatten() {
-        if *value == 0.0 {
-            *value = 0.0;
-        }
-    }
-    placement
 }

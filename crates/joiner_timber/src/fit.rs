@@ -29,7 +29,11 @@ impl FitClass {
         per_side: default_micrometers(500),
     };
 
-    pub(crate) fn allowance_meters(self) -> f64 {
+    /// The per-side profile offset in meters at the recipe-building boundary.
+    ///
+    /// Axial cut depth and bearing planes must not be enlarged by this value.
+    #[must_use]
+    pub fn allowance_meters(self) -> f64 {
         match self {
             Self::LineToLine => 0.0,
             Self::Clearance { per_side } => per_side.as_meters(),
