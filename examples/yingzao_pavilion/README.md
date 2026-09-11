@@ -44,12 +44,13 @@ blender --background --python examples/yingzao_pavilion/tools/render.py -- targe
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion bracket-study
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion seat-study
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion rafter-study
+blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion pavilion eaves
 blender --background --python examples/yingzao_pavilion/tools/render.py -- target/yingzao-pavilion concave-study
 ```
 
 The script imports the GLB and adds lighting and cameras. It preserves exported
 geometry, normals, and materials. The default run writes `eye-level.png`,
-`brackets.png`, `roof.png`, and `pavilion.blend`; other cases prefix their image
+`brackets.png`, `roof.png`, `eaves.png`, and `pavilion.blend`; other cases prefix their image
 names. On macOS the executable can be
 `/Applications/Blender.app/Contents/MacOS/Blender`.
 
@@ -83,7 +84,7 @@ sampling; metrics report that checked area. This does not prove contact over
 the excluded boundary strip or discover collisions elsewhere in the frame.
 
 `roof_section.rs` turns the setout datums into one piecewise roof section.
-Rafters and continuous decking share its slopes. Layer thickness
+Rafters, continuous decking, and tile courses share its slopes. Layer thickness
 is measured normal to the roof; adjacent offsets meet at mitres and the two
 roof halves meet on the ridge plane.
 
@@ -96,6 +97,16 @@ continuously along the timber. These scene-specific fits use ordinary
 API. Contact coverage checks use the exported shared parts. Regression samples
 also check pin clearance and interference between neighboring timbers; finite
 sampling is not a general collision certificate or a pin-bearing calculation.
+
+`tiles.rs` lays courses continuously from eave to ridge, following chords across
+pitch changes. The 340 mm clay shells taper so an uphill cover nests outside
+the previous cover, while a pan nests inside the previous drainage channel.
+Their overlaps have real thickness and clearance; coincident extrusions no
+longer produce bands at each purlin. Round lotus end faces and pointed drip
+aprons finish the eaves, and closed ridge ends project past the gable rows.
+The shell spacing leaves room for bedding, which is not separately modeled.
+The clay samples check overlap, decking clearance, ridge clearance and outward
+winding at the same tessellation tolerance as the exported scene.
 
 `scene.rs` places shared timber and studies. Curves use a 1 mm
 chord tolerance, authored cylinder sections use 32 sides, and the platform
@@ -116,7 +127,14 @@ The roof follows the four-interval *juzhe* construction described in
 raise the ridge by one third of the half-run, then depress successive working
 lines by R/10, R/20, and R/40. The bracket outline, fits, remaining dimensions,
 and finishes are authored here. The example does not reconstruct a particular
-historical building. Beam/post tenons and longitudinal purlin splices are still future work;
+historical building. The round eave faces (*wadang*) and pointed drip tiles
+(*dishui*) follow the forms described by
+[The Met's roof-tile collection](https://www.metmuseum.org/art/collection/search/49228)
+and its [Astor Court guide](https://www.metmuseum.org/-/media/files/learn/family-map-and-guides/edu3337_asianart_astorcourt_family_guide_061721_v8.pdf?sc_lang=en).
+Lotus tile terminals are represented among the
+[Song–Yuan archaeological finds](https://www.amo.gov.hk/graphics/ePamphlet_sung_wong_toi.pdf);
+this example's eight-petal relief is an authored motif, not a copied artifact.
+Beam/post tenons and longitudinal purlin splices are still future work;
 the isolated concave study does not
 round the fitted mating surfaces. The example supplies no
 structural capacity analysis. Textures, LODs, and collision geometry can follow

@@ -56,6 +56,7 @@ def main():
         ("eye-level", (8.0 * scale, -11.5 * scale, 1.75), (0, 0, 2.35), 40),
         ("brackets", (width / 2 + 2.3, -depth / 2 - 2.8, 2.4), (width / 2, -depth / 2, 3.42), 48),
         ("roof", (7 * scale, -9 * scale, 5 + 3 * scale), (0, 0, 2.4), 43),
+        ("eaves", (width / 2 + 0.6, -depth / 2 - 2.6, 4.7), (width / 2 - 0.6, -depth / 2 - 0.85, 3.98), 62),
     ]
     if case == "bracket-study":
         views = [("fits", (2.5, -4.5, 3.2), (0, 0, 0.55), 48)]

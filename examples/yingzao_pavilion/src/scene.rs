@@ -3,7 +3,6 @@
 
 //! Explicit pavilion construction and shared-part placement.
 
-use crate::roof_section::RoofSection;
 use exedra_assembly::{Assembly, PartId};
 use exedra_constructive::edge_finish::RoundPolicy;
 use exedra_constructive::ir::{Placement3, Recipe};
@@ -11,7 +10,7 @@ use joiner::compose;
 use std::collections::HashMap;
 
 use crate::{
-    Result, brackets, geometry, joinery::FittedConstruction, layout::Layout, rafters, seats,
+    Result, brackets, geometry, joinery::FittedConstruction, layout::Layout, rafters, seats, tiles,
 };
 
 #[cfg(test)]
@@ -29,7 +28,7 @@ pub(crate) fn build_with_roof(
     platform(&mut scene, layout)?;
     frame(&mut scene, layout)?;
     fitted_roof(&mut scene, roof_frame)?;
-    roof(&mut scene, layout)?;
+    tiles::roof(&mut scene, layout)?;
     Ok(scene.assembly)
 }
 
@@ -365,78 +364,6 @@ fn fitted_roof(scene: &mut Scene, seats: &FittedConstruction) -> Result<()> {
             part
         };
         scene.orient(key, part, element.extent.placement())?;
-    }
-    Ok(())
-}
-
-fn roof(scene: &mut Scene, l: &Layout) -> Result<()> {
-    let width = l.width + 1.2;
-    let section = RoofSection::new(l);
-    let decking = scene.part("roof-decking", section.decking(width)?, "timber.dark")?;
-    for side in [-1.0, 1.0] {
-        scene.orient(&format!("decking-{side}"), decking, section.placement(side))?;
-    }
-    let cap = scene.part("cap-tile", geometry::tile(0.065, 0.34, true)?, "tile.0")?;
-    let pan = scene.part("pan-tile", geometry::tile(0.14, 0.34, false)?, "tile.1")?;
-    let ridge = scene.part("ridge-tile", geometry::tile(0.14, 0.40, true)?, "tile.2")?;
-    let tile_columns = (width / 0.22).ceil();
-    let pitch = width / tile_columns;
-    for (segment, pair) in l.roof.windows(2).enumerate() {
-        let [[y0, z0], [y1, z1]] = [pair[0], pair[1]];
-        let run = y0 - y1;
-        let rise = z1 - z0;
-        let length = run.hypot(rise);
-        let c = run / length;
-        let s = rise / length;
-        let courses = (length / 0.26).ceil();
-        for side in [-1.0, 1.0] {
-            // Local +Y runs uphill. +X flips on the back to keep a right-handed frame.
-            let x_axis = [-side, 0.0, 0.0];
-            let y_axis = [0.0, -side * c, s];
-            let z_axis = [0.0, side * s, c];
-            let placement = |x, y, z| Placement3::from_axes(x_axis, y_axis, z_axis, [x, y, z]);
-            let mut col = 0;
-            while f64::from(col) <= tile_columns {
-                let x = -width * 0.5 + f64::from(col) * pitch;
-                let mut course = 0;
-                while f64::from(course) < courses {
-                    let along = f64::from(course) * length / courses;
-                    let key = format!("roof-{side}-{segment}-tiles-{col}-{course}");
-                    scene.orient(
-                        &format!("{key}-cap"),
-                        cap,
-                        placement(x, side * (y0 - along * c), z0 + along * s + 0.18),
-                    )?;
-                    if f64::from(col) < tile_columns {
-                        scene.orient(
-                            &format!("{key}-pan"),
-                            pan,
-                            placement(
-                                x + pitch * 0.5,
-                                side * (y0 - along * c),
-                                z0 + along * s + 0.31,
-                            ),
-                        )?;
-                    }
-                    course += 1;
-                }
-                col += 1;
-            }
-        }
-    }
-    let mut i = 0;
-    while f64::from(i) * 0.36 < width {
-        scene.orient(
-            &format!("roof-ridge-{i}"),
-            ridge,
-            Placement3::from_axes(
-                [0.0, 1.0, 0.0],
-                [-1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [width * 0.5 - f64::from(i) * 0.36, 0.0, l.roof[4][1] + 0.23],
-            ),
-        )?;
-        i += 1;
     }
     Ok(())
 }

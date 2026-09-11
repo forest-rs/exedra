@@ -94,36 +94,6 @@ pub(crate) fn arm(length: f64, width: f64, depth: f64) -> Result<Recipe> {
     )
 }
 
-/// A finite-thickness circular tile section, running along local +Y.
-pub(crate) fn tile(radius: f64, length: f64, cap: bool) -> Result<Recipe> {
-    let angle = if cap { core::f64::consts::PI } else { 1.65 };
-    let sign = if cap { 1.0 } else { -1.0 };
-    let point = |r: f64, side: f64| {
-        (
-            side * r * (angle * 0.5).sin(),
-            sign * r * (angle * 0.5).cos(),
-        )
-    };
-    let bulge = -sign * (angle * 0.25).tan();
-    let outer = Loop2::new(vec![
-        Seg2::arc(point(radius, 1.0), bulge),
-        Seg2::line(point(radius - 0.012, 1.0)),
-        Seg2::arc(point(radius - 0.012, -1.0), -bulge),
-        Seg2::line(point(radius, -1.0)),
-    ])?;
-    let profile = Profile2::simple(if cap { outer.reversed() } else { outer })?;
-    extrude(
-        profile,
-        length,
-        Placement3::from_axes(
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, -1.0, 0.0],
-            [0.0, length, 0.0],
-        ),
-    )
-}
-
 /// An isolated shoulder study: sharp, chamfered, or filleted into the void.
 pub(crate) fn concave_shoulder(finish: Option<RoundPolicy>) -> Result<Recipe> {
     let mut builder = RecipeBuilder::new();

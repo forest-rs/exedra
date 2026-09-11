@@ -11,6 +11,7 @@ mod rafters;
 mod roof_section;
 mod scene;
 mod seats;
+mod tiles;
 
 #[cfg(test)]
 mod tests;
