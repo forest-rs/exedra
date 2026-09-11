@@ -188,7 +188,9 @@ pub use contact_geometry::{
 pub use element::{DEFAULT_SLOT, Element, ElementOrigin, Member, Node, Part, Restraints, Support};
 pub use evidence::{Evidence, EvidenceClass, EvidenceSource};
 pub use geometry::{FRAME_TOLERANCE, OrientedBox, Vec3};
-pub use lower::{LowerError, compose, instance_path, lower, lower_selected, part_key};
+pub use lower::{
+    LowerError, compose, instance_path, lower, lower_selected, lower_shared, part_key,
+};
 pub use relation::{Relation, RelationKind};
 pub use rule::{
     Anchor, Applicability, AppliedRule, ContactMeaning, ContactPatch, Observation, PartEdit,
