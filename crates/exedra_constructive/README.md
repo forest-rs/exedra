@@ -217,6 +217,9 @@ refused, even if it lies just beyond the arc itself.
 Migration for concave finishing: selections and recipe encoding are unchanged,
 but straight concave targets that previously refused now add material.
 Evaluation schema 23 invalidates cached geometry and older text dumps.
+Schema 24 additionally invalidates robust triangulations that contained
+almost-collinear ears; those faces now retry with constrained Delaunay
+diagonals while preserving their boundary vertices.
 
 Migration for qualified selection: existing `SharpEdges` and `RegionBoundaries`
 calls keep their selection behavior and encoding. Exhaustive matches must handle

@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::num::NonZeroU32;
 
+use exedra_triangulate::{PolygonInput, TriParams, triangulate};
+
 use crate::{
     Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Id, Vertex, VertexId, attr,
     attributes::{AttrError, AttrKey, Attributes, Domain, LayerValue},
@@ -614,8 +616,9 @@ pub enum FaceTriangulation {
     Fan,
     /// Plane-projected robust triangulation via `exedra_triangulate`.
     ///
-    /// Handles concave faces; falls back to the fan deterministically when
-    /// the projected polygon is not simple (enumeration never fails).
+    /// Handles concave faces and legalizes almost-collinear ears without
+    /// moving or dropping their vertices. Falls back to the fan deterministically
+    /// when the projected polygon is not simple (enumeration never fails).
     Robust,
 }
 
@@ -1572,9 +1575,11 @@ impl Mesh {
     /// [`FaceTriangulation::Fan`] output is byte-identical to
     /// [`Mesh::triangulate_face_fan`]. [`FaceTriangulation::Robust`]
     /// projects the face loop onto its Newell best-fit plane and runs the
-    /// shared deterministic triangulator; when the projected polygon is not
-    /// simple it falls back to the fan deterministically (enumeration never
-    /// fails — see [`Mesh::face_triangles_counted`] to observe fallbacks).
+    /// shared deterministic triangulator, legalizing its diagonals only if
+    /// ear clipping produces an almost-collinear triangle. When the projected
+    /// polygon is not simple it falls back to the fan deterministically
+    /// (enumeration never fails — see [`Mesh::face_triangles_counted`] to
+    /// observe fallbacks).
     #[must_use]
     pub fn face_triangles(&self, face: FaceId, strategy: FaceTriangulation) -> Vec<[CornerId; 3]> {
         self.face_triangles_counted(face, strategy).0
@@ -1683,13 +1688,23 @@ impl Mesh {
             ((axis + 2) % 3, (axis + 1) % 3)
         };
         let projected: Vec<[f64; 2]> = points.iter().map(|p| [p[u], p[v]]).collect();
-        let input = exedra_triangulate::PolygonInput {
+        let input = PolygonInput {
             outer: &projected,
             holes: &[],
         };
-        let result =
-            exedra_triangulate::triangulate(&input, &exedra_triangulate::TriParams::default())
-                .ok()?;
+        let mut result = triangulate(&input, &TriParams::ear_clip()).ok()?;
+        // Boolean seams can add nearly collinear boundary samples. The
+        // index-first ear clipper may join three of them into a sliver even
+        // though another diagonal covers the same polygon cleanly. Keep the
+        // usual enumeration cheap and unchanged; legalize only those faces.
+        if result.triangles.len() > 1
+            && result.triangles.iter().any(|triangle| {
+                near_collinear_triangle(triangle.map(|index| projected[index as usize]))
+            })
+            && let Ok(legalized) = triangulate(&input, &TriParams::constrained_delaunay())
+        {
+            result = legalized;
+        }
         Some(
             result
                 .triangles
@@ -2581,6 +2596,20 @@ impl Iterator for FaceLoopIter<'_> {
         self.steps += 1;
         Some(current)
     }
+}
+
+/// Scale-independent trigger for legalizing a stored-coordinate boundary ear.
+/// This changes only its diagonals; it is never a triangle deletion tolerance.
+fn near_collinear_triangle([a, b, c]: [[f64; 2]; 3]) -> bool {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let ac = [c[0] - a[0], c[1] - a[1]];
+    let bc = [c[0] - b[0], c[1] - b[1]];
+    let length_squared = |edge: [f64; 2]| edge[0] * edge[0] + edge[1] * edge[1];
+    let longest = length_squared(ab)
+        .max(length_squared(ac))
+        .max(length_squared(bc));
+    let area2 = (ab[0] * ac[1] - ab[1] * ac[0]).abs();
+    area2 <= f64::from(f32::EPSILON) * longest
 }
 
 fn remap_index(index: u32, remap: &[u32], triangle: usize) -> Result<u32, BuildError> {
@@ -4061,6 +4090,36 @@ mod tests {
             area2 += a2;
         }
         assert!((area2 - 6.0).abs() < 1e-5, "area sum {area2} must be 6");
+    }
+
+    #[test]
+    fn robust_triangulation_avoids_almost_collinear_boundary_ears() {
+        // A notch wall from a coarse round-purlin Boolean. The first three
+        // boundary points are distinct stored f32 samples of one cut span;
+        // index-first ear clipping gives them a ~1e-12 m² double-area ear.
+        let points = [
+            [0.051_267_29, 0.011_328_021],
+            [0.055_535_574, 0.008_584_96],
+            [0.09, 0.015],
+            [0.045_553_58, 0.015],
+        ];
+        for scale in [1.0_f32 / 1024.0, 1.0, 1024.0] {
+            let scaled = points.map(|point| point.map(|coordinate| coordinate * scale));
+            let (mesh, face) = single_ngon(&scaled);
+            let (triangles, fallback) =
+                mesh.face_triangles_counted(face, FaceTriangulation::Robust);
+            assert!(!fallback);
+            assert_eq!(triangles.len(), 2);
+            for &triangle in &triangles {
+                assert!(
+                    corner_tri_area2(&mesh, triangle) > 1e-6 * scale * scale,
+                    "the alternate diagonal preserves the boundary without a thin ear",
+                );
+            }
+            for corner in mesh.face_loop(face) {
+                assert!(triangles.iter().any(|triangle| triangle.contains(&corner)));
+            }
+        }
     }
 
     #[test]
