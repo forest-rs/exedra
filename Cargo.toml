@@ -38,6 +38,7 @@ members = [
     "examples/constructive_gallery",
     "examples/constructive_probe",
     "examples/material_gallery",
+    "examples/yingzao_pavilion",
 ]
 
 [workspace.package]

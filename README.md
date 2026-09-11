@@ -90,6 +90,8 @@ Workspace-only construction, test, benchmark, and app crates:
   viewer for the wasm scenario snapshots.
 - **[examples/](examples/)** - Standalone constructive, basilica, and structural
   integration scenarios kept outside the core crates.
+  **[yingzao_pavilion](examples/yingzao_pavilion/)** builds a timber pavilion
+  with exact setting out, fitted brackets, shared parts, and material variants.
 
 ## Architecture
 
