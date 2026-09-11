@@ -515,29 +515,25 @@ mod tests {
     fn chained_face_partition_keeps_boundary_continuation_unambiguous() {
         // A deep chained sweep found this partition order adding a sub-face
         // while two distinct OUTSIDE continuations met at vertex 16. The
-        // partition now rebuilds safely, but its stored surface still has a
-        // degenerate face. Withhold that surface with a numerical diagnostic;
-        // neither an invariant panic nor invalid successful output is allowed.
-        let case = build_case(ScenarioClass::Chained, 7_497_488_052_617_644_153);
-        let mut diagnostics = BooleanDiagnostics::default();
-        let mut checks = MeshChecks::default();
-        let result = eval_mesh_tree(
-            &case.tree,
-            &case.operands,
-            &mut BooleanScratch::default(),
-            &mut diagnostics,
-            &mut checks,
-        );
+        // partition now rebuilds safely, and legalizing thin boundary ears
+        // also removes its subsequent numerical refusal. Every intermediate
+        // must remain valid, and the final solid must agree with both
+        // independent membership witnesses outside their exclusion bands.
+        let outcome = run_case(ScenarioClass::Chained, 7_497_488_052_617_644_153, 2_000);
 
-        assert_eq!(result.unwrap_err(), SkipReason::OtherSuspect);
-        assert!(diagnostics.entries().iter().any(|entry| {
-            entry.kind == BooleanFailureKind::NumericalInstability
-                && entry.detail
-                    == "assembled Boolean face has no nondegenerate robust triangulation"
-        }));
-        assert_eq!(checks.validation_errors, 0);
-        assert_eq!(checks.bookkeeping_errors, 0);
-        assert_eq!(checks.seam_identity_conflicts, 0);
+        assert_eq!(outcome.skip, None);
+        assert!(!outcome.empty_result);
+        assert!(outcome.mesh_points > 0);
+        assert!(outcome.field_points > 0);
+        assert_eq!(outcome.exhausted_points, 0);
+        assert_eq!(outcome.mesh_validation_errors, 0);
+        assert_eq!(outcome.mesh_bookkeeping_errors, 0);
+        assert_eq!(outcome.seam_identity_conflicts, 0);
+        assert!(
+            outcome.findings.is_empty(),
+            "{:?}",
+            outcome.findings.first()
+        );
     }
 
     #[test]
