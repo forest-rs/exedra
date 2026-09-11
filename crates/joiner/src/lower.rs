@@ -28,11 +28,12 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use exedra_assembly::{Assembly, AssemblyError, InstancePath};
+use exedra_assembly::{Assembly, AssemblyError, InstancePath, PartId, PartSource};
 use exedra_constructive::ir::{
     CsgOp, ImportId, NodeId, NodeKind, Placement3, ProfileId, Recipe, RecipeBuilder, RecipeError,
     SlotId, SourceId,
 };
+use hashbrown::HashMap;
 
 use crate::construction::Construction;
 use crate::element::{Element, ElementOrigin};
@@ -142,7 +143,40 @@ pub fn lower_selected(
     construction: &Construction,
     include: impl Fn(&Element) -> bool,
 ) -> Result<Assembly, LowerError> {
+    lower_with_families(construction, include, |element| part_key(&element.key))
+}
+
+/// Lowers present geometry, sharing identical composed recipes within named families.
+///
+/// `family` supplies an assembly part key for each element. Every element's
+/// edits are composed before reuse is considered. Sharing requires equal recipe
+/// fingerprints (including sources), slot tables and default slots. No geometric
+/// tolerance is used. Material differences become instance bindings.
+///
+/// The first recipe in a family uses its supplied key; a different recipe or
+/// default slot uses `"<family>-<element>"`. Each root instance retains its element
+/// key, placement and metadata. Resolve [`instance_path`] and read the instance's
+/// part instead of assuming [`part_key`] identifies shared geometry. Registration
+/// order determines which element supplies a family's default material and key.
+///
+/// # Errors
+///
+/// Returns [`LowerError`] for invalid recipes, slots or keys, including collisions
+/// between generated variant keys and caller-supplied family keys.
+pub fn lower_shared(
+    construction: &Construction,
+    family: impl Fn(&Element) -> String,
+) -> Result<Assembly, LowerError> {
+    lower_with_families(construction, |_| true, family)
+}
+
+fn lower_with_families(
+    construction: &Construction,
+    include: impl Fn(&Element) -> bool,
+    family: impl Fn(&Element) -> String,
+) -> Result<Assembly, LowerError> {
     let mut assembly = Assembly::new();
+    let mut families = HashMap::<String, Vec<PartId>>::new();
     for element in construction.elements() {
         if !element.present || !include(element) {
             continue;
@@ -151,11 +185,39 @@ pub fn lower_selected(
             continue;
         };
         let recipe = compose(construction, element)?;
-        let key = part_key(&element.key);
-        let id = assembly.add_recipe_part(&key, recipe)?;
-        assembly.set_default_slot(id, &part.slot)?;
-        assembly.set_part_material(id, &part.slot, &element.material)?;
+        let key = family(element);
+        let variants = families.entry(key.clone()).or_default();
+        let existing = variants.iter().copied().find(|&id| {
+            let definition = assembly.part(id).expect("registered family part");
+            matches!(definition.source(), PartSource::Recipe(existing)
+                if existing.recipe_fingerprint() == recipe.recipe_fingerprint())
+                && definition.slots() == recipe.slots()
+                && definition
+                    .slot_index(&part.slot)
+                    .is_some_and(|slot| Some(slot) == definition.default_slot())
+        });
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            let key = if variants.is_empty() {
+                key
+            } else {
+                format!("{key}-{}", element.key)
+            };
+            let id = assembly.add_recipe_part(&key, recipe)?;
+            assembly.set_default_slot(id, &part.slot)?;
+            assembly.set_part_material(id, &part.slot, &element.material)?;
+            variants.push(id);
+            id
+        };
         let instance = assembly.add_instance(None, &element.key, id, element.extent.placement())?;
+        let definition = assembly.part(id).expect("registered family part");
+        let slot = definition
+            .slot_index(&part.slot)
+            .expect("registered default slot");
+        if definition.default_material(slot) != Some(&element.material) {
+            assembly.bind_material(instance, &part.slot, &element.material)?;
+        }
         assembly.set_metadata(instance, "structural_role", &element.role)?;
         assembly.set_metadata(instance, "evidence_class", element.evidence.class.label())?;
         assembly.set_metadata(instance, "evidence_source", &element.evidence.source)?;

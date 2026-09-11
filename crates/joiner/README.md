@@ -86,6 +86,15 @@ check, building-code result, or engineering certification.
 
 ## API additions
 
+`lower` and `lower_selected` retain one part per element. Use
+`lower_shared(&construction, |element| family_key(element))` to share exact
+composed recipes within caller-named families. Different cuts, source references,
+slot tables or default slots get separate parts; differing materials use instance
+bindings. Element instance paths and provenance metadata are preserved. Shared
+part keys identify the first family recipe or an element-specific variant, so
+consumers resolve `instance_path(element)` and read its part rather than looking
+up `part_key(element)`.
+
 Existing contact callers keep their analytic extent checks. Add a footprint
 and opt into `measure_contact_geometry` when the generated bearing surface
 matters; a clean `validate` report alone remains an analytic claim.
