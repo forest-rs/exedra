@@ -12,8 +12,10 @@
 //! Stability policy (ADR-0003):
 //! - The header is `{"format": "exedra-recipe", "version": 1}`; readers
 //!   reject other formats/versions with a typed error.
-//! - Evolution within version 1 is additive-only: new optional fields and
-//!   new node kinds may appear, existing fields never change meaning.
+//! - Evolution within version 1 is additive-only: new optional fields, node
+//!   kinds, and explicitly distinguishable values may appear; existing values
+//!   never change meaning. Operand-qualified boundary objects extend numeric
+//!   boundary pairs and are rejected by older numeric-only readers.
 //!   Unknown *fields* are ignored (additive tolerance); unknown node
 //!   *kinds* are hard errors — a recipe is executable content, and
 //!   skipping an unknown operation would silently change geometry.
@@ -30,7 +32,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edge_finish::{EdgeSelection, RoundKind, RoundPolicy};
+use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, NodeId, NodeKind, Path3, Placement3, Plane3,
     PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId, SourceId,
@@ -179,6 +181,26 @@ pub type PlacementDto = [[f64; 4]; 3];
 /// Plane as `[nx, ny, nz, d]` (`dot(n, p) = d`).
 pub type PlaneDto = [f64; 4];
 
+/// An operand-qualified face region in an edge-boundary selection.
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct OperandRegionDto {
+    /// Index in the producing CSG node's declared operands.
+    pub operand: u16,
+    /// The operand face's region number.
+    pub region: u32,
+}
+
+/// Explicit edge boundaries. Numeric pairs retain the original JSON format;
+/// qualified endpoints are objects that older numeric-only readers reject.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EdgeBoundariesDto {
+    /// Unqualified face-region pairs.
+    Regions(Vec<[u32; 2]>),
+    /// Operand-qualified face-region pairs.
+    Operands(Vec<[OperandRegionDto; 2]>),
+}
+
 /// Node kind payloads. Unknown kinds are deserialization errors by design.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -187,8 +209,8 @@ pub enum NodeKindDto {
     EdgeFinish {
         /// Child node index.
         child: u32,
-        /// Region pairs; absent means all sharp edges.
-        boundaries: Option<Vec<[u32; 2]>>,
+        /// Region pairs, optionally qualified by operand; absent means all sharp edges.
+        boundaries: Option<EdgeBoundariesDto>,
         /// "fillet" or "chamfer".
         kind: String,
         /// Fillet radius or chamfer setback.
@@ -649,7 +671,20 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
                 child: child.0,
                 boundaries: match selection {
                     EdgeSelection::SharpEdges => None,
-                    EdgeSelection::RegionBoundaries(pairs) => Some(pairs.clone()),
+                    EdgeSelection::RegionBoundaries(pairs) => {
+                        Some(EdgeBoundariesDto::Regions(pairs.clone()))
+                    }
+                    EdgeSelection::OperandBoundaries(pairs) => Some(EdgeBoundariesDto::Operands(
+                        pairs
+                            .iter()
+                            .map(|pair| {
+                                pair.map(|source| OperandRegionDto {
+                                    operand: source.operand,
+                                    region: source.region,
+                                })
+                            })
+                            .collect(),
+                    )),
                 },
                 kind: String::from(kind),
                 offset,
@@ -861,9 +896,23 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             max_tangent_turn,
         } => NodeKind::EdgeFinish {
             child: NodeId(*child),
-            selection: boundaries
-                .clone()
-                .map_or(EdgeSelection::SharpEdges, EdgeSelection::RegionBoundaries),
+            selection: match boundaries {
+                None => EdgeSelection::SharpEdges,
+                Some(EdgeBoundariesDto::Regions(pairs)) => {
+                    EdgeSelection::RegionBoundaries(pairs.clone())
+                }
+                Some(EdgeBoundariesDto::Operands(pairs)) => EdgeSelection::OperandBoundaries(
+                    pairs
+                        .iter()
+                        .map(|pair| {
+                            pair.map(|source| OperandRegion {
+                                operand: source.operand,
+                                region: source.region,
+                            })
+                        })
+                        .collect(),
+                ),
+            },
             policy: RoundPolicy {
                 kind: match kind.as_str() {
                     "fillet" => RoundKind::Fillet { radius: *offset },
@@ -915,6 +964,29 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
 mod tests {
     use super::*;
     use alloc::format;
+
+    #[test]
+    fn edge_boundary_wire_forms_are_distinct_and_preserve_legacy_values() {
+        let legacy = "[[1,3],[2,4]]";
+        let parsed: EdgeBoundariesDto = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(parsed, EdgeBoundariesDto::Regions(_)));
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), legacy);
+
+        let qualified = r#"[[{"operand":0,"region":5},{"operand":1,"region":5}]]"#;
+        let parsed: EdgeBoundariesDto = serde_json::from_str(qualified).unwrap();
+        assert!(matches!(parsed, EdgeBoundariesDto::Operands(_)));
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), qualified);
+        // This is the previous reader's boundaries-field type. The new form
+        // must fail to parse rather than becoming an absent/all-sharp selection.
+        assert!(serde_json::from_str::<Option<Vec<[u32; 2]>>>(qualified).is_err());
+        for malformed in [
+            r#"[[{"region":5},{"operand":1,"region":5}]]"#,
+            r#"[[{"operand":65536,"region":5},{"operand":1,"region":5}]]"#,
+            r#"[[5,{"operand":1,"region":5}]]"#,
+        ] {
+            assert!(serde_json::from_str::<EdgeBoundariesDto>(malformed).is_err());
+        }
+    }
 
     #[test]
     fn json_round_trip_preserves_fingerprints() {

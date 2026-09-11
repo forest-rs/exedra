@@ -45,8 +45,10 @@ cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes
 These synthetic dimensions use metres in the recipe. The example preserves
 fillet normal overrides through assembly compilation and supplies its own
 preview material. These inputs have no UVs and use no textures. The recess
-example gives the cutter distinct face regions, then selects its boundary with
-the door front through `RegionBoundaries`. Square turns explicitly opt into
+example uses ordinary box primitives for both panel and cutter. It selects the
+panel-front/cutter-wall boundaries through `OperandBoundaries`, qualifying each
+region by its CSG operand instead of renumbering imported geometry. Square turns
+explicitly opt into
 `max_tangent_turn = FRAC_PI_2`; adjoining fillets retain a miter crease.
 
 Render the exported recess geometry, materials and normals in Blender:

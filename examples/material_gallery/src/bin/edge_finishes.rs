@@ -8,13 +8,11 @@ use std::path::PathBuf;
 
 use exedra_assembly::{Assembly, CompilePolicy, NormalsSource, PartCompiler, flatten};
 use exedra_constructive::builders;
-use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
+use exedra_constructive::edge_finish::{EdgeSelection, OperandRegion, RoundPolicy};
 use exedra_constructive::ir::{
     CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
-use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
-use exedra_mesh::{attr, op::set_face_region};
 use serde_json::json;
 
 fn rail(profile_rounding: bool) -> Result<Recipe, Box<dyn Error>> {
@@ -82,39 +80,10 @@ fn recessed_door(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> 
         },
         placement: Placement3::IDENTITY,
     })?;
-    // Give the cutter distinct geometric regions before the Boolean. Its
-    // four rim walls can then be selected without colliding with panel regions.
-    let mut cutter = tessellate_primitive(
-        PrimitiveSpec::Box {
+    let cutter = b.with_material(surface).add(NodeKind::Primitive {
+        spec: PrimitiveSpec::Box {
             size: [0.33, 0.02, 0.58],
         },
-        &Placement3::IDENTITY,
-        &EvalPolicy::default(),
-    )?
-    .mesh;
-    let regions: Vec<_> = cutter
-        .faces()
-        .map(|face| {
-            (
-                face,
-                *cutter
-                    .attrs()
-                    .dense(attr::FACE_REGION)
-                    .unwrap()
-                    .get(face.as_id())
-                    .unwrap()
-                    + 100,
-            )
-        })
-        .collect();
-    let mut edit = cutter.edit();
-    for (face, region) in regions {
-        set_face_region(&mut edit, face, region)?;
-    }
-    let _: () = edit.finish();
-    let import = b.add_import(cutter)?;
-    let cutter = b.with_material(surface).add(NodeKind::MeshImport {
-        import,
         placement: Placement3::translate(0.06, -0.008, 0.06),
     })?;
     let child = b.add(NodeKind::Csg {
@@ -126,14 +95,21 @@ fn recessed_door(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> 
         policy.chord_tolerance = 0.00002;
         b.add(NodeKind::EdgeFinish {
             child,
-            // Box region 4 is the -Y front; cutter regions 101/102 and
-            // 105/106 are the four walls meeting that front.
-            selection: EdgeSelection::RegionBoundaries(vec![
-                [4, 101],
-                [4, 102],
-                [4, 105],
-                [4, 106],
-            ]),
+            // Panel operand 0, region 4 is the -Y front. Cutter operand 1
+            // uses its ordinary box regions for the four walls at that front.
+            selection: EdgeSelection::OperandBoundaries(
+                [1, 2, 5, 6]
+                    .map(|region| {
+                        [
+                            OperandRegion {
+                                operand: 0,
+                                region: 4,
+                            },
+                            OperandRegion { operand: 1, region },
+                        ]
+                    })
+                    .to_vec(),
+            ),
             policy,
         })?
     } else {
