@@ -1,0 +1,25 @@
+[package]
+name = "yingzao_fashi_pavilion"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A parameterized timber pavilion built with Exedra"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra_assembly = { features = ["std"], workspace = true }
+exedra_constructive = { features = ["std"], workspace = true }
+exedra_gltf.workspace = true
+exedra_math.workspace = true
+exedra_mesh = { features = ["std"], workspace = true }
+joiner = { features = ["std"], workspace = true }
+joiner_timber = { features = ["std"], workspace = true }
+serde_json.workspace = true
+setout = { features = ["std"], workspace = true }
+setout_generate = { features = ["std"], workspace = true }
+setout_joiner = { features = ["std"], workspace = true }
