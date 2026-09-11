@@ -71,6 +71,42 @@ impl OrientedBox {
         )
     }
 
+    /// Expresses a world point in this box's local frame.
+    ///
+    /// This is the inverse of [`Self::anchor`] for a well-formed extent,
+    /// including reflected frames. It does not clamp to the box's bounds.
+    #[must_use]
+    pub fn local_point(&self, world: Vec3) -> Vec3 {
+        self.local_direction(sub(world, self.origin))
+    }
+
+    /// Expresses a world direction in this box's orthonormal local frame.
+    ///
+    /// Translation has no effect. Requires a well-formed extent, just like
+    /// [`Self::local_point`].
+    #[must_use]
+    pub fn local_direction(&self, world: Vec3) -> Vec3 {
+        self.axes.map(|axis| dot(world, axis))
+    }
+
+    /// Expresses a world placement in this box's orthonormal local frame.
+    ///
+    /// Useful for constructive tools authored in world coordinates but stored
+    /// relative to their target part. Signed zeros are normalized so equivalent
+    /// placements have identical recipe fingerprints.
+    #[must_use]
+    pub fn local_placement(&self, world: Placement3) -> Placement3 {
+        let axes = [0, 1, 2].map(|column| self.local_direction(world.rows.map(|row| row[column])));
+        let origin = self.local_point(world.rows.map(|row| row[3]));
+        let mut local = Placement3::from_axes(axes[0], axes[1], axes[2], origin);
+        for value in local.rows.iter_mut().flatten() {
+            if *value == 0.0 {
+                *value = 0.0;
+            }
+        }
+        local
+    }
+
     /// The world-space centre of the box.
     #[must_use]
     pub fn center(&self) -> Vec3 {
@@ -207,5 +243,36 @@ mod tests {
     fn overlap_is_never_negative() {
         assert_eq!(interval_overlap((0.0, 1.0), (2.0, 3.0)), 0.0);
         assert_eq!(interval_overlap((0.0, 2.0), (1.0, 3.0)), 1.0);
+    }
+
+    #[test]
+    fn inverse_frames_preserve_reflections_and_normalize_placement_zeros() {
+        let extent = OrientedBox {
+            origin: [4.0, -2.0, 3.0],
+            axes: [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            size: [2.0, 0.3, 0.4],
+        };
+        let local = [1.5, 0.25, 0.125];
+        assert_eq!(extent.local_point(extent.anchor(local)), local);
+        let identity = extent.local_placement(extent.placement());
+        assert_eq!(identity, Placement3::IDENTITY);
+        assert!(
+            identity
+                .rows
+                .into_iter()
+                .flatten()
+                .filter(|v| *v == 0.0)
+                .all(|v| !v.is_sign_negative())
+        );
+        let tool = Placement3::from_axes(
+            extent.axes[2],
+            extent.axes[0],
+            extent.axes[1],
+            extent.anchor(local),
+        );
+        assert_eq!(
+            extent.local_placement(tool),
+            Placement3::from_axes([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], local,)
+        );
     }
 }

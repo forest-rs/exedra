@@ -178,7 +178,7 @@ pub mod validate;
 #[cfg(test)]
 mod seeds;
 
-pub use construction::{Construction, ConstructionError, ElementId, channel};
+pub use construction::{ApplyRuleError, Construction, ConstructionError, ElementId, channel};
 pub use element::{DEFAULT_SLOT, Element, ElementOrigin, Member, Node, Part, Restraints, Support};
 pub use evidence::{Evidence, EvidenceClass, EvidenceSource};
 pub use geometry::{FRAME_TOLERANCE, OrientedBox, Vec3};
