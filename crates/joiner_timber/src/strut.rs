@@ -12,7 +12,7 @@ use joiner::{
 
 use crate::length::default_millimeters;
 use crate::participants::{EndpointPair, MemberEnd, resolve_endpoint_pair};
-use crate::tool::{nominal_rect, profile_tool_world, receiving_profile, world_to_local};
+use crate::tool::{nominal_rect, profile_tool_world, receiving_profile};
 use crate::{FitClass, Length};
 
 /// Stable identity for a housed strut-to-king-post application.
@@ -278,11 +278,11 @@ fn instantiate(
         &alloc::format!("contact-{relation}"),
         Anchor::new(
             &bearing_source.key,
-            world_to_local(&bearing_source.extent, pair.node.point),
+            bearing_source.extent.local_point(pair.node.point),
         ),
         Anchor::new(
             &bearing_support.key,
-            world_to_local(&bearing_support.extent, pair.node.point),
+            bearing_support.extent.local_point(pair.node.point),
         ),
         bearing_normal,
         [across, depth],
@@ -310,7 +310,7 @@ fn instantiate(
 }
 
 fn check_endpoint_section(pair: &EndpointPair<'_>) -> Result<(), &'static str> {
-    let local = world_to_local(&pair.carried.extent, pair.node.point);
+    let local = pair.carried.extent.local_point(pair.node.point);
     let expected = [
         match pair.carried_end {
             MemberEnd::Start => 0.0,
@@ -386,7 +386,7 @@ fn distance_to_exit(extent: &joiner::OrientedBox, point: Vec3, direction: Vec3) 
     if !extent.contains_point(point, FRAME_EPSILON) {
         return None;
     }
-    let local = world_to_local(extent, point);
+    let local = extent.local_point(point);
     let local_direction = extent.axes.map(|axis| dot(direction, axis));
     let mut distance = f64::INFINITY;
     for axis in 0..3 {

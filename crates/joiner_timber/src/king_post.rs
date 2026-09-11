@@ -12,7 +12,7 @@ use joiner::{
 
 use crate::length::default_millimeters;
 use crate::participants::{ParticipantPair, resolve_pair};
-use crate::tool::{nominal_rect, profile_tool_world, receiving_profile, world_to_local};
+use crate::tool::{nominal_rect, profile_tool_world, receiving_profile};
 use crate::{FitClass, Length};
 
 /// Stable identity recorded on keyed king-post-to-tie applications.
@@ -287,9 +287,9 @@ impl Rule for KingPostTieRule {
             &alloc::format!("contact-{relation}-tie-on-key"),
             Anchor::new(
                 &pair.carrier.key,
-                world_to_local(&pair.carrier.extent, tie_on_key_point),
+                pair.carrier.extent.local_point(tie_on_key_point),
             ),
-            Anchor::new(&key_name, world_to_local(&key_extent, tie_on_key_point)),
+            Anchor::new(&key_name, key_extent.local_point(tie_on_key_point)),
             insertion,
             [across, depth],
             ContactMeaning::Bearing,
@@ -300,10 +300,10 @@ impl Rule for KingPostTieRule {
         let key_on_tenon_point = key_bottom;
         let key_bears_on_tenon = ContactPatch::new(
             &alloc::format!("contact-{relation}-key-on-tenon"),
-            Anchor::new(&key_name, world_to_local(&key_extent, key_on_tenon_point)),
+            Anchor::new(&key_name, key_extent.local_point(key_on_tenon_point)),
             Anchor::new(
                 &pair.carried.key,
-                world_to_local(&pair.carried.extent, key_on_tenon_point),
+                pair.carried.extent.local_point(key_on_tenon_point),
             ),
             insertion,
             [across, depth],
@@ -347,7 +347,7 @@ struct KingPostTieInterface {
 }
 
 fn check_shoulder_section(pair: &ParticipantPair<'_>) -> Result<(), &'static str> {
-    let local = world_to_local(&pair.carried.extent, pair.node.point);
+    let local = pair.carried.extent.local_point(pair.node.point);
     let expected_section = [
         pair.carried.extent.size[1] * 0.5,
         pair.carried.extent.size[2] * 0.5,
@@ -396,13 +396,13 @@ fn validate_params(
 
     let insertion = pair.carried.extent.axes[0];
     let shoulder = pair.node.point;
-    let carried_shoulder = world_to_local(&pair.carried.extent, shoulder);
+    let carried_shoulder = pair.carried.extent.local_point(shoulder);
     if (carried_shoulder[0] - params.tenon_length).abs() > FRAME_EPSILON {
         return Err(RuleError::InvalidParameter {
             what: "post start does not match tenon length below shoulder",
         });
     }
-    let carrier_shoulder = world_to_local(&pair.carrier.extent, shoulder);
+    let carrier_shoulder = pair.carrier.extent.local_point(shoulder);
     let outward = dot(insertion, pair.carrier.extent.axes[2]);
     let carrier_face = if outward >= 0.0 {
         pair.carrier.extent.size[2]
@@ -592,14 +592,11 @@ mod tests {
 
         let post = construction.element("post").unwrap();
         let key = &output.generated[0];
-        let key_bottom = world_to_local(&post.extent, key.extent.origin)[0];
-        let key_top = world_to_local(
-            &post.extent,
-            add(
-                key.extent.origin,
-                scale(key.extent.axes[2], key.extent.size[2]),
-            ),
-        )[0];
+        let key_bottom = post.extent.local_point(key.extent.origin)[0];
+        let key_top = post.extent.local_point(add(
+            key.extent.origin,
+            scale(key.extent.axes[2], key.extent.size[2]),
+        ))[0];
         let slot_bottom = slot.placement.rows[0][3];
         let slot_top = slot_bottom + slot.placement.rows[0][1] * key_height;
         assert!((slot_bottom - key_bottom).abs() < 1.0e-12);

@@ -15,7 +15,7 @@ use super::crossing::{
 };
 use crate::length::default_millimeters;
 use crate::participants::{ParticipantPair, resolve_pair};
-use crate::tool::{nominal_rect, profile_tool_world, receiving_profile, world_to_local};
+use crate::tool::{nominal_rect, profile_tool_world, receiving_profile};
 use crate::{FitClass, Length};
 
 /// Stable identity for a purlin trenched into a principal rafter.
@@ -178,8 +178,8 @@ impl Rule for PurlinToPrincipalTrenchRule {
 fn assess_purlin_trench(pair: &ParticipantPair<'_>) -> Result<CrossingFootprint, RuleError> {
     let footprint = crossing_footprint(pair)?;
     validate_complete_crossing(pair, &footprint)?;
-    let purlin_node = world_to_local(&pair.carried.extent, pair.node.point);
-    let principal_node = world_to_local(&pair.carrier.extent, pair.node.point);
+    let purlin_node = pair.carried.extent.local_point(pair.node.point);
+    let principal_node = pair.carrier.extent.local_point(pair.node.point);
     if purlin_node[2].abs() > FRAME_EPSILON {
         return Err(not_applicable(
             pair,
@@ -209,8 +209,8 @@ fn validate_purlin_trench(
     let footprint = assess_purlin_trench(pair)?;
     validate_bearing_size(&footprint, params.minimum_bearing)?;
 
-    let purlin_node = world_to_local(&pair.carried.extent, pair.node.point);
-    let principal_node = world_to_local(&pair.carrier.extent, pair.node.point);
+    let purlin_node = pair.carried.extent.local_point(pair.node.point);
+    let principal_node = pair.carrier.extent.local_point(pair.node.point);
     if purlin_node[2].abs() > FRAME_EPSILON {
         return Err(not_applicable(
             pair,
