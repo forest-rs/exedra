@@ -14,12 +14,15 @@
 //!
 //! # Envelope (v1)
 //!
-//! Supported: open chains ending on a single transversal face or at a
+//! Supported: convex open chains ending on a single transversal face or at a
 //! convex trihedral corner of three rounded chains; closed rings (a drilled
 //! rim); mitered turns sharing a planar flank and equal dihedral angles;
-//! gently bent chains (per-vertex averaged frames elsewhere); per-edge
-//! varying flank faces (faceted walls). Everything outside that envelope is a typed
-//! [`RoundError`] and the mesh is left byte-identical: concave edges,
+//! gently bent convex chains (per-vertex averaged frames elsewhere); per-edge
+//! varying flank faces (faceted walls); straight concave chains between two
+//! planar flanks and perpendicular planar end caps. Concave rounding fills
+//! the internal corner, adding material; its radius is measured on the void side.
+//! Everything outside that envelope is a typed [`RoundError`] and the mesh is
+//! left byte-identical: concave turns or corner junctions,
 //! junction valence other than one, two, or three, non-trihedral corners,
 //! chain turns beyond [`RoundPolicy::max_tangent_turn`], non-planar
 //! affected faces, and rewrites that would invert or degenerate a face.
@@ -28,6 +31,12 @@
 //! both incident edges, including polygonal drill rims. Fillet miters retain
 //! a crease between cylinders; they are not spherical corner blends. Square
 //! rims require opting into a 90-degree [`RoundPolicy::max_tangent_turn`].
+//!
+//! Concave ends retain their original cap faces and add planar triangles out
+//! to the arc. Those triangles inherit the first incident cap face's attributes.
+//! End tangencies must fit before the next original cap-boundary vertex. A
+//! swept triangular clearance envelope conservatively excludes nearby faces,
+//! including obstructions just beyond the actual fillet arc.
 //!
 //! Two quality caveats are deliberate v1 scope: averaged per-vertex frames
 //! outside the planar-flank case can leave flank faces slightly non-planar
@@ -43,6 +52,7 @@
 //! Output is deterministic for a fixed math backend, target, and input —
 //! the same `std`/`libm` backend policy the primitive generators document.
 
+mod concave;
 mod geom;
 #[cfg(test)]
 mod tests;
@@ -95,8 +105,8 @@ pub struct RoundPolicy {
     pub chord_tolerance: f64,
     /// Edges with [`attr::EDGE_SHARPNESS`] at or above this value round.
     pub sharpness_threshold: f32,
-    /// [`attr::FACE_REGION`] assigned to new strip and patch faces, or the
-    /// first source face's region when absent.
+    /// [`attr::FACE_REGION`] assigned to new strip and trihedral patch faces,
+    /// or the first source face's region when absent.
     pub region: Option<u32>,
     /// Maximum absolute deviation for affected-face planarity and end-face
     /// containment checks.
@@ -181,8 +191,8 @@ pub enum RoundError {
         /// The offending face index.
         face: u32,
     },
-    /// A selected edge is concave (material dihedral above a flat angle);
-    /// v1 rounds convex edges only.
+    /// A selected concave edge belongs to a bend, closed ring, or corner
+    /// junction. Only straight concave chains with planar flanks round.
     ConcaveEdge {
         /// Smaller endpoint index.
         a: u32,
@@ -210,7 +220,9 @@ pub enum RoundError {
         /// The offending vertex index.
         vertex: u32,
     },
-    /// An open chain end without exactly one containing end face.
+    /// An open chain end without a supported containing cap. Convex ends
+    /// require one face; concave ends allow a coplanar face fan perpendicular
+    /// to the chain.
     UnsupportedEnd {
         /// The offending vertex index.
         vertex: u32,
@@ -243,7 +255,9 @@ impl fmt::Display for RoundError {
             Self::NonPlanarFace { face } => {
                 write!(f, "face {face} deviates from its fitted plane")
             }
-            Self::ConcaveEdge { a, b } => write!(f, "sharp edge ({a}, {b}) is concave"),
+            Self::ConcaveEdge { a, b } => {
+                write!(f, "concave edge ({a}, {b}) has an unsupported junction")
+            }
             Self::DegenerateEdge { a, b } => {
                 write!(f, "sharp edge ({a}, {b}) has degenerate geometry")
             }
@@ -277,7 +291,7 @@ pub struct RoundStats {
     pub corners: u32,
     /// Strip quads emitted.
     pub strip_faces: u32,
-    /// Corner patch faces emitted.
+    /// Corner and concave end-cap patch faces emitted.
     pub patch_faces: u32,
     /// Pre-existing faces rewritten.
     pub rewritten_faces: u32,
@@ -295,7 +309,9 @@ pub struct RoundStats {
 /// attributes needed for remapping before calling [`round_edges`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RoundFaceSource {
-    /// A trimmed or extended input face.
+    /// A trimmed or extended input face, including planar triangles added
+    /// at a concave chain end. New end triangles use the first incident cap
+    /// face in ascending input-ID order.
     Face(FaceId),
     /// A band along the boundary of these two input faces, in ascending ID order.
     Edge([FaceId; 2]),
@@ -464,7 +480,8 @@ struct DirEdge {
     b: VertexId,
     left: FaceId,
     right: FaceId,
-    /// Sweep angle between the flank normals.
+    /// Signed angle between the flank normals: positive for convex edges,
+    /// negative for concave edges, independent of traversal orientation.
     sweep: f64,
 }
 
@@ -599,6 +616,12 @@ enum Subst {
     /// End-face splice: `(chain index, vertex index)`, oriented at loop
     /// build via the incoming-twin rule.
     Splice(u32, u32),
+    /// Keep a concave cap vertex and split its incoming/outgoing boundary
+    /// edges at their tangencies. Interior cap edges remain unchanged.
+    EndCap {
+        incoming: Option<u32>,
+        outgoing: Option<u32>,
+    },
 }
 
 struct Planner<'a> {
@@ -727,6 +750,7 @@ impl Planner<'_> {
         for edge in selected {
             sweeps.push(self.edge_sweep(edge)?);
         }
+        self.check_concave_chains(selected, &adjacency, &sweeps)?;
 
         // Chains.
         let mut chains = self.trace_chains(selected, &adjacency, &sweeps)?;
@@ -745,11 +769,22 @@ impl Planner<'_> {
                 }
             }
         }
+        let concave_faces: BTreeSet<_> = chains
+            .iter()
+            .filter(|chain| chain.edges[0].sweep < 0.0)
+            .flat_map(|chain| {
+                chain
+                    .verts
+                    .iter()
+                    .flat_map(|vertex| vertex_faces[vertex].iter().copied())
+            })
+            .collect();
 
         // Interior and open-end cross-sections.
         for chain_index in 0..chains.len() {
             self.build_sections(&mut chains, chain_index, &adjacency, &kind_of)?;
         }
+        self.check_concave_clearance(&chains, &vertex_faces)?;
 
         // Trihedral corners (also builds corner-end sections).
         let corners = self.build_corners(&mut chains, &adjacency, selected, &vertex_faces)?;
@@ -773,6 +808,7 @@ impl Planner<'_> {
         }
 
         // Open-end splices.
+        let mut retained_end_vertices = BTreeSet::new();
         for (chain_index, chain) in chains.iter().enumerate() {
             if chain.closed {
                 continue;
@@ -794,6 +830,11 @@ impl Planner<'_> {
                     .collect();
                 others.sort_unstable();
                 others.dedup();
+                if edge.sweep < 0.0 {
+                    self.build_concave_end(chain, position, &others)?;
+                    retained_end_vertices.insert(vertex);
+                    continue;
+                }
                 let [end_face] = others.as_slice() else {
                     return Err(RoundError::UnsupportedEnd {
                         vertex: vertex.index(),
@@ -875,6 +916,7 @@ impl Planner<'_> {
             }
             self.rewrite_face(
                 face,
+                concave_faces.contains(&face),
                 &chains,
                 &chain_vertices,
                 &selected_pairs,
@@ -975,9 +1017,13 @@ impl Planner<'_> {
         }
 
         // Manifold pre-check over the planned complex.
-        self.precheck(&affected_set, &chain_vertices)?;
+        let consumed_vertices: BTreeSet<_> = chain_vertices
+            .difference(&retained_end_vertices)
+            .copied()
+            .collect();
+        self.precheck(&affected_set, &consumed_vertices)?;
 
-        let consumed: Vec<VertexId> = chain_vertices.iter().copied().collect();
+        let consumed: Vec<VertexId> = consumed_vertices.into_iter().collect();
         self.stats.removed_vertices = u32::try_from(consumed.len()).expect("count fits u32");
         self.stats.added_vertices = u32::try_from(self.points.len()).expect("count fits u32");
 
@@ -1114,14 +1160,11 @@ impl Planner<'_> {
         if side.abs() <= 1e-12 {
             return Err(RoundError::DegenerateEdge { a: small, b: large });
         }
-        if side < 0.0 {
-            return Err(RoundError::ConcaveEdge { a: small, b: large });
-        }
         let sweep = dot(left, right).clamp(-1.0, 1.0).acos_ext();
         if !(1e-6..=core::f64::consts::PI - 1e-6).contains(&sweep) {
             return Err(RoundError::DegenerateEdge { a: small, b: large });
         }
-        Ok(sweep)
+        Ok(sweep.copysign(side))
     }
 
     fn trace_chains(
@@ -1236,7 +1279,7 @@ impl Planner<'_> {
                 let ratio =
                     (1.0 - self.policy.chord_tolerance / (radius * radius_scale)).clamp(-1.0, 1.0);
                 let theta = 2.0 * ratio.acos_ext();
-                let max_sweep = edges.iter().fold(0.0_f64, |acc, e| acc.max(e.sweep));
+                let max_sweep = edges.iter().fold(0.0_f64, |acc, e| acc.max(e.sweep.abs()));
                 let required = (max_sweep / theta).ceil_ext();
                 if !required.is_finite() || required > 256.0 {
                     return Err(RoundError::InvalidPolicy {
@@ -1261,9 +1304,15 @@ impl Planner<'_> {
         id
     }
 
-    fn push_round_point(&mut self, point: [f64; 3], center: Option<[f64; 3]>) -> u32 {
+    fn push_round_point(
+        &mut self,
+        point: [f64; 3],
+        center: Option<[f64; 3]>,
+        normal_sign: f64,
+    ) -> u32 {
         let id = self.push_point(point);
-        self.point_normals[id as usize] = center.and_then(|c| normalize(sub(point, c)));
+        self.point_normals[id as usize] =
+            center.and_then(|c| normalize(scale(sub(point, c), normal_sign)));
         id
     }
 
@@ -1412,6 +1461,9 @@ impl Planner<'_> {
         next: DirEdge,
         vertex: VertexId,
     ) -> Result<Option<Miter>, RoundError> {
+        if previous.sweep < 0.0 || next.sweep < 0.0 {
+            return Ok(None);
+        }
         // Every selected edge's planes were prepared by edge_sweep before
         // chains or their sampling density are planned.
         let left = [
@@ -1522,6 +1574,7 @@ impl Planner<'_> {
                 }
                 RoundKind::Chamfer { setback } => setback,
             };
+            let normal_sign = chain.edges[0].sweep.signum();
             let left_dir = normalize(cross(left_normal, tangent)).ok_or(degenerate)?;
             let right_dir = normalize(cross(tangent, right_normal)).ok_or(degenerate)?;
             let anchor = self.position(vertex);
@@ -1531,8 +1584,8 @@ impl Planner<'_> {
                 RoundKind::Chamfer { .. } => None,
                 RoundKind::Fillet { radius } => Some(scale(
                     add(
-                        sub(left_point, scale(left_normal, radius)),
-                        sub(right_point, scale(right_normal, radius)),
+                        sub(left_point, scale(left_normal, radius * normal_sign)),
+                        sub(right_point, scale(right_normal, radius * normal_sign)),
                     ),
                     0.5,
                 )),
@@ -1544,7 +1597,7 @@ impl Planner<'_> {
             };
             sections[index] = section_points
                 .into_iter()
-                .map(|p| self.push_round_point(p, center))
+                .map(|p| self.push_round_point(p, center, normal_sign))
                 .collect();
             frames[index] = Some((left_normal, right_normal));
         }
@@ -1606,7 +1659,7 @@ impl Planner<'_> {
                     )?;
                     for (face, normal) in faces.iter().zip(normals) {
                         let point = add(center, scale(normal, radius));
-                        let id = self.push_round_point(point, Some(center));
+                        let id = self.push_round_point(point, Some(center), 1.0);
                         q.insert(*face, id);
                     }
                     Some(center)
@@ -1648,7 +1701,7 @@ impl Planner<'_> {
                         let mut ids = Vec::with_capacity(arc.len());
                         ids.push(left_q);
                         for point in &arc[1..arc.len() - 1] {
-                            ids.push(self.push_round_point(*point, Some(center)));
+                            ids.push(self.push_round_point(*point, Some(center), 1.0));
                         }
                         ids.push(right_q);
                         ids
@@ -1732,6 +1785,7 @@ impl Planner<'_> {
     fn rewrite_face(
         &mut self,
         face: FaceId,
+        check_simple: bool,
         chains: &[Chain],
         chain_vertices: &BTreeSet<VertexId>,
         selected_pairs: &BTreeSet<(VertexId, VertexId)>,
@@ -1755,6 +1809,13 @@ impl Planner<'_> {
                     images.push(alloc::vec![Tok::Old(vertex)]);
                 }
                 Some(Subst::Point(point)) => images.push(alloc::vec![Tok::New(*point)]),
+                Some(Subst::EndCap { incoming, outgoing }) => {
+                    let mut entries = Vec::with_capacity(3);
+                    entries.extend(incoming.map(Tok::New));
+                    entries.push(Tok::Old(vertex));
+                    entries.extend(outgoing.map(Tok::New));
+                    images.push(entries);
+                }
                 Some(Subst::Splice(chain_index, vertex_index)) => {
                     let chain = &chains[*chain_index as usize];
                     let section = &chain.sections[*vertex_index as usize];
@@ -1816,6 +1877,9 @@ impl Planner<'_> {
             .zip(normalize(new_normal))
             .is_none_or(|(old_unit, new_unit)| dot(old_unit, new_unit) <= 0.0)
         {
+            return Err(RoundError::ClearanceExceeded { face: face.index() });
+        }
+        if check_simple && !concave::simple_polygon(&new_points, new_normal) {
             return Err(RoundError::ClearanceExceeded { face: face.index() });
         }
 
@@ -2011,7 +2075,7 @@ impl Planner<'_> {
         // The final probe may have failed; emission uses the retained passing
         // sample count, or the caller's explicit count.
         let layers = self.policy.segments.unwrap_or(fine_layers);
-        let apex = self.push_round_point(apex, Some(center));
+        let apex = self.push_round_point(apex, Some(center), 1.0);
         // Grow inward from the existing strip boundary so every insertion
         // shares an edge with the mesh, never just an isolated boundary vertex.
         let mut outer = ring.to_vec();
@@ -2020,7 +2084,7 @@ impl Planner<'_> {
                 alloc::vec![apex; ring.len()]
             } else {
                 rays.iter()
-                    .map(|ray| self.push_round_point(ray[layer - 1], Some(center)))
+                    .map(|ray| self.push_round_point(ray[layer - 1], Some(center), 1.0))
                     .collect()
             };
             for i in 0..ring.len() {

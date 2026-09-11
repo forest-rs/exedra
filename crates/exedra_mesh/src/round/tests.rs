@@ -54,22 +54,32 @@ fn l_prism(height: f32) -> Mesh {
         [1.0, 2.0],
         [0.0, 2.0],
     ];
+    prism(&section, &[0.0, height])
+}
+
+fn prism(section: &[[f32; 2]], heights: &[f32]) -> Mesh {
     let n = u32::try_from(section.len()).expect("small section");
     let mut builder = MeshBuilder::new();
-    for z in [0.0, height] {
+    for &z in heights {
         for p in section {
             builder.push_vertex([p[0], p[1], z]);
         }
     }
     let bottom: Vec<u32> = (0..n).rev().collect();
     builder.add_face(&bottom).expect("bottom cap");
-    let top: Vec<u32> = (n..2 * n).collect();
+    let top_offset = n * u32::try_from(heights.len() - 1).unwrap();
+    let top: Vec<u32> = (top_offset..top_offset + n).collect();
     builder.add_face(&top).expect("top cap");
-    for i in 0..n {
-        let j = (i + 1) % n;
-        builder.add_face(&[i, j, n + j, n + i]).expect("side wall");
+    for layer in 0..heights.len() - 1 {
+        let offset = n * u32::try_from(layer).unwrap();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            builder
+                .add_face(&[i, j, n + j, n + i].map(|index| index + offset))
+                .expect("side wall");
+        }
     }
-    builder.build().expect("valid L prism").mesh
+    builder.build().expect("valid prism").mesh
 }
 
 /// Marks every canonical interior edge matching `pick` as fully sharp.
@@ -842,7 +852,7 @@ fn chamfer_of_every_box_edge_builds_corner_triangles() {
 }
 
 #[test]
-fn l_prism_convex_edge_rounds_and_reflex_edge_refuses() {
+fn l_prism_convex_and_concave_edges_round() {
     // Convex vertical edge at (2, 0).
     let mut mesh = l_prism(1.0);
     tag_sharp(&mut mesh, |m, e| {
@@ -855,15 +865,392 @@ fn l_prism_convex_edge_rounds_and_reflex_edge_refuses() {
     assert_clean(&mesh);
     assert_eq!(euler_characteristic(&mesh), 2);
 
-    // Reflex vertical edge at (1, 1): typed refusal, mesh untouched.
+    // The reflex fillet adds material into the notch, with its cylinder
+    // center in the void rather than inside the original solid.
     let mut mesh = l_prism(1.0);
     tag_sharp(&mut mesh, |m, e| {
         is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
     });
-    let before = snapshot(&mesh);
-    let error = round_sharp_edges(&mut mesh, &policy).expect_err("reflex edge must refuse");
-    assert!(matches!(error, RoundError::ConcaveEdge { .. }), "{error:?}");
-    assert_eq!(snapshot(&mesh), before);
+    let stats = round_sharp_edges(&mut mesh, &policy).expect("concave L edge fillet");
+    assert_eq!(stats.chains, 1);
+    assert_clean(&mesh);
+    assert_eq!(euler_characteristic(&mesh), 2);
+    let swept = 4.0 * (core::f64::consts::FRAC_PI_2 / 4.0).sin_ext();
+    let expected = 3.0 + 0.2 * 0.2 * (1.0 - swept * 0.5);
+    assert!((signed_volume(&mesh) - expected).abs() < 1e-6);
+}
+
+#[test]
+fn concave_notch_fillet_has_inward_radial_normals_and_outward_winding() {
+    let mut mesh = l_prism(1.0);
+    tag_sharp(&mut mesh, |m, e| {
+        is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
+    });
+    let mut policy = RoundPolicy::fillet(0.2);
+    policy.segments = Some(8);
+    policy.region = Some(91);
+    round_sharp_edges(&mut mesh, &policy).unwrap();
+    let mut bands = 0;
+    for face in mesh.faces() {
+        if mesh
+            .attrs()
+            .dense(attr::FACE_REGION)
+            .unwrap()
+            .get(face.as_id())
+            != Some(&91)
+        {
+            continue;
+        }
+        let points: Vec<_> = mesh
+            .face_loop(face)
+            .map(|corner| {
+                promote(
+                    *mesh
+                        .vertex_position(mesh.to_vertex(corner).unwrap())
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let outward = normalize(newell(&points)).unwrap();
+        for (corner, point) in mesh.face_loop(face).zip(points) {
+            let inward = sub([1.2, 1.2, point[2]], point);
+            assert!((norm(inward) - 0.2).abs() < 2e-7);
+            let expected = normalize(inward).unwrap();
+            let actual = promote(
+                *mesh
+                    .attrs()
+                    .sparse(attr::CORNER_NORMAL_OVERRIDE)
+                    .unwrap()
+                    .get(corner.as_id())
+                    .unwrap(),
+            );
+            assert!(dot(expected, actual) > 0.99999);
+            assert!(dot(outward, actual) > 0.99);
+        }
+        bands += 1;
+    }
+    assert_eq!(bands, 8);
+}
+
+#[test]
+fn separate_concave_shoulders_and_convex_edges_finish_in_one_pass() {
+    let section = [
+        [0.0, 0.0],
+        [3.0, 0.0],
+        [3.0, 2.0],
+        [2.0, 2.0],
+        [2.0, 1.0],
+        [1.0, 1.0],
+        [1.0, 2.0],
+        [0.0, 2.0],
+    ];
+    // Boolean splitting can fragment each straight shoulder into several
+    // collinear edges with distinct, coplanar flank faces.
+    let original = prism(&section, &[0.0, 0.3, 0.7, 1.0]);
+    for policy in [RoundPolicy::fillet(0.2), RoundPolicy::chamfer(0.2)] {
+        let mut mesh = original.clone();
+        tag_sharp(&mut mesh, |m, e| {
+            let (a, b) = edge_endpoints(m, e);
+            a[0] == b[0]
+                && a[1] == b[1]
+                && ((a[1] == 1.0 && (a[0] == 1.0 || a[0] == 2.0)) || (a[0] == 0.0 && a[1] == 0.0))
+        });
+        let mut repeat = mesh.clone();
+        let stats = round_sharp_edges(&mut mesh, &policy).unwrap();
+        round_sharp_edges(&mut repeat, &policy).unwrap();
+        assert_eq!(exact_snapshot(&mesh), exact_snapshot(&repeat));
+        assert_eq!(stats.chains, 3);
+        assert_eq!(stats.corners, 0);
+        assert_clean(&mesh);
+        assert_eq!(euler_characteristic(&mesh), 2);
+        // Two concave additions minus one equal convex removal.
+        let delta = match policy.kind {
+            RoundKind::Chamfer { .. } => 0.5 * 0.2 * 0.2,
+            RoundKind::Fillet { .. } => {
+                let segments = f64::from(stats.max_segments);
+                0.2 * 0.2
+                    * (1.0 - 0.5 * segments * (core::f64::consts::FRAC_PI_2 / segments).sin_ext())
+            }
+        };
+        assert!((signed_volume(&mesh) - 5.0 - delta).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn concave_junctions_and_overlapping_setbacks_refuse_atomically() {
+    for policy in [RoundPolicy::fillet(1.1), RoundPolicy::chamfer(1.1)] {
+        let mut mesh = l_prism(1.0);
+        tag_sharp(&mut mesh, |m, e| {
+            is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
+        });
+        let before = exact_snapshot(&mesh);
+        assert!(matches!(
+            round_sharp_edges(&mut mesh, &policy),
+            Err(RoundError::ClearanceExceeded { .. })
+        ));
+        assert_eq!(exact_snapshot(&mesh), before);
+    }
+    for all_edges in [false, true] {
+        let mut mesh = l_prism(1.0);
+        tag_sharp(&mut mesh, |m, e| {
+            all_edges
+                || is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
+                || is_edge_between(m, e, [1.0, 1.0, 1.0], [2.0, 1.0, 1.0])
+        });
+        let before = exact_snapshot(&mesh);
+        assert!(matches!(
+            round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.2)),
+            Err(RoundError::ConcaveEdge { .. })
+        ));
+        assert_eq!(exact_snapshot(&mesh), before);
+    }
+    for closed in [false, true] {
+        let mut mesh = recessed_panel();
+        let edges: Vec<_> = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .filter(|&edge| {
+                let (a, b) = edge_endpoints(&mesh, edge);
+                a[2] == 0.4
+                    && b[2] == 0.4
+                    && (closed || (a[0] == 1.0 && b[0] == 1.0) || (a[1] == 0.75 && b[1] == 0.75))
+            })
+            .collect();
+        let before = exact_snapshot(&mesh);
+        let mut policy = RoundPolicy::fillet(0.02);
+        policy.max_tangent_turn = core::f64::consts::PI;
+        assert!(matches!(
+            round_edges(&mut mesh, &edges, &policy),
+            Err(RoundError::ConcaveEdge { .. })
+        ));
+        assert_eq!(exact_snapshot(&mesh), before);
+    }
+}
+
+#[test]
+fn concave_cap_fan_refuses_sub_precision_triangles_atomically() {
+    let mut mesh = l_prism(1.0);
+    tag_sharp(&mut mesh, |m, e| {
+        is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
+    });
+    let positions: Vec<_> = mesh
+        .vertices()
+        .map(|vertex| {
+            (
+                vertex,
+                mesh.vertex_position(vertex).unwrap().map(|p| p + 10000.0),
+            )
+        })
+        .collect();
+    let mut edit = mesh.edit();
+    for (vertex, p) in positions {
+        op::set_vertex_position(&mut edit, vertex, p).unwrap();
+    }
+    let _: () = edit.finish();
+    let before = exact_snapshot(&mesh);
+    let mut policy = RoundPolicy::fillet(0.2);
+    policy.segments = Some(256);
+    assert!(matches!(
+        round_sharp_edges(&mut mesh, &policy),
+        Err(RoundError::ClearanceExceeded { .. })
+    ));
+    assert_eq!(exact_snapshot(&mesh), before);
+}
+
+#[test]
+fn concave_chain_with_an_oblique_end_cap_refuses_atomically() {
+    let mut mesh = l_prism(1.0);
+    tag_sharp(&mut mesh, |m, e| {
+        is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
+    });
+    let positions: Vec<_> = mesh
+        .vertices()
+        .map(|vertex| {
+            let mut p = *mesh.vertex_position(vertex).unwrap();
+            if p[2] == 1.0 {
+                p[2] += 0.1 * p[0];
+            }
+            (vertex, p)
+        })
+        .collect();
+    let mut edit = mesh.edit();
+    for (vertex, p) in positions {
+        op::set_vertex_position(&mut edit, vertex, p).unwrap();
+    }
+    let _: () = edit.finish();
+    let before = exact_snapshot(&mesh);
+    // A large plane tolerance must not silently approximate the elliptical
+    // section needed by an oblique cylinder/end-plane intersection.
+    let mut policy = RoundPolicy::fillet(0.2);
+    policy.max_planar_deviation = 1.0;
+    assert!(matches!(
+        round_sharp_edges(&mut mesh, &policy),
+        Err(RoundError::UnsupportedEnd { .. })
+    ));
+    assert_eq!(exact_snapshot(&mesh), before);
+}
+
+#[test]
+fn boolean_cut_through_housing_rounds_both_internal_shoulders() {
+    let beam = box_mesh(3.0, 1.0, 2.0);
+    let mut cutter = box_mesh(1.0, 1.2, 1.1);
+    let positions: Vec<_> = cutter
+        .vertices()
+        .map(|vertex| {
+            let p = *cutter.vertex_position(vertex).unwrap();
+            (vertex, [p[0] + 1.0, p[1] - 0.1, p[2] + 1.0])
+        })
+        .collect();
+    let mut edit = cutter.edit();
+    for (vertex, point) in positions {
+        op::set_vertex_position(&mut edit, vertex, point).unwrap();
+    }
+    let _: () = edit.finish();
+    let mut scratch = BooleanScratch::default();
+    let mut diagnostics = BooleanDiagnostics::default();
+    let original = boolean_mesh(
+        &beam,
+        &cutter,
+        BooleanOp::Difference,
+        FaceTriangulation::Robust,
+        &mut scratch,
+        &mut diagnostics,
+    )
+    .unwrap()
+    .mesh;
+    let mut mesh = original.clone();
+    // The Boolean marks additional seams; select only the two floor shoulders.
+    let edges: Vec<_> = mesh
+        .faces()
+        .flat_map(|face| mesh.face_loop(face))
+        .filter(|&edge| {
+            let (a, b) = edge_endpoints(&mesh, edge);
+            a[0] == b[0] && (a[0] == 1.0 || a[0] == 2.0) && a[2] == 1.0 && b[2] == 1.0
+        })
+        .collect();
+    let before = exact_snapshot(&mesh);
+    assert!(matches!(
+        round_edges(&mut mesh, &edges, &RoundPolicy::fillet(0.2)),
+        Err(RoundError::ClearanceExceeded { .. })
+    ));
+    assert_eq!(exact_snapshot(&mesh), before);
+    // The setback must fit before the next existing cap-boundary vertex;
+    // this pass does not dissolve collinear Boolean subdivisions.
+    let radius = 0.02;
+    let mut policy = RoundPolicy::fillet(radius);
+    policy.segments = Some(8);
+    let result = round_edges(&mut mesh, &edges, &policy).unwrap();
+    assert_eq!(result.stats.chains, 2);
+    assert_clean(&mesh);
+    assert_eq!(euler_characteristic(&mesh), 2);
+    let added =
+        2.0 * radius * radius * (1.0 - 4.0 * (core::f64::consts::FRAC_PI_2 / 8.0).sin_ext());
+    assert!((signed_volume(&mesh) - signed_volume(&original) - added).abs() < 1e-6);
+    for face in mesh.faces() {
+        assert!(
+            !mesh
+                .face_triangles_counted(face, FaceTriangulation::Robust)
+                .1
+        );
+    }
+}
+
+#[test]
+fn concave_fill_refuses_obstructions_in_its_conservative_clearance_prism() {
+    for position in [1.02, 1.09, 1.3] {
+        let mut builder = MeshBuilder::new();
+        for (source, offset) in [
+            (l_prism(1.0), [0.0; 3]),
+            (box_mesh(0.01, 0.01, 0.2), [position, position, 0.4]),
+        ] {
+            let vertices: BTreeMap<_, _> = source
+                .vertices()
+                .map(|vertex| {
+                    let p = *source.vertex_position(vertex).unwrap();
+                    (
+                        vertex,
+                        builder.push_vertex(core::array::from_fn(|axis| p[axis] + offset[axis])),
+                    )
+                })
+                .collect();
+            for face in source.faces() {
+                let indices: Vec<_> = source
+                    .face_loop(face)
+                    .map(|corner| vertices[&source.to_vertex(corner).unwrap()])
+                    .collect();
+                builder.add_face(&indices).unwrap();
+            }
+        }
+        let mut mesh = builder.build().unwrap().mesh;
+        tag_sharp(&mut mesh, |m, e| {
+            is_edge_between(m, e, [1.0, 1.0, 0.0], [1.0, 1.0, 1.0])
+        });
+        let before = exact_snapshot(&mesh);
+        let result = round_sharp_edges(&mut mesh, &RoundPolicy::fillet(0.2));
+        if position < 1.2 {
+            // 1.02 intersects the addition; 1.09 lies beyond the arc but
+            // inside its triangular clearance envelope and is also refused.
+            assert!(matches!(result, Err(RoundError::ClearanceExceeded { .. })));
+            assert_eq!(exact_snapshot(&mesh), before);
+        } else {
+            result.unwrap();
+            assert_clean(&mesh);
+            assert_eq!(euler_characteristic(&mesh), 4);
+        }
+    }
+}
+
+#[test]
+fn concave_chains_keep_their_radius_after_shear_and_oblique_placement() {
+    let section = [
+        [0.0, 0.0],
+        [2.0, 0.0],
+        [2.0, 1.0],
+        [1.0, 1.0],
+        [1.0, 2.0],
+        [0.0, 2.0],
+    ];
+    let mut original = prism(&section, &[0.0, 0.3, 0.7, 1.0]);
+    tag_sharp(&mut original, |m, e| {
+        let (a, b) = edge_endpoints(m, e);
+        a[0] == 1.0 && b[0] == 1.0 && a[1] == 1.0 && b[1] == 1.0
+    });
+    let axis = normalize([1.0, 2.0, 3.0]).unwrap();
+    let rotate = |p| {
+        add(
+            add(
+                scale(p, 0.7_f64.cos_ext()),
+                scale(cross(axis, p), 0.7_f64.sin_ext()),
+            ),
+            scale(axis, dot(axis, p) * (1.0 - 0.7_f64.cos_ext())),
+        )
+    };
+    for shear in [-0.4, 0.0, 0.4] {
+        let mut mesh = original.clone();
+        let positions: Vec<_> = mesh
+            .vertices()
+            .map(|vertex| {
+                let mut p = promote(*mesh.vertex_position(vertex).unwrap());
+                p[0] += shear * p[1];
+                (vertex, narrow(add(rotate(p), [0.3, -0.7, 1.2])))
+            })
+            .collect();
+        let mut edit = mesh.edit();
+        for (vertex, p) in positions {
+            op::set_vertex_position(&mut edit, vertex, p).unwrap();
+        }
+        let _: () = edit.finish();
+        let before = signed_volume(&mesh);
+        let mut policy = RoundPolicy::fillet(0.1);
+        policy.segments = Some(8);
+        let stats = round_sharp_edges(&mut mesh, &policy).unwrap();
+        assert_eq!(stats.chains, 1);
+        assert_clean(&mesh);
+        let sweep = (-shear / (1.0 + shear * shear).sqrt_ext()).acos_ext();
+        let tangent = (sweep * 0.5).sin_ext() / (sweep * 0.5).cos_ext();
+        let added = 0.1 * 0.1 * (tangent - 4.0 * (sweep / 8.0).sin_ext());
+        assert!((signed_volume(&mesh) - before - added).abs() < 1e-6);
+    }
 }
 
 #[test]
