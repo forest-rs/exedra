@@ -92,6 +92,8 @@ Workspace-only construction, test, benchmark, and app crates:
   integration scenarios kept outside the core crates.
   **[yingzao_fashi_pavilion](examples/yingzao_fashi_pavilion/)** builds a timber pavilion
   with exact setting out, fitted brackets, shared parts, and material variants.
+  **[moon_gate_courtyard](examples/moon_gate_courtyard/)** places it in a garden
+  with a coursed masonry entrance, procedural planting, pierced stones and drainage.
 
 ## Architecture
 

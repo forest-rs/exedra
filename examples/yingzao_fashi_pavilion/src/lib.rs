@@ -244,6 +244,17 @@ fn reassign_materials(assembly: &mut Assembly) -> Result<()> {
 
 fn check_reports(assembly: &Assembly, compiled: &CompiledParts) -> Result<()> {
     for (index, part) in assembly.parts().iter().enumerate() {
+        for (body_index, body) in compiled
+            .part(PartId(u32::try_from(index)?))
+            .ok_or("missing compiled part")?
+            .bodies
+            .iter()
+            .enumerate()
+        {
+            body.tri
+                .validate_geometry()
+                .map_err(|error| format!("{} body {body_index}: {error}", part.key()))?;
+        }
         // Successful compilation can include partial evaluations: refuse those too.
         if let Some(report) = compiled.report(PartId(u32::try_from(index)?))
             && !report.clean_at(Severity::Warning)

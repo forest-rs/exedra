@@ -907,6 +907,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "moon_gate_courtyard"
+version = "0.0.0"
+dependencies = [
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_gltf",
+ "exedra_isosurface",
+ "exedra_math",
+ "exedra_mesh",
+ "joiner",
+ "joiner_masonry",
+ "serde_json",
+ "yingzao_fashi_pavilion",
+]
+
+[[package]]
 name = "mutants"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
