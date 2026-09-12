@@ -45,10 +45,12 @@ deterministic, and cache-friendly.
   native thread boundaries. An error-level evaluation that emits no bodies is
   a typed compilation failure; partial geometry remains available with its
   report intact.
-- **The render seam.** `flatten()` produces a flat `RenderList` of
+- **The render seam.** Consumers can read `Assembly` and `CompiledParts`
+  directly for retained hierarchy and part-local geometry. `flatten()`
+  produces a flat `RenderList` of
   (instance path, world placement, part reference, exact placed bounds,
-  per-region index ranges with resolved material keys). Renderers and
-  exporters consume this and nothing deeper. `CompiledPart` accounting is
+  per-region index ranges with resolved material keys) when drawables or
+  exact measured bounds are needed. `CompiledPart` accounting is
   once-per-part and part-local; `RenderList` accounting includes instance
   multiplicity and is world-space. Placed bounds are derived from transformed
   emitted positions, not transformed local AABB corners, so they stay exact
@@ -64,7 +66,10 @@ It owns none of:
   evaluate their specification languages and hand this crate finished
   recipes, placements, and bindings.
 - **Rendering / file formats.** Exporters (e.g. `exedra_gltf`) are separate
-  leaf crates over the `RenderList`.
+  leaf crates. Retained export consumes `Assembly` and `CompiledParts`
+  directly, validates source correspondence, and preserves parent/local
+  placements and one logical identity per instance. Error-level partial
+  geometry is refused with its complete report.
 
 ## Consequences
 

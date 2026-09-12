@@ -1,24 +1,24 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! glTF 2.0 export for Exedra assembly render lists.
+//! glTF 2.0 export retaining Exedra assembly hierarchy.
 //!
-//! [`export_gltf`] and [`export_glb`] convert a flattened [`RenderList`] plus
-//! its [`CompiledParts`] into a single-file glTF 2.0 asset. JSON glTF embeds a
-//! base64 buffer; GLB stores the same buffer in its binary chunk.
+//! [`export_gltf`] and [`export_glb`] walk an [`Assembly`] with matching
+//! [`CompiledParts`]. No flattened render list is required. JSON glTF embeds
+//! a base64 buffer; GLB stores the same buffer in its binary chunk.
 //!
-//! - every render item becomes a glTF *node* carrying the item's world
-//!   matrix, with the instance path, part key, and opaque instance metadata
-//!   in `extras`;
-//! - every region/slot index range becomes a mesh *primitive*, preserving
-//!   distinct materials even when their geometric region IDs match;
+//! - each logical instance becomes one node with its parent, local matrix,
+//!   stable path and opaque metadata; geometry-free frames remain real nodes;
+//! - a one-body part attaches its mesh to that node. Multi-body parts attach
+//!   auxiliary geometry children, without duplicating occurrence identity;
+//! - region/slot ranges become primitives. Equal compiled content shares
+//!   geometry buffers, while material resolutions can use separate meshes;
 //! - [`export_glb_with_materials`] and [`export_gltf_with_materials`] resolve
-//!   material keys to caller-provided glTF material data; the original
-//!   entry points produce deterministic preview colors derived from keys;
-//! - items that share a part, body, and material resolution share one
-//!   glTF mesh (glTF-level instancing).
-//! - empty bodies retain their instance nodes and metadata without a mesh;
-//!   geometry-free scenes omit buffers and the optional GLB BIN chunk.
+//!   opaque material keys through caller-provided glTF data. The other entry
+//!   points produce deterministic preview colors derived from those keys;
+//! - exact empty parts keep their identity without illegal zero-count meshes.
+//!   Geometry-free scenes omit buffers and the optional GLB BIN chunk;
+//! - mismatched compiled sources and error-level partial geometry are refused.
 //!
 //! The output is deterministic: identical inputs produce byte-identical
 //! JSON. No external glTF or base64 dependency is used.
@@ -28,7 +28,7 @@
 //! Export a placed baked mesh, then inspect the GLB semantically:
 //!
 //! ```
-//! use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
+//! use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 //! use exedra_constructive::ir::Placement3;
 //! use exedra_gltf::{GlbDocument, export_glb};
 //! use exedra_mesh::{BuildParams, Mesh};
@@ -43,8 +43,7 @@
 //! assembly.add_instance(None, "placed", part, Placement3::IDENTITY)?;
 //!
 //! let compiled = PartCompiler::new().compile_parts(&assembly, &CompilePolicy::default())?;
-//! let list = flatten(&assembly, &compiled);
-//! let export = export_glb(&assembly, &compiled, &list)?;
+//! let export = export_glb(&assembly, &compiled)?;
 //! let document = GlbDocument::parse(&export.bytes)?;
 //!
 //! assert_eq!(document.node_names(), ["placed"]);
@@ -60,13 +59,23 @@ mod slot_tests;
 #[cfg(test)]
 mod normal_tests;
 
+#[cfg(test)]
+mod hierarchy_tests;
+
 pub use inspect::GlbDocument;
 pub use materials::MaterialResolver;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use exedra_assembly::{Assembly, CompiledParts, RenderItem, RenderList};
+use exedra_assembly::{
+    Assembly, CompilationMismatch, CompiledBody, CompiledParts, Instance, InstanceId,
+    PartFingerprint, PartId, ResolvedRegion,
+};
+use exedra_constructive::{
+    evaluate::{GeometryReport, Severity},
+    ir::Placement3,
+};
 use serde_json::{Map, Value, json};
 
 /// A finished export.
@@ -90,8 +99,8 @@ pub struct GlbExport {
 /// Deterministic export counters.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct GltfStats {
-    /// glTF nodes emitted (one per render item, plus an optional coordinate
-    /// conversion root).
+    /// Logical instance nodes, auxiliary multi-body nodes and the optional
+    /// coordinate-conversion root emitted.
     pub nodes: u64,
     /// Distinct glTF meshes emitted (shared across matching items).
     pub meshes: u64,
@@ -137,7 +146,7 @@ impl GltfExportOptions {
 }
 
 /// Typed export failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum GltfError {
     /// A bound material key has no description in the supplied resolver.
@@ -159,17 +168,14 @@ pub enum GltfError {
         /// The unsupported glTF material field.
         field: String,
     },
-    /// A render item references a part with no compiled entry.
-    MissingPart {
-        /// The part index the item referenced.
+    /// The supplied compilation does not match the assembly's current part sources.
+    CompilationMismatch(CompilationMismatch),
+    /// A compiled part retains error-level diagnostics from a partial evaluation.
+    IncompleteGeometry {
+        /// Assembly-local part with the error-level report.
         part: u32,
-    },
-    /// A render item references a body index out of range.
-    MissingBody {
-        /// The part index.
-        part: u32,
-        /// The body index the item referenced.
-        body: u32,
+        /// Complete evaluation evidence, retained independently of the snapshot.
+        report: Box<GeometryReport>,
     },
     /// The finished GLB would exceed its unsigned 32-bit container length.
     GlbTooLarge,
@@ -195,10 +201,11 @@ impl std::fmt::Display for GltfError {
             Self::UnsupportedMaterialField { key, field } => {
                 write!(f, "material {key:?} requests unsupported field {field:?}")
             }
-            Self::MissingPart { part } => write!(f, "no compiled entry for part {part}"),
-            Self::MissingBody { part, body } => {
-                write!(f, "part {part} has no compiled body {body}")
-            }
+            Self::CompilationMismatch(error) => error.fmt(f),
+            Self::IncompleteGeometry { part, .. } => write!(
+                f,
+                "compiled part {part} has error-level geometry diagnostics"
+            ),
             Self::GlbTooLarge => f.write_str("GLB output exceeds the 32-bit container limit"),
             Self::InvalidGlb { reason } => write!(f, "invalid GLB container: {reason}"),
             Self::InvalidGlbJson { message } => write!(f, "invalid GLB JSON chunk: {message}"),
@@ -206,27 +213,31 @@ impl std::fmt::Display for GltfError {
     }
 }
 
-impl std::error::Error for GltfError {}
+impl std::error::Error for GltfError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CompilationMismatch(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
-/// Exports a render list as a single-file glTF 2.0 JSON document.
+/// Exports the complete assembly as a single-file glTF 2.0 JSON document.
 ///
-/// `assembly` supplies part keys for `extras`; `compiled` supplies the
-/// geometry the list references.
+/// Parent/local placements and geometry-free frames are retained. Each logical
+/// node carries instance metadata and its stable path; auxiliary body nodes
+/// carry only part/body identity. Geometry comes from the matching compilation.
 /// Material keys use deterministic preview colors. For authored appearance,
 /// use [`export_gltf_with_materials`].
 ///
 /// # Errors
 ///
-/// Fails when the list references parts or bodies absent from `compiled`.
-pub fn export_gltf(
-    assembly: &Assembly,
-    compiled: &CompiledParts,
-    list: &RenderList,
-) -> Result<GltfExport, GltfError> {
-    export_gltf_with_options(assembly, compiled, list, GltfExportOptions::default())
+/// Fails for mismatched compiled sources or error-level geometry diagnostics.
+pub fn export_gltf(assembly: &Assembly, compiled: &CompiledParts) -> Result<GltfExport, GltfError> {
+    export_gltf_with_options(assembly, compiled, GltfExportOptions::default())
 }
 
-/// Exports a render list with explicit coordinate-system options.
+/// Exports the complete assembly with explicit coordinate-system options.
 ///
 /// The Z-up to Y-up conversion is represented by one scene-root node. Mesh
 /// buffers, accessor bounds, normals, winding, and item transforms remain in
@@ -235,14 +246,13 @@ pub fn export_gltf(
 ///
 /// # Errors
 ///
-/// Fails when the list references parts or bodies absent from `compiled`.
+/// Fails for mismatched compiled sources or error-level geometry diagnostics.
 pub fn export_gltf_with_options(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    list: &RenderList,
     options: GltfExportOptions,
 ) -> Result<GltfExport, GltfError> {
-    finish_gltf(build_export(assembly, compiled, list, options, None)?)
+    finish_gltf(build_export(assembly, compiled, options, None)?)
 }
 
 /// Exports glTF using real, caller-resolved untextured PBR materials.
@@ -261,17 +271,10 @@ pub fn export_gltf_with_options(
 pub fn export_gltf_with_materials(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    list: &RenderList,
     materials: &dyn MaterialResolver,
     options: GltfExportOptions,
 ) -> Result<GltfExport, GltfError> {
-    finish_gltf(build_export(
-        assembly,
-        compiled,
-        list,
-        options,
-        Some(materials),
-    )?)
+    finish_gltf(build_export(assembly, compiled, options, Some(materials))?)
 }
 
 fn finish_gltf(built: BuiltExport) -> Result<GltfExport, GltfError> {
@@ -296,36 +299,31 @@ fn finish_gltf(built: BuiltExport) -> Result<GltfExport, GltfError> {
     })
 }
 
-/// Exports a render list as a binary glTF 2.0 container.
+/// Exports the complete assembly as a binary glTF 2.0 container.
 ///
 /// Material keys use deterministic preview colors. For authored appearance,
 /// use [`export_glb_with_materials`].
 ///
 /// # Errors
 ///
-/// Fails when the list references absent compiled geometry or when the
-/// finished GLB exceeds its 32-bit container length.
-pub fn export_glb(
-    assembly: &Assembly,
-    compiled: &CompiledParts,
-    list: &RenderList,
-) -> Result<GlbExport, GltfError> {
-    export_glb_with_options(assembly, compiled, list, GltfExportOptions::default())
+/// Fails for mismatched compiled sources, error-level geometry diagnostics,
+/// or a finished GLB exceeding its 32-bit container length.
+pub fn export_glb(assembly: &Assembly, compiled: &CompiledParts) -> Result<GlbExport, GltfError> {
+    export_glb_with_options(assembly, compiled, GltfExportOptions::default())
 }
 
-/// Exports a render list as GLB with explicit coordinate-system options.
+/// Exports the complete assembly as GLB with explicit coordinate-system options.
 ///
 /// # Errors
 ///
-/// Fails when the list references absent compiled geometry or when the
-/// finished GLB exceeds its 32-bit container length.
+/// Fails for mismatched compiled sources, error-level geometry diagnostics,
+/// or a finished GLB exceeding its 32-bit container length.
 pub fn export_glb_with_options(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    list: &RenderList,
     options: GltfExportOptions,
 ) -> Result<GlbExport, GltfError> {
-    finish_glb(build_export(assembly, compiled, list, options, None)?)
+    finish_glb(build_export(assembly, compiled, options, None)?)
 }
 
 /// Exports a GLB using real, caller-resolved untextured PBR materials.
@@ -335,22 +333,15 @@ pub fn export_glb_with_options(
 ///
 /// # Errors
 ///
-/// Fails for missing, invalid, or unsupported used materials, absent compiled
-/// geometry, or a GLB exceeding the unsigned 32-bit container limit.
+/// Fails for missing, invalid, or unsupported used materials, mismatched compiled
+/// sources, error-level geometry diagnostics, or a GLB exceeding its length limit.
 pub fn export_glb_with_materials(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    list: &RenderList,
     materials: &dyn MaterialResolver,
     options: GltfExportOptions,
 ) -> Result<GlbExport, GltfError> {
-    finish_glb(build_export(
-        assembly,
-        compiled,
-        list,
-        options,
-        Some(materials),
-    )?)
+    finish_glb(build_export(assembly, compiled, options, Some(materials))?)
 }
 
 fn finish_glb(built: BuiltExport) -> Result<GlbExport, GltfError> {
@@ -369,98 +360,118 @@ struct BuiltExport {
 fn build_export(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    list: &RenderList,
     options: GltfExportOptions,
     resolver: Option<&dyn MaterialResolver>,
 ) -> Result<BuiltExport, GltfError> {
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut buffer_views: Vec<Value> = Vec::new();
-    let mut accessors: Vec<Value> = Vec::new();
-    let mut meshes: Vec<Value> = Vec::new();
-    let mut materials: Vec<Value> = Vec::new();
-    let mut material_index: HashMap<String, usize> = HashMap::new();
-    // Mesh sharing: items with the same part, body, and material
-    // resolution reference one glTF mesh.
-    let mut mesh_index: HashMap<(u32, u32, Vec<Option<String>>), usize> = HashMap::new();
-    let mut geometry_index: HashMap<(u32, u32), GeometryAccessors> = HashMap::new();
-    let mut nodes: Vec<Value> = Vec::new();
+    compiled
+        .validate_for(assembly)
+        .map_err(GltfError::CompilationMismatch)?;
+    for index in 0..assembly.parts().len() {
+        let part = PartId(u32::try_from(index).expect("validated part count"));
+        if let Some(report) = compiled.report(part)
+            && !report.clean_at(Severity::Error)
+        {
+            return Err(GltfError::IncompleteGeometry {
+                part: part.0,
+                report: Box::new(report.clone()),
+            });
+        }
+    }
+    let mut buffer = Vec::new();
+    let mut buffer_views = Vec::new();
+    let mut accessors = Vec::new();
+    let mut meshes = Vec::new();
+    let mut materials = Vec::new();
+    let mut material_index = HashMap::new();
+    // Content sharing is independent of local PartId assignment. Different
+    // material resolutions reuse the same immutable vertex and index buffers.
+    let mut mesh_index: HashMap<(PartFingerprint, usize, Vec<Option<String>>), usize> =
+        HashMap::new();
+    let mut geometry_index: HashMap<(PartFingerprint, usize), GeometryAccessors> = HashMap::new();
+    let mut nodes: Vec<Value> = assembly
+        .instances_with_ids()
+        .map(|(id, instance)| instance_node(assembly, id, instance))
+        .collect();
     let mut stats = GltfStats::default();
 
-    for item in &list.items {
-        let entry = compiled
-            .part(item.part)
-            .ok_or(GltfError::MissingPart { part: item.part.0 })?;
-        let body = entry
-            .bodies
-            .get(item.body as usize)
-            .ok_or(GltfError::MissingBody {
-                part: item.part.0,
-                body: item.body,
-            })?;
-
-        let mut node = Map::new();
-        node.insert("name".into(), Value::String(item.path.to_string()));
-        // An exact empty Boolean still has instance identity, but glTF
-        // meshes/accessors cannot represent zero geometry with zero counts.
-        if !body.tri.indices.is_empty() {
-            let resolution: Vec<Option<String>> =
-                item.regions.iter().map(|r| r.material.clone()).collect();
-            let key = (item.part.0, item.body, resolution);
+    for (id, instance) in assembly.instances_with_ids() {
+        let Some(part) = instance.part() else {
+            continue;
+        };
+        let def = assembly.part(part).expect("validated instance part");
+        let entry = compiled.part(part).expect("matching compilation");
+        for (body_index, body) in entry.bodies.iter().enumerate() {
+            let node_index = if entry.bodies.len() == 1 {
+                id.0 as usize
+            } else {
+                let child = nodes.len();
+                let name = format!(
+                    "{} [body {body_index}]",
+                    nodes[id.0 as usize]["name"]
+                        .as_str()
+                        .expect("logical node name")
+                );
+                nodes.push(json!({
+                    "name": name,
+                    "extras": { "partKey": def.key(), "body": body_index }
+                }));
+                append_child(&mut nodes[id.0 as usize], child);
+                child
+            };
+            nodes[node_index]["extras"]["body"] = json!(body_index);
+            // Empty geometry retains its logical node without illegal zero-count
+            // mesh/accessor records. A geometry-free frame has no partKey at all.
+            if body.tri.indices.is_empty() {
+                continue;
+            }
+            let regions: Vec<ResolvedRegion> = body
+                .regions
+                .iter()
+                .map(|range| ResolvedRegion {
+                    region: range.region,
+                    start: range.start,
+                    count: range.count,
+                    material: range
+                        .material_slot
+                        .or_else(|| def.region_slot(range.region))
+                        .and_then(|slot| assembly.resolved_material(id, slot))
+                        .map(str::to_owned),
+                })
+                .collect();
+            let resolution = regions.iter().map(|r| r.material.clone()).collect();
+            let key = (entry.fingerprint, body_index, resolution);
             let mesh = if let Some(&index) = mesh_index.get(&key) {
                 index
             } else {
                 let geometry = *geometry_index
-                    .entry((item.part.0, item.body))
+                    .entry((entry.fingerprint, body_index))
                     .or_insert_with(|| {
                         emit_geometry(body, &mut buffer, &mut buffer_views, &mut accessors)
                     });
-                let index = emit_mesh(
+                let mesh = emit_mesh(
                     geometry,
-                    item,
+                    &regions,
                     &mut accessors,
                     &mut materials,
                     &mut material_index,
                     &mut stats,
                     resolver,
                 )?;
-                meshes.push(index);
-                let mesh_number = meshes.len() - 1;
-                mesh_index.insert(key, mesh_number);
+                let index = meshes.len();
+                meshes.push(mesh);
+                mesh_index.insert(key, index);
                 stats.meshes += 1;
-                mesh_number
+                index
             };
-            node.insert("mesh".into(), json!(mesh));
+            nodes[node_index]["mesh"] = json!(mesh);
         }
-        if item.world.rows != exedra_constructive::ir::Placement3::IDENTITY.rows {
-            node.insert(
-                "matrix".into(),
-                json!(matrix_column_major(&item.world.rows)),
-            );
-        }
-        let part_key = assembly
-            .part(item.part)
-            .map(|def| def.key().to_string())
-            .unwrap_or_default();
-        let mut extras = Map::new();
-        if let Some(instance) = assembly.instance(item.instance) {
-            for (key, value) in instance.metadata() {
-                extras.insert(key.clone(), Value::String(value.clone()));
-            }
-        }
-        // Export identity is authoritative when opaque metadata reuses one
-        // of these reserved keys.
-        extras.insert("instancePath".into(), Value::String(item.path.to_string()));
-        extras.insert("partKey".into(), Value::String(part_key));
-        extras.insert("body".into(), json!(item.body));
-        node.insert("extras".into(), Value::Object(extras));
-        nodes.push(Value::Object(node));
-        stats.nodes += 1;
     }
+    stats.nodes = nodes.len() as u64;
 
     stats.buffer_bytes = buffer.len() as u64;
-    let item_nodes: Vec<usize> = (0..nodes.len()).collect();
+    let instance_roots: Vec<usize> = assembly.roots().iter().map(|id| id.0 as usize).collect();
     let scene_nodes = match options.coordinates {
-        GltfCoordinates::Preserve => item_nodes,
+        GltfCoordinates::Preserve => instance_roots,
         GltfCoordinates::ZUpToYUp => {
             let root = nodes.len();
             nodes.push(json!({
@@ -472,8 +483,8 @@ fn build_export(
                     0.0, 0.0, 0.0, 1.0
                 ],
             }));
-            if !item_nodes.is_empty() {
-                nodes[root]["children"] = json!(item_nodes);
+            if !instance_roots.is_empty() {
+                nodes[root]["children"] = json!(instance_roots);
             }
             stats.nodes += 1;
             vec![root]
@@ -508,6 +519,56 @@ fn build_export(
         buffer,
         stats,
     })
+}
+
+fn instance_node(assembly: &Assembly, id: InstanceId, instance: &Instance) -> Value {
+    let path = assembly
+        .path_of(id)
+        .expect("validated instance path")
+        .to_string();
+    let mut extras: Map<String, Value> = instance
+        .metadata()
+        .iter()
+        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+        .collect();
+    // Logical occurrence identity belongs only on this node, never on the
+    // auxiliary geometry nodes of a multi-body part.
+    extras.insert("instancePath".into(), json!(path));
+    extras.remove("body");
+    if let Some(part) = instance.part() {
+        extras.insert(
+            "partKey".into(),
+            json!(assembly.part(part).expect("validated part").key()),
+        );
+    } else {
+        extras.remove("partKey");
+    }
+    let mut node = json!({ "name": path, "extras": extras });
+    if *instance.placement() != Placement3::IDENTITY {
+        node["matrix"] = json!(matrix_column_major(&instance.placement().rows));
+    }
+    if !instance.children().is_empty() {
+        node["children"] = json!(
+            instance
+                .children()
+                .iter()
+                .map(|id| id.0)
+                .collect::<Vec<_>>()
+        );
+    }
+    node
+}
+
+fn append_child(node: &mut Value, child: usize) {
+    let children = &mut node["children"];
+    if children.is_null() {
+        *children = json!([child]);
+    } else {
+        children
+            .as_array_mut()
+            .expect("node children are an array")
+            .push(json!(child));
+    }
 }
 
 fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec<u8>, GltfError> {
@@ -563,7 +624,7 @@ struct GeometryAccessors {
 
 /// Emits a compiled body's geometry once, independently of material binding.
 fn emit_geometry(
-    body: &exedra_assembly::CompiledBody,
+    body: &CompiledBody,
     buffer: &mut Vec<u8>,
     buffer_views: &mut Vec<Value>,
     accessors: &mut Vec<Value>,
@@ -618,7 +679,7 @@ fn emit_geometry(
 /// Emits the primitive wrapper for one material resolution of shared geometry.
 fn emit_mesh(
     geometry: GeometryAccessors,
-    item: &RenderItem,
+    regions: &[ResolvedRegion],
     accessors: &mut Vec<Value>,
     materials: &mut Vec<Value>,
     material_index: &mut HashMap<String, usize>,
@@ -626,7 +687,7 @@ fn emit_mesh(
     resolver: Option<&dyn MaterialResolver>,
 ) -> Result<Value, GltfError> {
     let mut primitives: Vec<Value> = Vec::new();
-    for region in &item.regions {
+    for region in regions {
         let indices_accessor = accessors.len();
         accessors.push(json!({
             "bufferView": geometry.indices_view,
@@ -798,11 +859,12 @@ mod tests {
     use exedra_assembly::{CompilePolicy, PartCompiler, flatten};
     use exedra_constructive::builders;
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+    use exedra_mesh::{BuildParams, Mesh};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    fn example() -> (Assembly, CompiledParts, RenderList) {
+    fn example() -> (Assembly, CompiledParts) {
         let mut b = RecipeBuilder::new();
         let front = b.material_slot("front");
         let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
@@ -835,13 +897,12 @@ mod tests {
         let compiled = compiler
             .compile_parts(&asm, &CompilePolicy::default())
             .unwrap();
-        let list = flatten(&asm, &compiled);
-        (asm, compiled, list)
+        (asm, compiled)
     }
 
     #[test]
     fn resolved_materials_share_geometry_and_resolve_once_per_key() {
-        let (mut assembly, _, _) = example();
+        let (mut assembly, _) = example();
         let part = assembly.part_by_key("panel").unwrap();
         assembly
             .add_instance(None, "c", part, Placement3::translate(120.0, 0.0, 0.0))
@@ -851,7 +912,6 @@ mod tests {
             .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
         let counters = compiler.counters();
-        let list = flatten(&assembly, &compiled);
         let oak = json!({"pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.25, 0.1, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.7}});
         let walnut = json!({"pbrMetallicRoughness": {"baseColorFactor": [0.1, 0.05, 0.02, 0.4], "metallicFactor": 0.2, "roughnessFactor": 0.3}, "emissiveFactor": [0.01, 0.02, 0.03], "alphaMode": "BLEND", "doubleSided": true});
         let table = BTreeMap::from([("oak", oak.clone()), ("walnut", walnut.clone())]);
@@ -863,7 +923,6 @@ mod tests {
         let export = export_glb_with_materials(
             &assembly,
             &compiled,
-            &list,
             &resolve,
             GltfExportOptions::z_up_to_y_up(),
         )
@@ -914,7 +973,6 @@ mod tests {
         let repeat = export_glb_with_materials(
             &assembly,
             &compiled,
-            &list,
             &resolve,
             GltfExportOptions::z_up_to_y_up(),
         )
@@ -923,7 +981,6 @@ mod tests {
         let text = export_gltf_with_materials(
             &assembly,
             &compiled,
-            &list,
             &resolve,
             GltfExportOptions::z_up_to_y_up(),
         )
@@ -936,7 +993,7 @@ mod tests {
 
     #[test]
     fn appearance_edits_and_rebinding_reuse_compiled_parts() {
-        let (mut assembly, _, _) = example();
+        let (mut assembly, _) = example();
         let mut compiler = PartCompiler::new();
         let compiled = compiler
             .compile_parts(&assembly, &CompilePolicy::default())
@@ -944,26 +1001,24 @@ mod tests {
         let part = assembly.part_by_key("panel").unwrap();
         let tri_before = compiled.part(part).unwrap().bodies[0].tri.clone();
         let work_before = compiler.counters();
-        let list = flatten(&assembly, &compiled);
         let mut table = BTreeMap::from([
             ("oak", json!({"pbrMetallicRoughness": {}})),
             ("walnut", json!({"pbrMetallicRoughness": {}})),
         ]);
-        let export = |assembly: &Assembly, list: &RenderList, table: &BTreeMap<&str, Value>| {
+        let export = |assembly: &Assembly, table: &BTreeMap<&str, Value>| {
             export_glb_with_materials(
                 assembly,
                 &compiled,
-                list,
                 &|key: &str| table.get(key).cloned(),
                 GltfExportOptions::default(),
             )
             .unwrap()
         };
-        let before = export(&assembly, &list, &table);
+        let before = export(&assembly, &table);
         let oak = table.get_mut("oak").unwrap();
         oak["pbrMetallicRoughness"]["roughnessFactor"] = json!(0.25);
         oak["pbrMetallicRoughness"]["baseColorFactor"] = json!([0.6, 0.2, 0.1, 1.0]);
-        let after = export(&assembly, &list, &table);
+        let after = export(&assembly, &table);
         assert_ne!(before.bytes, after.bytes);
         let old = GlbDocument::parse(&before.bytes).unwrap();
         let new = GlbDocument::parse(&after.bytes).unwrap();
@@ -983,10 +1038,9 @@ mod tests {
         assert_eq!(compiler.counters(), work_before);
         // Change only the second occurrence; the first keeps the part default.
         assembly
-            .bind_material(list.items[1].instance, "front", "oak")
+            .bind_material(assembly.roots()[1], "front", "oak")
             .unwrap();
-        let rebound = flatten(&assembly, &compiled);
-        let rebound_export = export(&assembly, &rebound, &table);
+        let rebound_export = export(&assembly, &table);
         assert_eq!(rebound_export.stats.materials, 1);
         assert_eq!(rebound_export.stats.meshes, 1);
         assert_eq!(before.stats.buffer_bytes, rebound_export.stats.buffer_bytes);
@@ -1011,27 +1065,39 @@ mod tests {
 
     #[test]
     fn strict_resolution_distinguishes_missing_from_unassigned() {
-        let (assembly, compiled, mut list) = example();
+        let (assembly, compiled) = example();
         let missing = |_: &str| None;
         assert!(matches!(
-            export_glb_with_materials(&assembly, &compiled, &list, &missing, GltfExportOptions::default()),
+            export_glb_with_materials(&assembly, &compiled, &missing, GltfExportOptions::default()),
             Err(GltfError::MissingMaterial { key }) if key == "oak"
         ));
         assert!(
-            export_glb(&assembly, &compiled, &list).is_ok(),
-            "preview remains opt-in through the legacy API"
+            export_glb(&assembly, &compiled).is_ok(),
+            "the preview exporter supplies deterministic material colors"
         );
-        for item in &mut list.items {
-            for region in &mut item.regions {
-                region.material = None;
-            }
-        }
+        let body = &compiled.parts()[0].bodies[0];
+        let triangles: Vec<[u32; 3]> = body
+            .tri
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        let mesh =
+            Mesh::from_indexed_triangles(&body.tri.positions, &triangles, &BuildParams::default())
+                .unwrap();
+        let mut assembly = Assembly::new();
+        let part = assembly.add_baked_part("unassigned", mesh, &[]).unwrap();
+        assembly
+            .add_instance(None, "unassigned", part, Placement3::IDENTITY)
+            .unwrap();
+        let compiled = PartCompiler::new()
+            .compile_parts(&assembly, &CompilePolicy::default())
+            .unwrap();
         let never_resolve =
             |_: &str| -> Option<Value> { panic!("unassigned is not a missing resource") };
         let export = export_glb_with_materials(
             &assembly,
             &compiled,
-            &list,
             &never_resolve,
             GltfExportOptions::default(),
         )
@@ -1052,12 +1118,11 @@ mod tests {
         let compiled = PartCompiler::new()
             .compile_parts(&assembly, &CompilePolicy::default())
             .expect("empty assembly compiles");
-        let list = flatten(&assembly, &compiled);
         for options in [
             GltfExportOptions::default(),
             GltfExportOptions::z_up_to_y_up(),
         ] {
-            let export = export_glb_with_options(&assembly, &compiled, &list, options)
+            let export = export_glb_with_options(&assembly, &compiled, options)
                 .expect("empty scene exports");
             let document = GlbDocument::parse(&export.bytes).expect("valid JSON-only GLB");
             for name in ["meshes", "accessors", "bufferViews", "buffers", "materials"] {
@@ -1121,8 +1186,8 @@ mod tests {
             GltfExportOptions::default(),
             GltfExportOptions::z_up_to_y_up(),
         ] {
-            let export = export_gltf_with_options(&assembly, &compiled, &list, options)
-                .expect("JSON export");
+            let export =
+                export_gltf_with_options(&assembly, &compiled, options).expect("JSON export");
             let json: Value = serde_json::from_str(&export.json).expect("JSON");
             assert_eq!(json["nodes"][0]["name"], "empty-instance");
             assert_eq!(json["nodes"][0]["extras"]["partKey"], "empty-part");
@@ -1130,8 +1195,7 @@ mod tests {
             for field in ["meshes", "accessors", "bufferViews", "buffers"] {
                 assert!(json.get(field).is_none(), "empty geometry omits {field}");
             }
-            let glb =
-                export_glb_with_options(&assembly, &compiled, &list, options).expect("GLB export");
+            let glb = export_glb_with_options(&assembly, &compiled, options).expect("GLB export");
             let document = GlbDocument::parse(&glb.bytes).expect("valid container");
             assert_eq!(document.json(), &json);
             assert!(document.bin().is_empty());
@@ -1143,14 +1207,14 @@ mod tests {
 
     #[test]
     fn structural_validity() {
-        let (asm, compiled, list) = example();
-        let export = export_gltf(&asm, &compiled, &list).unwrap();
+        let (asm, compiled) = example();
+        let export = export_gltf(&asm, &compiled).unwrap();
         let doc: Value = serde_json::from_str(&export.json).unwrap();
 
         assert_eq!(doc["asset"]["version"], "2.0");
         assert_eq!(doc["scene"], 0);
         let nodes = doc["nodes"].as_array().unwrap();
-        assert_eq!(nodes.len(), 2, "one node per render item");
+        assert_eq!(nodes.len(), 2, "one node per logical instance");
         assert_eq!(nodes[0]["extras"]["instancePath"], "a");
         assert_eq!(nodes[1]["extras"]["partKey"], "panel");
         assert!(
@@ -1204,22 +1268,19 @@ mod tests {
 
     #[test]
     fn shared_resolution_shares_meshes() {
-        let (asm, compiled, mut list) = example();
-        // Make item b's materials identical to a's: same mesh key.
-        for region in &mut list.items[1].regions {
-            region.material = Some("oak".into());
-        }
-        let export = export_gltf(&asm, &compiled, &list).unwrap();
+        let (mut asm, compiled) = example();
+        // Make occurrence b's materials identical to a's: same mesh key.
+        asm.bind_material(asm.roots()[1], "front", "oak").unwrap();
+        let export = export_gltf(&asm, &compiled).unwrap();
         assert_eq!(export.stats.nodes, 2);
         assert_eq!(export.stats.meshes, 1, "identical items share one mesh");
     }
 
     #[test]
     fn z_up_to_y_up_uses_one_right_handed_scene_root() {
-        let (asm, compiled, list) = example();
+        let (asm, compiled) = example();
         let export =
-            export_gltf_with_options(&asm, &compiled, &list, GltfExportOptions::z_up_to_y_up())
-                .unwrap();
+            export_gltf_with_options(&asm, &compiled, GltfExportOptions::z_up_to_y_up()).unwrap();
         let doc: Value = serde_json::from_str(&export.json).unwrap();
         let nodes = doc["nodes"].as_array().unwrap();
         let root_index = usize::try_from(doc["scenes"][0]["nodes"][0].as_u64().unwrap()).unwrap();
@@ -1238,19 +1299,18 @@ mod tests {
 
     #[test]
     fn deterministic_output() {
-        let (asm, compiled, list) = example();
-        let a = export_gltf(&asm, &compiled, &list).unwrap();
-        let b = export_gltf(&asm, &compiled, &list).unwrap();
+        let (asm, compiled) = example();
+        let a = export_gltf(&asm, &compiled).unwrap();
+        let b = export_gltf(&asm, &compiled).unwrap();
         assert_eq!(a.json, b.json);
         assert_eq!(a.stats, b.stats);
     }
 
     #[test]
     fn binary_export_has_valid_glb_chunks() {
-        let (asm, compiled, list) = example();
+        let (asm, compiled) = example();
         let export =
-            export_glb_with_options(&asm, &compiled, &list, GltfExportOptions::z_up_to_y_up())
-                .unwrap();
+            export_glb_with_options(&asm, &compiled, GltfExportOptions::z_up_to_y_up()).unwrap();
         let bytes = &export.bytes;
 
         assert_eq!(&bytes[0..4], b"glTF");
@@ -1278,9 +1338,9 @@ mod tests {
 
     #[test]
     fn binary_output_is_deterministic() {
-        let (asm, compiled, list) = example();
-        let a = export_glb(&asm, &compiled, &list).unwrap();
-        let b = export_glb(&asm, &compiled, &list).unwrap();
+        let (asm, compiled) = example();
+        let a = export_glb(&asm, &compiled).unwrap();
+        let b = export_glb(&asm, &compiled).unwrap();
         assert_eq!(a.bytes, b.bytes);
         assert_eq!(a.stats, b.stats);
     }
@@ -1291,10 +1351,9 @@ mod tests {
         // slicing GLB offsets or depending on serialized JSON whitespace and
         // key order. The coordinate-conversion root leaves mesh accessors in
         // the authored local frame by design.
-        let (asm, compiled, list) = example();
+        let (asm, compiled) = example();
         let export =
-            export_glb_with_options(&asm, &compiled, &list, GltfExportOptions::z_up_to_y_up())
-                .unwrap();
+            export_glb_with_options(&asm, &compiled, GltfExportOptions::z_up_to_y_up()).unwrap();
         let document = GlbDocument::parse(&export.bytes).expect("exporter emits valid GLB");
 
         assert_eq!(

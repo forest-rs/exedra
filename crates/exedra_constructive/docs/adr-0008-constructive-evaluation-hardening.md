@@ -7,7 +7,7 @@ Accepted (review-hardening).
 ## Boundary
 
 The constructive head owns recipe identity, placement, evaluation completeness,
-and source attribution; it does not own catalog material definitions or mesh
+and source attribution; it does not own application material definitions or mesh
 Boolean algorithms. The mesh head owns typed attribute storage and edit tracking.
 
 ## Decisions

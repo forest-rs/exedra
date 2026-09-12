@@ -208,7 +208,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         let glb = export_glb_with_materials(
             &assembly,
             &compiled,
-            &draw,
             &|_: &str| {
                 Some(
                     json!({"pbrMetallicRoughness": {"baseColorFactor": [0.16, 0.32, 0.46, 1.0], "metallicFactor": 0.65, "roughnessFactor": 0.24}}),

@@ -1,13 +1,14 @@
 # `exedra_gltf`
 
-glTF 2.0 export for Exedra assembly render lists: instances become nodes,
-region/slot index ranges become primitives with real material bindings, and
-instance paths ride in `extras`. Single-file output uses either an embedded
+glTF 2.0 export retaining Exedra assembly hierarchy: logical instances become
+nodes with their parent/local placements, geometry-free frames remain nodes,
+and region/slot ranges become primitives with real material bindings. Instance
+paths and opaque occurrence metadata ride in `extras`. Single-file output uses either an embedded
 base64 buffer or a standard binary GLB container; both are deterministic
 byte-for-byte.
 
 ```rust
-use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
+use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::ir::Placement3;
 use exedra_gltf::{GlbDocument, export_glb};
 use exedra_mesh::{BuildParams, Mesh};
@@ -29,8 +30,7 @@ assembly
 let compiled = PartCompiler::new()
     .compile_parts(&assembly, &CompilePolicy::default())
     .expect("part compiles");
-let list = flatten(&assembly, &compiled);
-let export = export_glb(&assembly, &compiled, &list).expect("GLB export");
+let export = export_glb(&assembly, &compiled).expect("GLB export");
 let document = GlbDocument::parse(&export.bytes).expect("exporter wrote valid GLB");
 
 assert_eq!(document.node_names(), ["placed"]);
@@ -55,6 +55,26 @@ parsers or asserting against JSON whitespace and key order. Instance metadata
 is emitted directly in node `extras`; the exporter-reserved `instancePath`,
 `partKey`, and `body` keys remain authoritative on collisions.
 
+## Retained assembly export
+
+The primary export functions now take `Assembly` and `CompiledParts` directly;
+remove the `RenderList` argument at existing call sites. Export walks authored
+parent/local placements without flattening or remeasuring world-space vertices.
+Use `flatten` separately when exact measured bounds or renderer drawables are
+needed. To export a selected subtree set, build a selected assembly with
+`append_selected`; a render-list filter is not an assembly selection.
+
+One logical node carries each instance's `instancePath` and opaque metadata.
+For a single body, the mesh attaches to that node. Multiple bodies attach as
+auxiliary children with `partKey`/`body` metadata and no `instancePath`. Frame
+nodes have no `partKey`, keeping intentional frames distinct from exact-empty
+geometry. Coordinate conversion applies once above the assembly roots.
+
+Export validates current part-source correspondence and rejects error-level
+partial evaluations. The export error carries the complete `GeometryReport`,
+also accessible through `CompiledParts::report`. Equal content across distinct
+part registrations shares geometry buffers; different material bindings can still require separate meshes.
+
 ## Main APIs
 
 For authored appearance, use `export_glb_with_materials` or
@@ -74,9 +94,8 @@ let resolve = |id: &str| match id {
     _ => None,
 };
 assembly.set_part_material(part, "finish", "paint.red")?;
-let list = exedra_assembly::flatten(&assembly, &compiled);
 let export = exedra_gltf::export_glb_with_materials(
-    &assembly, &compiled, &list, &resolve,
+    &assembly, &compiled, &resolve,
     exedra_gltf::GltfExportOptions::z_up_to_y_up(),
 )?;
 ```

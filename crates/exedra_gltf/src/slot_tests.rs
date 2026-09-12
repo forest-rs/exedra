@@ -52,7 +52,7 @@ fn authored_slots_survive_overlapping_body_regions() {
                 .all(|region| region.material.as_deref() == Some(expected))
         );
     }
-    let export = export_glb(&assembly, &compiled, &list).unwrap();
+    let export = export_glb(&assembly, &compiled).unwrap();
     let document = GlbDocument::parse(&export.bytes).unwrap();
     assert_eq!(document.material_names(), ["red", "blue"]);
     assert_bound_exports(&assembly, &compiled, &[Some("red"), Some("blue")]);
@@ -75,12 +75,19 @@ fn assert_bound_exports(assembly: &Assembly, compiled: &CompiledParts, expected:
     let resolver = |_: &str| Some(json!({"pbrMetallicRoughness": {"metallicFactor": 0.0}}));
     let options = GltfExportOptions::default();
     for export in [
-        export_glb(assembly, compiled, &list).unwrap(),
-        export_glb_with_materials(assembly, compiled, &list, &resolver, options).unwrap(),
+        export_glb(assembly, compiled).unwrap(),
+        export_glb_with_materials(assembly, compiled, &resolver, options).unwrap(),
     ] {
         let document = GlbDocument::parse(&export.bytes).unwrap();
         let json = document.json();
-        for (node, expected) in json["nodes"].as_array().unwrap().iter().zip(expected) {
+        let drawable_nodes: Vec<_> = json["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node.get("mesh").is_some())
+            .collect();
+        assert_eq!(drawable_nodes.len(), expected.len());
+        for (node, expected) in drawable_nodes.into_iter().zip(expected) {
             let mesh = usize::try_from(node["mesh"].as_u64().unwrap()).unwrap();
             for primitive in json["meshes"][mesh]["primitives"].as_array().unwrap() {
                 match expected {
@@ -96,9 +103,8 @@ fn assert_bound_exports(assembly: &Assembly, compiled: &CompiledParts, expected:
             }
         }
     }
-    let preview = export_gltf(assembly, compiled, &list).unwrap();
-    let resolved =
-        export_gltf_with_materials(assembly, compiled, &list, &resolver, options).unwrap();
+    let preview = export_gltf(assembly, compiled).unwrap();
+    let resolved = export_gltf_with_materials(assembly, compiled, &resolver, options).unwrap();
     assert_eq!(preview.stats.materials, resolved.stats.materials);
 }
 
@@ -279,11 +285,10 @@ fn recessed_boolean_exports_face_materials_and_reuses_geometry_when_rebound() {
                 .windows(2)
                 .any(|r| r[0].region == r[1].region && r[0].material_slot != r[1].material_slot)
         );
-        let list = flatten(&assembly, &compiled);
-        let export = export_glb(&assembly, &compiled, &list).unwrap();
+        let export = export_glb(&assembly, &compiled).unwrap();
         assert_eq!(
             export.bytes,
-            export_glb(&assembly, &compiled, &list).unwrap().bytes
+            export_glb(&assembly, &compiled).unwrap().bytes
         );
         let document = GlbDocument::parse(&export.bytes).unwrap();
         assert_eq!(document.material_names(), ["oak", "inset"]);
@@ -297,7 +302,7 @@ fn recessed_boolean_exports_face_materials_and_reuses_geometry_when_rebound() {
             compiled.part(part).unwrap(),
             reused.part(part).unwrap()
         ));
-        let export = export_glb(&assembly, &reused, &flatten(&assembly, &reused)).unwrap();
+        let export = export_glb(&assembly, &reused).unwrap();
         assert_eq!(
             GlbDocument::parse(&export.bytes).unwrap().material_names(),
             ["oak", "brass"]

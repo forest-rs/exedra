@@ -24,8 +24,8 @@ that its emitted coordinates do not represent.
 ### One typed accuracy boundary
 
 `exedra_constructive::discretize` owns mathematical chord accuracy, finite
-per-curve work budgets, and f64 realization checks. It does not own catalog
-units, catalog cylinder construction, or universal cardinal-axis alignment.
+per-curve work budgets, and f64 realization checks. It does not own application units, caller-authored primitive construction, or
+universal cardinal-axis alignment.
 
 Successful `discretize_loop` and `discretize_profile` results satisfy the
 requested mathematical chord bound in their f64 output. When the required

@@ -119,7 +119,7 @@ fn baked_authored_normals_are_opt_in_and_reach_glb() {
             ..CompilePolicy::default()
         };
         let compiled = compiler.compile_parts(&assembly, &policy).unwrap();
-        let export = export_glb(&assembly, &compiled, &flatten(&assembly, &compiled)).unwrap();
+        let export = export_glb(&assembly, &compiled).unwrap();
         let document = GlbDocument::parse(&export.bytes).unwrap();
         let primitive = &document.json()["meshes"][0]["primitives"][0];
         let actual = read_floats::<3>(&document, attribute(&document, primitive, "NORMAL"), 0);
@@ -185,7 +185,7 @@ fn imported_and_generated_normals_survive_placement_and_partial_coverage_in_glb(
                 .unwrap();
             let list = flatten(&assembly, &compiled);
             assert_eq!(list.items.len(), 2);
-            let export = export_glb(&assembly, &compiled, &list).unwrap();
+            let export = export_glb(&assembly, &compiled).unwrap();
             let document = GlbDocument::parse(&export.bytes).unwrap();
             check_imported(&document, scale, partial);
             check_generated(&document);
