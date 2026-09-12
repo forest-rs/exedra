@@ -9,6 +9,9 @@
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 
+mod validate;
+pub use validate::TriMeshGeometryError;
+
 use crate::attributes::SparseLayer;
 use crate::{
     CornerId, DerivedCornerNormals, FaceId, FaceTriangulation, Mesh, NormalParams, NormalsSource,
