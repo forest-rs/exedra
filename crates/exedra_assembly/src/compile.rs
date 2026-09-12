@@ -14,10 +14,11 @@
 //!
 //! Dirty tracking runs through the `invalidation` crate: part-content
 //! edits are marked on a parts channel, and the next compile drains the
-//! channel and evicts exactly the marked parts' entries. Binding and
-//! metadata edits never touch this layer.
+//! channel and evicts the marked entries from the last successful snapshot.
+//! Shared aliases refer to the same cache entry. Binding and metadata edits
+//! never touch this layer; callers can explicitly release the whole cache.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use exedra_constructive::EVAL_SCHEMA_VERSION;
@@ -28,6 +29,9 @@ use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
 
 use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
+
+mod snapshot;
+pub use snapshot::CompilationMismatch;
 
 /// The single invalidation channel this layer uses: part content.
 const PARTS_CHANNEL: Channel = Channel::new(0);
@@ -234,7 +238,7 @@ pub enum CompileError {
         /// The rejected part.
         part: PartId,
         /// The complete constructive report, including the refusal reason.
-        report: Rc<GeometryReport>,
+        report: Arc<GeometryReport>,
     },
 }
 
@@ -266,24 +270,30 @@ impl core::fmt::Display for CompileError {
 impl core::error::Error for CompileError {}
 
 /// The compiled view of an assembly's parts.
+///
+/// Geometry and reports share immutable [`Arc`] ownership. Cloning this snapshot
+/// copies its handle tables without copying buffers or diagnostics. Snapshots
+/// are [`Send`] and [`Sync`] and remain usable after their compiler is dropped
+/// or its cache is cleared.
 #[derive(Clone, Debug)]
 pub struct CompiledParts {
     /// Compiled entry per part, indexed by [`PartId`].
-    parts: Vec<Rc<CompiledPart>>,
+    parts: Vec<Arc<CompiledPart>>,
     /// Constructive report per recipe part, parallel to `parts`.
-    reports: Vec<Option<Rc<GeometryReport>>>,
+    reports: Vec<Option<Arc<GeometryReport>>>,
+    policy: PolicyFingerprint,
 }
 
 impl CompiledParts {
     /// The compiled entry for a part.
     #[must_use]
-    pub fn part(&self, id: PartId) -> Option<&Rc<CompiledPart>> {
+    pub fn part(&self, id: PartId) -> Option<&Arc<CompiledPart>> {
         self.parts.get(id.0 as usize)
     }
 
     /// All compiled entries in [`PartId`] order.
     #[must_use]
-    pub fn parts(&self) -> &[Rc<CompiledPart>] {
+    pub fn parts(&self) -> &[Arc<CompiledPart>] {
         &self.parts
     }
 
@@ -306,17 +316,22 @@ impl CompiledParts {
 /// diagnostics are part of the compilation result, not incidental logging.
 #[derive(Clone, Debug)]
 struct CachedCompilation {
-    part: Rc<CompiledPart>,
-    report: Option<Rc<GeometryReport>>,
+    part: Arc<CompiledPart>,
+    report: Option<Arc<GeometryReport>>,
 }
 
 /// Memoizing part compiler with invalidation-channel eviction.
+///
+/// The compiler is [`Send`] and [`Sync`]; mutation requires exclusive access.
+/// A worker can own it and publish [`CompiledParts`] to other threads without
+/// copying geometry. Shared ownership uses [`alloc::sync::Arc`], requiring
+/// pointer-width atomic operations even when the `std` feature is disabled.
 #[derive(Debug, Default)]
 pub struct PartCompiler {
     cache: HashMap<(PartFingerprint, PolicyFingerprint), CachedCompilation>,
-    /// Cache keys last produced for each part, so channel-driven eviction
-    /// can find them without scanning.
-    part_keys: HashMap<PartId, Vec<(PartFingerprint, PolicyFingerprint)>>,
+    /// Keys in the most recent successful compilation, including cache hits.
+    /// Part IDs identify only that snapshot; older variants remain content keyed.
+    part_keys: Vec<(PartFingerprint, PolicyFingerprint)>,
     dirty: InvalidationSet<PartId>,
     counters: CompileCounters,
 }
@@ -340,14 +355,32 @@ impl PartCompiler {
         self.cache.len()
     }
 
-    /// Marks a part's content as changed on the parts channel.
+    /// Marks a part from the most recent successful compilation for eviction.
     ///
-    /// Call after [`Assembly::replace_part_source`]; the next
-    /// [`Self::compile_parts`] evicts exactly this part's entries. Content
-    /// addressing keeps results correct even without a mark — marking
-    /// controls memory, not correctness.
+    /// Call after changing a part in that assembly. The next compilation evicts
+    /// its previous content/policy entry, including entries first obtained on a
+    /// cache hit. Equal-content parts share an entry, so evicting one releases
+    /// the cached entry for all of its aliases. Older variants remain cached.
+    ///
+    /// Handles belong to the last successful compilation, not to a persistent
+    /// occurrence. When rebuilding assemblies, content addressing alone keeps
+    /// results correct; do not reinterpret their new IDs as old invalidations.
+    /// Marking controls cache retention, not geometry correctness.
     pub fn mark_part_changed(&mut self, part: PartId) {
         self.dirty.mark(part, PARTS_CHANNEL);
+    }
+
+    /// Releases all cached geometry and reports while retaining lifetime counters.
+    ///
+    /// Existing [`CompiledParts`] snapshots keep their own shared ownership and
+    /// remain usable. This also clears pending invalidations and local handle
+    /// associations. Callers can use [`Self::cached_entries`] to choose when to
+    /// release cache retention; this does not bound memory held by old snapshots.
+    pub fn clear_cache(&mut self) {
+        self.counters.cache_evictions += self.cache.len() as u64;
+        self.cache = HashMap::new();
+        self.part_keys = Vec::new();
+        self.dirty = InvalidationSet::default();
     }
 
     /// Compiles every part of `assembly` under `policy`, reusing cached
@@ -367,31 +400,34 @@ impl PartCompiler {
         let policy_fp = policy_fingerprint(policy);
         let mut out = Vec::with_capacity(assembly.parts().len());
         let mut reports = Vec::with_capacity(assembly.parts().len());
+        let mut part_keys = Vec::with_capacity(assembly.parts().len());
         for (index, def) in assembly.parts().iter().enumerate() {
             let id = PartId(crate::len_u32(index));
             let content_fp = part_fingerprint(def.source());
             let key = (content_fp, policy_fp);
+            part_keys.push(key);
             if let Some(hit) = self.cache.get(&key) {
                 self.counters.cache_hits += 1;
-                out.push(Rc::clone(&hit.part));
-                reports.push(hit.report.as_ref().map(Rc::clone));
+                out.push(Arc::clone(&hit.part));
+                reports.push(hit.report.as_ref().map(Arc::clone));
                 continue;
             }
             let (part, report) = compile_source(id, def.source(), policy, content_fp)?;
             let compiled = CachedCompilation {
-                part: Rc::new(part),
-                report: report.map(Rc::new),
+                part: Arc::new(part),
+                report: report.map(Arc::new),
             };
             self.counters.parts_compiled += 1;
             self.counters.triangles_emitted += compiled.part.triangle_count();
             self.cache.insert(key, compiled.clone());
-            self.part_keys.entry(id).or_default().push(key);
             out.push(compiled.part);
             reports.push(compiled.report);
         }
+        self.part_keys = part_keys;
         Ok(CompiledParts {
             parts: out,
             reports,
+            policy: policy_fp,
         })
     }
 
@@ -404,12 +440,10 @@ impl PartCompiler {
         let mut marked: Vec<PartId> = self.dirty.drain(PARTS_CHANNEL).collect();
         marked.sort_unstable();
         for part in marked {
-            if let Some(keys) = self.part_keys.remove(&part) {
-                for key in keys {
-                    if self.cache.remove(&key).is_some() {
-                        self.counters.cache_evictions += 1;
-                    }
-                }
+            if let Some(key) = self.part_keys.get(part.0 as usize)
+                && self.cache.remove(key).is_some()
+            {
+                self.counters.cache_evictions += 1;
             }
         }
     }
@@ -441,7 +475,7 @@ fn compile_source(
             if evaluation.bodies.is_empty() && !evaluation.report.clean_at(Severity::Error) {
                 return Err(CompileError::NoGeometry {
                     part,
-                    report: Rc::new(evaluation.report),
+                    report: Arc::new(evaluation.report),
                 });
             }
             let bodies = evaluation
@@ -868,7 +902,7 @@ mod tests {
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, 1);
         assert_eq!(compiler.counters().cache_hits, 1);
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             compiled.part(PartId(0)).unwrap(),
             again.part(PartId(0)).unwrap()
         ));
@@ -915,6 +949,46 @@ mod tests {
             regions: Vec::new(),
         };
         assert_eq!(empty.bounds(), None);
+    }
+
+    #[test]
+    fn failed_compilation_preserves_the_last_successful_invalidation_handles() {
+        let policy = CompilePolicy::default();
+        let mut compiler = PartCompiler::new();
+        let mut source = Assembly::new();
+        let first = source.add_recipe_part("first", prism_recipe(10.0)).unwrap();
+        let second = source
+            .add_recipe_part("second", prism_recipe(20.0))
+            .unwrap();
+        let before = compiler.compile_parts(&source, &policy).unwrap();
+
+        let mut failing = Assembly::new();
+        failing
+            .add_recipe_part("second", prism_recipe(20.0))
+            .unwrap();
+        failing.add_recipe_part("new", prism_recipe(30.0)).unwrap();
+        let refused = failing
+            .add_recipe_part("refused", refused_open_shell_recipe())
+            .unwrap();
+        assert!(matches!(
+            compiler.compile_parts(&failing, &policy),
+            Err(CompileError::NoGeometry { part, .. }) if part == refused
+        ));
+        assert_eq!(compiler.counters().parts_compiled, 3);
+        assert_eq!(compiler.cached_entries(), 3);
+
+        compiler.mark_part_changed(first);
+        let after = compiler.compile_parts(&source, &policy).unwrap();
+        assert!(
+            !Arc::ptr_eq(before.part(first).unwrap(), after.part(first).unwrap()),
+            "invalidation still addresses the last successful assembly"
+        );
+        assert!(
+            Arc::ptr_eq(before.part(second).unwrap(), after.part(second).unwrap()),
+            "a failed attempt must not replace the meaning of reused handles"
+        );
+        assert_eq!(compiler.counters().parts_compiled, 4);
+        assert_eq!(compiler.counters().cache_evictions, 1);
     }
 
     #[test]

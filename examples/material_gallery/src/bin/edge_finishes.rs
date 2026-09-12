@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use exedra_constructive::evaluate::evaluate;
     use exedra_constructive::tessellate::Feature;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     #[test]
     fn boolean_door_rim_finishes_through_semantic_region_selection() {
@@ -287,7 +287,7 @@ mod tests {
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, count);
         assert_eq!(count, 1);
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             first.part(part).unwrap(),
             second.part(part).unwrap()
         ));

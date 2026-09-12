@@ -79,8 +79,8 @@ pub use assembly::{
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{
-    CompileCounters, CompileError, CompilePolicy, CompiledBody, CompiledPart, CompiledParts,
-    PartCompiler, PartFingerprint, PolicyFingerprint, RegionRange,
+    CompilationMismatch, CompileCounters, CompileError, CompilePolicy, CompiledBody, CompiledPart,
+    CompiledParts, PartCompiler, PartFingerprint, PolicyFingerprint, RegionRange,
 };
 pub use exedra_mesh::NormalsSource;
 pub use flatten::{RenderItem, RenderList, ResolvedRegion, compose, flatten};

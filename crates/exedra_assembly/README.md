@@ -94,6 +94,46 @@ source spelling, so `frame/insert` becomes `west-frame/insert`. Separate appends
 do not intern part definitions; `PartCompiler` still reuses identical geometry
 by content. Material keys remain opaque caller-owned strings.
 
+## Retaining compiled geometry
+
+Keep one `PartCompiler` across evaluated snapshots, and rebuild lightweight
+assembly records with the new parent/local placements and material bindings.
+`compile_parts` uses source-content and policy fingerprints, so new local part
+handles do not prevent reuse. Equal content shares `Arc<CompiledPart>` and its
+geometry report. Changed dimensions compile only new content; a changed policy
+uses a separate cache entry.
+
+`CompiledParts` and `PartCompiler` are `Send + Sync`. A worker can retain the
+compiler and publish snapshots to other threads. `CompiledParts::clone` copies
+only the handle tables; geometry and reports retain shared `Arc` ownership.
+Compiler mutation still requires exclusive access. This uses `alloc::sync::Arc`
+and requires pointer-width atomics, available on the supported native and
+`wasm32-unknown-unknown` targets; `std` is not required for the ownership model.
+
+`CompiledParts::part` and `CompiledParts::parts` now expose `Arc<CompiledPart>`
+handles, and `CompileError::NoGeometry::report` uses `Arc<GeometryReport>`.
+Replace explicit `Rc::clone`/`Rc::ptr_eq` calls with their `Arc` equivalents.
+`CompiledParts::report` continues to return a borrowed `GeometryReport`.
+
+`CompiledParts::validate_for(&assembly)` rejects mismatched part counts and
+source content. It accepts pose, metadata and material edits. The snapshot's
+`policy_fingerprint()` identifies its evaluation/extraction settings. Content
+checking includes hashing baked mesh attributes, so use it at export or snapshot
+boundaries; reading parent/local placements directly requires no geometry walk.
+`flatten` remains the explicit way to measure exact placed bounds.
+
+`mark_part_changed(id)` refers to the **last successful compilation's** local
+handle assignment. It evicts that content/policy entry, including shared aliases;
+it does not identify a persistent occurrence or discard all historical variants.
+Freshly rebuilt assemblies do not need invalidation marks for correctness.
+
+Use `cached_entries()` and `clear_cache()` to control cache retention without
+resetting lifetime counters. Clearing releases the cache and its bookkeeping,
+including pending marks. Previously returned `CompiledParts` retain shared
+ownership and remain usable, so their memory lasts until those snapshots drop.
+Reports remain available on hits, and matching content does not turn a partial
+evaluation into complete geometry.
+
 ## Compile policy migration
 
 `PartCompiler::compile_parts` and `compile::policy_fingerprint` now accept

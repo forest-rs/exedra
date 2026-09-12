@@ -6,6 +6,7 @@
 use super::*;
 use exedra_assembly::{CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+use std::sync::Arc;
 
 #[test]
 fn authored_slots_survive_overlapping_body_regions() {
@@ -189,7 +190,7 @@ fn inherited_slots_child_overrides_and_unassigned_siblings_reach_both_export_pat
         let reused = compiler
             .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
-        assert!(std::rc::Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             compiled.part(part).unwrap(),
             reused.part(part).unwrap()
         ));
@@ -292,7 +293,7 @@ fn recessed_boolean_exports_face_materials_and_reuses_geometry_when_rebound() {
         let reused = compiler
             .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
-        assert!(std::rc::Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             compiled.part(part).unwrap(),
             reused.part(part).unwrap()
         ));

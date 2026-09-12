@@ -73,7 +73,7 @@ fn normal_policy_handles_partial_coverage_and_separates_cached_results() {
     assert_ne!(policy_fingerprint(&default), policy_fingerprint(&hybrid));
     assert_ne!(policy_fingerprint(&hybrid), policy_fingerprint(&custom));
     let reused = compiler.compile_parts(&assembly, &default).unwrap();
-    assert!(Rc::ptr_eq(
+    assert!(Arc::ptr_eq(
         reused.part(part).unwrap(),
         derived.part(part).unwrap()
     ));
@@ -127,7 +127,7 @@ fn baked_attribute_changes_cannot_reuse_topology_only_geometry() {
         );
         assert_eq!(updated_b.bodies[0].tri.uvs, [uv; 3]);
         assert_eq!(updated_b.bodies[0].regions[0].region, region);
-        assert!(Rc::ptr_eq(updated.part(a).unwrap(), first));
+        assert!(Arc::ptr_eq(updated.part(a).unwrap(), first));
         previous = updated_b.clone();
     }
     assert_eq!(compiler.counters().parts_compiled, 4);
