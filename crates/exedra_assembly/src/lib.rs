@@ -74,8 +74,8 @@ pub mod flatten;
 pub mod interchange;
 
 pub use assembly::{
-    Assembly, AssemblyError, Instance, InstanceId, InstancePath, PartDef, PartId, PartSource,
-    SlotIndex,
+    AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, PartDef, PartId,
+    PartSource, SlotIndex,
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{
