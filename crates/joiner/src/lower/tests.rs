@@ -182,7 +182,13 @@ fn shared_lowering_keeps_exceptional_cuts_materials_and_generated_identity() {
     let instances: Vec<_> = ["a", "b", "c", "d"]
         .map(|key| assembly.resolve_path(&instance_path(key)).unwrap())
         .into();
-    let part = |index: usize| assembly.instance(instances[index]).unwrap().part();
+    let part = |index: usize| {
+        assembly
+            .instance(instances[index])
+            .unwrap()
+            .part()
+            .expect("mesh-bearing test instance")
+    };
     assert_ne!(part(0), part(1));
     assert_eq!(part(0), part(2));
     assert_eq!(part(0), part(3));
@@ -212,7 +218,11 @@ fn shared_lowering_keeps_exceptional_cuts_materials_and_generated_identity() {
                 .map(|(_, value)| value.as_str()),
             (key == "d").then_some("fit")
         );
-        let PartSource::Recipe(actual) = assembly.part(definition.part()).unwrap().source() else {
+        let PartSource::Recipe(actual) = assembly
+            .part(definition.part().expect("mesh-bearing test instance"))
+            .unwrap()
+            .source()
+        else {
             panic!("recipe")
         };
         assert_eq!(

@@ -1008,7 +1008,7 @@ mod tests {
         assert_eq!(last.placement().rows[2][3], 3.0);
         assert_eq!(last.metadata(), &[("role".into(), "frame_member".into())]);
         let slot = assembly
-            .part(last.part())
+            .part(last.part().expect("mesh-bearing test instance"))
             .expect("part")
             .slot_index("surface")
             .expect("slot");
@@ -1251,7 +1251,7 @@ mod tests {
                 .iter()
                 .map(|instance| InstanceState {
                     key: instance.key().to_string(),
-                    part: instance.part(),
+                    part: instance.part().expect("mesh-bearing test instance"),
                     parent: instance.parent(),
                     placement: instance.placement().rows,
                     bindings: instance.bindings().to_vec(),

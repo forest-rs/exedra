@@ -136,7 +136,9 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
         let Some(inst) = assembly.instance(id) else {
             continue;
         };
-        if let (Some(def), Some(entry)) = (assembly.part(inst.part()), compiled.part(inst.part())) {
+        if let Some(part) = inst.part()
+            && let (Some(def), Some(entry)) = (assembly.part(part), compiled.part(part))
+        {
             let path = assembly
                 .path_of(id)
                 .unwrap_or_else(|| InstancePath(Vec::new()));
@@ -160,7 +162,7 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
                     path: path.clone(),
                     instance: id,
                     world,
-                    part: inst.part(),
+                    part,
                     body: crate::len_u32(body_index),
                     world_bounds,
                     regions,

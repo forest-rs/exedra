@@ -32,14 +32,16 @@ impl AppendMap {
 }
 
 impl Assembly {
-    /// Appends the source instance trees under a key prefix and root placement.
+    /// Appends source instance trees under `parent`, or at the root when `None`.
     ///
     /// Copies each referenced source part once, preserving sharing, slot order,
     /// region mappings and default materials. Instance bindings and metadata are
     /// copied unchanged. Unreferenced part definitions are omitted. Existing
     /// destination parts are not interned or reused by this operation.
     ///
-    /// Part keys and root-instance keys become `"{prefix}-{source_key}"`;
+    /// Source root placements are relative to the destination parent. Source
+    /// frames retain their identity and do not require an artificial part.
+    /// Part keys and source root-instance keys become `"{prefix}-{source_key}"`;
     /// descendant keys and local placements retain their source values. The
     /// supplied placement is composed onto source roots only. The prefix must
     /// be nonempty and contain no `/`. Returned handles associate source records
@@ -47,16 +49,17 @@ impl Assembly {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid prefix, a destination key collision,
+    /// Returns an error for an unknown parent, an invalid prefix, a destination key collision,
     /// a nonfinite supplied or composed root placement, or exhausted handles.
     /// On any returned error, the destination remains unchanged.
     pub fn append(
         &mut self,
+        parent: Option<InstanceId>,
         source: &Self,
         prefix: &str,
         placement: Placement3,
     ) -> Result<AppendMap, AssemblyError> {
-        self.append_selected(source, prefix, placement, |_, _| true)
+        self.append_selected(parent, source, prefix, placement, |_, _| true)
     }
 
     /// Appends selected source instance subtrees, with the same contract as [`Self::append`].
@@ -72,6 +75,7 @@ impl Assembly {
     /// Reports the same errors as [`Self::append`], without changing the destination.
     pub fn append_selected(
         &mut self,
+        parent: Option<InstanceId>,
         source: &Self,
         prefix: &str,
         placement: Placement3,
@@ -83,6 +87,11 @@ impl Assembly {
         if !finite_placement(&placement) {
             return Err(AssemblyError::NonFinitePlacement);
         }
+        if let Some(parent) = parent
+            && self.instance(parent).is_none()
+        {
+            return Err(AssemblyError::UnknownInstance(parent));
+        }
         let mut selected = vec![false; source.instances.len()];
         let mut used = vec![false; source.parts.len()];
         for (i, instance) in source.instances.iter().enumerate() {
@@ -91,7 +100,9 @@ impl Assembly {
             }
             if include(InstanceId(crate::len_u32(i)), instance) {
                 selected[i] = true;
-                used[instance.part.0 as usize] = true;
+                if let Some(part) = instance.part {
+                    used[part.0 as usize] = true;
+                }
             }
         }
         let part_count = used.iter().filter(|v| **v).count();
@@ -120,8 +131,10 @@ impl Assembly {
         }
         let mut instances: Vec<Instance> = Vec::with_capacity(instance_count);
         let mut roots = Vec::new();
-        let root_keys: HashSet<&str> = self
-            .roots
+        let siblings = parent.map_or(self.roots.as_slice(), |id| {
+            self.instances[id.0 as usize].children.as_slice()
+        });
+        let root_keys: HashSet<&str> = siblings
             .iter()
             .map(|root| self.instances[root.0 as usize].key.as_str())
             .collect();
@@ -131,9 +144,10 @@ impl Assembly {
             }
             let id = InstanceId(crate::len_u32(self.instances.len() + instances.len()));
             let mut copied = instance.clone();
-            copied.part = map
-                .part(instance.part)
-                .expect("selected instance uses a copied part");
+            copied.part = instance.part.map(|part| {
+                map.part(part)
+                    .expect("selected instance uses a copied part")
+            });
             copied.parent = instance
                 .parent
                 .map(|p| map.instance(p).expect("selected ancestor was copied first"));
@@ -142,10 +156,11 @@ impl Assembly {
                 let parent = &mut instances[parent.0 as usize - self.instances.len()];
                 parent.children.push(id);
             } else {
+                copied.parent = parent;
                 copied.key = format!("{prefix}-{}", instance.key);
                 if root_keys.contains(copied.key.as_str()) {
                     return Err(AssemblyError::DuplicateChildKey {
-                        parent: None,
+                        parent,
                         key: copied.key,
                     });
                 }
@@ -168,7 +183,10 @@ impl Assembly {
             self.parts.push(part);
         }
         self.instances.extend(instances);
-        self.roots.extend(roots);
+        match parent {
+            Some(parent) => self.instances[parent.0 as usize].children.extend(roots),
+            None => self.roots.extend(roots),
+        }
         self.content_generation += u64::from(crate::len_u32(part_count));
         Ok(map)
     }

@@ -157,7 +157,12 @@ mod tests {
             let instance = resolve_instance_path(&scenario.assembly, path)
                 .unwrap_or_else(|| panic!("missing named pendentive {path}"));
             assert_eq!(
-                scenario.assembly.instance(instance).unwrap().part(),
+                scenario
+                    .assembly
+                    .instance(instance)
+                    .unwrap()
+                    .part()
+                    .expect("mesh-bearing test instance"),
                 shared_part
             );
         }

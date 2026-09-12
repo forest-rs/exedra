@@ -22,9 +22,11 @@ deterministic, and cache-friendly.
   `exedra_mesh::Mesh`, registered under an opaque frontend-supplied `PartKey`
   string. Parts declare material slot names and an optional mapping from
   tessellation regions (`FACE_REGION` values) to slots.
-- **Instance trees.** Instances reference a part, carry an f64 `Placement3`,
-  slot-to-material-key bindings, and an opaque metadata bag. Each instance
-  has a frontend-supplied string key unique among its siblings.
+- **Instance trees.** Instances carry an optional part association, an `f64`
+  `Placement3`, and opaque metadata. Geometry-bearing instances have
+  slot-to-material-key bindings; geometry-free frames preserve ancestry and
+  placements without registering a part or accepting material bindings. Each
+  instance has a frontend-supplied string key unique among its siblings.
 - **Calm common-case defaults.** Registering a recipe with exactly one
   material slot makes that slot the part-wide default. Zero-slot and
   multi-slot recipes remain explicit. Deterministic instance traversal is

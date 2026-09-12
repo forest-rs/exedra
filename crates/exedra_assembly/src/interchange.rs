@@ -1,12 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! `exedra-assembly-v1`: the JSON interchange schema for assemblies.
+//! JSON interchange for assembly parts, spatial frames and instances.
 //!
-//! Mirrors the `exedra-recipe-v1` policy (see that module's ADR-0003):
-//! dedicated DTO types — never derives on internal types — additive-only
-//! evolution within version 1, unknown *fields* tolerated, unknown part
-//! *source kinds* hard errors (an assembly is executable content).
+//! Dedicated DTO types keep internal representation separate from storage.
+//! Every instance must supply `part`: an index associates geometry and explicit
+//! null denotes a geometry-free frame. Unknown fields are tolerated, but missing
+//! part associations and unknown part source kinds are hard errors rather than
+//! silently omitted geometry.
 //! Deserialization rebuilds through the validated [`Assembly`] API,
 //! re-running every check; the correctness oracle is
 //! [`assembly_fingerprint`] equality across a round trip.
@@ -30,7 +31,7 @@ use crate::compile::assembly_fingerprint;
 
 /// Format name in the header.
 pub const FORMAT: &str = "exedra-assembly";
-/// Format version this module reads and writes.
+/// Current format version.
 pub const VERSION: u32 = 1;
 
 /// Top-level interchange document.
@@ -112,8 +113,11 @@ pub struct InstanceDto {
     pub parent: Option<u32>,
     /// The sibling-unique instance key.
     pub key: String,
-    /// Index into `parts`.
-    pub part: u32,
+    /// Index into `parts`, or `None` for a geometry-free frame.
+    /// The field must be present in the document; only explicit `null` means a frame.
+    // An explicit deserializer prevents Serde from defaulting an absent field to None.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub part: Option<u32>,
     /// Placement rows (3x4 row-major).
     pub placement: [[f64; 4]; 3],
     /// Slot-to-material bindings.
@@ -223,19 +227,18 @@ pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
         .instances()
         .iter()
         .map(|inst| {
-            let def = assembly
-                .part(inst.part())
-                .expect("instances always reference registered parts");
+            let def = inst.part().and_then(|part| assembly.part(part));
             InstanceDto {
                 parent: inst.parent().map(|p| p.0),
                 key: String::from(inst.key()),
-                part: inst.part().0,
+                part: inst.part().map(|part| part.0),
                 placement: inst.placement().rows,
                 bindings: inst
                     .bindings()
                     .iter()
                     .map(|(slot, material)| SlotMaterialDto {
-                        slot: def.slots()[slot.0 as usize].clone(),
+                        slot: def.expect("bound instances have parts").slots()[slot.0 as usize]
+                            .clone(),
                         material: material.clone(),
                     })
                     .collect(),
@@ -294,8 +297,10 @@ pub fn from_dto(dto: &AssemblyDto) -> Result<Assembly, AssemblyInterchangeError>
         }
     }
     for (index, inst) in dto.instances.iter().enumerate() {
-        if inst.part as usize >= dto.parts.len() {
-            return Err(AssemblyInterchangeError::DanglingPart(inst.part));
+        if let Some(part) = inst.part
+            && part as usize >= dto.parts.len()
+        {
+            return Err(AssemblyInterchangeError::DanglingPart(part));
         }
         let parent = match inst.parent {
             Some(p) => {
@@ -306,14 +311,13 @@ pub fn from_dto(dto: &AssemblyDto) -> Result<Assembly, AssemblyInterchangeError>
             }
             None => None,
         };
-        let id = assembly.add_instance(
-            parent,
-            &inst.key,
-            PartId(inst.part),
-            exedra_constructive::ir::Placement3 {
-                rows: inst.placement,
-            },
-        )?;
+        let placement = exedra_constructive::ir::Placement3 {
+            rows: inst.placement,
+        };
+        let id = match inst.part {
+            Some(part) => assembly.add_instance(parent, &inst.key, PartId(part), placement)?,
+            None => assembly.add_frame(parent, &inst.key, placement)?,
+        };
         for binding in &inst.bindings {
             assembly.bind_material(id, &binding.slot, &binding.material)?;
         }
@@ -374,9 +378,11 @@ pub fn round_trips(assembly: &Assembly) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use exedra_constructive::builders;
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
     use exedra_constructive::tessellate::EvalPolicy;
+    use exedra_mesh::Mesh;
 
     fn slotted_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
@@ -415,9 +421,12 @@ mod tests {
         let baked = asm.add_baked_part("trim", mesh, &["shell"]).unwrap();
         asm.set_default_slot(baked, "shell").unwrap();
 
+        let frame = asm
+            .add_frame(None, "assembly", Placement3::IDENTITY)
+            .unwrap();
         let root = asm
             .add_instance(
-                None,
+                Some(frame),
                 "unit",
                 panel,
                 Placement3::rotate_z_then_translate(0.25, 10.0, 0.0, 0.0),
@@ -459,6 +468,44 @@ mod tests {
     }
 
     #[test]
+    fn instance_part_requires_an_explicit_index_or_null_without_bindings() {
+        let mut source = Assembly::new();
+        let mesh = Mesh::from_polygons(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[&[0, 1, 2]],
+        )
+        .unwrap();
+        let part = source.add_baked_part("triangle", mesh, &[]).unwrap();
+        source
+            .add_instance(None, "triangle", part, Placement3::IDENTITY)
+            .unwrap();
+        source
+            .add_frame(None, "frame", Placement3::IDENTITY)
+            .unwrap();
+        let wire = serde_json::to_value(to_dto(&source)).unwrap();
+        assert_eq!(wire["instances"][0]["part"], 0);
+        assert!(wire["instances"][1]["part"].is_null());
+        let dto: AssemblyDto = serde_json::from_value(wire.clone()).unwrap();
+        let rebuilt = from_dto(&dto).unwrap();
+        assert_eq!(
+            assembly_fingerprint(&source),
+            assembly_fingerprint(&rebuilt)
+        );
+
+        for misspelled in [false, true] {
+            let mut broken = wire.clone();
+            let instance = broken["instances"][0].as_object_mut().unwrap();
+            assert!(instance["bindings"].as_array().unwrap().is_empty());
+            let part = instance.remove("part").unwrap();
+            if misspelled {
+                instance.insert(String::from("prat"), part);
+            }
+            let error = serde_json::from_value::<AssemblyDto>(broken).unwrap_err();
+            assert!(error.to_string().contains("missing field `part`"));
+        }
+    }
+
+    #[test]
     fn header_and_reference_validation() {
         let asm = corpus_assembly();
         let mut dto = to_dto(&asm);
@@ -468,13 +515,13 @@ mod tests {
             Err(AssemblyInterchangeError::UnsupportedFormat)
         ));
         let mut dto = to_dto(&asm);
-        dto.version = 2;
+        dto.version = VERSION + 1;
         assert!(matches!(
             from_dto(&dto),
             Err(AssemblyInterchangeError::UnsupportedFormat)
         ));
         let mut dto = to_dto(&asm);
-        dto.instances[0].part = 99;
+        dto.instances[0].part = Some(99);
         assert!(matches!(
             from_dto(&dto),
             Err(AssemblyInterchangeError::DanglingPart(99))
