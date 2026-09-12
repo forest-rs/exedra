@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
+use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use serde_json::{Value, json};
@@ -72,11 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      assembly: &Assembly,
                      materials: &BTreeMap<&str, Value>|
      -> Result<(), Box<dyn std::error::Error>> {
-        let list = flatten(assembly, &compiled);
         let export = export_glb_with_materials(
             assembly,
             &compiled,
-            &list,
             &|key: &str| materials.get(key).cloned(),
             options,
         )?;

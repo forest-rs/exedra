@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Cabinet-door UVs survive constructive edge finishing and GLB export.
+//! Panel UVs survive constructive edge finishing and GLB export.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use exedra_mesh::{Mesh, op::set_corner_uv};
 use serde_json::json;
 
-fn door_mesh() -> Result<Mesh, Box<dyn Error>> {
+fn panel_mesh() -> Result<Mesh, Box<dyn Error>> {
     let mut mesh = tessellate_primitive(
         PrimitiveSpec::Box {
             size: [0.45, 0.024, 0.7],
@@ -56,10 +56,10 @@ fn door_mesh() -> Result<Mesh, Box<dyn Error>> {
     Ok(mesh)
 }
 
-fn door(policy: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
+fn panel(policy: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
     let mut builder = RecipeBuilder::new();
     let surface = builder.material_slot("surface");
-    let import = builder.add_import(door_mesh()?)?;
+    let import = builder.add_import(panel_mesh()?)?;
     let child = builder.with_material(surface).add(NodeKind::MeshImport {
         import,
         placement: Placement3::IDENTITY,
@@ -85,13 +85,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut fillet = RoundPolicy::fillet(0.004);
     fillet.chord_tolerance = 0.0001;
     for (name, finish) in [
-        ("door-sharp", None),
-        ("door-chamfer", Some(RoundPolicy::chamfer(0.004))),
-        ("door-fillet", Some(fillet)),
+        ("panel-sharp", None),
+        ("panel-chamfer", Some(RoundPolicy::chamfer(0.004))),
+        ("panel-fillet", Some(fillet)),
     ] {
         let mut assembly = Assembly::new();
-        let part = assembly.add_recipe_part(name, door(finish)?)?;
-        assembly.set_part_material(part, "surface", "door.surface")?;
+        let part = assembly.add_recipe_part(name, panel(finish)?)?;
+        assembly.set_part_material(part, "surface", "panel.surface")?;
         assembly.add_instance(None, name, part, Placement3::IDENTITY)?;
         let mut compiler = PartCompiler::new();
         let compiled = compiler.compile_parts(
@@ -105,7 +105,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         let glb = export_glb_with_materials(
             &assembly,
             &compiled,
-            &draw,
             &|_: &str| {
                 Some(json!({"pbrMetallicRoughness": {
                     "baseColorFactor": [0.6, 0.35, 0.15, 1.0],
@@ -127,9 +126,10 @@ mod tests {
     use exedra_mesh::{ExtractParams, FaceTriangulation, attr};
 
     #[test]
-    fn textured_door_has_no_missing_or_collapsed_uv_triangles() {
+    fn textured_panel_has_no_missing_or_collapsed_uv_triangles() {
         for policy in [RoundPolicy::chamfer(0.004), RoundPolicy::fillet(0.004)] {
-            let evaluated = evaluate(&door(Some(policy)).unwrap(), &EvalPolicy::default()).unwrap();
+            let evaluated =
+                evaluate(&panel(Some(policy)).unwrap(), &EvalPolicy::default()).unwrap();
             assert_eq!(evaluated.report.counters.edge_finish_passes, 1);
             let mesh = &evaluated.bodies[0].body.mesh;
             for corner in mesh.faces().flat_map(|f| mesh.face_loop(f)) {

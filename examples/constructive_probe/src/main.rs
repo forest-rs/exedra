@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use exedra_assembly::{Assembly, PartCompiler, flatten};
+use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::builders;
 use exedra_constructive::cache::EvalCache;
 use exedra_constructive::evaluate::{Evaluation, Fidelity, evaluate, evaluate_with_cache};
@@ -1026,14 +1026,8 @@ fn export(assembly: &Assembly, policy: &EvalPolicy, path: &Path) -> Result<Strin
     let compiled = compiler
         .compile_parts(assembly, &(*policy).into())
         .map_err(|e| format!("compile: {e}"))?;
-    let list = flatten(assembly, &compiled);
-    let glb = export_glb_with_options(
-        assembly,
-        &compiled,
-        &list,
-        GltfExportOptions::z_up_to_y_up(),
-    )
-    .map_err(|e| format!("glb: {e}"))?;
+    let glb = export_glb_with_options(assembly, &compiled, GltfExportOptions::z_up_to_y_up())
+        .map_err(|e| format!("glb: {e}"))?;
     std::fs::write(path, &glb.bytes).map_err(|e| format!("write: {e}"))?;
     Ok(format!(
         "glb nodes={} meshes={} primitives={} bytes={}",

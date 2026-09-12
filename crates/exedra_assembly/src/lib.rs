@@ -14,7 +14,7 @@
 //! It intentionally does not own: geometry math (that is [`exedra_mesh`] and
 //! [`exedra_constructive`]), parameter models, conditional logic, or
 //! pricing — those belong to the external runtimes that drive this crate —
-//! nor rendering itself, which consumes the flattened output.
+//! nor rendering itself, which consumes compiled buffers and instance poses.
 //!
 //! ## Identity
 //!
@@ -27,8 +27,8 @@
 //! ## Typical flow
 //!
 //! Register each distinct part once, place it any number of times, compile
-//! part-local geometry, then flatten the instance tree for a renderer or
-//! exporter:
+//! part-local geometry, then read the retained instance tree or flatten it for
+//! drawables with exact placed bounds:
 //!
 //! ```
 //! use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};

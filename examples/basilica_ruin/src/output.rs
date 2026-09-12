@@ -155,7 +155,6 @@ fn write_artifacts(output: &Path, scenario: &Scenario, obj: &str) -> (PathBuf, u
     let glb = exedra_gltf::export_glb_with_options(
         &scenario.assembly,
         &scenario.compiled,
-        &scenario.render_list,
         exedra_gltf::GltfExportOptions::z_up_to_y_up(),
     )
     .expect("the render list references its compiled assembly");
@@ -971,20 +970,12 @@ mod tests {
         }
 
         let options = exedra_gltf::GltfExportOptions::z_up_to_y_up();
-        let baseline_glb = exedra_gltf::export_glb_with_options(
-            &baseline.assembly,
-            &baseline.compiled,
-            &baseline.render_list,
-            options,
-        )
-        .expect("baseline exports");
-        let variant_glb = exedra_gltf::export_glb_with_options(
-            &variant.assembly,
-            &variant.compiled,
-            &variant.render_list,
-            options,
-        )
-        .expect("variant exports");
+        let baseline_glb =
+            exedra_gltf::export_glb_with_options(&baseline.assembly, &baseline.compiled, options)
+                .expect("baseline exports");
+        let variant_glb =
+            exedra_gltf::export_glb_with_options(&variant.assembly, &variant.compiled, options)
+                .expect("variant exports");
         assert_ne!(baseline_glb.bytes, variant_glb.bytes);
     }
 

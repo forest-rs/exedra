@@ -390,14 +390,12 @@ mod tests {
         let gltf_a = exedra_gltf::export_gltf_with_options(
             &a.assembly,
             &a.compiled,
-            &a.render_list,
             exedra_gltf::GltfExportOptions::z_up_to_y_up(),
         )
         .expect("matching assembly");
         let gltf_b = exedra_gltf::export_gltf_with_options(
             &b.assembly,
             &b.compiled,
-            &b.render_list,
             exedra_gltf::GltfExportOptions::z_up_to_y_up(),
         )
         .expect("matching assembly");
