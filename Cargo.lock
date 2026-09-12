@@ -1578,6 +1578,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "beffa227304dbaea3ad6a06ac674f9bc83a3dec3b7f63eeb442de37e7cb6bb01"
 
 [[package]]
+name = "yingzao_fashi_pavilion"
+version = "0.0.0"
+dependencies = [
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_gltf",
+ "exedra_math",
+ "exedra_mesh",
+ "joiner",
+ "joiner_timber",
+ "serde_json",
+ "setout",
+ "setout_generate",
+ "setout_joiner",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
