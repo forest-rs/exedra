@@ -37,10 +37,14 @@ deterministic, and cache-friendly.
   this crate only guarantees their stability semantics.
 - **Compilation and sharing.** Parts compile (tessellate) once per distinct
   (content fingerprint, policy fingerprint) pair; instances share compiled
-  results and their constructive reports. Dirty tracking runs through the
-  `invalidation` crate so a changed part invalidates only its own entry. An
-  error-level evaluation that emits no bodies is a typed compilation failure;
-  partial geometry remains available with its report intact.
+  results and their constructive reports through immutable `Arc` ownership.
+  Dirty tracking runs through the `invalidation` crate and addresses the last
+  successful compilation's local handles. Eviction releases the shared
+  content/policy entry for all aliases; failed compilation does not replace
+  the handle mapping. Published snapshots survive cache release and can cross
+  native thread boundaries. An error-level evaluation that emits no bodies is
+  a typed compilation failure; partial geometry remains available with its
+  report intact.
 - **The render seam.** `flatten()` produces a flat `RenderList` of
   (instance path, world placement, part reference, exact placed bounds,
   per-region index ranges with resolved material keys). Renderers and
@@ -66,7 +70,8 @@ It owns none of:
 
 - Material rebinding is a structure-level edit: it can never trigger
   re-tessellation, because geometry identity excludes bindings.
-- The crate is `no_std` + `alloc`; interchange (a host-side format) sits
+- The crate is `no_std` + `alloc`, with pointer-width atomics required for
+  shared compiled ownership. Interchange (a host-side format) sits
   behind a `serde` feature that implies `std`, matching the
   `exedra-recipe-v1` policy.
 - Cross-part geometry operations (a boolean between two instances) are out

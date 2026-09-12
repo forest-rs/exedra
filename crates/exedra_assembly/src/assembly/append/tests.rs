@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{CompilePolicy, InstancePath, PartCompiler, assembly_fingerprint, flatten};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use exedra_constructive::ir::{NodeKind, PrimitiveSpec, RecipeBuilder};
 use exedra_mesh::Mesh;
 
@@ -374,7 +374,7 @@ fn rebuilt_snapshots_reuse_compiled_geometry_despite_new_poses_and_local_handles
     assert_ne!(old_part, new_part);
     let second_compiled = compiler.compile_parts(&second, &policy).unwrap();
     assert!(
-        Rc::ptr_eq(old_geometry, second_compiled.part(new_part).unwrap()),
+        Arc::ptr_eq(old_geometry, second_compiled.part(new_part).unwrap()),
         "poses and local handle assignment do not identify geometry"
     );
     assert!(
@@ -397,11 +397,11 @@ fn rebuilt_snapshots_reuse_compiled_geometry_despite_new_poses_and_local_handles
     let resized_compiled = compiler.compile_parts(&resized, &policy).unwrap();
     assert_eq!(compiler.counters().parts_compiled, 2);
     assert!(
-        Rc::ptr_eq(old_geometry, resized_compiled.part(new_part).unwrap()),
+        Arc::ptr_eq(old_geometry, resized_compiled.part(new_part).unwrap()),
         "only the changed content compiles"
     );
     assert!(
-        !Rc::ptr_eq(
+        !Arc::ptr_eq(
             old_geometry,
             resized_compiled
                 .part(resized_map.part(PartId(0)).unwrap())

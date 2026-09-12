@@ -800,6 +800,7 @@ mod tests {
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     fn example() -> (Assembly, CompiledParts, RenderList) {
         let mut b = RecipeBuilder::new();
@@ -992,7 +993,7 @@ mod tests {
         let reused = compiler
             .compile_parts(&assembly, &CompilePolicy::default())
             .unwrap();
-        assert!(std::rc::Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             compiled.part(part).unwrap(),
             reused.part(part).unwrap()
         ));
