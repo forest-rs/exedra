@@ -54,6 +54,25 @@ placement and identity, not their geometry algorithms or rendering.
 The optional `serde` feature exposes host-side interchange. Core assembly and
 compilation remain `no_std` with `alloc`.
 
+## Composing assemblies
+
+Use `destination.append(&source, "west", placement)` to copy the source's
+instance trees into another assembly. The placement applies once, at each
+source root. Referenced parts retain their slot order, region mappings and
+default materials; instances retain bindings, metadata and part sharing.
+Unused part definitions are omitted. The returned `AppendMap` translates
+source part and instance handles into destination handles.
+
+`append_selected` takes an instance predicate. Omitting an instance prunes its
+whole subtree, and only parts used by retained instances are copied. A key
+collision or invalid placement leaves the destination unchanged.
+
+When replacing caller-written copy loops, note that only **part keys and root
+instance keys** receive the prefix (`west-frame`). Descendant keys retain their
+source spelling, so `frame/insert` becomes `west-frame/insert`. Separate appends
+do not intern part definitions; `PartCompiler` still reuses identical geometry
+by content. Material keys remain opaque caller-owned strings.
+
 ## Compile policy migration
 
 `PartCompiler::compile_parts` and `compile::policy_fingerprint` now accept

@@ -18,6 +18,9 @@ use alloc::vec::Vec;
 use exedra_constructive::ir::{Placement3, Recipe};
 use hashbrown::HashMap;
 
+mod append;
+pub use append::AppendMap;
+
 /// Index of a registered part within an [`Assembly`].
 ///
 /// Handles are only meaningful for the assembly that produced them; they
@@ -265,6 +268,8 @@ pub enum AssemblyError {
     DuplicateSlot(String),
     /// The placement contains non-finite values.
     NonFinitePlacement,
+    /// Appending would exceed the representable part or instance handles.
+    CapacityExceeded,
 }
 
 impl core::fmt::Display for AssemblyError {
@@ -284,6 +289,7 @@ impl core::fmt::Display for AssemblyError {
             }
             Self::DuplicateSlot(slot) => write!(f, "slot {slot:?} declared twice"),
             Self::NonFinitePlacement => write!(f, "placement contains non-finite values"),
+            Self::CapacityExceeded => write!(f, "assembly handle capacity exceeded"),
         }
     }
 }
