@@ -374,7 +374,12 @@ mod tests {
             resolve_instance_path(&scenario.assembly, names::instances::NAVE_WALL_NORTH_WEST)
                 .expect("named west clerestory resolves");
         assert_eq!(
-            scenario.assembly.instance(north_west).unwrap().part(),
+            scenario
+                .assembly
+                .instance(north_west)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance"),
             scenario
                 .assembly
                 .part_by_key(names::parts::NAVE_CLERESTORY_WEST)

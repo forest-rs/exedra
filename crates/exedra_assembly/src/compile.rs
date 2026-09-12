@@ -688,7 +688,13 @@ pub fn assembly_fingerprint(assembly: &Assembly) -> u128 {
     for inst in assembly.instances() {
         bytes.extend_from_slice(&inst.parent().map_or(u32::MAX, |p| p.0).to_le_bytes());
         push_str(&mut bytes, inst.key());
-        bytes.extend_from_slice(&inst.part().0.to_le_bytes());
+        match inst.part() {
+            Some(part) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&part.0.to_le_bytes());
+            }
+            None => bytes.push(0),
+        }
         for row in inst.placement().rows {
             for v in row {
                 bytes.extend_from_slice(&v.to_bits().to_le_bytes());

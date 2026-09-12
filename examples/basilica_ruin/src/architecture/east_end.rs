@@ -250,9 +250,22 @@ mod tests {
             .part_by_key("apse-roof")
             .expect("existing apse roof part key resolves");
 
-        assert_eq!(scenario.assembly.instance(apse).unwrap().part(), apse_part);
         assert_eq!(
-            scenario.assembly.instance(conch).unwrap().part(),
+            scenario
+                .assembly
+                .instance(apse)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance"),
+            apse_part
+        );
+        assert_eq!(
+            scenario
+                .assembly
+                .instance(conch)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance"),
             conch_part
         );
         assert_eq!(instances_with_role(&scenario.assembly, "apse"), [apse]);

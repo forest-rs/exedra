@@ -1386,6 +1386,33 @@
   "instances": [
     {
       "parent": null,
+      "key": "assembly",
+      "part": null,
+      "placement": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      ],
+      "bindings": [],
+      "metadata": []
+    },
+    {
+      "parent": 0,
       "key": "unit",
       "part": 0,
       "placement": [
@@ -1412,7 +1439,7 @@
       "metadata": []
     },
     {
-      "parent": 0,
+      "parent": 1,
       "key": "upper-panel",
       "part": 0,
       "placement": [
@@ -1449,7 +1476,7 @@
       ]
     },
     {
-      "parent": 0,
+      "parent": 1,
       "key": "edge",
       "part": 1,
       "placement": [

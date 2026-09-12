@@ -895,7 +895,10 @@ mod tests {
             .instances_with_ids()
             .zip(legacy.instances_with_ids())
         {
-            assert_eq!(patterned.part(), legacy.part());
+            assert_eq!(
+                patterned.part().expect("mesh-bearing test instance"),
+                legacy.part().expect("mesh-bearing test instance")
+            );
             for (generated, accepted) in patterned
                 .placement()
                 .rows
@@ -1007,7 +1010,13 @@ mod tests {
             assert_eq!(
                 members
                     .iter()
-                    .filter(|&&id| scenario.assembly.instance(id).unwrap().part() == part)
+                    .filter(|&&id| scenario
+                        .assembly
+                        .instance(id)
+                        .unwrap()
+                        .part()
+                        .expect("mesh-bearing test instance")
+                        == part)
                     .count(),
                 expected_count
             );
@@ -1015,7 +1024,10 @@ mod tests {
 
         for id in members {
             let instance = scenario.assembly.instance(id).unwrap();
-            let part = scenario.assembly.part(instance.part()).unwrap();
+            let part = scenario
+                .assembly
+                .part(instance.part().expect("mesh-bearing test instance"))
+                .unwrap();
             let surface = part.slot_index("surface").expect("truss surface slot");
             assert_eq!(
                 scenario.assembly.resolved_material(id, surface),
@@ -1325,8 +1337,18 @@ mod tests {
             let south_id = resolve_instance_path(&scenario.assembly, &south_path)
                 .unwrap_or_else(|| panic!("missing paired south rafter {south_path}"));
             assert_ne!(
-                scenario.assembly.instance(north_id).unwrap().part(),
-                scenario.assembly.instance(south_id).unwrap().part(),
+                scenario
+                    .assembly
+                    .instance(north_id)
+                    .unwrap()
+                    .part()
+                    .expect("mesh-bearing test instance"),
+                scenario
+                    .assembly
+                    .instance(south_id)
+                    .unwrap()
+                    .part()
+                    .expect("mesh-bearing test instance"),
                 "{prefix} uses distinct mirror-composed parts instead of a reflected instance"
             );
 

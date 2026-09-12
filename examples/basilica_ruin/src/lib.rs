@@ -237,7 +237,14 @@ mod tests {
             .expect("stable dome part key resolves");
         let dome_instance = resolve_instance_path(&assembly, names::instances::CROSSING_DOME)
             .expect("stable dome instance path resolves");
-        assert_eq!(assembly.instance(dome_instance).unwrap().part(), dome_part);
+        assert_eq!(
+            assembly
+                .instance(dome_instance)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance"),
+            dome_part
+        );
         assert_eq!(
             assembly.path_of(dome_instance).unwrap().to_string(),
             names::instances::CROSSING_DOME
@@ -250,7 +257,11 @@ mod tests {
             resolve_instance_path(&assembly, names::instances::PENDENTIVE_NORTH_EAST)
                 .expect("stable pendentive instance path resolves");
         assert_eq!(
-            assembly.instance(pendentive_instance).unwrap().part(),
+            assembly
+                .instance(pendentive_instance)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance"),
             pendentive_part
         );
 
@@ -278,11 +289,19 @@ mod tests {
         assert_eq!(pendentives.len(), 4);
         assert_eq!(truss_members.len(), 42);
         assert!(buttresses.iter().all(|&id| {
-            assembly.instance(id).unwrap().part()
+            assembly
+                .instance(id)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance")
                 == assembly.part_by_key(names::parts::AISLE_BUTTRESS).unwrap()
         }));
         assert!(windows.iter().all(|&id| {
-            assembly.instance(id).unwrap().part()
+            assembly
+                .instance(id)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance")
                 == assembly
                     .part_by_key(names::parts::DRUM_WINDOW_PANEL)
                     .unwrap()
@@ -391,7 +410,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0xabbe_d79d_50e4_790b_4b24_7a78_ad16_759d
+            0x3e0a_c6a9_6c2f_0850_b449_fd79_3394_835f
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);

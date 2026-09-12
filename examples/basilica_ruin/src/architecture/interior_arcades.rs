@@ -158,7 +158,12 @@ mod tests {
         )
         .expect("named interior arcade resolves");
         assert_eq!(
-            scenario.assembly.instance(north_west).unwrap().part(),
+            scenario
+                .assembly
+                .instance(north_west)
+                .unwrap()
+                .part()
+                .expect("mesh-bearing test instance"),
             scenario
                 .assembly
                 .part_by_key(names::parts::INTERIOR_ARCADE_WEST)

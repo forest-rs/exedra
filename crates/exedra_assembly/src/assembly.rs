@@ -21,6 +21,9 @@ use hashbrown::HashMap;
 mod append;
 pub use append::AppendMap;
 
+#[cfg(test)]
+mod frame_tests;
+
 /// Index of a registered part within an [`Assembly`].
 ///
 /// Handles are only meaningful for the assembly that produced them; they
@@ -131,11 +134,11 @@ impl PartDef {
     }
 }
 
-/// One placed use of a part in the instance tree.
+/// A spatial frame in the instance tree, optionally placing a part.
 #[derive(Clone, Debug)]
 pub struct Instance {
     key: String,
-    part: PartId,
+    part: Option<PartId>,
     parent: Option<InstanceId>,
     placement: Placement3,
     /// `(slot, material key)` pairs sorted by slot.
@@ -152,9 +155,9 @@ impl Instance {
         &self.key
     }
 
-    /// The part this instance places.
+    /// The part this instance places, or `None` for a geometry-free frame.
     #[must_use]
-    pub fn part(&self) -> PartId {
+    pub fn part(&self) -> Option<PartId> {
         self.part
     }
 
@@ -268,6 +271,8 @@ pub enum AssemblyError {
     DuplicateSlot(String),
     /// The placement contains non-finite values.
     NonFinitePlacement,
+    /// A material binding requires a part, but this instance is a frame.
+    NoPart(InstanceId),
     /// Appending would exceed the representable part or instance handles.
     CapacityExceeded,
 }
@@ -289,6 +294,7 @@ impl core::fmt::Display for AssemblyError {
             }
             Self::DuplicateSlot(slot) => write!(f, "slot {slot:?} declared twice"),
             Self::NonFinitePlacement => write!(f, "placement contains non-finite values"),
+            Self::NoPart(instance) => write!(f, "frame {instance:?} has no material slots"),
             Self::CapacityExceeded => write!(f, "assembly handle capacity exceeded"),
         }
     }
@@ -518,10 +524,42 @@ impl Assembly {
         part: PartId,
         placement: Placement3,
     ) -> Result<InstanceId, AssemblyError> {
+        self.add_instance_inner(parent, key, Some(part), placement)
+    }
+
+    /// Adds a geometry-free spatial frame under `parent`, or at the root.
+    ///
+    /// Frames carry local placements, stable paths and opaque metadata, and can
+    /// parent frames or part instances. They register no part and require no
+    /// compilation. This is distinct from a part whose evaluated geometry is empty.
+    /// Frames have no material slots; bindings belong to geometry-bearing instances.
+    ///
+    /// # Errors
+    ///
+    /// Fails on unknown parent, invalid or duplicate sibling key, or a nonfinite
+    /// placement. Parents must already exist, so cycles cannot be constructed.
+    pub fn add_frame(
+        &mut self,
+        parent: Option<InstanceId>,
+        key: &str,
+        placement: Placement3,
+    ) -> Result<InstanceId, AssemblyError> {
+        self.add_instance_inner(parent, key, None, placement)
+    }
+
+    fn add_instance_inner(
+        &mut self,
+        parent: Option<InstanceId>,
+        key: &str,
+        part: Option<PartId>,
+        placement: Placement3,
+    ) -> Result<InstanceId, AssemblyError> {
         if key.is_empty() || key.contains('/') {
             return Err(AssemblyError::InvalidKey(key.to_string()));
         }
-        if self.parts.get(part.0 as usize).is_none() {
+        if let Some(part) = part
+            && self.parts.get(part.0 as usize).is_none()
+        {
             return Err(AssemblyError::UnknownPart(part));
         }
         if !placement
@@ -573,8 +611,8 @@ impl Assembly {
     ///
     /// # Errors
     ///
-    /// Fails when the instance is unknown or its part declares no such
-    /// slot.
+    /// Fails when the instance is unknown, is a geometry-free frame, or its
+    /// part declares no such slot.
     pub fn bind_material(
         &mut self,
         instance: InstanceId,
@@ -585,7 +623,8 @@ impl Assembly {
             .instances
             .get(instance.0 as usize)
             .ok_or(AssemblyError::UnknownInstance(instance))?
-            .part;
+            .part
+            .ok_or(AssemblyError::NoPart(instance))?;
         let index = self.parts[part.0 as usize]
             .slot_index(slot)
             .ok_or_else(|| AssemblyError::UnknownSlot {
@@ -694,7 +733,7 @@ impl Assembly {
         if let Some(key) = inst.binding(slot) {
             return Some(key);
         }
-        self.parts[inst.part.0 as usize].default_material(slot)
+        self.parts[inst.part?.0 as usize].default_material(slot)
     }
 }
 

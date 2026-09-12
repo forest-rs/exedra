@@ -78,7 +78,9 @@ fn copies_geometry_bindings_metadata_and_hierarchy_without_losing_sharing() {
         ],
     };
     let mut destination = populated();
-    let map = destination.append(&source, "west", placement).unwrap();
+    let map = destination
+        .append(None, &source, "west", placement)
+        .unwrap();
 
     assert_eq!(destination.parts().len(), 3);
     assert_eq!(destination.instances().len(), 5);
@@ -103,7 +105,10 @@ fn copies_geometry_bindings_metadata_and_hierarchy_without_losing_sharing() {
         PartSource::Baked(_)
     ));
     let copied = destination.instance(map.instance(child).unwrap()).unwrap();
-    assert_eq!(copied.part(), map.part(baked).unwrap());
+    assert_eq!(
+        copied.part().expect("mesh-bearing test instance"),
+        map.part(baked).unwrap()
+    );
     assert_eq!(copied.parent(), map.instance(root));
     assert_eq!(copied.key(), "insert");
     assert_eq!(
@@ -122,8 +127,9 @@ fn copies_geometry_bindings_metadata_and_hierarchy_without_losing_sharing() {
         destination
             .instance(map.instance(second_child).unwrap())
             .unwrap()
-            .part(),
-        copied.part()
+            .part()
+            .expect("mesh-bearing test instance"),
+        copied.part().expect("mesh-bearing test instance")
     );
     assert_eq!(
         destination
@@ -188,7 +194,9 @@ fn copies_geometry_bindings_metadata_and_hierarchy_without_losing_sharing() {
 fn selection_prunes_subtrees_and_preserves_source_order() {
     let mut source = populated();
     let root = source.roots()[0];
-    let part = source.instances()[0].part();
+    let part = source.instances()[0]
+        .part()
+        .expect("mesh-bearing test instance");
     let omitted = source
         .add_instance(Some(root), "omit", part, Placement3::IDENTITY)
         .unwrap();
@@ -207,6 +215,7 @@ fn selection_prunes_subtrees_and_preserves_source_order() {
     let mut destination = Assembly::new();
     let map = destination
         .append_selected(
+            None,
             &source,
             "copy",
             Placement3::translate(10.0, 0.0, 0.0),
@@ -244,7 +253,7 @@ fn late_errors_leave_every_destination_record_unchanged() {
     let before = assembly_fingerprint(&destination);
     let generation = destination.content_generation();
     assert_eq!(
-        destination.append(&source, "copy", Placement3::IDENTITY),
+        destination.append(None, &source, "copy", Placement3::IDENTITY),
         Err(AssemblyError::DuplicateChildKey {
             parent: None,
             key: "copy-last".into()
@@ -261,7 +270,12 @@ fn late_errors_leave_every_destination_record_unchanged() {
     // The first root is staged successfully; only the second composition overflows.
     source.instances[1].placement = Placement3::translate(f64::MAX, 0.0, 0.0);
     assert_eq!(
-        destination.append(&source, "copy", Placement3::translate(f64::MAX, 0.0, 0.0)),
+        destination.append(
+            None,
+            &source,
+            "copy",
+            Placement3::translate(f64::MAX, 0.0, 0.0)
+        ),
         Err(AssemblyError::NonFinitePlacement)
     );
     assert_eq!(assembly_fingerprint(&destination), before);
@@ -275,13 +289,18 @@ fn validates_prefix_placement_and_part_collisions() {
     let mut destination = populated();
     for prefix in ["", "a/b"] {
         assert_eq!(
-            destination.append(&source, prefix, Placement3::IDENTITY),
+            destination.append(None, &source, prefix, Placement3::IDENTITY),
             Err(AssemblyError::InvalidKey(prefix.into()))
         );
     }
     for value in [f64::NAN, f64::INFINITY] {
         assert_eq!(
-            destination.append(&source, "copy", Placement3::translate(value, 0.0, 0.0)),
+            destination.append(
+                None,
+                &source,
+                "copy",
+                Placement3::translate(value, 0.0, 0.0)
+            ),
             Err(AssemblyError::NonFinitePlacement)
         );
     }
@@ -290,7 +309,7 @@ fn validates_prefix_placement_and_part_collisions() {
         .unwrap();
     let before = assembly_fingerprint(&destination);
     assert_eq!(
-        destination.append(&source, "copy", Placement3::IDENTITY),
+        destination.append(None, &source, "copy", Placement3::IDENTITY),
         Err(AssemblyError::DuplicatePartKey("copy-existing".into()))
     );
     assert_eq!(assembly_fingerprint(&destination), before);
@@ -302,10 +321,12 @@ fn empty_selection_is_a_noop_and_capacity_is_checked_without_overflow() {
     let before = assembly_fingerprint(&destination);
     let generation = destination.content_generation();
     destination
-        .append(&Assembly::new(), "empty", Placement3::IDENTITY)
+        .append(None, &Assembly::new(), "empty", Placement3::IDENTITY)
         .unwrap();
     let map = destination
-        .append_selected(&populated(), "empty", Placement3::IDENTITY, |_, _| false)
+        .append_selected(None, &populated(), "empty", Placement3::IDENTITY, |_, _| {
+            false
+        })
         .unwrap();
     assert_eq!(map.part(PartId(0)), None);
     assert_eq!(map.instance(InstanceId(0)), None);
@@ -328,7 +349,9 @@ fn rebuilt_snapshots_reuse_compiled_geometry_despite_new_poses_and_local_handles
     let mut compiler = PartCompiler::new();
     let policy = CompilePolicy::default();
     let mut first = populated();
-    let first_map = first.append(&source, "copy", Placement3::IDENTITY).unwrap();
+    let first_map = first
+        .append(None, &source, "copy", Placement3::IDENTITY)
+        .unwrap();
     let first_compiled = compiler.compile_parts(&first, &policy).unwrap();
     let old_part = first_map.part(PartId(0)).unwrap();
     let old_geometry = first_compiled.part(old_part).unwrap();
@@ -338,7 +361,7 @@ fn rebuilt_snapshots_reuse_compiled_geometry_despite_new_poses_and_local_handles
     // Rebuild structure with different part IDs, a new pose and new bindings.
     let mut second = Assembly::new();
     let second_map = second
-        .append(&source, "copy", Placement3::translate(5.0, 2.0, 1.0))
+        .append(None, &source, "copy", Placement3::translate(5.0, 2.0, 1.0))
         .unwrap();
     second
         .bind_material(
@@ -369,7 +392,7 @@ fn rebuilt_snapshots_reuse_compiled_geometry_despite_new_poses_and_local_handles
         .unwrap();
     let mut resized = second.clone();
     let resized_map = resized
-        .append(&source, "resized", Placement3::IDENTITY)
+        .append(None, &source, "resized", Placement3::IDENTITY)
         .unwrap();
     let resized_compiled = compiler.compile_parts(&resized, &policy).unwrap();
     assert_eq!(compiler.counters().parts_compiled, 2);

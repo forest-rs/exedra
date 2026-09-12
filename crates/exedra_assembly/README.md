@@ -54,10 +54,31 @@ placement and identity, not their geometry algorithms or rendering.
 The optional `serde` feature exposes host-side interchange. Core assembly and
 compilation remain `no_std` with `alloc`.
 
+## Spatial frames
+
+`Assembly::add_frame(parent, key, placement)` adds a real spatial frame without
+registering geometry. Frames can parent other frames or part instances, and
+carry the same stable paths and metadata. A part that evaluates to empty geometry
+remains a part instance; it is not converted into a frame.
+
+`Instance::part()` now returns `Option<PartId>`. Geometry consumers must handle
+`None`; material binding on a frame returns `AssemblyError::NoPart`. Use
+`add_instance` unchanged for geometry-bearing occurrences. `flatten` visits
+children of frames and emits only their geometry.
+
+Assembly interchange requires every instance to supply `part`: an integer
+associates geometry and explicit `null` denotes a frame. Omitting the field is
+an error. Structural assembly fingerprints distinguish frames from
+geometry-bearing instances; geometry and compilation policy fingerprints remain
+independent of the instance tree.
+
 ## Composing assemblies
 
-Use `destination.append(&source, "west", placement)` to copy the source's
-instance trees into another assembly. The placement applies once, at each
+Use `destination.append(None, &source, "west", placement)` to copy the source's
+instance trees into another assembly. Both append methods now take an explicit
+parent as their first argument: pass `None` for the previous root-level behavior,
+or `Some(frame)` to attach a composed assembly below an existing instance.
+The placement applies once, at each
 source root. Referenced parts retain their slot order, region mappings and
 default materials; instances retain bindings, metadata and part sharing.
 Unused part definitions are omitted. The returned `AppendMap` translates
