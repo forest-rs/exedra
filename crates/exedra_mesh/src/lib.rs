@@ -140,7 +140,9 @@ pub use mesh::{
 };
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
-pub use render::{ExtractMode, ExtractParams, ExtractStats, TriMesh, TrimeshCache};
+pub use render::{
+    ExtractMode, ExtractParams, ExtractStats, TriMesh, TriMeshGeometryError, TrimeshCache,
+};
 pub use round::{
     RoundError, RoundFaceSource, RoundKind, RoundPolicy, RoundResult, RoundStats, round_edges,
     round_sharp_edges,
