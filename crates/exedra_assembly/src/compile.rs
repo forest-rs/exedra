@@ -108,6 +108,9 @@ pub struct RegionRange {
     pub start: u32,
     /// Number of indices (multiple of 3).
     pub count: u32,
+    /// Whether every emitted triangle corner in this range has finite authored
+    /// UVs. Extraction's zero fallback for missing attributes does not count.
+    pub has_uvs: bool,
 }
 
 /// One tessellated body of a compiled part, region-grouped for rendering.
@@ -523,14 +526,21 @@ fn compile_body(
     let regions_layer = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
     let triangle_count = tri.indices.len() / 3;
     let mut tri_regions = Vec::with_capacity(triangle_count);
+    let mut tri_uvs = Vec::with_capacity(triangle_count);
+    let uv_layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
     for face in mesh.faces() {
         let (triangles, _) = mesh.face_triangles_counted(face, FaceTriangulation::Robust);
         let region = regions_layer
             .and_then(|layer| layer.get(face.as_id()).copied())
             .unwrap_or(0);
         let slot = material_for_face(face);
-        for _ in 0..triangles.len() {
+        for triangle in &triangles {
             tri_regions.push((region, slot));
+            tri_uvs.push(triangle.iter().all(|corner| {
+                uv_layer
+                    .and_then(|layer| layer.get((*corner).into()))
+                    .is_some_and(|uv| uv.iter().all(|v| v.is_finite()))
+            }));
         }
     }
     debug_assert_eq!(
@@ -549,12 +559,14 @@ fn compile_body(
         match regions.last_mut() {
             Some(last) if last.region == region && last.material_slot == material_slot => {
                 last.count += 3;
+                last.has_uvs &= tri_uvs[t as usize];
             }
             _ => regions.push(RegionRange {
                 region,
                 material_slot,
                 start,
                 count: 3,
+                has_uvs: tri_uvs[t as usize],
             }),
         }
         let base = t as usize * 3;

@@ -5,7 +5,7 @@
 //!
 //! Exedra defines no shared material model. Callers own their material IDs,
 //! descriptions, storage, and conversion to glTF. This module checks the
-//! supported untextured glTF subset at the export boundary.
+//! supported glTF subset at the export boundary.
 
 use serde_json::Value;
 
@@ -18,10 +18,11 @@ use serde_json::Value;
 /// regions never invoke the resolver. An omitted material name defaults to the
 /// key; a caller-supplied name and `extras` are preserved.
 ///
-/// This first path supports core untextured glTF material fields. Texture
-/// references and extensions are rejected explicitly because their resource
-/// tables and capabilities are not supplied by this interface. Other unknown
-/// fields are also rejected, so spelling mistakes cannot silently lose intent.
+/// Core material factors and `pbrMetallicRoughness.baseColorTexture` are supported.
+/// Texture indices address this resolver's resources through
+/// [`Self::resolve_texture`], not a previous export's texture table. Only
+/// `TEXCOORD_0` is supported. Other texture fields, extensions, and unknown fields
+/// are rejected, so spelling mistakes cannot silently lose intent.
 /// Colors must use glTF's linear factor convention.
 ///
 /// Closures implement this trait:
@@ -41,6 +42,31 @@ use serde_json::Value;
 pub trait MaterialResolver {
     /// Returns a glTF material object for `key`, or `None` if unavailable.
     fn resolve(&self, key: &str) -> Option<Value>;
+
+    /// Supplies a texture referenced by a material's caller-local index.
+    ///
+    /// Called once per used index, in first-use order. Keep resources fixed
+    /// during export. The default supports existing untextured resolvers.
+    fn resolve_texture(&self, _index: u32) -> Option<Texture<'_>> {
+        None
+    }
+}
+
+/// Caller-owned encoded image and glTF sampling parameters.
+///
+/// This is export transport data, not a shared material model. Identical image
+/// bytes share storage even when textures use different samplers. The exporter
+/// checks the image signature, not full decodability or color-profile contents.
+#[derive(Clone, Debug)]
+pub struct Texture<'a> {
+    /// Complete, valid encoded PNG or JPEG bytes. Base-color images use sRGB.
+    pub image: &'a [u8],
+    /// `image/png` or `image/jpeg`, matching the encoded image.
+    pub mime_type: &'a str,
+    /// Optional core glTF sampler object. Supports `magFilter`, `minFilter`,
+    /// `wrapS`, `wrapT`, `name`, and `extras`; unknown fields are refused.
+    /// `None` leaves sampling to glTF defaults.
+    pub sampler: Option<Value>,
 }
 
 impl<F: Fn(&str) -> Option<Value>> MaterialResolver for F {
@@ -93,6 +119,10 @@ pub(crate) fn validate(mut value: Value, key: &str) -> Result<Value, crate::Gltf
             let valid = match field.as_str() {
                 "baseColorFactor" => color(value, 4),
                 "metallicFactor" | "roughnessFactor" => unit(value),
+                "baseColorTexture" => {
+                    validate_texture_info(value, key)?;
+                    true
+                }
                 "extras" => true,
                 _ => {
                     return Err(crate::GltfError::UnsupportedMaterialField {
@@ -124,6 +154,41 @@ pub(crate) fn validate(mut value: Value, key: &str) -> Result<Value, crate::Gltf
         return Err(invalid("alphaCutoff"));
     }
     Ok(value)
+}
+
+fn validate_texture_info(value: &Value, key: &str) -> Result<(), crate::GltfError> {
+    let invalid = |field: &str| crate::GltfError::InvalidMaterial {
+        key: key.to_owned(),
+        field: texture_field(field),
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("baseColorTexture"))?;
+    if object
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|index| u32::try_from(index).ok())
+        .is_none()
+    {
+        return Err(invalid("baseColorTexture.index"));
+    }
+    for (field, value) in object {
+        match field.as_str() {
+            "index" | "extras" => {}
+            "texCoord" if value.as_u64() == Some(0) => {}
+            _ => {
+                return Err(crate::GltfError::UnsupportedMaterialField {
+                    key: key.to_owned(),
+                    field: texture_field(&format!("baseColorTexture.{field}")),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn texture_field(field: &str) -> String {
+    format!("pbrMetallicRoughness.{field}")
 }
 
 #[cfg(test)]
@@ -189,7 +254,7 @@ mod tests {
         for material in [
             json!({"normalTexture": {"index": 0}}),
             json!({"extensions": {"KHR_materials_unlit": {}}}),
-            json!({"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}),
+            json!({"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 0}}}),
             json!({"roughnes": 0.5}),
         ] {
             assert!(matches!(
