@@ -167,3 +167,12 @@ and `exedra_constructive` for the geometry side of the boundary.
 ## License
 
 Apache-2.0 OR MIT
+
+### UV coverage
+
+`RegionRange::has_uvs` records whether all emitted triangle corners in the range
+have finite authored UVs. Render buffers still use zero for missing coordinates;
+consumers can now distinguish that fallback from intentionally authored zero.
+When migrating hand-built `RegionRange` values, supply `has_uvs` from the source
+attribute coverage; do not infer it from nonzero render coordinates. Compilation
+populates it automatically, independently of material binding.

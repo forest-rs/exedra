@@ -55,15 +55,19 @@ mod inspect;
 mod materials;
 #[cfg(test)]
 mod slot_tests;
+mod textures;
 
 #[cfg(test)]
 mod normal_tests;
 
 #[cfg(test)]
+mod texture_tests;
+
+#[cfg(test)]
 mod hierarchy_tests;
 
 pub use inspect::GlbDocument;
-pub use materials::MaterialResolver;
+pub use materials::{MaterialResolver, Texture};
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -108,6 +112,12 @@ pub struct GltfStats {
     pub primitives: u64,
     /// Distinct materials emitted.
     pub materials: u64,
+    /// Distinct encoded images embedded, after byte-content sharing.
+    pub images: u64,
+    /// Distinct image/sampler combinations emitted.
+    pub textures: u64,
+    /// Encoded image bytes, excluding alignment padding (part of `buffer_bytes`).
+    pub image_bytes: u64,
     /// Total bytes in the embedded buffer.
     pub buffer_bytes: u64,
 }
@@ -149,6 +159,29 @@ impl GltfExportOptions {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum GltfError {
+    /// A referenced caller-local texture index has no resource.
+    MissingTexture {
+        /// Index supplied by the material resolver's texture reference.
+        index: u32,
+    },
+    /// A texture resource has an invalid encoding signature or sampler field.
+    InvalidTexture {
+        /// Caller-local texture index.
+        index: u32,
+        /// Rejected resource field.
+        field: &'static str,
+    },
+    /// A textured region contains missing or non-finite authored UVs.
+    MissingTextureCoordinates {
+        /// Bound material key.
+        material: String,
+        /// Assembly-local part.
+        part: u32,
+        /// Body within the part.
+        body: usize,
+        /// Geometric region within the body.
+        region: u32,
+    },
     /// A bound material key has no description in the supplied resolver.
     MissingMaterial {
         /// The unresolved assembly material key.
@@ -194,6 +227,19 @@ pub enum GltfError {
 impl std::fmt::Display for GltfError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::MissingTexture { index } => write!(f, "no texture resource for index {index}"),
+            Self::InvalidTexture { index, field } => {
+                write!(f, "texture {index} has invalid field {field:?}")
+            }
+            Self::MissingTextureCoordinates {
+                material,
+                part,
+                body,
+                region,
+            } => write!(
+                f,
+                "material {material:?} requires authored UVs in part {part}, body {body}, region {region}"
+            ),
             Self::MissingMaterial { key } => write!(f, "no material description for {key:?}"),
             Self::InvalidMaterial { key, field } => {
                 write!(f, "material {key:?} has invalid field {field:?}")
@@ -255,7 +301,7 @@ pub fn export_gltf_with_options(
     finish_gltf(build_export(assembly, compiled, options, None)?)
 }
 
-/// Exports glTF using real, caller-resolved untextured PBR materials.
+/// Exports glTF using real, caller-resolved glTF materials.
 ///
 /// Resolution is strict: bound keys must have valid descriptions. Unassigned
 /// regions remain without a material. Geometry is read from `compiled`; material
@@ -266,8 +312,9 @@ pub fn export_gltf_with_options(
 ///
 /// Returns [`GltfError::MissingMaterial`], [`GltfError::InvalidMaterial`], or
 /// [`GltfError::UnsupportedMaterialField`] for unresolved, invalid, or unsupported
-/// used descriptions, and geometry errors under the same conditions as
-/// [`export_gltf`].
+/// used descriptions. Texture references can return [`GltfError::MissingTexture`],
+/// [`GltfError::InvalidTexture`], or [`GltfError::MissingTextureCoordinates`].
+/// Geometry errors follow the same conditions as [`export_gltf`].
 pub fn export_gltf_with_materials(
     assembly: &Assembly,
     compiled: &CompiledParts,
@@ -326,14 +373,15 @@ pub fn export_glb_with_options(
     finish_glb(build_export(assembly, compiled, options, None)?)
 }
 
-/// Exports a GLB using real, caller-resolved untextured PBR materials.
+/// Exports a GLB using real, caller-resolved glTF materials.
 ///
 /// Uses the same strict resolution and geometry sharing contract as
 /// [`export_gltf_with_materials`], with geometry embedded in the GLB BIN chunk.
 ///
 /// # Errors
 ///
-/// Fails for missing, invalid, or unsupported used materials, mismatched compiled
+/// Fails for missing, invalid, or unsupported used materials/resources or missing
+/// authored texture coordinates, mismatched compiled
 /// sources, error-level geometry diagnostics, or a GLB exceeding its length limit.
 pub fn export_glb_with_materials(
     assembly: &Assembly,
@@ -451,6 +499,9 @@ fn build_export(
                 let mesh = emit_mesh(
                     geometry,
                     &regions,
+                    body,
+                    part,
+                    body_index,
                     &mut accessors,
                     &mut materials,
                     &mut material_index,
@@ -467,6 +518,17 @@ fn build_export(
         }
     }
     stats.nodes = nodes.len() as u64;
+
+    let textures = match resolver {
+        Some(resolver) => textures::embed(
+            &mut materials,
+            resolver,
+            &mut buffer,
+            &mut buffer_views,
+            &mut stats,
+        )?,
+        None => textures::TextureTables::default(),
+    };
 
     stats.buffer_bytes = buffer.len() as u64;
     let instance_roots: Vec<usize> = assembly.roots().iter().map(|id| id.0 as usize).collect();
@@ -507,6 +569,9 @@ fn build_export(
         ("nodes", nodes),
         ("meshes", meshes),
         ("materials", materials),
+        ("images", textures.images),
+        ("textures", textures.textures),
+        ("samplers", textures.samplers),
         ("accessors", accessors),
         ("bufferViews", buffer_views),
     ] {
@@ -680,6 +745,9 @@ fn emit_geometry(
 fn emit_mesh(
     geometry: GeometryAccessors,
     regions: &[ResolvedRegion],
+    body: &CompiledBody,
+    part: PartId,
+    body_index: usize,
     accessors: &mut Vec<Value>,
     materials: &mut Vec<Value>,
     material_index: &mut HashMap<String, usize>,
@@ -687,7 +755,7 @@ fn emit_mesh(
     resolver: Option<&dyn MaterialResolver>,
 ) -> Result<Value, GltfError> {
     let mut primitives: Vec<Value> = Vec::new();
-    for region in regions {
+    for (region, source) in regions.iter().zip(&body.regions) {
         let indices_accessor = accessors.len();
         accessors.push(json!({
             "bufferView": geometry.indices_view,
@@ -727,6 +795,18 @@ fn emit_mesh(
                     *entry.insert(materials.len() - 1)
                 }
             };
+            if materials[index]
+                .pointer("/pbrMetallicRoughness/baseColorTexture")
+                .is_some()
+                && !source.has_uvs
+            {
+                return Err(GltfError::MissingTextureCoordinates {
+                    material: material.clone(),
+                    part: part.0,
+                    body: body_index,
+                    region: region.region,
+                });
+            }
             primitive.insert("material".into(), json!(index));
         }
         primitives.push(Value::Object(primitive));

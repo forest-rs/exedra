@@ -100,9 +100,9 @@ let export = exedra_gltf::export_glb_with_materials(
 )?;
 ```
 
-The current export subset supports core untextured material factors, alpha, and
-sidedness. Names and `extras` are preserved. Missing IDs, invalid fields, and
-unsupported textures/extensions are typed errors; unassigned regions remain
+The current export subset supports core material factors, base-color textures,
+alpha, and sidedness. Names and `extras` are preserved. Missing IDs, invalid fields, and
+unsupported texture fields/extensions are typed errors; unassigned regions remain
 unassigned. Material-only edits reuse `compiled`, and differing instance
 finishes share geometry buffers.
 
@@ -119,3 +119,50 @@ The original functions below use hashed preview colors. See the runnable
 ## License
 
 Apache-2.0 OR MIT
+
+## Texture resources
+
+`MaterialResolver::resolve_texture` supplies encoded PNG/JPEG bytes and an
+optional core glTF sampler for caller-local texture indices referenced by
+`pbrMetallicRoughness.baseColorTexture`. The exporter remaps those indices,
+embeds only used images, and shares identical image bytes and sampler objects.
+Texture coordinates use `TEXCOORD_0`; other sets, normal textures, and extensions
+remain explicit errors. The exporter checks image signatures, not full image
+decodability; callers are responsible for supplying valid encoded images.
+
+Existing untextured resolver closures need no changes. Implement the optional
+method on a resolver type to supply textures; resource indices belong to that
+resolver, never to the assembly or a previous export. Textured regions require
+finite authored UVs at every emitted triangle corner. A default zero supplied
+by render extraction does not count as an authored coordinate.
+
+For example, a resolver can expose one caller-owned image:
+
+```rust
+use exedra_gltf::{MaterialResolver, Texture};
+use serde_json::{Value, json};
+
+struct Finish<'a> {
+    base_color_png: &'a [u8],
+}
+impl MaterialResolver for Finish<'_> {
+    fn resolve(&self, key: &str) -> Option<Value> {
+        (key == "wood").then(|| json!({
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {"index": 0},
+                "metallicFactor": 0.0
+            }
+        }))
+    }
+    fn resolve_texture(&self, index: u32) -> Option<Texture<'_>> {
+        (index == 0).then(|| Texture {
+            image: self.base_color_png,
+            mime_type: "image/png",
+            sampler: Some(json!({"wrapS": 10497, "wrapT": 10497})),
+        })
+    }
+}
+```
+
+`GltfStats` now includes `images`, `textures`, and `image_bytes`. For hand-built
+stats values, initialize those counters or use `..GltfStats::default()`.
