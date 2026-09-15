@@ -1401,8 +1401,9 @@ fn revolve_vertex_feature(ring: &DiscretizedLoop, loop_index: u16, point_index: 
 
 /// Tessellates a revolution: the profile's local `(x, y)` plane revolved
 /// about the local Y axis, `x` as radius and `y` as height, swept through
-/// `sweep` radians (counter-clockwise viewed from +Y), placed by
-/// `placement`.
+/// `sweep` radians by right-handed positive rotation about +Y, then placed
+/// by `placement`: `(x, y)` maps to `(x*cos(angle), y, -x*sin(angle))`.
+/// A positive quarter turn carries +X toward -Z, matching [`Placement3`].
 ///
 /// A full sweep (`sweep == tau`, compared exactly) closes on itself with a
 /// seam meridian tagged via edge seams; partial sweeps close their boundary
@@ -1412,6 +1413,15 @@ fn revolve_vertex_feature(ring: &DiscretizedLoop, loop_index: u16, point_index: 
 /// profile segment along the axis closes the section without producing a
 /// wall. Other segments along the axis are refused because revolving them
 /// would overlap topology.
+///
+/// # Migration
+///
+/// Since evaluation schema 27, positive angles follow the same +Y convention
+/// as placement rotations. Earlier versions swept +X toward +Z. To preserve
+/// old geometry, negate the Z column of the old placement (compose a local
+/// Z reflection before placement). New callers should use the ordinary
+/// right-handed convention without a sign correction. Serialized recipe
+/// shapes are unchanged, but earlier hashes and cached results invalidate.
 ///
 /// # Errors
 ///
@@ -1424,7 +1434,10 @@ pub fn tessellate_revolve(
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
     let d = discretize_profile(profile, &policy.discretize)?;
-    let flip = det3(placement) < 0.0;
+    // The ring connectivity below uses the old +Z angular parameterization.
+    // Reversing its angular direction reverses every face, independently of
+    // a reflection in the authored placement (including caps and pole fans).
+    let flip = det3(placement) >= 0.0;
     let full = sweep == core::f64::consts::TAU;
 
     // Radius is a half-plane coordinate, not a signed distance. Negative
@@ -1520,7 +1533,7 @@ pub fn tessellate_revolve(
         for (ring_index, ring) in d.rings().enumerate() {
             let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
             for (point_index, p) in ring.points.iter().enumerate() {
-                let v = [p[0] * c, p[1], p[0] * s];
+                let v = [p[0] * c, p[1], -p[0] * s];
                 let existing_axis = (p[0] == 0.0)
                     .then(|| axis_vertices[flat as usize])
                     .flatten();
@@ -4047,6 +4060,118 @@ mod tests {
             }
         }
         assert!(seam_edges > 0, "full sweep tags its closure meridian");
+    }
+
+    #[test]
+    fn quarter_revolve_matches_placement_rotation_and_outward_caps() {
+        let profile = annulus_square(3.0, 1.0);
+        let policy = EvalPolicy::default();
+        let d = discretize_profile(&profile, &policy.discretize).expect("profile");
+        let quarter = Placement3::euler_extrinsic_xyz_then_translate(
+            0.0,
+            core::f64::consts::FRAC_PI_2,
+            0.0,
+            [0.0; 3],
+        );
+        let rotated =
+            Placement3::euler_extrinsic_xyz_then_translate(0.3, -0.7, 0.2, [7.0, -2.0, 4.0]);
+        let mut mirrored = rotated;
+        for row in &mut mirrored.rows {
+            row[0] = -row[0];
+        }
+        for placement in [Placement3::IDENTITY, rotated, mirrored] {
+            let body = tessellate_revolve(
+                &profile,
+                &placement,
+                core::f64::consts::FRAC_PI_2,
+                CapMode::Both,
+                &policy,
+            )
+            .expect("quarter turn");
+            assert_clean(&body);
+            assert!(
+                body.mesh
+                    .boundary_loops()
+                    .expect("boundary loops")
+                    .is_empty()
+            );
+            assert!(
+                mesh_volume(&body.mesh) > 0.0,
+                "outward walls under reflection too"
+            );
+            let vertices: Vec<_> = body
+                .mesh
+                .vertices()
+                .map(|v| {
+                    body.mesh
+                        .vertex_position(v)
+                        .expect("position")
+                        .map(f64::from)
+                })
+                .collect();
+            let n = d.points_len();
+            for (i, point) in d.outer.points.iter().enumerate() {
+                let start = [point[0], point[1], 0.0];
+                let end = apply_placement(&quarter, start);
+                assert!(norm(sub(vertices[i], apply_placement(&placement, start))) < 1e-6);
+                assert!(
+                    norm(sub(
+                        vertices[vertices.len() - n + i],
+                        apply_placement(&placement, end)
+                    )) < 1e-6,
+                    "revolution must match the placement rotation, including its sign"
+                );
+            }
+            for face in body.mesh.faces() {
+                let tangent = match body.source_map.face_feature(face).expect("feature") {
+                    Feature::CapStart => [0.0, 0.0, 1.0], // outward: opposite initial -Z travel
+                    Feature::CapEnd => [-1.0, 0.0, 0.0],  // outward: final -X travel
+                    _ => continue,
+                };
+                let points: Vec<_> = body
+                    .mesh
+                    .face_loop(face)
+                    .map(|he| {
+                        body.mesh
+                            .vertex_position(body.mesh.to_vertex(he).expect("vertex"))
+                            .expect("position")
+                            .map(f64::from)
+                    })
+                    .collect();
+                let normal = cross(sub(points[1], points[0]), sub(points[2], points[0]));
+                let outward = placement
+                    .rows
+                    .map(|row| row[0] * tangent[0] + row[1] * tangent[1] + row[2] * tangent[2]);
+                assert!(
+                    dot(normal, outward) > 0.0,
+                    "cap winding follows angular direction"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn revolution_migration_reflection_preserves_legacy_quadrant() {
+        let placement = Placement3 {
+            rows: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0, 0.0],
+            ],
+        };
+        let body = tessellate_revolve(
+            &annulus_square(3.0, 1.0),
+            &placement,
+            core::f64::consts::FRAC_PI_2,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("migrated");
+        assert!(mesh_volume(&body.mesh) > 0.0);
+        for vertex in body.mesh.vertices() {
+            let p = body.mesh.vertex_position(vertex).expect("position");
+            assert!(p[0] >= 0.0 && p[2] >= 0.0, "legacy quarter occupies +X/+Z");
+        }
     }
 
     #[test]

@@ -419,7 +419,9 @@ pub enum NodeKind {
         /// Which caps to close.
         caps: CapMode,
     },
-    /// Revolve a profile about its local Y axis.
+    /// Revolve a profile by right-handed positive rotation about local +Y:
+    /// a quarter turn carries +X toward -Z, before applying placement.
+    /// See [`crate::tessellate::tessellate_revolve`] for the schema-27 migration.
     ///
     /// The profile lives in the local XY plane with profile x as radius
     /// and profile y as height along the axis, so the axis of revolution
@@ -2487,7 +2489,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xb6cfddf6068d38b355a46e22b3f9b150,
+            0xb96a0ffaafe8b7a9df21cdcfdd1e5bde,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }
