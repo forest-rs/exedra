@@ -393,12 +393,23 @@ fn intersect_pair(
     let interval_a = Interval::from_cut(&cut_a, direction);
     let interval_b = Interval::from_cut(&cut_b, direction);
 
+    // If a whole plane cut lies on a triangle edge, clipping it by the
+    // other interval does not make its endpoints face-interior. Exact plane
+    // signs establish the edge carrier without re-testing rounded points.
+    let cut_interior = |signs: [i8; 3]| {
+        (0_u8..3)
+            .find(|&i| signs[usize::from(i)] == 0 && signs[usize::from((i + 1) % 3)] == 0)
+            .map_or(EndpointSource::Interior, EndpointSource::Edge)
+    };
+    let interior_a = cut_interior(signs_a);
+    let interior_b = cut_interior(signs_b);
+
     // Overlap: max of the mins, min of the maxes; provenance follows
     // whichever cut point bounds the overlap.
     let (start_scalar, start_a, start_b) = if interval_a.min.0 >= interval_b.min.0 {
-        (interval_a.min.0, interval_a.min.1, EndpointSource::Interior)
+        (interval_a.min.0, interval_a.min.1, interior_b)
     } else {
-        (interval_b.min.0, EndpointSource::Interior, interval_b.min.1)
+        (interval_b.min.0, interior_a, interval_b.min.1)
     };
     let start_point = if interval_a.min.0 >= interval_b.min.0 {
         interval_a.min.2
@@ -406,9 +417,9 @@ fn intersect_pair(
         interval_b.min.2
     };
     let (end_scalar, end_a, end_b) = if interval_a.max.0 <= interval_b.max.0 {
-        (interval_a.max.0, interval_a.max.1, EndpointSource::Interior)
+        (interval_a.max.0, interval_a.max.1, interior_b)
     } else {
-        (interval_b.max.0, EndpointSource::Interior, interval_b.max.1)
+        (interval_b.max.0, interior_a, interval_b.max.1)
     };
     let end_point = if interval_a.max.0 <= interval_b.max.0 {
         interval_a.max.2
@@ -535,6 +546,30 @@ mod tests {
         BooleanCandidatePair {
             a: tri_ref(0),
             b: tri_ref(1),
+        }
+    }
+
+    #[test]
+    fn clipping_an_edge_in_the_other_plane_preserves_its_carrier() {
+        let a = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]];
+        // B's long edge is clipped at both ends by A. Those endpoints are
+        // still on B's edge, even though neither is a B source vertex.
+        let b = [[-1.0, 0.5, 0.0], [3.0, 0.5, 0.0], [0.5, 0.5, 1.0]];
+        for swapped in [false, true] {
+            let (a, b) = if swapped { (&b, &a) } else { (&a, &b) };
+            let PairOutcome::Segment(segment) = intersect_pair(pair(), a, b) else {
+                panic!("expected a segment");
+            };
+            for endpoint in [segment.start, segment.end] {
+                assert_eq!(
+                    if swapped {
+                        endpoint.source_a
+                    } else {
+                        endpoint.source_b
+                    },
+                    EndpointSource::Edge(0)
+                );
+            }
         }
     }
 

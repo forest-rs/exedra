@@ -23,7 +23,9 @@
 //! sample points lie exactly on the other mesh — so they classify first,
 //! by exact 2D containment of the patch faces in the counterpart face
 //! polygons: such patches become [`PatchSide::Boundary`] carrying the
-//! outward-normal agreement the stitch selection table consumes.
+//! outward-normal agreement the stitch selection table consumes. Cut vertices
+//! retain their opposing source-edge carriers, so realizing them as f32 does
+//! not erase proven incidence on a contact polygon's boundary.
 //!
 //! Suspicion is typed, never guessed: a patch is suspect when its cut
 //! network is provably incomplete (a graph edge attributed to one of its
@@ -283,6 +285,36 @@ fn classify_one_side(
         }
     }
 
+    // Retain the opposing source-edge carrier for each materialized cut
+    // vertex. f32 realization can move a proven boundary crossing a little
+    // to either side of its exact pre-split polygon.
+    let mut contact_carriers: ContactCarriers = HashMap::new();
+    if !contacts.is_empty() {
+        for (index, vertex) in graph.vertices.iter().enumerate() {
+            let Some(realized) = outcome.graph_vertices[index] else {
+                continue;
+            };
+            let anchor = match side {
+                MeshSide::A => vertex.anchor_b,
+                MeshSide::B => vertex.anchor_a,
+            };
+            let endpoints = match anchor {
+                super::MeshAnchor::Vertex(v) => Some((v, v)),
+                super::MeshAnchor::EdgeSpan(a, b) => Some((a, b)),
+                super::MeshAnchor::FaceInterior(_) => None,
+            };
+            if let Some((a, b)) = endpoints
+                && let (Some(a), Some(b)) =
+                    (other.mesh.vertex_position(a), other.mesh.vertex_position(b))
+            {
+                contact_carriers
+                    .entry(realized)
+                    .or_default()
+                    .push((promote(*a), promote(*b)));
+            }
+        }
+    }
+
     // --- Coplanar membership is also a patch boundary. The contact outline
     // can follow an existing mesh edge, in which case the transversal
     // intersection graph contributes no cut edge there. Classify each face
@@ -300,7 +332,7 @@ fn classify_one_side(
         let membership = contacts_by_face
             .get(&origin)
             .map_or(PatchContact::Clear, |indices| {
-                face_contact(geometry, face, contacts, indices, side)
+                face_contact(geometry, face, contacts, indices, side, &contact_carriers)
             });
         face_contacts.insert(face, membership);
     }
@@ -528,6 +560,8 @@ fn patch_contact(patch: &Patch, face_contacts: &HashMap<FaceId, PatchContact>) -
     }
 }
 
+type ContactCarriers = HashMap<VertexId, Vec<([f64; 3], [f64; 3])>>;
+
 /// Decides whether one post-split face lies inside a counterpart contact
 /// polygon.
 ///
@@ -545,6 +579,7 @@ fn face_contact(
     contacts: &[CoplanarContact],
     indices: &[u32],
     side: MeshSide,
+    carriers: &ContactCarriers,
 ) -> PatchContact {
     let first = &contacts[indices[0] as usize];
     let counterpart = |index: u32| match side {
@@ -567,7 +602,8 @@ fn face_contact(
     {
         let entry = &contacts[index as usize];
         let polygon = combined.as_deref().unwrap_or_else(|| counterpart(index));
-        let Some(inside) = face_inside_contact(geometry, face, entry.axis, polygon) else {
+        let Some(inside) = face_inside_contact(geometry, face, entry.axis, polygon, carriers)
+        else {
             return PatchContact::Ambiguous;
         };
         if inside {
@@ -622,15 +658,24 @@ fn face_inside_contact(
     face: FaceId,
     axis: usize,
     counterpart: &[[f64; 2]],
+    carriers: &ContactCarriers,
 ) -> Option<bool> {
     let mesh = geometry.mesh;
     let mut strictly_inside = 0;
     let mut strictly_outside = 0;
     let mut own_polygon = Vec::new();
     for half_edge in mesh.face_loop(face) {
-        let p = mesh.vertex_position(mesh.to_vertex(half_edge)?)?;
+        let vertex = mesh.to_vertex(half_edge)?;
+        let p = mesh.vertex_position(vertex)?;
         let projected = project_point(promote(*p), axis);
         own_polygon.push(projected);
+        if carriers.get(&vertex).is_some_and(|edges| {
+            edges
+                .iter()
+                .any(|&(a, b)| carrier_on_boundary(a, b, axis, counterpart))
+        }) {
+            continue;
+        }
         match place_point_in_polygon(projected, counterpart) {
             Placement::Inside => strictly_inside += 1,
             Placement::Outside => strictly_outside += 1,
@@ -1016,6 +1061,22 @@ fn project_triangle(t: [[f64; 3]; 3]) -> (usize, [[f64; 2]; 3]) {
     (axis, corners)
 }
 
+// Both ends must lie on one boundary segment. A triangulation diagonal with
+// endpoints on different boundary edges still crosses the polygon interior.
+fn carrier_on_boundary(a: [f64; 3], b: [f64; 3], axis: usize, polygon: &[[f64; 2]]) -> bool {
+    let endpoints = [project_point(a, axis), project_point(b, axis)];
+    polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .take(polygon.len())
+        .any(|(&p, &q)| {
+            endpoints.iter().all(|&v| {
+                orient2d(p, q, v) == Orientation::Collinear
+                    && (0..2).all(|i| (p[i].min(q[i])..=p[i].max(q[i])).contains(&v[i]))
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,6 +1109,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn boundary_carriers_exclude_interior_diagonals_and_extensions() {
+        let polygon = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
+        assert!(carrier_on_boundary(
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            2,
+            &polygon
+        ));
+        assert!(carrier_on_boundary(
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            2,
+            &polygon
+        ));
+        assert!(!carrier_on_boundary(
+            [0.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            2,
+            &polygon
+        ));
+        assert!(!carrier_on_boundary(
+            [-1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            2,
+            &polygon
+        ));
+        assert!(!carrier_on_boundary(
+            [0.0, 1e-15, 0.0],
+            [2.0, 1e-15, 0.0],
+            2,
+            &polygon
+        ));
     }
 
     #[test]
