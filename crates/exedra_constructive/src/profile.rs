@@ -458,6 +458,16 @@ impl Profile2 {
     ///
     /// Returns the first violated requirement.
     pub fn new(outer: Loop2, holes: Vec<Loop2>) -> Result<Self, ProfileError> {
+        Self::new_with_hole_check(outer, holes, |a, b| Ok(loops_conflict(a, b)))
+    }
+
+    // The offset caller supplies a budgeted separation check. Structural,
+    // winding and bounding-box checks remain owned here and cannot be skipped.
+    pub(crate) fn new_with_hole_check(
+        outer: Loop2,
+        holes: Vec<Loop2>,
+        mut conflict: impl FnMut(&Loop2, &Loop2) -> Result<bool, ProfileError>,
+    ) -> Result<Self, ProfileError> {
         if outer.signed_area() <= 0.0 {
             return Err(ProfileError::WrongWinding { hole: None });
         }
@@ -473,7 +483,7 @@ impl Profile2 {
         }
         for first in 0..holes.len() {
             for second in first + 1..holes.len() {
-                if loops_conflict(&holes[first], &holes[second]) {
+                if conflict(&holes[first], &holes[second])? {
                     return Err(ProfileError::OverlappingHoles { first, second });
                 }
             }
@@ -733,6 +743,17 @@ pub enum ProfileError {
         /// Index of the offending segment.
         seg: usize,
     },
+    /// Invalid absolute offset accuracy controls or clearance slack.
+    InvalidOffsetPolicy,
+    /// A whole-operation offset work budget was exhausted before the next charge.
+    OffsetBudgetExceeded {
+        /// Exhausted resource.
+        budget: crate::offset::OffsetBudget,
+        /// Caller-specified maximum.
+        maximum: u64,
+    },
+    /// Bounded offset checking could not sample a curve at the requested accuracy.
+    OffsetCheckSampling(crate::discretize::DiscretizeError),
     /// An offset distance was NaN or infinite.
     OffsetDistanceNotFinite,
     /// Offsetting an arc segment would drive its radius to zero or below,
@@ -826,6 +847,11 @@ impl core::fmt::Display for ProfileError {
             Self::NestedPolicy { seg } => {
                 write!(f, "segment {seg}: policy realizations must be concrete")
             }
+            Self::InvalidOffsetPolicy => write!(f, "invalid offset accuracy policy"),
+            Self::OffsetBudgetExceeded { budget, maximum } => {
+                write!(f, "offset {budget:?} budget of {maximum} exhausted")
+            }
+            Self::OffsetCheckSampling(error) => write!(f, "offset check sampling failed: {error}"),
             Self::OffsetDistanceNotFinite => write!(f, "offset distance is not finite"),
             Self::OffsetArcCollapsed { hole, seg } => {
                 write!(

@@ -29,6 +29,20 @@
 //!   contract**; the exact path is. Joinery profiles are overwhelmingly
 //!   rectilinear and rounded-rectilinear, and the exact path covers them.
 //!
+//! ## Explicit accuracy and work
+//!
+//! [`Profile2::offset_with_policy`] accepts an [`OffsetPolicy`] in recipe
+//! units instead of the legacy relative tolerances. It returns an
+//! [`OffsetResult`] with source correspondence, analytic/fitted method,
+//! requested fitting tolerance and charged work. Fitting is a tolerance
+//! target, **not a certified continuous error bound**: the pinned Kurbo
+//! fitter has a depth limit and may return an out-of-tolerance fit at that
+//! limit. Result checks use the bounded profile discretizer; their chord
+//! bounds do not certify continuous-curve topology or the fitted offset.
+//! A sampled clearance floor remains strictly positive: for nonzero
+//! offsets, slack must be smaller than the absolute distance. Zero work
+//! budgets refuse operations requiring that resource, without a partial result.
+//!
 //! ## Corners
 //!
 //! Where adjacent offset segments no longer meet, [`CornerPolicy`] decides
@@ -75,6 +89,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use kurbo::{BezPath, CubicBez, ParamCurve, ParamCurveDeriv, PathEl, Point, Shape, Vec2};
+
+#[path = "offset_policy.rs"]
+mod policy;
+use policy::OffsetContext;
+pub use policy::{OffsetBudget, OffsetMethod, OffsetPolicy, OffsetResult, OffsetRun, OffsetWork};
 
 use crate::ir::PolicyId;
 use crate::profile::{
@@ -177,6 +196,70 @@ impl Profile2 {
     /// assert_eq!(mortise.outer().segs().len(), 4);
     /// ```
     pub fn offset(&self, distance: f64, corners: CornerPolicy) -> Result<Self, ProfileError> {
+        self.offset_controlled(distance, corners, &mut OffsetContext::default())
+    }
+
+    /// Offsets with absolute recipe-unit accuracy controls, finite work limits,
+    /// and analytic-versus-fitted source correspondence.
+    ///
+    /// Migration: use this instead of [`Self::offset`] when relative legacy
+    /// tolerances or unchecked work costs are unsuitable. Read the geometry
+    /// from [`OffsetResult::profile`]; retain the result to keep derivation evidence.
+    /// Cubic fitting tolerance is a target, not a certified continuous bound.
+    /// Checks operate on bounded chord approximations; finer contacts can be
+    /// unresolved. Unsupported cubic corner trimming and collapsed topology
+    /// remain errors, never automatic repair.
+    ///
+    /// A zero distance copies the profile and records identity runs. Source
+    /// and result budgets still apply, but no fitting or checking is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the geometry errors of [`Self::offset`], or
+    /// [`ProfileError::InvalidOffsetPolicy`], [`ProfileError::OffsetBudgetExceeded`],
+    /// or [`ProfileError::OffsetCheckSampling`]. No partial result is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use exedra_constructive::{builders, offset::{CornerPolicy, OffsetMethod, OffsetPolicy}};
+    /// let tenon = builders::rect(40.0, 20.0).unwrap();
+    /// let policy = OffsetPolicy {
+    ///     fit_tolerance: 0.0001,
+    ///     check_tolerance: 0.001,
+    ///     undercut_slack: 0.005,
+    ///     ..Default::default()
+    /// };
+    /// let result = tenon.offset_with_policy(0.2, CornerPolicy::Round, &policy).unwrap();
+    /// assert!(result.runs.iter().all(|run| run.method == OffsetMethod::Analytic));
+    /// assert_eq!(result.work.cubic_fits, 0);
+    /// ```
+    pub fn offset_with_policy(
+        &self,
+        distance: f64,
+        corners: CornerPolicy,
+        policy: &OffsetPolicy,
+    ) -> Result<OffsetResult, ProfileError> {
+        policy.validate()?;
+        let mut context = OffsetContext {
+            policy: Some(*policy),
+            ..Default::default()
+        };
+        let profile = self.offset_controlled(distance, corners, &mut context)?;
+        Ok(OffsetResult {
+            profile,
+            policy: *policy,
+            work: context.work,
+            runs: context.runs,
+        })
+    }
+
+    fn offset_controlled(
+        &self,
+        distance: f64,
+        corners: CornerPolicy,
+        context: &mut OffsetContext,
+    ) -> Result<Self, ProfileError> {
         if !distance.is_finite() {
             return Err(ProfileError::OffsetDistanceNotFinite);
         }
@@ -185,37 +268,117 @@ impl Profile2 {
         {
             return Err(ProfileError::InvalidDimension);
         }
+        if distance != 0.0
+            && context
+                .policy
+                .is_some_and(|p| p.undercut_slack >= distance.abs())
+        {
+            return Err(ProfileError::InvalidOffsetPolicy);
+        }
+        for loop_ in core::iter::once(self.outer()).chain(self.holes()) {
+            context.charge(OffsetBudget::SourceSegments, loop_.segs().len() as u64)?;
+        }
         if distance == 0.0 {
+            for (index, loop_) in core::iter::once(self.outer())
+                .chain(self.holes())
+                .enumerate()
+            {
+                context.charge(OffsetBudget::ResultSegments, loop_.segs().len() as u64)?;
+                for seg in 0..crate::len_u32(loop_.segs().len()) {
+                    context.record(
+                        index.checked_sub(1),
+                        Some(seg),
+                        seg..seg + 1,
+                        OffsetMethod::Identity,
+                    );
+                }
+            }
             return Ok(self.clone());
         }
 
-        let outer = offset_loop(self.outer(), distance, corners, None)?;
+        let outer = offset_loop(self.outer(), distance, corners, None, context)?;
         let mut holes = Vec::with_capacity(self.holes().len());
         for (index, hole) in self.holes().iter().enumerate() {
-            holes.push(offset_loop(hole, distance, corners, Some(index))?);
+            holes.push(offset_loop(hole, distance, corners, Some(index), context)?);
         }
-        check_loop_separation(&outer, &holes)?;
-        Self::new(outer, holes)
+        check_loop_separation(&outer, &holes, context)?;
+        if context.policy.is_some() {
+            Self::new_with_hole_check(outer, holes, |a, b| {
+                let first = context.sample(a)?;
+                let second = context.sample(b)?;
+                context.charge(
+                    OffsetBudget::CheckPairs,
+                    first.len() as u64 * second.len() as u64
+                        + first.len() as u64
+                        + second.len() as u64,
+                )?;
+                Ok(rings_intersect(&first, &second)
+                    || ring_contains(&first, second[0])
+                    || ring_contains(&second, first[0]))
+            })
+        } else {
+            Self::new(outer, holes)
+        }
     }
 }
 
 /// Rejects offset holes that cross, touch, or escape the offset outer loop.
-fn check_loop_separation(outer: &Loop2, holes: &[Loop2]) -> Result<(), ProfileError> {
+fn check_loop_separation(
+    outer: &Loop2,
+    holes: &[Loop2],
+    context: &mut OffsetContext,
+) -> Result<(), ProfileError> {
     if holes.is_empty() {
         return Ok(());
     }
     let outer_path = outer.to_bez_path();
-    let outer_ring = flattened_ring(&outer_path, ring_tolerance(&outer_path));
+    let outer_ring = if context.policy.is_some() {
+        context.sample(outer)?
+    } else {
+        flattened_ring(&outer_path, ring_tolerance(&outer_path))
+    };
     for (index, hole) in holes.iter().enumerate() {
         let hole_path = hole.to_bez_path();
-        let hole_ring = flattened_ring(&hole_path, ring_tolerance(&hole_path));
-        let contact = rings_intersect(&outer_ring, &hole_ring)
-            || hole_ring.first().is_none_or(|p| !outer_path.contains(*p));
+        let hole_ring = if context.policy.is_some() {
+            context.sample(hole)?
+        } else {
+            flattened_ring(&hole_path, ring_tolerance(&hole_path))
+        };
+        context.charge(
+            OffsetBudget::CheckPairs,
+            outer_ring.len() as u64 * hole_ring.len() as u64 + outer_ring.len() as u64,
+        )?;
+        let contained = hole_ring.first().is_some_and(|p| {
+            if context.policy.is_some() {
+                ring_contains(&outer_ring, *p)
+            } else {
+                outer_path.contains(*p)
+            }
+        });
+        let contact = rings_intersect(&outer_ring, &hole_ring) || !contained;
         if contact {
             return Err(ProfileError::OffsetLoopContact { hole: index });
         }
     }
     Ok(())
+}
+
+// Even-odd containment; boundary contact is tested separately by rings_intersect.
+fn ring_contains(ring: &[Point], point: Point) -> bool {
+    let mut inside = false;
+    for (a, b) in ring
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+    {
+        if (a.y > point.y) != (b.y > point.y) {
+            let x = a.x + (point.y - a.y) / (b.y - a.y) * (b.x - a.x);
+            if point.x < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 fn ring_tolerance(path: &BezPath) -> f64 {
@@ -279,11 +442,12 @@ fn offset_loop(
     distance: f64,
     corners: CornerPolicy,
     hole: Option<usize>,
+    context: &mut OffsetContext,
 ) -> Result<Loop2, ProfileError> {
     let count = src.segs().len();
     let mut pieces = Vec::with_capacity(count);
     for (index, (from, seg)) in src.iter_with_starts().enumerate() {
-        pieces.push(build_piece(from, seg, distance, hole, index)?);
+        pieces.push(build_piece(from, seg, distance, hole, index, context)?);
     }
 
     let mut ends: Vec<Point> = pieces.iter().map(|p| p.end).collect();
@@ -314,6 +478,21 @@ fn offset_loop(
     let mut segs: Vec<Seg2> = Vec::with_capacity(count * 2);
     for index in 0..count {
         let piece = &pieces[index];
+        if context.policy.is_some()
+            && piece.kind.is_line()
+            && (ends[index] - starts[index]).dot(tangent_of(piece.start_normal)) <= 0.0
+        {
+            return Err(ProfileError::OffsetLoopDegenerate { hole });
+        }
+        let start = crate::len_u32(segs.len());
+        let (piece_count, method) = match &piece.kind {
+            PieceKind::Fitted(fitted) => (fitted.len(), OffsetMethod::Fitted),
+            _ => (1, OffsetMethod::Analytic),
+        };
+        context.charge(
+            OffsetBudget::ResultSegments,
+            piece_count as u64 + inserts[index].len() as u64,
+        )?;
         match &piece.kind {
             PieceKind::Line => segs.push(Seg2 {
                 to: ends[index],
@@ -340,11 +519,19 @@ fn offset_loop(
             }
             PieceKind::Fitted(fitted) => segs.extend(fitted.iter().cloned()),
         }
+        let end = crate::len_u32(segs.len());
+        context.record(hole, Some(crate::len_u32(index)), start..end, method);
         segs.extend(inserts[index].iter().cloned());
+        context.record(
+            hole,
+            None,
+            end..crate::len_u32(segs.len()),
+            OffsetMethod::Analytic,
+        );
     }
 
     let result = Loop2::new(segs).map_err(|_| ProfileError::OffsetLoopDegenerate { hole })?;
-    check_result(src, &result, distance, hole)?;
+    check_result(src, &result, distance, hole, context)?;
     Ok(result)
 }
 
@@ -359,12 +546,24 @@ fn check_result(
     result: &Loop2,
     distance: f64,
     hole: Option<usize>,
+    context: &mut OffsetContext,
 ) -> Result<(), ProfileError> {
     let src_path = src.to_bez_path();
     let result_path = result.to_bez_path();
     let tolerance = ring_tolerance(&src_path).max(ring_tolerance(&result_path));
-    let src_ring = flattened_ring(&src_path, tolerance);
-    let result_ring = flattened_ring(&result_path, tolerance);
+    let (src_ring, result_ring) = if context.policy.is_some() {
+        (context.sample(src)?, context.sample(result)?)
+    } else {
+        (
+            flattened_ring(&src_path, tolerance),
+            flattened_ring(&result_path, tolerance),
+        )
+    };
+    let n = result_ring.len() as u64;
+    context.charge(
+        OffsetBudget::CheckPairs,
+        n * n.saturating_sub(3) / 2 + n * src_ring.len() as u64,
+    )?;
 
     // Self-intersection first: a loop folded through itself usually flips
     // its winding too, and the fold is the more useful diagnosis.
@@ -377,7 +576,11 @@ fn check_result(
 
     let bounds = src_path.bounding_box();
     let scale = bounds.width().abs().max(bounds.height().abs());
-    let slack = distance.abs().max(scale) * UNDERCUT_SLACK_RATIO;
+    let slack = context
+        .policy
+        .map_or(distance.abs().max(scale) * UNDERCUT_SLACK_RATIO, |p| {
+            p.undercut_slack
+        });
     let floor = distance.abs() - slack;
     if src_ring.is_empty() {
         return Ok(());
@@ -427,6 +630,7 @@ fn build_piece(
     distance: f64,
     hole: Option<usize>,
     index: usize,
+    context: &mut OffsetContext,
 ) -> Result<Piece, ProfileError> {
     let (kind, policy) = match &seg.kind {
         SegKind::PolicyTo { policy, realized } => (realized.as_ref(), Some(*policy)),
@@ -485,7 +689,7 @@ fn build_piece(
             })
         }
         SegKind::Cubic { c1, c2 } => {
-            build_cubic_piece(from, to, *c1, *c2, seg.tag, policy, distance, hole)
+            build_cubic_piece(from, to, *c1, *c2, seg.tag, policy, distance, hole, context)
         }
         SegKind::PolicyTo { .. } => Err(ProfileError::NestedPolicy { seg: index }),
     }
@@ -504,6 +708,7 @@ fn build_cubic_piece(
     policy: Option<PolicyId>,
     distance: f64,
     hole: Option<usize>,
+    context: &mut OffsetContext,
 ) -> Result<Piece, ProfileError> {
     let degenerate = ProfileError::OffsetLoopDegenerate { hole };
     let cubic = CubicBez::new(from, c1, c2, to);
@@ -519,7 +724,11 @@ fn build_cubic_piece(
 
     let bounds = cubic.bounding_box();
     let scale = bounds.width().abs() + bounds.height().abs() + distance.abs();
-    let tolerance = (scale * CUBIC_OFFSET_TOLERANCE_RATIO).max(f64::MIN_POSITIVE);
+    let tolerance = context.policy.map_or(
+        (scale * CUBIC_OFFSET_TOLERANCE_RATIO).max(f64::MIN_POSITIVE),
+        |p| p.fit_tolerance,
+    );
+    context.charge(OffsetBudget::CubicFits, 1)?;
     let mut path = BezPath::new();
     // kurbo offsets along the left normal, this crate along the right one.
     kurbo::offset::offset_cubic(cubic, -distance, tolerance, &mut path);
@@ -997,7 +1206,7 @@ mod tests {
         );
     }
 
-    fn square_hole_profile() -> Profile2 {
+    pub(super) fn square_hole_profile() -> Profile2 {
         let outer = Loop2::new(vec![
             Seg2::line((20.0, 0.0)).tagged(SegTag(0)),
             Seg2::line((20.0, 20.0)).tagged(SegTag(1)),
@@ -1235,3 +1444,7 @@ mod tests {
         assert_eq!(actual_bytes, again_bytes);
     }
 }
+
+#[cfg(test)]
+#[path = "offset_policy_tests.rs"]
+mod policy_tests;
