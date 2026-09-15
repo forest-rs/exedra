@@ -324,6 +324,31 @@ pub enum Path3 {
         /// How profile frames orient along the path.
         frame: FramePolicy,
     },
+    /// Constant-section straight runs joined on tangent-bisector cut planes.
+    ///
+    /// Section orientation is transported by the shortest rotation between
+    /// segment directions. Local reversed spans fail; distant intersections
+    /// are not checked. See [`crate::tessellate::SweepChecks`].
+    MiteredPolyline {
+        /// Open path with at least two finite points; adjacent points differ.
+        points: Vec<[f64; 3]>,
+        /// Authored section-X direction in path-local coordinates. Projected
+        /// perpendicular to the first segment; must not be nearly parallel.
+        section_x: [f64; 3],
+        /// Maximum section-plane stretch, `1 / cos(turn / 2)`, finite and >= 1.
+        /// Exceeding it fails rather than changing the join style.
+        miter_limit: f64,
+    },
+}
+
+impl Path3 {
+    /// Authored path points, before any node placement.
+    #[must_use]
+    pub fn points(&self) -> &[[f64; 3]] {
+        match self {
+            Self::Polyline { points, .. } | Self::MiteredPolyline { points, .. } => points,
+        }
+    }
 }
 
 /// Parametric primitive specifications, evaluated via `exedra_primitives`.
@@ -1163,25 +1188,44 @@ impl RecipeBuilder {
                 caps: _,
             } => {
                 self.check_profile(*profile)?;
-                match path {
-                    Path3::Polyline { points, frame: _ } => {
-                        if points.len() < 2 {
-                            return Err(RecipeError::TooFewOperands {
-                                what: "sweep path points",
-                                count: points.len(),
-                            });
-                        }
-                        if points.iter().any(|p| p.iter().any(|v| !v.is_finite())) {
-                            return Err(RecipeError::InvalidParameter { what: "sweep path" });
-                        }
-                        if points.windows(2).any(|w| w[0] == w[1]) {
-                            return Err(RecipeError::InvalidParameter {
-                                what: "sweep path duplicate point",
-                            });
-                        }
-                        Ok(())
+                let points = path.points();
+                if points.len() < 2 {
+                    return Err(RecipeError::TooFewOperands {
+                        what: "sweep path points",
+                        count: points.len(),
+                    });
+                }
+                if points.iter().flatten().any(|v| !v.is_finite()) {
+                    return Err(RecipeError::InvalidParameter { what: "sweep path" });
+                }
+                if points.windows(2).any(|w| w[0] == w[1]) {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "sweep path duplicate point",
+                    });
+                }
+                if let Path3::MiteredPolyline {
+                    section_x,
+                    miter_limit,
+                    ..
+                } = path
+                {
+                    if !miter_limit.is_finite() || *miter_limit < 1.0 {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "sweep miter limit",
+                        });
+                    }
+                    if section_x.iter().any(|v| !v.is_finite()) || *section_x == [0.0; 3] {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "sweep section-X",
+                        });
+                    }
+                    if points.first() == points.last() {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "closed mitered sweep path",
+                        });
                     }
                 }
+                Ok(())
             }
             NodeKind::PlanarFace { profile, placement } => {
                 self.check_profile(*profile)?;
@@ -1672,6 +1716,23 @@ fn node_canon_bytes(
                     out.push(match frame {
                         FramePolicy::RotationMinimizing => 0,
                     });
+                }
+                Path3::MiteredPolyline {
+                    points,
+                    section_x,
+                    miter_limit,
+                } => {
+                    out.push(1);
+                    put_u32(out, len_u32(points.len()));
+                    for p in points {
+                        for &v in p {
+                            put_f64(out, v);
+                        }
+                    }
+                    for &v in section_x {
+                        put_f64(out, v);
+                    }
+                    put_f64(out, *miter_limit);
                 }
             }
             put_caps(out, *caps);
@@ -2426,7 +2487,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xa0d1_f6da_99c8_e4b8_cc66_1221_c517_aec8,
+            0xb6cfddf6068d38b355a46e22b3f9b150,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

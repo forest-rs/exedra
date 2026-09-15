@@ -266,6 +266,19 @@ pub enum NodeKindDto {
         /// Cap mode.
         caps: String,
     },
+    /// Explicitly oriented constant-section polyline with bounded miter joins.
+    MiteredSweep {
+        /// Profile index.
+        profile: u32,
+        /// Path-local points.
+        points: Vec<[f64; 3]>,
+        /// Authored path-local section-X direction.
+        section_x: [f64; 3],
+        /// Maximum section-plane stretch ratio.
+        miter_limit: f64,
+        /// Cap mode.
+        caps: String,
+    },
     /// Single-sided planar face.
     PlanarFace {
         /// Profile index.
@@ -602,15 +615,27 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             profile,
             path,
             caps,
-        } => {
-            let Path3::Polyline { points, frame } = path;
-            let FramePolicy::RotationMinimizing = frame;
-            NodeKindDto::Sweep {
+        } => match path {
+            Path3::Polyline { points, frame } => {
+                let FramePolicy::RotationMinimizing = frame;
+                NodeKindDto::Sweep {
+                    profile: profile.0,
+                    points: points.clone(),
+                    caps: caps_name(*caps),
+                }
+            }
+            Path3::MiteredPolyline {
+                points,
+                section_x,
+                miter_limit,
+            } => NodeKindDto::MiteredSweep {
                 profile: profile.0,
                 points: points.clone(),
+                section_x: *section_x,
+                miter_limit: *miter_limit,
                 caps: caps_name(*caps),
-            }
-        }
+            },
+        },
         NodeKind::PlanarFace { profile, placement } => NodeKindDto::PlanarFace {
             profile: profile.0,
             placement: placement_dto(placement),
@@ -831,6 +856,21 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             path: Path3::Polyline {
                 points: points.clone(),
                 frame: FramePolicy::RotationMinimizing,
+            },
+            caps: caps_value(caps)?,
+        },
+        NodeKindDto::MiteredSweep {
+            profile,
+            points,
+            section_x,
+            miter_limit,
+            caps,
+        } => NodeKind::Sweep {
+            profile: ProfileId(*profile),
+            path: Path3::MiteredPolyline {
+                points: points.clone(),
+                section_x: *section_x,
+                miter_limit: *miter_limit,
             },
             caps: caps_value(caps)?,
         },

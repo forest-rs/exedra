@@ -335,6 +335,7 @@ pub fn finish_edges(
             mesh,
             source_map,
             face_materials,
+            sweep_checks: None,
             refinement: None,
         },
         result.stats,

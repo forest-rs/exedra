@@ -235,14 +235,34 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             path,
             caps,
         } => {
-            let Path3::Polyline { points, frame } = path;
-            let FramePolicy::RotationMinimizing = frame;
-            let _ = write!(
-                line,
-                "sweep profile {} frame rmf points {} caps ",
-                profile.0,
-                points.len()
-            );
+            let points = path.points();
+            match path {
+                Path3::Polyline { frame, .. } => {
+                    let FramePolicy::RotationMinimizing = frame;
+                    let _ = write!(
+                        line,
+                        "sweep profile {} frame rmf points {} caps ",
+                        profile.0,
+                        points.len()
+                    );
+                }
+                Path3::MiteredPolyline {
+                    section_x,
+                    miter_limit,
+                    ..
+                } => {
+                    let _ = write!(
+                        line,
+                        "mitered_sweep profile {} section_x {} {} {} miter_limit {} points {} caps ",
+                        profile.0,
+                        hex(section_x[0]),
+                        hex(section_x[1]),
+                        hex(section_x[2]),
+                        hex(*miter_limit),
+                        points.len()
+                    );
+                }
+            }
             put_caps(line, *caps);
             for p in points {
                 let _ = write!(line, " {} {} {}", hex(p[0]), hex(p[1]), hex(p[2]));
@@ -826,11 +846,25 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 caps,
             }
         }
-        "sweep" => {
+        "sweep" | "mitered_sweep" => {
             expect(&mut tokens, "profile", line)?;
             let profile = ProfileId(next_u32(&mut tokens, line)?);
-            expect(&mut tokens, "frame", line)?;
-            expect(&mut tokens, "rmf", line)?;
+            let orientation = match tokens.next() {
+                Some("frame") if kind_name == "sweep" => {
+                    expect(&mut tokens, "rmf", line)?;
+                    None
+                }
+                Some("section_x") if kind_name == "mitered_sweep" => {
+                    let x = [
+                        next_f64(&mut tokens, line)?,
+                        next_f64(&mut tokens, line)?,
+                        next_f64(&mut tokens, line)?,
+                    ];
+                    expect(&mut tokens, "miter_limit", line)?;
+                    Some((x, next_f64(&mut tokens, line)?))
+                }
+                _ => return Err(TextError::Malformed { line }),
+            };
             expect(&mut tokens, "points", line)?;
             let count = next_u32(&mut tokens, line)? as usize;
             expect(&mut tokens, "caps", line)?;
@@ -845,9 +879,16 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             }
             NodeKind::Sweep {
                 profile,
-                path: Path3::Polyline {
-                    points,
-                    frame: FramePolicy::RotationMinimizing,
+                path: match orientation {
+                    None => Path3::Polyline {
+                        points,
+                        frame: FramePolicy::RotationMinimizing,
+                    },
+                    Some((section_x, miter_limit)) => Path3::MiteredPolyline {
+                        points,
+                        section_x,
+                        miter_limit,
+                    },
                 },
                 caps,
             }
@@ -1257,14 +1298,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 25\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 26\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 25\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 26\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

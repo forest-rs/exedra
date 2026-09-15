@@ -191,6 +191,26 @@ pub struct TessellatedBody {
     /// rather than provenance, and is preserved by cache and rigid-instance
     /// adapters.
     pub refinement: Option<RefineStats>,
+    /// Local sweep construction evidence. `None` means no sweep checks are
+    /// claimed (including legacy sweeps and geometry derived by other ops).
+    /// This is not a solid-validity certificate. Mutating the public mesh
+    /// invalidates the evidence, just as it invalidates source provenance.
+    pub sweep_checks: Option<SweepChecks>,
+}
+
+/// Local sweep construction and wall-realization evidence.
+///
+/// In path-local f64 geometry, every sampled profile vertex advances strictly
+/// forward along each run between the miter cuts. Placed f32 wall triangles retain
+/// strictly positive area projected onto their f64 wall normal, under either
+/// diagonal; emitted cap triangles retain their f64 winding too. This does not check distant-band
+/// intersections, unsampled curve interiors, or certify a closed solid.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SweepChecks {
+    /// Number of straight runs checked.
+    pub bands: usize,
+    /// Number of discretized section vertices checked per run, including holes.
+    pub section_vertices: usize,
 }
 
 /// Region values written into [`exedra_mesh::attr::FACE_REGION`].
@@ -266,10 +286,34 @@ pub enum TessellateError {
     /// an overflow to infinity or a positive primitive extent narrowing to
     /// zero).
     NonFiniteGeometry,
+    /// An open sweep needs finite points, distinct endpoints, distinct adjacent
+    /// points, and usable segment lengths.
+    InvalidSweepPath,
+    /// Section-X is nonfinite, zero, or within 1e-12 of parallel to the tangent.
+    InvalidSweepOrientation,
+    /// The miter limit must be finite and at least one.
+    InvalidMiterLimit,
+    /// The corner needs more section-plane stretch than the authored limit.
+    MiterLimitExceeded {
+        /// Corner point index.
+        point: usize,
+        /// Required section-plane stretch ratio.
+        required: f64,
+        /// Authored maximum ratio.
+        maximum: f64,
+    },
+    /// A sampled section vertex has no positive longitudinal span between cuts.
+    SweepFoldover {
+        /// Straight run index.
+        band: usize,
+        /// Flattened profile vertex index (outer loop, then holes).
+        vertex: usize,
+    },
     /// Distinct source vertices along one face edge narrow to the same `f32`
     /// position, so the placed mesh would carry a zero-length edge its
     /// source did not have (for example a placement far from the origin
-    /// relative to the feature size).
+    /// relative to the feature size). Also returned when a controlled sweep
+    /// wall or cap triangle collapses or reverses during placement or f32 narrowing.
     CollapsedGeometry,
     /// A declared cylinder requests more angular edges than the evaluation
     /// policy permits for one curved segment.
@@ -313,14 +357,34 @@ impl core::fmt::Display for TessellateError {
             Self::PathCusp { point } => {
                 write!(f, "sweep path reverses onto itself at point {point}")
             }
+            Self::InvalidSweepPath => write!(
+                f,
+                "sweep path needs finite distinct points and usable segment lengths"
+            ),
+            Self::InvalidSweepOrientation => write!(
+                f,
+                "sweep section-X must have a usable component perpendicular to the first segment"
+            ),
+            Self::InvalidMiterLimit => {
+                write!(f, "sweep miter limit must be finite and at least one")
+            }
+            Self::MiterLimitExceeded {
+                point,
+                required,
+                maximum,
+            } => write!(
+                f,
+                "sweep corner {point} needs miter ratio {required}, exceeding {maximum}"
+            ),
+            Self::SweepFoldover { band, vertex } => write!(
+                f,
+                "sweep band {band} collapses or reverses at section vertex {vertex}"
+            ),
             Self::NonFiniteGeometry => {
                 write!(f, "geometry is not representable at the f32 mesh boundary")
             }
             Self::CollapsedGeometry => {
-                write!(
-                    f,
-                    "distinct vertices collapse together at the f32 mesh boundary"
-                )
+                write!(f, "geometry collapses or reverses at the f32 mesh boundary")
             }
             Self::PrimitiveSegmentLimit { requested, maximum } => write!(
                 f,
@@ -629,6 +693,7 @@ fn rebuild_placed_primitive(
         mesh: build.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks: None,
         refinement: None,
     })
 }
@@ -781,6 +846,7 @@ pub fn tessellate_planar_face(
         mesh: result.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks: None,
         refinement: refinement_stats,
     })
 }
@@ -1047,6 +1113,7 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
         mesh: result.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks: None,
         refinement: refinement_stats,
     })
 }
@@ -1643,6 +1710,7 @@ pub fn tessellate_revolve(
         mesh: result.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks: None,
         refinement: None,
     })
 }
@@ -1876,6 +1944,7 @@ pub fn tessellate_loft(
         mesh: result.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks: None,
         refinement: None,
     })
 }
@@ -1995,6 +2064,225 @@ fn sweep_frames(
     Ok(frames)
 }
 
+/// Validates authored parameters without constructing frames or geometry.
+fn validate_mitered_path(
+    points: &[[f64; 3]],
+    section_x: [f64; 3],
+    miter_limit: f64,
+) -> Result<(), TessellateError> {
+    if !miter_limit.is_finite() || miter_limit < 1.0 {
+        return Err(TessellateError::InvalidMiterLimit);
+    }
+    if points.len() < 2
+        || points.first() == points.last()
+        || points.iter().flatten().any(|v| !v.is_finite())
+    {
+        return Err(TessellateError::InvalidSweepPath);
+    }
+    for pair in points.windows(2) {
+        sweep_direction(pair[0], pair[1])?;
+    }
+    initial_section_x(sweep_direction(points[0], points[1])?, section_x)?;
+    Ok(())
+}
+
+fn sweep_direction(a: [f64; 3], b: [f64; 3]) -> Result<[f64; 3], TessellateError> {
+    unit_vector(sub(b, a)).ok_or(TessellateError::InvalidSweepPath)
+}
+
+// Scale before normalization so finite very small/large inputs do not
+// underflow/overflow in the squared norm.
+fn unit_vector(v: [f64; 3]) -> Option<[f64; 3]> {
+    let largest = v.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
+    if largest == 0.0 || !largest.is_finite() || v.iter().any(|x| !x.is_finite()) {
+        return None;
+    }
+    let scaled = v.map(|x| x / largest);
+    Some(scale(scaled, 1.0 / norm(scaled)))
+}
+
+fn initial_section_x(t: [f64; 3], authored: [f64; 3]) -> Result<[f64; 3], TessellateError> {
+    let x = unit_vector(authored).ok_or(TessellateError::InvalidSweepOrientation)?;
+    let perpendicular = sub(x, scale(t, dot(x, t)));
+    let length = norm(perpendicular);
+    if length <= 1e-12 {
+        return Err(TessellateError::InvalidSweepOrientation);
+    }
+    Ok(scale(perpendicular, 1.0 / length))
+}
+
+fn mitered_frames(
+    points: &[[f64; 3]],
+    section_x: [f64; 3],
+    miter_limit: f64,
+) -> Result<Vec<SweepFrame>, TessellateError> {
+    validate_mitered_path(points, section_x, miter_limit)?;
+    let mut t = sweep_direction(points[0], points[1])?;
+    let mut u = initial_section_x(t, section_x)?;
+    let mut frames = Vec::with_capacity(points.len());
+    frames.push((points[0], u, cross(t, u), t));
+    for i in 1..points.len() - 1 {
+        let next = sweep_direction(points[i], points[i + 1])?;
+        if next == t {
+            frames.push((points[i], u, cross(t, u), t));
+            continue;
+        }
+        let sum = add(t, next);
+        let sum_length = norm(sum);
+        if sum_length <= 1e-12 {
+            return Err(TessellateError::PathCusp { point: i });
+        }
+        let m = scale(sum, 1.0 / sum_length);
+        // Half-angle identity avoids cancellation in dot(t, m) near reversal.
+        let cosine = sum_length * 0.5;
+        let ratio = 1.0 / cosine;
+        if ratio > miter_limit {
+            return Err(TessellateError::MiterLimitExceeded {
+                point: i,
+                required: ratio,
+                maximum: miter_limit,
+            });
+        }
+        let v = cross(t, u);
+        // Intersection of each incoming longitudinal line with the common
+        // bisector plane. These bases are intentionally not unit vectors.
+        let cut = |axis| sub(axis, scale(t, dot(axis, m) / cosine));
+        frames.push((points[i], cut(u), cut(v), m));
+        // Two reflections implement the shortest rotation taking t to next.
+        // Since u is perpendicular to t, the first reflection leaves u fixed.
+        u = sub(u, scale(m, 2.0 * dot(u, m)));
+        u = initial_section_x(next, u)?;
+        t = next;
+    }
+    frames.push((*points.last().expect("validated path"), u, cross(t, u), t));
+    Ok(frames)
+}
+
+fn sweep_point(frame: &SweepFrame, point: [f64; 2]) -> [f64; 3] {
+    add(
+        add(frame.0, scale(frame.1, point[0])),
+        scale(frame.2, point[1]),
+    )
+}
+
+// Check the actual f32 wall triangles against their f64 placed winding.
+// This catches collapsed edges and triangles, and rounding-induced inversion,
+// without treating topological closure as a geometric validity certificate.
+fn check_sweep_realization(
+    frames: &[SweepFrame],
+    profile: &DiscretizedProfile,
+    placement: &Placement3,
+) -> Result<(), TessellateError> {
+    for pair in frames.windows(2) {
+        for ring in profile.rings() {
+            for (i, &p) in ring.points.iter().enumerate() {
+                let q = ring.points[(i + 1) % ring.points.len()];
+                let placed = [
+                    sweep_point(&pair[0], p),
+                    sweep_point(&pair[0], q),
+                    sweep_point(&pair[1], q),
+                    sweep_point(&pair[1], p),
+                ]
+                .map(|point| apply_placement(placement, point));
+                let rounded = placed.map(|point| narrow(point).map(f64::from));
+                if rounded.iter().flatten().any(|v| !v.is_finite()) {
+                    return Err(TessellateError::NonFiniteGeometry);
+                }
+                let expected = cross(sub(placed[1], placed[0]), sub(placed[3], placed[0]));
+                // Audit both diagonals because mesh consumers may choose either.
+                for [a, b, c] in [[0, 1, 2], [0, 2, 3], [0, 1, 3], [1, 2, 3]] {
+                    let normal = cross(sub(rounded[b], rounded[a]), sub(rounded[c], rounded[a]));
+                    let orientation = dot(normal, expected);
+                    if !orientation.is_finite() || orientation <= 0.0 {
+                        return Err(TessellateError::CollapsedGeometry);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Tessellates an explicitly oriented, constant-section polyline rail.
+///
+/// `section_x` is in path-local coordinates, before `placement`. Its
+/// perpendicular projection onto the first section plane defines section X;
+/// Y completes a right-handed frame with the initial tangent. Shortest
+/// rotations transport that orientation across corners, with no world-axis
+/// reseeding. Corners are true miter cuts: straight runs preserve section
+/// dimensions. `miter_limit >= 1` bounds `1 / cos(turn / 2)`; no bevel fallback
+/// or automatic repair occurs.
+///
+/// Every sampled section vertex must advance along every run between its
+/// cuts. Successful results carry [`SweepChecks`], which describes this
+/// local f64 check, **not** global solid validity. Nonadjacent runs may still
+/// intersect. Curved profile interiors between samples are not certified.
+/// Placed f32 wall and cap triangles must also retain their f64 winding
+/// without collapse. Caps always use profile triangulation. If the chosen
+/// triangulation degenerates at f32 precision, evaluation fails rather than
+/// silently dropping triangles or selecting a different triangulation.
+/// Provenance and crease attribution follow [`tessellate_sweep`].
+///
+/// # Migration
+///
+/// Use this function or [`crate::ir::Path3::MiteredPolyline`] to opt into
+/// authored orientation and dimensional joins. Existing `tessellate_sweep`
+/// and `Path3::Polyline` retain their automatic seed and legacy ring joins.
+/// The new recipe operation round-trips through text and interchange;
+/// older readers cannot read it. Evaluation schema 26 invalidates old hashes.
+///
+/// # Errors
+///
+/// Rejects invalid paths/orientation/limits, reversals, excessive miters,
+/// locally collapsed or reversed spans, and normal tessellation failures.
+pub fn tessellate_mitered_sweep(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &[[f64; 3]],
+    section_x: [f64; 3],
+    miter_limit: f64,
+    caps: CapMode,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    let frames = mitered_frames(path, section_x, miter_limit)?;
+    let d = discretize_profile(profile, &policy.discretize)?;
+    for (band, pair) in frames.windows(2).enumerate() {
+        let direction = sweep_direction(pair[0].0, pair[1].0)?;
+        for (vertex, point) in d.rings().flat_map(|r| &r.points).enumerate() {
+            let start = sweep_point(&pair[0], *point);
+            let end = sweep_point(&pair[1], *point);
+            let span = dot(sub(end, start), direction);
+            if !span.is_finite() {
+                return Err(TessellateError::NonFiniteGeometry);
+            }
+            // Reserve rounding headroom for the f64 construction. Close-to-zero
+            // spans are numerically ambiguous and must not earn positive evidence.
+            let scale = start
+                .iter()
+                .chain(&end)
+                .map(|x| x.abs())
+                .fold(0.0_f64, f64::max);
+            if span <= scale * (64.0 * f64::EPSILON) {
+                return Err(TessellateError::SweepFoldover { band, vertex });
+            }
+        }
+    }
+    check_sweep_realization(&frames, &d, placement)?;
+    tessellate_sweep_rings(
+        profile,
+        placement,
+        path,
+        caps,
+        policy,
+        &d,
+        &frames,
+        Some(SweepChecks {
+            bands: path.len() - 1,
+            section_vertices: d.points_len(),
+        }),
+    )
+}
+
 /// Tessellates a sweep: the profile carried along a polyline path under a
 /// rotation-minimizing frame, placed by `placement`.
 ///
@@ -2017,9 +2305,22 @@ pub fn tessellate_sweep(
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
-    let flip = det3(placement) < 0.0;
     let d = discretize_profile(profile, &policy.discretize)?;
     let frames = sweep_frames(path, policy)?;
+    tessellate_sweep_rings(profile, placement, path, caps, policy, &d, &frames, None)
+}
+
+fn tessellate_sweep_rings(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &[[f64; 3]],
+    caps: CapMode,
+    policy: &EvalPolicy,
+    d: &DiscretizedProfile,
+    frames: &[SweepFrame],
+    sweep_checks: Option<SweepChecks>,
+) -> Result<TessellatedBody, TessellateError> {
+    let flip = det3(placement) < 0.0;
 
     // Ring creases at path corners: turn angle between adjacent segments.
     let corner_ring_sharp: Vec<bool> = {
@@ -2033,10 +2334,10 @@ pub fn tessellate_sweep(
         flags
     };
 
-    let ring_starts = ring_starts(&d);
+    let ring_starts = ring_starts(d);
     let total = len_u32(d.points_len());
     let mut builder = OrientedBuilder::new(flip);
-    for (origin, u, v, _) in &frames {
+    for (origin, u, v, _) in frames {
         for ring in d.rings() {
             for p in &ring.points {
                 let local = add(add(*origin, scale(*u, p[0])), scale(*v, p[1]));
@@ -2111,7 +2412,14 @@ pub fn tessellate_sweep(
     }
 
     if start_cap || end_cap {
-        let convex_simple = d.holes.is_empty() && is_convex_ring(&d.outer);
+        // Controlled caps are triangles so each realized face can be checked.
+        let cap_points: Option<Vec<[f64; 2]>> = sweep_checks.map(|_| {
+            d.rings()
+                .flat_map(|ring| ring.points.iter().copied())
+                .collect()
+        });
+        let convex_simple =
+            sweep_checks.is_none() && d.holes.is_empty() && is_convex_ring(&d.outer);
         let emit = |builder: &mut OrientedBuilder,
                     face_origins: &mut Vec<Feature>,
                     offset: u32,
@@ -2142,6 +2450,27 @@ pub fn tessellate_sweep(
                 };
                 let tri = triangulate(&input, &TriParams::default())?;
                 for t in &tri.triangles {
+                    if let Some(points) = &cap_points {
+                        let frame = if reverse {
+                            &frames[0]
+                        } else {
+                            &frames[frames.len() - 1]
+                        };
+                        let placed = t.map(|i| {
+                            apply_placement(placement, sweep_point(frame, points[i as usize]))
+                        });
+                        let rounded = placed.map(|p| narrow(p).map(f64::from));
+                        if rounded.iter().flatten().any(|v| !v.is_finite()) {
+                            return Err(TessellateError::NonFiniteGeometry);
+                        }
+                        let expected = cross(sub(placed[1], placed[0]), sub(placed[2], placed[0]));
+                        let actual =
+                            cross(sub(rounded[1], rounded[0]), sub(rounded[2], rounded[0]));
+                        let orientation = dot(actual, expected);
+                        if !orientation.is_finite() || orientation <= 0.0 {
+                            return Err(TessellateError::CollapsedGeometry);
+                        }
+                    }
                     let corners = if reverse {
                         [offset + t[2], offset + t[1], offset + t[0]]
                     } else {
@@ -2182,12 +2511,13 @@ pub fn tessellate_sweep(
     }
 
     let result = builder.build()?;
-    let vertex_features = profile_vertex_features(&d, len_u32(frames.len()));
+    let vertex_features = profile_vertex_features(d, len_u32(frames.len()));
     let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks,
         refinement: None,
     })
 }
@@ -2442,6 +2772,7 @@ pub fn tessellate_grid(
         mesh: result.mesh,
         source_map,
         face_materials: BTreeMap::new(),
+        sweep_checks: None,
         refinement: None,
     })
 }
@@ -2456,7 +2787,7 @@ mod tests {
 
     /// Signed volume via the divergence theorem, fanning each face loop.
     /// Valid for planar convex faces (all faces this tessellator emits).
-    fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
+    pub(super) fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
         let mut vol = 0.0;
         for face in mesh.faces() {
             let verts: Vec<[f64; 3]> = mesh
@@ -2474,7 +2805,7 @@ mod tests {
         vol / 6.0
     }
 
-    fn assert_clean(body: &TessellatedBody) {
+    pub(super) fn assert_clean(body: &TessellatedBody) {
         let errors = body.mesh.validate_deep();
         assert!(errors.is_empty(), "validate_deep: {errors:?}");
         assert_eq!(
@@ -4400,3 +4731,7 @@ mod tests {
         assert_eq!(a.source_map.dump(), b.source_map.dump());
     }
 }
+
+#[cfg(test)]
+#[path = "sweep_tests.rs"]
+mod sweep_tests;

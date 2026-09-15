@@ -586,18 +586,32 @@ impl EvalCx<'_> {
                 path,
                 caps,
             } => {
-                let crate::ir::Path3::Polyline { points, frame: _ } = path;
-                let points = points.clone();
+                let path = path.clone();
                 let caps = *caps;
                 let profile = *profile;
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_sweep(
-                        cx.recipe.profile(profile).expect("validated profile id"),
-                        world,
-                        &points,
-                        caps,
-                        cx.policy,
-                    )
+                    match &path {
+                        crate::ir::Path3::Polyline { points, .. } => tessellate_sweep(
+                            cx.recipe.profile(profile).expect("validated profile id"),
+                            world,
+                            points,
+                            caps,
+                            cx.policy,
+                        ),
+                        crate::ir::Path3::MiteredPolyline {
+                            points,
+                            section_x,
+                            miter_limit,
+                        } => crate::tessellate::tessellate_mitered_sweep(
+                            cx.recipe.profile(profile).expect("validated profile id"),
+                            world,
+                            points,
+                            *section_x,
+                            *miter_limit,
+                            caps,
+                            cx.policy,
+                        ),
+                    }
                     .map_err(|error| EvalError {
                         node: node_id,
                         error,
@@ -706,6 +720,7 @@ impl EvalCx<'_> {
                         mesh,
                         source_map,
                         face_materials: BTreeMap::new(),
+                        sweep_checks: None,
                         refinement: None,
                     })
                 })?;
@@ -1359,6 +1374,7 @@ impl EvalCx<'_> {
                     mesh,
                     source_map,
                     face_materials: output.face_materials,
+                    sweep_checks: None,
                     refinement: None,
                 });
                 self.report.counters.tessellations += 1;
@@ -1711,6 +1727,7 @@ fn instantiate(
         mesh,
         source_map,
         face_materials,
+        sweep_checks: None,
         refinement: source.refinement,
     })
 }

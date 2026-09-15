@@ -1,5 +1,6 @@
 [package]
 name = "constructive_probe"
+default-run = "constructive_probe"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
