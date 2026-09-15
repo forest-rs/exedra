@@ -339,14 +339,33 @@ pub enum Path3 {
         /// Exceeding it fails rather than changing the join style.
         miter_limit: f64,
     },
+    /// Tangent-continuous lines, circular arcs and spatial cubics.
+    ///
+    /// Initial section orientation is authored; analytic tangents guide
+    /// rotation-minimizing transport. Sampling uses `EvalPolicy::sweep_path`.
+    /// Sharp joins fail explicitly; use `MiteredPolyline` for corners.
+    Curves {
+        /// First endpoint, in path-local coordinates.
+        start: [f64; 3],
+        /// Nonempty ordered segments, with implicit shared endpoints.
+        segments: Vec<crate::path::PathSegment3>,
+        /// Initial section-X direction before placement, projected normal to
+        /// the first analytic tangent. Must have a usable perpendicular part.
+        section_x: [f64; 3],
+    },
 }
 
 impl Path3 {
-    /// Authored path points, before any node placement.
+    /// Authored polyline points before placement, or `None` for analytic curves.
+    ///
+    /// Migration: replaces `points()` in schema 28 because an analytic path
+    /// has segments, not a preselected sampling of points. Use
+    /// [`crate::path::discretize_path`] to sample `Curves` explicitly.
     #[must_use]
-    pub fn points(&self) -> &[[f64; 3]] {
+    pub fn polyline_points(&self) -> Option<&[[f64; 3]]> {
         match self {
-            Self::Polyline { points, .. } | Self::MiteredPolyline { points, .. } => points,
+            Self::Polyline { points, .. } | Self::MiteredPolyline { points, .. } => Some(points),
+            Self::Curves { .. } => None,
         }
     }
 }
@@ -1190,7 +1209,25 @@ impl RecipeBuilder {
                 caps: _,
             } => {
                 self.check_profile(*profile)?;
-                let points = path.points();
+                if let Path3::Curves {
+                    start,
+                    segments,
+                    section_x,
+                } = path
+                {
+                    crate::path::validate_path_structure(*start, segments).map_err(|_| {
+                        RecipeError::InvalidParameter {
+                            what: "curve sweep path",
+                        }
+                    })?;
+                    if section_x.iter().any(|v| !v.is_finite()) || *section_x == [0.0; 3] {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "sweep section-X",
+                        });
+                    }
+                    return Ok(());
+                }
+                let points = path.polyline_points().expect("polyline variant");
                 if points.len() < 2 {
                     return Err(RecipeError::TooFewOperands {
                         what: "sweep path points",
@@ -1735,6 +1772,51 @@ fn node_canon_bytes(
                         put_f64(out, v);
                     }
                     put_f64(out, *miter_limit);
+                }
+                Path3::Curves {
+                    start,
+                    segments,
+                    section_x,
+                } => {
+                    out.push(2);
+                    for &v in start {
+                        put_f64(out, v);
+                    }
+                    for &v in section_x {
+                        put_f64(out, v);
+                    }
+                    put_u32(out, len_u32(segments.len()));
+                    for segment in segments {
+                        match segment {
+                            crate::path::PathSegment3::Line { to } => {
+                                out.push(0);
+                                for &v in to {
+                                    put_f64(out, v);
+                                }
+                            }
+                            crate::path::PathSegment3::Arc {
+                                axis_origin,
+                                axis,
+                                sweep,
+                            } => {
+                                out.push(1);
+                                for &v in axis_origin.iter().chain(axis) {
+                                    put_f64(out, v);
+                                }
+                                put_f64(out, *sweep);
+                            }
+                            crate::path::PathSegment3::Cubic {
+                                control1,
+                                control2,
+                                to,
+                            } => {
+                                out.push(2);
+                                for &v in control1.iter().chain(control2).chain(to) {
+                                    put_f64(out, v);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             put_caps(out, *caps);
@@ -2489,7 +2571,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xb96a0ffaafe8b7a9df21cdcfdd1e5bde,
+            0x99cd66f1fc49ecb32999b7505a7edfc8,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

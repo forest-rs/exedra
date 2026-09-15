@@ -38,6 +38,9 @@ use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
 pub struct EvalPolicy {
     /// Curve discretization policy.
     pub discretize: DiscretizePolicy,
+    /// Centerline chord/tangent accuracy and work budgets for analytic sweep
+    /// paths. Independent of profile discretization and mesh quantization.
+    pub sweep_path: crate::path::PathDiscretizePolicy,
     /// Threshold on `|sin(turn angle)|` above which a profile corner
     /// authors a sharp lateral edge. Tangent-continuous junctions (arcs
     /// meeting lines smoothly) fall below any sensible threshold and stay
@@ -88,6 +91,7 @@ impl Default for EvalPolicy {
     fn default() -> Self {
         Self {
             discretize: DiscretizePolicy::default(),
+            sweep_path: crate::path::PathDiscretizePolicy::default(),
             sharp_sin_threshold: 0.1,
             planar_face_refinement: None,
             cap_refinement: None,
@@ -145,9 +149,11 @@ pub enum Feature {
     /// curve. Vertex attribution is derived from the incident faces'
     /// operands; the pipeline carries no finer vertex provenance yet.
     BooleanSeam,
-    /// A sweep wall face between path points `band` and `band + 1`.
+    /// A sweep wall face between path stations `band` and `band + 1`.
     SweepWall {
-        /// Index of the path segment.
+        /// Index of the sampled band. For curved paths, indexes the spans in
+        /// [`TessellatedBody::path_sampling`] to recover the authored segment
+        /// and its parameter interval.
         band: u16,
         /// Which profile loop: 0 = outer, `1 + i` is hole `i`.
         loop_index: u16,
@@ -196,12 +202,19 @@ pub struct TessellatedBody {
     /// This is not a solid-validity certificate. Mutating the public mesh
     /// invalidates the evidence, just as it invalidates source provenance.
     pub sweep_checks: Option<SweepChecks>,
+    /// Source path segments, parameter intervals, and original path-local
+    /// sampling bounds for a curved sweep. `SweepWall::band` indexes these
+    /// spans. Cache hits and instances (including reflections and nonuniform
+    /// scaling) retain this provenance; geometry-changing operations clear it.
+    /// These bounds do not describe the placed mesh's world-space accuracy
+    /// or certify its winding. See [`Self::sweep_checks`] for realization checks.
+    pub path_sampling: Option<crate::path::PathSampling>,
 }
 
 /// Local sweep construction and wall-realization evidence.
 ///
 /// In path-local f64 geometry, every sampled profile vertex advances strictly
-/// forward along each run between the miter cuts. Placed f32 wall triangles retain
+/// forward between successive section planes (miter cuts for polylines). Placed f32 wall triangles retain
 /// strictly positive area projected onto their f64 wall normal, under either
 /// diagonal; emitted cap triangles retain their f64 winding too. This does not check distant-band
 /// intersections, unsampled curve interiors, or certify a closed solid.
@@ -249,6 +262,8 @@ pub enum TessellateError {
     /// Discretization failed because its policy, accuracy budget, or numeric
     /// realization could not be satisfied.
     Discretize(DiscretizeError),
+    /// Analytic sweep path sampling failed, retaining the segment and reason.
+    Path(crate::path::PathDiscretizeError),
     /// Profile-area triangulation failed; the profile was not simple after
     /// discretization.
     Triangulate(exedra_triangulate::TriError),
@@ -336,6 +351,7 @@ pub enum TessellateError {
 impl core::fmt::Display for TessellateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Path(e) => write!(f, "sweep path sampling failed: {e}"),
             Self::Discretize(e) => write!(f, "discretization failed: {e}"),
             Self::Triangulate(e) => write!(f, "profile triangulation failed: {e}"),
             Self::Build(e) => write!(f, "mesh construction failed: {e:?}"),
@@ -694,6 +710,7 @@ fn rebuild_placed_primitive(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     })
 }
@@ -847,6 +864,7 @@ pub fn tessellate_planar_face(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: refinement_stats,
     })
 }
@@ -1114,6 +1132,7 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: refinement_stats,
     })
 }
@@ -1724,6 +1743,7 @@ pub fn tessellate_revolve(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     })
 }
@@ -1958,6 +1978,7 @@ pub fn tessellate_loft(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     })
 }
@@ -2259,6 +2280,28 @@ pub fn tessellate_mitered_sweep(
 ) -> Result<TessellatedBody, TessellateError> {
     let frames = mitered_frames(path, section_x, miter_limit)?;
     let d = discretize_profile(profile, &policy.discretize)?;
+    check_sweep_spans(&frames, &d, placement)?;
+    tessellate_sweep_rings(
+        profile,
+        placement,
+        path,
+        caps,
+        policy,
+        &d,
+        &frames,
+        Some(SweepChecks {
+            bands: path.len() - 1,
+            section_vertices: d.points_len(),
+        }),
+        None,
+    )
+}
+
+fn check_sweep_spans(
+    frames: &[SweepFrame],
+    d: &DiscretizedProfile,
+    placement: &Placement3,
+) -> Result<(), TessellateError> {
     for (band, pair) in frames.windows(2).enumerate() {
         let direction = sweep_direction(pair[0].0, pair[1].0)?;
         for (vertex, point) in d.rings().flat_map(|r| &r.points).enumerate() {
@@ -2280,19 +2323,81 @@ pub fn tessellate_mitered_sweep(
             }
         }
     }
-    check_sweep_realization(&frames, &d, placement)?;
+    check_sweep_realization(frames, d, placement)?;
+    Ok(())
+}
+
+/// Tessellates tangent-continuous analytic segments with authored orientation.
+///
+/// Lines, circular arcs and spatial cubics are sampled under
+/// [`EvalPolicy::sweep_path`]. Every ring is normal to an analytic tangent,
+/// with section X transported by the double-reflection rotation-minimizing
+/// method; no world-axis reseeding or inferred seam/corner correspondence.
+/// Tangent-discontinuous joins fail. Use [`tessellate_mitered_sweep`] for
+/// authored sharp corners. Sample stations do not introduce ring creases.
+///
+/// [`TessellatedBody::path_sampling`] records each band's source segment,
+/// parameter interval, chord bound and tangent variation bound. These bound
+/// the centerline, not the entire swept surface or numerical frame integration
+/// error. Tighten the tangent-angle bound for wide asymmetric sections.
+/// Profile discretization and f32 realization remain separate boundaries.
+/// Local span/winding checks and cap refusals match the controlled polyline
+/// contract; this is not a global self-intersection or solid certificate.
+///
+/// # Errors
+///
+/// Retains [`crate::path::PathDiscretizeError`] through [`TessellateError::Path`].
+/// Also rejects unusable section-X, local foldovers and mesh realization failures.
+pub fn tessellate_curved_sweep(
+    profile: &Profile2,
+    placement: &Placement3,
+    start: [f64; 3],
+    segments: &[crate::path::PathSegment3],
+    section_x: [f64; 3],
+    caps: CapMode,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    let sampled = crate::path::discretize_path(start, segments, &policy.sweep_path)
+        .map_err(TessellateError::Path)?;
+    let first = sampled.stations[0];
+    let mut u = initial_section_x(first.tangent, section_x)?;
+    let mut frames = Vec::with_capacity(sampled.stations.len());
+    frames.push((first.point, u, cross(first.tangent, u), first.tangent));
+    for stations in sampled.stations.windows(2) {
+        let previous = stations[0];
+        let next = stations[1];
+        // Normalize reflection normals before arithmetic to avoid squaring
+        // very long or short chords. Both reflection steps preserve lengths.
+        let chord = sweep_direction(previous.point, next.point)?;
+        let reflected_u = sub(u, scale(chord, 2.0 * dot(chord, u)));
+        let reflected_t = sub(
+            previous.tangent,
+            scale(chord, 2.0 * dot(chord, previous.tangent)),
+        );
+        u = if let Some(normal) = unit_vector(sub(next.tangent, reflected_t)) {
+            sub(reflected_u, scale(normal, 2.0 * dot(normal, reflected_u)))
+        } else {
+            reflected_u
+        };
+        u = initial_section_x(next.tangent, u)?;
+        frames.push((next.point, u, cross(next.tangent, u), next.tangent));
+    }
+    let d = discretize_profile(profile, &policy.discretize)?;
+    check_sweep_spans(&frames, &d, placement)?;
+    let points: Vec<_> = sampled.stations.iter().map(|s| s.point).collect();
     tessellate_sweep_rings(
         profile,
         placement,
-        path,
+        &points,
         caps,
         policy,
         &d,
         &frames,
         Some(SweepChecks {
-            bands: path.len() - 1,
+            bands: sampled.sampling.spans.len(),
             section_vertices: d.points_len(),
         }),
+        Some(sampled.sampling),
     )
 }
 
@@ -2320,7 +2425,9 @@ pub fn tessellate_sweep(
     debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
     let d = discretize_profile(profile, &policy.discretize)?;
     let frames = sweep_frames(path, policy)?;
-    tessellate_sweep_rings(profile, placement, path, caps, policy, &d, &frames, None)
+    tessellate_sweep_rings(
+        profile, placement, path, caps, policy, &d, &frames, None, None,
+    )
 }
 
 fn tessellate_sweep_rings(
@@ -2332,6 +2439,7 @@ fn tessellate_sweep_rings(
     d: &DiscretizedProfile,
     frames: &[SweepFrame],
     sweep_checks: Option<SweepChecks>,
+    path_sampling: Option<crate::path::PathSampling>,
 ) -> Result<TessellatedBody, TessellateError> {
     let flip = det3(placement) < 0.0;
 
@@ -2339,6 +2447,9 @@ fn tessellate_sweep_rings(
     let corner_ring_sharp: Vec<bool> = {
         let mut flags = alloc::vec![false; frames.len()];
         for i in 1..path.len() - 1 {
+            if path_sampling.is_some() {
+                continue;
+            }
             let a = sub(path[i], path[i - 1]);
             let b = sub(path[i + 1], path[i]);
             let cross = norm(cross(a, b));
@@ -2531,6 +2642,7 @@ fn tessellate_sweep_rings(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks,
+        path_sampling,
         refinement: None,
     })
 }
@@ -2786,6 +2898,7 @@ pub fn tessellate_grid(
         source_map,
         face_materials: BTreeMap::new(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     })
 }
@@ -4860,3 +4973,7 @@ mod tests {
 #[cfg(test)]
 #[path = "sweep_tests.rs"]
 mod sweep_tests;
+
+#[cfg(test)]
+#[path = "curved_sweep_tests.rs"]
+mod curved_sweep_tests;

@@ -85,6 +85,7 @@ fn compact_body(body: &TessellatedBody) -> TessellatedBody {
             .map(|(&face, &slot)| (remap.face(face).unwrap(), slot))
             .collect(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     }
 }
@@ -284,6 +285,7 @@ fn separate_pocket_rims_finish_together_and_in_sequence() {
                 })
                 .collect(),
             sweep_checks: None,
+            path_sampling: None,
             refinement: None,
         });
         let before = format!("{body:?}");
@@ -454,6 +456,7 @@ fn qualified_rims_disambiguate_reused_and_equal_region_labels() {
         mesh: renamed_mesh,
         face_materials: body.face_materials.clone(),
         sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     };
     let unqualified =
@@ -1186,6 +1189,7 @@ fn semantic_selection_survives_compaction_and_different_tessellation() {
             source_map,
             face_materials: BTreeMap::new(),
             sweep_checks: None,
+            path_sampling: None,
             refinement: None,
         };
         let bottom = EdgeSelection::RegionBoundaries(vec![[1, 3]]);

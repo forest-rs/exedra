@@ -235,7 +235,49 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             path,
             caps,
         } => {
-            let points = path.points();
+            if let Path3::Curves {
+                start,
+                segments,
+                section_x,
+            } = path
+            {
+                let _ = write!(line, "curved_sweep profile {} start", profile.0);
+                put_vector3(line, *start);
+                line.push_str(" section_x");
+                put_vector3(line, *section_x);
+                let _ = write!(line, " segments {} caps ", segments.len());
+                put_caps(line, *caps);
+                for segment in segments {
+                    match segment {
+                        crate::path::PathSegment3::Line { to } => {
+                            line.push_str(" line");
+                            put_vector3(line, *to);
+                        }
+                        crate::path::PathSegment3::Arc {
+                            axis_origin,
+                            axis,
+                            sweep,
+                        } => {
+                            line.push_str(" arc");
+                            put_vector3(line, *axis_origin);
+                            put_vector3(line, *axis);
+                            let _ = write!(line, " {}", hex(*sweep));
+                        }
+                        crate::path::PathSegment3::Cubic {
+                            control1,
+                            control2,
+                            to,
+                        } => {
+                            line.push_str(" cubic");
+                            put_vector3(line, *control1);
+                            put_vector3(line, *control2);
+                            put_vector3(line, *to);
+                        }
+                    }
+                }
+                return;
+            }
+            let points = path.polyline_points().expect("polyline variant");
             match path {
                 Path3::Polyline { frame, .. } => {
                     let FramePolicy::RotationMinimizing = frame;
@@ -262,6 +304,7 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                         points.len()
                     );
                 }
+                Path3::Curves { .. } => unreachable!("handled above"),
             }
             put_caps(line, *caps);
             for p in points {
@@ -846,6 +889,47 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 caps,
             }
         }
+        "curved_sweep" => {
+            expect(&mut tokens, "profile", line)?;
+            let profile = ProfileId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "start", line)?;
+            let start = parse_vector3(&mut tokens, line)?;
+            expect(&mut tokens, "section_x", line)?;
+            let section_x = parse_vector3(&mut tokens, line)?;
+            expect(&mut tokens, "segments", line)?;
+            let count = next_u32(&mut tokens, line)?;
+            expect(&mut tokens, "caps", line)?;
+            let caps = parse_caps(tokens.next().ok_or(TextError::Malformed { line })?, line)?;
+            let mut segments = Vec::new();
+            for _ in 0..count {
+                let segment = match tokens.next() {
+                    Some("line") => crate::path::PathSegment3::Line {
+                        to: parse_vector3(&mut tokens, line)?,
+                    },
+                    Some("arc") => crate::path::PathSegment3::Arc {
+                        axis_origin: parse_vector3(&mut tokens, line)?,
+                        axis: parse_vector3(&mut tokens, line)?,
+                        sweep: next_f64(&mut tokens, line)?,
+                    },
+                    Some("cubic") => crate::path::PathSegment3::Cubic {
+                        control1: parse_vector3(&mut tokens, line)?,
+                        control2: parse_vector3(&mut tokens, line)?,
+                        to: parse_vector3(&mut tokens, line)?,
+                    },
+                    _ => return Err(TextError::Malformed { line }),
+                };
+                segments.push(segment);
+            }
+            NodeKind::Sweep {
+                profile,
+                path: Path3::Curves {
+                    start,
+                    segments,
+                    section_x,
+                },
+                caps,
+            }
+        }
         "sweep" | "mitered_sweep" => {
             expect(&mut tokens, "profile", line)?;
             let profile = ProfileId(next_u32(&mut tokens, line)?);
@@ -1272,6 +1356,26 @@ pub(crate) mod tests_support {
     }
 }
 
+fn put_vector3(out: &mut String, point: [f64; 3]) {
+    let _ = write!(
+        out,
+        " {} {} {}",
+        hex(point[0]),
+        hex(point[1]),
+        hex(point[2])
+    );
+}
+fn parse_vector3(
+    tokens: &mut core::str::SplitWhitespace<'_>,
+    line: usize,
+) -> Result<[f64; 3], TextError> {
+    Ok([
+        next_f64(tokens, line)?,
+        next_f64(tokens, line)?,
+        next_f64(tokens, line)?,
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1298,14 +1402,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 27\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 28\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 27\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 28\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

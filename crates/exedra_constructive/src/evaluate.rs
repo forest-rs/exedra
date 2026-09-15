@@ -611,6 +611,19 @@ impl EvalCx<'_> {
                             caps,
                             cx.policy,
                         ),
+                        crate::ir::Path3::Curves {
+                            start,
+                            segments,
+                            section_x,
+                        } => crate::tessellate::tessellate_curved_sweep(
+                            cx.recipe.profile(profile).expect("validated profile id"),
+                            world,
+                            *start,
+                            segments,
+                            *section_x,
+                            caps,
+                            cx.policy,
+                        ),
                     }
                     .map_err(|error| EvalError {
                         node: node_id,
@@ -721,6 +734,7 @@ impl EvalCx<'_> {
                         source_map,
                         face_materials: BTreeMap::new(),
                         sweep_checks: None,
+                        path_sampling: None,
                         refinement: None,
                     })
                 })?;
@@ -1375,6 +1389,7 @@ impl EvalCx<'_> {
                     source_map,
                     face_materials: output.face_materials,
                     sweep_checks: None,
+                    path_sampling: None,
                     refinement: None,
                 });
                 self.report.counters.tessellations += 1;
@@ -1728,6 +1743,9 @@ fn instantiate(
         source_map,
         face_materials,
         sweep_checks: None,
+        // Face bands still address the original path-local sampling. This
+        // provenance survives placement; realized mesh checks do not.
+        path_sampling: source.path_sampling.clone(),
         refinement: source.refinement,
     })
 }
