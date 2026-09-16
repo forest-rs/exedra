@@ -222,8 +222,11 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             policy,
             caps,
         } => {
-            let LoftPolicy::Ruled = policy;
-            let _ = write!(line, "loft ruled sections {} caps ", sections.len());
+            let mode = match policy {
+                LoftPolicy::Ruled => "ruled",
+                LoftPolicy::Smooth => "smooth",
+            };
+            let _ = write!(line, "loft {mode} sections {} caps ", sections.len());
             put_caps(line, *caps);
             for (placement, profile) in sections {
                 let _ = write!(line, " section {} placement", profile.0);
@@ -870,7 +873,11 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             }
         }
         "loft" => {
-            expect(&mut tokens, "ruled", line)?;
+            let policy = match tokens.next() {
+                Some("ruled") => LoftPolicy::Ruled,
+                Some("smooth") => LoftPolicy::Smooth,
+                _ => return Err(TextError::Malformed { line }),
+            };
             expect(&mut tokens, "sections", line)?;
             let count = next_u32(&mut tokens, line)? as usize;
             expect(&mut tokens, "caps", line)?;
@@ -885,7 +892,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             }
             NodeKind::Loft {
                 sections,
-                policy: LoftPolicy::Ruled,
+                policy,
                 caps,
             }
         }
@@ -1402,14 +1409,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 30\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 31\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 30\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 31\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

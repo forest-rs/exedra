@@ -236,6 +236,23 @@ impl Loop2 {
         (0..n).map(move |i| (self.segs[(i + n - 1) % n].to, &self.segs[i]))
     }
 
+    /// Selects the source segment that becomes segment zero, without changing
+    /// geometry, winding, or segment tags. The seam is that segment's start
+    /// (the previous segment's endpoint). Loft correspondence then follows
+    /// the resulting ordered segment boundaries as authored landmarks.
+    ///
+    /// Returns `None` when `segment` is out of range. No geometric matching
+    /// or automatic reversal is performed.
+    #[must_use]
+    pub fn with_seam(&self, segment: usize) -> Option<Self> {
+        if segment >= self.segs.len() {
+            return None;
+        }
+        let mut segs = self.segs.clone();
+        segs.rotate_left(segment);
+        Some(Self { segs })
+    }
+
     /// This loop with reversed orientation.
     ///
     /// Segment order reverses, arc bulges negate, cubic control points

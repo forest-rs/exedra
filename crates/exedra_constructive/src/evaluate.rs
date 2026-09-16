@@ -523,7 +523,7 @@ impl EvalCx<'_> {
             }
             NodeKind::Loft {
                 sections,
-                policy: _,
+                policy: interpolation,
                 caps,
             } => {
                 let placed: Vec<(Placement3, &crate::profile::Profile2)> = sections
@@ -539,21 +539,22 @@ impl EvalCx<'_> {
                 let profile_ids: Vec<ProfileId> =
                     sections.iter().map(|(_, profile)| *profile).collect();
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_loft(&placed, caps, cx.policy).map_err(|error| EvalError {
-                        node: node_id,
-                        error,
+                    tessellate_loft(&placed, *interpolation, caps, cx.policy).map_err(|error| {
+                        EvalError {
+                            node: node_id,
+                            error,
+                        }
                     })
                 });
-                // Sections that do not correspond, or span no volume, are a
-                // valid request the tessellator cannot honor: a typed
-                // refusal like a CSG deferral, not a failure of the whole
-                // evaluation.
+                // Ruled loft refusals retain section envelopes. Smooth curves
+                // can overshoot those bounds even for coplanar sections, so
+                // every smooth refusal must propagate as an evaluation error.
                 let body = match body {
                     Ok(body) => body,
                     Err(EvalError {
                         error: TessellateError::SectionMismatch { section },
                         ..
-                    }) => {
+                    }) if *interpolation == crate::ir::LoftPolicy::Ruled => {
                         return Ok(self.record_loft_refusal(
                             node_id,
                             &placed,
@@ -568,7 +569,7 @@ impl EvalCx<'_> {
                     Err(EvalError {
                         error: TessellateError::DegenerateLoft,
                         ..
-                    }) => {
+                    }) if *interpolation == crate::ir::LoftPolicy::Ruled => {
                         return Ok(self.record_loft_refusal(
                             node_id,
                             &placed,
@@ -735,6 +736,7 @@ impl EvalCx<'_> {
                         face_materials: BTreeMap::new(),
                         sweep_checks: None,
                         path_sampling: None,
+                        loft_sampling: None,
                         refinement: None,
                     })
                 })?;
@@ -1390,6 +1392,7 @@ impl EvalCx<'_> {
                     face_materials: output.face_materials,
                     sweep_checks: None,
                     path_sampling: None,
+                    loft_sampling: None,
                     refinement: None,
                 });
                 self.report.counters.tessellations += 1;
@@ -1746,6 +1749,7 @@ fn instantiate(
         // Face bands still address the original path-local sampling. This
         // provenance survives placement; realized mesh checks do not.
         path_sampling: source.path_sampling.clone(),
+        loft_sampling: source.loft_sampling.clone(),
         refinement: source.refinement,
     })
 }

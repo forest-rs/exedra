@@ -337,6 +337,7 @@ pub fn finish_edges(
             face_materials,
             sweep_checks: None,
             path_sampling: None,
+            loft_sampling: None,
             refinement: None,
         },
         result.stats,

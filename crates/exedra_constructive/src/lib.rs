@@ -86,6 +86,7 @@ mod hostile;
 mod import_mesh;
 pub mod interchange;
 pub mod ir;
+pub mod loft;
 #[cfg(test)]
 mod material_tests;
 pub mod offset;
@@ -119,11 +120,10 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 30 invalidates cached cylinders, revolutions, and dependent Booleans
-/// after exact cardinal-axis sampling. Migration: reevaluate recipes and
-/// regenerate serialized IR with the current schema; recipe shapes and the
-/// right-handed revolution convention are unchanged.
-pub const EVAL_SCHEMA_VERSION: u32 = 30;
+/// Schema 31 adds smooth-loft interpolation, sampling policy, and source evidence.
+/// Migration: reevaluate cached recipes and regenerate schema-stamped IR.
+/// JSON loft nodes explicitly name their interpolation policy.
+pub const EVAL_SCHEMA_VERSION: u32 = 31;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
