@@ -80,6 +80,7 @@ pub mod discretize;
 mod door_boolean_tests;
 pub mod edge_finish;
 pub mod evaluate;
+pub mod extrude;
 #[cfg(test)]
 mod goldens;
 #[cfg(test)]

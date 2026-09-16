@@ -41,6 +41,16 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+`extrude::extrude_to_plane` creates a closed extrusion along a profile
+placement's +Z axis, stopping at an authored plane in body coordinates. Holes,
+wall regions, and source features survive; the terminating cap has the ordinary
+end-cap region and plane-cut provenance. The operation computes its own extent
+and refuses parallel, backward, crossing, or numerically unrepresentable cases.
+It returns the body and the terminating section with accuracy/work measurements.
+This is an additive evaluated-body API; existing callers need no migration.
+The `extrude_to_plane` example in `constructive_probe` exports hollow supports
+terminating at one inclined plane.
+
 For evaluated bodies, `section::section_body` extracts planar regions with holes
 and per-edge source features. `section::split_body` returns both capped halves
 of the triangulated mesh, with an explicit plane, distance tolerance, finite
