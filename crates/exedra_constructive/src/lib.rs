@@ -126,13 +126,18 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 31 adds smooth-loft interpolation, sampling policy, and source evidence.
+/// Schema 32 adds retained plane operations and their evaluation policy.
+/// Existing builder calls are unchanged; exhaustive policy literals should
+/// start from `EvalPolicy::default()` and set fields explicitly.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped IR.
-/// JSON loft nodes explicitly name their interpolation policy.
-pub const EVAL_SCHEMA_VERSION: u32 = 31;
+/// JSON recipe nodes evolve additively without changing the format version.
+pub const EVAL_SCHEMA_VERSION: u32 = 32;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
 
 #[cfg(test)]
 mod rounded_post_tests;
+
+#[cfg(test)]
+mod retained_plane_tests;

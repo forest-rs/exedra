@@ -29,7 +29,7 @@ pub struct PlaneExtrusion {
 }
 
 /// A forward plane-terminated extrusion could not be constructed.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ExtrudeToPlaneError {
     /// Placement, plane, or section policy is nonfinite, singular, or invalid.

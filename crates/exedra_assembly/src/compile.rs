@@ -30,7 +30,10 @@ use invalidation::{Channel, InvalidationSet};
 
 use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
 
+mod evaluated;
 mod snapshot;
+use evaluated::EvaluatedPart;
+pub use evaluated::{EvaluationSnapshot, SnapshotBody, SnapshotWorkplane, StaleSelection};
 pub use snapshot::CompilationMismatch;
 
 /// The single invalidation channel this layer uses: part content.
@@ -346,6 +349,7 @@ impl CompiledParts {
 /// diagnostics are part of the compilation result, not incidental logging.
 #[derive(Clone, Debug)]
 struct CachedCompilation {
+    evaluated: Option<Arc<EvaluatedPart>>,
     part: Arc<CompiledPart>,
     report: Option<Arc<GeometryReport>>,
 }
@@ -426,39 +430,83 @@ impl PartCompiler {
         assembly: &Assembly,
         policy: &CompilePolicy,
     ) -> Result<CompiledParts, CompileError> {
+        self.compile_parts_inner(assembly, policy, false)
+            .map(|(parts, _)| parts)
+    }
+
+    /// Compiles render buffers and retains their evaluated bodies for queries.
+    ///
+    /// The returned immutable snapshot also freezes the render list's instance
+    /// paths and placements. Cached topology is shared; upgrading a render-only
+    /// cache entry evaluates it once. Subsequent queries never reevaluate it.
+    /// Dropping or clearing this compiler does not invalidate a live snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Same checked evaluation failures as [`Self::compile_parts`].
+    pub fn compile_snapshot(
+        &mut self,
+        assembly: &Assembly,
+        policy: &CompilePolicy,
+    ) -> Result<EvaluationSnapshot, CompileError> {
+        let (compiled, evaluated) = self.compile_parts_inner(assembly, policy, true)?;
+        let render = crate::flatten(assembly, &compiled);
+        Ok(EvaluationSnapshot::new(compiled, evaluated, render))
+    }
+
+    fn compile_parts_inner(
+        &mut self,
+        assembly: &Assembly,
+        policy: &CompilePolicy,
+        retain: bool,
+    ) -> Result<(CompiledParts, Vec<Arc<EvaluatedPart>>), CompileError> {
         self.drain_dirty();
         let policy_fp = policy_fingerprint(policy);
         let mut out = Vec::with_capacity(assembly.parts().len());
         let mut reports = Vec::with_capacity(assembly.parts().len());
         let mut part_keys = Vec::with_capacity(assembly.parts().len());
+        let mut evaluated = Vec::new();
         for (index, def) in assembly.parts().iter().enumerate() {
             let id = PartId(crate::len_u32(index));
             let content_fp = part_fingerprint(def.source());
             let key = (content_fp, policy_fp);
             part_keys.push(key);
-            if let Some(hit) = self.cache.get(&key) {
+            if let Some(hit) = self.cache.get(&key)
+                && (!retain || hit.evaluated.is_some())
+            {
                 self.counters.cache_hits += 1;
                 out.push(Arc::clone(&hit.part));
                 reports.push(hit.report.as_ref().map(Arc::clone));
+                if retain {
+                    evaluated.push(Arc::clone(hit.evaluated.as_ref().expect("retained hit")));
+                }
                 continue;
             }
-            let (part, report) = compile_source(id, def.source(), policy, content_fp)?;
+            let (part, report, geometry) =
+                compile_source(id, def.source(), policy, content_fp, retain)?;
             let compiled = CachedCompilation {
+                evaluated: geometry.map(Arc::new),
                 part: Arc::new(part),
                 report: report.map(Arc::new),
             };
             self.counters.parts_compiled += 1;
             self.counters.triangles_emitted += compiled.part.triangle_count();
             self.cache.insert(key, compiled.clone());
+            if retain {
+                evaluated.push(compiled.evaluated.expect("retained compilation"));
+            }
             out.push(compiled.part);
             reports.push(compiled.report);
         }
         self.part_keys = part_keys;
-        Ok(CompiledParts {
-            parts: out,
-            reports,
-            policy: policy_fp,
-        })
+        Ok((
+            CompiledParts {
+                parts: out,
+                reports,
+                policy: policy_fp,
+            },
+            evaluated,
+        ))
     }
 
     fn drain_dirty(&mut self) {
@@ -493,8 +541,9 @@ fn compile_source(
     source: &PartSource,
     policy: &CompilePolicy,
     fingerprint: PartFingerprint,
-) -> Result<(CompiledPart, Option<GeometryReport>), CompileError> {
-    let (bodies, report) = match source {
+    retain: bool,
+) -> Result<(CompiledPart, Option<GeometryReport>, Option<EvaluatedPart>), CompileError> {
+    let (bodies, report, evaluated) = match source {
         PartSource::Recipe(recipe) => {
             let evaluation = evaluate(recipe, &policy.evaluation)
                 .map_err(|error| CompileError::Evaluate { part, error })?;
@@ -519,9 +568,15 @@ fn compile_source(
                     )
                 })
                 .collect();
-            (bodies, Some(evaluation.report))
+            let geometry =
+                retain.then(|| EvaluatedPart::from_evaluation(evaluation.bodies, recipe));
+            (bodies, Some(evaluation.report), geometry)
         }
-        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh, |_| None, policy)], None),
+        PartSource::Baked(mesh) => (
+            alloc::vec![compile_body(mesh, |_| None, policy)],
+            None,
+            retain.then(|| EvaluatedPart::from_baked(mesh)),
+        ),
     };
     Ok((
         CompiledPart {
@@ -529,6 +584,7 @@ fn compile_source(
             bodies,
         },
         report,
+        evaluated,
     ))
 }
 

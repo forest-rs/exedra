@@ -418,10 +418,45 @@ pub enum CsgOp {
     Intersection,
 }
 
+/// Signed half-space of an oriented plane retained by a recipe cut.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PlaneSide {
+    /// Points with `dot(normal, point) < distance`.
+    Negative,
+    /// Points with `dot(normal, point) > distance`.
+    Positive,
+}
+
 /// One constructive node.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum NodeKind {
+    /// Capped cut in this node's input coordinates, after child transforms.
+    /// Ancestor transforms place the completed cut; they do not move the plane
+    /// relative to the child. Each completely evaluated closed child body is
+    /// cut independently. A disjoint retained half emits no body.
+    PlaneCut {
+        /// Subtree supplying closed bodies.
+        child: NodeId,
+        /// Plane equation `dot(normal, point) = distance` in node-local units.
+        plane: Plane3,
+        /// Half-space retained, independent of outward cap winding.
+        side: PlaneSide,
+        /// Region and optional material override for generated caps.
+        cap: crate::section::CutCap,
+    },
+    /// Closed extrusion along placement-local +Z ending at a plane.
+    /// The target plane is in this node's coordinates, not profile coordinates.
+    /// Ancestor transforms apply after the checked local operation. Accuracy
+    /// and budgets come from [`crate::tessellate::EvalPolicy::section`].
+    ExtrudeToPlane {
+        /// Source profile, including holes.
+        profile: ProfileId,
+        /// Profile placement relative to the target plane's coordinate system.
+        placement: Placement3,
+        /// Forward target plane in this node's coordinates.
+        plane: Plane3,
+    },
     /// Fillet or chamfer selected edges of one evaluated child body.
     ///
     /// Finishing happens in child-local space before outer transforms or
@@ -1169,6 +1204,27 @@ impl RecipeBuilder {
 
     fn validate_kind(&self, kind: &NodeKind) -> Result<(), RecipeError> {
         match kind {
+            NodeKind::PlaneCut {
+                child, plane, cap, ..
+            } => {
+                self.check_node(*child)?;
+                self.check_plane(plane)?;
+                if let Some(slot) = cap.material
+                    && slot.0 as usize >= self.slots.len()
+                {
+                    return Err(RecipeError::UnknownSlot { slot: slot.0 });
+                }
+                Ok(())
+            }
+            NodeKind::ExtrudeToPlane {
+                profile,
+                placement,
+                plane,
+            } => {
+                self.check_profile(*profile)?;
+                self.check_placement(placement)?;
+                self.check_plane(plane)
+            }
             NodeKind::Extrude {
                 profile,
                 placement,
@@ -1705,6 +1761,38 @@ fn node_canon_bytes(
         put_u128(out, node_fingerprints[id.0 as usize].0);
     };
     match &node.kind {
+        NodeKind::PlaneCut {
+            child: c,
+            plane,
+            side,
+            cap,
+        } => {
+            out.push(15);
+            child(out, *c);
+            put_plane(out, plane);
+            out.push(match side {
+                PlaneSide::Negative => 0,
+                PlaneSide::Positive => 1,
+            });
+            put_u32(out, cap.region);
+            match cap.material {
+                None => out.push(0),
+                Some(slot) => {
+                    out.push(1);
+                    put_u32(out, slot.0);
+                }
+            }
+        }
+        NodeKind::ExtrudeToPlane {
+            profile,
+            placement,
+            plane,
+        } => {
+            out.push(16);
+            put_u128(out, profile_hashes[profile.0 as usize]);
+            put_placement(out, placement);
+            put_plane(out, plane);
+        }
         NodeKind::Extrude {
             profile,
             placement,
@@ -2581,7 +2669,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x10c27f2effdbffa51a2222caa5865805,
+            0x36593db4e9a4620ed4ac7f508172d437,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

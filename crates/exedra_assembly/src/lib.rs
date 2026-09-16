@@ -80,7 +80,8 @@ pub use assembly::{
 pub use compile::assembly_fingerprint;
 pub use compile::{
     CompilationMismatch, CompileCounters, CompileError, CompilePolicy, CompiledBody, CompiledPart,
-    CompiledParts, PartCompiler, PartFingerprint, PolicyFingerprint, RegionRange,
+    CompiledParts, EvaluationSnapshot, PartCompiler, PartFingerprint, PolicyFingerprint,
+    RegionRange, SnapshotBody, SnapshotWorkplane, StaleSelection,
 };
 pub use exedra_mesh::NormalsSource;
 pub use flatten::{RenderItem, RenderList, ResolvedRegion, compose, flatten};

@@ -270,12 +270,13 @@ impl PlacedBody {
     }
 }
 
-/// Hard evaluation failure: a body that should tessellate, did not.
+/// Hard evaluation failure: a body could not be tessellated or a checked
+/// retained plane operation was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EvalError {
     /// The failing node.
     pub node: NodeId,
-    /// The underlying tessellation failure.
+    /// The underlying tessellation or retained-operation failure.
     pub error: TessellateError,
 }
 
@@ -290,7 +291,8 @@ impl core::error::Error for EvalError {}
 /// Evaluates `recipe` under `policy`.
 ///
 /// Supported nodes include declared box/cylinder primitives, constructive
-/// bodies, planar faces, groups, transforms, stretch, and CSG operations
+/// bodies, planar faces, groups, transforms, stretch, retained plane cuts and
+/// extrusions to planes, and CSG operations
 /// handled by the mesh Boolean pipeline. Refused CSG and stretch operations,
 /// and lofts whose sections do not correspond or span no volume, report
 /// [`Fidelity::EnvelopeOnly`] with structured diagnostics rather than
@@ -473,6 +475,38 @@ impl EvalCx<'_> {
         let node = self.recipe.node(node_id).expect("walked ids are validated");
         let material = node.material.or(inherited_material);
         match &node.kind {
+            NodeKind::PlaneCut {
+                child,
+                plane,
+                side,
+                cap,
+            } => {
+                self.evaluate_plane_cut(node_id, *child, *plane, *side, *cap, world, emit, material)
+            }
+            NodeKind::ExtrudeToPlane {
+                profile,
+                placement,
+                plane,
+            } => {
+                let (profile, placement, plane) = (*profile, *placement, *plane);
+                let body = self.body_cached(node_id, &Placement3::IDENTITY, |cx| {
+                    crate::extrude::extrude_to_plane(
+                        cx.recipe.profile(profile).expect("validated profile id"),
+                        &placement,
+                        plane,
+                        cx.policy,
+                        &cx.policy.section,
+                    )
+                    .map(|result| result.body)
+                    .map_err(|error| EvalError {
+                        node: node_id,
+                        error: TessellateError::ExtrudeToPlane(alloc::boxed::Box::new(error)),
+                    })
+                })?;
+                let body = self.place_plane_body(node_id, body, world)?;
+                let fidelity = self.body_fidelity(node_id, &[profile]);
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
+            }
             NodeKind::Extrude {
                 profile,
                 placement,
@@ -908,6 +942,100 @@ impl EvalCx<'_> {
         }
         self.push_diagnostic(node, Severity::Error, code, message);
         bounds
+    }
+
+    fn place_plane_body(
+        &self,
+        node: NodeId,
+        body: Rc<TessellatedBody>,
+        world: &Placement3,
+    ) -> Result<Rc<TessellatedBody>, EvalError> {
+        if *world == Placement3::IDENTITY {
+            Ok(body)
+        } else {
+            instantiate(&body, world)
+                .map(Rc::new)
+                .map_err(|error| EvalError { node, error })
+        }
+    }
+
+    fn evaluate_plane_cut(
+        &mut self,
+        node: NodeId,
+        child: NodeId,
+        plane: crate::ir::Plane3,
+        side: crate::ir::PlaneSide,
+        cap: crate::section::CutCap,
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+    ) -> Result<Aabb3, EvalError> {
+        // Evaluate the child locally and without ancestor defaults. Replay its
+        // diagnostics even on a cut-cache hit; never turn a partial child into
+        // an apparently complete solid.
+        let taken = core::mem::take(&mut self.bodies);
+        let errors_before = self.error_count();
+        let result = self.walk(child, &Placement3::IDENTITY, true, None);
+        let collected = core::mem::replace(&mut self.bodies, taken);
+        result?;
+        if self.error_count() != errors_before {
+            return Err(EvalError {
+                node,
+                error: TessellateError::IncompletePlaneCut,
+            });
+        }
+        // The body cache stores one nonempty body. Multi-body and empty cuts
+        // still reuse child evaluations but do not masquerade as singleton hits.
+        let key = (collected.len() == 1)
+            .then(|| self.cache_key(node, &Placement3::IDENTITY))
+            .flatten();
+        let cached = if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
+            let hit = cache.get(key);
+            if hit.is_some() {
+                self.report.counters.cache_hits += 1;
+            } else {
+                self.report.counters.cache_misses += 1;
+            }
+            hit
+        } else {
+            None
+        };
+        let mut bounds = Aabb3::EMPTY;
+        for placed in collected {
+            let body = if let Some(body) = &cached {
+                Some(Rc::clone(body))
+            } else {
+                let split =
+                    crate::section::split_body(&placed.body, plane, &self.policy.section, cap)
+                        .map_err(|error| EvalError {
+                            node,
+                            error: TessellateError::PlaneCut(error),
+                        })?;
+                self.report.counters.tessellations += 1;
+                match side {
+                    crate::ir::PlaneSide::Negative => split.negative,
+                    crate::ir::PlaneSide::Positive => split.positive,
+                }
+                .map(Rc::new)
+            };
+            if let Some(body) = body {
+                if cached.is_none()
+                    && let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key)
+                {
+                    cache.insert(key, Rc::clone(&body));
+                }
+                let body = self.place_plane_body(node, body, world)?;
+                let fidelity = self.body_fidelity(node, &[]);
+                bounds.union(&self.finish_body(
+                    node,
+                    body,
+                    emit,
+                    fidelity,
+                    placed.material.or(material),
+                ));
+            }
+        }
+        Ok(bounds)
     }
 
     fn evaluate_stretch(

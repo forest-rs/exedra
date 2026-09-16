@@ -16,7 +16,9 @@
 //! The world placement participates in the key because tessellation bakes
 //! the composed world placement into f64 vertex construction *before* the
 //! single f32 narrowing; caching local-space bodies and re-transforming on
-//! hit would round twice and break bit-identity.
+//! hit would round twice and break bit-identity. Local mesh operations such as
+//! edge finishing and retained plane operations instead cache their checked
+//! local result and apply ancestor placement afterward on both hits and misses.
 //!
 //! Eviction is deterministic: entries carry a `(generation, sequence)`
 //! stamp (generation advances once per evaluation, sequence per touch) and
@@ -53,6 +55,10 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.loft.chord_tolerance.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.loft.max_band_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.loft.max_vertices.to_le_bytes());
+    bytes.extend_from_slice(&policy.section.distance_tolerance.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&policy.section.max_triangles.to_le_bytes());
+    bytes.extend_from_slice(&policy.section.max_section_vertices.to_le_bytes());
+    bytes.extend_from_slice(&policy.section.max_pair_checks.to_le_bytes());
     push_refinement_fingerprint(&mut bytes, policy.planar_face_refinement, true);
     // Cap refinement is always interior-only. Its caller-supplied boundary
     // policy cannot affect geometry and therefore must not split cache keys.
