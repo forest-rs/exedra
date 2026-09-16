@@ -43,6 +43,9 @@ pub struct EvalPolicy {
     pub sweep_path: crate::path::PathDiscretizePolicy,
     /// Point-trajectory accuracy and work budgets for smooth lofts.
     pub loft: crate::loft::LoftSamplingPolicy,
+    /// Accuracy and per-body work budgets for retained plane operations, in
+    /// operation-local units before ancestor transforms.
+    pub section: crate::section::SectionPolicy,
     /// Threshold on `|sin(turn angle)|` above which a profile corner
     /// authors a sharp lateral edge. Tangent-continuous junctions (arcs
     /// meeting lines smoothly) fall below any sensible threshold and stay
@@ -95,6 +98,7 @@ impl Default for EvalPolicy {
             discretize: DiscretizePolicy::default(),
             sweep_path: crate::path::PathDiscretizePolicy::default(),
             loft: crate::loft::LoftSamplingPolicy::default(),
+            section: crate::section::SectionPolicy::default(),
             sharp_sin_threshold: 0.1,
             planar_face_refinement: None,
             cap_refinement: None,
@@ -185,7 +189,7 @@ pub enum Feature {
 }
 
 /// A tessellated body: the mesh plus its element provenance.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct TessellatedBody {
     /// The tessellated mesh.
@@ -220,6 +224,28 @@ pub struct TessellatedBody {
     /// `None` for ruled lofts and geometry derived by other operations.
     /// Retained as source evidence by instances; not a solid certificate.
     pub loft_sampling: Option<crate::loft::LoftSampling>,
+}
+
+impl TessellatedBody {
+    /// Wraps an existing mesh with imported provenance, without tessellating it
+    /// or claiming it is a checked solid. Mesh attributes are preserved.
+    #[must_use]
+    pub fn from_imported_mesh(mesh: exedra_mesh::Mesh) -> Self {
+        let source_map = crate::source_map::SourceMap::new(
+            &mesh,
+            alloc::vec![Feature::Imported; mesh.faces().count()],
+            alloc::vec![Feature::Imported; mesh.vertices().count()],
+        );
+        Self {
+            mesh,
+            source_map,
+            face_materials: BTreeMap::new(),
+            refinement: None,
+            sweep_checks: None,
+            path_sampling: None,
+            loft_sampling: None,
+        }
+    }
 }
 
 /// Local sweep construction and wall-realization evidence.
@@ -270,6 +296,12 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TessellateError {
+    /// A retained plane cut failed its checked mesh operation.
+    PlaneCut(crate::section::SectionError),
+    /// The cut's child was only partially evaluated; no partial cut is emitted.
+    IncompletePlaneCut,
+    /// A retained extrusion could not reach its target plane.
+    ExtrudeToPlane(alloc::boxed::Box<crate::extrude::ExtrudeToPlaneError>),
     /// Discretization failed because its policy, accuracy budget, or numeric
     /// realization could not be satisfied.
     Discretize(DiscretizeError),
@@ -364,6 +396,11 @@ pub enum TessellateError {
 impl core::fmt::Display for TessellateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::PlaneCut(e) => write!(f, "plane cut failed: {e}"),
+            Self::IncompletePlaneCut => {
+                write!(f, "plane cut requires a completely evaluated child")
+            }
+            Self::ExtrudeToPlane(e) => write!(f, "extrusion to plane failed: {e}"),
             Self::Path(e) => write!(f, "sweep path sampling failed: {e}"),
             Self::Discretize(e) => write!(f, "discretization failed: {e}"),
             Self::Triangulate(e) => write!(f, "profile triangulation failed: {e}"),

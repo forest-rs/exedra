@@ -205,6 +205,28 @@ pub enum EdgeBoundariesDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeKindDto {
+    /// Retain one capped half of every closed child body.
+    PlaneCut {
+        /// Child node index.
+        child: u32,
+        /// Plane in node-local coordinates after child transforms.
+        plane: PlaneDto,
+        /// Retained half-space: "negative" or "positive".
+        side: String,
+        /// Generated cap region.
+        cap_region: u32,
+        /// Optional generated cap material slot.
+        cap_material: Option<u32>,
+    },
+    /// Closed extrusion along placement +Z to a node-local plane.
+    ExtrudeToPlane {
+        /// Profile index.
+        profile: u32,
+        /// Profile placement in node-local coordinates.
+        placement: PlacementDto,
+        /// Target plane in node-local coordinates.
+        plane: PlaneDto,
+    },
     /// Convex edge finishing in child-local space.
     EdgeFinish {
         /// Child node index.
@@ -590,6 +612,31 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
 
 fn kind_dto(kind: &NodeKind) -> NodeKindDto {
     match kind {
+        NodeKind::PlaneCut {
+            child,
+            plane,
+            side,
+            cap,
+        } => NodeKindDto::PlaneCut {
+            child: child.0,
+            plane: plane_dto(plane),
+            side: match side {
+                crate::ir::PlaneSide::Negative => "negative",
+                crate::ir::PlaneSide::Positive => "positive",
+            }
+            .into(),
+            cap_region: cap.region,
+            cap_material: cap.material.map(|slot| slot.0),
+        },
+        NodeKind::ExtrudeToPlane {
+            profile,
+            placement,
+            plane,
+        } => NodeKindDto::ExtrudeToPlane {
+            profile: profile.0,
+            placement: placement.rows,
+            plane: plane_dto(plane),
+        },
         NodeKind::Extrude {
             profile,
             placement,
@@ -844,6 +891,34 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
 
 fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
     Ok(match dto {
+        NodeKindDto::PlaneCut {
+            child,
+            plane,
+            side,
+            cap_region,
+            cap_material,
+        } => NodeKind::PlaneCut {
+            child: NodeId(*child),
+            plane: plane_value(*plane),
+            side: match side.as_str() {
+                "negative" => crate::ir::PlaneSide::Negative,
+                "positive" => crate::ir::PlaneSide::Positive,
+                _ => return Err(InterchangeError::UnknownValue { field: "side" }),
+            },
+            cap: crate::section::CutCap {
+                region: *cap_region,
+                material: cap_material.map(SlotId),
+            },
+        },
+        NodeKindDto::ExtrudeToPlane {
+            profile,
+            placement,
+            plane,
+        } => NodeKind::ExtrudeToPlane {
+            profile: ProfileId(*profile),
+            placement: placement_value(*placement),
+            plane: plane_value(*plane),
+        },
         NodeKindDto::Extrude {
             profile,
             placement,

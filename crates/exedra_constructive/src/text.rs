@@ -185,6 +185,46 @@ fn dump_seg_kind(line: &mut String, kind: &SegKind) {
 
 fn dump_kind(line: &mut String, kind: &NodeKind) {
     match kind {
+        NodeKind::PlaneCut {
+            child,
+            plane,
+            side,
+            cap,
+        } => {
+            let side = match side {
+                crate::ir::PlaneSide::Negative => "negative",
+                crate::ir::PlaneSide::Positive => "positive",
+            };
+            let material = cap
+                .material
+                .map_or_else(|| String::from("-"), |slot| format!("{}", slot.0));
+            let _ = write!(
+                line,
+                "plane_cut child {} plane {} {} {} {} side {side} cap_region {} cap_material {material}",
+                child.0,
+                hex(plane.normal[0]),
+                hex(plane.normal[1]),
+                hex(plane.normal[2]),
+                hex(plane.distance),
+                cap.region
+            );
+        }
+        NodeKind::ExtrudeToPlane {
+            profile,
+            placement,
+            plane,
+        } => {
+            let _ = write!(
+                line,
+                "extrude_to_plane profile {} plane {} {} {} {} placement",
+                profile.0,
+                hex(plane.normal[0]),
+                hex(plane.normal[1]),
+                hex(plane.normal[2]),
+                hex(plane.distance)
+            );
+            put_placement(line, placement);
+        }
         NodeKind::Extrude {
             profile,
             placement,
@@ -840,6 +880,43 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
     let mut tokens = body.split_whitespace();
     let kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
     let kind = match kind_name {
+        "plane_cut" => {
+            expect(&mut tokens, "child", line)?;
+            let child = NodeId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "plane", line)?;
+            let plane = parse_plane(&mut tokens, line)?;
+            expect(&mut tokens, "side", line)?;
+            let side = match tokens.next() {
+                Some("negative") => crate::ir::PlaneSide::Negative,
+                Some("positive") => crate::ir::PlaneSide::Positive,
+                _ => return Err(TextError::Malformed { line }),
+            };
+            expect(&mut tokens, "cap_region", line)?;
+            let region = next_u32(&mut tokens, line)?;
+            expect(&mut tokens, "cap_material", line)?;
+            let material =
+                parse_opt_index(tokens.next().ok_or(TextError::Malformed { line })?, line)?
+                    .map(crate::ir::SlotId);
+            NodeKind::PlaneCut {
+                child,
+                plane,
+                side,
+                cap: crate::section::CutCap { region, material },
+            }
+        }
+        "extrude_to_plane" => {
+            expect(&mut tokens, "profile", line)?;
+            let profile = ProfileId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "plane", line)?;
+            let plane = parse_plane(&mut tokens, line)?;
+            expect(&mut tokens, "placement", line)?;
+            let placement = parse_placement(&mut tokens, line)?;
+            NodeKind::ExtrudeToPlane {
+                profile,
+                placement,
+                plane,
+            }
+        }
         "extrude" => {
             expect(&mut tokens, "profile", line)?;
             let profile = ProfileId(next_u32(&mut tokens, line)?);
@@ -1409,14 +1486,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 31\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 32\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 31\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 32\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(
