@@ -41,6 +41,15 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+For evaluated bodies, `section::section_body` extracts planar regions with holes
+and per-edge source features. `section::split_body` returns both capped halves
+of the triangulated mesh, with an explicit plane, distance tolerance, finite
+work budgets, and caller-selected cap region/material. Contacts within tolerance
+are typed failures. These operations preserve surviving surface attributes and
+clear source sampling evidence on derived bodies; they do not certify distant
+self-intersections. See the `section` rustdoc example and the `plane_cut` binary
+in `constructive_probe` for an oblique cut through a smooth loft.
+
 ## Materials through Booleans
 
 Slots are opaque recipe-local IDs. CSG preserves the slot of each surviving

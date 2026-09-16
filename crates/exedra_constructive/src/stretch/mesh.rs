@@ -1203,21 +1203,9 @@ fn canonical_intersection(
     let (ClipKey::Original(a_index), ClipKey::Original(b_index)) = (a.key, b.key) else {
         return Err(StretchRefusal::AmbiguousContact);
     };
-    let (low, low_side, high, high_side) = if a_index < b_index {
-        (a.point, side_a, b.point, side_b)
-    } else {
-        (b.point, side_b, a.point, side_a)
-    };
-    let denominator = low_side - high_side;
-    if denominator == 0.0 || !denominator.is_finite() {
-        return Err(StretchRefusal::AmbiguousContact);
-    }
-    let t = low_side / denominator;
-    Ok([
-        low[0] + t * (high[0] - low[0]),
-        low[1] + t * (high[1] - low[1]),
-        low[2] + t * (high[2] - low[2]),
-    ])
+    crate::plane::intersect_edge((a_index, a.point, side_a), (b_index, b.point, side_b))
+        .map(|(point, _)| point)
+        .ok_or(StretchRefusal::AmbiguousContact)
 }
 
 fn cut_point(

@@ -247,6 +247,8 @@ impl core::fmt::Display for FeatureLabel {
             } => write!(f, "sweep_wall {band} {loop_index} {seg}"),
             Feature::GridPatch { row, col } => write!(f, "grid_patch {row} {col}"),
             Feature::StretchSeam { rim } => write!(f, "stretch_seam {rim}"),
+            Feature::PlaneCutCap => write!(f, "plane_cut_cap"),
+            Feature::PlaneCutSeam => write!(f, "plane_cut_seam"),
         }
     }
 }

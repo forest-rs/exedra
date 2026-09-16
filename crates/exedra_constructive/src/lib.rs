@@ -15,6 +15,7 @@
 //!   planar faces, grids, stretch, CSG, transforms, instances) and its
 //!   content-addressed identity,
 //! - deterministic evaluation and tessellation with source maps and reports.
+//! - evaluated-body plane sections and capped cuts preserving surface attribution.
 //!
 //! It intentionally does not own: mesh topology (that is [`exedra_mesh`]),
 //! polygon triangulation (that is `exedra_triangulate`), any source vocabulary
@@ -93,7 +94,9 @@ pub mod offset;
 #[cfg(test)]
 mod panel_boolean_tests;
 pub mod path;
+mod plane;
 pub mod profile;
+pub mod section;
 pub mod source_map;
 mod stretch;
 pub mod tessellate;
