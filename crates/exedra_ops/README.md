@@ -74,10 +74,10 @@ mesh under that policy. Where authored UVs exist the paths differ: extraction
 keeps them, while `uv.box` overwrites them unless `write_missing_only` is set.
 
 Migration: dominant-axis selection now normalizes the face normal before
-applying `normal_epsilon`, so it depends on orientation only. Small faces whose
-unnormalized normal fell below the epsilon used to fall back to the `+Z` plane;
-they now project on their true dominant plane. Regenerate box mappings on meshes
-with faces smaller than about a millimetre if the old output was relied upon.
+applying `normal_epsilon`, so it depends on orientation only. Very small or very
+large faces that used to fall back to the `+Z` plane now project on their true
+dominant plane. Regenerate box mappings on such meshes if the old output was
+relied upon.
 
 ## Design
 
