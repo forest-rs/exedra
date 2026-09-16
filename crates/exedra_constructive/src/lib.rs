@@ -91,6 +91,7 @@ mod material_tests;
 pub mod offset;
 #[cfg(test)]
 mod panel_boolean_tests;
+pub mod path;
 pub mod profile;
 pub mod source_map;
 mod stretch;
@@ -117,4 +118,11 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// recipe: a kurbo upgrade, a discretization-rule change, a canonical
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
-pub const EVAL_SCHEMA_VERSION: u32 = 25;
+///
+/// Schema 29 invalidates cached Boolean results after source-edge carrier
+/// preservation and consistent axis-parallel seam construction. Migration:
+/// reevaluate recipes and regenerate serialized IR with the current schema.
+pub const EVAL_SCHEMA_VERSION: u32 = 29;
+
+#[cfg(test)]
+mod diagonal_boolean_tests;

@@ -20,6 +20,12 @@
 //! equivalence classes and compacted after the complete segment stream, so
 //! graph identity does not depend on which triangle pair reported first.
 //!
+//! After welding collects the complete incident-face set, axis-parallel
+//! seams use their original planar faces to reconstruct the two constant
+//! coordinates consistently. This prevents f32 realization from turning
+//! one straight seam into a zigzag across triangulation diagonals. Source
+//! vertices stay fixed; non-planar faces retain per-triangle construction.
+//!
 //! Touch contacts ([`SegmentKind::Touch`]) are recorded as isolated touch
 //! points: they carry classification hints for later stages but never join
 //! cut polylines. A touch is one geometric point, so its two reported
@@ -429,11 +435,41 @@ pub fn build_intersection_graph(
         edge.crossings.dedup();
     }
     graph.edges.sort_unstable_by_key(|edge| edge.vertices);
+    let mut planes_a = HashMap::new();
+    let mut planes_b = HashMap::new();
     for vertex in &mut graph.vertices {
         vertex.faces_a.sort_unstable_by_key(|f| f.index());
         vertex.faces_a.dedup();
         vertex.faces_b.sort_unstable_by_key(|f| f.index());
         vertex.faces_b.dedup();
+        // Wait for the complete incident-face set: a cap endpoint and an
+        // interior seam point may initially arrive from different triangles.
+        // Never displace an original mesh vertex.
+        if !matches!(vertex.anchor_a, MeshAnchor::Vertex(_))
+            && !matches!(vertex.anchor_b, MeshAnchor::Vertex(_))
+        {
+            for &a in &vertex.faces_a {
+                let Some(&plane_a) = planes_a
+                    .entry(a)
+                    .or_insert_with(|| source_face_plane(mesh_a, a))
+                    .as_ref()
+                else {
+                    continue;
+                };
+                for &b in &vertex.faces_b {
+                    let Some(&plane_b) = planes_b
+                        .entry(b)
+                        .or_insert_with(|| source_face_plane(mesh_b, b))
+                        .as_ref()
+                    else {
+                        continue;
+                    };
+                    if let Some(point) = axis_parallel_crossing(plane_a, plane_b, vertex.position) {
+                        vertex.position = point;
+                    }
+                }
+            }
+        }
     }
     graph.touch_points.sort_unstable();
     graph.touch_points.dedup();
@@ -610,6 +646,68 @@ fn canonical_endpoint_position(
         }
         _ => fallback,
     }
+}
+
+#[derive(Clone, Copy)]
+struct SourceFacePlane {
+    origin: [f64; 3],
+    normal: [f64; 3],
+}
+
+fn source_face_plane(mesh: &Mesh, face: FaceId) -> Option<SourceFacePlane> {
+    use exedra_triangulate::predicates::{Orientation3d, orient3d};
+
+    let points: Vec<_> = mesh
+        .face_loop(face)
+        .map(|he| {
+            mesh.to_vertex(he)
+                .and_then(|v| mesh.vertex_position(v))
+                .copied()
+                .map(promote)
+        })
+        .collect::<Option<_>>()?;
+    let a = *points.first()?;
+    let b = *points.iter().find(|&&p| p != a)?;
+    let c = *points
+        .iter()
+        .find(|&&p| cross(sub(b, a), sub(p, a)) != [0.0; 3])?;
+    // A non-planar polygon retains its per-triangle geometry.
+    if !points
+        .iter()
+        .all(|&p| orient3d(a, b, c, p) == Orientation3d::Coplanar)
+    {
+        return None;
+    }
+    Some(SourceFacePlane {
+        origin: a,
+        normal: cross(sub(b, a), sub(c, a)),
+    })
+}
+
+// An axis-parallel intersection has two constant coordinates. Reconstruct
+// them from the same source-face planes along the entire seam: independent
+// triangle-edge solves can round a straight seam into an f32 zigzag. This
+// changes construction only; neither welding nor incidence uses a tolerance.
+fn axis_parallel_crossing(
+    a: SourceFacePlane,
+    b: SourceFacePlane,
+    mut point: [f64; 3],
+) -> Option<[f64; 3]> {
+    let direction = cross(a.normal, b.normal);
+    if direction == [0.0; 3] {
+        return None;
+    }
+    let axis = dominant_axis(direction);
+    if a.normal[axis] != 0.0 || b.normal[axis] != 0.0 {
+        return None;
+    }
+    let u = (axis + 1) % 3;
+    let v = (axis + 2) % 3;
+    let rhs = dot(b.normal, sub(b.origin, a.origin));
+    let determinant = a.normal[u] * b.normal[v] - a.normal[v] * b.normal[u];
+    point[u] = a.origin[u] - a.normal[v] * rhs / determinant;
+    point[v] = a.origin[v] + a.normal[u] * rhs / determinant;
+    point.iter().all(|x| x.is_finite()).then_some(point)
 }
 
 /// Intersects two non-parallel exact promoted-f32 spans in the 2D projection
@@ -1467,6 +1565,74 @@ mod tests {
             builder.add_face(&face).expect("valid cube face");
         }
         builder.build().expect("valid cube").mesh
+    }
+
+    #[test]
+    fn axis_parallel_seams_have_constant_dependent_coordinates() {
+        for axis in 0..3 {
+            let u = (axis + 1) % 3;
+            let v = (axis + 2) % 3;
+            let mut normal_a = [0.0; 3];
+            let mut normal_b = [0.0; 3];
+            normal_a[u] = 0.48;
+            normal_a[v] = 0.78;
+            normal_b[u] = -0.48;
+            normal_b[v] = 0.78;
+            let a = SourceFacePlane {
+                origin: [0.05, 0.03, 0.0],
+                normal: normal_a,
+            };
+            let b = SourceFacePlane {
+                origin: [0.48, 0.78, 0.018],
+                normal: normal_b,
+            };
+            let mut reference = None;
+            for height in [-0.018, -0.009, 0.0, 0.007, 0.011, 0.018, 0.036] {
+                let mut point = [0.29; 3];
+                // Emulate inconsistent triangle-edge construction near a
+                // rounding boundary along the same source-face intersection.
+                point[u] += height * 1e-12;
+                point[v] -= height * 1e-12;
+                point[axis] = height;
+                let actual = axis_parallel_crossing(a, b, point).unwrap();
+                assert_eq!(actual[axis], height);
+                let dependent = [actual[u], actual[v]];
+                assert_eq!(dependent, *reference.get_or_insert(dependent));
+            }
+            assert!(axis_parallel_crossing(a, a, [0.0; 3]).is_none());
+            normal_b[axis] = 0.5;
+            assert!(
+                axis_parallel_crossing(
+                    a,
+                    SourceFacePlane {
+                        normal: normal_b,
+                        ..b
+                    },
+                    [0.0; 3]
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn source_face_planes_do_not_flatten_nonplanar_polygons() {
+        for z in [0.0, 1e-6] {
+            let mesh = Mesh::from_polygons(
+                &[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, z],
+                    [0.0, 1.0, 0.0],
+                ],
+                &[&[0, 1, 2, 3]],
+            )
+            .unwrap();
+            assert_eq!(
+                source_face_plane(&mesh, mesh.faces().next().unwrap()).is_some(),
+                z == 0.0
+            );
+        }
     }
 
     #[test]

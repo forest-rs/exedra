@@ -266,6 +266,32 @@ pub enum NodeKindDto {
         /// Cap mode.
         caps: String,
     },
+    /// Explicitly oriented constant-section polyline with bounded miter joins.
+    MiteredSweep {
+        /// Profile index.
+        profile: u32,
+        /// Path-local points.
+        points: Vec<[f64; 3]>,
+        /// Authored path-local section-X direction.
+        section_x: [f64; 3],
+        /// Maximum section-plane stretch ratio.
+        miter_limit: f64,
+        /// Cap mode.
+        caps: String,
+    },
+    /// Sweep along tangent-continuous analytic spatial segments.
+    CurvedSweep {
+        /// Profile index.
+        profile: u32,
+        /// Path-local starting endpoint.
+        start: [f64; 3],
+        /// Ordered spatial segments.
+        segments: Vec<PathSegmentDto>,
+        /// Authored initial section-X direction.
+        section_x: [f64; 3],
+        /// Cap mode.
+        caps: String,
+    },
     /// Single-sided planar face.
     PlanarFace {
         /// Profile index.
@@ -602,15 +628,38 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             profile,
             path,
             caps,
-        } => {
-            let Path3::Polyline { points, frame } = path;
-            let FramePolicy::RotationMinimizing = frame;
-            NodeKindDto::Sweep {
+        } => match path {
+            Path3::Polyline { points, frame } => {
+                let FramePolicy::RotationMinimizing = frame;
+                NodeKindDto::Sweep {
+                    profile: profile.0,
+                    points: points.clone(),
+                    caps: caps_name(*caps),
+                }
+            }
+            Path3::MiteredPolyline {
+                points,
+                section_x,
+                miter_limit,
+            } => NodeKindDto::MiteredSweep {
                 profile: profile.0,
                 points: points.clone(),
+                section_x: *section_x,
+                miter_limit: *miter_limit,
                 caps: caps_name(*caps),
-            }
-        }
+            },
+            Path3::Curves {
+                start,
+                segments,
+                section_x,
+            } => NodeKindDto::CurvedSweep {
+                profile: profile.0,
+                start: *start,
+                segments: segments.iter().map(path_segment_dto).collect(),
+                section_x: *section_x,
+                caps: caps_name(*caps),
+            },
+        },
         NodeKind::PlanarFace { profile, placement } => NodeKindDto::PlanarFace {
             profile: profile.0,
             placement: placement_dto(placement),
@@ -834,6 +883,36 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             },
             caps: caps_value(caps)?,
         },
+        NodeKindDto::MiteredSweep {
+            profile,
+            points,
+            section_x,
+            miter_limit,
+            caps,
+        } => NodeKind::Sweep {
+            profile: ProfileId(*profile),
+            path: Path3::MiteredPolyline {
+                points: points.clone(),
+                section_x: *section_x,
+                miter_limit: *miter_limit,
+            },
+            caps: caps_value(caps)?,
+        },
+        NodeKindDto::CurvedSweep {
+            profile,
+            start,
+            segments,
+            section_x,
+            caps,
+        } => NodeKind::Sweep {
+            profile: ProfileId(*profile),
+            path: Path3::Curves {
+                start: *start,
+                segments: segments.iter().map(path_segment_value).collect(),
+                section_x: *section_x,
+            },
+            caps: caps_value(caps)?,
+        },
         NodeKindDto::PlanarFace { profile, placement } => NodeKind::PlanarFace {
             profile: ProfileId(*profile),
             placement: placement_value(*placement),
@@ -958,6 +1037,82 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             placement: placement_value(*placement),
         },
     })
+}
+
+/// A spatial curve segment in the interchange format.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathSegmentDto {
+    /// Straight segment.
+    Line {
+        /// Endpoint.
+        to: [f64; 3],
+    },
+    /// Circular arc around an axis.
+    Arc {
+        /// Point on the axis.
+        axis_origin: [f64; 3],
+        /// Axis direction.
+        axis: [f64; 3],
+        /// Signed right-handed angle.
+        sweep: f64,
+    },
+    /// Spatial cubic Bezier.
+    Cubic {
+        /// First control point.
+        control1: [f64; 3],
+        /// Second control point.
+        control2: [f64; 3],
+        /// Endpoint.
+        to: [f64; 3],
+    },
+}
+
+fn path_segment_dto(segment: &crate::path::PathSegment3) -> PathSegmentDto {
+    match segment {
+        crate::path::PathSegment3::Line { to } => PathSegmentDto::Line { to: *to },
+        crate::path::PathSegment3::Arc {
+            axis_origin,
+            axis,
+            sweep,
+        } => PathSegmentDto::Arc {
+            axis_origin: *axis_origin,
+            axis: *axis,
+            sweep: *sweep,
+        },
+        crate::path::PathSegment3::Cubic {
+            control1,
+            control2,
+            to,
+        } => PathSegmentDto::Cubic {
+            control1: *control1,
+            control2: *control2,
+            to: *to,
+        },
+    }
+}
+fn path_segment_value(segment: &PathSegmentDto) -> crate::path::PathSegment3 {
+    match segment {
+        PathSegmentDto::Line { to } => crate::path::PathSegment3::Line { to: *to },
+        PathSegmentDto::Arc {
+            axis_origin,
+            axis,
+            sweep,
+        } => crate::path::PathSegment3::Arc {
+            axis_origin: *axis_origin,
+            axis: *axis,
+            sweep: *sweep,
+        },
+        PathSegmentDto::Cubic {
+            control1,
+            control2,
+            to,
+        } => crate::path::PathSegment3::Cubic {
+            control1: *control1,
+            control2: *control2,
+            to: *to,
+        },
+    }
 }
 
 #[cfg(test)]

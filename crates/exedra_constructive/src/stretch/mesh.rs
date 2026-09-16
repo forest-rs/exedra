@@ -438,6 +438,8 @@ impl OutputMesh {
             source_map,
             // The child tessellation records its own refinement outcome
             // before stretch consumes it; the derived body was not refined.
+            sweep_checks: None,
+            path_sampling: None,
             refinement: None,
         })
     }
@@ -492,6 +494,8 @@ fn stretch_mesh_expansion(
                 mesh,
                 source_map,
                 face_materials: source.face_materials.clone(),
+                sweep_checks: None,
+                path_sampling: None,
                 refinement: None,
             },
             MeshStretchStats::default(),
@@ -713,6 +717,8 @@ fn stretch_mesh_contraction(
                 mesh,
                 source_map,
                 face_materials: source.face_materials.clone(),
+                sweep_checks: None,
+                path_sampling: None,
                 refinement: None,
             },
             MeshStretchStats::default(),
@@ -1167,6 +1173,8 @@ fn translate_body(source: &TessellatedBody, displacement: [f64; 3]) -> Tessellat
         mesh,
         source_map,
         face_materials: source.face_materials.clone(),
+        sweep_checks: None,
+        path_sampling: None,
         refinement: None,
     }
 }

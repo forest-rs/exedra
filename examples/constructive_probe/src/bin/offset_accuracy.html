@@ -1,0 +1,73 @@
+<div id="exedra-offset-accuracy">
+  <h2>Clearance, made visible</h2>
+  <div class="viz-controls">
+    <label class="form-label">Section
+      <select class="form-select" data-profile><option value="0">Frame with two openings</option><option value="1">Cubic-sided section</option></select>
+    </label>
+    <label class="form-label">Cubic fitting target · recipe units
+      <select class="form-select" data-fit><option value="0.01">Coarse · 0.01</option><option value="0.001" selected>Medium · 0.001</option><option value="0.00000001">Fine · 0.00000001</option></select>
+    </label>
+  </div>
+  <label class="form-label">Clearance <output class="tabular-nums" data-distance>+1.0</output> · recipe units
+    <input class="form-range" data-slider type="range" min="-15" max="20" step="1" value="5" aria-label="Clearance in steps of 0.2 recipe units">
+  </label>
+  <div class="viz-row">
+    <span><svg width="26" height="12" aria-hidden="true"><path d="M1,6H25" fill="none" stroke="var(--foreground)" stroke-width="1.5" stroke-dasharray="4 3"/></svg> Nominal</span>
+    <span><svg width="26" height="12" aria-hidden="true"><path d="M1,6H25" fill="none" stroke="var(--viz-series-1)" stroke-width="2"/></svg> Offset material</span>
+    <label class="form-check"><input class="form-check-input" data-markers type="checkbox" checked><span class="form-check-label">Segment endpoints</span></label>
+  </div>
+  <div data-drawing></div>
+  <div class="viz-row tabular-nums" data-metrics role="status"></div>
+  <div class="text-destructive" data-error role="status" hidden></div>
+  <div class="text-small text-muted">Check chord tolerance: 0.01 · Clearance slack: 0.05 · Fitting target is not a certified bound</div>
+  <script type="application/json" data-offset-data>OFFSET_DATA</script>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('exedra-offset-accuracy');
+  const data = JSON.parse(root.querySelector('[data-offset-data]').textContent);
+  const select = root.querySelector('[data-profile]');
+  const fitting = root.querySelector('[data-fit]');
+  const slider = root.querySelector('[data-slider]');
+  const markers = root.querySelector('[data-markers]');
+  const drawing = root.querySelector('[data-drawing]');
+  const metrics = root.querySelector('[data-metrics]');
+  const error = root.querySelector('[data-error]');
+  const ns = 'http://www.w3.org/2000/svg';
+  function node(tag, attrs, text) {
+    const el = document.createElementNS(ns, tag);
+    for (const [k,v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+  function draw() {
+    const section = data[Number(select.value)];
+    const distance = Number(slider.value) / 5;
+    const state = section.states.find(s => s.distance === distance && s.fit === Number(fitting.value));
+    root.querySelector('[data-distance]').textContent = `${distance > 0 ? '+' : ''}${distance.toFixed(1)}`;
+    const width = Math.max(240, drawing.clientWidth);
+    const height = Math.min(390, Math.max(270, width * 0.65));
+    const candidates = [section.source, ...section.states.filter(s => s.geometry).map(s => s.geometry)];
+    const points = candidates.flatMap(g => g.points);
+    const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const padding = 32;
+    const scale = Math.min((width - 2 * padding) / (x1-x0), (height - 2 * padding) / (y1-y0));
+    const tx = width / 2 - scale * (x0+x1) / 2, ty = height / 2 + scale * (y0+y1) / 2;
+    const svg = node('svg', {viewBox: `0 0 ${width} ${height}`, width: '100%', height, role:'img', 'aria-label': `${section.name}, clearance ${distance}. ${state.error || `${state.segments} output segments`}`});
+    svg.append(node('title', {}, `${section.name}: nominal and offset boundaries`));
+    const g = node('g', {transform:`matrix(${scale} 0 0 ${-scale} ${tx} ${ty})`});
+    if (state.geometry) g.append(node('path', {d: state.geometry.path, fill:'var(--viz-series-1)', 'fill-opacity':0.14, 'fill-rule':'evenodd', stroke:'var(--viz-series-1)', 'stroke-width':2, 'vector-effect':'non-scaling-stroke'}));
+    g.append(node('path', {d:section.source.path, fill:'none', stroke:'var(--foreground)', 'stroke-width':1.4, 'stroke-dasharray':'4 3', 'vector-effect':'non-scaling-stroke'}));
+    if (state.geometry && markers.checked) for (const p of state.geometry.points) g.append(node('circle', {cx:p[0],cy:p[1],r:2.7/scale, fill:'var(--viz-series-1)',stroke:'var(--background)','stroke-width':1,'vector-effect':'non-scaling-stroke'}));
+    svg.append(g);
+    drawing.replaceChildren(svg);
+    error.hidden = !state.error;
+    error.textContent = state.error ? `Refused: ${state.error}` : '';
+    metrics.textContent = state.geometry ? `${state.segments} output segments · ${state.fits} cubic fits · ${state.edges.toLocaleString()} check edges · ${state.pairs.toLocaleString()} reserved comparisons` : '';
+  }
+  [select, fitting, slider, markers].forEach(el => el.addEventListener('input', draw));
+  new ResizeObserver(draw).observe(drawing);
+  draw();
+})();
+</script>
