@@ -15,7 +15,8 @@
 //!   planar faces, grids, stretch, CSG, transforms, instances) and its
 //!   content-addressed identity,
 //! - deterministic evaluation and tessellation with source maps and reports.
-//! - evaluated-body plane sections and capped cuts preserving surface attribution.
+//! - evaluated-body plane sections and capped cuts preserving surface attribution,
+//! - revision-checked planar workplanes with authored origin and in-plane axes.
 //!
 //! It intentionally does not own: mesh topology (that is [`exedra_mesh`]),
 //! polygon triangulation (that is `exedra_triangulate`), any source vocabulary
@@ -102,6 +103,7 @@ pub mod source_map;
 mod stretch;
 pub mod tessellate;
 pub mod text;
+pub mod workplane;
 
 /// Narrows a validated count to `u32`.
 ///

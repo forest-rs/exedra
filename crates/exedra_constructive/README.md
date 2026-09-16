@@ -41,6 +41,16 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+`workplane::face_workplane` builds an orthonormal frame on a face or connected
+planar region. Callers author the origin and X direction in body coordinates;
+face winding supplies +Z. Operand-qualified regions disambiguate reused Boolean
+region numbers. Workplanes expose local/body transforms, placements for local
+feature offsets, selected face IDs, measured planarity, and a revision check.
+They are evaluated snapshots, not persistent attachments across recipe changes.
+Nonplanar, disconnected, degenerate, or ambiguously selected patches are refused.
+This additive API needs no migration. See the `face_workplane` GLB example for
+holes and collars positioned on an angled panel using face-local coordinates.
+
 `extrude::extrude_to_plane` creates a closed extrusion along a profile
 placement's +Z axis, stopping at an authored plane in body coordinates. Holes,
 wall regions, and source features survive; the terminating cap has the ordinary
