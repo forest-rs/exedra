@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use crate::math::FloatExt;
 use crate::{CornerId, FaceId, HalfEdgeId, Mesh};
-use exedra_math::{add, cross, dot, norm, normalize, sub};
+use exedra_math::{cross, dot, norm, normalize, sub};
 
 /// Weighting mode used for derived corner normals.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -163,25 +163,8 @@ fn face_normal_data(face: FaceId, values: &[Option<FaceNormalData>]) -> Option<F
 }
 
 fn face_normal(mesh: &Mesh, face: FaceId) -> Option<([f32; 3], f32)> {
-    let corners = mesh.face_loop(face).collect::<Vec<_>>();
-    if corners.len() < 3 {
-        return None;
-    }
-    // The signed fan sum also handles concave polygons. Taking all products
-    // relative to a face vertex avoids cancellation from its world offset.
-    let origin = corner_position(mesh, corners[0])?;
-    let mut vector = [0.0_f32; 3];
-    for pair in corners[1..].windows(2) {
-        let current = sub(corner_position(mesh, pair[0])?, origin);
-        let next = sub(corner_position(mesh, pair[1])?, origin);
-        vector = add(vector, cross(current, next));
-    }
+    let vector = crate::uvs::face_normal_sum(mesh, face)?;
     Some((normalize(vector)?, norm(vector)))
-}
-
-fn corner_position(mesh: &Mesh, corner: CornerId) -> Option<[f32; 3]> {
-    let vertex = mesh.to_vertex(corner)?;
-    mesh.vertex_position(vertex).copied()
 }
 
 fn smooth_corner_group(

@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 use exedra_constructive::EVAL_SCHEMA_VERSION;
 use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
-use exedra_mesh::{ExtractParams, FaceTriangulation, NormalsSource, TriMesh};
+use exedra_mesh::{ExtractParams, FaceTriangulation, NormalsSource, TriMesh, UvSource};
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
 
@@ -38,9 +38,11 @@ const PARTS_CHANNEL: Channel = Channel::new(0);
 
 /// Evaluation and render extraction policy for recipe and baked parts.
 ///
-/// Defaults to derived normals. Select [`NormalsSource::CustomOrDerived`]
-/// to preserve authored corner normals and derive any missing overrides.
-/// Every output-affecting setting participates in [`policy_fingerprint`].
+/// Defaults to derived normals and authored-only UVs. Select
+/// [`NormalsSource::CustomOrDerived`] to preserve authored corner normals and
+/// derive any missing overrides; select [`UvSource::CustomOrBoxProjected`] to
+/// box-project every corner that has no authored UV. Every output-affecting
+/// setting participates in [`policy_fingerprint`].
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct CompilePolicy {
     /// Constructive evaluation settings; baked parts skip evaluation.
@@ -51,6 +53,14 @@ pub struct CompilePolicy {
     /// Use [`NormalsSource::CustomOrDerived`] for partially authored meshes or
     /// parts that combine imported and generated geometry.
     pub normals: NormalsSource,
+    /// UV selection for every emitted body, including imported meshes.
+    ///
+    /// [`UvSource::CustomOnly`] emits zero UVs for corners without an authored
+    /// value and leaves [`RegionRange::has_uvs`] false for them. Under
+    /// [`UvSource::CustomOrBoxProjected`] those corners project their position
+    /// on the face's dominant-axis plane, so every range of finite geometry
+    /// reports UV coverage. Authored UVs are never overwritten.
+    pub uvs: UvSource,
 }
 
 impl From<EvalPolicy> for CompilePolicy {
@@ -74,12 +84,14 @@ pub struct PolicyFingerprint(pub u64);
 
 /// Computes the policy fingerprint for `policy`.
 ///
-/// Combines the constructive policy fingerprint with the normal source.
-/// Constructive evaluation owns fingerprinting its settings, including
-/// refinement budgets and [`EVAL_SCHEMA_VERSION`].
+/// Combines the constructive policy fingerprint with the normal and UV
+/// sources. Constructive evaluation owns fingerprinting its settings,
+/// including refinement budgets and [`EVAL_SCHEMA_VERSION`]. The prefix
+/// advanced to `v2` when the UV source joined the identity, so fingerprints
+/// persisted from earlier versions never collide with current ones.
 #[must_use]
 pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v1"[..]);
+    let mut bytes = Vec::from(&b"assembly-compile-v2"[..]);
     bytes.extend_from_slice(
         &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
     );
@@ -88,6 +100,13 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
         NormalsSource::CustomOrDerived => 1,
         NormalsSource::CustomOnly => 2,
     });
+    match policy.uvs {
+        UvSource::CustomOnly => bytes.push(0),
+        UvSource::CustomOrBoxProjected { scale } => {
+            bytes.push(1);
+            bytes.extend_from_slice(&scale.to_bits().to_le_bytes());
+        }
+    }
     let h = fnv128(&bytes);
     #[expect(
         clippy::cast_possible_truncation,
@@ -108,8 +127,14 @@ pub struct RegionRange {
     pub start: u32,
     /// Number of indices (multiple of 3).
     pub count: u32,
-    /// Whether every emitted triangle corner in this range has finite authored
-    /// UVs. Extraction's zero fallback for missing attributes does not count.
+    /// Whether every emitted triangle corner in this range has a finite UV
+    /// after [`CompilePolicy::uvs`] is applied.
+    ///
+    /// Under [`UvSource::CustomOnly`] only finite authored UVs count;
+    /// extraction's zero fallback for missing attributes does not. Under
+    /// [`UvSource::CustomOrBoxProjected`] a corner without an authored UV
+    /// counts when its projected coordinates are finite, which holds for
+    /// every finite position, so ranges of such bodies report `true`.
     pub has_uvs: bool,
 }
 
@@ -488,16 +513,13 @@ fn compile_source(
                     compile_body(
                         &placed.body.mesh,
                         |face| placed.material_for_face(face).map(|slot| SlotIndex(slot.0)),
-                        policy.normals,
+                        policy,
                     )
                 })
                 .collect();
             (bodies, Some(evaluation.report))
         }
-        PartSource::Baked(mesh) => (
-            alloc::vec![compile_body(mesh, |_| None, policy.normals)],
-            None,
-        ),
+        PartSource::Baked(mesh) => (alloc::vec![compile_body(mesh, |_| None, policy)], None),
     };
     Ok((
         CompiledPart {
@@ -513,10 +535,11 @@ fn compile_source(
 fn compile_body(
     mesh: &exedra_mesh::Mesh,
     material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
-    normals: NormalsSource,
+    policy: &CompilePolicy,
 ) -> CompiledBody {
     let params = ExtractParams {
-        normals,
+        normals: policy.normals,
+        uvs: policy.uvs,
         face_triangulation: FaceTriangulation::Robust,
         ..ExtractParams::default()
     };
@@ -528,6 +551,23 @@ fn compile_body(
     let mut tri_regions = Vec::with_capacity(triangle_count);
     let mut tri_uvs = Vec::with_capacity(triangle_count);
     let uv_layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
+    // A corner counts as textured when the policy resolves a finite UV for
+    // it. Authored values are checked at the source; a projected fallback is
+    // checked on the emitted buffer, where extraction-order triangle `t`
+    // occupies indices `3t..3t + 3`. The zero fallback of `CustomOnly` is not
+    // a UV and never counts.
+    let is_finite_uv = |uv: &[f32; 2]| uv.iter().all(|v| v.is_finite());
+    let corner_has_uv = |corner: exedra_mesh::CornerId, emitted: usize| match uv_layer
+        .and_then(|layer| layer.get(corner.into()))
+    {
+        Some(uv) => is_finite_uv(uv),
+        None => match policy.uvs {
+            UvSource::CustomOnly => false,
+            UvSource::CustomOrBoxProjected { .. } => {
+                is_finite_uv(&tri.uvs[tri.indices[emitted] as usize])
+            }
+        },
+    };
     for face in mesh.faces() {
         let (triangles, _) = mesh.face_triangles_counted(face, FaceTriangulation::Robust);
         let region = regions_layer
@@ -535,12 +575,14 @@ fn compile_body(
             .unwrap_or(0);
         let slot = material_for_face(face);
         for triangle in &triangles {
+            let base = tri_regions.len() * 3;
             tri_regions.push((region, slot));
-            tri_uvs.push(triangle.iter().all(|corner| {
-                uv_layer
-                    .and_then(|layer| layer.get((*corner).into()))
-                    .is_some_and(|uv| uv.iter().all(|v| v.is_finite()))
-            }));
+            tri_uvs.push(
+                triangle
+                    .iter()
+                    .enumerate()
+                    .all(|(k, corner)| corner_has_uv(*corner, base + k)),
+            );
         }
     }
     debug_assert_eq!(
@@ -1239,6 +1281,124 @@ mod tests {
         assert_ne!(
             policy_fingerprint(&CompilePolicy::default()),
             policy_fingerprint(&coarse.into())
+        );
+    }
+
+    #[test]
+    fn uv_source_participates_in_policy_fingerprint() {
+        let custom_only = CompilePolicy::default();
+        let projected = |scale| CompilePolicy {
+            uvs: UvSource::CustomOrBoxProjected { scale },
+            ..CompilePolicy::default()
+        };
+        let fingerprints = [
+            policy_fingerprint(&custom_only),
+            policy_fingerprint(&projected(1.0)),
+            policy_fingerprint(&projected(2.0)),
+        ];
+        assert_ne!(fingerprints[0], fingerprints[1], "variant changes identity");
+        assert_ne!(fingerprints[1], fingerprints[2], "scale changes identity");
+        assert_ne!(fingerprints[0], fingerprints[2]);
+        assert_eq!(policy_fingerprint(&projected(1.0)), fingerprints[1]);
+
+        // The policy is a cache key: a UV change compiles again.
+        let asm = n_instance_assembly(1);
+        let mut compiler = PartCompiler::new();
+        compiler.compile_parts(&asm, &custom_only).unwrap();
+        compiler.compile_parts(&asm, &projected(1.0)).unwrap();
+        compiler.compile_parts(&asm, &projected(1.0)).unwrap();
+        assert_eq!(compiler.counters().parts_compiled, 2);
+        assert_eq!(compiler.counters().cache_hits, 1);
+    }
+
+    #[test]
+    fn box_projection_gives_every_range_uv_coverage() {
+        let asm = n_instance_assembly(1);
+        let mut compiler = PartCompiler::new();
+        let plain = compiler
+            .compile_parts(&asm, &CompilePolicy::default())
+            .unwrap();
+        let projected = compiler
+            .compile_parts(
+                &asm,
+                &CompilePolicy {
+                    uvs: UvSource::CustomOrBoxProjected { scale: 1.0 },
+                    ..CompilePolicy::default()
+                },
+            )
+            .unwrap();
+        let plain_part = plain.part(PartId(0)).unwrap();
+        let projected_part = projected.part(PartId(0)).unwrap();
+        assert_eq!(plain_part.bodies.len(), projected_part.bodies.len());
+        for (plain_body, projected_body) in plain_part.bodies.iter().zip(&projected_part.bodies) {
+            assert!(!projected_body.regions.is_empty());
+            assert!(
+                plain_body.regions.iter().all(|range| !range.has_uvs),
+                "the generated prism has no authored UVs"
+            );
+            assert!(
+                projected_body.regions.iter().all(|range| range.has_uvs),
+                "projection covers every corner"
+            );
+            assert_eq!(plain_body.regions.len(), projected_body.regions.len());
+            for (a, b) in plain_body.regions.iter().zip(&projected_body.regions) {
+                assert_eq!(
+                    (a.region, a.material_slot, a.start, a.count),
+                    (b.region, b.material_slot, b.start, b.count),
+                    "the UV policy changes coverage, not range layout"
+                );
+            }
+            assert_eq!(plain_body.tri.indices, projected_body.tri.indices);
+            assert_eq!(plain_body.tri.positions, projected_body.tri.positions);
+            assert!(plain_body.tri.uvs.iter().all(|uv| *uv == [0.0, 0.0]));
+            assert!(
+                projected_body
+                    .tri
+                    .uvs
+                    .iter()
+                    .all(|uv| uv.iter().all(|v| v.is_finite()))
+            );
+            assert!(projected_body.tri.uvs.iter().any(|uv| *uv != [0.0, 0.0]));
+        }
+    }
+
+    #[test]
+    fn box_projection_keeps_authored_uvs_and_nonfinite_authored_values_stay_uncovered() {
+        let mut builder = exedra_mesh::MeshBuilder::new();
+        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            builder.push_vertex(p);
+        }
+        builder.add_face(&[0, 1, 2]).unwrap();
+        let mut mesh = builder.build().unwrap().mesh;
+        let corners: Vec<_> = mesh.face_loop(mesh.faces().next().unwrap()).collect();
+        let mut edit = mesh.edit();
+        exedra_mesh::op::set_corner_uv(&mut edit, corners[0], [5.0, 6.0]).unwrap();
+        let _: () = edit.finish();
+        let policy = CompilePolicy {
+            uvs: UvSource::CustomOrBoxProjected { scale: 1.0 },
+            ..CompilePolicy::default()
+        };
+
+        let mut asm = Assembly::new();
+        let part = asm.add_baked_part("tri", mesh.clone(), &[]).unwrap();
+        asm.add_instance(None, "tri", part, Placement3::IDENTITY)
+            .unwrap();
+        let compiled = PartCompiler::new().compile_parts(&asm, &policy).unwrap();
+        let body = &compiled.part(part).unwrap().bodies[0];
+        assert!(body.regions[0].has_uvs);
+        assert!(body.tri.uvs.contains(&[5.0, 6.0]), "authored UV survives");
+
+        let mut edit = mesh.edit();
+        exedra_mesh::op::set_corner_uv(&mut edit, corners[1], [f32::NAN, 0.0]).unwrap();
+        let _: () = edit.finish();
+        let mut asm = Assembly::new();
+        let part = asm.add_baked_part("tri", mesh, &[]).unwrap();
+        asm.add_instance(None, "tri", part, Placement3::IDENTITY)
+            .unwrap();
+        let compiled = PartCompiler::new().compile_parts(&asm, &policy).unwrap();
+        assert!(
+            !compiled.part(part).unwrap().bodies[0].regions[0].has_uvs,
+            "projection fills missing UVs, never repairs authored ones"
         );
     }
 

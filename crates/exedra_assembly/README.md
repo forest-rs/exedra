@@ -149,6 +149,16 @@ complete coverage. `Derived`, the default, ignores overrides. The policy
 applies to both recipe and baked parts and participates in compilation cache
 identity.
 
+`CompilePolicy::uvs` selects the UV source the same way. `UvSource::CustomOnly`,
+the default, emits zero for corners without an authored UV and leaves their
+ranges without coverage. `UvSource::CustomOrBoxProjected { scale }` box-projects
+every unauthored corner on its face's dominant-axis plane, multiplied by
+`scale`, using the same math as the `uv.box` operator; authored UVs are never
+overwritten. Meshes authored in meters get one UV unit per meter with
+`scale: 1.0`. Adding the UV source to the policy advanced `policy_fingerprint`
+to the `assembly-compile-v2` prefix, so persisted policy fingerprints must be
+recomputed; defaults still produce the same render bytes as before.
+
 Compiled baked-part fingerprints now include built-in render attributes.
 Persisted compilation content and policy fingerprints must be recomputed.
 The v1 JSON interchange still represents baked positions and faces only;
@@ -171,8 +181,15 @@ Apache-2.0 OR MIT
 ### UV coverage
 
 `RegionRange::has_uvs` records whether all emitted triangle corners in the range
-have finite authored UVs. Render buffers still use zero for missing coordinates;
-consumers can now distinguish that fallback from intentionally authored zero.
-When migrating hand-built `RegionRange` values, supply `has_uvs` from the source
-attribute coverage; do not infer it from nonzero render coordinates. Compilation
-populates it automatically, independently of material binding.
+have a finite UV after `CompilePolicy::uvs` is applied. Under the default
+`UvSource::CustomOnly` that means finite authored UVs: render buffers still use
+zero for missing coordinates, and consumers can distinguish that fallback from
+intentionally authored zero. Under `UvSource::CustomOrBoxProjected` unauthored
+corners receive finite projected coordinates, so every range of finite geometry
+reports coverage; a non-finite authored UV still disqualifies its range, because
+projection fills missing values and never repairs authored ones. When migrating
+hand-built `RegionRange` values, supply `has_uvs` from the source attribute
+coverage under the policy in force; do not infer it from nonzero render
+coordinates. Compilation populates it automatically, independently of material
+binding, and the glTF exporter relies on it to refuse textured materials
+without texture coordinates.

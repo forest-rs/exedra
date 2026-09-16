@@ -63,7 +63,8 @@
 //!   representative from [`Mesh::canonical_edge`].
 //! - **Render extraction**: [`Mesh::to_trimesh`] triangulates faces with a
 //!   stable fan and creates distinct render vertices for a shared topology
-//!   vertex when corner UVs or corner normals differ.
+//!   vertex when corner UVs or corner normals differ. [`NormalsSource`] and
+//!   [`UvSource`] choose what corners without authored data emit.
 //! - **Boolean broad phase**: [`BooleanBvh`] reports deterministic AABB-overlap
 //!   candidate pairs over face triangles enumerated under an explicit
 //!   [`FaceTriangulation`] strategy.
@@ -125,6 +126,7 @@ pub mod round;
 mod session;
 mod sorted_merge;
 mod topology;
+mod uvs;
 
 pub use arena::Arena;
 pub use boolean::{
@@ -153,6 +155,10 @@ pub use session::{
     PositionPropagation, PropagatePolicy, SplitFaceDiagonalEdgePropagation, UvPropagation,
 };
 pub use topology::{Face, HalfEdge, Vertex};
+pub use uvs::{
+    BoxPlane, DEFAULT_BOX_NORMAL_EPSILON, UvSource, dominant_box_plane, project_box_position,
+    project_corner_box,
+};
 
 #[cfg(test)]
 mod tests {

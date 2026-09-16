@@ -5,12 +5,12 @@
 
 use alloc::vec::Vec;
 
-use exedra_mesh::{CornerId, FaceId};
+use exedra_mesh::{CornerId, DEFAULT_BOX_NORMAL_EPSILON, dominant_box_plane, project_corner_box};
 
 use crate::{
     Artifact, Artifacts, DiagCode, DiagLevel, Diagnostic, EditOperator, OpContext, OpError,
     OpReport, UvScope,
-    uv_common::{corner_position, face_normal, select_faces, stale_face_error},
+    uv_common::{select_faces, stale_face_error},
 };
 
 /// Parameters for [`UvBox`].
@@ -25,6 +25,9 @@ pub struct UvBoxParams {
     /// When true, only writes missing corner UV values.
     pub write_missing_only: bool,
     /// Epsilon used by dominant-axis tie-breaking.
+    ///
+    /// Defaults to [`DEFAULT_BOX_NORMAL_EPSILON`], the value render extraction
+    /// uses under `UvSource::CustomOrBoxProjected`.
     pub normal_epsilon: f32,
 }
 
@@ -35,12 +38,18 @@ impl Default for UvBoxParams {
             scale: 1.0,
             offset: [0.0, 0.0],
             write_missing_only: false,
-            normal_epsilon: 1.0e-6,
+            normal_epsilon: DEFAULT_BOX_NORMAL_EPSILON,
         }
     }
 }
 
 /// Deterministic box projection UV operator.
+///
+/// The projection is `exedra_mesh`'s shared box projection
+/// ([`dominant_box_plane`] and [`project_corner_box`]), so authoring UVs with
+/// this operator and extracting with the default UV policy yields the same
+/// render buffers as extracting the unmodified mesh under
+/// `UvSource::CustomOrBoxProjected` with the same scale and no offset.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct UvBox;
 
@@ -114,7 +123,8 @@ impl EditOperator for UvBox {
                         continue;
                     }
                     let uv =
-                        project_corner_box(txn.mesh(), corner, plane, params.scale, params.offset);
+                        project_corner_box(txn.mesh(), corner, plane, params.scale, params.offset)
+                            .expect("face loop corner must have destination vertex");
                     pending.push((corner, uv));
                 }
                 report.stats.counters.faces_processed =
@@ -153,82 +163,60 @@ impl EditOperator for UvBox {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum BoxPlane {
-    PosX,
-    NegX,
-    PosY,
-    NegY,
-    PosZ,
-    NegZ,
-}
-
-fn project_corner_box(
-    mesh: &exedra_mesh::Mesh,
-    corner: CornerId,
-    plane: BoxPlane,
-    scale: f32,
-    offset: [f32; 2],
-) -> [f32; 2] {
-    let p = corner_position(mesh, corner);
-    let base = match plane {
-        BoxPlane::PosX => [-p[2], p[1]],
-        BoxPlane::NegX => [p[2], p[1]],
-        BoxPlane::PosY => [p[0], -p[2]],
-        BoxPlane::NegY => [p[0], p[2]],
-        BoxPlane::PosZ => [p[0], p[1]],
-        BoxPlane::NegZ => [-p[0], p[1]],
-    };
-    [base[0] * scale + offset[0], base[1] * scale + offset[1]]
-}
-
-fn dominant_box_plane(mesh: &exedra_mesh::Mesh, face: FaceId, epsilon: f32) -> (BoxPlane, bool) {
-    let Some([nx, ny, nz]) = face_normal(mesh, face) else {
-        return (BoxPlane::PosZ, true);
-    };
-    let ax = nx.abs();
-    let ay = ny.abs();
-    let az = nz.abs();
-    let max_axis = ax.max(ay).max(az);
-    if max_axis < epsilon {
-        return (BoxPlane::PosZ, true);
-    }
-    if ax + epsilon >= max_axis {
-        return (
-            if nx >= 0.0 {
-                BoxPlane::PosX
-            } else {
-                BoxPlane::NegX
-            },
-            false,
-        );
-    }
-    if ay + epsilon >= max_axis {
-        return (
-            if ny >= 0.0 {
-                BoxPlane::PosY
-            } else {
-                BoxPlane::NegY
-            },
-            false,
-        );
-    }
-    (
-        if nz >= 0.0 {
-            BoxPlane::PosZ
-        } else {
-            BoxPlane::NegZ
-        },
-        false,
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use exedra_mesh::{ExtractParams, MeshBuilder};
+    use exedra_mesh::{ExtractParams, MeshBuilder, UvSource};
 
     use super::{UvBox, UvBoxParams};
     use crate::{OperatorRunner, UvScope, test_support::commit};
+
+    #[test]
+    fn uv_box_matches_extraction_time_box_projection() {
+        let mut builder = MeshBuilder::new();
+        // Octahedron: eight faces on eight distinct dominant planes.
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([-1.0, 0.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.push_vertex([0.0, -1.0, 0.0]);
+        builder.push_vertex([0.0, 0.0, 1.0]);
+        builder.push_vertex([0.0, 0.0, -1.0]);
+        builder.add_face(&[0, 2, 4]).expect("face");
+        builder.add_face(&[2, 1, 4]).expect("face");
+        builder.add_face(&[1, 3, 4]).expect("face");
+        builder.add_face(&[3, 0, 4]).expect("face");
+        builder.add_face(&[2, 0, 5]).expect("face");
+        builder.add_face(&[1, 2, 5]).expect("face");
+        builder.add_face(&[3, 1, 5]).expect("face");
+        builder.add_face(&[0, 3, 5]).expect("face");
+        let pristine = builder.build().expect("build should succeed").mesh;
+
+        for scale in [1.0_f32, 2.5] {
+            let mut authored = pristine.clone();
+            let mut runner = OperatorRunner::new();
+            let _ = commit(
+                &mut runner,
+                &mut authored,
+                &UvBox,
+                &UvBoxParams {
+                    scale,
+                    ..UvBoxParams::default()
+                },
+            )
+            .expect("uv.box should succeed");
+
+            let (from_operator, operator_stats) = authored.to_trimesh(&ExtractParams::default());
+            let (from_policy, policy_stats) = pristine.to_trimesh(&ExtractParams {
+                uvs: UvSource::CustomOrBoxProjected { scale },
+                ..ExtractParams::default()
+            });
+            assert_eq!(from_operator, from_policy, "scale {scale}");
+            assert_eq!(operator_stats, policy_stats, "scale {scale}");
+            assert!(
+                policy_stats.uv_split_count > 0,
+                "planes differ across faces"
+            );
+        }
+    }
 
     #[test]
     fn uv_box_projects_axis_aligned_face() {
