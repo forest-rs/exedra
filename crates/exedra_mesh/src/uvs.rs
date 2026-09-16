@@ -8,20 +8,24 @@
 //! decides what extraction emits for a face corner that has no authored value:
 //! the historical zero fallback, or a deterministic box projection of the
 //! corner's destination vertex. The projection is the same function the
-//! `uv.box` operator writes into the mesh, so extracting with
-//! [`UvSource::CustomOrBoxProjected`] and extracting after `uv.box` produce
-//! identical render buffers for identical parameters.
+//! `uv.box` operator writes into the mesh. For a mesh with no authored UVs,
+//! extracting with [`UvSource::CustomOrBoxProjected`] and extracting after
+//! `uv.box` at the same scale and zero offset produce identical render
+//! buffers. The two differ only where authored UVs exist: extraction keeps
+//! them, while the operator overwrites them unless `write_missing_only` is
+//! set.
 
 use alloc::vec::Vec;
 
-use exedra_math::{add, cross, sub};
+use exedra_math::{add, cross, normalize, sub};
 
 use crate::{CornerId, FaceId, Mesh};
 
 /// Default dominant-axis tie-break epsilon for [`dominant_box_plane`].
 ///
-/// Extraction under [`UvSource::CustomOrBoxProjected`] uses this value; the
-/// `uv.box` operator exposes it as its default `normal_epsilon`.
+/// Compared between components of the unit face normal, so it is independent
+/// of face size. Extraction under [`UvSource::CustomOrBoxProjected`] uses this
+/// value; the `uv.box` operator exposes it as its default `normal_epsilon`.
 pub const DEFAULT_BOX_NORMAL_EPSILON: f32 = 1.0e-6;
 
 /// Source policy for render/extraction UVs.
@@ -109,22 +113,22 @@ pub fn project_corner_box(
 /// Selects the box projection plane for `face` from its dominant normal axis.
 ///
 /// The face normal is the signed fan sum over the face loop, so concave
-/// polygons resolve correctly. Ties within `epsilon` prefer X, then Y, then Z.
-/// A degenerate normal (fewer than three corners, or every component below
-/// `epsilon`) falls back to [`BoxPlane::PosZ`]; the second value reports
+/// polygons resolve correctly. It is normalized before comparison, so the
+/// selection depends only on orientation, never on face size: `epsilon` is a
+/// tie-break tolerance between unit-normal components, and ties prefer X,
+/// then Y, then Z. Degeneracy is decided separately by the normalization
+/// itself: a face with fewer than three corners, zero area, or a non-finite
+/// position falls back to [`BoxPlane::PosZ`], and the second value reports
 /// that fallback.
 #[must_use]
 pub fn dominant_box_plane(mesh: &Mesh, face: FaceId, epsilon: f32) -> (BoxPlane, bool) {
-    let Some([nx, ny, nz]) = face_normal_sum(mesh, face) else {
+    let Some([nx, ny, nz]) = face_normal_sum(mesh, face).and_then(normalize) else {
         return (BoxPlane::PosZ, true);
     };
     let ax = nx.abs();
     let ay = ny.abs();
     let az = nz.abs();
     let max_axis = ax.max(ay).max(az);
-    if max_axis < epsilon {
-        return (BoxPlane::PosZ, true);
-    }
     if ax + epsilon >= max_axis {
         return (
             if nx >= 0.0 {
@@ -263,6 +267,25 @@ mod tests {
                 dominant_box_plane(&mesh, face, DEFAULT_BOX_NORMAL_EPSILON),
                 (expected, false),
                 "points {points:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plane_selection_is_independent_of_face_size() {
+        // A 0.5 mm square in the YZ plane, then the same square at every
+        // scale from micrometres to kilometres. The unnormalized fan sum of
+        // the small square is ~2.5e-7, below the tie-break epsilon; selection
+        // must still see a +X face.
+        let side = 0.0005_f32;
+        for scale in [1.0_f32, 1.0e-3, 1.0e-2, 1.0e2, 1.0e3, 1.0e6] {
+            let s = side * scale;
+            let mesh = quad([[0.0, 0.0, 0.0], [0.0, s, 0.0], [0.0, s, s], [0.0, 0.0, s]]);
+            let face = mesh.faces().next().expect("one face");
+            assert_eq!(
+                dominant_box_plane(&mesh, face, DEFAULT_BOX_NORMAL_EPSILON),
+                (BoxPlane::PosX, false),
+                "scale {scale}"
             );
         }
     }

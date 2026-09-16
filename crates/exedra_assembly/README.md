@@ -185,9 +185,11 @@ have a finite UV after `CompilePolicy::uvs` is applied. Under the default
 `UvSource::CustomOnly` that means finite authored UVs: render buffers still use
 zero for missing coordinates, and consumers can distinguish that fallback from
 intentionally authored zero. Under `UvSource::CustomOrBoxProjected` unauthored
-corners receive finite projected coordinates, so every range of finite geometry
-reports coverage; a non-finite authored UV still disqualifies its range, because
-projection fills missing values and never repairs authored ones. When migrating
+corners count when their emitted projected coordinates are finite, which
+compilation checks on the emitted buffer rather than assumes: a finite position
+times a finite scale can still overflow. A non-finite authored UV still
+disqualifies its range, because projection fills missing values and never
+repairs authored ones. When migrating
 hand-built `RegionRange` values, supply `has_uvs` from the source attribute
 coverage under the policy in force; do not infer it from nonzero render
 coordinates. Compilation populates it automatically, independently of material

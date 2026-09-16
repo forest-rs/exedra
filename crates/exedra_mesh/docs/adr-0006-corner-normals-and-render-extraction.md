@@ -112,17 +112,25 @@ authored `attr::CORNER_UV` emits:
   by `scale`. Authored UVs are never overwritten under either variant.
 
 **Per-face dominant axis.** The plane is chosen once per face, not per
-corner, from the signed fan-sum face normal with
-`DEFAULT_BOX_NORMAL_EPSILON` (`1e-6`) and the tie-break order X, then Y,
-then Z; a degenerate normal falls back to `+Z`. This is the same rule the
+corner, from the signed fan-sum face normal, normalized, with
+`DEFAULT_BOX_NORMAL_EPSILON` (`1e-6`) as a tie-break between unit-normal
+components in the order X, then Y, then Z. Normalizing first makes the
+selection depend on orientation only: previously the epsilon was compared
+against the area-scaled sum, so a valid sub-millimetre face fell back to
+`+Z` and its projection collapsed to a line. Degeneracy is a separate
+decision made by the normalization itself (zero area or non-finite
+positions), and it falls back to `+Z`; extraction reports each such face in
+`ExtractStats::uv_projection_fallback_count`. This is the same rule the
 `uv.box` operator applies, and the projection math now lives in
 `exedra_mesh` (`dominant_box_plane`, `project_corner_box`,
-`project_box_position`) so the operator and extraction cannot drift.
-Extracting a mesh under `CustomOrBoxProjected { scale }` and extracting
-the same mesh after `uv.box` with that scale and no offset produce
-identical render buffers. Because projected UVs enter the render-vertex
-key like authored ones, adjacent faces on different planes split their
-shared vertices exactly as authored seams do.
+`project_box_position`) so the operator and extraction cannot drift. For a
+mesh with no authored UVs, extracting under `CustomOrBoxProjected { scale }`
+and extracting after `uv.box` with that scale and zero offset produce
+identical render buffers; where authored UVs exist, extraction keeps them
+while the operator overwrites them unless `write_missing_only` is set.
+Because projected UVs enter the render-vertex key like authored ones,
+adjacent faces on different planes split their shared vertices exactly as
+authored seams do.
 
 **Why extraction time.** The compiled output of the structure head is
 triangle buffers only, so a consumer cannot run `uv.box` after
@@ -136,8 +144,10 @@ to `assembly-compile-v2` and appends a UV variant byte plus the scale
 bits, so persisted fingerprints from earlier versions never collide with
 current ones. `RegionRange::has_uvs` now means "every emitted corner in
 the range has a finite UV after the policy is applied": unchanged under
-`CustomOnly`, and true for every range of finite geometry under
-`CustomOrBoxProjected` unless an authored UV is itself non-finite.
+`CustomOnly`; under `CustomOrBoxProjected` a projected corner counts when
+its emitted coordinates are finite, which compilation checks on the emitted
+buffer because a finite position times a finite scale can overflow, and an
+authored non-finite UV still disqualifies its range.
 
 **Out of scope.** Planar and cylindrical extraction policies, texture
 transforms in glTF, and any change to how authored UVs are read.

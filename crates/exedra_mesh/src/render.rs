@@ -128,6 +128,11 @@ pub struct ExtractStats {
     /// fan because the projected polygon was not simple. Always zero under
     /// [`FaceTriangulation::Fan`].
     pub robust_fallback_count: u64,
+    /// Number of faces whose degenerate normal forced the `+Z` plane while
+    /// box-projecting corners under [`UvSource::CustomOrBoxProjected`].
+    /// Always zero under [`UvSource::CustomOnly`] and for fully authored
+    /// faces, which never project.
+    pub uv_projection_fallback_count: u64,
     /// Number of full rebuilds performed where reuse was requested but no
     /// usable prior output existed ([`ExtractMode::Incremental`] without a
     /// cache, an empty [`TrimeshCache`], or a stale one).
@@ -371,9 +376,11 @@ impl FaceUvFallback {
     /// Selects the fallback for `face`. The plane is chosen per face, so all
     /// projected corners of one face share it; only faces that actually have a
     /// corner without an authored UV pay for the face-normal computation.
-    fn for_face(source: &Mesh, face: FaceId, inputs: &CornerInputs<'_>) -> Self {
+    /// The second value reports a degenerate normal that forced the `+Z`
+    /// plane.
+    fn for_face(source: &Mesh, face: FaceId, inputs: &CornerInputs<'_>) -> (Self, bool) {
         match inputs.uvs {
-            UvSource::CustomOnly => Self::Zero,
+            UvSource::CustomOnly => (Self::Zero, false),
             UvSource::CustomOrBoxProjected { scale } => {
                 let fully_authored = inputs.corner_uvs.is_some_and(|layer| {
                     source
@@ -381,11 +388,11 @@ impl FaceUvFallback {
                         .all(|corner| layer.get(corner.as_id()).is_some())
                 });
                 if fully_authored {
-                    return Self::Zero;
+                    return (Self::Zero, false);
                 }
-                let (plane, _fell_back) =
+                let (plane, fell_back) =
                     dominant_box_plane(source, face, DEFAULT_BOX_NORMAL_EPSILON);
-                Self::Box { plane, scale }
+                (Self::Box { plane, scale }, fell_back)
             }
         }
     }
@@ -409,7 +416,11 @@ fn emit_face(
     if fell_back {
         out.stats.robust_fallback_count = out.stats.robust_fallback_count.saturating_add(1);
     }
-    let uv_fallback = FaceUvFallback::for_face(source, face, inputs);
+    let (uv_fallback, projection_fell_back) = FaceUvFallback::for_face(source, face, inputs);
+    if projection_fell_back {
+        out.stats.uv_projection_fallback_count =
+            out.stats.uv_projection_fallback_count.saturating_add(1);
+    }
     for triangle in triangles {
         for corner in triangle {
             let index = resolve_render_vertex(source, corner, uv_fallback, inputs, out);
@@ -1087,6 +1098,47 @@ mod tests {
 
         // Fully authored faces are left alone under the projected policy too.
         assert_eq!(authored_mesh.to_trimesh(&box_projected(1.0)).0, authored);
+    }
+
+    #[test]
+    fn degenerate_faces_report_the_projection_fallback() {
+        // A collinear "quad" has no normal; projection must fall back to +Z
+        // and say so. The default policy never projects, so it never counts.
+        let mut builder = MeshBuilder::new();
+        for x in [0.0, 1.0, 2.0, 3.0] {
+            builder.push_vertex([x, 0.0, 0.0]);
+        }
+        builder
+            .add_face(&[0, 1, 2, 3])
+            .expect("topologically valid quad");
+        let mesh = builder.build().expect("build should succeed").mesh;
+
+        let (tri, stats) = mesh.to_trimesh(&box_projected(1.0));
+        assert_eq!(stats.uv_projection_fallback_count, 1);
+        for (position, uv) in tri.positions.iter().zip(&tri.uvs) {
+            assert_eq!(*uv, [position[0], position[1]], "+Z fallback projects XY");
+        }
+        let (_, zero_stats) = mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(zero_stats.uv_projection_fallback_count, 0);
+
+        // Well-formed faces never count, regardless of their size.
+        let small = {
+            let mut builder = MeshBuilder::new();
+            for p in [[0.0, 0.0, 0.0], [0.0, 5.0e-4, 0.0], [0.0, 5.0e-4, 5.0e-4]] {
+                builder.push_vertex(p);
+            }
+            builder.add_face(&[0, 1, 2]).expect("small triangle");
+            builder.build().expect("build should succeed").mesh
+        };
+        let (small_tri, small_stats) = small.to_trimesh(&box_projected(1.0));
+        assert_eq!(small_stats.uv_projection_fallback_count, 0);
+        for (position, uv) in small_tri.positions.iter().zip(&small_tri.uvs) {
+            assert_eq!(
+                *uv,
+                [-position[2], position[1]],
+                "+X plane, not the fallback"
+            );
+        }
     }
 
     #[test]
