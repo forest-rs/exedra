@@ -116,15 +116,17 @@ pub fn project_corner_box(
 /// polygons resolve correctly. It is normalized before comparison, so the
 /// selection depends only on orientation, never on face size: `epsilon` is a
 /// tie-break tolerance between unit-normal components, and ties prefer X,
-/// then Y, then Z. Degeneracy is decided separately by the normalization
-/// itself: a face with fewer than three corners, zero area, or a non-finite
-/// position falls back to [`BoxPlane::PosZ`], and the second value reports
-/// that fallback.
+/// then Y, then Z. The sum and its normalization run in `f64` so that any
+/// finite `f32` face, however small or large, keeps a finite normal.
+/// Degeneracy is decided separately by the normalization itself: a face with
+/// fewer than three corners, zero area, or a non-finite position falls back
+/// to [`BoxPlane::PosZ`], and the second value reports that fallback.
 #[must_use]
 pub fn dominant_box_plane(mesh: &Mesh, face: FaceId, epsilon: f32) -> (BoxPlane, bool) {
-    let Some([nx, ny, nz]) = face_normal_sum(mesh, face).and_then(normalize) else {
+    let Some([nx, ny, nz]) = face_normal_sum_f64(mesh, face).and_then(normalize) else {
         return (BoxPlane::PosZ, true);
     };
+    let epsilon = f64::from(epsilon);
     let ax = nx.abs();
     let ay = ny.abs();
     let az = nz.abs();
@@ -174,6 +176,29 @@ pub(crate) fn face_normal_sum(mesh: &Mesh, face: FaceId) -> Option<[f32; 3]> {
     for pair in corners[1..].windows(2) {
         let current = sub(corner_position(mesh, pair[0])?, origin);
         let next = sub(corner_position(mesh, pair[1])?, origin);
+        vector = add(vector, cross(current, next));
+    }
+    Some(vector)
+}
+
+/// [`face_normal_sum`] evaluated in `f64` after promoting each position.
+///
+/// Plane selection only needs the direction of the normal, and `f32`
+/// accumulation would overflow the squared length for large finite faces
+/// (a square with side `1e10` is valid `f32` geometry whose `f32` normal
+/// length squared is not). Derived shading normals keep the `f32` path so
+/// their bytes are unchanged.
+fn face_normal_sum_f64(mesh: &Mesh, face: FaceId) -> Option<[f64; 3]> {
+    let corners = mesh.face_loop(face).collect::<Vec<_>>();
+    if corners.len() < 3 {
+        return None;
+    }
+    let promote = |corner: CornerId| corner_position(mesh, corner).map(|p| p.map(f64::from));
+    let origin = promote(corners[0])?;
+    let mut vector = [0.0_f64; 3];
+    for pair in corners[1..].windows(2) {
+        let current = sub(promote(pair[0])?, origin);
+        let next = sub(promote(pair[1])?, origin);
         vector = add(vector, cross(current, next));
     }
     Some(vector)
@@ -273,19 +298,20 @@ mod tests {
 
     #[test]
     fn plane_selection_is_independent_of_face_size() {
-        // A 0.5 mm square in the YZ plane, then the same square at every
-        // scale from micrometres to kilometres. The unnormalized fan sum of
-        // the small square is ~2.5e-7, below the tie-break epsilon; selection
-        // must still see a +X face.
-        let side = 0.0005_f32;
-        for scale in [1.0_f32, 1.0e-3, 1.0e-2, 1.0e2, 1.0e3, 1.0e6] {
-            let s = side * scale;
+        // A square in the YZ plane at every valid f32 size, from a 0.5 mm
+        // tile to sides whose squared normal length overflows f32. The
+        // unnormalized fan sum of the small square is ~2.5e-7, below the
+        // tie-break epsilon, and the f32 normal of the 1e10 square has a
+        // non-finite length; selection must still see a +X face for all.
+        for s in [
+            5.0e-4_f32, 5.0e-7, 5.0e-2, 5.0e1, 5.0e2, 1.0e10, 1.0e18, 3.0e37,
+        ] {
             let mesh = quad([[0.0, 0.0, 0.0], [0.0, s, 0.0], [0.0, s, s], [0.0, 0.0, s]]);
             let face = mesh.faces().next().expect("one face");
             assert_eq!(
                 dominant_box_plane(&mesh, face, DEFAULT_BOX_NORMAL_EPSILON),
                 (BoxPlane::PosX, false),
-                "scale {scale}"
+                "side {s}"
             );
         }
     }
