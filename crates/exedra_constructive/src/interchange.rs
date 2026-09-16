@@ -250,10 +250,12 @@ pub enum NodeKindDto {
         /// Cap mode.
         caps: String,
     },
-    /// Ruled loft between placed sections.
+    /// Loft between placed sections with authored segment correspondence.
     Loft {
         /// Sections as `(placement, profile)` pairs.
         sections: Vec<(PlacementDto, u32)>,
+        /// Explicit interpolation policy: `ruled` or `smooth`.
+        policy: String,
         /// Cap mode.
         caps: String,
     },
@@ -614,16 +616,17 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             sections,
             policy,
             caps,
-        } => {
-            let LoftPolicy::Ruled = policy;
-            NodeKindDto::Loft {
-                sections: sections
-                    .iter()
-                    .map(|(placement, profile)| (placement_dto(placement), profile.0))
-                    .collect(),
-                caps: caps_name(*caps),
-            }
-        }
+        } => NodeKindDto::Loft {
+            policy: String::from(match policy {
+                LoftPolicy::Ruled => "ruled",
+                LoftPolicy::Smooth => "smooth",
+            }),
+            sections: sections
+                .iter()
+                .map(|(placement, profile)| (placement_dto(placement), profile.0))
+                .collect(),
+            caps: caps_name(*caps),
+        },
         NodeKind::Sweep {
             profile,
             path,
@@ -863,12 +866,24 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             sweep: *sweep,
             caps: caps_value(caps)?,
         },
-        NodeKindDto::Loft { sections, caps } => NodeKind::Loft {
+        NodeKindDto::Loft {
+            sections,
+            policy,
+            caps,
+        } => NodeKind::Loft {
             sections: sections
                 .iter()
                 .map(|(placement, profile)| (placement_value(*placement), ProfileId(*profile)))
                 .collect(),
-            policy: LoftPolicy::Ruled,
+            policy: match policy.as_str() {
+                "ruled" => LoftPolicy::Ruled,
+                "smooth" => LoftPolicy::Smooth,
+                _ => {
+                    return Err(InterchangeError::UnknownValue {
+                        field: "loft policy",
+                    });
+                }
+            },
             caps: caps_value(caps)?,
         },
         NodeKindDto::Sweep {

@@ -24,7 +24,7 @@ use crate::discretize::{
     CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
     DiscretizedProfile, circular_edge_count, discretize_profile,
 };
-use crate::ir::{CapMode, Placement3, PrimitiveSpec, SlotId};
+use crate::ir::{CapMode, LoftPolicy, Placement3, PrimitiveSpec, SlotId};
 use crate::len_u32;
 use crate::profile::Profile2;
 use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
@@ -41,6 +41,8 @@ pub struct EvalPolicy {
     /// Centerline chord/tangent accuracy and work budgets for analytic sweep
     /// paths. Independent of profile discretization and mesh quantization.
     pub sweep_path: crate::path::PathDiscretizePolicy,
+    /// Point-trajectory accuracy and work budgets for smooth lofts.
+    pub loft: crate::loft::LoftSamplingPolicy,
     /// Threshold on `|sin(turn angle)|` above which a profile corner
     /// authors a sharp lateral edge. Tangent-continuous junctions (arcs
     /// meeting lines smoothly) fall below any sensible threshold and stay
@@ -92,6 +94,7 @@ impl Default for EvalPolicy {
         Self {
             discretize: DiscretizePolicy::default(),
             sweep_path: crate::path::PathDiscretizePolicy::default(),
+            loft: crate::loft::LoftSamplingPolicy::default(),
             sharp_sin_threshold: 0.1,
             planar_face_refinement: None,
             cap_refinement: None,
@@ -209,6 +212,10 @@ pub struct TessellatedBody {
     /// These bounds do not describe the placed mesh's world-space accuracy
     /// or certify its winding. See [`Self::sweep_checks`] for realization checks.
     pub path_sampling: Option<crate::path::PathSampling>,
+    /// Original smooth-loft sampling and local realization evidence.
+    /// `None` for ruled lofts and geometry derived by other operations.
+    /// Retained as source evidence by instances; not a solid certificate.
+    pub loft_sampling: Option<crate::loft::LoftSampling>,
 }
 
 /// Local sweep construction and wall-realization evidence.
@@ -291,6 +298,8 @@ pub enum TessellateError {
     },
     /// All loft sections are coplanar, so the loft has no volumetric span.
     DegenerateLoft,
+    /// Smooth-loft interpolation or sampling could not honor its contract.
+    Loft(crate::loft::LoftError),
     /// A sweep path reverses onto itself at this point (anti-parallel
     /// adjacent segments give no miter tangent).
     PathCusp {
@@ -369,6 +378,7 @@ impl core::fmt::Display for TessellateError {
             Self::SectionMismatch { section } => {
                 write!(f, "loft section {section} does not correspond to section 0")
             }
+            Self::Loft(error) => error.fmt(f),
             Self::DegenerateLoft => write!(f, "loft sections have no volumetric span"),
             Self::PathCusp { point } => {
                 write!(f, "sweep path reverses onto itself at point {point}")
@@ -711,6 +721,7 @@ fn rebuild_placed_primitive(
         face_materials: BTreeMap::new(),
         sweep_checks: None,
         path_sampling: None,
+        loft_sampling: None,
         refinement: None,
     })
 }
@@ -897,6 +908,7 @@ pub fn tessellate_planar_face(
         face_materials: BTreeMap::new(),
         sweep_checks: None,
         path_sampling: None,
+        loft_sampling: None,
         refinement: refinement_stats,
     })
 }
@@ -1165,6 +1177,7 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
         face_materials: BTreeMap::new(),
         sweep_checks: None,
         path_sampling: None,
+        loft_sampling: None,
         refinement: refinement_stats,
     })
 }
@@ -1787,11 +1800,12 @@ pub fn tessellate_revolve(
         face_materials: BTreeMap::new(),
         sweep_checks: None,
         path_sampling: None,
+        loft_sampling: None,
         refinement: None,
     })
 }
 
-/// Tessellates a ruled loft between placed sections.
+/// Tessellates a loft through placed sections with authored correspondence.
 ///
 /// Each section is a profile with its own placement; corresponding
 /// discretized ring points connect with quads band by band. Sections must
@@ -1806,19 +1820,31 @@ pub fn tessellate_revolve(
 /// sections must be ordered so counter-clockwise outer loops yield
 /// outward-facing walls (the extrude convention generalized).
 ///
-/// Intermediate section rings crease (a ruled loft is only C0 across
-/// sections); lateral edges crease at sharp corners of section 0's source
-/// tangents, and cap rims crease when capped.
+/// [`LoftPolicy::Ruled`] creases intermediate section rings. [`LoftPolicy::Smooth`]
+/// uses uniform C1 cubic trajectories and keeps intermediate rings smooth.
+/// Lateral edges crease at authored sharp profile corners; cap rims crease
+/// when capped. Smooth lofts retain every authored section and carry
+/// [`crate::loft::LoftSampling`] evidence. Accuracy and local checks apply to
+/// sampled profile trajectories, not a general solid-validity certificate.
 ///
 /// # Errors
 ///
 /// Returns a typed [`TessellateError`]; never panics.
 pub fn tessellate_loft(
     sections: &[(Placement3, &Profile2)],
+    interpolation: LoftPolicy,
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
-    debug_assert!(sections.len() >= 2, "IR validation requires >= 2 sections");
+    if sections.len() < 2 {
+        return Err(TessellateError::Loft(
+            crate::loft::LoftError::InvalidSections,
+        ));
+    }
+    let smooth = interpolation == LoftPolicy::Smooth;
+    if smooth {
+        policy.loft.validate().map_err(TessellateError::Loft)?;
+    }
     let flip = det3(&sections[0].0) < 0.0;
 
     // Correspondence: identical segment structure across sections.
@@ -1846,6 +1872,14 @@ pub fn tessellate_loft(
             }
         }
     }
+    if smooth {
+        let points: u64 = counts.iter().flatten().map(|&n| u64::from(n)).sum();
+        if points.saturating_mul(sections.len() as u64) > u64::from(policy.loft.max_vertices) {
+            return Err(TessellateError::Loft(
+                crate::loft::LoftError::BudgetExceeded,
+            ));
+        }
+    }
     let discretized: Vec<DiscretizedProfile> = sections
         .iter()
         .map(|(_, profile)| {
@@ -1865,31 +1899,67 @@ pub fn tessellate_loft(
 
     let ring_starts = ring_starts(reference);
     let total = len_u32(reference.points_len());
+    let placed: Vec<Vec<[f64; 3]>> = sections
+        .iter()
+        .zip(&discretized)
+        .map(|((placement, _), d)| {
+            d.rings()
+                .flat_map(|ring| {
+                    ring.points
+                        .iter()
+                        .map(|p| apply_placement(placement, [p[0], p[1], 0.0]))
+                })
+                .collect()
+        })
+        .collect();
+    let (placed, loft_sampling) = if smooth {
+        let sampled = crate::loft::sample(&placed, policy.loft).map_err(TessellateError::Loft)?;
+        (sampled.rings, Some(sampled.evidence))
+    } else {
+        (placed, None)
+    };
     let mut builder = OrientedBuilder::new(flip);
-    for ((placement, _), d) in sections.iter().zip(&discretized) {
-        for ring in d.rings() {
-            for p in &ring.points {
-                builder.push_vertex(narrow(apply_placement(placement, [p[0], p[1], 0.0])));
-            }
+    for ring in &placed {
+        for &p in ring {
+            builder.push_vertex(narrow(p));
         }
     }
     let section_offset = |k: usize| len_u32(k) * total;
 
     let mut face_origins: Vec<Feature> = Vec::new();
     let seg_offsets = seg_offsets(sections[0].1);
-    let corner_sharp: Vec<Vec<bool>> = core::iter::once(sections[0].1.outer())
+    let mut corner_sharp: Vec<Vec<bool>> = core::iter::once(sections[0].1.outer())
         .chain(sections[0].1.holes().iter())
         .map(|source| loop_corner_sharpness(source, policy))
         .collect();
 
+    if smooth {
+        for (_, profile) in &sections[1..] {
+            for (combined, source) in corner_sharp
+                .iter_mut()
+                .zip(core::iter::once(profile.outer()).chain(profile.holes().iter()))
+            {
+                for (sharp, own) in combined
+                    .iter_mut()
+                    .zip(loop_corner_sharpness(source, policy))
+                {
+                    *sharp |= own;
+                }
+            }
+        }
+    }
+
     let start_cap = matches!(caps, CapMode::Both | CapMode::Start);
     let end_cap = matches!(caps, CapMode::Both | CapMode::End);
-    let bands = sections.len() - 1;
+    let bands = placed.len() - 1;
 
     for band in 0..bands {
         let below = section_offset(band);
         let above = section_offset(band + 1);
-        let band_u16 = u16::try_from(band).unwrap_or(u16::MAX);
+        let band_u16 = loft_sampling.as_ref().map_or_else(
+            || u16::try_from(band).unwrap_or(u16::MAX),
+            |sampling| sampling.spans[band].band,
+        );
         for (ring_index, ring) in reference.rings().enumerate() {
             let base = ring_starts[ring_index];
             let n = len_u32(ring.points.len());
@@ -1901,16 +1971,23 @@ pub fn tessellate_loft(
                     ring.is_endpoint(point)
                         && corner_sharp[ring_index][ring.edge_seg[point as usize] as usize]
                 };
-                // Ring creases: caps at the outer boundaries, and always at
-                // intermediate sections (ruled bands are only C0 there).
-                let bottom_crease = if band == 0 { start_cap } else { true };
-                let top_crease = if band + 1 == bands { end_cap } else { true };
+                // Cap rims crease; only ruled lofts crease intermediate rings.
+                let bottom_crease = if band == 0 { start_cap } else { !smooth };
+                let top_crease = if band + 1 == bands { end_cap } else { !smooth };
                 let sharp = [
                     if bottom_crease { 1.0 } else { 0.0 },
                     if sharp_at(j) { 1.0 } else { 0.0 },
                     if top_crease { 1.0 } else { 0.0 },
                     if sharp_at(i) { 1.0 } else { 0.0 },
                 ];
+                if smooth {
+                    check_loft_wall([
+                        placed[band][(base + i) as usize],
+                        placed[band][(base + j) as usize],
+                        placed[band + 1][(base + j) as usize],
+                        placed[band + 1][(base + i) as usize],
+                    ])?;
+                }
                 builder.add_face_with_attrs(
                     &[
                         below + base + i,
@@ -1941,7 +2018,7 @@ pub fn tessellate_loft(
                             feature: Feature,
                             region: u32|
          -> Result<(), TessellateError> {
-            let convex_simple = d.holes.is_empty() && is_convex_ring(&d.outer);
+            let convex_simple = !smooth && d.holes.is_empty() && is_convex_ring(&d.outer);
             if convex_simple {
                 let n = len_u32(d.outer.points.len());
                 let ring: Vec<u32> = if reverse {
@@ -1965,6 +2042,14 @@ pub fn tessellate_loft(
                 };
                 let tri = triangulate(&input, &TriParams::default())?;
                 for t in &tri.triangles {
+                    if smooth {
+                        let ring = if reverse {
+                            &placed[0]
+                        } else {
+                            &placed[placed.len() - 1]
+                        };
+                        check_loft_triangle(t.map(|i| ring[i as usize]))?;
+                    }
                     let corners = if reverse {
                         [offset + t[2], offset + t[1], offset + t[0]]
                     } else {
@@ -1995,7 +2080,7 @@ pub fn tessellate_loft(
             let last = sections.len() - 1;
             emit_cap(
                 &discretized[last],
-                section_offset(last),
+                section_offset(placed.len() - 1),
                 false,
                 Feature::CapEnd,
                 REGION_CAP_END,
@@ -2004,17 +2089,7 @@ pub fn tessellate_loft(
     }
 
     let result = builder.build()?;
-    let mut vertex_features = Vec::with_capacity(reference.points_len() * sections.len());
-    for d in &discretized {
-        let mut per_ring: Vec<Feature> = Vec::with_capacity(d.points_len());
-        for (ring_index, ring) in d.rings().enumerate() {
-            let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
-            for &seg in &ring.edge_seg {
-                per_ring.push(Feature::Wall { loop_index, seg });
-            }
-        }
-        vertex_features.extend_from_slice(&per_ring);
-    }
+    let vertex_features = profile_vertex_features(reference, len_u32(placed.len()));
     let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
     Ok(TessellatedBody {
         mesh: result.mesh,
@@ -2022,8 +2097,37 @@ pub fn tessellate_loft(
         face_materials: BTreeMap::new(),
         sweep_checks: None,
         path_sampling: None,
+        loft_sampling,
         refinement: None,
     })
+}
+
+fn check_loft_triangle(placed: [[f64; 3]; 3]) -> Result<(), TessellateError> {
+    let rounded = placed.map(|p| narrow(p).map(f64::from));
+    if rounded.iter().flatten().any(|x| !x.is_finite()) {
+        return Err(TessellateError::NonFiniteGeometry);
+    }
+    let expected = cross(sub(placed[1], placed[0]), sub(placed[2], placed[0]));
+    let actual = cross(sub(rounded[1], rounded[0]), sub(rounded[2], rounded[0]));
+    let orientation = dot(actual, expected);
+    if !orientation.is_finite() || orientation <= 0.0 {
+        return Err(TessellateError::CollapsedGeometry);
+    }
+    Ok(())
+}
+
+fn check_loft_wall(placed: [[f64; 3]; 4]) -> Result<(), TessellateError> {
+    let expected = cross(sub(placed[1], placed[0]), sub(placed[3], placed[0]));
+    for [a, b, c] in [[0, 1, 2], [0, 2, 3], [0, 1, 3], [1, 2, 3]] {
+        check_loft_triangle([placed[a], placed[b], placed[c]])?;
+        let rounded = [placed[a], placed[b], placed[c]].map(|p| narrow(p).map(f64::from));
+        let actual = cross(sub(rounded[1], rounded[0]), sub(rounded[2], rounded[0]));
+        let orientation = dot(actual, expected);
+        if !orientation.is_finite() || orientation <= 0.0 {
+            return Err(TessellateError::CollapsedGeometry);
+        }
+    }
+    Ok(())
 }
 
 fn loft_has_volumetric_span(
@@ -2686,6 +2790,7 @@ fn tessellate_sweep_rings(
         face_materials: BTreeMap::new(),
         sweep_checks,
         path_sampling,
+        loft_sampling: None,
         refinement: None,
     })
 }
@@ -2942,6 +3047,7 @@ pub fn tessellate_grid(
         face_materials: BTreeMap::new(),
         sweep_checks: None,
         path_sampling: None,
+        loft_sampling: None,
         refinement: None,
     })
 }
@@ -4606,8 +4712,13 @@ mod tests {
             (Placement3::IDENTITY, &profile),
             (Placement3::translate(0.0, 0.0, 3.0), &profile),
         ];
-        let body =
-            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
+        let body = tessellate_loft(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("tessellates");
         assert_clean(&body);
         assert!((mesh_volume(&body.mesh) - 6.0).abs() < 1e-4);
     }
@@ -4620,7 +4731,12 @@ mod tests {
             (Placement3::translate(1.0, 0.0, 0.0), &profile),
         ];
         assert!(matches!(
-            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()),
+            tessellate_loft(
+                &sections,
+                LoftPolicy::Ruled,
+                CapMode::Both,
+                &EvalPolicy::default()
+            ),
             Err(TessellateError::DegenerateLoft)
         ));
     }
@@ -4635,8 +4751,13 @@ mod tests {
             (Placement3::IDENTITY, &big),
             (Placement3::translate(1.0, 0.5, 3.0), &small),
         ];
-        let body =
-            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
+        let body = tessellate_loft(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("tessellates");
         assert_clean(&body);
         assert!(
             (mesh_volume(&body.mesh) - 14.0).abs() < 1e-3,
@@ -4654,8 +4775,13 @@ mod tests {
             (Placement3::translate(0.4, 0.0, 1.0), &wide),
             (Placement3::translate(0.0, 0.0, 2.0), &profile),
         ];
-        let body =
-            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("tessellates");
+        let body = tessellate_loft(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("tessellates");
         assert_clean(&body);
         // Intermediate ring edges (z == 1) crease.
         let mesh = &body.mesh;
@@ -4696,7 +4822,12 @@ mod tests {
             (Placement3::IDENTITY, &rect),
             (Placement3::translate(0.0, 0.0, 1.0), &ring),
         ];
-        let result = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default());
+        let result = tessellate_loft(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        );
         assert_eq!(
             result
                 .err()
@@ -4720,7 +4851,8 @@ mod tests {
             (Placement3::IDENTITY, &big),
             (Placement3::translate(0.0, 0.0, 120.0), &small),
         ];
-        let body = tessellate_loft(&sections, CapMode::Both, &policy).expect("lofts");
+        let body =
+            tessellate_loft(&sections, LoftPolicy::Ruled, CapMode::Both, &policy).expect("lofts");
         assert_clean(&body);
         let (r1, r2, h) = (60.0_f64, 25.0_f64, 120.0);
         let frustum = core::f64::consts::PI * h / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2);
@@ -4768,7 +4900,8 @@ mod tests {
             (Placement3::IDENTITY, &rounded),
             (Placement3::translate(0.5, 0.5, 5.0), &straight),
         ];
-        let body = tessellate_loft(&sections, CapMode::Both, &policy).expect("lofts");
+        let body =
+            tessellate_loft(&sections, LoftPolicy::Ruled, CapMode::Both, &policy).expect("lofts");
         assert_clean(&body);
         assert!(mesh_volume(&body.mesh) > 0.0);
         let arc_edges = discretize_profile(&rounded, &policy.discretize)
@@ -4785,7 +4918,8 @@ mod tests {
             (Placement3::IDENTITY, &straight),
             (Placement3::translate(0.5, 0.5, 5.0), &rounded),
         ];
-        let body = tessellate_loft(&reversed, CapMode::Both, &policy).expect("lofts");
+        let body =
+            tessellate_loft(&reversed, LoftPolicy::Ruled, CapMode::Both, &policy).expect("lofts");
         assert_clean(&body);
         assert_eq!(body.mesh.vertices().count(), 2 * arc_edges);
     }
@@ -4807,7 +4941,12 @@ mod tests {
             (Placement3::translate(0.0, 0.0, 3.0), &triangle),
         ];
         assert!(matches!(
-            tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()),
+            tessellate_loft(
+                &sections,
+                LoftPolicy::Ruled,
+                CapMode::Both,
+                &EvalPolicy::default()
+            ),
             Err(TessellateError::SectionMismatch { section: 1 })
         ));
     }
@@ -4824,8 +4963,20 @@ mod tests {
             let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
             exedra_testkit::golden::trimesh_signature(&tri)
         };
-        let a = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("a");
-        let b = tessellate_loft(&sections, CapMode::Both, &EvalPolicy::default()).expect("b");
+        let a = tessellate_loft(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("a");
+        let b = tessellate_loft(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::Both,
+            &EvalPolicy::default(),
+        )
+        .expect("b");
         assert_eq!(sig(&a), sig(&b));
     }
 
@@ -5123,3 +5274,7 @@ mod sweep_tests;
 #[cfg(test)]
 #[path = "curved_sweep_tests.rs"]
 mod curved_sweep_tests;
+
+#[cfg(test)]
+#[path = "smooth_loft_tests.rs"]
+mod smooth_loft_tests;

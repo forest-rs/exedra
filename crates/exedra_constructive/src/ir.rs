@@ -295,13 +295,22 @@ pub enum CapMode {
     None,
 }
 
-/// Loft section-correspondence policy.
+/// Loft interpolation policy. Both policies use authored loop/segment order
+/// for correspondence; neither guesses seams or matches unrelated sections.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LoftPolicy {
     /// Ruled surface between equal-segment-count sections.
     #[default]
     Ruled,
+    /// C1 cubic interpolation through corresponding placed profile samples.
+    /// Section indices are uniformly spaced parameters. Interior tangents
+    /// are centered differences; endpoint tangents are one-sided secants.
+    /// Source segment boundaries are landmarks. Use
+    /// [`crate::profile::Loop2::with_seam`] to author a different first segment.
+    /// Sampling and local checks follow [`crate::loft::LoftSamplingPolicy`].
+    /// This does not certify absence of distant surface intersections.
+    Smooth,
 }
 
 /// Frame policy for polyline sweeps.
@@ -469,7 +478,7 @@ pub enum NodeKind {
     Loft {
         /// Sections in order; at least two.
         sections: Vec<(Placement3, ProfileId)>,
-        /// Correspondence policy.
+        /// Interpolation policy; correspondence is authored segment order.
         policy: LoftPolicy,
         /// Which end caps to close.
         caps: CapMode,
@@ -1733,6 +1742,7 @@ fn node_canon_bytes(
             }
             out.push(match policy {
                 LoftPolicy::Ruled => 0,
+                LoftPolicy::Smooth => 1,
             });
             put_caps(out, *caps);
         }
@@ -2571,7 +2581,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xc23bbda774fa143f69642da9fdddb555,
+            0x10c27f2effdbffa51a2222caa5865805,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

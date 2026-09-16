@@ -50,6 +50,9 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.sweep_path.max_tangent_angle.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.sweep_path.max_segment_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.sweep_path.max_path_edges.to_le_bytes());
+    bytes.extend_from_slice(&policy.loft.chord_tolerance.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&policy.loft.max_band_edges.to_le_bytes());
+    bytes.extend_from_slice(&policy.loft.max_vertices.to_le_bytes());
     push_refinement_fingerprint(&mut bytes, policy.planar_face_refinement, true);
     // Cap refinement is always interior-only. Its caller-supplied boundary
     // policy cannot affect geometry and therefore must not split cache keys.
@@ -282,6 +285,9 @@ fn approx_body_bytes(body: &TessellatedBody) -> u64 {
         + corners * 16
         + body.source_map.stats().approx_bytes as u64
         + materials
+        + body.loft_sampling.as_ref().map_or(0, |sampling| {
+            (sampling.spans.len() * size_of::<crate::loft::LoftSpan>()) as u64
+        })
         + body.path_sampling.as_ref().map_or(0, |sampling| {
             (sampling.spans.len() * size_of::<crate::path::PathSpan>()) as u64
         })
