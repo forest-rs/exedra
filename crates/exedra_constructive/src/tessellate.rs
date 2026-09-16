@@ -715,6 +715,40 @@ fn rebuild_placed_primitive(
     })
 }
 
+// Cardinal samples are mathematical axis points, not evaluations of an
+// approximate pi through libm. Keep their zero coordinates exact so opposite
+// angular directions cannot create spurious slivers in subsequent Booleans.
+fn cardinal_sin_cos(angle: f64) -> (f64, f64) {
+    use core::f64::consts::{FRAC_PI_2, PI, TAU};
+    if angle == 0.0 || angle.abs() == TAU {
+        (0.0, 1.0)
+    } else if angle.abs() == FRAC_PI_2 {
+        (angle.signum(), 0.0)
+    } else if angle.abs() == PI {
+        (0.0, -1.0)
+    } else if angle.abs() == 3.0 * FRAC_PI_2 {
+        (-angle.signum(), 0.0)
+    } else {
+        (libm::sin(angle), libm::cos(angle))
+    }
+}
+
+// Use the integer sample identity for full turns: division by the segment
+// count need not reconstruct an exact multiple of FRAC_PI_2 in f64.
+fn full_turn_sin_cos(index: u32, steps: u32, angle: f64) -> (f64, f64) {
+    let quarters = u64::from(index) * 4;
+    if quarters.is_multiple_of(u64::from(steps)) {
+        match (quarters / u64::from(steps)) % 4 {
+            0 => (0.0, 1.0),
+            1 => (1.0, 0.0),
+            2 => (0.0, -1.0),
+            _ => (-1.0, 0.0),
+        }
+    } else {
+        (libm::sin(angle), libm::cos(angle))
+    }
+}
+
 fn primitive_local_position(
     source: &exedra_mesh::Mesh,
     vertex: exedra_mesh::VertexId,
@@ -753,18 +787,16 @@ fn primitive_local_position(
                 "capped-ngon cylinder vertices are exactly two rings"
             );
             let ring_index = ordinal % segments_usize;
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "u32 segment indices are intentionally sampled in the f64 construction domain"
-            )]
-            let theta = (ring_index as f64) * core::f64::consts::TAU / f64::from(segments);
-            let native_x = radius * libm::cos(theta);
+            let ring_index = len_u32(ring_index);
+            let angle = f64::from(ring_index) * core::f64::consts::TAU / f64::from(segments);
+            let (sin_theta, cos_theta) = full_turn_sin_cos(ring_index, segments, angle);
+            let native_x = radius * cos_theta;
             let native_y = if ordinal < segments_usize {
                 0.0
             } else {
                 height
             };
-            let native_z = radius * libm::sin(theta);
+            let native_z = radius * sin_theta;
             // Rotate +90 degrees around X: backend +Y becomes constructive
             // +Z without a handedness change.
             [native_x, -native_z, native_y]
@@ -1543,11 +1575,22 @@ pub fn tessellate_revolve(
     // table, but axis points reuse their first emitted vertex at every angle.
     // This prevents both coincident vertex rings and zero-area pole quads.
     // Angles are evaluated independently per step (no accumulation drift),
-    // with libm trig only.
+    // with exact cardinal values and libm elsewhere.
     let step_angle = sweep / f64::from(steps);
     for k in 0..vertex_rings {
-        let angle = step_angle * f64::from(k);
-        let (s, c) = (libm::sin(angle), libm::cos(angle));
+        // Preserve the authored partial endpoint: dividing then multiplying
+        // can round a neighboring angle onto a cardinal (even onto TAU), or
+        // move an exact quarter turn off its axis.
+        let angle = if k == steps {
+            sweep
+        } else {
+            step_angle * f64::from(k)
+        };
+        let (s, c) = if full {
+            full_turn_sin_cos(k, steps, angle)
+        } else {
+            cardinal_sin_cos(angle)
+        };
         let mut flat = 0_u32;
         for (ring_index, ring) in d.rings().enumerate() {
             let loop_index = u16::try_from(ring_index).unwrap_or(u16::MAX);
@@ -4173,6 +4216,109 @@ mod tests {
             }
         }
         assert!(seam_edges > 0, "full sweep tags its closure meridian");
+    }
+
+    #[test]
+    fn circular_samples_preserve_exact_axes_without_snapping_neighbors() {
+        use core::f64::consts::{FRAC_PI_2, TAU};
+        let expected = [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)];
+        for steps in [4, 16, 44, 100, 4096] {
+            for (quadrant, pair) in expected.into_iter().enumerate() {
+                assert_eq!(
+                    full_turn_sin_cos(
+                        len_u32(quadrant) * (steps / 4),
+                        steps,
+                        TAU / f64::from(steps) * f64::from(len_u32(quadrant) * (steps / 4))
+                    ),
+                    pair
+                );
+            }
+        }
+        for (quadrant, pair) in expected.into_iter().enumerate() {
+            let angle = f64::from(len_u32(quadrant)) * FRAC_PI_2;
+            assert_eq!(cardinal_sin_cos(angle), pair);
+            let negative = cardinal_sin_cos(-angle);
+            assert_eq!(negative, (-pair.0, pair.1));
+        }
+        for angle in [FRAC_PI_2.next_down(), FRAC_PI_2.next_up()] {
+            assert_eq!(
+                cardinal_sin_cos(angle),
+                (libm::sin(angle), libm::cos(angle))
+            );
+            assert_ne!(cardinal_sin_cos(angle).1, 0.0);
+        }
+        // Authored odd counts retain their samples; no cardinal meridians
+        // or additional vertices are inserted into a cylinder.
+        for i in 1..7 {
+            let angle = f64::from(i) * TAU / 7.0;
+            assert_eq!(
+                full_turn_sin_cos(i, 7, angle),
+                (libm::sin(angle), libm::cos(angle))
+            );
+        }
+    }
+
+    #[test]
+    fn partial_revolve_preserves_authored_cardinal_endpoints_and_neighbors() {
+        use core::f64::consts::{FRAC_PI_2, TAU};
+        for (sweep, minimum, radius, tolerance, expected_steps) in [
+            (TAU.next_down(), 4, 0.02, 0.00075, 12),
+            (FRAC_PI_2, 25, 2.0, 2.0, 25),
+            (FRAC_PI_2.next_down(), 3, 2.0, 2.0, 3),
+            (FRAC_PI_2.next_up(), 3, 2.0, 2.0, 3),
+        ] {
+            let points = [
+                (radius / 2.0, 0.0),
+                (radius, 0.0),
+                (radius, 1.0),
+                (radius / 2.0, 1.0),
+            ];
+            let profile =
+                Profile2::simple(Loop2::new(points.map(Seg2::line).to_vec()).unwrap()).unwrap();
+            let policy = EvalPolicy {
+                discretize: DiscretizePolicy {
+                    min_arc_edges: minimum,
+                    chord_tolerance: tolerance,
+                    ..DiscretizePolicy::default()
+                },
+                ..EvalPolicy::default()
+            };
+            let body = tessellate_revolve(
+                &profile,
+                &Placement3::IDENTITY,
+                sweep,
+                CapMode::Both,
+                &policy,
+            )
+            .unwrap();
+            assert_clean(&body);
+            assert!(body.mesh.boundary_loops().unwrap().is_empty());
+            assert!(mesh_volume(&body.mesh) > 0.0);
+            let vertices: Vec<_> = body
+                .mesh
+                .vertices()
+                .map(|v| *body.mesh.vertex_position(v).unwrap())
+                .collect();
+            assert_eq!(vertices.len(), 4 * (expected_steps + 1));
+            let end = &vertices[vertices.len() - 4..];
+            let (sin, cos) = if sweep == FRAC_PI_2 {
+                (1.0, 0.0)
+            } else {
+                (libm::sin(sweep), libm::cos(sweep))
+            };
+            for (radius, y) in points {
+                assert!(
+                    end.contains(&narrow([radius * cos, y, -radius * sin])),
+                    "authored endpoint for sweep {sweep:?}: {end:?}"
+                );
+            }
+            for (i, point) in vertices.iter().enumerate() {
+                assert!(
+                    !vertices[i + 1..].contains(point),
+                    "partial sweep {sweep:?} must not close onto itself"
+                );
+            }
+        }
     }
 
     #[test]

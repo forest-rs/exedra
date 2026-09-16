@@ -119,10 +119,14 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 29 invalidates cached Boolean results after source-edge carrier
-/// preservation and consistent axis-parallel seam construction. Migration:
-/// reevaluate recipes and regenerate serialized IR with the current schema.
-pub const EVAL_SCHEMA_VERSION: u32 = 29;
+/// Schema 30 invalidates cached cylinders, revolutions, and dependent Booleans
+/// after exact cardinal-axis sampling. Migration: reevaluate recipes and
+/// regenerate serialized IR with the current schema; recipe shapes and the
+/// right-handed revolution convention are unchanged.
+pub const EVAL_SCHEMA_VERSION: u32 = 30;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
+
+#[cfg(test)]
+mod rounded_post_tests;

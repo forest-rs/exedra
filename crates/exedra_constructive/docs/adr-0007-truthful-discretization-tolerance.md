@@ -55,6 +55,15 @@ optional edge-count multiple. The multiple defaults to one. Full revolutions
 explicitly select four so cardinal meridians preserve exact extrema; ordinary
 profile arcs do not inherit that caller-specific rule.
 
+Since schema 30, full-turn cylinder and revolution samples identify cardinal
+meridians by integer step index and emit exact zero/unit coordinates there.
+Partial revolutions use exact values when the sampled angle equals a cardinal
+angle; neighboring angles retain ordinary libm evaluation. This prevents
+opposite-sign trigonometric residues at nominally shared axes from creating
+sliver intersections after a sweep-direction change. Counts, tolerances,
+right-handed orientation, and Boolean refusal rules remain unchanged.
+Reevaluate cached geometry and regenerate schema-stamped IR on migration.
+
 The calculation uses
 `4 * asin(sqrt(tolerance) / (sqrt(2) * sqrt(radius)))` for the allowed central
 angle per chord. This is the cancellation-resistant form of the sagitta
