@@ -58,8 +58,8 @@ pub struct CompilePolicy {
     /// [`UvSource::CustomOnly`] emits zero UVs for corners without an authored
     /// value and leaves [`RegionRange::has_uvs`] false for them. Under
     /// [`UvSource::CustomOrBoxProjected`] those corners project their position
-    /// on the face's dominant-axis plane, so every range of finite geometry
-    /// reports UV coverage. Authored UVs are never overwritten.
+    /// on the face's dominant-axis plane and count toward coverage whenever
+    /// the emitted coordinates are finite. Authored UVs are never overwritten.
     pub uvs: UvSource,
 }
 
@@ -133,8 +133,10 @@ pub struct RegionRange {
     /// Under [`UvSource::CustomOnly`] only finite authored UVs count;
     /// extraction's zero fallback for missing attributes does not. Under
     /// [`UvSource::CustomOrBoxProjected`] a corner without an authored UV
-    /// counts when its projected coordinates are finite, which holds for
-    /// every finite position, so ranges of such bodies report `true`.
+    /// counts when its emitted projected coordinates are finite. That is
+    /// checked on the emitted values, not assumed: a finite position times a
+    /// finite scale can still overflow, and an authored non-finite UV is left
+    /// as authored.
     pub has_uvs: bool,
 }
 

@@ -26,8 +26,10 @@ pub struct UvBoxParams {
     pub write_missing_only: bool,
     /// Epsilon used by dominant-axis tie-breaking.
     ///
-    /// Defaults to [`DEFAULT_BOX_NORMAL_EPSILON`], the value render extraction
-    /// uses under `UvSource::CustomOrBoxProjected`.
+    /// Compared between components of the unit face normal, so plane
+    /// selection does not depend on face size. Defaults to
+    /// [`DEFAULT_BOX_NORMAL_EPSILON`], the value render extraction uses under
+    /// `UvSource::CustomOrBoxProjected`.
     pub normal_epsilon: f32,
 }
 
@@ -46,10 +48,12 @@ impl Default for UvBoxParams {
 /// Deterministic box projection UV operator.
 ///
 /// The projection is `exedra_mesh`'s shared box projection
-/// ([`dominant_box_plane`] and [`project_corner_box`]), so authoring UVs with
-/// this operator and extracting with the default UV policy yields the same
-/// render buffers as extracting the unmodified mesh under
-/// `UvSource::CustomOrBoxProjected` with the same scale and no offset.
+/// ([`dominant_box_plane`] and [`project_corner_box`]). For a mesh with no
+/// authored UVs, authoring with this operator and extracting under the default
+/// UV policy yields the same render buffers as extracting the unmodified mesh
+/// under `UvSource::CustomOrBoxProjected` with the same scale and no offset.
+/// Where authored UVs exist the two differ: extraction preserves them, while
+/// this operator overwrites them unless `write_missing_only` is set.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct UvBox;
 
