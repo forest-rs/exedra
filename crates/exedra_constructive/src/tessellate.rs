@@ -178,6 +178,10 @@ pub enum Feature {
         /// `0` is the stationary rim and `1` is its translated counterpart.
         rim: u8,
     },
+    /// A cap created by an evaluated-body plane cut.
+    PlaneCutCap,
+    /// A vertex created where an evaluated-body plane cut crosses an edge.
+    PlaneCutSeam,
 }
 
 /// A tessellated body: the mesh plus its element provenance.
