@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use super::*;
 use exedra_assembly::{CompilePolicy, PartCompiler};
-use exedra_mesh::{Mesh, MeshBuilder, op};
+use exedra_mesh::{Mesh, MeshBuilder, UvSource, op};
 
 // A complete 1x1 PNG; export must preserve these exact encoded bytes.
 const PNG: &[u8] = &[
@@ -172,6 +172,63 @@ fn missing_partial_and_nonfinite_uvs_are_rejected_but_authored_zero_is_valid() {
     assert!(
         export_glb(&assembly, &compiled).is_ok(),
         "untextured export needs no UVs"
+    );
+}
+
+#[test]
+fn box_projected_uvs_satisfy_textured_materials_without_authored_uvs() {
+    let assembly = assembly(triangle(0, [0., 0.]));
+    let mut compiler = PartCompiler::new();
+    let custom_only = compiler
+        .compile_parts(&assembly, &CompilePolicy::default())
+        .unwrap();
+    assert!(!custom_only.part(PartId(0)).unwrap().bodies[0].regions[0].has_uvs);
+    assert!(matches!(
+        export_glb_with_materials(
+            &assembly,
+            &custom_only,
+            &Resources::default(),
+            GltfExportOptions::default()
+        ),
+        Err(GltfError::MissingTextureCoordinates {
+            part: 0,
+            body: 0,
+            region: 0,
+            ..
+        })
+    ));
+
+    let projected = compiler
+        .compile_parts(
+            &assembly,
+            &CompilePolicy {
+                uvs: UvSource::CustomOrBoxProjected { scale: 1.0 },
+                ..CompilePolicy::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        compiler.counters().parts_compiled,
+        2,
+        "the UV policy is a cache key"
+    );
+    let body = &projected.part(PartId(0)).unwrap().bodies[0];
+    assert!(body.regions[0].has_uvs);
+    // The triangle lies in z = 0 facing +Z, so the projection is its XY.
+    for (position, uv) in body.tri.positions.iter().zip(&body.tri.uvs) {
+        assert_eq!(*uv, [position[0], position[1]]);
+    }
+    let export = export_glb_with_materials(
+        &assembly,
+        &projected,
+        &Resources::default(),
+        GltfExportOptions::default(),
+    )
+    .unwrap();
+    let doc = GlbDocument::parse(&export.bytes).unwrap();
+    assert!(
+        doc.json()["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"].is_number(),
+        "textured primitives carry projected texture coordinates"
     );
 }
 

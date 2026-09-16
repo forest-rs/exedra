@@ -14,8 +14,9 @@ pub use validate::TriMeshGeometryError;
 
 use crate::attributes::SparseLayer;
 use crate::{
-    CornerId, DerivedCornerNormals, FaceId, FaceTriangulation, Mesh, NormalParams, NormalsSource,
-    VertexId, attr,
+    BoxPlane, CornerId, DEFAULT_BOX_NORMAL_EPSILON, DerivedCornerNormals, FaceId,
+    FaceTriangulation, Mesh, NormalParams, NormalsSource, UvSource, VertexId, attr,
+    dominant_box_plane, project_box_position,
 };
 
 /// Triangle mesh suitable for GPU upload.
@@ -59,11 +60,13 @@ pub enum ExtractMode {
 /// rebuild.
 ///
 /// `normals` selects whether extraction uses derived geometry normals,
-/// authored corner overrides, or a hybrid of both.
+/// authored corner overrides, or a hybrid of both. `uvs` selects what a
+/// corner without an authored UV emits: zero, or a box projection of its
+/// position.
 ///
 /// # Example
 /// ```rust
-/// use exedra_mesh::{ExtractMode, ExtractParams, NormalsSource};
+/// use exedra_mesh::{ExtractMode, ExtractParams, NormalsSource, UvSource};
 ///
 /// let params = ExtractParams {
 ///     mode: ExtractMode::FullRebuild,
@@ -72,6 +75,7 @@ pub enum ExtractMode {
 /// };
 /// assert_eq!(params.mode, ExtractMode::FullRebuild);
 /// assert_eq!(params.face_triangulation, exedra_mesh::FaceTriangulation::Fan);
+/// assert_eq!(params.uvs, UvSource::CustomOnly);
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ExtractParams {
@@ -87,6 +91,12 @@ pub struct ExtractParams {
     /// output; [`FaceTriangulation::Robust`] handles concave ngon faces via
     /// the shared deterministic triangulator.
     pub face_triangulation: FaceTriangulation,
+    /// UV source policy used for emitted render vertices.
+    ///
+    /// [`UvSource::CustomOnly`] preserves the historical output: corners
+    /// without an authored UV emit `[0.0, 0.0]`. Projected UVs take part in
+    /// render-vertex splitting exactly like authored ones.
+    pub uvs: UvSource,
 }
 
 impl Default for ExtractParams {
@@ -96,6 +106,7 @@ impl Default for ExtractParams {
             normals: NormalsSource::Derived,
             normal_params: NormalParams::default(),
             face_triangulation: FaceTriangulation::Fan,
+            uvs: UvSource::CustomOnly,
         }
     }
 }
@@ -214,6 +225,9 @@ impl Mesh {
     /// Render vertex splitting:
     /// - keys are `(VertexId, corner_uv_bits, corner_normal_bits)`
     /// - shared topology vertices split when corner UVs or corner normals differ
+    /// - the UV and normal of a corner are whatever [`ExtractParams::uvs`] and
+    ///   [`ExtractParams::normals`] resolve for it, so projected UVs and
+    ///   derived normals split exactly like authored ones
     ///
     /// # Example
     /// ```rust
@@ -304,92 +318,125 @@ impl Mesh {
             DerivedCornerNormals::default()
         };
 
-        let mut mesh = TriMesh::default();
-        let mut stats = ExtractStats::default();
-        let mut key_to_index = HashMap::<RenderVertexKey, u32>::new();
-        let mut vertex_variants = HashMap::<VertexId, VertexVariants>::new();
+        let inputs = CornerInputs {
+            corner_uvs,
+            normal_overrides,
+            derived_normals: &derived_normals,
+            normals: params.normals,
+            uvs: params.uvs,
+        };
+        let mut out = Emission::default();
 
         for face in self.faces() {
-            emit_face(
-                self,
-                face,
-                params.face_triangulation,
-                corner_uvs,
-                normal_overrides,
-                &derived_normals,
-                params.normals,
-                &mut mesh,
-                &mut key_to_index,
-                &mut vertex_variants,
-                &mut stats,
-            );
+            emit_face(self, face, params.face_triangulation, &inputs, &mut out);
         }
 
+        let Emission {
+            mesh, mut stats, ..
+        } = out;
         stats.render_vertex_count = mesh.positions.len() as u64;
         (mesh, stats)
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading fixed extraction context"
-)]
+/// Read-only per-corner attribute sources and policies for one extraction.
+#[derive(Copy, Clone, Debug)]
+struct CornerInputs<'a> {
+    corner_uvs: Option<&'a SparseLayer<[f32; 2]>>,
+    normal_overrides: Option<&'a SparseLayer<[f32; 3]>>,
+    derived_normals: &'a DerivedCornerNormals,
+    normals: NormalsSource,
+    uvs: UvSource,
+}
+
+/// Growing output of one extraction.
+#[derive(Debug, Default)]
+struct Emission {
+    mesh: TriMesh,
+    stats: ExtractStats,
+    key_to_index: HashMap<RenderVertexKey, u32>,
+    vertex_variants: HashMap<VertexId, VertexVariants>,
+}
+
+/// UV fallback resolved once per face for corners without an authored UV.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum FaceUvFallback {
+    /// Historical behaviour: missing corners emit `[0.0, 0.0]`.
+    Zero,
+    /// Project the corner position on `plane` and multiply by `scale`.
+    Box { plane: BoxPlane, scale: f32 },
+}
+
+impl FaceUvFallback {
+    /// Selects the fallback for `face`. The plane is chosen per face, so all
+    /// projected corners of one face share it; only faces that actually have a
+    /// corner without an authored UV pay for the face-normal computation.
+    fn for_face(source: &Mesh, face: FaceId, inputs: &CornerInputs<'_>) -> Self {
+        match inputs.uvs {
+            UvSource::CustomOnly => Self::Zero,
+            UvSource::CustomOrBoxProjected { scale } => {
+                let fully_authored = inputs.corner_uvs.is_some_and(|layer| {
+                    source
+                        .face_loop(face)
+                        .all(|corner| layer.get(corner.as_id()).is_some())
+                });
+                if fully_authored {
+                    return Self::Zero;
+                }
+                let (plane, _fell_back) =
+                    dominant_box_plane(source, face, DEFAULT_BOX_NORMAL_EPSILON);
+                Self::Box { plane, scale }
+            }
+        }
+    }
+
+    fn resolve(self, position: [f32; 3]) -> [f32; 2] {
+        match self {
+            Self::Zero => [0.0, 0.0],
+            Self::Box { plane, scale } => project_box_position(position, plane, scale, [0.0, 0.0]),
+        }
+    }
+}
+
 fn emit_face(
     source: &Mesh,
     face: FaceId,
     strategy: FaceTriangulation,
-    corner_uvs: Option<&SparseLayer<[f32; 2]>>,
-    normal_overrides: Option<&SparseLayer<[f32; 3]>>,
-    derived_normals: &DerivedCornerNormals,
-    normals_source: NormalsSource,
-    mesh: &mut TriMesh,
-    key_to_index: &mut HashMap<RenderVertexKey, u32>,
-    vertex_variants: &mut HashMap<VertexId, VertexVariants>,
-    stats: &mut ExtractStats,
+    inputs: &CornerInputs<'_>,
+    out: &mut Emission,
 ) {
     let (triangles, fell_back) = source.face_triangles_counted(face, strategy);
     if fell_back {
-        stats.robust_fallback_count = stats.robust_fallback_count.saturating_add(1);
+        out.stats.robust_fallback_count = out.stats.robust_fallback_count.saturating_add(1);
     }
+    let uv_fallback = FaceUvFallback::for_face(source, face, inputs);
     for triangle in triangles {
         for corner in triangle {
-            let index = resolve_render_vertex(
-                source,
-                corner,
-                corner_uvs,
-                normal_overrides,
-                derived_normals,
-                normals_source,
-                mesh,
-                key_to_index,
-                vertex_variants,
-                stats,
-            );
-            mesh.indices.push(index);
+            let index = resolve_render_vertex(source, corner, uv_fallback, inputs, out);
+            out.mesh.indices.push(index);
         }
-        stats.triangle_count = stats.triangle_count.saturating_add(1);
+        out.stats.triangle_count = out.stats.triangle_count.saturating_add(1);
     }
 }
 
 fn resolve_render_vertex(
     source: &Mesh,
     corner: CornerId,
-    corner_uvs: Option<&SparseLayer<[f32; 2]>>,
-    normal_overrides: Option<&SparseLayer<[f32; 3]>>,
-    derived_normals: &DerivedCornerNormals,
-    normals_source: NormalsSource,
-    mesh: &mut TriMesh,
-    key_to_index: &mut HashMap<RenderVertexKey, u32>,
-    vertex_variants: &mut HashMap<VertexId, VertexVariants>,
-    stats: &mut ExtractStats,
+    uv_fallback: FaceUvFallback,
+    inputs: &CornerInputs<'_>,
+    out: &mut Emission,
 ) -> u32 {
     let vertex = source
         .to_vertex(corner)
         .expect("face triangulation corner must have destination vertex");
-    let uv = corner_uvs
+    let position = *source
+        .vertex_position(vertex)
+        .expect("live vertex must have builtin position");
+    let uv = inputs
+        .corner_uvs
         .and_then(|layer| layer.get(corner.as_id()).copied())
-        .unwrap_or([0.0, 0.0]);
-    let normal = effective_corner_normal(corner, normal_overrides, derived_normals, normals_source);
+        .unwrap_or_else(|| uv_fallback.resolve(position));
+    let normal = effective_corner_normal(corner, inputs);
     let key = RenderVertexKey {
         vertex,
         uv_bits: [uv[0].to_bits(), uv[1].to_bits()],
@@ -400,46 +447,44 @@ fn resolve_render_vertex(
         ],
     };
 
-    if let Some(&index) = key_to_index.get(&key) {
+    if let Some(&index) = out.key_to_index.get(&key) {
         return index;
     }
 
-    let variants = vertex_variants.entry(vertex).or_default();
+    let variants = out.vertex_variants.entry(vertex).or_default();
     let uv_split = variants.has_other_uv(key.uv_bits);
     let normal_split = variants.has_other_normal(key.normal_bits);
     if uv_split || normal_split {
-        stats.split_count = stats.split_count.saturating_add(1);
+        out.stats.split_count = out.stats.split_count.saturating_add(1);
         if uv_split {
-            stats.uv_split_count = stats.uv_split_count.saturating_add(1);
+            out.stats.uv_split_count = out.stats.uv_split_count.saturating_add(1);
         }
         if normal_split {
-            stats.normal_split_count = stats.normal_split_count.saturating_add(1);
+            out.stats.normal_split_count = out.stats.normal_split_count.saturating_add(1);
         }
     }
     variants.record(key.uv_bits, key.normal_bits);
 
-    let position = *source
-        .vertex_position(vertex)
-        .expect("live vertex must have builtin position");
-    let index = u32::try_from(mesh.positions.len()).expect("render vertex index overflowed u32");
-    key_to_index.insert(key, index);
-    mesh.positions.push(position);
-    mesh.uvs.push(uv);
-    mesh.normals.push(normal);
+    let index =
+        u32::try_from(out.mesh.positions.len()).expect("render vertex index overflowed u32");
+    out.key_to_index.insert(key, index);
+    out.mesh.positions.push(position);
+    out.mesh.uvs.push(uv);
+    out.mesh.normals.push(normal);
     index
 }
 
-fn effective_corner_normal(
-    corner: CornerId,
-    normal_overrides: Option<&SparseLayer<[f32; 3]>>,
-    derived_normals: &DerivedCornerNormals,
-    source: NormalsSource,
-) -> [f32; 3] {
-    let override_normal = normal_overrides.and_then(|layer| layer.get(corner.as_id()).copied());
-    match source {
-        NormalsSource::Derived => derived_normals.get(corner).unwrap_or([0.0, 0.0, 0.0]),
+fn effective_corner_normal(corner: CornerId, inputs: &CornerInputs<'_>) -> [f32; 3] {
+    let override_normal = inputs
+        .normal_overrides
+        .and_then(|layer| layer.get(corner.as_id()).copied());
+    match inputs.normals {
+        NormalsSource::Derived => inputs
+            .derived_normals
+            .get(corner)
+            .unwrap_or([0.0, 0.0, 0.0]),
         NormalsSource::CustomOrDerived => override_normal
-            .or_else(|| derived_normals.get(corner))
+            .or_else(|| inputs.derived_normals.get(corner))
             .unwrap_or([0.0, 0.0, 0.0]),
         NormalsSource::CustomOnly => override_normal.unwrap_or([0.0, 0.0, 0.0]),
     }
@@ -450,7 +495,10 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::{ExtractParams, FaceTriangulation, MeshBuilder, NormalsSource, TriMesh, attr, op};
+    use crate::{
+        DEFAULT_BOX_NORMAL_EPSILON, ExtractParams, FaceTriangulation, Mesh, MeshBuilder,
+        NormalsSource, TriMesh, UvSource, attr, dominant_box_plane, op, project_corner_box,
+    };
 
     /// Twice the signed XY area of trimesh triangle `t`.
     fn trimesh_tri_area2(tri: &TriMesh, t: usize) -> f32 {
@@ -901,5 +949,159 @@ mod tests {
         let a = built.mesh.to_trimesh(&ExtractParams::default());
         let b = built.mesh.to_trimesh(&ExtractParams::default());
         assert_eq!(a, b);
+    }
+
+    fn unit_quad_at_z1() -> Mesh {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 1.0]);
+        builder.push_vertex([1.0, 0.0, 1.0]);
+        builder.push_vertex([1.0, 1.0, 1.0]);
+        builder.push_vertex([0.0, 1.0, 1.0]);
+        builder
+            .add_face(&[0, 1, 2, 3])
+            .expect("quad should be valid");
+        builder.build().expect("build should succeed").mesh
+    }
+
+    fn box_projected(scale: f32) -> ExtractParams {
+        ExtractParams {
+            uvs: UvSource::CustomOrBoxProjected { scale },
+            ..ExtractParams::default()
+        }
+    }
+
+    #[test]
+    fn box_projected_uvs_fill_missing_corners_from_positions() {
+        let mesh = unit_quad_at_z1();
+        let (tri, stats) = mesh.to_trimesh(&box_projected(1.0));
+        assert_eq!(stats.render_vertex_count, 4);
+        assert_eq!(stats.uv_split_count, 0);
+        for (position, uv) in tri.positions.iter().zip(&tri.uvs) {
+            assert_eq!(*uv, [position[0], position[1]]);
+        }
+
+        let (doubled, _) = mesh.to_trimesh(&box_projected(2.0));
+        assert_eq!(doubled.positions, tri.positions);
+        for (position, uv) in doubled.positions.iter().zip(&doubled.uvs) {
+            assert_eq!(*uv, [position[0] * 2.0, position[1] * 2.0]);
+        }
+
+        // The default policy is untouched: missing corners still emit zero.
+        let (zero, _) = mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(zero.uvs, vec![[0.0, 0.0]; 4]);
+        assert_eq!(zero.positions, tri.positions);
+        assert_eq!(zero.indices, tri.indices);
+    }
+
+    #[test]
+    fn box_projection_keeps_authored_uvs_and_projects_the_rest() {
+        let mut mesh = unit_quad_at_z1();
+        let face = mesh.faces().next().expect("one face");
+        let authored = mesh.face_loop(face).next().expect("quad corner");
+        let authored_vertex = mesh.to_vertex(authored).expect("live corner");
+        let mut edit = mesh.edit();
+        op::set_corner_uv(&mut edit, authored, [7.0, 7.0]).expect("corner is live");
+        let _: () = edit.finish();
+
+        let (tri, stats) = mesh.to_trimesh(&box_projected(1.0));
+        assert_eq!(stats.render_vertex_count, 4);
+        let authored_position = *mesh
+            .vertex_position(authored_vertex)
+            .expect("live vertex has a position");
+        let mut authored_seen = 0;
+        for (position, uv) in tri.positions.iter().zip(&tri.uvs) {
+            if *position == authored_position {
+                assert_eq!(*uv, [7.0, 7.0], "authored UVs are never overwritten");
+                authored_seen += 1;
+            } else {
+                assert_eq!(*uv, [position[0], position[1]]);
+            }
+        }
+        assert_eq!(authored_seen, 1);
+    }
+
+    /// Closed axis-aligned box with outward-facing quads. Coordinates are
+    /// chosen so no two box planes project any corner to the same UV.
+    fn axis_aligned_box() -> Mesh {
+        let (x0, x1, y0, y1, z0, z1) = (1.0, 2.0, 2.0, 3.0, 4.0, 6.0);
+        let mut builder = MeshBuilder::new();
+        for p in [
+            [x0, y0, z0],
+            [x1, y0, z0],
+            [x1, y1, z0],
+            [x0, y1, z0],
+            [x0, y0, z1],
+            [x1, y0, z1],
+            [x1, y1, z1],
+            [x0, y1, z1],
+        ] {
+            builder.push_vertex(p);
+        }
+        for face in [
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [2, 3, 7, 6],
+            [0, 4, 7, 3],
+            [1, 2, 6, 5],
+        ] {
+            builder.add_face(&face).expect("box quad should be valid");
+        }
+        builder.build().expect("build should succeed").mesh
+    }
+
+    #[test]
+    fn box_projection_splits_a_box_once_per_face_like_authored_uvs() {
+        let projected_mesh = axis_aligned_box();
+        let (projected, stats) = projected_mesh.to_trimesh(&box_projected(1.0));
+        assert_eq!(
+            stats.render_vertex_count, 24,
+            "three planes meet at each corner"
+        );
+        assert_eq!(stats.uv_split_count, 16);
+        assert_eq!(
+            stats.normal_split_count, 0,
+            "smooth derived normals never split"
+        );
+
+        // Author the same projection into the mesh and extract under the
+        // default policy: the two paths must agree byte for byte.
+        let mut authored_mesh = axis_aligned_box();
+        let faces: Vec<_> = authored_mesh.faces().collect();
+        let mut edit = authored_mesh.edit();
+        for face in faces {
+            let (plane, fell_back) =
+                dominant_box_plane(edit.mesh(), face, DEFAULT_BOX_NORMAL_EPSILON);
+            assert!(!fell_back, "box faces have well-defined normals");
+            let corners: Vec<_> = edit.mesh().face_loop(face).collect();
+            for corner in corners {
+                let uv = project_corner_box(edit.mesh(), corner, plane, 1.0, [0.0, 0.0])
+                    .expect("live corner");
+                op::set_corner_uv(&mut edit, corner, uv).expect("corner is live");
+            }
+        }
+        let _: () = edit.finish();
+        let (authored, authored_stats) = authored_mesh.to_trimesh(&ExtractParams::default());
+        assert_eq!(authored_stats.render_vertex_count, 24);
+        assert_eq!(authored, projected);
+
+        // Fully authored faces are left alone under the projected policy too.
+        assert_eq!(authored_mesh.to_trimesh(&box_projected(1.0)).0, authored);
+    }
+
+    #[test]
+    fn uv_policy_is_pinned_by_the_extraction_cache() {
+        use crate::TrimeshCache;
+
+        let mesh = unit_quad_at_z1();
+        let mut cache = TrimeshCache::new();
+        let (zero, _) = mesh.to_trimesh_cached(&ExtractParams::default(), &mut cache);
+        let (projected, stats) = mesh.to_trimesh_cached(&box_projected(1.0), &mut cache);
+        assert_eq!(
+            stats.incremental_fallbacks, 1,
+            "a policy change refuses reuse"
+        );
+        assert_ne!(zero.uvs, projected.uvs);
+        assert_eq!(projected, mesh.to_trimesh(&box_projected(1.0)).0);
     }
 }

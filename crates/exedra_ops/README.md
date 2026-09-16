@@ -65,6 +65,12 @@ UV projection uses each corner's destination vertex, matching render extraction.
 Migration: regenerate mappings authored by the earlier projection operators,
 which shifted UVs by one corner around each face. Operator parameters are unchanged.
 
+`uv.box` shares its plane selection and projection with `exedra_mesh`
+(`dominant_box_plane`, `project_corner_box`), which render extraction also uses
+under `UvSource::CustomOrBoxProjected`. Authoring with `uv.box` at a given scale
+and no offset, then extracting with the default UV policy, yields the same
+render buffers as extracting the unmodified mesh under that policy.
+
 ## Design
 
 - [SDK boundary](https://github.com/forest-rs/exedra/blob/main/crates/exedra_ops/docs/adr-0001-operator-sdk-surface.md) — the mesh workflow

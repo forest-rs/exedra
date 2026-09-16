@@ -16,6 +16,19 @@
 //! This means one topology vertex can map to multiple render vertices when
 //! corner UVs or corner normals differ across incident faces.
 //!
+//! # Source Policies
+//!
+//! A corner's UV and normal are whatever the extraction policies resolve for
+//! it, and the key sees the resolved values:
+//! - [`NormalsSource`](crate::NormalsSource) chooses derived normals, authored
+//!   overrides, or authored-with-derived-fallback.
+//! - [`UvSource`](crate::UvSource) chooses what a corner without an authored
+//!   `CORNER_UV` emits. `CustomOnly` (the default) emits `[0.0, 0.0]`;
+//!   `CustomOrBoxProjected { scale }` projects the corner position on its
+//!   face's dominant-axis plane using
+//!   [`dominant_box_plane`](crate::dominant_box_plane), the same rule as the
+//!   `uv.box` operator. Authored UVs are never overwritten.
+//!
 //! # Determinism
 //!
 //! Ordering is deterministic for fixed mesh state:

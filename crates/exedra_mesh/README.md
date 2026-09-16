@@ -100,7 +100,12 @@ Exhaustive `RoundError` matches must handle the new `InvalidEdge` variant.
   half-edge representative for each undirected edge.
 - **Render extraction**: `Mesh::to_trimesh` triangulates polygonal faces with a
   stable fan and splits a shared topology vertex into multiple render vertices
-  when corner UVs or corner normals differ.
+  when corner UVs or corner normals differ. `ExtractParams::normals`
+  (`NormalsSource`) and `ExtractParams::uvs` (`UvSource`) choose what corners
+  without authored data emit. `UvSource::CustomOrBoxProjected { scale }`
+  box-projects each unauthored corner on its face's dominant-axis plane with
+  the same math as the `uv.box` operator; authored UVs are never overwritten,
+  and the default `CustomOnly` keeps the historical zero fallback.
 - **Boolean broad phase**: `BooleanBvh` reports deterministic AABB-overlap
   candidate pairs over fan-triangulated mesh faces.
 - **Edit sessions**: public mutation goes through `op::*` functions applied to
@@ -146,6 +151,8 @@ fn main() -> Result<(), exedra_mesh::BuildError> {
 - `EditSession`, `ChangeSet`, `DirtySet`, `PropagatePolicy`: edit hosting and
   change reporting.
 - `ExtractParams`, `TriMesh`, `ExtractStats`: render extraction.
+- `NormalsSource`, `UvSource`, `dominant_box_plane`, `project_corner_box`:
+  extraction policies and the shared box projection behind `UvSource`.
 
 ## Design
 
