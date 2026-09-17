@@ -7,14 +7,14 @@
 ## Context
 
 Exedra's downstream machinery — the half-edge kernel, edit sessions,
-Exedra Ops' mesh-operator lifecycle, primitives with semantic regions — is solid,
+Exedra Edit' mesh-operator lifecycle, primitives with semantic regions — is solid,
 but nothing upstream of the mesh exists: no curves, no pre-mesh profiles, no
 constructive operations, no recipe model. External spec compilers (parametric product specifications, living in
 separate repositories by decision) need a spec-agnostic construction
 representation they can target, with the mesh as its *output*, not its
 source model.
 
-Exedra Ops ADR-0005 records the required boundary: a sibling head with
+Exedra Edit ADR-0005 records the required boundary: a sibling head with
 explicit, lossy, provenance-carrying conversion into the mesh domain — never an extension of
 the mesh kernel, and never a universal geometry abstraction.
 
@@ -231,8 +231,10 @@ mesh-side merge tolerances.
 - External frontends get a semver-conscious integration surface; mistakes
   in the canonical encoding are breaking changes, so it ships with golden
   coverage from the first slice.
-- `exedra_ops` can expose a typed conversion adapter while its runner remains
-  mesh-specific; it does not gain a heterogeneous operator domain.
+- Evaluation and mesh-loop profile conversion are direct constructive APIs;
+  there is no additional command-runner conversion layer. Geometric mesh
+  algorithms live below constructive in `exedra_mesh_ops`; see its
+  [boundary decision](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md).
 - One more workspace crate with a heavier dependency (kurbo) — accepted and
   recorded against the dependency-creep tenet in `ec-c3ii`'s audit.
 

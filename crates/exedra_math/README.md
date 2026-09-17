@@ -12,14 +12,14 @@ Current scope:
 - the `f32` ↔ `f64` `promote`/`narrow` pair kernels use at their single
   narrowing point,
 - finiteness, unit-length, and orthogonal-frame predicates with explicit
-  tolerances.
+  tolerances,
+- affine `Placement3` matrices and `Plane3` with checked normalization.
 
-Every operation is correctly rounded, so the `std` and `libm` backends produce
-bit-identical results. Transcendental functions are deliberately absent; the
-crates that need them keep their own backend plumbing.
-
-This crate owns only scalar vector arithmetic. It does not own vector types,
-placements, bounding boxes, or matrices.
+Vector arithmetic is correctly rounded, so its `std` and `libm` backends produce
+bit-identical results. Shared `Placement3` and `Plane3` types also live here,
+independent of recipes and meshes. Rotation constructors use libm when enabled,
+otherwise the standard backend. Constructive explicitly selects libm to preserve
+recipe evaluation arithmetic.
 
 ```rust
 use exedra_math::{cross, dot, normalize};

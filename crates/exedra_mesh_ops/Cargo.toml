@@ -1,0 +1,31 @@
+[package]
+name = "exedra_mesh_ops"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Direct mesh modeling and geometric queries for Exedra"
+readme = "README.md"
+keywords = ["mesh", "modeling", "geometry", "no_std"]
+categories = ["graphics", "algorithms"]
+
+[dependencies]
+exedra_math.workspace = true
+exedra_mesh.workspace = true
+exedra_triangulate.workspace = true
+hashbrown.workspace = true
+# Planar measurement and extracted constructive geometry retain deterministic
+# libm arithmetic, independently of the legacy rounding backend selection.
+libm.workspace = true
+
+[features]
+default = ["std"]
+std = ["exedra_math/std", "exedra_mesh/std"]
+libm = ["exedra_math/libm", "exedra_mesh/libm"]
+
+[dev-dependencies]
+exedra_testkit = { features = ["std"], workspace = true }
+
+[lints]
+workspace = true

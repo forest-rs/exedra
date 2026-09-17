@@ -21,21 +21,7 @@ pub fn dissolve_edges<S: ChangeSink>(
     session: &mut EditSession<'_, S>,
     edges: &[HalfEdgeId],
 ) -> Result<Vec<FaceId>, DissolveEdgesError> {
-    validate_edge_set(session, edges)?;
-    let mut touched_faces = BTreeSet::<FaceId>::new();
-    for &half_edge in edges {
-        let twin = live_twin(session, half_edge)?;
-        let face = live_face(session, half_edge)?;
-        let twin_face = live_face(session, twin)?;
-        if face == FaceId::OUTSIDE || twin_face == FaceId::OUTSIDE {
-            return Err(DissolveEdgesError::BoundaryEdgeNotDissolvable {
-                half_edge: half_edge.index(),
-            });
-        }
-        if !touched_faces.insert(face) || !touched_faces.insert(twin_face) {
-            return Err(DissolveEdgesError::OverlappingEdgeSet);
-        }
-    }
+    validate_dissolve_edge_selection(session.mesh(), edges)?;
 
     let mut merged_faces = Vec::with_capacity(edges.len());
     for &half_edge in edges {
@@ -69,10 +55,35 @@ pub fn dissolve_edges<S: ChangeSink>(
     Ok(merged_faces)
 }
 
-fn validate_edge_set<S: ChangeSink>(
-    session: &EditSession<'_, S>,
+/// Checks canonical, live, interior and pairwise face-disjoint edge selection.
+///
+/// This performs the selection preflight used by [`dissolve_edges`] without an
+/// edit session. Merged-loop construction and subsequent kernel edits may still
+/// fail; passing this check does not make eager execution transactional.
+pub fn validate_dissolve_edge_selection(
+    mesh: &crate::Mesh,
     edges: &[HalfEdgeId],
 ) -> Result<(), DissolveEdgesError> {
+    validate_edge_set(mesh, edges)?;
+    let mut touched_faces = BTreeSet::<FaceId>::new();
+    for &half_edge in edges {
+        let twin = live_twin(mesh, half_edge)?;
+        let face = live_face(mesh, half_edge)?;
+        let twin_face = live_face(mesh, twin)?;
+        if face == FaceId::OUTSIDE || twin_face == FaceId::OUTSIDE {
+            return Err(DissolveEdgesError::BoundaryEdgeNotDissolvable {
+                half_edge: half_edge.index(),
+            });
+        }
+        if !touched_faces.insert(face) || !touched_faces.insert(twin_face) {
+            return Err(DissolveEdgesError::OverlappingEdgeSet);
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_edge_set(mesh: &crate::Mesh, edges: &[HalfEdgeId]) -> Result<(), DissolveEdgesError> {
     let mut previous = None;
     for &half_edge in edges {
         if let Some(prev) = previous
@@ -81,7 +92,7 @@ fn validate_edge_set<S: ChangeSink>(
             return Err(DissolveEdgesError::NonCanonicalEdgeSet);
         }
         previous = Some(half_edge);
-        let twin = live_twin(session, half_edge)?;
+        let twin = live_twin(mesh, half_edge)?;
         if core::cmp::min(half_edge, twin) != half_edge {
             return Err(DissolveEdgesError::NonCanonicalEdgeSet);
         }
@@ -89,25 +100,15 @@ fn validate_edge_set<S: ChangeSink>(
     Ok(())
 }
 
-fn live_twin<S: ChangeSink>(
-    session: &EditSession<'_, S>,
-    half_edge: HalfEdgeId,
-) -> Result<HalfEdgeId, DissolveEdgesError> {
-    session
-        .mesh()
-        .twin(half_edge)
+fn live_twin(mesh: &crate::Mesh, half_edge: HalfEdgeId) -> Result<HalfEdgeId, DissolveEdgesError> {
+    mesh.twin(half_edge)
         .ok_or(DissolveEdgesError::HalfEdgeNotLive {
             half_edge: half_edge.index(),
         })
 }
 
-fn live_face<S: ChangeSink>(
-    session: &EditSession<'_, S>,
-    half_edge: HalfEdgeId,
-) -> Result<FaceId, DissolveEdgesError> {
-    session
-        .mesh()
-        .face(half_edge)
+fn live_face(mesh: &crate::Mesh, half_edge: HalfEdgeId) -> Result<FaceId, DissolveEdgesError> {
+    mesh.face(half_edge)
         .ok_or(DissolveEdgesError::HalfEdgeNotLive {
             half_edge: half_edge.index(),
         })

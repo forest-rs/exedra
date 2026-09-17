@@ -10,10 +10,8 @@
 //! - eager edit scopes with optional deterministic change summaries,
 //! - deterministic render extraction ([`Mesh::to_trimesh`]).
 //!
-//! Exedra Mesh is the engine tier. For workflow/operator authoring and end-user
-//! modeling flows, prefer the Exedra Ops crate (`exedra_ops::...`). Its runner
-//! is mesh-specific; cross-domain work uses explicit adapters owned by the
-//! participating domains.
+//! Compound mesh modeling and geometric queries live in `exedra_mesh_ops`.
+//! Retained construction and application execution build on those direct APIs.
 //!
 //! The intended engine surface is this crate root (`exedra_mesh::...`) via
 //! re-exported kernel types like [`Mesh`], [`EditSession`], [`MeshBuilder`],
@@ -33,7 +31,6 @@
 //! - Explicit compaction: [`Mesh::compact`], [`Remap`]
 //! - Kernel mutation surface: [`op`]
 //! - Render extraction: [`ExtractParams`], [`TriMesh`]
-//! - Boolean broad phase: [`boolean`], [`BooleanBvh`]
 //!
 //! # Guarantees
 //!
@@ -47,7 +44,7 @@
 //!
 //! Exedra Mesh does not own scene graphs, units, materials, UI/operator workflows,
 //! or exact analytic/CAD topology. Higher-level modeling policy belongs in
-//! Exedra Ops or sibling domain crates. Exedra Mesh also does not compact IDs
+//! `exedra_mesh_ops` or sibling domain crates. Exedra Mesh also does not compact IDs
 //! implicitly; use [`Mesh::compact`] when you want a tombstone-free copy.
 //!
 //! # Core Concepts
@@ -65,9 +62,6 @@
 //!   stable fan and creates distinct render vertices for a shared topology
 //!   vertex when corner UVs or corner normals differ. [`NormalsSource`] and
 //!   [`UvSource`] choose what corners without authored data emit.
-//! - **Boolean broad phase**: [`BooleanBvh`] reports deterministic AABB-overlap
-//!   candidate pairs over face triangles enumerated under an explicit
-//!   [`FaceTriangulation`] strategy.
 //! - **Edit sessions**: mutations are eager through [`EditSession`], with
 //!   optional [`ChangeSet`] and [`DirtySet`] output for incremental consumers.
 //! - **Numeric policy**: [`NumericPolicy`] centralizes tolerances for geometry
@@ -112,7 +106,6 @@ compile_error!("exedra_mesh requires either the `std` or `libm` feature");
 mod arena;
 pub mod attr;
 pub mod attributes;
-pub mod boolean;
 mod id;
 #[cfg(doc)]
 pub mod manual;
@@ -122,17 +115,12 @@ mod normals;
 mod numeric;
 pub mod op;
 mod render;
-pub mod round;
 mod session;
 mod sorted_merge;
 mod topology;
 mod uvs;
 
 pub use arena::Arena;
-pub use boolean::{
-    Aabb, BooleanBroadPhaseStats, BooleanBvh, BooleanCandidatePair, BooleanScratch,
-    BooleanTriangleRef,
-};
 pub use id::{CornerId, FaceId, HalfEdgeId, Id, VertexId};
 pub use mesh::{
     BoundaryLoopError, BuildError, BuildParams, ConnectedFaceRegionError, FaceAttrErrorKind,
@@ -144,10 +132,6 @@ pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsS
 pub use numeric::NumericPolicy;
 pub use render::{
     ExtractMode, ExtractParams, ExtractStats, TriMesh, TriMeshGeometryError, TrimeshCache,
-};
-pub use round::{
-    RoundError, RoundFaceSource, RoundKind, RoundPolicy, RoundResult, RoundStats, round_edges,
-    round_sharp_edges,
 };
 pub use session::{
     ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,

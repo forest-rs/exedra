@@ -14,7 +14,7 @@ Exedra's topology-editing surface currently lives mostly on
 4. public surface of kernel edits.
 
 This has become hard to navigate and obscures the architectural boundary
-between Exedra kernel edits and Exedra Ops workflow operators.
+between Exedra kernel edits and Exedra Edit workflow operators.
 
 ## Decision
 
@@ -26,7 +26,8 @@ The boundary is:
 - `session/*` owns eager edit hosting, bookkeeping, dirty/change tracking,
   cache invalidation, and low-level mutation helpers.
 - `op/*` owns public kernel mutation functions over `&mut EditSession`.
-- `exedra_ops` owns compile/apply plans, diagnostics, reports, artifacts, and
+- `exedra_mesh_ops` composes kernel primitives into direct geometric algorithms.
+- `exedra_edit` owns compile/apply plans, diagnostics, reports, artifacts, and
   user-facing workflow operators.
 
 Exedra ops are namespaced free functions such as `op::split_edge(...)` and
@@ -38,7 +39,7 @@ hierarchy, runner layer, or command-object representation in Exedra.
 - Makes kernel edits explicit and discoverable without turning `EditSession`
   into the public operation namespace.
 - Keeps bookkeeping and mutation plumbing where it belongs: on the session.
-- Gives Exedra Ops a cleaner composition seam for future modeling operators.
+- Gives Exedra Edit a cleaner composition seam for future modeling operators.
 - Avoids the allocation/verbosity cost of struct-wrapped command values for
   borrowed slice inputs and simple authored writes.
 
@@ -51,3 +52,6 @@ hierarchy, runner layer, or command-object representation in Exedra.
   second public mutation surface.
 - Topology operation bodies live in `op/*`; `session/*` retains bookkeeping,
   cache invalidation, propagation helpers, and other mutation plumbing.
+
+The [mesh-operation consolidation](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md)
+records current ownership and migration from the former `exedra_ops` surface.

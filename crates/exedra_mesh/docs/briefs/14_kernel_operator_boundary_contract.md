@@ -1,17 +1,17 @@
 # Brief: Kernel/operator boundary contract (kernel promises and operator responsibilities)
 
 ## Decision
-Exedra and Exedra Ops have an explicit boundary contract:
+Exedra and Exedra Edit have an explicit boundary contract:
 
 - **Exedra** is the calm kernel: topology + attributes + deterministic extraction + validation + (later) booleans.
-- **Exedra Ops** supplies the deterministic mesh-operator lifecycle: workflows,
+- **Exedra Edit** supplies the deterministic mesh-operator lifecycle: workflows,
   preview/commit orchestration, diagnostics, and thin explicit adapters.
 
-Exedra Ops never depends on Exedra internals; Exedra never depends on Exedra Ops concepts.
+Exedra Edit never depends on Exedra internals; Exedra never depends on Exedra Edit concepts.
 
 ## Why
 Without a boundary contract:
-- Exedra Ops reaches into kernel data structures
+- Exedra Edit reaches into kernel data structures
 - Exedra gets polluted with tool semantics
 - incremental workflows become brittle (duplicated invalidation logic)
 - determinism breaks when ordering rules diverge
@@ -40,16 +40,16 @@ A crisp contract preserves modularity and replaceability.
 7. **Boolean pipeline (later)**:
    - staged execution with artifacts and structured failure taxonomy
 
-## What Exedra Ops may do (allowed responsibilities)
+## What Exedra Edit may do (allowed responsibilities)
 - Execute generic mesh workflows; applications and domain crates define their
   own semantic vocabulary.
 - Compose Exedra edits inside eager edit scopes; supply propagation policies intentionally.
 - Orchestrate preview/commit (clone/COW/undo later) without mutating the committed base mesh in preview.
 - Maintain operator-local caches keyed by (mesh version/change set, params hash).
-- Use `invalidation` (formerly `understory_dirty`) for Exedra Ops runtime cache invalidation (not for kernel dirtiness).
+- Use `invalidation` (formerly `understory_dirty`) for Exedra Edit runtime cache invalidation (not for kernel dirtiness).
 - Own UV generation utilities and seam tooling.
 
-## What Exedra Ops must NOT do (boundary violations)
+## What Exedra Edit must NOT do (boundary violations)
 - Mutate Exedra topology/attributes without a `EditSession`.
 - Infer kernel dirtiness by inspection; must consume `ChangeSet.dirty`.
 - Depend on internal arena layout beyond stable APIs.
@@ -66,9 +66,9 @@ Objects crossing the boundary and expected to remain stable:
 
 ## Implications
 - Exedra APIs are intentionally boring and semver-stable.
-- Exedra Ops can add mesh operators without changing Exedra.
-- Debuggability is shared: Exedra provides core reports/artifacts; Exedra Ops provides operator reports/artifacts.
+- Exedra Edit can add mesh operators without changing Exedra.
+- Debuggability is shared: Exedra provides core reports/artifacts; Exedra Edit provides operator reports/artifacts.
 
 ## Non-goals / deferrals
 - A monolithic scene graph that owns both kernel and operators.
-- Allowing Exedra Ops to bypass the edit-scope/change-set contract for performance.
+- Allowing Exedra Edit to bypass the edit-scope/change-set contract for performance.

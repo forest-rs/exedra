@@ -38,7 +38,7 @@
 //! 1. Build a primitive (for example [`quad()`]).
 //! 2. Read semantic metadata from [`Primitive::face_region`] and
 //!    [`Primitive::selections`].
-//! 3. Pass [`Primitive::mesh`] into Exedra/Exedra Ops workflows.
+//! 3. Pass [`Primitive::mesh`] into Exedra/Exedra Edit workflows.
 //!
 //! ```
 //! use exedra_primitives::{BoxParams, box_primitive};

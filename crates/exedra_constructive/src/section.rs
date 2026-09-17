@@ -28,43 +28,12 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-mod emit;
-mod prepare;
-mod triangulate;
-use emit::{cap_triangles, emit};
-use prepare::prepare;
-
 use crate::ir::{Placement3, Plane3, SlotId};
 use crate::tessellate::{Feature, TessellatedBody};
-use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
-use exedra_math::{cross, dot, narrow, normalize, scale, sub};
-use exedra_mesh::{FaceBuildAttrs, FaceTriangulation, MeshBuilder};
+use exedra_mesh_ops::section as geometry;
 
-/// Accuracy and finite work limits for plane operations.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct SectionPolicy {
-    /// Body-space distance: vertices this close to the plane are ambiguous.
-    /// Emitted cut vertices must also remain within this distance after f32 storage.
-    pub distance_tolerance: f64,
-    /// Maximum input triangles, before clipping.
-    pub max_triangles: u32,
-    /// Maximum distinct section vertices, including triangulation-diagonal crossings.
-    pub max_section_vertices: u32,
-    /// Maximum budgeted segment-pair and containment work, shared by original
-    /// and f32-realized section validation.
-    pub max_pair_checks: u64,
-}
-impl Default for SectionPolicy {
-    fn default() -> Self {
-        Self {
-            distance_tolerance: 1e-6,
-            max_triangles: 1_000_000,
-            max_section_vertices: 8192,
-            max_pair_checks: 16_000_000,
-        }
-    }
-}
+pub use geometry::{SectionPolicy, SectionStats};
 
 /// Authored attributes of newly generated cap faces.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -91,22 +60,6 @@ pub struct SectionRegion {
     pub outer: SectionLoop,
     /// Clockwise hole boundaries.
     pub holes: Vec<SectionLoop>,
-}
-/// Deterministic work and realization measurements.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct SectionStats {
-    /// Number of input triangles inspected.
-    pub input_triangles: u32,
-    /// Input triangles straddling the plane.
-    pub split_triangles: u32,
-    /// Distinct edge/plane intersections.
-    pub section_vertices: u32,
-    /// Closed section boundaries, including holes.
-    pub section_loops: u32,
-    /// Triangles on one cap; zero for section-only queries.
-    pub cap_triangles: u32,
-    /// Maximum plane distance after narrowing cut vertices to f32.
-    pub max_plane_deviation: f64,
 }
 /// A section of the triangulated input surface; empty when the plane misses it.
 #[derive(Clone, Debug, PartialEq)]
@@ -213,7 +166,14 @@ pub fn section_body(
     plane: Plane3,
     policy: &SectionPolicy,
 ) -> Result<PlaneSection, SectionError> {
-    Ok(prepare(source, plane, policy)?.section)
+    source
+        .source_map
+        .check(&source.mesh)
+        .map_err(|_| SectionError::StaleSourceMap)?;
+    Ok(bind_section(
+        source,
+        geometry::section_mesh(&source.mesh, plane, policy).map_err(SectionError::from)?,
+    ))
 }
 
 /// Splits an evaluated body into two closed, capped halves.
@@ -233,63 +193,106 @@ pub fn split_body(
     policy: &SectionPolicy,
     cap: CutCap,
 ) -> Result<PlaneSplit, SectionError> {
-    let mut prepared = prepare(source, plane, policy)?;
-    let triangles = cap_triangles(&prepared)?;
-    prepared.section.stats.cap_triangles =
-        u32::try_from(triangles.len()).map_err(|_| SectionError::BudgetExceeded)?;
-    let negative = emit(
-        source,
-        &prepared,
-        &prepared.negative,
-        &triangles,
-        cap,
-        false,
-    )?;
-    let positive = emit(source, &prepared, &prepared.positive, &triangles, cap, true)?;
+    source
+        .source_map
+        .check(&source.mesh)
+        .map_err(|_| SectionError::StaleSourceMap)?;
+    let split = geometry::split_mesh(&source.mesh, plane, policy, cap.region)
+        .map_err(SectionError::from)?;
     Ok(PlaneSplit {
-        negative,
-        positive,
-        section: prepared.section,
+        negative: split.negative.map(|half| bind_half(source, half, cap)),
+        positive: split.positive.map(|half| bind_half(source, half, cap)),
+        section: bind_section(source, split.section),
     })
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum PointKey {
-    Original(u32),
-    Cut(u32, u32),
+fn bind_section(source: &TessellatedBody, section: geometry::PlaneSection) -> PlaneSection {
+    let bind_loop = |boundary: geometry::SectionLoop| SectionLoop {
+        points: boundary.points,
+        edge_features: boundary
+            .edge_faces
+            .into_iter()
+            .map(|face| {
+                source
+                    .source_map
+                    .face_feature(face)
+                    .unwrap_or(Feature::Imported)
+            })
+            .collect(),
+    };
+    PlaneSection {
+        frame: section.frame,
+        stats: section.stats,
+        regions: section
+            .regions
+            .into_iter()
+            .map(|region| SectionRegion {
+                outer: bind_loop(region.outer),
+                holes: region.holes.into_iter().map(bind_loop).collect(),
+            })
+            .collect(),
+    }
 }
-#[derive(Copy, Clone)]
-struct Point {
-    position: [f64; 3],
-    key: PointKey,
-    feature: Feature,
-    sharpness: Option<f32>,
+
+fn bind_half(source: &TessellatedBody, half: geometry::CutMesh, cap: CutCap) -> TessellatedBody {
+    let features = half
+        .mesh
+        .faces()
+        .map(|face| match half.face_sources[&face] {
+            geometry::CutFaceSource::Original(face) => source
+                .source_map
+                .face_feature(face)
+                .unwrap_or(Feature::Imported),
+            geometry::CutFaceSource::Cap => Feature::PlaneCutCap,
+        })
+        .collect();
+    let vertices = half
+        .mesh
+        .vertices()
+        .map(|vertex| match half.vertex_sources[&vertex] {
+            geometry::CutVertexSource::Original(vertex) => source
+                .source_map
+                .vertex_feature(vertex)
+                .unwrap_or(Feature::Imported),
+            geometry::CutVertexSource::Intersection { .. } => Feature::PlaneCutSeam,
+        })
+        .collect();
+    let face_materials = half
+        .face_sources
+        .iter()
+        .filter_map(|(&output, provenance)| {
+            let material = match provenance {
+                geometry::CutFaceSource::Original(face) => source.face_materials.get(face).copied(),
+                geometry::CutFaceSource::Cap => cap.material,
+            };
+            material.map(|slot| (output, slot))
+        })
+        .collect();
+    let source_map = crate::source_map::SourceMap::new(&half.mesh, features, vertices);
+    TessellatedBody {
+        mesh: half.mesh,
+        source_map,
+        face_materials,
+        sweep_checks: None,
+        path_sampling: None,
+        loft_sampling: None,
+        refinement: None,
+    }
 }
-#[derive(Copy, Clone)]
-struct Corner {
-    point: u32,
-    uv: Option<[f64; 2]>,
-    normal: Option<[f32; 3]>,
-}
-struct Polygon {
-    corners: Vec<Corner>,
-    feature: Feature,
-    region: u32,
-    material: Option<SlotId>,
-}
-struct Boundary {
-    ids: Vec<u32>,
-    features: Vec<Feature>,
-    xy: Vec<[f64; 2]>,
-    area: f64,
-}
-struct Prepared {
-    points: Vec<Point>,
-    negative: Vec<Polygon>,
-    positive: Vec<Polygon>,
-    boundaries: Vec<Boundary>,
-    groups: Vec<(usize, Vec<usize>)>,
-    section: PlaneSection,
+
+impl From<geometry::SectionError> for SectionError {
+    fn from(error: geometry::SectionError) -> Self {
+        match error {
+            geometry::SectionError::InvalidPolicy => Self::InvalidPolicy,
+            geometry::SectionError::InvalidMesh => Self::InvalidMesh,
+            geometry::SectionError::AmbiguousContact => Self::AmbiguousContact,
+            geometry::SectionError::Triangulation => Self::Triangulation,
+            geometry::SectionError::BudgetExceeded => Self::BudgetExceeded,
+            geometry::SectionError::InvalidSection => Self::InvalidSection,
+            geometry::SectionError::NumericLimit => Self::NumericLimit,
+            geometry::SectionError::BuildFailed => Self::BuildFailed,
+        }
+    }
 }
 
 #[cfg(test)]

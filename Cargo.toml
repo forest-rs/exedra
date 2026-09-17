@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "apps/exedra_ops_web_bridge",
+    "apps/exedra_edit_web_bridge",
     "benchmarks/boolean_oracle",
     "benchmarks/constructive_wind_tunnel",
     "benchmarks/exedra_fidget_bench",
@@ -14,14 +14,15 @@ members = [
     "crates/exedra_analytic",
     "crates/exedra_assembly",
     "crates/exedra_constructive",
+    "crates/exedra_edit",
+    "crates/exedra_edit_testkit",
     "crates/exedra_fidget",
     "crates/exedra_gltf",
     "crates/exedra_isosurface",
     "crates/exedra_math",
     "crates/exedra_measurements",
     "crates/exedra_mesh",
-    "crates/exedra_ops",
-    "crates/exedra_ops_testkit",
+    "crates/exedra_mesh_ops",
     "crates/exedra_primitives",
     "crates/exedra_qef",
     "crates/exedra_spatial",
@@ -106,14 +107,15 @@ exedra = { default-features = false, path = "crates/exedra", version = "0.1.0" }
 exedra_analytic = { default-features = false, path = "crates/exedra_analytic", version = "0.1.0" }
 exedra_assembly = { default-features = false, path = "crates/exedra_assembly", version = "0.1.0" }
 exedra_constructive = { default-features = false, path = "crates/exedra_constructive", version = "0.1.0" }
+exedra_edit = { default-features = false, path = "crates/exedra_edit", version = "0.1.0" }
+exedra_edit_testkit = { default-features = false, path = "crates/exedra_edit_testkit" }
 exedra_fidget = { default-features = false, path = "crates/exedra_fidget", version = "0.1.0" }
 exedra_gltf = { default-features = false, path = "crates/exedra_gltf", version = "0.1.0" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface", version = "0.1.0" }
 exedra_math = { default-features = false, path = "crates/exedra_math", version = "0.1.0" }
 exedra_measurements = { default-features = false, path = "crates/exedra_measurements", version = "0.1.0" }
 exedra_mesh = { default-features = false, path = "crates/exedra_mesh", version = "0.1.0" }
-exedra_ops = { default-features = false, path = "crates/exedra_ops", version = "0.1.0" }
-exedra_ops_testkit = { default-features = false, path = "crates/exedra_ops_testkit" }
+exedra_mesh_ops = { default-features = false, path = "crates/exedra_mesh_ops", version = "0.1.0" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives", version = "0.1.0" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef", version = "0.1.0" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial", version = "0.1.0" }

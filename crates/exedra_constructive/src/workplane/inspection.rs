@@ -131,135 +131,59 @@ pub(super) fn duplicate(source: &str) -> Rejection {
     )
 }
 
-/// Geometry of a checked planar patch, without choosing an attachment frame.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SurfacePlane {
-    /// A measured point on the plane in body coordinates, not an authored anchor.
-    pub point: [f64; 3],
-    /// Unit normal following the patch's current face winding.
-    pub normal: [f64; 3],
-    /// Maximum source-corner distance from this plane, in body units.
-    pub max_plane_deviation: f64,
-}
+pub use exedra_mesh_ops::workplane::SurfacePlane;
 
-pub(super) struct PatchGeometry {
-    pub plane: SurfacePlane,
-    pub points: Vec<[f64; 3]>,
-}
-
-/// Shared geometric check; callers have already established connectedness.
-pub(super) fn analyze_patch(
+fn analyze_patch(
     mesh: &Mesh,
     faces: &[FaceId],
     tolerance: f64,
     corners: &mut u64,
     limit: u64,
-) -> Result<PatchGeometry, Rejection> {
-    use WorkplaneError as Error;
-    let mut all_points = Vec::new();
-    let mut normals = Vec::new();
-    let mut sum = [0.0; 3];
-    for &face in faces {
-        let mut points = Vec::new();
-        for edge in mesh.face_loop(face) {
-            if *corners >= limit {
-                return Err(budget(SurfaceResource::Corners, *corners, limit));
-            }
-            *corners += 1;
-            let p = mesh
-                .to_vertex(edge)
-                .and_then(|vertex| mesh.vertex_position(vertex))
-                .ok_or(Error::InvalidFace)?
-                .map(f64::from);
-            if p.iter().any(|v| !v.is_finite()) {
-                return Err(Error::InvalidGeometry.into());
-            }
-            points.push(p);
-        }
-        if points.len() < 3 {
-            return Err(Error::InvalidFace.into());
-        }
-        let mut triangles = Vec::new();
-        if mesh.face_triangles_into(face, FaceTriangulation::Robust, &mut triangles)
-            || triangles.is_empty()
-        {
-            return Err(Error::InvalidFace.into());
-        }
-        let mut normal = [0.0; 3];
-        for pair in points[1..].windows(2) {
-            normal = add(
-                normal,
-                cross(sub(pair[0], points[0]), sub(pair[1], points[0])),
-            );
-        }
-        normals.push(normalize(normal).ok_or(Error::InvalidGeometry)?);
-        sum = add(sum, normal);
-        all_points.extend(points);
-    }
-    let normal = normalize(sum).ok_or(Error::InvalidGeometry)?;
-    if normals.iter().any(|&n| dot(n, normal) <= 0.0) {
-        return Err(Error::InvalidGeometry.into());
-    }
-    let point = *all_points.first().ok_or(Error::EmptySelection)?;
-    let mut measured = 0.0_f64;
-    for &p in &all_points {
-        let distance = dot(normal, sub(p, point)).abs();
-        if !distance.is_finite() {
-            return Err(Error::InvalidGeometry.into());
-        }
-        measured = measured.max(distance);
-    }
-    if measured > tolerance {
-        return Err(Rejection(
-            Error::NonPlanar,
-            WorkplaneEvidence::PlaneDeviation {
-                measured,
-                tolerance,
-            },
-        ));
-    }
-    Ok(PatchGeometry {
-        plane: SurfacePlane {
-            point,
-            normal,
-            max_plane_deviation: measured,
-        },
-        points: all_points,
-    })
+) -> Result<SurfacePlane, Rejection> {
+    exedra_mesh_ops::workplane::analyze_patch(mesh, faces, tolerance, corners, limit)
+        .map_err(Rejection::from)
 }
 
-pub(super) fn components(
+fn components(
     mesh: &Mesh,
     faces: &[FaceId],
     corners: &mut u64,
     limit: u64,
 ) -> Result<Vec<Vec<FaceId>>, Rejection> {
-    let mut remaining: BTreeSet<_> = faces.iter().copied().collect();
-    let mut patches = Vec::new();
-    while let Some(&first) = remaining.first() {
-        remaining.remove(&first);
-        let mut pending = alloc::vec![first];
-        let mut patch = Vec::new();
-        while let Some(face) = pending.pop() {
-            patch.push(face);
-            for edge in mesh.face_loop(face) {
-                if *corners >= limit {
-                    return Err(budget(SurfaceResource::Corners, *corners, limit));
-                }
-                *corners += 1;
-                let adjacent = mesh
-                    .twin(edge)
-                    .and_then(|edge| mesh.face(edge))
-                    .ok_or(WorkplaneError::InvalidFace)?;
-                if remaining.remove(&adjacent) {
-                    pending.push(adjacent);
-                }
+    exedra_mesh_ops::workplane::connected_patches(mesh, faces, corners, limit)
+        .map_err(Rejection::from)
+}
+
+impl From<exedra_mesh_ops::workplane::FrameFailure> for Rejection {
+    fn from(failure: exedra_mesh_ops::workplane::FrameFailure) -> Self {
+        use exedra_mesh_ops::workplane::{FrameEvidence, FrameResource};
+        let evidence = match failure.evidence {
+            FrameEvidence::None => WorkplaneEvidence::None,
+            FrameEvidence::Disconnected { representatives } => {
+                WorkplaneEvidence::Disconnected { representatives }
             }
-        }
-        patch.sort_unstable();
-        patches.push(patch);
+            FrameEvidence::PlaneDeviation {
+                measured,
+                tolerance,
+            } => WorkplaneEvidence::PlaneDeviation {
+                measured,
+                tolerance,
+            },
+            FrameEvidence::Budget {
+                resource,
+                completed,
+                limit,
+            } => WorkplaneEvidence::Budget {
+                resource: match resource {
+                    FrameResource::SelectedFaces => SurfaceResource::SelectedFaces,
+                    FrameResource::Corners => SurfaceResource::Corners,
+                },
+                completed,
+                limit,
+            },
+        };
+        Self(failure.kind, evidence)
     }
-    Ok(patches)
 }
 
 pub(super) fn selection_ambiguity(
@@ -562,8 +486,7 @@ pub fn inspect_surfaces(
                 policy.distance_tolerance,
                 &mut stats.corners_examined,
                 policy.max_corners,
-            )
-            .map(|geometry| geometry.plane);
+            );
             if let Err(reason) = &plane {
                 reject_inventory_budget(reason)?;
             }

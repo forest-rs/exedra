@@ -154,7 +154,7 @@ fn extraction_and_queries_reject_stale_invalid_and_over_budget_inputs() {
             .circle_clearance([1.0; 2], 0.1)
             .unwrap()
             .classify(0.0, -1.0),
-        Err(ClearanceError::InvalidInput)
+        Err(geometry::ClearanceError::InvalidInput)
     );
     let vertex = body.mesh.vertices().next().unwrap();
     let mut edit = body.mesh.edit();
@@ -164,40 +164,6 @@ fn extraction_and_queries_reject_stale_invalid_and_over_budget_inputs() {
         PlanarPatch::from_workplane(&body, &frame, &BoundaryPolicy::default()).unwrap_err(),
         ClearanceError::Workplane(WorkplaneError::StaleSource)
     );
-}
-
-#[test]
-fn boundary_validator_rejects_crossings_contacts_backtracking_and_nested_holes() {
-    let source = patch(&builders::rect(4.0, 3.0).unwrap()).loops[0].sources[0];
-    let make = |points: &[[f64; 2]]| PatchLoop {
-        points: points.to_vec(),
-        sources: alloc::vec![source;points.len()],
-    };
-    let policy = BoundaryPolicy::default();
-    for mut loops in [
-        alloc::vec![make(&[[0.0, 0.0], [3.0, 3.0], [0.0, 2.0], [3.0, 0.0]])],
-        alloc::vec![make(&[
-            [0.0, 0.0],
-            [3.0, 0.0],
-            [2.0, 0.0],
-            [3.0, 3.0],
-            [0.0, 3.0]
-        ])],
-        alloc::vec![
-            make(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]),
-            make(&[[0.0, 1.0], [0.0, 2.0], [1.0, 2.0], [1.0, 1.0]])
-        ],
-        alloc::vec![
-            make(&[[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [0.0, 6.0]]),
-            make(&[[1.0, 1.0], [1.0, 5.0], [5.0, 5.0], [5.0, 1.0]]),
-            make(&[[2.0, 2.0], [2.0, 3.0], [3.0, 3.0], [3.0, 2.0]])
-        ],
-    ] {
-        assert!(matches!(
-            validate_loops(&mut loops, &policy, &mut BoundaryStats::default()),
-            Err(ClearanceError::InvalidBoundary | ClearanceError::BoundaryContact { .. })
-        ));
-    }
 }
 
 #[test]

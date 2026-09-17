@@ -8,12 +8,16 @@ use crate::{ChangeSink, DeletePolicy, EditSession, FaceId, HalfEdgeId};
 
 use super::DeleteEdgesError;
 
-/// Deletes a canonical set of undirected edges.
+/// Deletes a canonical set of undirected edges by deleting their incident faces.
+///
+/// Returns the sorted, deduplicated face IDs removed by the operation. IDs refer
+/// to the source mesh; isolated vertices follow `policy`. Selection/preflight
+/// failures leave the mesh unchanged.
 pub fn delete_edges<S: ChangeSink>(
     session: &mut EditSession<'_, S>,
     edges: &[HalfEdgeId],
     policy: DeletePolicy,
-) -> Result<(), DeleteEdgesError> {
+) -> Result<Vec<FaceId>, DeleteEdgesError> {
     let mut faces = Vec::<FaceId>::new();
     let mut previous = None;
 
@@ -61,5 +65,6 @@ pub fn delete_edges<S: ChangeSink>(
     }
 
     sort_dedup(&mut faces);
-    super::delete_faces(session, &faces, policy).map_err(DeleteEdgesError::FaceDeleteFailed)
+    super::delete_faces(session, &faces, policy).map_err(DeleteEdgesError::FaceDeleteFailed)?;
+    Ok(faces)
 }

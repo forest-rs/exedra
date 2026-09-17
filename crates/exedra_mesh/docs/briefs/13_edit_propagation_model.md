@@ -107,4 +107,4 @@ Dirtiness:
 
 ## Non-goals / deferrals
 - Optimal attribute interpolation for all types (categorical, quaternions, etc.).
-- Automatic seam creation/merging; Exedra Ops may add higher-level seam tools.
+- Automatic seam creation/merging; Exedra Edit may add higher-level seam tools.

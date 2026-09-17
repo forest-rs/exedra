@@ -1,6 +1,9 @@
 # Exedra Mesh API Surface Audit
 
-Status: current as of `exe-1wdr`.
+Status: updated for the mesh-operation extraction.
+
+Compound algorithms now belong to `exedra_mesh_ops`; see its
+[boundary and migration decision](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md).
 
 ## Goal
 
@@ -26,9 +29,6 @@ Most callers should use the crate root re-exports:
 - `UvSource`, `BoxPlane`, `DEFAULT_BOX_NORMAL_EPSILON`, `dominant_box_plane`,
   `project_box_position`, and `project_corner_box` for the extraction UV
   policy and the box projection shared with the `uv.box` operator.
-- `boolean`, `BooleanBvh`, `BooleanScratch`, `BooleanCandidatePair`,
-  `BooleanTriangleRef`, `BooleanBroadPhaseStats`, and `Aabb` for staged boolean
-  broad-phase candidate discovery.
 - `NumericPolicy` for explicit numeric tolerances.
 - `attr` for built-in attribute keys.
 - `attributes` for typed custom attribute storage.
@@ -76,15 +76,11 @@ should not construct them directly:
   split-face code.
 - `ExtractMode::Incremental` is reserved in v0.1 and currently behaves as a full
   rebuild.
-- Boolean broad phase operates over deterministic fan triangles. It reports
-  candidate pairs only; narrow-phase intersection, classification, splitting,
-  and stitching remain separate pipeline stages.
 
 ## Audit Result
 
 - Public kernel items are documented and covered by the workspace lint set.
 - No `pub(crate)` implementation detail is reachable through the public API
   except by intentional root re-export.
-- No public API was removed during this audit. The current surface is retained
-  so the next kernel slices can add explicit compaction and remapping without
-  combining semantic cleanup with new behavior.
+- Boolean and rounding imports move to `exedra_mesh_ops`. Topology IDs and
+  edit-scope semantics remain owned by the kernel.

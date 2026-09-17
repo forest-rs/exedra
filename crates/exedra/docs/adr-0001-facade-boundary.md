@@ -21,27 +21,28 @@ own geometry algorithms, persistent model state, scheduling, or conversion
 semantics.
 
 Dependency direction is from the facade to the domain crates. The mesh kernel
-is `exedra_mesh`; the constructive, assembly, operations, analytic,
+is `exedra_mesh`; the constructive, assembly, mesh-operations, edit, analytic,
 isosurface, and export crates remain independent owners of their APIs. No
 domain crate may depend on this facade.
 
 The always-present `mesh` namespace exposes the mesh kernel. Optional
-namespaces map one-to-one to their owners: `constructive`, `assembly`, `ops`,
-`analytic`, `isosurface`, `primitives`, and `gltf`. The root exposes only
+namespaces map one-to-one to their owners: `constructive`, `assembly`, `mesh_ops`, `edit`,
+`edit`, `analytic`, `isosurface`, `primitives`, and `gltf`. The root exposes only
 `Mesh`, plus `Recipe` with `constructive` and `Assembly` with `assembly`. Each
 namespace is a direct crate reexport, not a second manually mirrored API
 surface.
 
-The default features are `std`, `assembly`, and `ops` because they describe
+The default features are `std`, `assembly`, and `mesh_ops` because they describe
 the common host application. `assembly` selects `constructive`: assembly's
 public part source admits recipes, so making that relationship explicit avoids
-an incoherent feature surface. `analytic`, `isosurface`, `primitives`, and
+an incoherent feature surface. `edit`, `analytic`, `isosurface`, `primitives`, and
 `gltf` are opt-in; `gltf` selects `assembly` and `std`. `libm` is the
 alternative backend for `no_std` consumers. Interchange remains behind
 `serde`, which selects `std` and the constructive and assembly serialization
-features. When the `ops` feature and an adapter-bearing native head are both
-enabled, the facade forwards the corresponding adapter feature to the
-operations crate.
+features. The runner is opt-in as `edit`; direct mesh operations use `mesh_ops`.
+Native-head adapters are removed: conversions and evaluation live in their
+owning crates. See the [consolidation decision](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md)
+for migration from the former `ops` feature and namespace.
 
 ## Consequences
 

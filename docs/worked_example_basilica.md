@@ -1,14 +1,22 @@
 # Byzantine Basilica Ruin Pipeline
 
-*(A concrete end-to-end example tying Exedra + Exedra Ops together)*
+> Historical worked design. Current modeling APIs are in `exedra_mesh_ops`;
+> command execution is opt-in through `exedra_edit`. Concrete assembly helpers
+> live in `exedra_assembly::pattern` and labeled layout uses `setout_generate`.
+> See the [migration decision](../crates/exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md)
+> for current entry points; illustrative policy and generator APIs below are not
+> a current executable example.
 
-This document is a **worked example** that makes Exedra and Exedra Ops concrete. It describes a complete procedural pipeline that generates a Byzantine-flavored basilica ruin, including:
 
-* an illustrative Exedra Ops mesh-workflow sequence
+*(A concrete end-to-end example tying Exedra + Exedra Edit together)*
+
+This document is a **worked example** that makes Exedra and Exedra Edit concrete. It describes a complete procedural pipeline that generates a Byzantine-flavored basilica ruin, including:
+
+* an illustrative Exedra Edit mesh-workflow sequence
 * what each operator reads/writes
 * what artifacts are emitted
 * how `Txn → ChangeSet → DirtySet` drives incremental extraction
-* where `invalidation` (formerly `understory_dirty`) channels apply (Exedra Ops caches)
+* where `invalidation` (formerly `understory_dirty`) channels apply (Exedra Edit caches)
 * how an LLM can generate or vary the program safely
 
 This is not a spec for every operator listed here; it is an **example pipeline** that we can use as a guiding demo and a future wind tunnel scenario.
@@ -58,7 +66,7 @@ This is not a spec for every operator listed here; it is an **example pipeline**
 
 * `seed: u64` — top-level seed controlling any randomized decisions.
 * `NumericPolicy` — explicit tolerances.
-* `PolicySet` — Exedra Ops policies (preview/commit, budgets, artifact limits, validation).
+* `PolicySet` — Exedra Edit policies (preview/commit, budgets, artifact limits, validation).
 
 ### Outputs
 
@@ -69,7 +77,7 @@ This is not a spec for every operator listed here; it is an **example pipeline**
 
 ## Region tags and selections
 
-This demo uses **semantic regions** as face-domain tags (Exedra) and canonical face selections (Exedra Ops).
+This demo uses **semantic regions** as face-domain tags (Exedra) and canonical face selections (Exedra Edit).
 
 ### Face-domain region tag
 
@@ -85,7 +93,7 @@ A minimal region tag is a `u32` or small enum stored in a face-domain attribute 
 * `REGION_DRUM`
 * `REGION_DOME`
 
-### Canonical selection representation (Exedra Ops)
+### Canonical selection representation (Exedra Edit)
 
 Selections passed between operators are canonical `Vec<FaceId>`:
 
@@ -453,7 +461,7 @@ Preview-mode steps run against a cloned mesh; the same ChangeSet/DirtySet logic 
 
 ## `invalidation`: where it applies
 
-Exedra Ops uses `invalidation` for **operator-runtime caches** and workflow state.
+Exedra Edit uses `invalidation` for **operator-runtime caches** and workflow state.
 
 For this demo, typical mappings:
 
@@ -505,7 +513,7 @@ A useful pattern:
 1. LLM produces a *style intent* ("collapsed dome, heavy ivy, many arcades")
 2. A deterministic compiler maps intent → parameter ranges and operator variants
 3. The application runs the resulting validated sequence through selected
-   Exedra Ops mesh operators
+   Exedra Edit mesh operators
 
 ---
 
@@ -633,7 +641,7 @@ Avoid storing entire intermediate meshes as goldens early unless necessary; mesh
 This pipeline is intentionally designed so that:
 
 * Exedra stays calm (topology + attributes + deterministic extraction).
-* The basilica workflow owns meaning (basilica, dome, ruinization); Exedra Ops
+* The basilica workflow owns meaning (basilica, dome, ruinization); Exedra Edit
   supplies the deterministic mesh lifecycle it uses.
 * The LLM is “boxed in” to generating **validated programs**, not arbitrary geometry.
 

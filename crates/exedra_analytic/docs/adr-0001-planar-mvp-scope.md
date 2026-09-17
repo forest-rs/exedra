@@ -34,7 +34,7 @@ The first slice explicitly does not support:
 Positive:
 - proves the second canonical domain with a bounded implementation,
 - preserves `exedra_mesh` as the polygon head,
-- supplies the bounded analytic-to-mesh conversion seam that Exedra Ops stages
+- supplies the bounded analytic-to-mesh conversion seam that Exedra Edit stages
   through an explicit adapter.
 
 Tradeoffs:

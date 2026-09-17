@@ -12,10 +12,11 @@ env:
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS:
-    -p exedra_ops
-    -p exedra_ops_testkit
+    -p exedra_edit
+    -p exedra_edit_testkit
     -p exedra
     -p exedra_mesh
+    -p exedra_mesh_ops
     -p exedra_analytic
     -p exedra_assembly
     -p exedra_constructive
@@ -30,10 +31,11 @@ env:
   # Foundational packages whose `no_std` contract is checked directly. Keep
   # this positive list in sync with crate-level `#![no_std]` declarations.
   RUST_NO_STD_PKGS:
-    -p exedra_ops
-    -p exedra_ops_testkit
+    -p exedra_edit
+    -p exedra_edit_testkit
     -p exedra
     -p exedra_mesh
+    -p exedra_mesh_ops
     -p exedra_analytic
     -p exedra_assembly
     -p exedra_constructive
@@ -45,10 +47,10 @@ env:
     -p exedra_triangulate
   # Host auxiliary targets exclude the Wasm-only bridge.
   RUST_AUX_EXCLUDES:
-    --exclude exedra_ops_web_bridge
+    --exclude exedra_edit_web_bridge
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS:
-    --exclude exedra_ops_web_bridge
+    --exclude exedra_edit_web_bridge
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.
@@ -140,8 +142,8 @@ jobs:
       - name: check copyright headers
         run: bash .github/copyright.sh
 
-  exedra-ops-features:
-    name: exedra_ops feature boundaries
+  mesh-operation-features:
+    name: mesh operation boundaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -156,23 +158,31 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'merge_group' }}
 
-      - name: cargo check (default mesh operations)
-        run: cargo check -p exedra_ops --locked
+      - name: cargo check (direct mesh operations)
+        run: cargo check -p exedra_mesh_ops --locked
 
-      - name: cargo check (mesh-only minimum)
-        run: cargo check -p exedra_ops --locked --no-default-features --features std
+      - name: cargo check (direct mesh operations with libm)
+        run: cargo check -p exedra_mesh_ops --locked --no-default-features --features libm
 
-      - name: cargo check (analytic adapter)
-        run: cargo check -p exedra_ops --locked --no-default-features --features std,analytic
+      - name: cargo check (mesh command runner)
+        run: cargo check -p exedra_edit --locked
 
-      - name: cargo check (assembly adapter)
-        run: cargo check -p exedra_ops --locked --no-default-features --features std,assembly
+      - name: cargo check (mesh command runner with libm)
+        run: cargo check -p exedra_edit --locked --no-default-features --features libm
 
-      - name: cargo check (constructive adapter)
-        run: cargo check -p exedra_ops --locked --no-default-features --features std,constructive
-
-      - name: cargo check (all features)
-        run: cargo check -p exedra_ops --locked --all-features
+      - name: check dependency direction and default facade
+        shell: bash
+        run: |
+          cargo tree -p exedra_mesh_ops --locked --edges normal --prefix none > mesh-dependencies.txt
+          if grep -E '^exedra_(constructive|assembly|edit) ' mesh-dependencies.txt; then
+            echo "Mesh operations must not depend on native domains or command execution."
+            exit 1
+          fi
+          cargo tree -p exedra --locked --edges normal --prefix none > facade-dependencies.txt
+          if grep -E '^exedra_edit ' facade-dependencies.txt; then
+            echo "The default facade must not enable command execution."
+            exit 1
+          fi
 
   exedra-facade-features:
     name: exedra facade feature boundaries
@@ -197,14 +207,17 @@ jobs:
       - name: cargo check (mesh-only facade)
         run: cargo check -p exedra --locked --no-default-features --features std
 
-      - name: cargo check (analytic operation adapter)
-        run: cargo check -p exedra --locked --no-default-features --features std,analytic,ops
+      - name: cargo check (analytic and direct mesh operations)
+        run: cargo check -p exedra --locked --no-default-features --features std,analytic,mesh_ops
 
       - name: cargo check (optional no_std heads)
         run: cargo check -p exedra --locked --no-default-features --features libm,analytic,primitives --target x86_64-unknown-none
 
       - name: cargo check (common no_std surface)
-        run: cargo check -p exedra --locked --no-default-features --features libm,assembly,ops --target x86_64-unknown-none
+        run: cargo check -p exedra --locked --no-default-features --features libm,assembly,mesh_ops --target x86_64-unknown-none
+
+      - name: cargo check (opt-in command runner)
+        run: cargo check -p exedra --locked --no-default-features --features std,edit
 
       - name: cargo check (all features)
         run: cargo check -p exedra --locked --all-features

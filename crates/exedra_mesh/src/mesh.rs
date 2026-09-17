@@ -1014,6 +1014,21 @@ impl Mesh {
         self.vertices.iter().map(|(id, _)| VertexId::from(id))
     }
 
+    /// Number of live directed half-edges, including outside half-edges.
+    #[must_use]
+    pub fn half_edge_count(&self) -> usize {
+        self.half_edges.len()
+    }
+
+    /// Iterates all live directed half-edges in deterministic arena slot order.
+    ///
+    /// Both directions of each edge are included, including outside half-edges
+    /// on open boundaries. Use [`Self::canonical_edge`] to identify an
+    /// undirected edge without relying on storage indices.
+    pub fn half_edges(&self) -> impl Iterator<Item = HalfEdgeId> + '_ {
+        self.half_edges.iter().map(|(id, _)| HalfEdgeId::from(id))
+    }
+
     /// Iterates live interior faces in deterministic arena slot order.
     pub fn faces(&self) -> impl Iterator<Item = FaceId> + '_ {
         self.faces.iter().map(|(id, _)| FaceId::from(id))

@@ -4,29 +4,17 @@
 //! Internal float math helpers with `std`/`libm` backends.
 
 pub(crate) trait FloatExt {
-    fn acos_ext(self) -> Self;
     fn atan2_ext(self, other: Self) -> Self;
-    fn ceil_ext(self) -> Self;
     fn cos_ext(self) -> Self;
+    #[cfg(test)]
     fn sin_ext(self) -> Self;
-    fn sqrt_ext(self) -> Self;
 }
 
 #[cfg(feature = "std")]
 impl FloatExt for f32 {
     #[inline]
-    fn acos_ext(self) -> Self {
-        self.acos()
-    }
-
-    #[inline]
     fn atan2_ext(self, other: Self) -> Self {
         self.atan2(other)
-    }
-
-    #[inline]
-    fn ceil_ext(self) -> Self {
-        self.ceil()
     }
 
     #[inline]
@@ -35,31 +23,17 @@ impl FloatExt for f32 {
     }
 
     #[inline]
+    #[cfg(test)]
     fn sin_ext(self) -> Self {
         self.sin()
-    }
-
-    #[inline]
-    fn sqrt_ext(self) -> Self {
-        self.sqrt()
     }
 }
 
 #[cfg(all(not(feature = "std"), feature = "libm"))]
 impl FloatExt for f32 {
     #[inline]
-    fn acos_ext(self) -> Self {
-        libm::acosf(self)
-    }
-
-    #[inline]
     fn atan2_ext(self, other: Self) -> Self {
         libm::atan2f(self, other)
-    }
-
-    #[inline]
-    fn ceil_ext(self) -> Self {
-        libm::ceilf(self)
     }
 
     #[inline]
@@ -68,31 +42,17 @@ impl FloatExt for f32 {
     }
 
     #[inline]
+    #[cfg(test)]
     fn sin_ext(self) -> Self {
         libm::sinf(self)
-    }
-
-    #[inline]
-    fn sqrt_ext(self) -> Self {
-        libm::sqrtf(self)
     }
 }
 
 #[cfg(feature = "std")]
 impl FloatExt for f64 {
     #[inline]
-    fn acos_ext(self) -> Self {
-        self.acos()
-    }
-
-    #[inline]
     fn atan2_ext(self, other: Self) -> Self {
         self.atan2(other)
-    }
-
-    #[inline]
-    fn ceil_ext(self) -> Self {
-        self.ceil()
     }
 
     #[inline]
@@ -101,31 +61,17 @@ impl FloatExt for f64 {
     }
 
     #[inline]
+    #[cfg(test)]
     fn sin_ext(self) -> Self {
         self.sin()
-    }
-
-    #[inline]
-    fn sqrt_ext(self) -> Self {
-        self.sqrt()
     }
 }
 
 #[cfg(all(not(feature = "std"), feature = "libm"))]
 impl FloatExt for f64 {
     #[inline]
-    fn acos_ext(self) -> Self {
-        libm::acos(self)
-    }
-
-    #[inline]
     fn atan2_ext(self, other: Self) -> Self {
         libm::atan2(self, other)
-    }
-
-    #[inline]
-    fn ceil_ext(self) -> Self {
-        libm::ceil(self)
     }
 
     #[inline]
@@ -134,12 +80,8 @@ impl FloatExt for f64 {
     }
 
     #[inline]
+    #[cfg(test)]
     fn sin_ext(self) -> Self {
         libm::sin(self)
-    }
-
-    #[inline]
-    fn sqrt_ext(self) -> Self {
-        libm::sqrt(self)
     }
 }

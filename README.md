@@ -6,7 +6,8 @@ assets.
 The `exedra` crate is the thin application-facing facade. Focused crates retain
 the geometry state and algorithms behind it: Exedra Mesh supplies the polygon
 kernel, Exedra Constructive retains construction intent, Exedra Assembly owns
-placed structure, and Exedra Ops supplies deterministic workflow operations.
+placed structure, mesh ops supplies direct geometry operations, and Exedra Edit
+adds optional command execution.
 Applications can start from one curated namespace while specialist crates stay
 small, independently usable, and honest about conversion boundaries.
 
@@ -20,8 +21,8 @@ exedra = "0.1"
 ```
 
 Its default features provide the mesh kernel, constructive recipes,
-assemblies, and workflow operations. Primitive generation, analytic topology,
-implicit surfaces, glTF export, and interchange are opt-in features. Disable
+assemblies, and direct mesh operations. Primitive generation, analytic topology,
+implicit surfaces, command execution, glTF export, and interchange are opt-in features. Disable
 default features and select `libm` for a `no_std` application.
 
 Depend directly on a focused crate when you are implementing a lower-level
@@ -39,10 +40,12 @@ Facade and core workflow crates:
 - **[exedra_mesh](crates/exedra_mesh/)** - Structural half-edge mesh kernel:
   topology, stable IDs, attributes, validation, edit sessions, dirty/change
   summaries, and deterministic triangle extraction.
-- **[exedra_ops](crates/exedra_ops/)** - Deterministic mesh-operator lifecycle:
-  compile/preview/apply, diagnostics, reports, policy, selections, UV
-  projection, face and normal edits, fluent mesh workflows, and focused
-  adapters for explicit domain crossings.
+- **[exedra_mesh_ops](crates/exedra_mesh_ops/)** - Direct mesh modeling and
+  geometric queries: face edits, Booleans, edge finishing, sections, frames,
+  clearance, transforms, UVs and normals, with source correspondence.
+- **[exedra_edit](crates/exedra_edit/)** - Optional mesh command execution:
+  compile/preview/apply, stale plans, timings, diagnostics and change reports.
+  Command adapters call the same direct algorithms.
 
 Construction and extraction crates:
 
@@ -79,14 +82,14 @@ Workspace-only construction, test, benchmark, and app crates:
   evolving construction and joinery layers kept outside the first public
   package set.
 - **[exedra_testkit](crates/exedra_testkit/)** and
-  **[exedra_ops_testkit](crates/exedra_ops_testkit/)** - Deterministic fixtures,
+  **[exedra_edit_testkit](crates/exedra_edit_testkit/)** - Deterministic fixtures,
   golden snapshots, and debug dumps.
 - **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for Exedra
   kernel scenarios, QEF solves, render extraction, and Fidget-backed
   field/extraction paths.
-- **[apps/exedra_ops_web_bridge](apps/exedra_ops_web_bridge/)** - Wasm bridge
-  for deterministic Exedra Ops scenario execution.
-- **[apps/exedra_ops_web_viewer](apps/exedra_ops_web_viewer/)** - Three.js
+- **[apps/exedra_edit_web_bridge](apps/exedra_edit_web_bridge/)** - Wasm bridge
+  for deterministic Exedra Edit scenario execution.
+- **[apps/exedra_edit_web_viewer](apps/exedra_edit_web_viewer/)** - Three.js
   viewer for the wasm scenario snapshots.
 - **[examples/](examples/)** - Standalone constructive, basilica, and structural
   integration scenarios kept outside the core crates.
@@ -110,21 +113,15 @@ Exedra Mesh owns the mesh model:
 - **Deterministic extraction**: polygonal meshes to GPU-ready triangle buffers.
 - **Edit sessions**: eager mutation with optional ChangeSet and DirtySet output.
 
-Exedra Ops owns the deterministic mesh workflow lifecycle:
+`exedra_mesh_ops` owns reusable modeling algorithms and geometric queries.
+Constructive binds their source correspondence to authored provenance.
+`exedra_edit` wraps direct operations with command plans, clone-based preview,
+timings, diagnostics and change reports.
 
-- **Operator lifecycle**: compile, preview-on-clone, and apply-in-place.
-- **Structured reporting**: deterministic stats, bounded artifacts, diagnostics,
-  timings, and plan fingerprints.
-- **Selection and tagging**: canonical face/edge/vertex sets and region labels.
-- **Mesh edits**: delete/dissolve, bridge, cut, extrude, inset, poke, solidify,
-  UV projection, and corner-normal operations.
-
-Native heads retain their own values and algorithms. Exedra Ops does not
-dispatch a heterogeneous geometry graph: its mesh runner accepts `Mesh`, while
-its adapters make a conversion or expansion explicit. A future Exedra
-procedural-network layer would define typed geometry nodes and compile them
-onto the shared `execution_graph` runtime; an `understory_node_graph` adapter
-could present the same authored network without becoming its execution model.
+Native heads retain their own values, algorithms and conversions. Use
+`exedra_mesh_ops` for direct geometry and `exedra_edit` for editor command
+execution. A heterogeneous procedural network belongs in an application toolkit
+above these crates.
 
 Implicit and primitive crates stay outside the mesh kernel. They produce or
 adapt geometry through explicit mesh/field boundaries rather than introducing
@@ -133,22 +130,21 @@ a scene graph into the core.
 ## Example Flow
 
 ```rust
-use exedra::Mesh;
-use exedra::ops::{
-    OperatorRunner, ValidateMesh, ValidateMeshMode, ValidateMeshParams,
-};
+use exedra::{Mesh, mesh::PropagatePolicy};
+use exedra::mesh_ops::face_edit::{extrude_faces, ExtrudeFacesParams, ExtrudeMode};
 
-fn main() -> Result<(), exedra::ops::OpError> {
-    let mesh = Mesh::new();
-    let mut runner = OperatorRunner::new();
-    let op = ValidateMesh;
-    let params = ValidateMeshParams {
-        mode: ValidateMeshMode::FastAndDeep,
-    };
-
-    let plan = runner.compile(&mesh, &op, &params)?;
-    let preview = runner.preview_on_clone(&mesh, &op, &plan)?;
-    assert_eq!(preview.report.name, "inspect.validate.mesh");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut mesh = Mesh::from_polygons(
+        &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        &[&[0, 1, 2, 3]],
+    )?;
+    let faces = mesh.faces().collect();
+    let mut edit = mesh.edit();
+    let (_, result) = extrude_faces(&mut edit, &ExtrudeFacesParams {
+        faces, mode: ExtrudeMode::KeepSource, distance: 0.5,
+    }, &PropagatePolicy::default())?;
+    assert_eq!(result.cap_faces.len(), 1);
+    let _: () = edit.finish();
     Ok(())
 }
 ```
@@ -157,7 +153,7 @@ fn main() -> Result<(), exedra::ops::OpError> {
 
 - **Facade** - The leaf-only `exedra` crate that selects and names public heads.
 - **Mesh kernel** - The long-lived mesh/topology core in `exedra_mesh`.
-- **Operator** - An Exedra Ops mesh workflow unit with compile, preview, and
+- **Operator** - An Exedra Edit mesh command with compile, preview, and
   apply steps.
 - **Attribute domain** - Where data lives: vertex, face, edge, or corner.
 - **Field seam** - The trait boundary used by implicit-surface extractors.

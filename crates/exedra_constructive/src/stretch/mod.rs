@@ -79,9 +79,4 @@ impl StretchRefusal {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct MeshStretchStats {
-    pub(crate) split_faces: u64,
-    pub(crate) band_faces: u64,
-    pub(crate) uv_unmapped_faces: u64,
-}
+pub(crate) use exedra_mesh_ops::stretch::StretchStats as MeshStretchStats;

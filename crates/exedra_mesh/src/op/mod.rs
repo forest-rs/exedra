@@ -4,7 +4,7 @@
 //! Lightweight kernel mutation surface for Exedra Mesh.
 //!
 //! This module defines explicit kernel edits over [`EditSession`](crate::EditSession).
-//! It is intentionally much smaller than Exedra Ops' workflow-operator layer:
+//! It is intentionally much smaller than Exedra Edit' workflow-operator layer:
 //! - no compile/apply plan lifecycle,
 //! - no reports, diagnostics, or artifacts,
 //! - no preview/runner abstraction.
@@ -80,8 +80,8 @@ pub use collapse_edge::{CollapseEdgeError, collapse_edge};
 pub use delete_edges::delete_edges;
 pub use delete_faces::delete_faces;
 pub use delete_vertices::delete_vertices;
-pub use dissolve_edges::dissolve_edges;
-pub use dissolve_vertices::dissolve_vertices;
+pub use dissolve_edges::{dissolve_edges, validate_dissolve_edge_selection};
+pub use dissolve_vertices::{dissolve_vertices, validate_dissolve_vertex_selection};
 pub use flip_edge::{FlipEdgeError, flip_edge};
 pub use set_corner_normal_override::{SetCornerNormalOverrideError, set_corner_normal_override};
 pub use set_corner_uv::{SetCornerUvError, set_corner_uv};
@@ -221,13 +221,15 @@ mod tests {
                     && mesh.face(twin) != Some(FaceId::OUTSIDE)
             })
             .expect("interior edge should exist");
+        let expected_faces = mesh.faces().collect::<vec::Vec<_>>();
         let mut session = mesh.edit_with(ChangeSetBuilder::new());
 
-        op::delete_edges(&mut session, &[edge], DeletePolicy::KeepIsolated)
+        let removed = op::delete_edges(&mut session, &[edge], DeletePolicy::KeepIsolated)
             .expect("delete edges should succeed");
         let changes = session.finish();
 
-        assert!(!changes.deleted_faces.is_empty());
+        assert_eq!(removed, expected_faces);
+        assert_eq!(changes.deleted_faces, removed);
         assert!(mesh.validate_deep().is_empty());
     }
 

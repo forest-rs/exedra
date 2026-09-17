@@ -597,51 +597,15 @@ pub(crate) fn flattened_ring(path: &BezPath, tolerance: f64) -> Vec<Point> {
 
 /// Whether any edge of `first` crosses or touches any edge of `second`.
 pub(crate) fn rings_intersect(first: &[Point], second: &[Point]) -> bool {
-    first.iter().enumerate().any(|(first_index, &first_start)| {
-        let first_end = first[(first_index + 1) % first.len()];
-        second
-            .iter()
-            .enumerate()
-            .any(|(second_index, &second_start)| {
-                let second_end = second[(second_index + 1) % second.len()];
-                segments_intersect(first_start, first_end, second_start, second_end)
-            })
-    })
+    let first: Vec<_> = first.iter().map(|p| [p.x, p.y]).collect();
+    let second: Vec<_> = second.iter().map(|p| [p.x, p.y]).collect();
+    exedra_mesh_ops::polygon::rings_intersect(&first, &second)
 }
 
-/// Whether any two non-adjacent edges of a single ring cross or touch.
-///
-/// Adjacent edges always share an endpoint by construction, so only pairs
-/// at least two apart around the cycle are tested. The ring must be free of
-/// repeated vertices ([`flattened_ring`] guarantees that), or a zero-length
-/// edge would make its neighbors look like a contact. Bounding boxes reject
-/// the overwhelming majority of pairs before the orientation tests run.
+/// Whether non-adjacent edges of a finite, nondegenerate ring cross or touch.
 pub(crate) fn ring_self_intersects(ring: &[Point]) -> bool {
-    let n = ring.len();
-    if n < 4 {
-        return false;
-    }
-    for i in 0..n {
-        let a = ring[i];
-        let b = ring[(i + 1) % n];
-        let (ax0, ax1) = (a.x.min(b.x), a.x.max(b.x));
-        let (ay0, ay1) = (a.y.min(b.y), a.y.max(b.y));
-        for j in i + 2..n {
-            if i == 0 && j == n - 1 {
-                continue;
-            }
-            let c = ring[j];
-            let d = ring[(j + 1) % n];
-            if c.x.min(d.x) > ax1 || c.x.max(d.x) < ax0 || c.y.min(d.y) > ay1 || c.y.max(d.y) < ay0
-            {
-                continue;
-            }
-            if segments_intersect(a, b, c, d) {
-                return true;
-            }
-        }
-    }
-    false
+    let points: Vec<_> = ring.iter().map(|p| [p.x, p.y]).collect();
+    exedra_mesh_ops::polygon::ring_self_intersects(&points)
 }
 
 /// Shortest distance from `point` to the closed polyline `ring`.
@@ -669,30 +633,6 @@ fn point_segment_distance(point: Point, start: Point, end: Point) -> f64 {
     let dx = rel.x - t * seg.x;
     let dy = rel.y - t * seg.y;
     libm::sqrt(dx * dx + dy * dy)
-}
-
-fn segments_intersect(a: Point, b: Point, c: Point, d: Point) -> bool {
-    let ab_c = cross(a, b, c);
-    let ab_d = cross(a, b, d);
-    let cd_a = cross(c, d, a);
-    let cd_b = cross(c, d, b);
-    ((ab_c > 0.0 && ab_d < 0.0) || (ab_c < 0.0 && ab_d > 0.0))
-        && ((cd_a > 0.0 && cd_b < 0.0) || (cd_a < 0.0 && cd_b > 0.0))
-        || ab_c == 0.0 && point_on_segment(c, a, b)
-        || ab_d == 0.0 && point_on_segment(d, a, b)
-        || cd_a == 0.0 && point_on_segment(a, c, d)
-        || cd_b == 0.0 && point_on_segment(b, c, d)
-}
-
-fn cross(a: Point, b: Point, c: Point) -> f64 {
-    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-}
-
-fn point_on_segment(point: Point, start: Point, end: Point) -> bool {
-    point.x >= start.x.min(end.x)
-        && point.x <= start.x.max(end.x)
-        && point.y >= start.y.min(end.y)
-        && point.y <= start.y.max(end.y)
 }
 
 fn normalize_point(p: &mut Point) {

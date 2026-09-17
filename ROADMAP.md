@@ -10,7 +10,8 @@ unresolved outcomes belong here.
 The `exedra` crate is a leaf-only facade: it owns feature selection, curated
 namespaces, and entry documentation, but no geometry state or algorithms.
 `exedra_mesh` owns editable polygon topology, attributes, validation,
-deterministic extraction, and mesh-mutation invariants. Exedra Ops owns
+deterministic extraction, and mesh-mutation invariants. Mesh ops owns direct
+modeling and queries. Exedra Edit owns
 deterministic mesh-operator planning, execution, diagnostics, selections, and
 explicit feature-gated adapters. Sibling heads own their native
 representations:
@@ -43,7 +44,7 @@ The workspace currently provides:
 3. A staged mesh-Boolean pipeline with broad and narrow phases, splitting,
    classification, stitching, provenance, through-holes, selected coplanar
    contacts, seam cleanup, and typed diagnostics.
-4. Exedra Ops mesh compile, preview, and apply lifecycles with stale-plan
+4. Exedra Edit mesh compile, preview, and apply lifecycles with stale-plan
    rejection, reports, timings, bounded artifacts, diagnostics, selections, UV
    projection, face and normal edits, and Boolean orchestration.
 5. Constructive profiles and recipes for extrusion, revolution, lofting,
@@ -65,16 +66,13 @@ configurations must remain typed failures or explicitly counted fallbacks.
 1. Implementation crates depend directly on the native heads they use and
    never upward on the `exedra` facade. Applications may use the facade for a
    coherent namespace and common feature bundle without changing ownership.
-2. `exedra_ops` is the current direct-operation SDK: its deterministic runner
-   plans and applies mesh operations, while focused adapters expose explicit
-   crossings into or out of sibling native heads.
-3. A future Exedra procedural-network layer is earned only by a real pipeline
-   that requires at least two native value kinds joined by an explicit
-   conversion. It owns the typed geometry vocabulary, native artifacts,
-   conversion reports, and compilation adapters. The shared `execution_graph`
-   runtime owns incremental scheduling and execution causality;
-   `understory_node_graph` owns editor documents and projections. None owns a
-   universal geometry value.
+2. `exedra_mesh_ops` owns direct mesh modeling and geometric queries. Constructive
+   evaluation and `exedra_edit` command adapters call the same implementations.
+   The edit runner is mesh-specific and optional; native heads expose their own
+   operations and conversions.
+3. A heterogeneous procedural network belongs in a higher-level application
+   toolkit. This geometry library does not prescribe its graph, scheduler or
+   editor document model.
 4. Native heads keep their algorithms, identities, and provenance. CSG remains
    domain-native: recipes combine construction intent, meshes use polygonal
    operations, and fields compose before extraction.

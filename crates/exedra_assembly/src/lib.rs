@@ -72,6 +72,7 @@ pub mod assembly;
 pub mod compile;
 pub mod flatten;
 pub mod interchange;
+pub mod pattern;
 
 pub use assembly::{
     AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, PartDef, PartId,

@@ -304,10 +304,10 @@ fn main() {
 /// by the kernel rounding pass (strips in region 9). Rounding constructive
 /// drill output is blocked on exe-8kli; this card rounds direct boolean
 /// output, which is the pass's proven envelope.
-fn rounded_drill_mesh() -> (exedra_mesh::Mesh, exedra_mesh::round::RoundStats) {
+fn rounded_drill_mesh() -> (exedra_mesh::Mesh, exedra_mesh_ops::round::RoundStats) {
     let mut mesh = drilled_slab_mesh();
     let stats =
-        exedra_mesh::round::round_sharp_edges(&mut mesh, &rounding_policy()).expect("rounds");
+        exedra_mesh_ops::round::round_sharp_edges(&mut mesh, &rounding_policy()).expect("rounds");
     (mesh, stats)
 }
 
@@ -362,12 +362,12 @@ fn drilled_slab_mesh() -> exedra_mesh::Mesh {
     }
     let prism = b.build().expect("valid prism").mesh;
 
-    let mut scratch = exedra_mesh::boolean::BooleanScratch::new();
-    let mut diagnostics = exedra_mesh::boolean::BooleanDiagnostics::default();
-    exedra_mesh::boolean::boolean_mesh(
+    let mut scratch = exedra_mesh_ops::boolean::BooleanScratch::new();
+    let mut diagnostics = exedra_mesh_ops::boolean::BooleanDiagnostics::default();
+    exedra_mesh_ops::boolean::boolean_mesh(
         &slab,
         &prism,
-        exedra_mesh::boolean::BooleanOp::Difference,
+        exedra_mesh_ops::boolean::BooleanOp::Difference,
         exedra_mesh::FaceTriangulation::Fan,
         &mut scratch,
         &mut diagnostics,
@@ -377,8 +377,8 @@ fn drilled_slab_mesh() -> exedra_mesh::Mesh {
 }
 
 /// The rounding policy for the gallery's filleted drill card.
-fn rounding_policy() -> exedra_mesh::round::RoundPolicy {
-    let mut policy = exedra_mesh::round::RoundPolicy::fillet(0.3);
+fn rounding_policy() -> exedra_mesh_ops::round::RoundPolicy {
+    let mut policy = exedra_mesh_ops::round::RoundPolicy::fillet(0.3);
     policy.region = Some(9);
     policy
 }

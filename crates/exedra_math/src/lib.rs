@@ -12,17 +12,17 @@
 //! predicates. Mesh storage (`f32`) and kernel arithmetic (`f64`) call the
 //! same functions; the arrays choose the precision.
 //!
-//! It owns nothing else: no vector or point types, no placements, bounding
-//! boxes, or matrices, and no transcendental functions.
+//! [`Placement3`] and [`Plane3`] provide shared affine and plane representations
+//! for geometry crates, independent of recipes and meshes.
 //!
 //! Design rules:
 //!
 //! - **Plain arrays, free functions.** No newtype and no operator overloading;
 //!   call sites read `exedra_math::dot(a, b)` and nothing else changes.
-//! - **Correctly rounded only.** Every operation is a fixed sequence of
+//! - **Correctly rounded vector arithmetic.** Each vector helper uses
 //!   additions, multiplications, divisions, and IEEE `sqrt`, all of which
-//!   round identically under `std` and `libm`. Transcendentals are not
-//!   offered here; a crate that needs `acos` keeps its own backend choice.
+//!   round identically under `std` and `libm`. Rotation constructors additionally
+//!   use trig: they prefer libm when enabled, otherwise the standard backend.
 //! - **Fixed operation order.** The expression each helper evaluates is part
 //!   of its contract, because golden fixtures downstream depend on it.
 //! - **Explicit tolerances.** Predicates that need a tolerance take one; the
@@ -32,7 +32,8 @@
 //!
 //! - `std` (default): `sqrt` through the standard library.
 //! - `libm`: `sqrt` through the `libm` crate for `no_std` builds. When both are
-//!   enabled `std` is used; the results are identical either way.
+//!   enabled `std` supplies square root; the results are identical either way.
+//!   Rotation constructors always prefer libm when enabled.
 //!
 //! # Example
 //!
@@ -50,6 +51,9 @@
 //! ```
 
 #![no_std]
+
+mod geometry;
+pub use geometry::{Placement3, Plane3, intersect_plane_edge};
 
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_math requires either the `std` or `libm` feature");

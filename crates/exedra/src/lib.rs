@@ -12,7 +12,8 @@
 //! - [`mesh`] is always available and contains the mesh kernel API.
 //! - [`constructive`] contains immutable recipes and deterministic evaluation.
 //! - [`assembly`] contains parts, instances, material bindings, and flattening.
-//! - [`ops`] contains workflow-oriented mesh operations and adapters.
+//! - [`mesh_ops`] contains direct mesh modeling and geometric queries.
+//! - [`edit`] contains opt-in command execution, preview and reports for editors.
 //! - [`primitives`] contains deterministic primitive mesh generators (opt-in).
 //! - [`analytic`] and [`isosurface`] contain alternative geometry heads (opt-in).
 //! - [`gltf`] contains assembly export (opt-in).
@@ -27,13 +28,11 @@
 //!
 //! Exedra requires one numeric backend. The default `std` backend suits host
 //! applications; `libm` supports `no_std` applications. The default feature
-//! set is `std`, `assembly`, and `ops`; `assembly` also selects
-//! `constructive` because its public API admits [`Recipe`]. `analytic`,
-//! `isosurface`, `primitives`, and `gltf` remain opt-in. Enabling `analytic`,
-//! `constructive`, or `assembly` alongside `ops` also enables the matching
-//! workflow adapter in [`ops`]. The `gltf` feature selects `assembly` and
-//! `std`; `serde` selects `std` and exposes the constructive and assembly
-//! interchange modules.
+//! set is `std`, `assembly`, and `mesh_ops`; `assembly` also selects
+//! `constructive` because its public API admits [`Recipe`]. `edit`, `analytic`,
+//! `isosurface`, `primitives`, and `gltf` remain opt-in. Native domains expose
+//! their own operations directly. The `gltf` feature selects `assembly` and
+//! `std`; `serde` selects `std` and exposes constructive and assembly interchange.
 //!
 //! # Example
 //!
@@ -104,9 +103,13 @@ pub use exedra_assembly as assembly;
 #[cfg(feature = "assembly")]
 pub use exedra_assembly::Assembly;
 
-/// Workflow-oriented mesh operations and enabled cross-domain adapters.
-#[cfg(feature = "ops")]
-pub use exedra_ops as ops;
+/// Direct mesh modeling, geometric queries and source correspondence.
+#[cfg(feature = "mesh_ops")]
+pub use exedra_mesh_ops as mesh_ops;
+
+/// Opt-in mesh command execution, preview and reporting for editor applications.
+#[cfg(feature = "edit")]
+pub use exedra_edit as edit;
 
 /// Planar analytic topology and tessellation.
 #[cfg(feature = "analytic")]
@@ -128,36 +131,6 @@ pub use exedra_gltf as gltf;
 
 #[cfg(test)]
 mod feature_contract_tests {
-    #[cfg(all(feature = "analytic", feature = "ops"))]
-    #[test]
-    fn analytic_head_enables_its_ops_adapter() {
-        use core::mem::size_of;
-
-        // The facade promises that pairing a native head with `ops` exposes
-        // that head's workflow adapter without another feature selection.
-        let _ = size_of::<crate::ops::analytic::AnalyticFaceId>();
-    }
-
-    #[cfg(all(feature = "assembly", feature = "ops"))]
-    #[test]
-    fn assembly_head_enables_its_ops_adapter() {
-        use core::mem::size_of;
-
-        // The default facade must include the assembly workflow adapter, not
-        // merely the assembly data model and the mesh-only operation surface.
-        let _ = size_of::<crate::ops::assembly::PlacementSite>();
-    }
-
-    #[cfg(all(feature = "constructive", feature = "ops"))]
-    #[test]
-    fn constructive_head_enables_its_ops_adapter() {
-        use core::mem::size_of;
-
-        // Assembly implies constructive, so the default facade must expose
-        // the matching recipe workflow adapter as part of that implication.
-        let _ = size_of::<crate::ops::constructive::RecipePlan>();
-    }
-
     #[cfg(feature = "primitives")]
     #[test]
     fn primitives_feature_exposes_the_generator_namespace() {

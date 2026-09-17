@@ -13,7 +13,7 @@ your spec data ──▶ your compiler (exact arithmetic, spec tables, policies)
                         │  builds
                         ▼
                 RecipeBuilder ──finish()──▶ Recipe (frozen, fingerprinted)
-                        │  evaluate() / exedra_ops::constructive::apply_recipe()
+                        │  evaluate() / evaluate_with_cache()
                         ▼
         Evaluation { bodies: [mesh + SourceMap], report: GeometryReport }
 ```

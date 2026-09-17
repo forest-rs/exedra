@@ -9,7 +9,7 @@ mod tests {
     use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder};
 
     use super::exact::ExactStretchPlan;
-    use super::mesh::{cross3, dot3};
+    use exedra_math::{cross as cross3, dot as dot3};
     use super::exact_plan;
     use crate::evaluate::{Aabb3, Fidelity, Severity, evaluate, evaluate_with_cache, mesh_bounds};
     use crate::ir::{

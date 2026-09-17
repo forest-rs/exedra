@@ -31,11 +31,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use exedra_isosurface::ScalarField;
 use exedra_isosurface::analytic::{Difference, Intersection, Union};
-use exedra_mesh::boolean::{
+use exedra_mesh::{FaceTriangulation, Mesh, VertexId};
+use exedra_mesh_ops::boolean::{
     BooleanDiagnostics, BooleanError, BooleanFailureKind, BooleanOp, BooleanOutput, BooleanScratch,
     boolean_mesh,
 };
-use exedra_mesh::{FaceTriangulation, Mesh, VertexId};
 
 use crate::membership::{Parity, point_in_triangles};
 use crate::operands::{Operand, mesh_triangles_f64};
@@ -623,7 +623,7 @@ mod triage {
     #[test]
     #[ignore = "triage tool, run by hand"]
     fn isolate_patches() {
-        use exedra_mesh::boolean::{
+        use exedra_mesh_ops::boolean::{
             BooleanBvh, MeshSide, build_intersection_graph, classify_patches,
             collect_coplanar_contacts, narrow_phase, split_mesh_along_graph,
         };
