@@ -1,7 +1,18 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use super::prepare::signed_area;
+use alloc::collections::BTreeMap;
+use exedra_math::{cross, dot, scale, sub};
+use exedra_mesh::{FaceTriangulation, MeshBuilder};
+
+fn signed_area(points: &[[f64; 2]]) -> f64 {
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
+        .sum::<f64>()
+        * 0.5
+}
 use super::*;
 use crate::ir::{CapMode, LoftPolicy};
 use crate::tessellate::{EvalPolicy, tessellate_extrude, tessellate_loft};
@@ -589,7 +600,7 @@ fn oblique_cuts_preserve_closed_filleted_and_chamfered_bodies() {
         );
         assert_eq!(split.section.regions.len(), 1);
         assert!(split.section.stats.section_vertices > 4);
-        if matches!(policy.kind, exedra_mesh::RoundKind::Fillet { .. }) {
+        if matches!(policy.kind, exedra_mesh_ops::RoundKind::Fillet { .. }) {
             for body in [split.negative.unwrap(), split.positive.unwrap()] {
                 let normals = body
                     .mesh
@@ -770,4 +781,89 @@ fn original_and_realized_boundaries_share_the_pair_budget() {
     policy.max_pair_checks = 128;
     let section = section_body(&source, plane, &policy).unwrap();
     assert_eq!(section.stats.section_vertices, 8);
+}
+
+#[test]
+fn direct_cut_correspondence_drives_constructive_bindings() {
+    use exedra_mesh_ops::section::{CutFaceSource, CutVertexSource, split_mesh};
+    let mut source = block();
+    source.face_materials = source.mesh.faces().map(|face| (face, SlotId(3))).collect();
+    let plane = Plane3 {
+        normal: [0.3, -0.2, 1.0],
+        distance: 1.71,
+    };
+    let direct = split_mesh(&source.mesh, plane, &SectionPolicy::default(), cap().region).unwrap();
+    let wrapped = split_body(&source, plane, &SectionPolicy::default(), cap()).unwrap();
+    assert_eq!(direct.section.frame, wrapped.section.frame);
+    assert_eq!(direct.section.stats, wrapped.section.stats);
+    assert_eq!(
+        direct.section.measure().unwrap(),
+        wrapped.section.measure().unwrap()
+    );
+    for (direct, wrapped) in [
+        (direct.negative.unwrap(), wrapped.negative.unwrap()),
+        (direct.positive.unwrap(), wrapped.positive.unwrap()),
+    ] {
+        assert_eq!(
+            direct
+                .mesh
+                .to_trimesh(&exedra_mesh::ExtractParams::default())
+                .0,
+            wrapped
+                .mesh
+                .to_trimesh(&exedra_mesh::ExtractParams::default())
+                .0
+        );
+        for (face, origin) in direct.face_sources {
+            let (feature, material) = match origin {
+                CutFaceSource::Original(input) => (
+                    source.source_map.face_feature(input).unwrap(),
+                    Some(SlotId(3)),
+                ),
+                CutFaceSource::Cap => (Feature::PlaneCutCap, cap().material),
+            };
+            assert_eq!(wrapped.source_map.face_feature(face), Some(feature));
+            assert_eq!(wrapped.face_materials.get(&face).copied(), material);
+        }
+        let mut saw_diagonal = false;
+        for (vertex, origin) in direct.vertex_sources {
+            match origin {
+                CutVertexSource::Original(input) => {
+                    assert_eq!(
+                        direct.mesh.vertex_position(vertex),
+                        source.mesh.vertex_position(input)
+                    );
+                    assert_eq!(
+                        wrapped.source_map.vertex_feature(vertex),
+                        source.source_map.vertex_feature(input)
+                    );
+                }
+                CutVertexSource::Intersection {
+                    vertices: [a, b],
+                    parameter,
+                } => {
+                    assert!(parameter > 0.0 && parameter < 1.0);
+                    let a_position = source.mesh.vertex_position(a).unwrap().map(f64::from);
+                    let b_position = source.mesh.vertex_position(b).unwrap().map(f64::from);
+                    let expected = exedra_math::lerp(a_position, b_position, parameter);
+                    let actual = direct.mesh.vertex_position(vertex).unwrap().map(f64::from);
+                    assert!(exedra_math::norm(sub(actual, expected)) < 1e-6);
+                    assert_eq!(
+                        wrapped.source_map.vertex_feature(vertex),
+                        Some(Feature::PlaneCutSeam)
+                    );
+                    saw_diagonal |= !source.mesh.half_edges().any(|edge| {
+                        (source.mesh.from_vertex(edge) == Some(a)
+                            && source.mesh.to_vertex(edge) == Some(b))
+                            || (source.mesh.from_vertex(edge) == Some(b)
+                                && source.mesh.to_vertex(edge) == Some(a))
+                    });
+                }
+            }
+        }
+        assert!(
+            saw_diagonal,
+            "input quad triangulation creates diagonal intersections too"
+        );
+    }
 }

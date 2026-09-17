@@ -1,4 +1,4 @@
-exclude = ["target/**"]
+exclude = ["target/**", ".worktrees/**"]
 
 [formatting]
 align_comments = false

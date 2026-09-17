@@ -1,5 +1,9 @@
 # Plane sections and capped cuts
 
+Geometry implementation now lives in `exedra_mesh_ops`; constructive retains
+feature/material binding and source-map checks. See the
+[operation boundary](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md).
+
 `exedra_constructive::section` owns section extraction and capped splitting of
 an evaluated body. It operates on the mesh's robust face triangulation, not
 the analytic recipe that produced the mesh. Stretch shares ordered edge/plane

@@ -13,10 +13,8 @@ use exedra_constructive::{
     workplane::{WorkplanePolicy, WorkplaneSelection, face_workplane},
 };
 use exedra_gltf::{GltfExportOptions, export_glb_with_options};
-use exedra_mesh::{
-    FaceTriangulation, Mesh,
-    boolean::{BooleanDiagnostics, BooleanOp, BooleanScratch, boolean_mesh},
-};
+use exedra_mesh::{FaceTriangulation, Mesh};
+use exedra_mesh_ops::boolean::{BooleanDiagnostics, BooleanOp, BooleanScratch, boolean_mesh};
 use std::path::PathBuf;
 
 fn add(assembly: &mut Assembly, name: &str, mesh: Mesh, material: &str) {

@@ -299,6 +299,8 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TessellateError {
+    /// Evaluated or imported mesh structure is invalid for a geometric operation.
+    InvalidMesh(Vec<exedra_mesh::ValidationError>),
     /// A retained workplane attachment could not resolve its surface or frame.
     Attachment(crate::workplane::WorkplaneFailure),
     /// Support evaluation contained a refusal; partial geometry is not attached to.
@@ -408,6 +410,9 @@ pub enum TessellateError {
 impl core::fmt::Display for TessellateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::InvalidMesh(errors) => {
+                write!(f, "invalid mesh: {} structural failures", errors.len())
+            }
             Self::Attachment(error) => write!(f, "workplane attachment failed: {error}"),
             Self::IncompleteAttachmentSupport => {
                 write!(f, "workplane attachment support is incomplete")
@@ -517,12 +522,7 @@ fn apply_placement(p: &Placement3, v: [f64; 3]) -> [f64; 3] {
 /// placement reflects, and emitted face loops must reverse to keep
 /// outward orientation.
 pub(crate) fn det3(p: &Placement3) -> f64 {
-    let r = &p.rows;
-    exedra_math::det3([
-        [r[0][0], r[0][1], r[0][2]],
-        [r[1][0], r[1][1], r[1][2]],
-        [r[2][0], r[2][1], r[2][2]],
-    ])
+    p.linear_determinant()
 }
 
 /// Reorders per-edge attributes for a reversed face loop: reversed edge

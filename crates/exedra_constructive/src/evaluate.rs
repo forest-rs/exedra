@@ -14,10 +14,11 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use exedra_mesh::boolean::{
+use exedra_mesh::{FaceId, FaceTriangulation, Mesh};
+use exedra_mesh_ops::RoundPolicy;
+use exedra_mesh_ops::boolean::{
     BooleanDiagnostics, BooleanError, BooleanOp, BooleanScratch, MeshSide, boolean_mesh,
 };
-use exedra_mesh::{FaceId, FaceTriangulation, Mesh, RoundPolicy};
 use exedra_triangulate::RefineStats;
 use hashbrown::HashMap;
 

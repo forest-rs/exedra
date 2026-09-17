@@ -17,4 +17,5 @@ workspace = true
 [dependencies]
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_mesh = { features = ["std"], workspace = true }
+exedra_mesh_ops = { features = ["libm", "std"], workspace = true }
 exedra_testkit = { features = ["std"], workspace = true }

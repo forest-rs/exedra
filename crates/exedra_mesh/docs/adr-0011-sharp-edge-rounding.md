@@ -1,5 +1,8 @@
 # ADR 0011: Sharp-Edge Rounding (Fillet/Chamfer) Pass
 
+Algorithm ownership now lives in `exedra_mesh_ops`; this record retains the
+geometric design. See the [current boundary and migration decision](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md).
+
 ## Status
 
 Accepted.
@@ -16,7 +19,7 @@ so rounding can be a deterministic mesh pass above them.
 
 ## Decision
 
-`exedra_mesh::round::round_sharp_edges` plans read-only and applies to a staged
+`exedra_mesh_ops::round::round_sharp_edges` plans read-only and applies to a staged
 mesh clone in one edit session:
 
 - **Selection and chains.** Canonical edges with sharpness at or above a

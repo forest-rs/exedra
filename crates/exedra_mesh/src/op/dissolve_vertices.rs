@@ -34,24 +34,7 @@ pub fn dissolve_vertices<S: ChangeSink>(
     session: &mut EditSession<'_, S>,
     vertices: &[VertexId],
 ) -> Result<Vec<FaceId>, DissolveVerticesError> {
-    if !crate::session::is_canonical_vertex_set(vertices) {
-        return Err(DissolveVerticesError::NonCanonicalVertexSet);
-    }
-
-    let mut touched_faces = BTreeSet::<FaceId>::new();
-    let mut plans = Vec::<VertexDissolvePlan>::with_capacity(vertices.len());
-    for &vertex in vertices {
-        let plan = build_vertex_plan(session.mesh(), vertex)?;
-        for &face in &plan.faces {
-            if !touched_faces.insert(face) {
-                return Err(DissolveVerticesError::OverlappingVertexSet);
-            }
-        }
-        plans.push(plan);
-    }
-
-    let mut deleted_faces = touched_faces.into_iter().collect::<Vec<_>>();
-    deleted_faces.sort_unstable();
+    let (deleted_faces, plans) = build_plans(session.mesh(), vertices)?;
     op::delete_faces(session, &deleted_faces, crate::DeletePolicy::KeepIsolated)
         .map_err(DissolveVerticesError::FaceDeleteFailed)?;
     op::delete_vertices(session, vertices).map_err(DissolveVerticesError::VertexDeleteFailed)?;
@@ -96,6 +79,42 @@ pub fn dissolve_vertices<S: ChangeSink>(
         }
     }
     Ok(rebuilt)
+}
+
+/// Checks the canonical, live, face-disjoint interior valence-2 selection.
+///
+/// Uses the same topology and attribute preparation as [`dissolve_vertices`],
+/// without editing. Kernel mutation failures remain possible during execution.
+pub fn validate_dissolve_vertex_selection(
+    mesh: &crate::Mesh,
+    vertices: &[VertexId],
+) -> Result<(), DissolveVerticesError> {
+    build_plans(mesh, vertices).map(|_| ())
+}
+
+fn build_plans(
+    mesh: &crate::Mesh,
+    vertices: &[VertexId],
+) -> Result<(Vec<FaceId>, Vec<VertexDissolvePlan>), DissolveVerticesError> {
+    if !crate::session::is_canonical_vertex_set(vertices) {
+        return Err(DissolveVerticesError::NonCanonicalVertexSet);
+    }
+
+    let mut touched_faces = BTreeSet::<FaceId>::new();
+    let mut plans = Vec::<VertexDissolvePlan>::with_capacity(vertices.len());
+    for &vertex in vertices {
+        let plan = build_vertex_plan(mesh, vertex)?;
+        for &face in &plan.faces {
+            if !touched_faces.insert(face) {
+                return Err(DissolveVerticesError::OverlappingVertexSet);
+            }
+        }
+        plans.push(plan);
+    }
+
+    let mut deleted_faces = touched_faces.into_iter().collect::<Vec<_>>();
+    deleted_faces.sort_unstable();
+    Ok((deleted_faces, plans))
 }
 
 fn build_vertex_plan(

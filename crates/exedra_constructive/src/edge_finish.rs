@@ -11,8 +11,9 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra_mesh::{FaceId, HalfEdgeId, RoundError, RoundStats, attr, round_edges};
-pub use exedra_mesh::{RoundKind, RoundPolicy};
+use exedra_mesh::{FaceId, HalfEdgeId, attr};
+use exedra_mesh_ops::{RoundError, RoundStats, round_edges};
+pub use exedra_mesh_ops::{RoundKind, RoundPolicy};
 
 use crate::source_map::{SourceMap, StaleSourceMap};
 use crate::tessellate::{Feature, TessellatedBody};

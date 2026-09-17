@@ -81,6 +81,7 @@ dependencies = [
  "exedra_isosurface",
  "exedra_math",
  "exedra_mesh",
+ "exedra_mesh_ops",
  "exedra_primitives",
  "exedra_qef",
  "exedra_spatial",
@@ -134,6 +135,7 @@ version = "0.0.0"
 dependencies = [
  "exedra_constructive",
  "exedra_mesh",
+ "exedra_mesh_ops",
  "exedra_testkit",
 ]
 
@@ -145,6 +147,7 @@ dependencies = [
  "exedra_constructive",
  "exedra_gltf",
  "exedra_mesh",
+ "exedra_mesh_ops",
  "exedra_testkit",
 ]
 
@@ -154,6 +157,7 @@ version = "0.0.0"
 dependencies = [
  "exedra_constructive",
  "exedra_mesh",
+ "exedra_mesh_ops",
  "exedra_testkit",
 ]
 
@@ -255,10 +259,11 @@ dependencies = [
  "exedra_analytic",
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_edit",
  "exedra_gltf",
  "exedra_isosurface",
  "exedra_mesh",
- "exedra_ops",
+ "exedra_mesh_ops",
  "exedra_primitives",
 ]
 
@@ -290,6 +295,7 @@ version = "0.1.0"
 dependencies = [
  "exedra_math",
  "exedra_mesh",
+ "exedra_mesh_ops",
  "exedra_primitives",
  "exedra_testkit",
  "exedra_triangulate",
@@ -298,6 +304,42 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "exedra_edit"
+version = "0.1.0"
+dependencies = [
+ "exedra_constructive",
+ "exedra_edit_testkit",
+ "exedra_mesh",
+ "exedra_mesh_ops",
+ "exedra_testkit",
+ "invalidation",
+ "web-time",
+]
+
+[[package]]
+name = "exedra_edit_testkit"
+version = "0.1.0"
+dependencies = [
+ "exedra_edit",
+ "exedra_mesh",
+ "exedra_primitives",
+]
+
+[[package]]
+name = "exedra_edit_web_bridge"
+version = "0.1.0"
+dependencies = [
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_edit",
+ "exedra_mesh",
+ "exedra_primitives",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -369,42 +411,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "exedra_ops"
+name = "exedra_mesh_ops"
 version = "0.1.0"
 dependencies = [
- "exedra_analytic",
- "exedra_assembly",
- "exedra_constructive",
  "exedra_math",
  "exedra_mesh",
- "exedra_ops_testkit",
  "exedra_testkit",
- "invalidation",
+ "exedra_triangulate",
+ "hashbrown",
  "libm",
- "web-time",
-]
-
-[[package]]
-name = "exedra_ops_testkit"
-version = "0.1.0"
-dependencies = [
- "exedra_mesh",
- "exedra_ops",
- "exedra_primitives",
-]
-
-[[package]]
-name = "exedra_ops_web_bridge"
-version = "0.1.0"
-dependencies = [
- "exedra_assembly",
- "exedra_constructive",
- "exedra_mesh",
- "exedra_ops",
- "exedra_primitives",
- "serde",
- "serde_json",
- "wasm-bindgen",
 ]
 
 [[package]]

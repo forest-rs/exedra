@@ -35,11 +35,11 @@ use exedra_constructive::ir::{
     CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
 use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
-use exedra_mesh::boolean::{
+use exedra_mesh::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder, NormalsSource};
+use exedra_mesh_ops::boolean::{
     BooleanDiagnostics, BooleanOp, BooleanScratch, BooleanStats, boolean_mesh,
 };
-use exedra_mesh::round::{RoundPolicy, RoundStats, round_sharp_edges};
-use exedra_mesh::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder, NormalsSource};
+use exedra_mesh_ops::round::{RoundPolicy, RoundStats, round_sharp_edges};
 use exedra_testkit::trimesh_signature;
 
 fn main() {

@@ -98,8 +98,8 @@ pub mod offset;
 #[cfg(test)]
 mod panel_boolean_tests;
 pub mod path;
-mod plane;
 pub mod profile;
+pub mod profile_section;
 pub mod section;
 pub mod source_map;
 mod stretch;

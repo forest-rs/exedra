@@ -976,7 +976,14 @@ impl<S: ChangeSink> EditSession<'_, S> {
         face_edge_use_in_index(index, from, to)
     }
 
-    pub(crate) fn find_half_edge(&mut self, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
+    /// Finds an edge joining two live vertices, preferring `from` to `to`.
+    ///
+    /// The result may be an outside half-edge. If only the reverse direction
+    /// is present during an edit, that half-edge is returned instead.
+    /// The first lookup builds a session-local adjacency index in linear time;
+    /// subsequent lookups inspect only the endpoints' outgoing edges. Kernel
+    /// mutations maintain this index for the lifetime of the edit session.
+    pub fn find_half_edge(&mut self, from: VertexId, to: VertexId) -> Option<HalfEdgeId> {
         let index = self.ensure_outgoing_index();
         find_half_edge_in_index(index, from, to)
     }
@@ -1649,7 +1656,7 @@ mod tests {
             edges: &[HalfEdgeId],
             policy: DeletePolicy,
         ) -> Result<(), DeleteEdgesError> {
-            op::delete_edges(self, edges, policy)
+            op::delete_edges(self, edges, policy).map(|_| ())
         }
 
         fn dissolve_edges(

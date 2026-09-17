@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::builders::rect;
-use crate::ir::CapMode;
+use crate::ir::{CapMode, Placement3};
 use crate::tessellate::{EvalPolicy, REGION_CAP_END, tessellate_extrude};
+use exedra_math::{cross, dot};
 
 fn block() -> TessellatedBody {
     tessellate_extrude(

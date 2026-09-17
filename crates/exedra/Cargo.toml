@@ -11,35 +11,37 @@ keywords = ["geometry", "modeling", "mesh", "no_std"]
 categories = ["graphics", "data-structures"]
 
 [features]
-# The common application surface: native backend, structure, and its workflow
-# layer. `assembly` selects `constructive` because its public API admits recipes.
-default = ["std", "assembly", "ops"]
+# The common geometry surface: native backend, structure and direct mesh operations. `assembly` selects `constructive` because its public API admits recipes.
+default = ["std", "assembly", "mesh_ops"]
 
 # Numeric backends. At least one must be selected.
 std = [
     "exedra_mesh/std",
+    "exedra_mesh_ops?/std",
     "exedra_analytic?/std",
     "exedra_assembly?/std",
     "exedra_constructive?/std",
     "exedra_isosurface?/std",
-    "exedra_ops?/std",
+    "exedra_edit?/std",
     "exedra_primitives?/std",
 ]
 libm = [
     "exedra_mesh/libm",
+    "exedra_mesh_ops?/libm",
     "exedra_analytic?/libm",
     "exedra_isosurface?/libm",
-    "exedra_ops?/libm",
+    "exedra_edit?/libm",
     "exedra_primitives?/libm",
 ]
 
 # Application-facing domain namespaces.
-analytic = ["dep:exedra_analytic", "exedra_ops?/analytic"]
-assembly = ["dep:exedra_assembly", "constructive", "exedra_ops?/assembly"]
-constructive = ["dep:exedra_constructive", "exedra_ops?/constructive"]
+analytic = ["dep:exedra_analytic"]
+assembly = ["dep:exedra_assembly", "constructive"]
+constructive = ["dep:exedra_constructive"]
 gltf = ["dep:exedra_gltf", "assembly", "std"]
 isosurface = ["dep:exedra_isosurface"]
-ops = ["dep:exedra_ops"]
+edit = ["dep:exedra_edit"]
+mesh_ops = ["dep:exedra_mesh_ops"]
 primitives = ["dep:exedra_primitives"]
 serde = [
     "assembly",
@@ -52,10 +54,11 @@ serde = [
 exedra_analytic = { optional = true, workspace = true }
 exedra_assembly = { optional = true, workspace = true }
 exedra_constructive = { optional = true, workspace = true }
+exedra_edit = { optional = true, workspace = true }
 exedra_gltf = { optional = true, workspace = true }
 exedra_isosurface = { optional = true, workspace = true }
 exedra_mesh.workspace = true
-exedra_ops = { optional = true, workspace = true }
+exedra_mesh_ops = { optional = true, workspace = true }
 exedra_primitives = { optional = true, workspace = true }
 
 [lints]

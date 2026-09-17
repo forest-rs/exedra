@@ -1,5 +1,8 @@
 # ADR 0007: Boolean Broad-Phase BVH
 
+Algorithm ownership now lives in `exedra_mesh_ops`; this record retains the
+geometric design. See the [current boundary and migration decision](../../exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md).
+
 ## Status
 
 Accepted.

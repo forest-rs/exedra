@@ -1,0 +1,25 @@
+[package]
+name = "exedra_edit_testkit"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Golden snapshots and debug dump utilities for Exedra Edit"
+keywords = ["mesh", "test", "golden", "snapshot"]
+categories = ["development-tools::testing"]
+readme = "README.md"
+
+[features]
+default = ["std"]
+libm = ["exedra_edit/libm"]
+std = ["exedra_edit/std"]
+
+[dev-dependencies]
+exedra_edit.workspace = true
+exedra_mesh.workspace = true
+exedra_primitives = { features = ["std"], workspace = true }
+
+[lints]
+workspace = true

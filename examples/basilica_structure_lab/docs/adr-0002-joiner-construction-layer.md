@@ -1,5 +1,11 @@
 # ADR 0002: The `joiner` construction layer
 
+> Migration: joiner generation now uses `setout_generate`; concrete occurrence
+> expansion is `exedra_assembly::pattern`. `exedra_edit` is a mesh command runner,
+> with no assembly or conversion adapters. See the
+> [consolidation decision](../../../crates/exedra_mesh_ops/docs/adr-0001-mesh-operation-boundary.md).
+
+
 ## Status
 
 Accepted (2026-08-21). Supersedes the ADR 0001 consequence that the
@@ -16,7 +22,7 @@ The workspace has a geometry stack but no construction layer:
   recipe (profiles, extrude/revolve/loft/sweep, n-ary CSG through the mesh
   boolean pipeline, provenance down to profile segments) into meshes;
   `exedra_assembly` arranges parts as instances under stable paths with
-  material bindings; `exedra_ops` is the mesh-operator SDK plus
+  material bindings; `exedra_edit` is the mesh-operator SDK plus
   deterministic placement patterns.
 - Nothing owns *how building elements fit together*. `basilica_ruin`
   encodes joints as per-part constants (`KING_POST_RAFTER_OVERLAP`,
@@ -145,7 +151,7 @@ stone.
   from ADR 0001: validation is schema, coherence, contact, transfer
   witness, and load path.
 - **Rendering and export.** Consumers of the compiled assembly.
-- **Exedra Ops' operator lifecycle.** `joiner` uses `exedra_ops::assembly`
+- **Exedra Ops' operator lifecycle.** `joiner` uses `exedra_edit::assembly`
   placement patterns for stationing (truss bays, window rhythm) and
   otherwise talks to `exedra_constructive` and `exedra_assembly` directly.
   Exedra Ops stays the mesh-operator SDK; it does not become the construction
@@ -228,7 +234,7 @@ existed; stage 2 replaces the timber fixture geometry with concrete rules.
 
 ## Alternatives considered
 
-- **Extend `exedra_ops`.** Rejected: Exedra Ops' contract is the mesh operator
+- **Extend `exedra_edit`.** Rejected: Exedra Ops' contract is the mesh operator
   lifecycle; a construction vocabulary would double its responsibility and
   pull building semantics into every Exedra Ops consumer.
 - **Extend `exedra_assembly`.** Rejected: the structure head is a

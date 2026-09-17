@@ -3,23 +3,23 @@
 
 //! Authored coordinate frames on evaluated planar face patches.
 //!
-//! This module owns planar selection, authored frame validation, and semantic
-//! attachment resolution. Origins and roll are authored explicitly; attachments
-//! re-resolve surface intent instead of tracking transient faces across edits.
+//! This module owns semantic surface selection and attachment resolution.
+//! Mesh geometry and authored frame validation delegate to `exedra_mesh_ops`.
+//! Origins and roll are authored explicitly; attachments re-resolve surface
+//! intent instead of tracking transient faces across edits.
 //! Frames are snapshots in body coordinates, pinned to one logical mesh revision.
 
 use alloc::string::String;
 
 use crate::edge_finish::OperandRegion;
-use crate::ir::Placement3;
 use crate::tessellate::{Feature, TessellatedBody};
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use exedra_math::{add, cross, dot, norm, normalize, scale, sub};
-use exedra_mesh::{FaceId, FaceTriangulation, Mesh, MeshRevision, attr};
+use exedra_math::normalize;
+use exedra_mesh::{FaceId, Mesh, MeshRevision, attr};
 
 mod inspection;
-use inspection::{Rejection, analyze_patch, budget, components, selection_ambiguity};
+use inspection::{Rejection, budget, selection_ambiguity};
 pub use inspection::{
     SurfaceEntry, SurfaceInventory, SurfaceInventoryError, SurfaceInventoryPolicy,
     SurfaceInventoryStats, SurfacePatch, SurfacePlane, SurfaceResource, WorkplaneEvidence,
@@ -139,148 +139,7 @@ impl WorkplaneAttachment {
     }
 }
 
-/// Accuracy and selected-patch work limits.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct WorkplanePolicy {
-    /// Maximum vertex and authored-origin distance from the selected plane,
-    /// in body units. Must be positive and finite.
-    pub distance_tolerance: f64,
-    /// Minimum sine of the angle between authored X and the face normal.
-    /// Must lie in `(0, 1]`; directions closer to parallel are refused.
-    pub min_axis_sine: f64,
-    /// Minimum absolute cosine between an attachment projection and the face
-    /// normal, in `(0, 1]`. Smaller values admit longer, less stable projections.
-    pub min_projection_cos: f64,
-    /// Maximum selected faces. Region resolution scans the body's face list.
-    pub max_faces: u32,
-    /// Maximum corner visits across connectivity and geometry checks.
-    /// A successful resolution visits each selected face corner twice.
-    pub max_corners: u32,
-}
-impl Default for WorkplanePolicy {
-    fn default() -> Self {
-        Self {
-            distance_tolerance: 1e-6,
-            min_axis_sine: 1e-6,
-            min_projection_cos: 1e-6,
-            max_faces: 16384,
-            max_corners: 65536,
-        }
-    }
-}
-
-/// A refused planar selection or authored frame.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum WorkplaneError {
-    /// Invalid policy, nonfinite origin, or unusable X direction.
-    InvalidInput,
-    /// The source provenance or retained workplane no longer matches the mesh.
-    StaleSource,
-    /// No face matches the selection.
-    EmptySelection,
-    /// A selected face is stale, outside, malformed, or cannot be triangulated.
-    InvalidFace,
-    /// Selected faces are disconnected, source labels are duplicated, or
-    /// Boolean operand identities are mixed. See the failure evidence.
-    AmbiguousSelection,
-    /// Selected face corners do not lie on one plane within tolerance.
-    NonPlanar,
-    /// A face has zero area, incompatible winding, or unrepresentable geometry.
-    InvalidGeometry,
-    /// The authored origin is outside the plane's distance tolerance.
-    OriginOffPlane,
-    /// Authored X is too nearly parallel to the face normal.
-    ParallelAxis,
-    /// Attachment projection is too nearly parallel to the selected plane.
-    ParallelProjection,
-    /// The selected patch exceeds a work limit.
-    BudgetExceeded,
-}
-impl core::fmt::Display for WorkplaneError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::InvalidInput => "invalid workplane policy or authored frame",
-            Self::StaleSource => "workplane source revision is stale",
-            Self::EmptySelection => "workplane selection is empty",
-            Self::InvalidFace => "workplane selection contains an invalid face",
-            Self::AmbiguousSelection => "workplane selection is ambiguous",
-            Self::NonPlanar => "workplane selection is not planar within tolerance",
-            Self::InvalidGeometry => "workplane geometry is degenerate or inconsistently oriented",
-            Self::OriginOffPlane => "workplane origin is not on the selected plane",
-            Self::ParallelProjection => "attachment projection is too parallel to the surface",
-            Self::ParallelAxis => "workplane X direction is too parallel to the normal",
-            Self::BudgetExceeded => "workplane selection exceeds its work budget",
-        })
-    }
-}
-impl core::error::Error for WorkplaneError {}
-
-/// An orthonormal, right-handed frame on a selected planar patch.
-///
-/// +Z follows source winding (outward only when the source is oriented outward).
-/// The origin is the authored point projected onto the plane within tolerance.
-/// It need not be inside the face boundary: this is a coordinate frame, not a
-/// containment query. Selected geometry is checked in f64 after exact promotion
-/// from mesh storage. Holes do not affect frame validity.
-///
-/// Like a source map, this value is bound to one logical mesh; revision equality
-/// cannot identify unrelated meshes. Call [`Self::check`] before reuse after edits.
-#[derive(Clone, Debug)]
-pub struct Workplane {
-    frame: Placement3,
-    faces: Vec<FaceId>,
-    revision: MeshRevision,
-    max_plane_deviation: f64,
-}
-impl Workplane {
-    /// Returns the placement mapping workplane coordinates into body coordinates.
-    #[must_use]
-    pub fn frame(&self) -> Placement3 {
-        self.frame
-    }
-    /// Returns the selected source faces in deterministic ID order.
-    #[must_use]
-    pub fn faces(&self) -> &[FaceId] {
-        &self.faces
-    }
-    /// Maximum measured source-corner distance from the returned plane.
-    #[must_use]
-    pub fn max_plane_deviation(&self) -> f64 {
-        self.max_plane_deviation
-    }
-    /// Refuses reuse after an edit of the same logical mesh.
-    pub fn check(&self, mesh: &Mesh) -> Result<(), WorkplaneError> {
-        if mesh.revision() == self.revision {
-            Ok(())
-        } else {
-            Err(WorkplaneError::StaleSource)
-        }
-    }
-    /// Maps a local point into body coordinates, including an offset along +Z.
-    #[must_use]
-    pub fn to_body(&self, point: [f64; 3]) -> [f64; 3] {
-        self.frame
-            .rows
-            .map(|r| r[0] * point[0] + r[1] * point[1] + r[2] * point[2] + r[3])
-    }
-    /// Maps a body-space point into this orthonormal frame.
-    #[must_use]
-    pub fn to_local(&self, point: [f64; 3]) -> [f64; 3] {
-        let relative = sub(point, self.frame.rows.map(|r| r[3]));
-        core::array::from_fn(|i| dot(relative, self.frame.rows.map(|r| r[i])))
-    }
-    /// Returns an equally oriented placement translated by a local offset.
-    /// Use local XY for feature positions and local Z for stand-off or depth.
-    #[must_use]
-    pub fn placement_at(&self, offset: [f64; 3]) -> Placement3 {
-        let mut frame = self.frame;
-        for (row, coordinate) in frame.rows.iter_mut().zip(self.to_body(offset)) {
-            row[3] = coordinate;
-        }
-        frame
-    }
-}
+pub use exedra_mesh_ops::workplane::{Workplane, WorkplaneError, WorkplanePolicy};
 
 /// Builds a frame on a planar face or connected region using authored origin/X.
 ///
@@ -353,7 +212,7 @@ fn build_inner(
     {
         return Err(Error::InvalidInput.into());
     }
-    let authored_x = normalize(x_direction).ok_or(Error::InvalidInput)?;
+    let _ = normalize(x_direction).ok_or(Error::InvalidInput)?;
     body.source_map
         .check(&body.mesh)
         .map_err(|_| Error::StaleSource)?;
@@ -419,74 +278,15 @@ fn build_inner(
     if let Some(error) = selection_ambiguity(body, selection, &faces) {
         return Err(error);
     }
-    let mut corners = 0;
-    let patches = components(mesh, &faces, &mut corners, u64::from(policy.max_corners))?;
-    if patches.len() != 1 {
-        return Err(Rejection(
-            Error::AmbiguousSelection,
-            WorkplaneEvidence::Disconnected {
-                representatives: patches.iter().map(|patch| patch[0]).collect(),
-            },
-        ));
-    }
-    let geometry = analyze_patch(
+    exedra_mesh_ops::workplane::face_workplane(
         mesh,
         &faces,
-        policy.distance_tolerance,
-        &mut corners,
-        u64::from(policy.max_corners),
-    )?;
-    let z = geometry.plane.normal;
-    let reference = geometry.plane.point;
-    let all_points = geometry.points;
-    let origin = if let Some(direction) = projection {
-        let direction = normalize(direction).ok_or(Error::InvalidInput)?;
-        let denominator = dot(z, direction);
-        if denominator.abs() < policy.min_projection_cos {
-            return Err(Error::ParallelProjection.into());
-        }
-        let distance = dot(z, sub(reference, origin)) / denominator;
-        let projected = add(origin, scale(direction, distance));
-        if projected.iter().any(|value| !value.is_finite()) {
-            return Err(Error::InvalidGeometry.into());
-        }
-        projected
-    } else {
-        origin
-    };
-    let offset = dot(z, sub(origin, reference));
-    if !offset.is_finite() {
-        return Err(Error::InvalidInput.into());
-    }
-    if offset.abs() > policy.distance_tolerance {
-        return Err(Error::OriginOffPlane.into());
-    }
-    let origin = sub(origin, scale(z, offset));
-    // Verify the plane that the rounded f64 frame actually represents, including
-    // when an authored origin is far from the selected patch in the plane.
-    let mut max_plane_deviation = 0.0_f64;
-    for &p in &all_points {
-        let distance = dot(z, sub(p, origin)).abs();
-        if !distance.is_finite() || distance > policy.distance_tolerance {
-            return Err(Error::InvalidGeometry.into());
-        }
-        max_plane_deviation = max_plane_deviation.max(distance);
-    }
-    // The transverse cross product measures sin(angle) directly. Subtracting
-    // z * dot(x, z) can turn unit-length roundoff into an invented axis when
-    // the authored direction is exactly parallel to z.
-    let transverse = cross(z, authored_x);
-    if norm(transverse) < policy.min_axis_sine {
-        return Err(Error::ParallelAxis.into());
-    }
-    let y = normalize(transverse).ok_or(Error::ParallelAxis)?;
-    let x = cross(y, z);
-    Ok(Workplane {
-        frame: Placement3::from_axes(x, y, z, origin),
-        faces,
-        revision: mesh.revision(),
-        max_plane_deviation,
-    })
+        origin,
+        projection,
+        x_direction,
+        policy,
+    )
+    .map_err(Rejection::from)
 }
 
 #[cfg(test)]
