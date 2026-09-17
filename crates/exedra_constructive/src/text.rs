@@ -185,6 +185,41 @@ fn dump_seg_kind(line: &mut String, kind: &SegKind) {
 
 fn dump_kind(line: &mut String, kind: &NodeKind) {
     match kind {
+        NodeKind::OnWorkplane {
+            support,
+            child,
+            attachment,
+        } => {
+            use crate::workplane::SurfaceSelector;
+            let _ = write!(
+                line,
+                "on_workplane support {} child {} surface ",
+                support.0, child.0
+            );
+            match attachment.surface {
+                SurfaceSelector::StartCap => line.push_str("start_cap"),
+                SurfaceSelector::EndCap => line.push_str("end_cap"),
+                SurfaceSelector::Region(region) => {
+                    let _ = write!(line, "region {region}");
+                }
+                SurfaceSelector::OperandRegion(value) => {
+                    let _ = write!(line, "operand_region {} {}", value.operand, value.region);
+                }
+            }
+            for (name, vector) in [
+                ("anchor", attachment.anchor),
+                ("projection", attachment.projection),
+                ("x", attachment.x_direction),
+            ] {
+                let _ = write!(
+                    line,
+                    " {name} {} {} {}",
+                    hex(vector[0]),
+                    hex(vector[1]),
+                    hex(vector[2])
+                );
+            }
+        }
         NodeKind::PlaneCut {
             child,
             plane,
@@ -880,6 +915,53 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
     let mut tokens = body.split_whitespace();
     let kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
     let kind = match kind_name {
+        "on_workplane" => {
+            use crate::workplane::{SurfaceSelector, WorkplaneAttachment};
+            expect(&mut tokens, "support", line)?;
+            let support = NodeId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "child", line)?;
+            let child = NodeId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "surface", line)?;
+            let surface = match tokens.next() {
+                Some("start_cap") => SurfaceSelector::StartCap,
+                Some("end_cap") => SurfaceSelector::EndCap,
+                Some("region") => SurfaceSelector::Region(next_u32(&mut tokens, line)?),
+                Some("operand_region") => SurfaceSelector::OperandRegion(OperandRegion {
+                    operand: u16::try_from(next_u32(&mut tokens, line)?)
+                        .map_err(|_| TextError::Malformed { line })?,
+                    region: next_u32(&mut tokens, line)?,
+                }),
+                _ => return Err(TextError::Malformed { line }),
+            };
+            expect(&mut tokens, "anchor", line)?;
+            let anchor = [
+                next_f64(&mut tokens, line)?,
+                next_f64(&mut tokens, line)?,
+                next_f64(&mut tokens, line)?,
+            ];
+            expect(&mut tokens, "projection", line)?;
+            let projection = [
+                next_f64(&mut tokens, line)?,
+                next_f64(&mut tokens, line)?,
+                next_f64(&mut tokens, line)?,
+            ];
+            expect(&mut tokens, "x", line)?;
+            let x_direction = [
+                next_f64(&mut tokens, line)?,
+                next_f64(&mut tokens, line)?,
+                next_f64(&mut tokens, line)?,
+            ];
+            NodeKind::OnWorkplane {
+                support,
+                child,
+                attachment: WorkplaneAttachment {
+                    surface,
+                    anchor,
+                    projection,
+                    x_direction,
+                },
+            }
+        }
         "plane_cut" => {
             expect(&mut tokens, "child", line)?;
             let child = NodeId(next_u32(&mut tokens, line)?);
@@ -1486,14 +1568,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 32\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 33\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 32\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 33\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

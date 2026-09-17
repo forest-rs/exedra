@@ -23,9 +23,10 @@ second clipping path. It constructs and discards the far half; a future direct
 emitter can remove that cost while preserving this public contract.
 
 Walls and the start cap keep ordinary extrusion regions and provenance. The end
-cap uses `REGION_CAP_END` with `PlaneCutCap` provenance, section-frame UVs, and
+cap uses `REGION_CAP_END` with `CapEnd` provenance (since schema 33), section-frame UVs, and
 sharp rims. Assembly consumers bind materials by these regions. The result also
 returns the terminating section and its measurements. Mesh geometry follows the
 sampled profile; no analytic-surface or global self-intersection certificate is
-claimed. Arbitrary target bodies and recipe-level termination remain separate
-extensions.
+claimed. Recipe-level termination is provided by `NodeKind::ExtrudeToPlane`;
+arbitrary target bodies remain a separate extension. Semantic cap selection and
+the schema-33 migration are specified in [ADR 0014](adr-0014-semantic-attachments.md).

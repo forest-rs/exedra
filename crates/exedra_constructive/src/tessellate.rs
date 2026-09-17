@@ -46,6 +46,8 @@ pub struct EvalPolicy {
     /// Accuracy and per-body work budgets for retained plane operations, in
     /// operation-local units before ancestor transforms.
     pub section: crate::section::SectionPolicy,
+    /// Local-coordinate workplane validation and budgets for retained attachments.
+    pub workplane: crate::workplane::WorkplanePolicy,
     /// Threshold on `|sin(turn angle)|` above which a profile corner
     /// authors a sharp lateral edge. Tangent-continuous junctions (arcs
     /// meeting lines smoothly) fall below any sensible threshold and stay
@@ -99,6 +101,7 @@ impl Default for EvalPolicy {
             sweep_path: crate::path::PathDiscretizePolicy::default(),
             loft: crate::loft::LoftSamplingPolicy::default(),
             section: crate::section::SectionPolicy::default(),
+            workplane: crate::workplane::WorkplanePolicy::default(),
             sharp_sin_threshold: 0.1,
             planar_face_refinement: None,
             cap_refinement: None,
@@ -296,6 +299,15 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TessellateError {
+    /// A retained workplane attachment could not resolve its surface or frame.
+    Attachment(crate::workplane::WorkplaneError),
+    /// Support evaluation contained a refusal; partial geometry is not attached to.
+    IncompleteAttachmentSupport,
+    /// An attachment requires a unique support body.
+    AttachmentSupportCount {
+        /// Number of completely evaluated support bodies found.
+        actual: u32,
+    },
     /// A retained plane cut failed its checked mesh operation.
     PlaneCut(crate::section::SectionError),
     /// The cut's child was only partially evaluated; no partial cut is emitted.
@@ -396,6 +408,14 @@ pub enum TessellateError {
 impl core::fmt::Display for TessellateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Attachment(error) => write!(f, "workplane attachment failed: {error}"),
+            Self::IncompleteAttachmentSupport => {
+                write!(f, "workplane attachment support is incomplete")
+            }
+            Self::AttachmentSupportCount { actual } => write!(
+                f,
+                "workplane attachment requires one support body, found {actual}"
+            ),
             Self::PlaneCut(e) => write!(f, "plane cut failed: {e}"),
             Self::IncompletePlaneCut => {
                 write!(f, "plane cut requires a completely evaluated child")

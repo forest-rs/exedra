@@ -33,7 +33,9 @@ use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
 mod evaluated;
 mod snapshot;
 use evaluated::EvaluatedPart;
-pub use evaluated::{EvaluationSnapshot, SnapshotBody, SnapshotWorkplane, StaleSelection};
+pub use evaluated::{
+    BodyLookupError, EvaluationSnapshot, SnapshotBody, SnapshotWorkplane, StaleSelection,
+};
 pub use snapshot::CompilationMismatch;
 
 /// The single invalidation channel this layer uses: part content.

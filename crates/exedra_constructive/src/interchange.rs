@@ -205,6 +205,15 @@ pub enum EdgeBoundariesDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeKindDto {
+    /// Places a child on a freshly resolved semantic support workplane.
+    OnWorkplane {
+        /// Unique support subtree node.
+        support: u32,
+        /// Child in workplane-local coordinates.
+        child: u32,
+        /// Retained surface and authored projection/roll.
+        attachment: WorkplaneAttachmentDto,
+    },
     /// Retain one capped half of every closed child body.
     PlaneCut {
         /// Child node index.
@@ -612,6 +621,15 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
 
 fn kind_dto(kind: &NodeKind) -> NodeKindDto {
     match kind {
+        NodeKind::OnWorkplane {
+            support,
+            child,
+            attachment,
+        } => NodeKindDto::OnWorkplane {
+            support: support.0,
+            child: child.0,
+            attachment: (*attachment).into(),
+        },
         NodeKind::PlaneCut {
             child,
             plane,
@@ -891,6 +909,15 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
 
 fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
     Ok(match dto {
+        NodeKindDto::OnWorkplane {
+            support,
+            child,
+            attachment,
+        } => NodeKind::OnWorkplane {
+            support: NodeId(*support),
+            child: NodeId(*child),
+            attachment: (*attachment).into(),
+        },
         NodeKindDto::PlaneCut {
             child,
             plane,
@@ -1202,6 +1229,78 @@ fn path_segment_value(segment: &PathSegmentDto) -> crate::path::PathSegment3 {
             control2: *control2,
             to: *to,
         },
+    }
+}
+
+/// Persistent surface intent; never a transient face index.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceSelectorDto {
+    /// Authored start cap.
+    StartCap,
+    /// Authored terminal cap.
+    EndCap,
+    /// Unique geometric region.
+    Region {
+        /// Authored region number.
+        region: u32,
+    },
+    /// Region qualified by its producing Boolean operand.
+    OperandRegion {
+        /// Operand index in that Boolean.
+        operand: u16,
+        /// Authored region number.
+        region: u32,
+    },
+}
+
+/// An attachment's persistent surface and authored body-local frame controls.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct WorkplaneAttachmentDto {
+    /// Surface to resolve afresh.
+    pub surface: SurfaceSelectorDto,
+    /// Point on the infinite projection line.
+    pub anchor: [f64; 3],
+    /// Projection line direction.
+    pub projection: [f64; 3],
+    /// Preferred in-plane X direction.
+    pub x_direction: [f64; 3],
+}
+impl From<crate::workplane::WorkplaneAttachment> for WorkplaneAttachmentDto {
+    fn from(value: crate::workplane::WorkplaneAttachment) -> Self {
+        use crate::workplane::SurfaceSelector;
+        Self {
+            surface: match value.surface {
+                SurfaceSelector::StartCap => SurfaceSelectorDto::StartCap,
+                SurfaceSelector::EndCap => SurfaceSelectorDto::EndCap,
+                SurfaceSelector::Region(region) => SurfaceSelectorDto::Region { region },
+                SurfaceSelector::OperandRegion(value) => SurfaceSelectorDto::OperandRegion {
+                    operand: value.operand,
+                    region: value.region,
+                },
+            },
+            anchor: value.anchor,
+            projection: value.projection,
+            x_direction: value.x_direction,
+        }
+    }
+}
+impl From<WorkplaneAttachmentDto> for crate::workplane::WorkplaneAttachment {
+    fn from(value: WorkplaneAttachmentDto) -> Self {
+        use crate::workplane::SurfaceSelector;
+        Self {
+            surface: match value.surface {
+                SurfaceSelectorDto::StartCap => SurfaceSelector::StartCap,
+                SurfaceSelectorDto::EndCap => SurfaceSelector::EndCap,
+                SurfaceSelectorDto::Region { region } => SurfaceSelector::Region(region),
+                SurfaceSelectorDto::OperandRegion { operand, region } => {
+                    SurfaceSelector::OperandRegion(OperandRegion { operand, region })
+                }
+            },
+            anchor: value.anchor,
+            projection: value.projection,
+            x_direction: value.x_direction,
+        }
     }
 }
 

@@ -3,8 +3,9 @@
 
 //! Authored coordinate frames on evaluated planar face patches.
 //!
-//! This module owns planar selection and frame validation. It does not choose
-//! an origin, infer an in-plane axis, or track a face across recipe reevaluation.
+//! This module owns planar selection, authored frame validation, and semantic
+//! attachment resolution. Origins and roll are authored explicitly; attachments
+//! re-resolve surface intent instead of tracking transient faces across edits.
 //! Frames are snapshots in body coordinates, pinned to one logical mesh revision.
 
 use crate::edge_finish::OperandRegion;
@@ -20,11 +21,92 @@ use exedra_mesh::{FaceId, FaceTriangulation, Mesh, MeshRevision, attr};
 pub enum WorkplaneSelection {
     /// One live face of the source mesh. IDs are scoped to that logical mesh.
     Face(FaceId),
+    /// Faces retaining the authored start-cap feature. Missing provenance is
+    /// an empty selection, never a guess based on position or region number.
+    StartCap,
+    /// Faces retaining the authored terminal-cap feature, including an
+    /// extrusion terminated by a plane.
+    EndCap,
     /// All faces carrying this region. They must be edge-connected and must
     /// not mix Boolean operands with reused region numbers.
     Region(u32),
     /// A region restricted to one producing Boolean operand.
     OperandRegion(OperandRegion),
+}
+
+/// A surface description that can be retained across recipe evaluations.
+///
+/// This value contains no mesh IDs. Resolve it afresh after edits. Caps follow
+/// feature provenance, not extremal positions; Boolean operations may replace
+/// that provenance, in which case use an explicitly qualified operand region.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SurfaceSelector {
+    /// The source operation's start cap.
+    StartCap,
+    /// The source operation's terminal cap.
+    EndCap,
+    /// An authored geometric region, which must resolve unambiguously.
+    Region(u32),
+    /// A region belonging to one operand of the producing Boolean operation.
+    OperandRegion(OperandRegion),
+}
+impl SurfaceSelector {
+    /// Converts persistent surface intent to an evaluated workplane selection.
+    #[must_use]
+    pub const fn selection(self) -> WorkplaneSelection {
+        match self {
+            Self::StartCap => WorkplaneSelection::StartCap,
+            Self::EndCap => WorkplaneSelection::EndCap,
+            Self::Region(region) => WorkplaneSelection::Region(region),
+            Self::OperandRegion(region) => WorkplaneSelection::OperandRegion(region),
+        }
+    }
+}
+
+/// Authored attachment intent, independently resolvable on each new body.
+///
+/// The origin is the intersection of the selected plane with the infinite line
+/// `anchor + t * projection`. Both signs of `t` are allowed. All vectors use
+/// body coordinates. The projected X direction controls roll; no axis is guessed.
+/// The origin may lie outside the patch: use a planar clearance query to check
+/// footprint containment. Resolution never matches a previous transient face ID.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct WorkplaneAttachment {
+    /// Surface to resolve uniquely on each evaluation.
+    pub surface: SurfaceSelector,
+    /// Point on the authored projection line.
+    pub anchor: [f64; 3],
+    /// Direction of that line, independent of vector magnitude.
+    pub projection: [f64; 3],
+    /// Preferred workplane X direction, projected into the selected plane.
+    pub x_direction: [f64; 3],
+}
+impl WorkplaneAttachment {
+    /// Resolves this intent against current topology and feature provenance.
+    ///
+    /// # Errors
+    /// Rejects missing, ambiguous, nonplanar or stale surfaces, invalid authored
+    /// vectors, near-parallel projection, and exhausted work budgets.
+    pub fn resolve(
+        &self,
+        body: &TessellatedBody,
+        policy: &WorkplanePolicy,
+    ) -> Result<Workplane, WorkplaneError> {
+        build_workplane(
+            body,
+            self.surface.selection(),
+            self.anchor,
+            Some(self.projection),
+            self.x_direction,
+            policy,
+        )
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        self.anchor.iter().all(|value| value.is_finite())
+            && normalize(self.projection).is_some()
+            && normalize(self.x_direction).is_some()
+    }
 }
 
 /// Accuracy and selected-patch work limits.
@@ -36,6 +118,9 @@ pub struct WorkplanePolicy {
     /// Minimum sine of the angle between authored X and the face normal.
     /// Must lie in `(0, 1]`; directions closer to parallel are refused.
     pub min_axis_sine: f64,
+    /// Minimum absolute cosine between an attachment projection and the face
+    /// normal, in `(0, 1]`. Smaller values admit longer, less stable projections.
+    pub min_projection_cos: f64,
     /// Maximum selected faces. Region resolution scans the body's face list.
     pub max_faces: u32,
     /// Maximum selected face corners, including shared vertices repeatedly.
@@ -46,6 +131,7 @@ impl Default for WorkplanePolicy {
         Self {
             distance_tolerance: 1e-6,
             min_axis_sine: 1e-6,
+            min_projection_cos: 1e-6,
             max_faces: 16384,
             max_corners: 65536,
         }
@@ -74,6 +160,8 @@ pub enum WorkplaneError {
     OriginOffPlane,
     /// Authored X is too nearly parallel to the face normal.
     ParallelAxis,
+    /// Attachment projection is too nearly parallel to the selected plane.
+    ParallelProjection,
     /// The selected patch exceeds a work limit.
     BudgetExceeded,
 }
@@ -88,6 +176,7 @@ impl core::fmt::Display for WorkplaneError {
             Self::NonPlanar => "workplane selection is not planar within tolerance",
             Self::InvalidGeometry => "workplane geometry is degenerate or inconsistently oriented",
             Self::OriginOffPlane => "workplane origin is not on the selected plane",
+            Self::ParallelProjection => "attachment projection is too parallel to the surface",
             Self::ParallelAxis => "workplane X direction is too parallel to the normal",
             Self::BudgetExceeded => "workplane selection exceeds its work budget",
         })
@@ -193,12 +282,26 @@ pub fn face_workplane(
     x_direction: [f64; 3],
     policy: &WorkplanePolicy,
 ) -> Result<Workplane, WorkplaneError> {
+    build_workplane(body, selection, origin, None, x_direction, policy)
+}
+
+fn build_workplane(
+    body: &TessellatedBody,
+    selection: WorkplaneSelection,
+    origin: [f64; 3],
+    projection: Option<[f64; 3]>,
+    x_direction: [f64; 3],
+    policy: &WorkplanePolicy,
+) -> Result<Workplane, WorkplaneError> {
     use WorkplaneError as Error;
     if !policy.distance_tolerance.is_finite()
         || policy.distance_tolerance <= 0.0
         || !policy.min_axis_sine.is_finite()
         || policy.min_axis_sine <= 0.0
         || policy.min_axis_sine > 1.0
+        || !policy.min_projection_cos.is_finite()
+        || policy.min_projection_cos <= 0.0
+        || policy.min_projection_cos > 1.0
         || policy.max_faces == 0
         || policy.max_corners == 0
         || origin.iter().any(|v| !v.is_finite())
@@ -213,6 +316,10 @@ pub fn face_workplane(
     let regions = mesh.attrs().dense(attr::FACE_REGION);
     let matches = |face: FaceId| match selection {
         WorkplaneSelection::Face(wanted) => face == wanted,
+        WorkplaneSelection::StartCap => {
+            body.source_map.face_feature(face) == Some(Feature::CapStart)
+        }
+        WorkplaneSelection::EndCap => body.source_map.face_feature(face) == Some(Feature::CapEnd),
         WorkplaneSelection::Region(region) => {
             regions.and_then(|r| r.get(face.into())) == Some(&region)
         }
@@ -328,6 +435,21 @@ pub fn face_workplane(
     if max_plane_deviation > policy.distance_tolerance {
         return Err(Error::NonPlanar);
     }
+    let origin = if let Some(direction) = projection {
+        let direction = normalize(direction).ok_or(Error::InvalidInput)?;
+        let denominator = dot(z, direction);
+        if denominator.abs() < policy.min_projection_cos {
+            return Err(Error::ParallelProjection);
+        }
+        let distance = dot(z, sub(reference, origin)) / denominator;
+        let projected = add(origin, scale(direction, distance));
+        if projected.iter().any(|value| !value.is_finite()) {
+            return Err(Error::InvalidGeometry);
+        }
+        projected
+    } else {
+        origin
+    };
     let offset = dot(z, sub(origin, reference));
     if !offset.is_finite() {
         return Err(Error::InvalidInput);

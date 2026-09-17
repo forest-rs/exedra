@@ -76,6 +76,7 @@ pub use kurbo;
 
 pub mod builders;
 pub mod cache;
+pub mod clearance;
 pub mod discretize;
 #[cfg(test)]
 mod door_boolean_tests;
@@ -126,12 +127,16 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 32 adds retained plane operations and their evaluation policy.
+/// Schema 33 adds retained workplane attachments and semantic terminal caps.
+/// Extrusion-to-plane end faces now carry `Feature::CapEnd`; standalone plane
+/// cuts continue to carry `Feature::PlaneCutCap`. Update feature-based queries.
+/// Explicit `WorkplanePolicy` literals must supply `min_projection_cos`;
+/// explicit `EvalPolicy` literals gain `workplane`.
 /// Existing builder calls are unchanged; exhaustive policy literals should
 /// start from `EvalPolicy::default()` and set fields explicitly.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped IR.
 /// JSON recipe nodes evolve additively without changing the format version.
-pub const EVAL_SCHEMA_VERSION: u32 = 32;
+pub const EVAL_SCHEMA_VERSION: u32 = 33;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
@@ -141,3 +146,6 @@ mod rounded_post_tests;
 
 #[cfg(test)]
 mod retained_plane_tests;
+
+#[cfg(test)]
+mod attachment_tests;

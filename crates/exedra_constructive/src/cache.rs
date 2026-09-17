@@ -59,6 +59,11 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.section.max_triangles.to_le_bytes());
     bytes.extend_from_slice(&policy.section.max_section_vertices.to_le_bytes());
     bytes.extend_from_slice(&policy.section.max_pair_checks.to_le_bytes());
+    bytes.extend_from_slice(&policy.workplane.distance_tolerance.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&policy.workplane.min_axis_sine.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&policy.workplane.min_projection_cos.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&policy.workplane.max_faces.to_le_bytes());
+    bytes.extend_from_slice(&policy.workplane.max_corners.to_le_bytes());
     push_refinement_fingerprint(&mut bytes, policy.planar_face_refinement, true);
     // Cap refinement is always interior-only. Its caller-supplied boundary
     // policy cannot affect geometry and therefore must not split cache keys.

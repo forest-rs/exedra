@@ -431,6 +431,20 @@ pub enum PlaneSide {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum NodeKind {
+    /// Places a child in an authored workplane resolved on one complete support
+    /// body. The support is evaluated in this node's local coordinates and is
+    /// not emitted by this node. Child-local XY lies on the resolved surface;
+    /// +Z follows support winding. Ancestor transforms apply to both the frame
+    /// and attached geometry afterward. Use a group or Boolean to include the
+    /// support itself. Missing/ambiguous surfaces never reuse an older frame.
+    OnWorkplane {
+        /// Subtree that must produce exactly one completely evaluated body.
+        support: NodeId,
+        /// Subtree authored in workplane coordinates.
+        child: NodeId,
+        /// Persistent surface, projection line, and roll intent.
+        attachment: crate::workplane::WorkplaneAttachment,
+    },
     /// Capped cut in this node's input coordinates, after child transforms.
     /// Ancestor transforms place the completed cut; they do not move the plane
     /// relative to the child. Each completely evaluated closed child body is
@@ -1204,6 +1218,20 @@ impl RecipeBuilder {
 
     fn validate_kind(&self, kind: &NodeKind) -> Result<(), RecipeError> {
         match kind {
+            NodeKind::OnWorkplane {
+                support,
+                child,
+                attachment,
+            } => {
+                self.check_node(*support)?;
+                self.check_node(*child)?;
+                if !attachment.valid() {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "workplane attachment",
+                    });
+                }
+                Ok(())
+            }
             NodeKind::PlaneCut {
                 child, plane, cap, ..
             } => {
@@ -1761,6 +1789,36 @@ fn node_canon_bytes(
         put_u128(out, node_fingerprints[id.0 as usize].0);
     };
     match &node.kind {
+        NodeKind::OnWorkplane {
+            support,
+            child: c,
+            attachment,
+        } => {
+            out.push(17);
+            child(out, *support);
+            child(out, *c);
+            match attachment.surface {
+                crate::workplane::SurfaceSelector::StartCap => out.push(0),
+                crate::workplane::SurfaceSelector::EndCap => out.push(1),
+                crate::workplane::SurfaceSelector::Region(region) => {
+                    out.push(2);
+                    put_u32(out, region);
+                }
+                crate::workplane::SurfaceSelector::OperandRegion(region) => {
+                    out.push(3);
+                    put_u32(out, u32::from(region.operand));
+                    put_u32(out, region.region);
+                }
+            }
+            for value in attachment
+                .anchor
+                .into_iter()
+                .chain(attachment.projection)
+                .chain(attachment.x_direction)
+            {
+                put_f64(out, value);
+            }
+        }
         NodeKind::PlaneCut {
             child: c,
             plane,
@@ -2669,7 +2727,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x36593db4e9a4620ed4ac7f508172d437,
+            0x32161ea47b59023309a06a40c1f36528,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

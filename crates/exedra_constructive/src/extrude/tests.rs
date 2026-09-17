@@ -57,7 +57,7 @@ fn run(profile: &Profile2, placement: &Placement3, plane: Plane3) -> PlaneExtrus
                 assert_eq!(regions.get(face.into()), Some(&REGION_CAP_START));
                 start += 1;
             }
-            Feature::PlaneCutCap => {
+            Feature::CapEnd => {
                 end += 1;
                 assert_eq!(regions.get(face.into()), Some(&REGION_CAP_END));
                 for corner in result.body.mesh.face_loop(face) {
@@ -92,7 +92,7 @@ fn oblique_rectangle_has_expected_volume_and_cap_orientation() {
     // rect spans x=0..2: mean height is 2.25.
     assert!((volume(&result.body) - 4.5).abs() < 1e-6);
     for face in result.body.mesh.faces() {
-        if result.body.source_map.face_feature(face) != Some(Feature::PlaneCutCap) {
+        if result.body.source_map.face_feature(face) != Some(Feature::CapEnd) {
             continue;
         }
         let p: alloc::vec::Vec<_> = result
