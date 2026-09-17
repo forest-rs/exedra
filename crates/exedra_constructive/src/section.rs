@@ -118,6 +118,38 @@ pub struct PlaneSection {
     /// Work and numerical realization evidence, not a self-intersection certificate.
     pub stats: SectionStats,
 }
+impl PlaneSection {
+    /// Measures all filled regions in this section's local XY frame.
+    ///
+    /// Holes subtract area and add perimeter; disconnected regions contribute
+    /// together. An empty section has zero area/perimeter and no centroid/bounds.
+    /// Work is linear in the stored boundary edges without allocation or renewed
+    /// tessellation. The section policy bounds generated boundaries.
+    ///
+    /// Measures the original intersection coordinates stored here, before any
+    /// f32 narrowing of a split body's cap. This is not an analytic measurement.
+    ///
+    /// Because section fields are public, callers editing them must preserve
+    /// simple, nonoverlapping regions and correctly nested holes. This query
+    /// checks finite arithmetic, degeneracy and winding, not crossings/nesting.
+    /// Source features and the frame remain on this section.
+    ///
+    /// # Errors
+    /// Rejects invalid oriented loops, nonpositive net area for nonempty input,
+    /// and unrepresentable arithmetic.
+    pub fn measure(
+        &self,
+    ) -> Result<crate::measure::PlanarMeasurements, crate::measure::MeasurementError> {
+        crate::measure::measure(self.regions.iter().flat_map(|region| {
+            core::iter::once((region.outer.points.as_slice(), false)).chain(
+                region
+                    .holes
+                    .iter()
+                    .map(|hole| (hole.points.as_slice(), true)),
+            )
+        }))
+    }
+}
 /// Both closed sides of a plane cut, sharing the same realized section vertices.
 #[derive(Debug)]
 pub struct PlaneSplit {
