@@ -216,6 +216,26 @@ impl CircleClearance {
 }
 
 impl PlanarPatch {
+    /// Measures material area, total boundary length, centroid, and XY bounds.
+    ///
+    /// Uses this patch's projected polygonal boundaries and local frame. Holes
+    /// subtract area and add perimeter. Work is linear in boundary edges, with
+    /// no allocation, topology traversal, or tessellation. The extraction policy
+    /// already bounds the number of edges. Source evidence remains on this patch.
+    ///
+    /// # Errors
+    /// Returns a numeric-limit error if the measurement is not representable.
+    pub fn measure(
+        &self,
+    ) -> Result<crate::measure::PlanarMeasurements, crate::measure::MeasurementError> {
+        crate::measure::measure(
+            self.loops
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.points(), i != 0)),
+        )
+    }
+
     /// Extracts a boundary from a checked workplane and its original body.
     /// Callers must pair the workplane with that logical body: revision counters
     /// alone cannot distinguish unrelated meshes. Assembly snapshot workplanes

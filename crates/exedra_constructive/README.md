@@ -365,3 +365,17 @@ Exhaustive `NodeKindDto` matches must handle its new `EdgeFinish` variant.
 ## License
 
 Apache-2.0 OR MIT
+
+### Planar measurements
+
+`PlanarPatch::measure()` and `PlaneSection::measure()` report material area,
+total perimeter (including holes), area centroid, local XY bounds, and edges
+examined. Holes subtract area; disconnected section regions contribute together.
+An empty section has zero area/perimeter and no centroid or bounds. A centroid
+can lie in a hole or outside a concave region.
+
+Queries reuse stored polygonal boundaries without allocation or retessellation.
+Lengths use body units and areas use squared body units. Coordinates use the
+owner's frame; retain the patch or section for that frame and source evidence.
+Results describe evaluated polygons, not analytic curved-surface measurements.
+See [the measurement contract](docs/adr-0017-planar-measurements.md).

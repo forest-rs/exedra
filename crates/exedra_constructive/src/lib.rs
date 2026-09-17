@@ -93,6 +93,7 @@ pub mod ir;
 pub mod loft;
 #[cfg(test)]
 mod material_tests;
+pub mod measure;
 pub mod offset;
 #[cfg(test)]
 mod panel_boolean_tests;
