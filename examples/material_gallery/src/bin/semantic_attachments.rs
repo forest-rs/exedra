@@ -252,7 +252,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
             support
                 .resolve_attachment(&missing, &policy.evaluation.workplane)
-                .unwrap_err(),
+                .unwrap_err()
+                .kind,
             WorkplaneError::EmptySelection,
             "missing surfaces must not reuse the successful attachment"
         );

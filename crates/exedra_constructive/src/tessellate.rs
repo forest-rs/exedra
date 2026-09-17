@@ -300,7 +300,7 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[non_exhaustive]
 pub enum TessellateError {
     /// A retained workplane attachment could not resolve its surface or frame.
-    Attachment(crate::workplane::WorkplaneError),
+    Attachment(crate::workplane::WorkplaneFailure),
     /// Support evaluation contained a refusal; partial geometry is not attached to.
     IncompleteAttachmentSupport,
     /// An attachment requires a unique support body.

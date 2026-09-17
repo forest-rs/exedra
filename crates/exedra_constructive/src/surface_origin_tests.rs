@@ -187,7 +187,8 @@ fn removed_split_and_duplicate_targets_fail_without_fallback() {
             assert_eq!(
                 attachment()
                     .resolve(&result.bodies[0].body, &WorkplanePolicy::default())
-                    .unwrap_err(),
+                    .unwrap_err()
+                    .kind,
                 expected
             );
             let error = evaluate_with_cache(
@@ -196,7 +197,9 @@ fn removed_split_and_duplicate_targets_fail_without_fallback() {
                 &mut cache,
             )
             .unwrap_err();
-            assert_eq!(error.error, TessellateError::Attachment(expected));
+            assert!(
+                matches!(error.error, TessellateError::Attachment(failure) if failure.kind == expected)
+            );
         }
     }
 }
@@ -376,7 +379,8 @@ fn naming_context_changes_recipe_identity_without_invalidating_subtree_geometry(
     assert_eq!(
         attachment()
             .resolve(&result.bodies[0].body, &WorkplanePolicy::default())
-            .unwrap_err(),
+            .unwrap_err()
+            .kind,
         WorkplaneError::AmbiguousSelection
     );
     let text = crate::text::dump_recipe(&duplicate);

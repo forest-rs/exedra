@@ -34,7 +34,8 @@ mod evaluated;
 mod snapshot;
 use evaluated::EvaluatedPart;
 pub use evaluated::{
-    BodyLookupError, EvaluationSnapshot, SnapshotBody, SnapshotWorkplane, StaleSelection,
+    BodyLookupError, EvaluationSnapshot, SnapshotBody, SnapshotSurfaceInventory, SnapshotWorkplane,
+    StaleSelection,
 };
 pub use snapshot::CompilationMismatch;
 
