@@ -57,7 +57,7 @@ pub struct SourceMapStats {
 /// Original generating surface, independent of the latest Boolean operand.
 /// Placement and Boolean face splits preserve this record. A difference may
 /// reverse its winding: the feature describes ancestry, not the current normal.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SurfaceOrigin {
     /// Feature on the generating body.
     pub feature: Feature,

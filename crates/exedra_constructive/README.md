@@ -126,6 +126,39 @@ text. Workplane selectors and attachments now own optional source labels and
 are `Clone` rather than `Copy`; clone them when reusing owned values. Existing
 operand-qualified regions keep their immediate-Boolean meaning.
 
+## Inspecting surfaces and diagnosing attachments
+
+`workplane::inspect_surfaces` inventories surviving cap and region selectors.
+Each entry includes original source labels and roles, unknown-ancestry counts,
+connected patches with snapshot-local face IDs, measured planes, and a selection
+status. It does not pick an anchor, roll, or replacement target. Several selectors
+can cover the same faces. This inventory covers semantic cap/region selections;
+individual transient face queries remain available through `face_workplane`.
+
+A successful entry means one geometrically valid planar patch under the recorded
+inventory policy. Authored frame inputs and resolution budgets still need checking.
+Absent selectors are not evidence of why a surface is missing: it may have been
+removed, never authored, or lost its provenance. Nonplanar or ambiguous entries
+remain inspectable, with evidence; exhausted global budgets fail the whole query.
+`SurfaceInventoryPolicy` limits scanned faces, corner visits across overlapping
+selectors, and output selector count. The result retains effective policy and work
+statistics.
+
+`WorkplaneAttachment::resolve` and `face_workplane` now return `WorkplaneFailure`.
+Its `selection` is the requested selector, `kind` is the existing coarse category,
+and `evidence` distinguishes duplicate source labels, disconnected patches, mixed
+Boolean operands, measured nonplanarity, and the exact exhausted resource/limit.
+Other categories carry `WorkplaneEvidence::None`. Face IDs in evidence refer to the
+queried body; use assembly snapshot ownership before applying them elsewhere.
+Retained `OnWorkplane` errors carry the same failure in `TessellateError::Attachment`.
+
+Migration: evaluation schema 35; regenerate evaluation caches and schema-stamped
+text. Match `failure.kind` for existing error-category handling and inspect
+`failure.evidence` for recovery. Workplane corner limits now count both connectivity
+and geometric analysis, visiting every selected corner twice on success. Increase
+explicitly tuned limits accordingly. No recipe node or selector encoding changes.
+See [ADR 0016](docs/adr-0016-surface-inspection.md).
+
 ## Materials through Booleans
 
 Slots are opaque recipe-local IDs. CSG preserves the slot of each surviving

@@ -61,7 +61,8 @@ fn no_implicit_origin_or_axis_fallback() {
             [1.0, 0.0, 0.0],
             &WorkplanePolicy::default()
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::OriginOffPlane
     );
     assert_eq!(
@@ -72,7 +73,8 @@ fn no_implicit_origin_or_axis_fallback() {
             [0.0, 0.0, 1.0],
             &WorkplanePolicy::default()
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::ParallelAxis
     );
     let p = face_workplane(
@@ -159,7 +161,7 @@ fn nonplanar_degenerate_and_disconnected_selections_are_refused() {
             &WorkplanePolicy::default(),
         )
     };
-    assert_eq!(make(&bent).unwrap_err(), WorkplaneError::NonPlanar);
+    assert_eq!(make(&bent).unwrap_err().kind, WorkplaneError::NonPlanar);
     let separate = patch(
         &[
             [0.0, 0.0, 0.0],
@@ -172,13 +174,13 @@ fn nonplanar_degenerate_and_disconnected_selections_are_refused() {
         &[&[0, 1, 2], &[3, 4, 5]],
     );
     assert_eq!(
-        make(&separate).unwrap_err(),
+        make(&separate).unwrap_err().kind,
         WorkplaneError::AmbiguousSelection
     );
     let zero = patch(&[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], &[&[0, 1, 2]]);
     assert!(matches!(
         make(&zero),
-        Err(WorkplaneError::InvalidFace | WorkplaneError::InvalidGeometry)
+        Err(failure) if matches!(failure.kind, WorkplaneError::InvalidFace | WorkplaneError::InvalidGeometry)
     ));
 }
 
@@ -199,7 +201,8 @@ fn revisions_and_budgets_are_checked() {
             [1.0, 0.0, 0.0],
             &WorkplanePolicy::default()
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::StaleSource
     );
     let body = block();
@@ -215,7 +218,8 @@ fn revisions_and_budgets_are_checked() {
             [1.0, 0.0, 0.0],
             &limited
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::BudgetExceeded
     );
     assert_eq!(
@@ -226,7 +230,8 @@ fn revisions_and_budgets_are_checked() {
             [1.0, 0.0, 0.0],
             &WorkplanePolicy::default()
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::InvalidFace
     );
 }
@@ -260,7 +265,7 @@ fn operand_qualified_regions_resolve_reused_region_numbers() {
         )
     };
     assert_eq!(
-        make(WorkplaneSelection::Region(0)).unwrap_err(),
+        make(WorkplaneSelection::Region(0)).unwrap_err().kind,
         WorkplaneError::AmbiguousSelection
     );
     for operand in [0, 1] {
@@ -325,7 +330,8 @@ fn invalid_authored_inputs_empty_selection_and_face_budget() {
             [1.0, 0.0, 0.0],
             &WorkplanePolicy::default()
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::EmptySelection
     );
     for x in [[0.0; 3], [f64::NAN, 0.0, 0.0], [f64::INFINITY, 0.0, 0.0]] {
@@ -336,7 +342,8 @@ fn invalid_authored_inputs_empty_selection_and_face_budget() {
                 x,
                 &WorkplanePolicy::default()
             )
-            .unwrap_err(),
+            .unwrap_err()
+            .kind,
             WorkplaneError::InvalidInput
         );
     }
@@ -351,7 +358,8 @@ fn invalid_authored_inputs_empty_selection_and_face_budget() {
             [1.0, 0.0, 0.0],
             &invalid
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::InvalidInput
     );
     let triangles = patch(
@@ -375,7 +383,8 @@ fn invalid_authored_inputs_empty_selection_and_face_budget() {
             [1.0, 0.0, 0.0],
             &limited
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::BudgetExceeded
     );
 }
@@ -398,7 +407,230 @@ fn parallel_axis_cannot_be_created_from_projection_roundoff() {
             [-1.0, -5.0, 1.0],
             &policy
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .kind,
         WorkplaneError::ParallelAxis
+    );
+}
+
+#[test]
+fn inspection_and_resolution_share_planarity_evidence() {
+    let body = patch(
+        &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.1],
+            [0.0, 1.0, 0.0],
+        ],
+        &[&[0, 1, 2, 3]],
+    );
+    let failure = face_workplane(
+        &body,
+        WorkplaneSelection::Region(0),
+        [0.0; 3],
+        [1.0, 0.0, 0.0],
+        &WorkplanePolicy::default(),
+    )
+    .unwrap_err();
+    assert_eq!(failure.selection, WorkplaneSelection::Region(0));
+    assert!(
+        matches!(failure.evidence, WorkplaneEvidence::PlaneDeviation { measured, tolerance } if measured > tolerance && tolerance == 1e-6)
+    );
+    let inventory = inspect_surfaces(&body, &SurfaceInventoryPolicy::default()).unwrap();
+    let entry = inventory
+        .entries()
+        .iter()
+        .find(|entry| entry.selector == SurfaceSelector::Region(0))
+        .unwrap();
+    assert_eq!(entry.status, Err(failure.clone()));
+    assert_eq!(entry.patches[0].plane, Err(failure));
+    assert_eq!(entry.origins[0].feature, Feature::Imported);
+    assert_eq!(inventory.stats().corners_examined, 8);
+}
+
+#[test]
+fn detailed_budgets_count_completed_work_and_never_return_partial_inventory() {
+    let body = block();
+    let select = WorkplaneSelection::EndCap;
+    let failure = face_workplane(
+        &body,
+        select.clone(),
+        [0.0, 0.0, 2.0],
+        [1.0, 0.0, 0.0],
+        &WorkplanePolicy {
+            max_corners: 3,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(failure.selection, select);
+    assert_eq!(
+        failure.evidence,
+        WorkplaneEvidence::Budget {
+            resource: SurfaceResource::Corners,
+            completed: 3,
+            limit: 3
+        }
+    );
+    for (policy, resource, limit) in [
+        (
+            SurfaceInventoryPolicy {
+                max_faces: 1,
+                ..Default::default()
+            },
+            SurfaceResource::ScannedFaces,
+            1,
+        ),
+        (
+            SurfaceInventoryPolicy {
+                max_selectors: 1,
+                ..Default::default()
+            },
+            SurfaceResource::Selectors,
+            1,
+        ),
+        (
+            SurfaceInventoryPolicy {
+                max_corners: 3,
+                ..Default::default()
+            },
+            SurfaceResource::Corners,
+            3,
+        ),
+    ] {
+        assert_eq!(
+            inspect_surfaces(&body, &policy).unwrap_err(),
+            SurfaceInventoryError::Budget {
+                resource,
+                completed: limit,
+                limit
+            }
+        );
+    }
+}
+
+#[test]
+fn inventory_preserves_disconnected_and_duplicate_label_evidence() {
+    let mut body = patch(
+        &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+        ],
+        &[&[0, 1, 2], &[3, 4, 5]],
+    );
+    body.source_map = crate::source_map::SourceMap::new(
+        &body.mesh,
+        alloc::vec![Feature::CapEnd;2],
+        body.mesh.vertices().map(|_| Feature::Imported).collect(),
+    );
+    body.source_map.bind_source("panel");
+    let attachment = WorkplaneAttachment {
+        surface: SurfaceSelector::SourceEndCap("panel".into()),
+        anchor: [0.0; 3],
+        projection: [0.0, 0.0, 1.0],
+        x_direction: [1.0, 0.0, 0.0],
+    };
+    let failure = attachment
+        .resolve(&body, &WorkplanePolicy::default())
+        .unwrap_err();
+    assert!(
+        matches!(&failure.evidence,WorkplaneEvidence::Disconnected {representatives} if representatives.len()==2)
+    );
+    let inventory = inspect_surfaces(&body, &SurfaceInventoryPolicy::default()).unwrap();
+    let entry = inventory
+        .entries()
+        .iter()
+        .find(|entry| entry.selector == attachment.surface)
+        .unwrap();
+    assert_eq!(entry.status, Err(failure));
+    assert_eq!(entry.patches.len(), 2);
+    assert!(entry.patches.iter().all(|patch| patch.plane.is_ok()));
+    body.source_map.set_ambiguous_sources(&["panel".into()]);
+    let failure = attachment
+        .resolve(&body, &WorkplanePolicy::default())
+        .unwrap_err();
+    assert_eq!(
+        failure.evidence,
+        WorkplaneEvidence::DuplicateSource {
+            source: "panel".into()
+        }
+    );
+    let inventory = inspect_surfaces(&body, &SurfaceInventoryPolicy::default()).unwrap();
+    assert_eq!(
+        inventory
+            .entries()
+            .iter()
+            .find(|entry| entry.selector == attachment.surface)
+            .unwrap()
+            .status,
+        Err(failure)
+    );
+}
+
+#[test]
+fn inventory_reports_mixed_operands_unknown_ancestry_missing_and_stale_separately() {
+    let mut body = patch(
+        &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        &[&[0, 1, 2], &[0, 2, 3]],
+    );
+    body.source_map = crate::source_map::SourceMap::new(
+        &body.mesh,
+        alloc::vec![
+            Feature::BooleanFace { operand: 0 },
+            Feature::BooleanFace { operand: 1 }
+        ],
+        body.mesh.vertices().map(|_| Feature::Imported).collect(),
+    );
+    let inventory = inspect_surfaces(&body, &SurfaceInventoryPolicy::default()).unwrap();
+    let entry = inventory
+        .entries()
+        .iter()
+        .find(|entry| entry.selector == SurfaceSelector::Region(0))
+        .unwrap();
+    assert_eq!(
+        entry.status.as_ref().unwrap_err().evidence,
+        WorkplaneEvidence::MixedOperands {
+            operands: alloc::vec![Some(0), Some(1)]
+        }
+    );
+    assert_eq!(entry.unknown_origin_faces, 2);
+    assert!(entry.origins.is_empty());
+    assert_eq!(inventory.stats().unknown_origin_faces, 2);
+    assert!(
+        inventory
+            .entries()
+            .iter()
+            .filter(|entry| matches!(entry.selector, SurfaceSelector::OperandRegion(_)))
+            .all(|entry| entry.status.is_ok())
+    );
+    let missing = WorkplaneAttachment {
+        surface: SurfaceSelector::SourceEndCap("absent".into()),
+        anchor: [0.0; 3],
+        projection: [0.0, 0.0, 1.0],
+        x_direction: [1.0, 0.0, 0.0],
+    };
+    let failure = missing
+        .resolve(&body, &WorkplanePolicy::default())
+        .unwrap_err();
+    assert_eq!(failure.selection, missing.surface.selection());
+    assert_eq!(failure.kind, WorkplaneError::EmptySelection);
+    let edit = body.mesh.edit();
+    let _: () = edit.finish();
+    assert_eq!(
+        inventory.check(&body.mesh),
+        Err(WorkplaneError::StaleSource)
+    );
+    assert_eq!(
+        inspect_surfaces(&body, &SurfaceInventoryPolicy::default()).unwrap_err(),
+        SurfaceInventoryError::StaleSource
     );
 }

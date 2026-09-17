@@ -81,7 +81,8 @@ pub use compile::assembly_fingerprint;
 pub use compile::{
     BodyLookupError, CompilationMismatch, CompileCounters, CompileError, CompilePolicy,
     CompiledBody, CompiledPart, CompiledParts, EvaluationSnapshot, PartCompiler, PartFingerprint,
-    PolicyFingerprint, RegionRange, SnapshotBody, SnapshotWorkplane, StaleSelection,
+    PolicyFingerprint, RegionRange, SnapshotBody, SnapshotSurfaceInventory, SnapshotWorkplane,
+    StaleSelection,
 };
 pub use exedra_mesh::NormalsSource;
 pub use flatten::{RenderItem, RenderList, ResolvedRegion, compose, flatten};

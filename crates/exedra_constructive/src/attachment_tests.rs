@@ -158,7 +158,9 @@ fn projection_and_missing_surfaces_are_explicit_failures_without_old_frame_fallb
             &mut cache,
         )
         .unwrap_err();
-        assert_eq!(failure.error, TessellateError::Attachment(expected));
+        assert!(
+            matches!(failure.error, TessellateError::Attachment(failure) if failure.kind == expected)
+        );
     }
     let changed = EvalPolicy {
         workplane: crate::workplane::WorkplanePolicy {
@@ -168,15 +170,18 @@ fn projection_and_missing_surfaces_are_explicit_failures_without_old_frame_fallb
         ..policy
     };
     assert_ne!(policy_fingerprint(&policy), policy_fingerprint(&changed));
-    assert_eq!(
+    assert!(matches!(
         evaluate(
             &attached(1.0, 0.2, intent(), Placement3::IDENTITY),
             &changed
         )
         .unwrap_err()
         .error,
-        TessellateError::Attachment(WorkplaneError::BudgetExceeded)
-    );
+        TessellateError::Attachment(crate::workplane::WorkplaneFailure {
+            kind: WorkplaneError::BudgetExceeded,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -284,7 +289,8 @@ fn disconnected_terminal_features_are_rejected_without_picking_the_first_patch()
     assert_eq!(
         intent()
             .resolve(&body, &crate::workplane::WorkplanePolicy::default())
-            .unwrap_err(),
+            .unwrap_err()
+            .kind,
         WorkplaneError::AmbiguousSelection
     );
 }
@@ -323,7 +329,8 @@ fn removed_terminal_cap_is_missing_even_when_a_new_cut_reuses_its_region() {
                 &body.bodies[0].body,
                 &crate::workplane::WorkplanePolicy::default()
             )
-            .unwrap_err(),
+            .unwrap_err()
+            .kind,
         WorkplaneError::EmptySelection
     );
     let explicit = WorkplaneAttachment {

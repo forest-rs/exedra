@@ -127,14 +127,13 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 34 preserves original surface provenance through Booleans and adds
-/// source-qualified cap selectors. Start/end cap selectors now follow surviving
-/// original caps through Boolean results. Immediate operand features are unchanged.
-/// Workplane selectors and attachments are now `Clone`, not `Copy`, because
-/// qualified selectors own their source labels. Clone values when reusing them.
-/// Migration: reevaluate cached recipes and regenerate schema-stamped IR.
-/// JSON recipe nodes evolve additively without changing the format version.
-pub const EVAL_SCHEMA_VERSION: u32 = 34;
+/// Schema 35 shares surface analysis between inventory and workplane resolution.
+/// Workplane corner budgets now count connectivity and geometry visits (twice
+/// per selected corner on success); increase explicitly tuned limits accordingly.
+/// Resolution returns `WorkplaneFailure`, retaining the selection, coarse `kind`
+/// and structured `evidence`. `TessellateError::Attachment` carries that failure.
+/// Migration: reevaluate cached recipes and regenerate schema-stamped text.
+pub const EVAL_SCHEMA_VERSION: u32 = 35;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;

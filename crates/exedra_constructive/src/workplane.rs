@@ -18,6 +18,14 @@ use alloc::vec::Vec;
 use exedra_math::{add, cross, dot, norm, normalize, scale, sub};
 use exedra_mesh::{FaceId, FaceTriangulation, Mesh, MeshRevision, attr};
 
+mod inspection;
+use inspection::{Rejection, analyze_patch, budget, components, selection_ambiguity};
+pub use inspection::{
+    SurfaceEntry, SurfaceInventory, SurfaceInventoryError, SurfaceInventoryPolicy,
+    SurfaceInventoryStats, SurfacePatch, SurfacePlane, SurfaceResource, WorkplaneEvidence,
+    WorkplaneFailure, inspect_surfaces,
+};
+
 /// The planar face patch whose winding determines the workplane's +Z.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkplaneSelection {
@@ -46,7 +54,7 @@ pub enum WorkplaneSelection {
 /// original feature provenance through Boolean splits, not extremal positions.
 /// Source-qualified caps use opaque labels on generating nodes, not wrappers.
 /// Labels must be unique in the recipe. Neither form stores transient mesh IDs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SurfaceSelector {
     /// The source operation's start cap.
     StartCap,
@@ -113,7 +121,7 @@ impl WorkplaneAttachment {
         &self,
         body: &TessellatedBody,
         policy: &WorkplanePolicy,
-    ) -> Result<Workplane, WorkplaneError> {
+    ) -> Result<Workplane, WorkplaneFailure> {
         build_workplane(
             body,
             self.surface.selection(),
@@ -145,7 +153,8 @@ pub struct WorkplanePolicy {
     pub min_projection_cos: f64,
     /// Maximum selected faces. Region resolution scans the body's face list.
     pub max_faces: u32,
-    /// Maximum selected face corners, including shared vertices repeatedly.
+    /// Maximum corner visits across connectivity and geometry checks.
+    /// A successful resolution visits each selected face corner twice.
     pub max_corners: u32,
 }
 impl Default for WorkplanePolicy {
@@ -172,7 +181,8 @@ pub enum WorkplaneError {
     EmptySelection,
     /// A selected face is stale, outside, malformed, or cannot be triangulated.
     InvalidFace,
-    /// Selected faces are disconnected or mix Boolean operand identities.
+    /// Selected faces are disconnected, source labels are duplicated, or
+    /// Boolean operand identities are mixed. See the failure evidence.
     AmbiguousSelection,
     /// Selected face corners do not lie on one plane within tolerance.
     NonPlanar,
@@ -194,7 +204,7 @@ impl core::fmt::Display for WorkplaneError {
             Self::StaleSource => "workplane source revision is stale",
             Self::EmptySelection => "workplane selection is empty",
             Self::InvalidFace => "workplane selection contains an invalid face",
-            Self::AmbiguousSelection => "workplane selection is disconnected or operand-ambiguous",
+            Self::AmbiguousSelection => "workplane selection is ambiguous",
             Self::NonPlanar => "workplane selection is not planar within tolerance",
             Self::InvalidGeometry => "workplane geometry is degenerate or inconsistently oriented",
             Self::OriginOffPlane => "workplane origin is not on the selected plane",
@@ -283,8 +293,9 @@ impl Workplane {
 /// # Errors
 /// Rejects stale provenance, empty/ambiguous selections, invalid or nonplanar
 /// geometry, an off-plane origin, a near-normal X direction, and exhausted
-/// budgets. This does not certify the source as a solid or infer curved-face
-/// tangent frames. The additive API requires no existing-caller migration.
+/// budgets. Failures retain the requested selection, coarse category and
+/// structured evidence. This does not certify the source as a solid or infer
+/// curved-face tangent frames.
 ///
 /// ```
 /// use exedra_constructive::{builders::rect, ir::{CapMode, Placement3},
@@ -303,7 +314,7 @@ pub fn face_workplane(
     origin: [f64; 3],
     x_direction: [f64; 3],
     policy: &WorkplanePolicy,
-) -> Result<Workplane, WorkplaneError> {
+) -> Result<Workplane, WorkplaneFailure> {
     build_workplane(body, selection, origin, None, x_direction, policy)
 }
 
@@ -314,7 +325,19 @@ fn build_workplane(
     projection: Option<[f64; 3]>,
     x_direction: [f64; 3],
     policy: &WorkplanePolicy,
-) -> Result<Workplane, WorkplaneError> {
+) -> Result<Workplane, WorkplaneFailure> {
+    build_inner(body, &selection, origin, projection, x_direction, policy)
+        .map_err(|rejection| rejection.for_selection(selection))
+}
+
+fn build_inner(
+    body: &TessellatedBody,
+    selection: &WorkplaneSelection,
+    origin: [f64; 3],
+    projection: Option<[f64; 3]>,
+    x_direction: [f64; 3],
+    policy: &WorkplanePolicy,
+) -> Result<Workplane, Rejection> {
     use WorkplaneError as Error;
     if !policy.distance_tolerance.is_finite()
         || policy.distance_tolerance <= 0.0
@@ -328,7 +351,7 @@ fn build_workplane(
         || policy.max_corners == 0
         || origin.iter().any(|v| !v.is_finite())
     {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidInput.into());
     }
     let authored_x = normalize(x_direction).ok_or(Error::InvalidInput)?;
     body.source_map
@@ -336,13 +359,10 @@ fn build_workplane(
         .map_err(|_| Error::StaleSource)?;
     let mesh = &body.mesh;
     let regions = mesh.attrs().dense(attr::FACE_REGION);
-    if let WorkplaneSelection::SourceStartCap(source) | WorkplaneSelection::SourceEndCap(source) =
-        &selection
-        && body.source_map.source_is_ambiguous(source)
-    {
-        return Err(Error::AmbiguousSelection);
+    if let Some(error) = selection_ambiguity(body, selection, &[]) {
+        return Err(error);
     }
-    let matches = |face: FaceId| match &selection {
+    let matches = |face: FaceId| match selection {
         WorkplaneSelection::Face(wanted) => face == *wanted,
         WorkplaneSelection::StartCap => body
             .source_map
@@ -373,120 +393,62 @@ fn build_workplane(
                     })
         }
     };
-    if let WorkplaneSelection::Face(face) = &selection
+    if let WorkplaneSelection::Face(face) = selection
         && (*face == FaceId::OUTSIDE || mesh.face_edge(*face).is_none())
     {
-        return Err(Error::InvalidFace);
+        return Err(Error::InvalidFace.into());
     }
     let mut faces = Vec::new();
-    if let WorkplaneSelection::Face(face) = &selection {
+    if let WorkplaneSelection::Face(face) = selection {
         faces.push(*face);
     } else {
         for face in mesh.faces().filter(|&face| matches(face)) {
             if faces.len() >= policy.max_faces as usize {
-                return Err(Error::BudgetExceeded);
+                return Err(budget(
+                    SurfaceResource::SelectedFaces,
+                    faces.len() as u64,
+                    u64::from(policy.max_faces),
+                ));
             }
             faces.push(face);
         }
     }
     if faces.is_empty() {
-        return Err(Error::EmptySelection);
+        return Err(Error::EmptySelection.into());
     }
-    if matches!(selection, WorkplaneSelection::Region(_)) {
-        let operands: BTreeSet<_> = faces
-            .iter()
-            .map(|&face| match body.source_map.face_feature(face) {
-                Some(Feature::BooleanFace { operand }) => Some(operand),
-                _ => None,
-            })
-            .collect();
-        if operands.len() > 1 {
-            return Err(Error::AmbiguousSelection);
-        }
+    if let Some(error) = selection_ambiguity(body, selection, &faces) {
+        return Err(error);
     }
-    let selected: BTreeSet<_> = faces.iter().copied().collect();
-    let mut pending = alloc::vec![faces[0]];
-    let mut visited = BTreeSet::new();
-    let mut corners = 0_u64;
-    let mut all_points = Vec::new();
-    let mut normals = Vec::new();
-    let mut sum = [0.0; 3];
-    while let Some(face) = pending.pop() {
-        if !visited.insert(face) {
-            continue;
-        }
-        let mut points = Vec::new();
-        for edge in mesh.face_loop(face) {
-            corners += 1;
-            if corners > u64::from(policy.max_corners) {
-                return Err(Error::BudgetExceeded);
-            }
-            let adjacent = mesh
-                .twin(edge)
-                .and_then(|edge| mesh.face(edge))
-                .ok_or(Error::InvalidFace)?;
-            if selected.contains(&adjacent) && !visited.contains(&adjacent) {
-                pending.push(adjacent);
-            }
-            let p = mesh
-                .to_vertex(edge)
-                .and_then(|vertex| mesh.vertex_position(vertex))
-                .ok_or(Error::InvalidFace)?
-                .map(f64::from);
-            if p.iter().any(|v| !v.is_finite()) {
-                return Err(Error::InvalidGeometry);
-            }
-            points.push(p);
-        }
-        if points.len() < 3 {
-            return Err(Error::InvalidFace);
-        }
-        let mut triangles = Vec::new();
-        if mesh.face_triangles_into(face, FaceTriangulation::Robust, &mut triangles)
-            || triangles.is_empty()
-        {
-            return Err(Error::InvalidFace);
-        }
-        let mut normal = [0.0; 3];
-        for pair in points[1..].windows(2) {
-            normal = add(
-                normal,
-                cross(sub(pair[0], points[0]), sub(pair[1], points[0])),
-            );
-        }
-        normals.push(normalize(normal).ok_or(Error::InvalidGeometry)?);
-        sum = add(sum, normal);
-        all_points.extend(points);
+    let mut corners = 0;
+    let patches = components(mesh, &faces, &mut corners, u64::from(policy.max_corners))?;
+    if patches.len() != 1 {
+        return Err(Rejection(
+            Error::AmbiguousSelection,
+            WorkplaneEvidence::Disconnected {
+                representatives: patches.iter().map(|patch| patch[0]).collect(),
+            },
+        ));
     }
-    if visited.len() != faces.len() {
-        return Err(Error::AmbiguousSelection);
-    }
-    let z = normalize(sum).ok_or(Error::InvalidGeometry)?;
-    if normals.iter().any(|&normal| dot(normal, z) <= 0.0) {
-        return Err(Error::InvalidGeometry);
-    }
-    let reference = all_points[0];
-    let mut max_plane_deviation = 0.0_f64;
-    for &p in &all_points {
-        let distance = dot(z, sub(p, reference)).abs();
-        if !distance.is_finite() {
-            return Err(Error::InvalidGeometry);
-        }
-        max_plane_deviation = max_plane_deviation.max(distance);
-    }
-    if max_plane_deviation > policy.distance_tolerance {
-        return Err(Error::NonPlanar);
-    }
+    let geometry = analyze_patch(
+        mesh,
+        &faces,
+        policy.distance_tolerance,
+        &mut corners,
+        u64::from(policy.max_corners),
+    )?;
+    let z = geometry.plane.normal;
+    let reference = geometry.plane.point;
+    let all_points = geometry.points;
     let origin = if let Some(direction) = projection {
         let direction = normalize(direction).ok_or(Error::InvalidInput)?;
         let denominator = dot(z, direction);
         if denominator.abs() < policy.min_projection_cos {
-            return Err(Error::ParallelProjection);
+            return Err(Error::ParallelProjection.into());
         }
         let distance = dot(z, sub(reference, origin)) / denominator;
         let projected = add(origin, scale(direction, distance));
         if projected.iter().any(|value| !value.is_finite()) {
-            return Err(Error::InvalidGeometry);
+            return Err(Error::InvalidGeometry.into());
         }
         projected
     } else {
@@ -494,19 +456,19 @@ fn build_workplane(
     };
     let offset = dot(z, sub(origin, reference));
     if !offset.is_finite() {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidInput.into());
     }
     if offset.abs() > policy.distance_tolerance {
-        return Err(Error::OriginOffPlane);
+        return Err(Error::OriginOffPlane.into());
     }
     let origin = sub(origin, scale(z, offset));
     // Verify the plane that the rounded f64 frame actually represents, including
     // when an authored origin is far from the selected patch in the plane.
-    max_plane_deviation = 0.0;
+    let mut max_plane_deviation = 0.0_f64;
     for &p in &all_points {
         let distance = dot(z, sub(p, origin)).abs();
         if !distance.is_finite() || distance > policy.distance_tolerance {
-            return Err(Error::InvalidGeometry);
+            return Err(Error::InvalidGeometry.into());
         }
         max_plane_deviation = max_plane_deviation.max(distance);
     }
@@ -515,7 +477,7 @@ fn build_workplane(
     // the authored direction is exactly parallel to z.
     let transverse = cross(z, authored_x);
     if norm(transverse) < policy.min_axis_sine {
-        return Err(Error::ParallelAxis);
+        return Err(Error::ParallelAxis.into());
     }
     let y = normalize(transverse).ok_or(Error::ParallelAxis)?;
     let x = cross(y, z);

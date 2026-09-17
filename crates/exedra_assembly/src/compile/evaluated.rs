@@ -10,8 +10,9 @@ use exedra_constructive::{
     section::{PlaneSection, SectionError, SectionPolicy, section_body},
     tessellate::TessellatedBody,
     workplane::{
-        Workplane, WorkplaneAttachment, WorkplaneError, WorkplanePolicy, WorkplaneSelection,
-        face_workplane,
+        SurfaceInventory, SurfaceInventoryError, SurfaceInventoryPolicy, Workplane,
+        WorkplaneAttachment, WorkplaneFailure, WorkplanePolicy, WorkplaneSelection, face_workplane,
+        inspect_surfaces,
     },
 };
 
@@ -226,6 +227,21 @@ impl SnapshotBody {
         section_body(self.geometry(), plane, policy)
     }
 
+    /// Inventories surviving semantic selectors and connected patches in part
+    /// coordinates. Retains this body and snapshot; no geometry is reevaluated.
+    ///
+    /// # Errors
+    /// Rejects invalid policy, stale provenance and exhausted inventory budgets.
+    pub fn inspect_surfaces(
+        &self,
+        policy: &SurfaceInventoryPolicy,
+    ) -> Result<SnapshotSurfaceInventory, SurfaceInventoryError> {
+        Ok(SnapshotSurfaceInventory {
+            body: self.clone(),
+            inventory: inspect_surfaces(self.geometry(), policy)?,
+        })
+    }
+
     /// Resolves persistent surface and frame intent into this snapshot's scope.
     /// All authored attachment vectors use part-local coordinates.
     ///
@@ -236,7 +252,7 @@ impl SnapshotBody {
         &self,
         attachment: &WorkplaneAttachment,
         policy: &WorkplanePolicy,
-    ) -> Result<SnapshotWorkplane, WorkplaneError> {
+    ) -> Result<SnapshotWorkplane, WorkplaneFailure> {
         let plane = attachment.resolve(self.geometry(), policy)?;
         Ok(SnapshotWorkplane {
             body: self.clone(),
@@ -256,7 +272,7 @@ impl SnapshotBody {
         origin: [f64; 3],
         x_direction: [f64; 3],
         policy: &WorkplanePolicy,
-    ) -> Result<SnapshotWorkplane, WorkplaneError> {
+    ) -> Result<SnapshotWorkplane, WorkplaneFailure> {
         let plane = face_workplane(self.geometry(), selection, origin, x_direction, policy)?;
         Ok(SnapshotWorkplane {
             body: self.clone(),
@@ -310,6 +326,40 @@ impl SnapshotWorkplane {
             return Err(StaleSelection);
         }
         Ok(())
+    }
+}
+
+/// Surface evidence owning its immutable body and evaluation-snapshot scope.
+#[derive(Clone, Debug)]
+pub struct SnapshotSurfaceInventory {
+    body: SnapshotBody,
+    inventory: SurfaceInventory,
+}
+impl SnapshotSurfaceInventory {
+    /// Complete inspected selectors and patches. IDs belong to [`Self::body`].
+    #[must_use]
+    pub fn inventory(&self) -> &SurfaceInventory {
+        &self.inventory
+    }
+    /// Immutable source body, retained independently of compiler-cache eviction.
+    #[must_use]
+    pub fn body(&self) -> &SnapshotBody {
+        &self.body
+    }
+    /// Checks identity before applying evidence to another body handle.
+    ///
+    /// # Errors
+    /// Another snapshot, part or body is stale even if geometry was cached.
+    pub fn check(&self, body: &SnapshotBody) -> Result<(), StaleSelection> {
+        if !Arc::ptr_eq(&self.body.scope, &body.scope)
+            || self.body.part != body.part
+            || self.body.body != body.body
+            || self.inventory.check(&body.geometry().mesh).is_err()
+        {
+            Err(StaleSelection)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -373,6 +423,7 @@ impl core::error::Error for StaleSelection {}
 mod tests {
     use super::*;
     use crate::{Assembly, CompilePolicy, PartCompiler};
+    use exedra_constructive::workplane::WorkplaneError;
     use exedra_constructive::{
         builders,
         ir::{CapMode, NodeKind, Placement3, RecipeBuilder},
@@ -434,6 +485,7 @@ mod tests {
                 .unwrap()
                 .resolve_attachment(&named_cap(), &WorkplanePolicy::default())
                 .map(|_| ())
+                .map_err(|failure| failure.kind)
         };
         for first_duplicate in [false, true] {
             let mut compiler = PartCompiler::new();
@@ -493,7 +545,10 @@ mod tests {
                 crate::CompileError::Evaluate {
                     error: exedra_constructive::evaluate::EvalError {
                         error: exedra_constructive::tessellate::TessellateError::Attachment(
-                            WorkplaneError::AmbiguousSelection
+                            WorkplaneFailure {
+                                kind: WorkplaneError::AmbiguousSelection,
+                                ..
+                            }
                         ),
                         ..
                     },
@@ -502,6 +557,102 @@ mod tests {
             ));
             compile(&mut compiler, false).unwrap();
         }
+    }
+
+    #[test]
+    fn surface_inspection_diagnoses_and_recovers_without_private_geometry_access() {
+        use exedra_constructive::{
+            ir::CsgOp,
+            workplane::{SurfaceSelector, WorkplaneEvidence},
+        };
+        let mut b = RecipeBuilder::new();
+        let profile = b.add_profile(builders::rect(4.0, 3.0).unwrap());
+        let mut operands = Vec::new();
+        for (source, x) in [("left", 0.0), ("right", 6.0)] {
+            let source = b.source_ref(source);
+            operands.push(
+                b.with_source(source)
+                    .add(NodeKind::Extrude {
+                        profile,
+                        placement: Placement3::translate(x, 0.0, 0.0),
+                        height: 2.0,
+                        caps: CapMode::Both,
+                    })
+                    .unwrap(),
+            );
+        }
+        let source = b.source_ref("panels");
+        let root = b
+            .with_source(source)
+            .add(NodeKind::Csg {
+                op: CsgOp::Union,
+                operands,
+            })
+            .unwrap();
+        let mut assembly = Assembly::new();
+        let part = assembly
+            .add_recipe_part("panels", b.finish(root).unwrap())
+            .unwrap();
+        let mut compiler = PartCompiler::new();
+        let snapshot = compiler
+            .compile_snapshot(&assembly, &CompilePolicy::default())
+            .unwrap();
+        let body = snapshot.body_by_source(part, "panels").unwrap();
+        let attachment = WorkplaneAttachment {
+            surface: SurfaceSelector::EndCap,
+            anchor: [6.5, 0.5, 0.0],
+            projection: [0.0, 0.0, 1.0],
+            x_direction: [1.0, 0.0, 0.0],
+        };
+        let failure = body
+            .resolve_attachment(&attachment, &WorkplanePolicy::default())
+            .unwrap_err();
+        assert_eq!(failure.selection, attachment.surface.selection());
+        assert!(
+            matches!(&failure.evidence,WorkplaneEvidence::Disconnected {representatives} if representatives.len()==2)
+        );
+        let inventory = body
+            .inspect_surfaces(&SurfaceInventoryPolicy::default())
+            .unwrap();
+        inventory.check(&body).unwrap();
+        let candidate = inventory
+            .inventory()
+            .entries()
+            .iter()
+            .find(|entry| entry.selector == SurfaceSelector::SourceEndCap("right".into()))
+            .unwrap();
+        candidate.status.as_ref().unwrap();
+        assert_eq!(candidate.patches.len(), 1);
+        assert!(
+            candidate
+                .origins
+                .iter()
+                .any(|origin| origin.source.as_deref() == Some("right"))
+        );
+        let explicit = WorkplaneAttachment {
+            surface: candidate.selector.clone(),
+            ..attachment
+        };
+        let plane = inventory
+            .body()
+            .resolve_attachment(&explicit, &WorkplanePolicy::default())
+            .unwrap();
+        assert_eq!(plane.plane().to_body([0.0; 3]), [6.5, 0.5, 2.0]);
+        let patch = plane.planar_patch(&BoundaryPolicy::default()).unwrap();
+        assert!(patch.circle_clearance([0.0; 2], 0.1).unwrap().clearance > 0.39);
+        let next = compiler
+            .compile_snapshot(&assembly, &CompilePolicy::default())
+            .unwrap();
+        assert_eq!(compiler.counters().cache_hits, 1);
+        let next_body = next.body_by_source(part, "panels").unwrap();
+        assert_eq!(inventory.check(&next_body), Err(StaleSelection));
+        compiler.clear_cache();
+        drop(snapshot);
+        inventory.check(inventory.body()).unwrap();
+        inventory
+            .body()
+            .resolve_attachment(&explicit, &WorkplanePolicy::default())
+            .unwrap();
     }
 
     fn assembly(height: f64) -> Assembly {

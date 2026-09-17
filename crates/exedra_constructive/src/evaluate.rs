@@ -1016,7 +1016,17 @@ impl EvalCx<'_> {
                 .any(|label| label == source)
         }) {
             return Err(fail(TessellateError::Attachment(
-                crate::workplane::WorkplaneError::AmbiguousSelection,
+                crate::workplane::WorkplaneFailure {
+                    selection: attachment.surface.selection(),
+                    kind: crate::workplane::WorkplaneError::AmbiguousSelection,
+                    evidence: crate::workplane::WorkplaneEvidence::DuplicateSource {
+                        source: attachment
+                            .surface
+                            .source()
+                            .expect("qualified selector")
+                            .into(),
+                    },
+                },
             )));
         }
         let frame = attachment

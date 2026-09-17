@@ -222,3 +222,22 @@ coverage under the policy in force; do not infer it from nonzero render
 coordinates. Compilation populates it automatically, independently of material
 binding, and the glTF exporter relies on it to refuse textured materials
 without texture coordinates.
+
+### Surface inspection and attachment recovery
+
+`SnapshotBody::inspect_surfaces` returns a `SnapshotSurfaceInventory`, retaining
+its immutable source body. Entries expose surviving semantic selectors, original
+surface roles/labels, connected patches, measured planarity, and typed refusals.
+Callers choose an explicit selector and provide their own anchor and axes to
+`resolve_attachment`; inventory never selects a repair automatically.
+
+Use `inventory.check(&body)` before applying patch evidence to another handle.
+A newer snapshot is stale even when its geometry came from the compiler cache;
+old inventories remain usable after compiler eviction. `inventory.body()` retains
+the exact source. Attachment resolution now returns `WorkplaneFailure`, including
+the selector, coarse `kind`, and diagnostic `evidence`.
+
+The public consumer regression exercises an ambiguous cap, inspection of named
+alternatives, explicit resolution, and clearance verification without private mesh
+access. [Constructive ADR 0016](../exedra_constructive/docs/adr-0016-surface-inspection.md)
+owns the query and diagnostic contract.
