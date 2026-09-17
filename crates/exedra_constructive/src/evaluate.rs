@@ -375,6 +375,14 @@ fn evaluate_inner(
         },
     };
     cx.walk(recipe.root(), &Placement3::IDENTITY, true, None)?;
+    let ambiguous = recipe.ambiguous_sources();
+    for placed in &mut cx.bodies {
+        if !ambiguous.is_empty() {
+            Rc::make_mut(&mut placed.body)
+                .source_map
+                .set_ambiguous_sources(ambiguous);
+        }
+    }
     // The output ledger describes what was emitted, not what was visited.
     for placed in &cx.bodies {
         let counters = &mut cx.report.counters;
@@ -416,6 +424,7 @@ const CSG_TRIANGULATION: FaceTriangulation = FaceTriangulation::Robust;
 struct CsgMesh {
     mesh: Mesh,
     face_operands: HashMap<FaceId, u16>,
+    surface_origins: BTreeMap<FaceId, crate::source_map::SurfaceOrigin>,
     face_materials: BTreeMap<FaceId, SlotId>,
 }
 
@@ -424,6 +433,7 @@ impl CsgMesh {
         let operand = u16::try_from(index).expect("IR validation bounds CSG operand counts");
         Self {
             face_operands: mesh.faces().map(|face| (face, operand)).collect(),
+            surface_origins: BTreeMap::new(),
             face_materials: BTreeMap::new(),
             mesh,
         }
@@ -445,6 +455,7 @@ impl CsgMesh {
             diagnostics,
         )?;
         let mut face_operands = HashMap::with_capacity(output.mesh.faces().count());
+        let mut surface_origins = BTreeMap::new();
         let mut face_materials = BTreeMap::new();
         for &(face, side, source_face) in &output.face_provenance {
             let source = match side {
@@ -456,6 +467,9 @@ impl CsgMesh {
                 .get(&source_face)
                 .expect("boolean provenance references an input face");
             face_operands.insert(face, operand);
+            if let Some(origin) = source.surface_origins.get(&source_face) {
+                surface_origins.insert(face, origin.clone());
+            }
             if let Some(slot) = source.face_materials.get(&source_face) {
                 face_materials.insert(face, *slot);
             }
@@ -463,6 +477,7 @@ impl CsgMesh {
         Ok(Self {
             mesh: output.mesh,
             face_operands,
+            surface_origins,
             face_materials,
         })
     }
@@ -994,6 +1009,16 @@ impl EvalCx<'_> {
                 actual: crate::len_u32(collected.len()),
             }));
         };
+        if attachment.surface.source().is_some_and(|source| {
+            self.recipe
+                .ambiguous_sources()
+                .iter()
+                .any(|label| label == source)
+        }) {
+            return Err(fail(TessellateError::Attachment(
+                crate::workplane::WorkplaneError::AmbiguousSelection,
+            )));
+        }
         let frame = attachment
             .resolve(&support_body.body, &self.policy.workplane)
             .map_err(|error| fail(TessellateError::Attachment(error)))?;
@@ -1376,12 +1401,25 @@ impl EvalCx<'_> {
                     .faces()
                     .filter_map(|face| placed.material_for_face(face).map(|slot| (face, slot)))
                     .collect();
+                let surface_origins = placed
+                    .body
+                    .mesh
+                    .faces()
+                    .filter_map(|face| {
+                        placed
+                            .body
+                            .source_map
+                            .surface_origin(face)
+                            .map(|origin| (face, origin.clone()))
+                    })
+                    .collect();
                 let mesh = match Rc::try_unwrap(placed.body) {
                     Ok(body) => body.mesh,
                     Err(shared) => shared.mesh.clone(),
                 };
                 let mut mesh = CsgMesh::operand(mesh, index);
                 mesh.face_materials = face_materials;
+                mesh.surface_origins = surface_origins;
                 mesh
             })
             .collect();
@@ -1578,8 +1616,13 @@ impl EvalCx<'_> {
                         _ => Feature::BooleanSeam,
                     })
                     .collect();
+                let origins = mesh
+                    .faces()
+                    .map(|face| output.surface_origins.get(&face).cloned())
+                    .collect();
                 let source_map =
-                    crate::source_map::SourceMap::new(&mesh, face_features, vertex_features);
+                    crate::source_map::SourceMap::new(&mesh, face_features, vertex_features)
+                        .with_origins(origins);
                 let body = Rc::new(TessellatedBody {
                     mesh,
                     source_map,
@@ -1785,7 +1828,11 @@ impl EvalCx<'_> {
             }
             self.report.counters.cache_misses += 1;
         }
-        let body = Rc::new(build(self)?);
+        let mut body = build(self)?;
+        if let Some(source) = self.recipe.source_of(node_id) {
+            body.source_map.bind_source(source);
+        }
+        let body = Rc::new(body);
         self.report.counters.tessellations += 1;
         if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key) {
             cache.insert(key, Rc::clone(&body));
@@ -1925,7 +1972,13 @@ fn instantiate(
                     .expect("every source vertex is mapped")
             })
             .collect();
-        crate::source_map::SourceMap::new(&mesh, face_features, vertex_features)
+        crate::source_map::SourceMap::new(&mesh, face_features, vertex_features).with_origins(
+            source
+                .mesh
+                .faces()
+                .map(|face| map.surface_origin(face).cloned())
+                .collect(),
+        )
     } else {
         source.source_map.repinned(&mesh)
     };

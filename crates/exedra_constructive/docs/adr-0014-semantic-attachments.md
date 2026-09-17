@@ -57,10 +57,10 @@ is re-resolved after edits. No transient face IDs are serialized as attachments.
 
 ## Limits and migration
 
-Booleans currently replace leaf surface features with operand attribution. Cap
-selectors return missing when that meaning is unavailable; an explicit
-operand-qualified region remains selectable. General topology matching and
-curved-surface attachments are outside this contract.
+[ADR 0015](adr-0015-boolean-surface-provenance.md) extends cap selection through
+Booleans with separate original-surface records and source-qualified selectors.
+Immediate operand attribution remains available. General topology matching and
+curved-surface attachments remain outside this contract.
 
 Schema 33 invalidates evaluation fingerprints and canonical text. Queries for
 extrusion-to-plane terminal faces should use `CapEnd`. Explicit `WorkplanePolicy`

@@ -56,7 +56,7 @@ fn no_implicit_origin_or_axis_fallback() {
     assert_eq!(
         face_workplane(
             &body,
-            select,
+            select.clone(),
             [0.0; 3],
             [1.0, 0.0, 0.0],
             &WorkplanePolicy::default()
@@ -67,7 +67,7 @@ fn no_implicit_origin_or_axis_fallback() {
     assert_eq!(
         face_workplane(
             &body,
-            select,
+            select.clone(),
             [0.0, 0.0, 2.0],
             [0.0, 0.0, 1.0],
             &WorkplanePolicy::default()
@@ -330,7 +330,13 @@ fn invalid_authored_inputs_empty_selection_and_face_budget() {
     );
     for x in [[0.0; 3], [f64::NAN, 0.0, 0.0], [f64::INFINITY, 0.0, 0.0]] {
         assert_eq!(
-            make(selection, [0.0, 0.0, 2.0], x, &WorkplanePolicy::default()).unwrap_err(),
+            make(
+                selection.clone(),
+                [0.0, 0.0, 2.0],
+                x,
+                &WorkplanePolicy::default()
+            )
+            .unwrap_err(),
             WorkplaneError::InvalidInput
         );
     }
@@ -339,7 +345,13 @@ fn invalid_authored_inputs_empty_selection_and_face_budget() {
         ..Default::default()
     };
     assert_eq!(
-        make(selection, [0.0, 0.0, 2.0], [1.0, 0.0, 0.0], &invalid).unwrap_err(),
+        make(
+            selection.clone(),
+            [0.0, 0.0, 2.0],
+            [1.0, 0.0, 0.0],
+            &invalid
+        )
+        .unwrap_err(),
         WorkplaneError::InvalidInput
     );
     let triangles = patch(
