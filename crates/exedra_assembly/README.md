@@ -134,6 +134,33 @@ ownership and remain usable, so their memory lasts until those snapshots drop.
 Reports remain available on hits, and matching content does not turn a partial
 evaluation into complete geometry.
 
+## Shared geometry queries
+
+Use `PartCompiler::compile_snapshot` when an operation needs both rendering and
+inspection. Its `EvaluationSnapshot` shares evaluated topology and source maps
+with the render extraction, captures instance placements in `render()`, and
+provides the ordinary buffers/reports through `compiled()`. All geometry is
+part-local; the captured render items supply occurrence world placements.
+
+`body_by_source(part, "panel")` finds a unique producing source label without
+retaining a prior body's numeric index. `BodyLookupError` distinguishes unknown
+parts, missing labels, and ambiguous labels with match counts. Labels belong to
+the producing node, not to an inferred search through erased Boolean history.
+
+A `SnapshotBody` can resolve a `WorkplaneAttachment`, extract a section, or expose
+its immutable geometry. A `SnapshotWorkplane` can produce a checked `PlanarPatch`
+for circular-footprint clearance queries. Workplane checks include snapshot and
+body identity: clones share scope, but a fresh compilation starts a new scope,
+even when all geometry came from cache. Re-resolve attachment intent after edits;
+do not serialize a transient workplane or face index as a persistent reference.
+
+Snapshots and body/workplane handles survive cache eviction. `compile_parts`
+still serves render-only callers without retaining topology. Upgrading a
+render-only cache entry to a query snapshot requires one evaluation; subsequent
+queries and snapshot cache hits do not repeat recipe evaluation. See the
+[attachment and clearance contract](../exedra_constructive/docs/adr-0014-semantic-attachments.md)
+and the `material_gallery` `semantic_attachments` example for the complete flow.
+
 ## Compile policy migration
 
 `PartCompiler::compile_parts` and `compile::policy_fingerprint` now accept

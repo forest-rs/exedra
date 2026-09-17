@@ -27,6 +27,8 @@ Face and corner limits bound selected-patch work; resolving a region scans the
 body's face list. This is a planarity check, not a global solid or overlap proof.
 
 Workplanes retain their source revision and expose an explicit stale check.
-They do not follow topology edits or recipe reevaluation automatically. Curved
-surface tangent frames and persistent recipe attachments are future operations,
-not hidden fallback behavior of planar selection.
+Resolved frames do not follow topology edits or recipe reevaluation automatically.
+[ADR 0014](adr-0014-semantic-attachments.md) adds explicit retained attachment
+intent, resolved afresh on each evaluation. Strict-origin calls retain their
+existing semantics. Curved tangent frames and arbitrary face tracking remain
+separate operations.

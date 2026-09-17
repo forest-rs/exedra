@@ -4,11 +4,15 @@
 use crate::{CompiledParts, PartId, RenderList};
 use alloc::{rc::Rc, string::String, sync::Arc, vec::Vec};
 use exedra_constructive::{
+    clearance::{BoundaryPolicy, ClearanceError, PlanarPatch},
     evaluate::PlacedBody,
     ir::{NodeId, Plane3, Recipe, SlotId},
     section::{PlaneSection, SectionError, SectionPolicy, section_body},
     tessellate::TessellatedBody,
-    workplane::{Workplane, WorkplaneError, WorkplanePolicy, WorkplaneSelection, face_workplane},
+    workplane::{
+        Workplane, WorkplaneAttachment, WorkplaneError, WorkplanePolicy, WorkplaneSelection,
+        face_workplane,
+    },
 };
 
 #[derive(Debug)]
@@ -99,6 +103,45 @@ impl EvaluationSnapshot {
         &self.render
     }
 
+    /// Resolves one producing source label within a part of this snapshot.
+    /// Use authored labels after parameter edits instead of retaining a previous
+    /// body's numeric index. Equal labels are not silently resolved by order.
+    ///
+    /// # Errors
+    /// Identifies an unknown part, absent source, or ambiguous source with its
+    /// match count. The source is the producing recipe node's label, not a
+    /// recursive search for labels erased by later geometry operations.
+    pub fn body_by_source(
+        &self,
+        part: PartId,
+        source: &str,
+    ) -> Result<SnapshotBody, BodyLookupError> {
+        let evaluated = self
+            .evaluated
+            .get(part.0 as usize)
+            .ok_or(BodyLookupError::UnknownPart { part })?;
+        let mut first = None;
+        let mut count = 0;
+        for (index, body) in evaluated.bodies.iter().enumerate() {
+            if body.source.as_deref() == Some(source) {
+                first.get_or_insert(crate::len_u32(index));
+                count += 1;
+            }
+        }
+        match (first, count) {
+            (Some(index), 1) => Ok(self.body(part, index).expect("resolved snapshot body")),
+            (None, _) => Err(BodyLookupError::MissingSource {
+                part,
+                source: String::from(source),
+            }),
+            _ => Err(BodyLookupError::AmbiguousSource {
+                part,
+                source: String::from(source),
+                matches: count,
+            }),
+        }
+    }
+
     /// Obtains a shared, immutable body by the same part/body indices used in
     /// render items. Invalid indices return `None`; baked meshes are supported
     /// with imported provenance and no producing recipe node.
@@ -183,6 +226,24 @@ impl SnapshotBody {
         section_body(self.geometry(), plane, policy)
     }
 
+    /// Resolves persistent surface and frame intent into this snapshot's scope.
+    /// All authored attachment vectors use part-local coordinates.
+    ///
+    /// # Errors
+    /// Same missing/ambiguous surface, projection and budget checks as
+    /// [`WorkplaneAttachment::resolve`].
+    pub fn resolve_attachment(
+        &self,
+        attachment: &WorkplaneAttachment,
+        policy: &WorkplanePolicy,
+    ) -> Result<SnapshotWorkplane, WorkplaneError> {
+        let plane = attachment.resolve(self.geometry(), policy)?;
+        Ok(SnapshotWorkplane {
+            body: self.clone(),
+            plane,
+        })
+    }
+
     /// Constructs an authored workplane pinned to this body and snapshot.
     /// Origin and X direction are in part coordinates, not occurrence world
     /// coordinates. Use the captured render item's placement when placing it.
@@ -224,6 +285,16 @@ impl SnapshotWorkplane {
         &self.body
     }
 
+    /// Extracts a checked planar material boundary for footprint measurements.
+    /// Uses this workplane's immutable owning body, preserving its association.
+    /// Build once, then query multiple footprints without repeating extraction.
+    ///
+    /// # Errors
+    /// Reports invalid boundaries, numeric limits or exhausted work budgets.
+    pub fn planar_patch(&self, policy: &BoundaryPolicy) -> Result<PlanarPatch, ClearanceError> {
+        PlanarPatch::from_workplane(self.body.geometry(), &self.plane, policy)
+    }
+
     /// Verifies identity before using this selection with another body handle.
     /// A new snapshot, a different part, or a different body is stale even if
     /// its mesh revision counter or face indices happen to be identical.
@@ -241,6 +312,52 @@ impl SnapshotWorkplane {
         Ok(())
     }
 }
+
+/// Failure to find a unique body by authored producing-source label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BodyLookupError {
+    /// The part handle is absent from this snapshot.
+    UnknownPart {
+        /// Requested snapshot-local part.
+        part: PartId,
+    },
+    /// No emitted body has the requested producing source.
+    MissingSource {
+        /// Requested snapshot-local part.
+        part: PartId,
+        /// Requested authored label.
+        source: String,
+    },
+    /// Several emitted bodies have the same producing source.
+    AmbiguousSource {
+        /// Requested snapshot-local part.
+        part: PartId,
+        /// Requested authored label.
+        source: String,
+        /// Number of candidates, none of which was silently chosen.
+        matches: u32,
+    },
+}
+impl core::fmt::Display for BodyLookupError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownPart { part } => write!(f, "snapshot has no part {part:?}"),
+            Self::MissingSource { part, source } => {
+                write!(f, "part {part:?} has no body produced by source {source:?}")
+            }
+            Self::AmbiguousSource {
+                part,
+                source,
+                matches,
+            } => write!(
+                f,
+                "part {part:?} has {matches} bodies produced by source {source:?}"
+            ),
+        }
+    }
+}
+impl core::error::Error for BodyLookupError {}
 
 /// A transient selection was used with a different evaluation snapshot or body.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -418,6 +535,94 @@ mod tests {
             .unwrap();
         assert_eq!(compiler.counters().parts_compiled, 2);
         assert_eq!(plane.check(&body), Ok(()));
+    }
+
+    #[test]
+    fn semantic_attachment_and_clearance_survive_edits_with_explicit_stale_and_missing_results() {
+        use exedra_constructive::{
+            clearance::ClearanceDecision,
+            ir::Plane3,
+            workplane::{SurfaceSelector, WorkplaneAttachment},
+        };
+        let attachment = WorkplaneAttachment {
+            surface: SurfaceSelector::EndCap,
+            anchor: [0.75, 1.0, 0.0],
+            projection: [0.0, 0.0, 1.0],
+            x_direction: [1.0, 0.0, 0.0],
+        };
+        let make = |width, duplicate| {
+            let mut b = RecipeBuilder::new();
+            let label = b.source_ref("panel");
+            let profile = b.add_profile(builders::rect(width, 3.0).unwrap());
+            let support = b
+                .with_source(label)
+                .add(NodeKind::ExtrudeToPlane {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    plane: Plane3 {
+                        normal: [-0.2, 0.0, 1.0],
+                        distance: 1.0,
+                    },
+                })
+                .unwrap();
+            let root = if duplicate {
+                b.add(NodeKind::Group {
+                    children: alloc::vec![support, support],
+                })
+                .unwrap()
+            } else {
+                support
+            };
+            let mut assembly = Assembly::new();
+            assembly
+                .add_recipe_part("panel", b.finish(root).unwrap())
+                .unwrap();
+            assembly
+        };
+        let mut compiler = PartCompiler::new();
+        let mut previous: Option<SnapshotWorkplane> = None;
+        for (width, expected) in [
+            (4.0, ClearanceDecision::Satisfied),
+            (1.0, ClearanceDecision::Violated),
+        ] {
+            let snapshot = compiler
+                .compile_snapshot(&make(width, false), &CompilePolicy::default())
+                .unwrap();
+            let body = snapshot.body_by_source(PartId(0), "panel").unwrap();
+            if let Some(old) = previous {
+                assert_eq!(old.check(&body), Err(StaleSelection));
+            }
+            let plane = body
+                .resolve_attachment(&attachment, &WorkplanePolicy::default())
+                .unwrap();
+            assert!((plane.plane().frame().rows[2][3] - 1.15).abs() < 1e-6);
+            let patch = plane.planar_patch(&BoundaryPolicy::default()).unwrap();
+            let clearance = patch.circle_clearance([0.0, 0.0], 0.2).unwrap();
+            assert_eq!(clearance.classify(0.1, 1e-5), Ok(expected));
+            assert!(matches!(
+                snapshot.body_by_source(PartId(0), "absent"),
+                Err(BodyLookupError::MissingSource { .. })
+            ));
+            assert!(matches!(
+                snapshot.body_by_source(PartId(1), "panel"),
+                Err(BodyLookupError::UnknownPart { .. })
+            ));
+            previous = Some(plane);
+        }
+        let ambiguous = compiler
+            .compile_snapshot(&make(4.0, true), &CompilePolicy::default())
+            .unwrap();
+        assert!(matches!(
+            ambiguous.body_by_source(PartId(0), "panel"),
+            Err(BodyLookupError::AmbiguousSource { matches: 2, .. })
+        ));
+        compiler.clear_cache();
+        assert!(
+            previous
+                .unwrap()
+                .planar_patch(&BoundaryPolicy::default())
+                .is_ok()
+        );
     }
 
     #[test]

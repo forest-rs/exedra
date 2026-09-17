@@ -177,10 +177,29 @@ pub struct EvalCounters {
     pub cache_misses: u32,
 }
 
+/// Evidence from resolving a retained workplane attachment during evaluation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttachmentResolution {
+    /// Attachment recipe node.
+    pub node: NodeId,
+    /// Recipe node supplying the selected body.
+    pub support: NodeId,
+    /// Orthonormal resolved frame in attachment-node local coordinates.
+    pub frame: Placement3,
+    /// Number of selected support faces checked for connectedness and planarity.
+    pub selected_faces: u32,
+    /// Maximum selected-corner deviation in support-local units.
+    pub max_plane_deviation: f64,
+}
+
 /// The honest ledger of one evaluation.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct GeometryReport {
+    /// Attachment resolutions in walk order. Body-cache hits replay resolution;
+    /// reused instance definitions share their recorded local resolution.
+    /// Frames are evidence for this evaluation, not persistent face identities.
+    pub attachments: Vec<AttachmentResolution>,
     /// Per-node fidelity outcomes, in node order (only nodes the walk
     /// visited).
     pub fidelity: Vec<(NodeId, Fidelity)>,
@@ -344,6 +363,7 @@ fn evaluate_inner(
         instance_cache: HashMap::new(),
         bodies: Vec::new(),
         report: GeometryReport {
+            attachments: Vec::new(),
             fidelity: Vec::new(),
             diagnostics: Vec::new(),
             envelopes: Vec::new(),
@@ -475,6 +495,12 @@ impl EvalCx<'_> {
         let node = self.recipe.node(node_id).expect("walked ids are validated");
         let material = node.material.or(inherited_material);
         match &node.kind {
+            NodeKind::OnWorkplane {
+                support,
+                child,
+                attachment,
+            } => self
+                .evaluate_attachment(node_id, *support, *child, attachment, world, emit, material),
             NodeKind::PlaneCut {
                 child,
                 plane,
@@ -942,6 +968,46 @@ impl EvalCx<'_> {
         }
         self.push_diagnostic(node, Severity::Error, code, message);
         bounds
+    }
+
+    fn evaluate_attachment(
+        &mut self,
+        node: NodeId,
+        support: NodeId,
+        child: NodeId,
+        attachment: &crate::workplane::WorkplaneAttachment,
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+    ) -> Result<Aabb3, EvalError> {
+        let taken = core::mem::take(&mut self.bodies);
+        let errors_before = self.error_count();
+        let result = self.walk(support, &Placement3::IDENTITY, true, None);
+        let collected = core::mem::replace(&mut self.bodies, taken);
+        result?;
+        let fail = |error| EvalError { node, error };
+        if self.error_count() != errors_before {
+            return Err(fail(TessellateError::IncompleteAttachmentSupport));
+        }
+        let [support_body] = collected.as_slice() else {
+            return Err(fail(TessellateError::AttachmentSupportCount {
+                actual: crate::len_u32(collected.len()),
+            }));
+        };
+        let frame = attachment
+            .resolve(&support_body.body, &self.policy.workplane)
+            .map_err(|error| fail(TessellateError::Attachment(error)))?;
+        let combined = compose(world, &frame.frame());
+        self.report.attachments.push(AttachmentResolution {
+            node,
+            support,
+            frame: frame.frame(),
+            selected_faces: crate::len_u32(frame.faces().len()),
+            max_plane_deviation: frame.max_plane_deviation(),
+        });
+        let fidelity = self.body_fidelity(node, &[]);
+        self.report.fidelity.push((node, fidelity));
+        self.walk(child, &combined, emit, material)
     }
 
     fn place_plane_body(

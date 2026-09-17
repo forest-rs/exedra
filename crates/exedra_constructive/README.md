@@ -46,7 +46,9 @@ planar region. Callers author the origin and X direction in body coordinates;
 face winding supplies +Z. Operand-qualified regions disambiguate reused Boolean
 region numbers. Workplanes expose local/body transforms, placements for local
 feature offsets, selected face IDs, measured planarity, and a revision check.
-They are evaluated snapshots, not persistent attachments across recipe changes.
+Resolved workplanes are snapshots. `WorkplaneAttachment` retains a semantic
+surface selector, projection line, and preferred X direction, then resolves a
+fresh workplane after recipe changes. No transient face ID is retained.
 Nonplanar, disconnected, degenerate, or ambiguously selected patches are refused.
 This additive API needs no migration. See the `face_workplane` GLB example for
 holes and collars positioned on an angled panel using face-local coordinates.
@@ -54,10 +56,12 @@ holes and collars positioned on an angled panel using face-local coordinates.
 `extrude::extrude_to_plane` creates a closed extrusion along a profile
 placement's +Z axis, stopping at an authored plane in body coordinates. Holes,
 wall regions, and source features survive; the terminating cap has the ordinary
-end-cap region and plane-cut provenance. The operation computes its own extent
+end-cap region and `Feature::CapEnd` provenance. The operation computes its own extent
 and refuses parallel, backward, crossing, or numerically unrepresentable cases.
 It returns the body and the terminating section with accuracy/work measurements.
-This is an additive evaluated-body API; existing callers need no migration.
+`NodeKind::ExtrudeToPlane` retains the same operation in a recipe.
+`NodeKind::PlaneCut` retains one capped half-space of a child. Planes use node-local
+coordinates after child transforms, before ancestor transforms.
 The `extrude_to_plane` example in `constructive_probe` exports hollow supports
 terminating at one inclined plane.
 
@@ -69,6 +73,53 @@ are typed failures. These operations preserve surviving surface attributes and
 clear source sampling evidence on derived bodies; they do not certify distant
 self-intersections. See the `section` rustdoc example and the `plane_cut` binary
 in `constructive_probe` for an oblique cut through a smooth loft.
+
+## Retained attachments and clearance
+
+`NodeKind::OnWorkplane { support, child, attachment }` evaluates one complete
+support body, resolves the authored workplane, and places the child in that
+frame. The support is not emitted by the attachment node: include it in a group
+or Boolean when needed. `EvalPolicy::workplane` supplies accuracy and work limits.
+`GeometryReport::attachments` records resolved local frames and planarity evidence.
+
+`SurfaceSelector::EndCap` follows actual terminal-cap provenance through profile
+changes and tessellation changes. `StartCap`, explicit regions, and
+operand-qualified regions are also supported. Missing or disconnected surfaces
+are refused; there is no nearest-face fallback. Booleans currently replace cap
+features with operand attribution, so use an explicit operand-qualified region
+when selecting their output. A later cut reusing the cap's region number does not
+inherit terminal-cap identity.
+
+An attachment origin is the intersection of its selected plane and the authored
+infinite line `anchor + t * projection`. Both signs of `t` are allowed. The
+preferred X direction controls roll. All inputs use node-local coordinates;
+ancestor transforms place the completed result. The origin may lie outside the
+patch, so attaching a frame alone does not prove a feature fits.
+
+`clearance::PlanarPatch::from_workplane` extracts and checks the selected patch's
+outer boundary and holes. Reuse the patch to measure circular footprints with
+`circle_clearance(center, radius)`. The result gives a signed containment margin,
+nearest boundary point, source edge/features, and measured work.
+`classify(minimum, tolerance)` distinguishes satisfied, violated, and within the
+decision tolerance. A near-threshold result is not silently accepted.
+
+Measurements use the evaluated polygonal boundary in orthonormal workplane
+coordinates. They do not certify analytic curve error, three-dimensional bore
+clearance, or wall thickness. Crossings, contact, invalid nesting, stale source
+maps and exhausted work budgets are explicit errors.
+
+Run `cargo run -p material_gallery --bin semantic_attachments` for four retained,
+Boolean-drilled panels: baseline, resized, tilted, and a narrow panel with two
+clearance violations. It exports canonical recipes, a measured report, and a GLB
+with colored mounts and nearest-boundary witness strokes. The displayed bodies
+and measurements come from one shared query snapshot.
+
+Migration: schema 33 invalidates earlier evaluation fingerprints and canonical
+text. Extrusion-to-plane terminal faces now use `Feature::CapEnd`; standalone
+plane cuts retain `Feature::PlaneCutCap`. Explicit `WorkplanePolicy` literals must
+supply `min_projection_cos`; explicit `EvalPolicy` literals gain `workplane`.
+Both can initialize from `Default`. Existing strict-origin
+`face_workplane` calls keep their coordinate semantics.
 
 ## Materials through Booleans
 

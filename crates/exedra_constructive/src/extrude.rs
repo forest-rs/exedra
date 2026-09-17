@@ -21,7 +21,7 @@ use exedra_math::{dot, norm};
 #[derive(Debug)]
 pub struct PlaneExtrusion {
     /// Closed body. Walls and the start cap retain extrusion provenance and
-    /// regions; the terminating cap uses `REGION_CAP_END` and `PlaneCutCap`.
+    /// regions; the terminating cap uses `REGION_CAP_END` and `Feature::CapEnd`.
     /// Material slots may be bound to these regions by the assembly consumer.
     pub body: TessellatedBody,
     /// Terminating profile in the target plane's deterministic frame.
@@ -198,7 +198,7 @@ pub fn extrude_to_plane(
         },
     )
     .map_err(Error::Section)?;
-    let body = if denominator > 0.0 {
+    let mut body = if denominator > 0.0 {
         split.negative
     } else {
         split.positive
@@ -207,6 +207,30 @@ pub fn extrude_to_plane(
     if split.section.regions.is_empty() {
         return Err(Error::NumericLimit);
     }
+    let faces = body
+        .source_map
+        .face_features()
+        .iter()
+        .map(|&feature| {
+            if feature == Feature::PlaneCutCap {
+                Feature::CapEnd
+            } else {
+                feature
+            }
+        })
+        .collect();
+    body.source_map = crate::source_map::SourceMap::new(
+        &body.mesh,
+        faces,
+        body.mesh
+            .vertices()
+            .map(|vertex| {
+                body.source_map
+                    .vertex_feature(vertex)
+                    .expect("current extrusion provenance")
+            })
+            .collect(),
+    );
     Ok(PlaneExtrusion {
         body,
         section: split.section,
