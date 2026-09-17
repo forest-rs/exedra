@@ -127,16 +127,14 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 33 adds retained workplane attachments and semantic terminal caps.
-/// Extrusion-to-plane end faces now carry `Feature::CapEnd`; standalone plane
-/// cuts continue to carry `Feature::PlaneCutCap`. Update feature-based queries.
-/// Explicit `WorkplanePolicy` literals must supply `min_projection_cos`;
-/// explicit `EvalPolicy` literals gain `workplane`.
-/// Existing builder calls are unchanged; exhaustive policy literals should
-/// start from `EvalPolicy::default()` and set fields explicitly.
+/// Schema 34 preserves original surface provenance through Booleans and adds
+/// source-qualified cap selectors. Start/end cap selectors now follow surviving
+/// original caps through Boolean results. Immediate operand features are unchanged.
+/// Workplane selectors and attachments are now `Clone`, not `Copy`, because
+/// qualified selectors own their source labels. Clone values when reusing them.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped IR.
 /// JSON recipe nodes evolve additively without changing the format version.
-pub const EVAL_SCHEMA_VERSION: u32 = 33;
+pub const EVAL_SCHEMA_VERSION: u32 = 34;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
@@ -149,3 +147,6 @@ mod retained_plane_tests;
 
 #[cfg(test)]
 mod attachment_tests;
+
+#[cfg(test)]
+mod surface_origin_tests;

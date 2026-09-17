@@ -82,13 +82,20 @@ frame. The support is not emitted by the attachment node: include it in a group
 or Boolean when needed. `EvalPolicy::workplane` supplies accuracy and work limits.
 `GeometryReport::attachments` records resolved local frames and planarity evidence.
 
-`SurfaceSelector::EndCap` follows actual terminal-cap provenance through profile
-changes and tessellation changes. `StartCap`, explicit regions, and
-operand-qualified regions are also supported. Missing or disconnected surfaces
-are refused; there is no nearest-face fallback. Booleans currently replace cap
-features with operand attribution, so use an explicit operand-qualified region
-when selecting their output. A later cut reusing the cap's region number does not
-inherit terminal-cap identity.
+`SurfaceSelector::EndCap` follows original terminal-cap provenance through profile
+changes, placement, and Boolean face splits. `SourceEndCap("panel/body".into())`
+qualifies that role by the opaque source label on its generating recipe node;
+`SourceStartCap` does the same for the start cap. Name the extrusion or other
+surface-generating node, not a transform, instance, or Boolean wrapper. Qualified
+labels must be unique among reachable recipe nodes. Whole-recipe fingerprints
+include this naming context; node fingerprints still support subtree reuse. A shared definition counts
+once; disconnected occurrences still fail the connected-patch check. Missing,
+disconnected, nonplanar, and ambiguous targets are refused without a fallback.
+`SourceMap::surface_origin` exposes original feature and source independently of
+`face_feature`, which retains immediate Boolean operand attribution. Difference
+may reverse a surviving surface's winding without changing its ancestry. Other
+topology-changing operations do not yet promise to retain this additional ancestry.
+See [ADR 0015](docs/adr-0015-boolean-surface-provenance.md).
 
 An attachment origin is the intersection of its selected plane and the authored
 infinite line `anchor + t * projection`. Both signs of `t` are allowed. The
@@ -114,12 +121,10 @@ clearance violations. It exports canonical recipes, a measured report, and a GLB
 with colored mounts and nearest-boundary witness strokes. The displayed bodies
 and measurements come from one shared query snapshot.
 
-Migration: schema 33 invalidates earlier evaluation fingerprints and canonical
-text. Extrusion-to-plane terminal faces now use `Feature::CapEnd`; standalone
-plane cuts retain `Feature::PlaneCutCap`. Explicit `WorkplanePolicy` literals must
-supply `min_projection_cos`; explicit `EvalPolicy` literals gain `workplane`.
-Both can initialize from `Default`. Existing strict-origin
-`face_workplane` calls keep their coordinate semantics.
+Migration: schema 34 invalidates earlier evaluation fingerprints and canonical
+text. Workplane selectors and attachments now own optional source labels and
+are `Clone` rather than `Copy`; clone them when reusing owned values. Existing
+operand-qualified regions keep their immediate-Boolean meaning.
 
 ## Materials through Booleans
 

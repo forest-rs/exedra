@@ -196,7 +196,21 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 "on_workplane support {} child {} surface ",
                 support.0, child.0
             );
-            match attachment.surface {
+            match &attachment.surface {
+                SurfaceSelector::SourceStartCap(source) | SurfaceSelector::SourceEndCap(source) => {
+                    line.push_str(
+                        if matches!(attachment.surface, SurfaceSelector::SourceStartCap(_)) {
+                            "source_start_cap "
+                        } else {
+                            "source_end_cap "
+                        },
+                    );
+                    // Prefix keeps the empty UTF-8 label a nonempty token.
+                    line.push('x');
+                    for byte in source.as_bytes() {
+                        let _ = write!(line, "{byte:02X}");
+                    }
+                }
                 SurfaceSelector::StartCap => line.push_str("start_cap"),
                 SurfaceSelector::EndCap => line.push_str("end_cap"),
                 SurfaceSelector::Region(region) => {
@@ -923,6 +937,29 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             let child = NodeId(next_u32(&mut tokens, line)?);
             expect(&mut tokens, "surface", line)?;
             let surface = match tokens.next() {
+                Some(kind @ ("source_start_cap" | "source_end_cap")) => {
+                    let token = tokens
+                        .next()
+                        .and_then(|s| s.strip_prefix('x'))
+                        .ok_or(TextError::Malformed { line })?;
+                    if token.len() % 2 != 0 || !token.is_ascii() {
+                        return Err(TextError::Malformed { line });
+                    }
+                    let bytes = (0..token.len())
+                        .step_by(2)
+                        .map(|i| {
+                            u8::from_str_radix(&token[i..i + 2], 16)
+                                .map_err(|_| TextError::Malformed { line })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let source =
+                        String::from_utf8(bytes).map_err(|_| TextError::Malformed { line })?;
+                    if kind == "source_start_cap" {
+                        SurfaceSelector::SourceStartCap(source)
+                    } else {
+                        SurfaceSelector::SourceEndCap(source)
+                    }
+                }
                 Some("start_cap") => SurfaceSelector::StartCap,
                 Some("end_cap") => SurfaceSelector::EndCap,
                 Some("region") => SurfaceSelector::Region(next_u32(&mut tokens, line)?),
@@ -1568,14 +1605,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 33\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 34\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 33\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 34\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

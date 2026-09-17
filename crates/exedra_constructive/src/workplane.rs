@@ -8,6 +8,8 @@
 //! re-resolve surface intent instead of tracking transient faces across edits.
 //! Frames are snapshots in body coordinates, pinned to one logical mesh revision.
 
+use alloc::string::String;
+
 use crate::edge_finish::OperandRegion;
 use crate::ir::Placement3;
 use crate::tessellate::{Feature, TessellatedBody};
@@ -17,7 +19,7 @@ use exedra_math::{add, cross, dot, norm, normalize, scale, sub};
 use exedra_mesh::{FaceId, FaceTriangulation, Mesh, MeshRevision, attr};
 
 /// The planar face patch whose winding determines the workplane's +Z.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkplaneSelection {
     /// One live face of the source mesh. IDs are scoped to that logical mesh.
     Face(FaceId),
@@ -27,6 +29,10 @@ pub enum WorkplaneSelection {
     /// Faces retaining the authored terminal-cap feature, including an
     /// extrusion terminated by a plane.
     EndCap,
+    /// Surviving start cap of the uniquely named generating recipe node.
+    SourceStartCap(String),
+    /// Surviving terminal cap of the uniquely named generating recipe node.
+    SourceEndCap(String),
     /// All faces carrying this region. They must be edge-connected and must
     /// not mix Boolean operands with reused region numbers.
     Region(u32),
@@ -37,28 +43,44 @@ pub enum WorkplaneSelection {
 /// A surface description that can be retained across recipe evaluations.
 ///
 /// This value contains no mesh IDs. Resolve it afresh after edits. Caps follow
-/// feature provenance, not extremal positions; Boolean operations may replace
-/// that provenance, in which case use an explicitly qualified operand region.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// original feature provenance through Boolean splits, not extremal positions.
+/// Source-qualified caps use opaque labels on generating nodes, not wrappers.
+/// Labels must be unique in the recipe. Neither form stores transient mesh IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SurfaceSelector {
     /// The source operation's start cap.
     StartCap,
     /// The source operation's terminal cap.
     EndCap,
+    /// Surviving start cap of the uniquely named generating recipe node.
+    SourceStartCap(String),
+    /// Surviving terminal cap of the uniquely named generating recipe node.
+    SourceEndCap(String),
     /// An authored geometric region, which must resolve unambiguously.
     Region(u32),
     /// A region belonging to one operand of the producing Boolean operation.
     OperandRegion(OperandRegion),
 }
 impl SurfaceSelector {
+    /// Authored generating-node label for a qualified cap selector.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            Self::SourceStartCap(source) | Self::SourceEndCap(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Converts persistent surface intent to an evaluated workplane selection.
     #[must_use]
-    pub const fn selection(self) -> WorkplaneSelection {
+    pub fn selection(&self) -> WorkplaneSelection {
         match self {
             Self::StartCap => WorkplaneSelection::StartCap,
             Self::EndCap => WorkplaneSelection::EndCap,
-            Self::Region(region) => WorkplaneSelection::Region(region),
-            Self::OperandRegion(region) => WorkplaneSelection::OperandRegion(region),
+            Self::Region(region) => WorkplaneSelection::Region(*region),
+            Self::OperandRegion(region) => WorkplaneSelection::OperandRegion(*region),
+            Self::SourceStartCap(source) => WorkplaneSelection::SourceStartCap(source.clone()),
+            Self::SourceEndCap(source) => WorkplaneSelection::SourceEndCap(source.clone()),
         }
     }
 }
@@ -70,7 +92,7 @@ impl SurfaceSelector {
 /// body coordinates. The projected X direction controls roll; no axis is guessed.
 /// The origin may lie outside the patch: use a planar clearance query to check
 /// footprint containment. Resolution never matches a previous transient face ID.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkplaneAttachment {
     /// Surface to resolve uniquely on each evaluation.
     pub surface: SurfaceSelector,
@@ -314,14 +336,34 @@ fn build_workplane(
         .map_err(|_| Error::StaleSource)?;
     let mesh = &body.mesh;
     let regions = mesh.attrs().dense(attr::FACE_REGION);
-    let matches = |face: FaceId| match selection {
-        WorkplaneSelection::Face(wanted) => face == wanted,
-        WorkplaneSelection::StartCap => {
-            body.source_map.face_feature(face) == Some(Feature::CapStart)
+    if let WorkplaneSelection::SourceStartCap(source) | WorkplaneSelection::SourceEndCap(source) =
+        &selection
+        && body.source_map.source_is_ambiguous(source)
+    {
+        return Err(Error::AmbiguousSelection);
+    }
+    let matches = |face: FaceId| match &selection {
+        WorkplaneSelection::Face(wanted) => face == *wanted,
+        WorkplaneSelection::StartCap => body
+            .source_map
+            .surface_origin(face)
+            .is_some_and(|origin| origin.feature == Feature::CapStart),
+        WorkplaneSelection::EndCap => body
+            .source_map
+            .surface_origin(face)
+            .is_some_and(|origin| origin.feature == Feature::CapEnd),
+        WorkplaneSelection::SourceStartCap(source) | WorkplaneSelection::SourceEndCap(source) => {
+            let feature = if matches!(selection, WorkplaneSelection::SourceStartCap(_)) {
+                Feature::CapStart
+            } else {
+                Feature::CapEnd
+            };
+            body.source_map.surface_origin(face).is_some_and(|origin| {
+                origin.feature == feature && origin.source.as_deref() == Some(source.as_str())
+            })
         }
-        WorkplaneSelection::EndCap => body.source_map.face_feature(face) == Some(Feature::CapEnd),
         WorkplaneSelection::Region(region) => {
-            regions.and_then(|r| r.get(face.into())) == Some(&region)
+            regions.and_then(|r| r.get(face.into())) == Some(region)
         }
         WorkplaneSelection::OperandRegion(wanted) => {
             regions.and_then(|r| r.get(face.into())) == Some(&wanted.region)
@@ -331,14 +373,14 @@ fn build_workplane(
                     })
         }
     };
-    if let WorkplaneSelection::Face(face) = selection
-        && (face == FaceId::OUTSIDE || mesh.face_edge(face).is_none())
+    if let WorkplaneSelection::Face(face) = &selection
+        && (*face == FaceId::OUTSIDE || mesh.face_edge(*face).is_none())
     {
         return Err(Error::InvalidFace);
     }
     let mut faces = Vec::new();
-    if let WorkplaneSelection::Face(face) = selection {
-        faces.push(face);
+    if let WorkplaneSelection::Face(face) = &selection {
+        faces.push(*face);
     } else {
         for face in mesh.faces().filter(|&face| matches(face)) {
             if faces.len() >= policy.max_faces as usize {

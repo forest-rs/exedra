@@ -13,7 +13,7 @@
 //! (feature → faces) is built once at construction and queried by binary
 //! search.
 
-use alloc::vec::Vec;
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use exedra_mesh::{FaceId, Mesh, MeshRevision, VertexId};
 
@@ -49,8 +49,21 @@ pub struct SourceMapStats {
     pub vertex_entries: usize,
     /// Reverse-index entries.
     pub reverse_entries: usize,
-    /// Approximate retained bytes across all tables.
+    /// Approximate retained bytes across all tables. Shared source strings are
+    /// conservatively counted once per referencing face.
     pub approx_bytes: usize,
+}
+
+/// Original generating surface, independent of the latest Boolean operand.
+/// Placement and Boolean face splits preserve this record. A difference may
+/// reverse its winding: the feature describes ancestry, not the current normal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SurfaceOrigin {
+    /// Feature on the generating body.
+    pub feature: Feature,
+    /// Opaque label on the generating recipe node, when authored.
+    /// Wrapper labels do not rename surfaces inherited from their children.
+    pub source: Option<Arc<str>>,
 }
 
 /// Per-element provenance for one tessellated body.
@@ -58,6 +71,8 @@ pub struct SourceMapStats {
 pub struct SourceMap {
     face_ids: Vec<FaceId>,
     face_features: Vec<Feature>,
+    origins: Vec<Option<SurfaceOrigin>>,
+    ambiguous_sources: Vec<String>,
     vertex_ids: Vec<VertexId>,
     vertex_features: Vec<Feature>,
     /// `(feature, face index)` sorted by feature then index: the reverse
@@ -95,6 +110,17 @@ impl SourceMap {
         by_feature.sort_unstable();
         Self {
             face_ids,
+            origins: face_features
+                .iter()
+                .map(|&feature| match feature {
+                    Feature::BooleanFace { .. } | Feature::BooleanSeam => None,
+                    _ => Some(SurfaceOrigin {
+                        feature,
+                        source: None,
+                    }),
+                })
+                .collect(),
+            ambiguous_sources: Vec::new(),
             face_features,
             vertex_ids,
             vertex_features,
@@ -135,6 +161,48 @@ impl SourceMap {
             .binary_search_by_key(&face.index(), |id| id.index())
             .ok()?;
         (self.face_ids[index] == face).then(|| self.face_features[index])
+    }
+
+    /// Original surface of a live face, when correspondence was retained.
+    /// `None` means unknown ancestry; callers must not infer it from regions.
+    #[must_use]
+    pub fn surface_origin(&self, face: FaceId) -> Option<&SurfaceOrigin> {
+        let index = self
+            .face_ids
+            .binary_search_by_key(&face.index(), |id| id.index())
+            .ok()?;
+        (self.face_ids[index] == face)
+            .then(|| self.origins[index].as_ref())
+            .flatten()
+    }
+
+    /// Whether a label names multiple reachable nodes in the evaluated recipe.
+    #[must_use]
+    pub fn source_is_ambiguous(&self, source: &str) -> bool {
+        self.ambiguous_sources.iter().any(|label| label == source)
+    }
+
+    pub(crate) fn with_origins(mut self, origins: Vec<Option<SurfaceOrigin>>) -> Self {
+        assert_eq!(
+            origins.len(),
+            self.face_ids.len(),
+            "one origin entry per live face"
+        );
+        self.origins = origins;
+        self
+    }
+
+    pub(crate) fn bind_source(&mut self, source: &str) {
+        let source: Arc<str> = Arc::from(source);
+        for origin in self.origins.iter_mut().flatten() {
+            if origin.source.is_none() {
+                origin.source = Some(Arc::clone(&source));
+            }
+        }
+    }
+
+    pub(crate) fn set_ambiguous_sources(&mut self, sources: &[String]) {
+        self.ambiguous_sources = sources.to_vec();
     }
 
     /// The feature whose surface a live vertex lies on (O(log n)).
@@ -188,7 +256,20 @@ impl SourceMap {
                 + self.vertex_features.len() * entry
                 + self.face_ids.len() * size_of::<FaceId>()
                 + self.vertex_ids.len() * size_of::<VertexId>()
-                + self.by_feature.len() * reverse,
+                + self.by_feature.len() * reverse
+                + self.origins.len() * size_of::<Option<SurfaceOrigin>>()
+                + self
+                    .origins
+                    .iter()
+                    .flatten()
+                    .filter_map(|o| o.source.as_ref())
+                    .map(|s| s.len())
+                    .sum::<usize>()
+                + self
+                    .ambiguous_sources
+                    .iter()
+                    .map(|s| size_of::<String>() + s.len())
+                    .sum::<usize>(),
         }
     }
 
@@ -202,6 +283,8 @@ impl SourceMap {
         Self {
             face_ids: self.face_ids.clone(),
             face_features: self.face_features.clone(),
+            origins: self.origins.clone(),
+            ambiguous_sources: self.ambiguous_sources.clone(),
             vertex_ids: self.vertex_ids.clone(),
             vertex_features: self.vertex_features.clone(),
             by_feature: self.by_feature.clone(),
@@ -212,9 +295,9 @@ impl SourceMap {
     /// Renders the map as deterministic text lines for goldens: one
     /// `face <index> <feature>` line per face in index order.
     #[must_use]
-    pub fn dump(&self) -> alloc::string::String {
+    pub fn dump(&self) -> String {
         use core::fmt::Write;
-        let mut out = alloc::string::String::new();
+        let mut out = String::new();
         for (face, feature) in self.face_ids.iter().zip(&self.face_features) {
             let _ = writeln!(out, "face {} {}", face.index(), FeatureLabel(*feature));
         }

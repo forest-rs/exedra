@@ -379,6 +379,131 @@ mod tests {
         tessellate::REGION_CAP_END,
     };
 
+    fn naming_context(duplicate: bool, retained: bool) -> Assembly {
+        let mut b = RecipeBuilder::new();
+        let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+        let label = b.source_ref("panel");
+        let kind = NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height: 1.0,
+            caps: CapMode::Both,
+        };
+        let first = b.with_source(label).add(kind.clone()).unwrap();
+        let second = if duplicate {
+            b.with_source(label).add(kind).unwrap()
+        } else {
+            first
+        };
+        let second = if retained {
+            b.add(NodeKind::OnWorkplane {
+                support: second,
+                child: first,
+                attachment: named_cap(),
+            })
+            .unwrap()
+        } else {
+            second
+        };
+        let root = b
+            .add(NodeKind::Group {
+                children: alloc::vec![first, second],
+            })
+            .unwrap();
+        let mut assembly = Assembly::new();
+        assembly
+            .add_recipe_part("panel", b.finish(root).unwrap())
+            .unwrap();
+        assembly
+    }
+
+    fn named_cap() -> WorkplaneAttachment {
+        WorkplaneAttachment {
+            surface: exedra_constructive::workplane::SurfaceSelector::SourceEndCap("panel".into()),
+            anchor: [0.0; 3],
+            projection: [0.0, 0.0, 1.0],
+            x_direction: [1.0, 0.0, 0.0],
+        }
+    }
+
+    #[test]
+    fn naming_context_separates_snapshot_cache_entries_in_both_directions() {
+        let query = |snapshot: &EvaluationSnapshot| {
+            snapshot
+                .body(PartId(0), 0)
+                .unwrap()
+                .resolve_attachment(&named_cap(), &WorkplanePolicy::default())
+                .map(|_| ())
+        };
+        for first_duplicate in [false, true] {
+            let mut compiler = PartCompiler::new();
+            let policy = CompilePolicy::default();
+            let first = compiler
+                .compile_snapshot(&naming_context(first_duplicate, false), &policy)
+                .unwrap();
+            let expected_first = if first_duplicate {
+                Err(WorkplaneError::AmbiguousSelection)
+            } else {
+                Ok(())
+            };
+            assert_eq!(query(&first), expected_first);
+            let second = compiler
+                .compile_snapshot(&naming_context(!first_duplicate, false), &policy)
+                .unwrap();
+            assert_eq!(
+                query(&second),
+                if first_duplicate {
+                    Ok(())
+                } else {
+                    Err(WorkplaneError::AmbiguousSelection)
+                }
+            );
+            assert_eq!(
+                query(&first),
+                expected_first,
+                "old snapshots retain their naming context"
+            );
+            let again = compiler
+                .compile_snapshot(&naming_context(first_duplicate, false), &policy)
+                .unwrap();
+            assert_eq!(query(&again), expected_first);
+            assert_eq!(compiler.counters().cache_hits, 1);
+            compiler.clear_cache();
+            assert_eq!(query(&first), expected_first);
+        }
+    }
+
+    #[test]
+    fn naming_context_cannot_skip_retained_attachment_failure_on_cache_hit() {
+        for retain in [false, true] {
+            let mut compiler = PartCompiler::new();
+            let policy = CompilePolicy::default();
+            let compile = |compiler: &mut PartCompiler, duplicate| {
+                let assembly = naming_context(duplicate, true);
+                if retain {
+                    compiler.compile_snapshot(&assembly, &policy).map(|_| ())
+                } else {
+                    compiler.compile_parts(&assembly, &policy).map(|_| ())
+                }
+            };
+            compile(&mut compiler, false).unwrap();
+            let error = compile(&mut compiler, true).unwrap_err();
+            assert!(matches!(
+                error,
+                crate::CompileError::Evaluate {
+                    error: exedra_constructive::evaluate::EvalError {
+                        error: exedra_constructive::tessellate::TessellateError::Attachment(
+                            WorkplaneError::AmbiguousSelection
+                        ),
+                        ..
+                    },
+                    ..
+                }
+            ));
+            compile(&mut compiler, false).unwrap();
+        }
+    }
+
     fn assembly(height: f64) -> Assembly {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::rect(2.0, 3.0).unwrap());
@@ -545,14 +670,14 @@ mod tests {
             workplane::{SurfaceSelector, WorkplaneAttachment},
         };
         let attachment = WorkplaneAttachment {
-            surface: SurfaceSelector::EndCap,
+            surface: SurfaceSelector::SourceEndCap("panel/origin".into()),
             anchor: [0.75, 1.0, 0.0],
             projection: [0.0, 0.0, 1.0],
             x_direction: [1.0, 0.0, 0.0],
         };
         let make = |width, duplicate| {
             let mut b = RecipeBuilder::new();
-            let label = b.source_ref("panel");
+            let label = b.source_ref("panel/origin");
             let profile = b.add_profile(builders::rect(width, 3.0).unwrap());
             let support = b
                 .with_source(label)
@@ -563,6 +688,23 @@ mod tests {
                         normal: [-0.2, 0.0, 1.0],
                         distance: 1.0,
                     },
+                })
+                .unwrap();
+            let hole_profile = b.add_profile(builders::rect(0.2, 0.2).unwrap());
+            let hole = b
+                .add(NodeKind::Extrude {
+                    profile: hole_profile,
+                    placement: Placement3::translate(0.1, 2.0, -1.0),
+                    height: 4.0,
+                    caps: CapMode::Both,
+                })
+                .unwrap();
+            let label = b.source_ref("panel");
+            let support = b
+                .with_source(label)
+                .add(NodeKind::Csg {
+                    op: exedra_constructive::ir::CsgOp::Difference,
+                    operands: alloc::vec![support, hole],
                 })
                 .unwrap();
             let root = if duplicate {

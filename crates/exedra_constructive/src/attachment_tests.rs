@@ -341,7 +341,7 @@ fn removed_terminal_cap_is_missing_even_when_a_new_cut_reuses_its_region() {
 }
 
 #[test]
-fn boolean_surfaces_require_explicit_operand_region_when_cap_provenance_is_replaced() {
+fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
     use crate::{edge_finish::OperandRegion, ir::CsgOp};
     let mut b = RecipeBuilder::new();
     let panel = b.add_profile(builders::rect(2.0, 2.0).unwrap());
@@ -371,12 +371,9 @@ fn boolean_surfaces_require_explicit_operand_region_when_cap_provenance_is_repla
     let result = evaluate(&b.finish(root).unwrap(), &EvalPolicy::default()).unwrap();
     assert_eq!(result.bodies.len(), 1);
     let body = &result.bodies[0].body;
-    assert_eq!(
-        intent()
-            .resolve(body, &crate::workplane::WorkplanePolicy::default())
-            .unwrap_err(),
-        WorkplaneError::EmptySelection
-    );
+    let semantic = intent()
+        .resolve(body, &crate::workplane::WorkplanePolicy::default())
+        .unwrap();
     let explicit = WorkplaneAttachment {
         surface: SurfaceSelector::OperandRegion(OperandRegion {
             operand: 0,
@@ -387,6 +384,7 @@ fn boolean_surfaces_require_explicit_operand_region_when_cap_provenance_is_repla
     let frame = explicit
         .resolve(body, &crate::workplane::WorkplanePolicy::default())
         .unwrap();
+    assert_eq!(semantic.faces(), frame.faces());
     let patch = crate::clearance::PlanarPatch::from_workplane(
         body,
         &frame,

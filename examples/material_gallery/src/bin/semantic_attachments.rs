@@ -28,7 +28,7 @@ const RADIUS: f64 = 0.12;
 const REQUIRED: f64 = 0.25;
 fn attachment() -> WorkplaneAttachment {
     WorkplaneAttachment {
-        surface: SurfaceSelector::EndCap,
+        surface: SurfaceSelector::SourceEndCap("panel/surface".into()),
         anchor: [0.0; 3],
         projection: [0.0, 0.0, 1.0],
         x_direction: [1.0, 0.0, 0.0],
@@ -43,14 +43,17 @@ fn recipe(
 ) -> Result<Recipe, Box<dyn std::error::Error>> {
     let mut b = RecipeBuilder::new();
     let panel_profile = b.add_profile(rect(width, height)?);
-    let definition = b.add(NodeKind::ExtrudeToPlane {
-        profile: panel_profile,
-        placement: Placement3::IDENTITY,
-        plane: Plane3 {
-            normal: [-slope, 0.0, 1.0],
-            distance: thickness,
-        },
-    })?;
+    let surface_source = b.source_ref("panel/surface");
+    let definition = b
+        .with_source(surface_source)
+        .add(NodeKind::ExtrudeToPlane {
+            profile: panel_profile,
+            placement: Placement3::IDENTITY,
+            plane: Plane3 {
+                normal: [-slope, 0.0, 1.0],
+                distance: thickness,
+            },
+        })?;
     let source = b.source_ref("panel");
     // Explicitly share the support definition among queries and construction.
     let panel = b.with_source(source).add(NodeKind::Instance {
@@ -89,7 +92,7 @@ fn recipe(
     })?;
     let collars = b.add(NodeKind::Group { children: collars })?;
     let collars = b.add(NodeKind::OnWorkplane {
-        support: panel,
+        support: drilled,
         child: collars,
         attachment: attachment(),
     })?;
@@ -159,6 +162,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let patch = plane.planar_patch(&BoundaryPolicy::default())?;
         let placement = Placement3::translate(x, y, 0.0);
         let drilled = snapshot.body_by_source(part, "drilled")?;
+        let drilled_plane =
+            drilled.resolve_attachment(&attachment(), &policy.evaluation.workplane)?;
+        let drilled_patch = drilled_plane.planar_patch(&BoundaryPolicy::default())?;
+        assert_eq!(
+            drilled_patch.loops().len(),
+            5,
+            "terminal patch must retain the outer boundary and four drilled holes"
+        );
+        // Measure authored hole-to-edge requirements before drilling. The
+        // drilled patch includes the holes themselves as excluded material.
+        let _ = writeln!(
+            report,
+            "{name}: terminal surface survives drilling with {} boundary loops",
+            drilled_patch.loops().len()
+        );
         assert!(
             drilled.geometry().mesh.validate_deep().is_empty(),
             "{name}: drilled topology must validate"

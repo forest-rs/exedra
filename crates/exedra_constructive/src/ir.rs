@@ -21,6 +21,7 @@
 //!   frontend-assigned string, interned per recipe. Source references give
 //!   provenance continuity across recipe edits and are never parsed here.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use exedra_mesh::{RoundKind, RoundPolicy};
@@ -692,6 +693,8 @@ pub struct Recipe {
     policies: Vec<String>,
     imports: Vec<exedra_mesh::Mesh>,
     fingerprints: Vec<Fingerprint>,
+    ambiguous_sources: Vec<String>,
+    recipe_fingerprint: Fingerprint,
 }
 
 impl Recipe {
@@ -819,11 +822,18 @@ impl Recipe {
         self.fingerprints.get(id.0 as usize).copied()
     }
 
-    /// The whole recipe's fingerprint: the root's.
+    /// Whole-recipe evaluation identity: root content plus reachable source-label
+    /// ambiguity. Unlike a node fingerprint, this distinguishes shared definitions
+    /// from independently authored identical definitions when naming semantics differ.
+    /// Unreachable nodes do not affect this identity. Subtree geometry caches should
+    /// continue to use [`Self::fingerprint`].
     #[must_use]
     pub fn recipe_fingerprint(&self) -> Fingerprint {
-        self.fingerprint(self.root)
-            .expect("the root id is validated at finish")
+        self.recipe_fingerprint
+    }
+
+    pub(crate) fn ambiguous_sources(&self) -> &[String] {
+        &self.ambiguous_sources
     }
 
     /// Returns a new recipe mirrored across `plane` in recipe coordinates.
@@ -1172,7 +1182,21 @@ impl RecipeBuilder {
         }
         let fingerprints =
             compute_fingerprints(&self.profiles, &self.nodes, &self.sources, &self.imports);
+        let ambiguous_sources = ambiguous_sources(&self.nodes, &self.sources, root);
+        let mut recipe_fingerprint = fingerprints[root.0 as usize];
+        if !ambiguous_sources.is_empty() {
+            let mut bytes = Vec::from(&b"recipe-surface-ambiguity-v1"[..]);
+            put_u128(&mut bytes, recipe_fingerprint.0);
+            put_u32(&mut bytes, len_u32(ambiguous_sources.len()));
+            for source in &ambiguous_sources {
+                put_u32(&mut bytes, len_u32(source.len()));
+                bytes.extend_from_slice(source.as_bytes());
+            }
+            recipe_fingerprint = Fingerprint(fnv128(&bytes, FNV128_OFFSET));
+        }
         Ok(Recipe {
+            ambiguous_sources,
+            recipe_fingerprint,
             profiles: self.profiles,
             nodes: self.nodes,
             root,
@@ -1695,6 +1719,57 @@ fn mesh_canon_bytes(mesh: &exedra_mesh::Mesh, out: &mut Vec<u8>) {
     }
 }
 
+fn ambiguous_sources(nodes: &[Node], sources: &[String], root: NodeId) -> Vec<String> {
+    // Only reachable nodes affect whole-recipe evaluation identity. Count a
+    // shared definition once, even when it has several occurrences.
+    let mut reachable = alloc::vec![false; nodes.len()];
+    reachable[root.0 as usize] = true;
+    let mut counts = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate().rev() {
+        if !reachable[index] {
+            continue;
+        }
+        if let Some(label) = node.source.map(|id| sources[id.0 as usize].as_str()) {
+            *counts.entry(label).or_insert(0_u32) += 1;
+        }
+        let mut visit = |id: NodeId| reachable[id.0 as usize] = true;
+        match &node.kind {
+            NodeKind::OnWorkplane { support, child, .. } => {
+                visit(*support);
+                visit(*child);
+            }
+            NodeKind::PlaneCut { child, .. }
+            | NodeKind::EdgeFinish { child, .. }
+            | NodeKind::Transform { child, .. }
+            | NodeKind::Mirror { child, .. }
+            | NodeKind::Stretch { child, .. } => visit(*child),
+            NodeKind::Instance { of, .. } => visit(*of),
+            NodeKind::Group { children }
+            | NodeKind::Csg {
+                operands: children, ..
+            } => {
+                for &child in children {
+                    visit(child);
+                }
+            }
+            NodeKind::ExtrudeToPlane { .. }
+            | NodeKind::Extrude { .. }
+            | NodeKind::Revolve { .. }
+            | NodeKind::Loft { .. }
+            | NodeKind::Sweep { .. }
+            | NodeKind::PlanarFace { .. }
+            | NodeKind::Primitive { .. }
+            | NodeKind::MeshImport { .. }
+            | NodeKind::GridSurface { .. } => {}
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(label, _)| String::from(label))
+        .collect()
+}
+
 fn compute_fingerprints(
     profiles: &[Profile2],
     nodes: &[Node],
@@ -1797,12 +1872,22 @@ fn node_canon_bytes(
             out.push(17);
             child(out, *support);
             child(out, *c);
-            match attachment.surface {
+            match &attachment.surface {
+                crate::workplane::SurfaceSelector::SourceStartCap(source) => {
+                    out.push(4);
+                    put_u32(out, len_u32(source.len()));
+                    out.extend_from_slice(source.as_bytes());
+                }
+                crate::workplane::SurfaceSelector::SourceEndCap(source) => {
+                    out.push(5);
+                    put_u32(out, len_u32(source.len()));
+                    out.extend_from_slice(source.as_bytes());
+                }
                 crate::workplane::SurfaceSelector::StartCap => out.push(0),
                 crate::workplane::SurfaceSelector::EndCap => out.push(1),
                 crate::workplane::SurfaceSelector::Region(region) => {
                     out.push(2);
-                    put_u32(out, region);
+                    put_u32(out, *region);
                 }
                 crate::workplane::SurfaceSelector::OperandRegion(region) => {
                     out.push(3);
@@ -2727,7 +2812,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x32161ea47b59023309a06a40c1f36528,
+            0xf4a30116f8116a34ccb27f22a33e0726,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

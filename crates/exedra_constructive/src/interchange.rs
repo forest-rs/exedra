@@ -628,7 +628,7 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
         } => NodeKindDto::OnWorkplane {
             support: support.0,
             child: child.0,
-            attachment: (*attachment).into(),
+            attachment: attachment.clone().into(),
         },
         NodeKind::PlaneCut {
             child,
@@ -916,7 +916,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
         } => NodeKind::OnWorkplane {
             support: NodeId(*support),
             child: NodeId(*child),
-            attachment: (*attachment).into(),
+            attachment: attachment.clone().into(),
         },
         NodeKindDto::PlaneCut {
             child,
@@ -1233,13 +1233,23 @@ fn path_segment_value(segment: &PathSegmentDto) -> crate::path::PathSegment3 {
 }
 
 /// Persistent surface intent; never a transient face index.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SurfaceSelectorDto {
     /// Authored start cap.
     StartCap,
     /// Authored terminal cap.
     EndCap,
+    /// Start cap qualified by its generating-node source label.
+    SourceStartCap {
+        /// Opaque authored label.
+        source: String,
+    },
+    /// Terminal cap qualified by its generating-node source label.
+    SourceEndCap {
+        /// Opaque authored label.
+        source: String,
+    },
     /// Unique geometric region.
     Region {
         /// Authored region number.
@@ -1255,7 +1265,7 @@ pub enum SurfaceSelectorDto {
 }
 
 /// An attachment's persistent surface and authored body-local frame controls.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkplaneAttachmentDto {
     /// Surface to resolve afresh.
     pub surface: SurfaceSelectorDto,
@@ -1272,6 +1282,12 @@ impl From<crate::workplane::WorkplaneAttachment> for WorkplaneAttachmentDto {
         Self {
             surface: match value.surface {
                 SurfaceSelector::StartCap => SurfaceSelectorDto::StartCap,
+                SurfaceSelector::SourceStartCap(source) => {
+                    SurfaceSelectorDto::SourceStartCap { source }
+                }
+                SurfaceSelector::SourceEndCap(source) => {
+                    SurfaceSelectorDto::SourceEndCap { source }
+                }
                 SurfaceSelector::EndCap => SurfaceSelectorDto::EndCap,
                 SurfaceSelector::Region(region) => SurfaceSelectorDto::Region { region },
                 SurfaceSelector::OperandRegion(value) => SurfaceSelectorDto::OperandRegion {
@@ -1291,6 +1307,12 @@ impl From<WorkplaneAttachmentDto> for crate::workplane::WorkplaneAttachment {
         Self {
             surface: match value.surface {
                 SurfaceSelectorDto::StartCap => SurfaceSelector::StartCap,
+                SurfaceSelectorDto::SourceStartCap { source } => {
+                    SurfaceSelector::SourceStartCap(source)
+                }
+                SurfaceSelectorDto::SourceEndCap { source } => {
+                    SurfaceSelector::SourceEndCap(source)
+                }
                 SurfaceSelectorDto::EndCap => SurfaceSelector::EndCap,
                 SurfaceSelectorDto::Region { region } => SurfaceSelector::Region(region),
                 SurfaceSelectorDto::OperandRegion { operand, region } => {
