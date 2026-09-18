@@ -49,9 +49,15 @@
 //! what fills the gap: a round arc of the offset radius, or a sharp miter
 //! bounded by an explicit limit. Where they overlap instead — the inside of
 //! a turn — the two offset curves are trimmed back to their intersection.
-//! Trimming is analytic and local: line/line, line/arc, and arc/arc only.
-//! A corner that needs trimming next to a fitted cubic is rejected with
-//! [`ProfileError::OffsetCornerUnsupported`] rather than approximated.
+//! Line/line, line/arc, and arc/arc trimming remains analytic. Beside fitted
+//! cubics, bounded interval searches isolate intersections on finite runs.
+//! Exactly one transverse intersection is required; competing intersections,
+//! tangencies, coincidence, or unresolved intersections at fitted-piece endpoints
+//! are explicit failures. Retained cubic pieces are split at their parameters;
+//! their endpoint and adjacent handle move by at most `trim_tolerance` to share
+//! one join. [`OffsetResult::trims`] records this operation separately from fitting.
+//! The legacy method uses `abs(distance) * 1e-6` trim accuracy and the default
+//! trim work budget; use [`OffsetPolicy`] for absolute recipe-unit controls.
 //!
 //! ## Rejection, never repair
 //!
@@ -92,8 +98,12 @@ use kurbo::{BezPath, CubicBez, ParamCurve, ParamCurveDeriv, PathEl, Point, Shape
 
 #[path = "offset_policy.rs"]
 mod policy;
+#[path = "offset_trim/mod.rs"]
+mod trim;
 use policy::OffsetContext;
-pub use policy::{OffsetBudget, OffsetMethod, OffsetPolicy, OffsetResult, OffsetRun, OffsetWork};
+pub use policy::{
+    OffsetBudget, OffsetMethod, OffsetPolicy, OffsetResult, OffsetRun, OffsetTrim, OffsetWork,
+};
 
 use crate::ir::PolicyId;
 use crate::profile::{
@@ -177,7 +187,8 @@ impl Profile2 {
     /// below `1.0` or not finite. Per-loop failures are
     /// [`ProfileError::OffsetArcCollapsed`],
     /// [`ProfileError::OffsetMiterLimitExceeded`],
-    /// [`ProfileError::OffsetCornerUnsupported`],
+    /// [`ProfileError::OffsetTrimUnresolved`], [`ProfileError::OffsetTrimAmbiguous`],
+    /// [`ProfileError::OffsetBudgetExceeded`],
     /// [`ProfileError::OffsetLoopDegenerate`],
     /// [`ProfileError::OffsetSelfIntersects`], and
     /// [`ProfileError::OffsetUndercut`]; whole-profile failures are
@@ -207,8 +218,8 @@ impl Profile2 {
     /// from [`OffsetResult::profile`]; retain the result to keep derivation evidence.
     /// Cubic fitting tolerance is a target, not a certified continuous bound.
     /// Checks operate on bounded chord approximations; finer contacts can be
-    /// unresolved. Unsupported cubic corner trimming and collapsed topology
-    /// remain errors, never automatic repair.
+    /// unresolved. Ambiguous or unresolved trims and collapsed topology remain
+    /// errors, never automatic repair.
     ///
     /// A zero distance copies the profile and records identity runs. Source
     /// and result budgets still apply, but no fitting or checking is needed.
@@ -251,6 +262,7 @@ impl Profile2 {
             policy: *policy,
             work: context.work,
             runs: context.runs,
+            trims: context.trims,
         })
     }
 
@@ -415,7 +427,7 @@ enum PieceKind {
         /// Source sweep in radians, signed.
         sweep: f64,
     },
-    /// A refitted cubic run; never trimmed, never extended.
+    /// A refitted cubic run; locally trimmed but never extended.
     Fitted(Vec<Seg2>),
 }
 
@@ -435,6 +447,8 @@ struct Corner {
     trimmed: bool,
     /// Segments bridging `end` to `start`, in order.
     inserts: Vec<Seg2>,
+    /// Numerical cuts on the earlier and later run, respectively.
+    cuts: Option<[trim::Cut; 2]>,
 }
 
 fn offset_loop(
@@ -453,6 +467,8 @@ fn offset_loop(
     let mut ends: Vec<Point> = pieces.iter().map(|p| p.end).collect();
     let mut starts: Vec<Point> = pieces.iter().map(|p| p.start).collect();
     let mut trimmed = vec![false; count];
+    let mut start_cuts = vec![None; count];
+    let mut end_cuts = vec![None; count];
     let mut inserts: Vec<Vec<Seg2>> = (0..count).map(|_| Vec::new()).collect();
 
     for index in 0..count {
@@ -465,7 +481,12 @@ fn offset_loop(
             corners,
             hole,
             index,
+            context,
         )?;
+        if let Some([end, start]) = corner.cuts {
+            end_cuts[index] = Some(end);
+            start_cuts[next] = Some(start);
+        }
         ends[index] = corner.end;
         starts[next] = corner.start;
         if corner.trimmed {
@@ -484,10 +505,36 @@ fn offset_loop(
         {
             return Err(ProfileError::OffsetLoopDegenerate { hole });
         }
+        let numerical = start_cuts[index].is_some() || end_cuts[index].is_some();
+        trim::check_cuts(piece, start_cuts[index], end_cuts[index], hole, index)?;
+        let fitted = if let PieceKind::Fitted(fitted) = &piece.kind {
+            Some(trim::emit(
+                piece,
+                fitted,
+                start_cuts[index],
+                end_cuts[index],
+                starts[index],
+                ends[index],
+                hole,
+                context,
+            )?)
+        } else {
+            None
+        };
         let start = crate::len_u32(segs.len());
         let (piece_count, method) = match &piece.kind {
-            PieceKind::Fitted(fitted) => (fitted.len(), OffsetMethod::Fitted),
-            _ => (1, OffsetMethod::Analytic),
+            PieceKind::Fitted(_) => (
+                fitted.as_ref().expect("fitted run").len(),
+                OffsetMethod::Fitted,
+            ),
+            _ => (
+                1,
+                if numerical {
+                    OffsetMethod::Trimmed
+                } else {
+                    OffsetMethod::Analytic
+                },
+            ),
         };
         context.charge(
             OffsetBudget::ResultSegments,
@@ -517,7 +564,7 @@ fn offset_loop(
                     tag: piece.tag,
                 });
             }
-            PieceKind::Fitted(fitted) => segs.extend(fitted.iter().cloned()),
+            PieceKind::Fitted(_) => segs.extend(fitted.expect("fitted run")),
         }
         let end = crate::len_u32(segs.len());
         context.record(hole, Some(crate::len_u32(index)), start..end, method);
@@ -781,6 +828,10 @@ fn build_cubic_piece(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private corner geometry and operation context"
+)]
 fn resolve_corner(
     before: &Piece,
     after: &Piece,
@@ -789,12 +840,14 @@ fn resolve_corner(
     corners: CornerPolicy,
     hole: Option<usize>,
     index: usize,
+    context: &mut OffsetContext,
 ) -> Result<Corner, ProfileError> {
     let plain = Corner {
         end: before.end,
         start: after.start,
         trimmed: false,
         inserts: Vec::new(),
+        cuts: None,
     };
     if before.end == after.start {
         return Ok(plain);
@@ -813,6 +866,7 @@ fn resolve_corner(
             start: before.end,
             trimmed: false,
             inserts: Vec::new(),
+            cuts: None,
         });
     }
     let gap = distance * turn > 0.0;
@@ -830,6 +884,15 @@ fn resolve_corner(
         };
     }
     if overlap {
+        if matches!(before.kind, PieceKind::Fitted(_)) || matches!(after.kind, PieceKind::Fitted(_))
+        {
+            let tolerance = context
+                .policy
+                .map_or((distance.abs() * 1e-6).max(f64::MIN_POSITIVE), |p| {
+                    p.trim_tolerance
+                });
+            return trim::corner(before, after, tolerance, hole, index, context);
+        }
         return trim_corner(before, after, vertex, hole, index);
     }
     // Unreachable for finite inputs (a nonzero distance and a turn past
@@ -908,6 +971,7 @@ fn miter_corner(
         start,
         trimmed: false,
         inserts,
+        cuts: None,
     })
 }
 
@@ -924,7 +988,7 @@ fn trim_corner(
     hole: Option<usize>,
     index: usize,
 ) -> Result<Corner, ProfileError> {
-    let unsupported = ProfileError::OffsetCornerUnsupported { hole, seg: index };
+    let unsupported = ProfileError::OffsetTrimUnresolved { hole, seg: index };
     let first = prim_of(before, before.end, before.end_normal).ok_or(unsupported)?;
     let second = prim_of(after, after.start, after.start_normal).ok_or(unsupported)?;
     let point =
@@ -934,6 +998,7 @@ fn trim_corner(
         start: point,
         trimmed: true,
         inserts: Vec::new(),
+        cuts: None,
     })
 }
 

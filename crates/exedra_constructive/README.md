@@ -41,6 +41,21 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+## Profile offsets
+
+`Profile2::offset_with_policy` trims inside corners beside fitted cubics, including
+line/cubic, arc/cubic and cubic/cubic joins. `OffsetPolicy::trim_tolerance` and
+`max_trim_steps` control the intersection search. `OffsetResult::trims` reports
+parameters, positional enclosures and endpoint adjustments; fitted runs retain
+their tags and sampling policy. Multiple intersections, tangencies, unresolved
+piece-endpoint intersections and consumed geometry fail explicitly.
+
+Migration: add the two policy fields (or use `..Default::default()`), scale
+`trim_tolerance` with other dimensional tolerances, and handle `OffsetMethod::Trimmed`,
+`OffsetBudget::TrimSteps`, and `OffsetWork::trim_steps`. The former blanket
+`OffsetCornerUnsupported` failure is replaced by `OffsetTrimUnresolved` and
+`OffsetTrimAmbiguous`. See [numerical trim semantics](docs/adr-0021-cubic-offset-trimming.md).
+
 ## Authoring coordinates and diagnosing boundaries
 
 Closed planar surrounds use the ordinary `NodeKind::Sweep` with
