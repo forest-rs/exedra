@@ -12,6 +12,40 @@
 use alloc::vec::Vec;
 use exedra_math::{add, cross, dot, scale, sub};
 
+/// Authored endpoint connectivity of a controlled sweep path.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PathClosure {
+    /// A spatial rail with distinct endpoints and optional caps.
+    #[default]
+    Open,
+    /// A cyclic path in the plane through its first station.
+    ///
+    /// Polyline stations omit the repeated endpoint; curved segments explicitly
+    /// terminate at the exact starting point. The closing run and corner
+    /// are explicit; caps must be [`crate::ir::CapMode::None`]. Only f64 rounding-scale
+    /// deviation from the plane is accepted, without projecting the points.
+    ClosedPlanar {
+        /// Finite nonzero plane normal in path-local coordinates.
+        /// Its magnitude and sign do not change section orientation, which
+        /// remains controlled by `section_x` and traversal direction.
+        normal: [f64; 3],
+    },
+}
+
+/// Join behavior at authored curve segment boundaries, including a closed seam.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PathJoin {
+    /// Require analytic tangent continuity; no corner is inferred or repaired.
+    #[default]
+    Smooth,
+    /// Join sections on the tangent-bisector plane at an authored corner.
+    Miter {
+        /// Maximum section-plane stretch, `1 / cos(turn / 2)`, finite and >= 1.
+        /// Evaluation refuses larger corners instead of beveling them.
+        limit: f64,
+    },
+}
+
 /// One authored segment, starting at the preceding endpoint (or path start).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -99,6 +133,17 @@ pub struct PathSpan {
     pub tangent_angle_bound: f64,
 }
 
+/// An authored tangent discontinuity, separate from smooth sampling stations.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PathCorner {
+    /// Station index; zero denotes a sharp closed seam.
+    pub station: u32,
+    /// Source segment beginning at the corner, zero at a closed seam.
+    pub segment: u32,
+    /// Unsigned angle between incoming and outgoing analytic tangents, in radians.
+    pub turn_angle: f64,
+}
+
 /// Original path-local sampling policy and per-span evidence.
 ///
 /// Retained with tessellated bodies and their instances as source provenance.
@@ -108,8 +153,22 @@ pub struct PathSpan {
 pub struct PathSampling {
     /// Policy under which these spans were accepted.
     pub policy: PathDiscretizePolicy,
+    /// Authored path connectivity; preserved as original construction evidence.
+    pub closure: PathClosure,
+    /// Authored corner behavior; sampled interiors remain smooth.
+    pub joins: PathJoin,
+    /// Authored discontinuities in ascending station order. Sampling creates none.
+    pub corners: Vec<PathCorner>,
     /// One entry per sweep wall band, in traversal order.
     pub spans: Vec<PathSpan>,
+}
+
+impl PathSampling {
+    pub(crate) fn approx_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.spans.len() * size_of::<PathSpan>()
+            + self.corners.len() * size_of::<PathCorner>()
+    }
 }
 
 /// A section station on an analytic path.
@@ -117,11 +176,16 @@ pub struct PathSampling {
 pub struct PathStation {
     /// Position in path-local coordinates.
     pub point: [f64; 3],
-    /// Unit analytic tangent in traversal direction.
+    /// Outgoing unit analytic tangent in traversal direction.
     pub tangent: [f64; 3],
+    /// Incoming unit analytic tangent. Authored joins can differ by rounding;
+    /// larger discontinuities require mitered corners.
+    /// At an open start it equals the outgoing tangent.
+    pub incoming_tangent: [f64; 3],
 }
 
-/// A sampled open path; station count is span count plus one.
+/// A sampled path; station count is span count plus one. A closed path
+/// includes its repeated first station for span checks; mesh emission shares it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiscretizedPath {
     /// Shared stations, including exact authored line/cubic endpoints.
@@ -136,8 +200,24 @@ pub struct DiscretizedPath {
 pub enum PathDiscretizeError {
     /// Invalid tolerance, tangent-angle bound, or edge budget.
     InvalidPolicy,
-    /// Empty, nonfinite-start, or closed path; closed-loop frame closure is not supported.
+    /// Empty, nonfinite-start, or an open path whose endpoint equals its start.
     InvalidPath,
+    /// Miter limit is nonfinite or less than one.
+    InvalidJoin,
+    /// Closed planar path has an unusable normal.
+    InvalidPlane,
+    /// A closed path does not terminate at its exact authored start.
+    NotClosed {
+        /// Authored start point.
+        start: [f64; 3],
+        /// Realized final endpoint; no snapping is applied.
+        end: [f64; 3],
+    },
+    /// Authored controls, endpoints, or an arc axis leave the declared plane.
+    NonPlanar {
+        /// Offending source segment index.
+        segment: usize,
+    },
     /// Segment has invalid coordinates, axis, angle, or coincident line endpoints.
     InvalidSegment {
         /// Offending source segment index.
@@ -151,7 +231,7 @@ pub enum PathDiscretizeError {
         parameter: f64,
     },
     /// Adjacent analytic tangent directions disagree by more than 1e-10 radians.
-    /// Use a mitered polyline for sharp corners; no tangent is guessed here.
+    /// Use an explicit miter join policy for sharp corners; no tangent is guessed.
     DiscontinuousTangent {
         /// Source segment beginning at the discontinuity.
         segment: usize,
@@ -180,7 +260,18 @@ impl core::fmt::Display for PathDiscretizeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidPolicy => write!(f, "invalid sweep path sampling policy"),
-            Self::InvalidPath => write!(f, "sweep curve path must be finite, nonempty and open"),
+            Self::InvalidPath => {
+                write!(f, "invalid sweep curve path or open endpoint connectivity")
+            }
+            Self::InvalidJoin => write!(f, "invalid curve path miter limit"),
+            Self::InvalidPlane => write!(f, "invalid closed curve path plane"),
+            Self::NotClosed { start, end } => write!(
+                f,
+                "closed curve path ends at {end:?}, not its authored start {start:?}"
+            ),
+            Self::NonPlanar { segment } => {
+                write!(f, "curve path segment {segment} leaves its declared plane")
+            }
             Self::InvalidSegment { segment } => write!(f, "invalid path segment {segment}"),
             Self::StationaryTangent { segment, parameter } => write!(
                 f,
@@ -273,17 +364,63 @@ fn budget_error(
     }
 }
 
+pub(crate) fn same_tangent(a: [f64; 3], b: [f64; 3]) -> bool {
+    dot(a, b) > 0.0 && norm(cross(a, b)) <= 1e-10
+}
+
+// Check authored curves, not only sampled stations: a coarse cubic sampling
+// cannot hide off-plane control points, nor can a small arc hide a tilted axis.
+fn validate_planar_curves(
+    start: [f64; 3],
+    segments: &[PathSegment3],
+    normal: [f64; 3],
+) -> Result<(), PathDiscretizeError> {
+    let normal = unit(normal).ok_or(PathDiscretizeError::InvalidPlane)?;
+    for (segment, curve) in segments.iter().enumerate() {
+        let check = |p: [f64; 3]| {
+            let scale = start.iter().chain(&p).map(|v| v.abs()).fold(0.0, f64::max);
+            let distance = dot(sub(p, start), normal).abs();
+            distance.is_finite() && distance <= 64.0 * f64::EPSILON * scale
+        };
+        let valid = match curve {
+            PathSegment3::Line { to } => check(*to),
+            PathSegment3::Cubic {
+                control1,
+                control2,
+                to,
+            } => [*control1, *control2, *to].into_iter().all(check),
+            PathSegment3::Arc { axis, .. } => {
+                unit(*axis).is_some_and(|axis| norm(cross(axis, normal)) <= 64.0 * f64::EPSILON)
+            }
+        };
+        if !valid {
+            return Err(PathDiscretizeError::NonPlanar { segment });
+        }
+    }
+    Ok(())
+}
+
 struct Sampler {
     output: DiscretizedPath,
+    joins: PathJoin,
 }
 impl Sampler {
     fn begin(&mut self, station: PathStation, segment: usize) -> Result<(), PathDiscretizeError> {
-        if let Some(previous) = self.output.stations.last() {
-            if dot(previous.tangent, station.tangent) <= 0.0
-                || norm(cross(previous.tangent, station.tangent)) > 1e-10
-            {
+        if let Some(previous) = self.output.stations.last_mut() {
+            if self.joins == PathJoin::Smooth && !same_tangent(previous.tangent, station.tangent) {
                 return Err(PathDiscretizeError::DiscontinuousTangent { segment });
             }
+            if !same_tangent(previous.tangent, station.tangent) {
+                self.output.sampling.corners.push(PathCorner {
+                    station: crate::len_u32(self.output.sampling.spans.len()),
+                    segment: crate::len_u32(segment),
+                    turn_angle: libm::atan2(
+                        norm(cross(previous.tangent, station.tangent)),
+                        dot(previous.tangent, station.tangent),
+                    ),
+                });
+            }
+            previous.tangent = station.tangent;
         } else {
             self.output.stations.push(station);
         }
@@ -311,8 +448,12 @@ impl Sampler {
 /// with at most 32 levels. Unresolved stationary tangents may exhaust that
 /// budget; they never produce a successful under-resolved span.
 ///
-/// Joins must be tangent-continuous (directions, not parameter speeds); the
-/// 1e-10-radian allowance is only for numerical agreement at authored joins.
+/// `Smooth` joins require tangent continuity (direction, not parameter speed);
+/// the 1e-10-radian allowance is only for numerical agreement. `Miter` retains
+/// both tangents at an authored corner; tessellation checks its stretch limit.
+/// Closed planar curves must terminate at exactly `start`, with no inferred
+/// closing segment or endpoint snap. Authored controls/axes must lie in the
+/// declared plane. The returned final station repeats the first for span checks.
 /// Lines/cubics preserve authored endpoints. Arcs rotate about their authored
 /// axis using libm. A complete turn returns the exact starting point/tangent.
 ///
@@ -320,12 +461,23 @@ impl Sampler {
 ///
 /// Returns [`PathDiscretizeError`] for invalid inputs, discontinuities,
 /// unusable tangents, insufficient work budgets, or numeric limitations.
+///
+/// Migration: existing callers add `PathClosure::Open` and `PathJoin::Smooth`
+/// before the discretization policy. Sampling evidence now includes connectivity,
+/// join policy and authored corner records; stations retain both tangents.
 pub fn discretize_path(
     start: [f64; 3],
     segments: &[PathSegment3],
+    closure: PathClosure,
+    joins: PathJoin,
     policy: &PathDiscretizePolicy,
 ) -> Result<DiscretizedPath, PathDiscretizeError> {
     policy.validate()?;
+    if let PathJoin::Miter { limit } = joins
+        && (!limit.is_finite() || limit < 1.0)
+    {
+        return Err(PathDiscretizeError::InvalidJoin);
+    }
     if segments.is_empty() || start.iter().any(|v| !v.is_finite()) {
         return Err(PathDiscretizeError::InvalidPath);
     }
@@ -334,11 +486,18 @@ pub fn discretize_path(
             maximum: policy.max_path_edges,
         });
     }
+    if let PathClosure::ClosedPlanar { normal } = closure {
+        validate_planar_curves(start, segments, normal)?;
+    }
     let mut sampler = Sampler {
+        joins,
         output: DiscretizedPath {
             stations: Vec::new(),
             sampling: PathSampling {
                 policy: *policy,
+                closure,
+                joins,
+                corners: Vec::new(),
                 spans: Vec::new(),
             },
         },
@@ -363,6 +522,7 @@ pub fn discretize_path(
                     PathStation {
                         point: from,
                         tangent: t,
+                        incoming_tangent: t,
                     },
                     segment,
                 )?;
@@ -370,6 +530,7 @@ pub fn discretize_path(
                     PathStation {
                         point: *to,
                         tangent: t,
+                        incoming_tangent: t,
                     },
                     PathSpan {
                         segment: crate::len_u32(segment),
@@ -411,6 +572,7 @@ pub fn discretize_path(
                     PathStation {
                         point: from,
                         tangent: first,
+                        incoming_tangent: first,
                     },
                     segment,
                 )?;
@@ -454,6 +616,7 @@ pub fn discretize_path(
                             PathStation {
                                 point: p[3],
                                 tangent: t_end,
+                                incoming_tangent: t_end,
                             },
                             PathSpan {
                                 segment: crate::len_u32(segment),
@@ -485,8 +648,35 @@ pub fn discretize_path(
             .expect("segment emitted")
             .point;
     }
-    if from == start {
-        return Err(PathDiscretizeError::InvalidPath);
+    match closure {
+        PathClosure::Open if from == start => return Err(PathDiscretizeError::InvalidPath),
+        PathClosure::Open => {}
+        PathClosure::ClosedPlanar { .. } => {
+            if from != start {
+                return Err(PathDiscretizeError::NotClosed { start, end: from });
+            }
+            let first = sampler.output.stations[0];
+            let last = sampler.output.stations.last_mut().expect("nonempty path");
+            if joins == PathJoin::Smooth && !same_tangent(last.incoming_tangent, first.tangent) {
+                return Err(PathDiscretizeError::DiscontinuousTangent { segment: 0 });
+            }
+            if !same_tangent(last.incoming_tangent, first.tangent) {
+                sampler.output.sampling.corners.insert(
+                    0,
+                    PathCorner {
+                        station: 0,
+                        segment: 0,
+                        turn_angle: libm::atan2(
+                            norm(cross(last.incoming_tangent, first.tangent)),
+                            dot(last.incoming_tangent, first.tangent),
+                        ),
+                    },
+                );
+            }
+            last.tangent = first.tangent;
+            let seam = *last;
+            sampler.output.stations[0] = seam;
+        }
     }
     Ok(sampler.output)
 }
@@ -558,6 +748,7 @@ fn sample_arc(
         PathStation {
             point: from,
             tangent: first_t,
+            incoming_tangent: first_t,
         },
         segment,
     )?;
@@ -583,6 +774,7 @@ fn sample_arc(
             PathStation {
                 point,
                 tangent: direction,
+                incoming_tangent: direction,
             },
             PathSpan {
                 segment: crate::len_u32(segment),

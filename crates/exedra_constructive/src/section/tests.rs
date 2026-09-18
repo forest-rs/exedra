@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::ir::LoftSection;
-use crate::ir::PathClosure;
+use crate::path::{PathClosure, PathJoin};
 use alloc::collections::BTreeMap;
 use exedra_math::{cross, dot, scale, sub};
 use exedra_mesh::{FaceTriangulation, MeshBuilder};
@@ -267,6 +267,9 @@ fn section_profiles_sweep_with_connected_caps() {
                                 sweep: core::f64::consts::FRAC_PI_6,
                             }],
                             [1.0, 0.0, 0.0],
+                            [0.0; 2],
+                            PathClosure::Open,
+                            PathJoin::Smooth,
                             caps,
                             &policy,
                         ),

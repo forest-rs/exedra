@@ -11,7 +11,9 @@
 use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::evaluate;
-use exedra_constructive::ir::{CapMode, NodeKind, Path3, Placement3, RecipeBuilder};
+use exedra_constructive::ir::{
+    CapMode, NodeKind, Path3, PathClosure, PathJoin, Placement3, RecipeBuilder,
+};
 use exedra_constructive::path::PathSegment3;
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_gltf::{GltfExportOptions, export_glb_with_options};
@@ -59,6 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 start: [0.0; 3],
                 segments,
                 section_x: [1.0, 0.0, 0.0],
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
+                joins: PathJoin::Smooth,
             },
             caps: CapMode::Both,
         })?;

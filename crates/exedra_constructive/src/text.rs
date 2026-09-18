@@ -24,7 +24,7 @@ use kurbo::Point;
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
-    Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
+    PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -334,12 +334,34 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 start,
                 segments,
                 section_x,
+                section_origin,
+                closure,
+                joins,
             } = path
             {
-                let _ = write!(line, "curved_sweep profile {} start", profile.0);
+                let _ = write!(line, "curved_path_sweep profile {} start", profile.0);
                 put_vector3(line, *start);
                 line.push_str(" section_x");
                 put_vector3(line, *section_x);
+                let _ = write!(
+                    line,
+                    " section_origin {} {} closure ",
+                    hex(section_origin[0]),
+                    hex(section_origin[1])
+                );
+                match closure {
+                    PathClosure::Open => line.push_str("open"),
+                    PathClosure::ClosedPlanar { normal } => {
+                        line.push_str("closed_planar");
+                        put_vector3(line, *normal);
+                    }
+                }
+                match joins {
+                    PathJoin::Smooth => line.push_str(" joins smooth"),
+                    PathJoin::Miter { limit } => {
+                        let _ = write!(line, " joins miter {}", hex(*limit));
+                    }
+                }
                 let _ = write!(line, " segments {} caps ", segments.len());
                 put_caps(line, *caps);
                 for segment in segments {
@@ -1115,13 +1137,36 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 caps,
             }
         }
-        "curved_sweep" => {
+        "curved_sweep" | "curved_path_sweep" => {
             expect(&mut tokens, "profile", line)?;
             let profile = ProfileId(next_u32(&mut tokens, line)?);
             expect(&mut tokens, "start", line)?;
             let start = parse_vector3(&mut tokens, line)?;
             expect(&mut tokens, "section_x", line)?;
             let section_x = parse_vector3(&mut tokens, line)?;
+            let (section_origin, closure, joins) = if kind_name == "curved_path_sweep" {
+                expect(&mut tokens, "section_origin", line)?;
+                let origin = [next_f64(&mut tokens, line)?, next_f64(&mut tokens, line)?];
+                expect(&mut tokens, "closure", line)?;
+                let closure = match tokens.next() {
+                    Some("open") => PathClosure::Open,
+                    Some("closed_planar") => PathClosure::ClosedPlanar {
+                        normal: parse_vector3(&mut tokens, line)?,
+                    },
+                    _ => return Err(TextError::Malformed { line }),
+                };
+                expect(&mut tokens, "joins", line)?;
+                let joins = match tokens.next() {
+                    Some("smooth") => PathJoin::Smooth,
+                    Some("miter") => PathJoin::Miter {
+                        limit: next_f64(&mut tokens, line)?,
+                    },
+                    _ => return Err(TextError::Malformed { line }),
+                };
+                (origin, closure, joins)
+            } else {
+                ([0.0; 2], PathClosure::Open, PathJoin::Smooth)
+            };
             expect(&mut tokens, "segments", line)?;
             let count = next_u32(&mut tokens, line)?;
             expect(&mut tokens, "caps", line)?;
@@ -1152,6 +1197,9 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                     start,
                     segments,
                     section_x,
+                    section_origin,
+                    closure,
+                    joins,
                 },
                 caps,
             }
@@ -1646,14 +1694,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 37\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 38\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 37\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 38\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

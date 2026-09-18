@@ -304,9 +304,7 @@ fn approx_body_bytes(body: &TessellatedBody) -> u64 {
             .path_sampling
             .as_ref()
             .filter(|sampling| !body.source_map.retains_path_sampling(sampling))
-            .map_or(0, |sampling| {
-                (sampling.spans.len() * size_of::<crate::path::PathSpan>()) as u64
-            })
+            .map_or(0, |sampling| sampling.approx_bytes() as u64)
 }
 
 #[cfg(test)]

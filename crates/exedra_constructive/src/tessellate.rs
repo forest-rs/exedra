@@ -26,10 +26,11 @@ use crate::discretize::{
     CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
     DiscretizedProfile, circular_edge_count, discretize_profile,
 };
-use crate::ir::{CapMode, LoftPolicy, PathClosure, Placement3, PrimitiveSpec, SlotId};
+use crate::ir::{CapMode, LoftPolicy, PathClosure, PathJoin, Placement3, PrimitiveSpec, SlotId};
 use crate::len_u32;
 use crate::profile::Profile2;
 mod closed_sweep;
+mod curved_sweep;
 mod diagnostics;
 pub use diagnostics::ProfileBoundaryEdge;
 use diagnostics::triangulation_error;
@@ -2753,14 +2754,18 @@ fn check_sweep_spans(
     Ok(())
 }
 
-/// Tessellates tangent-continuous analytic segments with authored orientation.
+/// Tessellates analytic segments with authored orientation, corners and closure.
 ///
 /// Lines, circular arcs and spatial cubics are sampled under
-/// [`EvalPolicy::sweep_path`]. Every ring is normal to an analytic tangent,
-/// with section X transported by the double-reflection rotation-minimizing
-/// method; no world-axis reseeding or inferred seam/corner correspondence.
-/// Tangent-discontinuous joins fail. Use [`tessellate_mitered_sweep`] for
-/// authored sharp corners. Sample stations do not introduce ring creases.
+/// [`EvalPolicy::sweep_path`]. Open spans use double-reflection rotation-minimizing
+/// transport. Closed planar paths reconstruct the authored roll from the plane,
+/// meeting at one shared ring without a compensating twist or duplicate caps.
+/// `section_origin` is the profile datum placed on the path. `Smooth` requires
+/// matching analytic tangents; `Miter` uses bounded tangent-bisector cut planes
+/// at authored corners, including the seam. Sampling stations introduce no creases.
+/// Curved segments explicitly terminate at their exact start when closed; nearly
+/// closed paths fail. A full-turn arc supplies an exact closing endpoint/tangent.
+/// Supply `CapMode::None` for closed paths.
 ///
 /// [`TessellatedBody::path_sampling`] records each band's source segment,
 /// parameter interval, chord bound and tangent variation bound. These bound
@@ -2769,6 +2774,13 @@ fn check_sweep_spans(
 /// Profile discretization and f32 realization remain separate boundaries.
 /// Local span/winding checks and cap refusals match the controlled polyline
 /// contract; this is not a global self-intersection or solid certificate.
+///
+/// # Migration
+///
+/// Existing callers add `[0.0; 2]`, `PathClosure::Open`, and `PathJoin::Smooth`
+/// after `section_x`. These are also new fields on `Path3::Curves`. Schema 38
+/// invalidates recipe fingerprints; the new `curved_path_sweep` wire operation
+/// prevents older readers silently ignoring the added geometry controls.
 ///
 /// # Errors
 ///
@@ -2780,37 +2792,42 @@ pub fn tessellate_curved_sweep(
     start: [f64; 3],
     segments: &[crate::path::PathSegment3],
     section_x: [f64; 3],
+    section_origin: [f64; 2],
+    closure: PathClosure,
+    joins: PathJoin,
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
-    let sampled = crate::path::discretize_path(start, segments, &policy.sweep_path)
+    let closed = matches!(closure, PathClosure::ClosedPlanar { .. });
+    if closed && caps != CapMode::None {
+        return Err(TessellateError::ClosedSweepCaps);
+    }
+    if section_origin.iter().any(|v| !v.is_finite()) {
+        return Err(TessellateError::InvalidSectionOrigin);
+    }
+    let sampled = crate::path::discretize_path(start, segments, closure, joins, &policy.sweep_path)
         .map_err(TessellateError::Path)?;
-    let first = sampled.stations[0];
-    let mut u = initial_section_x(first.tangent, section_x)?;
-    let mut frames = Vec::with_capacity(sampled.stations.len());
-    frames.push((first.point, u, cross(first.tangent, u), first.tangent));
-    for stations in sampled.stations.windows(2) {
-        let previous = stations[0];
-        let next = stations[1];
-        // Normalize reflection normals before arithmetic to avoid squaring
-        // very long or short chords. Both reflection steps preserve lengths.
-        let chord = sweep_direction(previous.point, next.point)?;
-        let reflected_u = sub(u, scale(chord, 2.0 * dot(chord, u)));
-        let reflected_t = sub(
-            previous.tangent,
-            scale(chord, 2.0 * dot(chord, previous.tangent)),
-        );
-        u = if let Some(normal) = unit_vector(sub(next.tangent, reflected_t)) {
-            sub(reflected_u, scale(normal, 2.0 * dot(normal, reflected_u)))
-        } else {
-            reflected_u
-        };
-        u = initial_section_x(next.tangent, u)?;
-        frames.push((next.point, u, cross(next.tangent, u), next.tangent));
+    let mut frames = curved_sweep::frames(&sampled, section_x)?;
+    if section_origin != [0.0; 2] {
+        for frame in &mut frames {
+            frame.0 = sub(
+                frame.0,
+                add(
+                    scale(frame.1, section_origin[0]),
+                    scale(frame.2, section_origin[1]),
+                ),
+            );
+        }
     }
     let d = discretize_profile(profile, &policy.discretize)?;
-    check_sweep_vertex_budget(frames.len(), d.points_len(), policy)?;
-    let points: Vec<_> = sampled.stations.iter().map(|s| s.point).collect();
+    let rings = frames.len() - usize::from(closed);
+    check_sweep_vertex_budget(rings, d.points_len(), policy)?;
+    let points: Vec<_> = sampled
+        .stations
+        .iter()
+        .take(rings)
+        .map(|s| s.point)
+        .collect();
     check_sweep_spans(&frames, &d, placement, &points)?;
     tessellate_sweep_rings(
         profile,
@@ -2825,7 +2842,7 @@ pub fn tessellate_curved_sweep(
             section_vertices: d.points_len(),
         }),
         Some(sampled.sampling),
-        false,
+        closed,
     )
 }
 
@@ -2872,24 +2889,29 @@ fn tessellate_sweep_rings(
 ) -> Result<TessellatedBody, TessellateError> {
     let flip = det3(placement) < 0.0;
 
-    // Ring creases at path corners: turn angle between adjacent segments.
+    // Analytic sampling stations remain smooth; only authored corners crease.
     let corner_ring_sharp: Vec<bool> = {
-        let mut flags = alloc::vec![false; frames.len()];
-        for i in 1..path.len() - 1 {
-            if path_sampling.is_some() {
-                continue;
+        let mut flags = alloc::vec![false;frames.len()];
+        if let Some(sampling) = &path_sampling {
+            for corner in &sampling.corners {
+                flags[corner.station as usize] =
+                    libm::sin(corner.turn_angle) > policy.sharp_sin_threshold;
             }
-            let a = sub(path[i], path[i - 1]);
-            let b = sub(path[i + 1], path[i]);
-            let cross = norm(cross(a, b));
-            flags[i] = cross > policy.sharp_sin_threshold * norm(a) * norm(b);
-        }
-        if closed {
-            for i in [0, path.len() - 1] {
-                let a = sub(path[i], path[(i + path.len() - 1) % path.len()]);
-                let b = sub(path[(i + 1) % path.len()], path[i]);
+        } else {
+            for i in 1..path.len() - 1 {
+                let a = sub(path[i], path[i - 1]);
+                let b = sub(path[i + 1], path[i]);
                 flags[i] = norm(cross(a, b)) > policy.sharp_sin_threshold * norm(a) * norm(b);
             }
+            if closed {
+                for i in [0, path.len() - 1] {
+                    let a = sub(path[i], path[(i + path.len() - 1) % path.len()]);
+                    let b = sub(path[(i + 1) % path.len()], path[i]);
+                    flags[i] = norm(cross(a, b)) > policy.sharp_sin_threshold * norm(a) * norm(b);
+                }
+            }
+        }
+        if closed {
             flags[frames.len() - 1] = flags[0];
         }
         flags
@@ -5563,3 +5585,7 @@ mod curved_sweep_tests;
 #[cfg(test)]
 #[path = "smooth_loft_tests.rs"]
 mod smooth_loft_tests;
+
+#[cfg(test)]
+#[path = "closed_curved_sweep_tests.rs"]
+mod closed_curved_sweep_tests;
