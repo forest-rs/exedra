@@ -76,6 +76,8 @@ pub use kurbo;
 
 pub mod builders;
 pub mod cache;
+#[cfg(test)]
+mod cap_tests;
 pub mod chart;
 pub mod clearance;
 pub mod discretize;
@@ -129,11 +131,11 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 39 adds opt-in construction UV charts to generating nodes and their
-/// canonical identity. Charted surfaces retain the original rest metric and
-/// profile sampling alongside mesh corner coordinates.
+/// Schema 40 fixes hole-bridge endpoint ordering and distinguishes unresolved
+/// triangulation failures from witnessed invalid input. Previously refused
+/// multi-hole caps can now evaluate, and deterministic triangulations can change.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped text.
-pub const EVAL_SCHEMA_VERSION: u32 = 39;
+pub const EVAL_SCHEMA_VERSION: u32 = 40;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;

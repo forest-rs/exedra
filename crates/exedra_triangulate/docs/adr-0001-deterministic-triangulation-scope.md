@@ -199,11 +199,37 @@ or Steiner point removal is offered; those are separate decisions.
 
 ## Consequences
 
+### Hole-bridge endpoint occurrences
+
+The same input vertex can occur multiple times in a composite ring after
+bridging. Each occurrence bounds a different material wedge. Checking only
+segment visibility admitted bridges at the wrong occurrence: several
+disjoint curved holes could fail ear clipping despite valid input boundaries.
+Bridge selection now uses exact orientation signs to check the local material
+cone at the chosen occurrence and at the hole anchor. Convex corners require
+both left half-planes; reflex corners require either. Crossing, touching and
+collinearity refusals, deterministic candidate orders and final boundary
+incidence validation remain in force. No new coordinates or tolerances enter.
+
+Ear-clipping exhaustion on the synthesized weakly simple ring cannot prove
+the original polygon invalid. It now reports `TriangulationFailed` with
+`TriangulationStage::EarClipping`; failure of the final incidence check reports
+`BoundaryIncidence`. Original-edge contact diagnosis still takes precedence
+when it finds a geometric witness. `NonSimple` is limited to an input loop
+that degenerates under pruning, and `UnbridgeableHole` reports unsuccessful
+bridge selection without claiming that every possible bridge is impossible.
+
+Migration: callers with exhaustive `TriError` matches must handle the new
+variant. Constructive schema 40 invalidates cached evaluations and text
+schema stamps because previously refused recipes can now produce geometry
+and deterministic cap diagonals may change. The input and output geometry
+representations are unchanged.
+
 Failed cover construction now searches original nonadjacent boundary edges for
 an exact crossing or touch, returning `BoundaryContact` with both cyclic edge
 identities. This is a failure-only, allocation-free search of at most N(N-1)/2
 pairs; successful geometry is unchanged. Adjacent edges in a loop are excluded.
-If no witness is found, the original failure remains. Constructive maps these
+If no witness is found, the construction failure remains. Constructive maps these
 sampled edge indices to authored segments and tags. See the
 [authoring contract](../../exedra_constructive/docs/adr-0018-authored-geometry-diagnostics.md).
 Callers inspecting `TriError` should handle this new variant; the triangulator

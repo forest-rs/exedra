@@ -133,9 +133,13 @@ When failed triangulation finds an actual boundary contact,
 their optional tags, the sampled edge indices, and crossing versus touching.
 A ground-reaching opening belongs in the outer boundary as a notch; it cannot
 be a touching hole. Curve diagnostics describe the operation's sampled chords.
-An unexplained triangulation failure keeps its original error instead of
-inventing a boundary culprit. See the
-[authoring contract](docs/adr-0018-authored-geometry-diagnostics.md).
+`Triangulate(TriError::TriangulationFailed { stage })` reports an unresolved
+construction failure without inventing a boundary culprit or proving the input
+invalid. See the [authoring contract](docs/adr-0018-authored-geometry-diagnostics.md)
+and [hole-bridge contract](../exedra_triangulate/docs/adr-0001-deterministic-triangulation-scope.md#hole-bridge-endpoint-occurrences).
+Migration: evaluation schema 40 invalidates cached output and schema-stamped
+text after the shared hole-bridge fix. Exhaustive `TriError` matches must handle
+the new variant; profile and recipe node representations are unchanged.
 
 `workplane::face_workplane` builds an orthonormal frame on a face or connected
 planar region. Callers author the origin and X direction in body coordinates;
