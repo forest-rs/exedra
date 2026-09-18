@@ -400,6 +400,65 @@ mod tests {
     }
 
     #[test]
+    fn zero_length_stretch_keeps_its_declared_conflict() {
+        let mut builder = RecipeBuilder::new();
+        let issue = builder.source_ref("spec.issue.contradiction");
+        let child = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [10.0, 4.0, 2.0],
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .expect("box is valid");
+        let plane = Plane3 {
+            normal: [1.0, 0.0, 0.0],
+            distance: 4.0,
+        };
+        let standalone = builder
+            .with_issue(issue)
+            .add(NodeKind::Stretch {
+                child,
+                plane,
+                length: 0.0,
+            })
+            .expect("zero-length stretch is valid");
+        let nested = builder
+            .with_issue(issue)
+            .add(NodeKind::Stretch {
+                child,
+                plane,
+                length: 0.0,
+            })
+            .expect("zero-length stretch is valid");
+        let live = builder
+            .add(NodeKind::Stretch {
+                child: nested,
+                plane,
+                length: 3.0,
+            })
+            .expect("stretch is valid");
+        let root = builder
+            .add(NodeKind::Group {
+                children: vec![standalone, live],
+            })
+            .expect("group is valid");
+        let result = evaluate(
+            &builder.finish(root).expect("recipe is valid"),
+            &EvalPolicy::default(),
+        )
+        .expect("evaluates");
+        for node in [standalone, nested] {
+            assert_eq!(
+                result.report.fidelity_of(node),
+                Some(Fidelity::Conflicted(issue)),
+                "node {node:?}"
+            );
+        }
+        assert_eq!(result.report.fidelity_of(live), Some(Fidelity::Exact));
+    }
+
+    #[test]
     fn contraction_removes_the_positive_offset_slab() {
         // A -3 stretch at x=4 removes input x=[4, 7], then moves x>=7 back
         // by three. It must not scale the ten-unit box or fold x in (4, 7).
