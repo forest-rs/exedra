@@ -58,8 +58,9 @@ together would break both.
   (collapsed arcs and loops, self-intersection, undercut material, holes
   reaching the outer loop) are typed `ProfileError`s; consistent with the
   no-auto-repair non-goal, self-intersection is detected and rejected,
-  never healed, and no loop-trimming or offset-cleanup algorithm is in
-  scope. Self-intersection, undercut, and hole contact are decided from
+  never healed. Local cubic-adjacent corner trimming is defined in
+  [ADR-0021](adr-0021-cubic-offset-trimming.md); global offset cleanup remains
+  outside scope. Self-intersection, undercut, and hole contact are decided from
   kurbo-flattened rings at a documented relative tolerance.
 - **The constructive node set**: extrude, revolve (partial sweeps, cap
   flags, open shells), loft, sweep along polyline or planar paths, planar

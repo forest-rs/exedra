@@ -18,10 +18,14 @@ use crate::profile::{Loop2, Profile2, ProfileError};
 pub struct OffsetPolicy {
     /// Requested cubic fitting tolerance, finite and positive, in recipe units.
     pub fit_tolerance: f64,
+    /// Maximum positional enclosure for a numerically trimmed join, in recipe units.
+    pub trim_tolerance: f64,
+    /// Maximum interval boxes/contractions examined across cubic-adjacent joins.
+    pub max_trim_steps: u64,
     /// Chord tolerance for source/result checks, finite and positive, in recipe units.
     pub check_tolerance: f64,
     /// Allowed shortfall from the offset distance in sampled clearance checks,
-    /// in recipe units. Must be finite and at least `2 * check_tolerance + fit_tolerance`.
+    /// in recipe units. Must be finite and at least `2 * check_tolerance + fit_tolerance + trim_tolerance`.
     /// For a nonzero offset, must also be smaller than its absolute distance.
     pub undercut_slack: f64,
     /// Maximum authored segments inspected across the outer loop and all holes.
@@ -44,6 +48,8 @@ impl Default for OffsetPolicy {
     fn default() -> Self {
         Self {
             fit_tolerance: 0.001,
+            trim_tolerance: 0.001,
+            max_trim_steps: 65536,
             check_tolerance: 0.01,
             undercut_slack: 0.05,
             max_source_segments: 4096,
@@ -60,9 +66,11 @@ impl OffsetPolicy {
     /// operation needing that resource. Returns [`ProfileError::InvalidOffsetPolicy`]
     /// for invalid scalars or insufficient clearance slack.
     pub fn validate(&self) -> Result<(), ProfileError> {
-        let minimum_slack = 2.0 * self.check_tolerance + self.fit_tolerance;
+        let minimum_slack = 2.0 * self.check_tolerance + self.fit_tolerance + self.trim_tolerance;
         if !self.fit_tolerance.is_finite()
             || self.fit_tolerance <= 0.0
+            || !self.trim_tolerance.is_finite()
+            || self.trim_tolerance <= 0.0
             || !self.check_tolerance.is_finite()
             || self.check_tolerance <= 0.0
             || !self.undercut_slack.is_finite()
@@ -84,6 +92,8 @@ pub enum OffsetBudget {
     ResultSegments,
     /// Cubic fitter calls.
     CubicFits,
+    /// Interval intersection boxes/contractions for numerical corner trimming.
+    TrimSteps,
     /// Allocated check edges.
     CheckEdges,
     /// Reserved edge-pair visits.
@@ -100,6 +110,8 @@ pub enum OffsetMethod {
     /// Kurbo cubic fitting; requested tolerance is recorded in the policy.
     /// No continuous error certificate is claimed, even if the output is a line.
     Fitted,
+    /// Line/arc offset with a numerically trimmed endpoint; see [`OffsetResult::trims`].
+    Trimmed,
 }
 
 /// Source correspondence for a contiguous run of output segments.
@@ -124,10 +136,34 @@ pub struct OffsetWork {
     pub result_segments: u64,
     /// Calls to the cubic fitter.
     pub cubic_fits: u64,
+    /// Interval intersection boxes/contractions for numerical trimming.
+    pub trim_steps: u64,
     /// Edges allocated for checks, including repeated samplings.
     pub check_edges: u64,
     /// Reserved upper bound on check edge-pair visits.
     pub check_pairs: u64,
+}
+
+/// Isolated join between finite offset pieces beside a fitted cubic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OffsetTrim {
+    /// Hole index, or `None` for the outer loop.
+    pub hole: Option<usize>,
+    /// Source segment before the join; the following source segment wraps cyclically.
+    pub corner: u32,
+    /// Local fitted-piece index on each side (zero for an analytic line/arc).
+    pub pieces: [u32; 2],
+    /// Retained parameters on those pieces, before trimming, in `[0, 1]`.
+    pub parameters: [f64; 2],
+    /// Parameter enclosures used to prove that retained start/end cuts are ordered.
+    pub parameter_bounds: [[f64; 2]; 2],
+    /// Shared emitted join point in recipe units.
+    pub point: [f64; 2],
+    /// Positional enclosure radius used to accept the fitted-curve intersection.
+    /// This does not bound the upstream cubic fit's error.
+    pub position_bound: f64,
+    /// Largest endpoint/adjacent-control-point displacement used to share the join.
+    pub endpoint_adjustment: f64,
 }
 
 /// Offset geometry and operation-local approximation evidence.
@@ -144,6 +180,8 @@ pub struct OffsetResult {
     pub work: OffsetWork,
     /// Output runs in loop/segment order, covering every output segment once.
     pub runs: Vec<OffsetRun>,
+    /// Numerical intersections used by cubic-adjacent inside corners.
+    pub trims: Vec<OffsetTrim>,
 }
 
 #[derive(Default)]
@@ -151,12 +189,15 @@ pub(super) struct OffsetContext {
     pub policy: Option<OffsetPolicy>,
     pub work: OffsetWork,
     pub runs: Vec<OffsetRun>,
+    pub trims: Vec<OffsetTrim>,
 }
 
 impl OffsetContext {
     pub(super) fn charge(&mut self, budget: OffsetBudget, amount: u64) -> Result<(), ProfileError> {
-        let Some(policy) = self.policy else {
-            return Ok(());
+        let policy = match (self.policy, budget) {
+            (Some(policy), _) => policy,
+            (None, OffsetBudget::TrimSteps) => OffsetPolicy::default(),
+            (None, _) => return Ok(()),
         };
         let (used, maximum) = match budget {
             OffsetBudget::SourceSegments => (
@@ -170,6 +211,7 @@ impl OffsetContext {
             OffsetBudget::CubicFits => {
                 (&mut self.work.cubic_fits, u64::from(policy.max_cubic_fits))
             }
+            OffsetBudget::TrimSteps => (&mut self.work.trim_steps, policy.max_trim_steps),
             OffsetBudget::CheckEdges => (
                 &mut self.work.check_edges,
                 u64::from(policy.max_check_edges),

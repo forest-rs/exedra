@@ -63,6 +63,7 @@ fn analytic_offsets_keep_geometry_and_charge_before_work() {
             source_segments: 4,
             result_segments: 4,
             cubic_fits: 0,
+            trim_steps: 0,
             check_edges: 8,
             check_pairs: 18
         }
@@ -244,17 +245,18 @@ fn zero_distance_records_identity_and_validates_policy_first() {
 }
 
 #[test]
-fn collapse_and_unsupported_cubic_trimming_remain_failures() {
+fn collapse_remains_a_failure_and_cubic_trimming_succeeds() {
     let policy = OffsetPolicy::default();
     let rect = builders::rect_from_corner(40.0, 20.0).expect("rectangle");
     assert!(
         rect.offset_with_policy(-11.0, CornerPolicy::Miter { limit: 2.0 }, &policy)
             .is_err()
     );
-    assert!(matches!(
-        cubic_profile().offset_with_policy(-1.0, CornerPolicy::Round, &policy),
-        Err(ProfileError::OffsetCornerUnsupported { .. })
-    ));
+    let result = cubic_profile()
+        .offset_with_policy(-1.0, CornerPolicy::Round, &policy)
+        .expect("trimmed cubic");
+    assert_eq!(result.trims.len(), 2);
+    assert_coverage(&result);
 }
 
 #[test]
@@ -355,6 +357,7 @@ fn explicit_units_scale_geometry_and_charges_together() {
     for units in [0.001, 1000.0] {
         let policy = OffsetPolicy {
             fit_tolerance: reference.fit_tolerance * units,
+            trim_tolerance: reference.trim_tolerance * units,
             check_tolerance: reference.check_tolerance * units,
             undercut_slack: reference.undercut_slack * units,
             ..reference
@@ -432,4 +435,95 @@ fn unresolvable_check_accuracy_and_nonpositive_clearance_floor_fail() {
         ProfileError::InvalidOffsetPolicy,
         "slack must not erase the entire requested clearance"
     );
+}
+
+#[test]
+fn cubic_trims_preserve_tags_policies_and_hole_correspondence() {
+    let source = cubic_profile();
+    let mut segments = source.outer().segs().to_vec();
+    segments[1].kind = wrap(segments[1].kind.clone(), Some(PolicyId(17)));
+    let source = Profile2::simple(Loop2::new(segments).expect("loop")).expect("profile");
+    let result = source
+        .offset_with_policy(-1.0, CornerPolicy::Round, &OffsetPolicy::default())
+        .expect("trim");
+    assert_coverage(&result);
+    assert_eq!(result.trims.len(), 2);
+    assert!(result.work.trim_steps > 0);
+    for trim in &result.trims {
+        assert!(trim.position_bound <= result.policy.trim_tolerance);
+        assert!(trim.endpoint_adjustment <= result.policy.trim_tolerance);
+        assert_eq!(trim.hole, None);
+    }
+    for run in &result.runs {
+        for s in &result.profile.outer().segs()[run.result.start as usize..run.result.end as usize]
+        {
+            assert_eq!(s.tag, run.source.map(SegTag));
+            if run.source == Some(1) {
+                assert!(matches!(
+                    s.kind,
+                    SegKind::PolicyTo {
+                        policy: PolicyId(17),
+                        ..
+                    }
+                ));
+            }
+        }
+    }
+    let outer = builders::rect_centered(60.0, 60.0).expect("outer");
+    let holed =
+        Profile2::new(outer.outer().clone(), vec![source.outer().reversed()]).expect("hole");
+    let result = holed
+        .offset_with_policy(1.0, CornerPolicy::Round, &OffsetPolicy::default())
+        .expect("shrunk hole");
+    assert_coverage(&result);
+    assert_eq!(result.trims.len(), 2);
+    assert!(result.trims.iter().all(|t| t.hole == Some(0)));
+}
+
+#[test]
+fn arc_cubic_and_cubic_cubic_inside_corners_are_trimmed() {
+    for top in [
+        Seg2::arc((0.0, 10.0), 0.2),
+        Seg2::cubic((0.0, 10.0), (7.0, 12.0), (3.0, 12.0)),
+    ] {
+        let source = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((10.0, 0.0)),
+                Seg2::cubic((10.0, 10.0), (12.0, 3.0), (12.0, 7.0)),
+                top,
+                Seg2::line((0.0, 0.0)),
+            ])
+            .expect("loop"),
+        )
+        .expect("profile");
+        let result = source
+            .offset_with_policy(-0.5, CornerPolicy::Round, &OffsetPolicy::default())
+            .expect("mixed corner");
+        assert_coverage(&result);
+        assert!(result.trims.iter().any(|t| t.corner == 1));
+        assert!(result.profile.outer().signed_area() < source.outer().signed_area());
+        source
+            .offset(-0.5, CornerPolicy::Round)
+            .expect("legacy trim accuracy");
+    }
+}
+
+#[test]
+fn numerical_trim_budget_has_no_partial_result() {
+    let policy = OffsetPolicy {
+        max_trim_steps: 0,
+        ..Default::default()
+    };
+    assert!(matches!(
+        cubic_profile().offset_with_policy(-1.0, CornerPolicy::Round, &policy),
+        Err(ProfileError::OffsetBudgetExceeded {
+            budget: OffsetBudget::TrimSteps,
+            maximum: 0
+        })
+    ));
+    let result = cubic_profile()
+        .offset_with_policy(1.0, CornerPolicy::Round, &policy)
+        .expect("outward has no trim");
+    assert_eq!(result.work.trim_steps, 0);
+    assert!(result.trims.is_empty());
 }

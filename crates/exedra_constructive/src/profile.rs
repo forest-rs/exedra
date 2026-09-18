@@ -731,13 +731,21 @@ pub enum ProfileError {
         /// Index of the source segment before the offending corner.
         seg: usize,
     },
-    /// A corner where the offset segments overlap needs trimming, but at
-    /// least one side is a fitted cubic. Only line and arc segments — the
-    /// exact offset path — can be trimmed analytically.
-    OffsetCornerUnsupported {
+    /// Numerical corner trimming could not isolate a transverse intersection.
+    /// Tangency, coincidence, fitted-piece endpoint intersections, or inadequate
+    /// floating-point resolution are refused instead of guessed.
+    OffsetTrimUnresolved {
         /// Hole index, or `None` for the outer loop.
         hole: Option<usize>,
-        /// Index of the source segment before the offending corner.
+        /// Source segment before the corner.
+        seg: usize,
+    },
+    /// Adjacent offset runs have more than one isolated intersection. Choosing
+    /// between them would require unsupported topology cleanup.
+    OffsetTrimAmbiguous {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+        /// Source segment before the corner.
         seg: usize,
     },
     /// The offset loop is not constructible or lost its orientation: the
@@ -824,10 +832,17 @@ impl core::fmt::Display for ProfileError {
                     Loc(*hole)
                 )
             }
-            Self::OffsetCornerUnsupported { hole, seg } => {
+            Self::OffsetTrimUnresolved { hole, seg } => {
                 write!(
                     f,
-                    "{}: corner after segment {seg} needs trimming a fitted cubic",
+                    "{}: corner after segment {seg} has an unresolved numerical trim",
+                    Loc(*hole)
+                )
+            }
+            Self::OffsetTrimAmbiguous { hole, seg } => {
+                write!(
+                    f,
+                    "{}: corner after segment {seg} has competing trim intersections",
                     Loc(*hole)
                 )
             }
