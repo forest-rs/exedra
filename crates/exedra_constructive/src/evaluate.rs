@@ -29,8 +29,9 @@ use crate::ir::{
 };
 use crate::source_map::SurfaceAncestry;
 use crate::tessellate::{
-    EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
-    tessellate_planar_face, tessellate_primitive, tessellate_revolve, tessellate_sweep,
+    EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude,
+    tessellate_extrude_with_chart, tessellate_loft, tessellate_planar_face, tessellate_primitive,
+    tessellate_revolve, tessellate_revolve_with_chart, tessellate_sweep,
 };
 
 /// How faithfully a node's output represents its constructive intent.
@@ -546,14 +547,15 @@ impl EvalCx<'_> {
             } => {
                 let combined = compose(world, placement);
                 let (profile, height, caps) = (*profile, *height, *caps);
+                let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_extrude(
-                        cx.recipe.profile(profile).expect("validated profile id"),
-                        &combined,
-                        height,
-                        caps,
-                        cx.policy,
-                    )
+                    let profile = cx.recipe.profile(profile).expect("validated profile id");
+                    match chart {
+                        Some(chart) => tessellate_extrude_with_chart(
+                            profile, &combined, height, caps, chart, cx.policy,
+                        ),
+                        None => tessellate_extrude(profile, &combined, height, caps, cx.policy),
+                    }
                     .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
@@ -567,14 +569,15 @@ impl EvalCx<'_> {
             } => {
                 let combined = compose(world, placement);
                 let (profile, sweep, caps) = (*profile, *sweep, *caps);
+                let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_revolve(
-                        cx.recipe.profile(profile).expect("validated profile id"),
-                        &combined,
-                        sweep,
-                        caps,
-                        cx.policy,
-                    )
+                    let profile = cx.recipe.profile(profile).expect("validated profile id");
+                    match chart {
+                        Some(chart) => tessellate_revolve_with_chart(
+                            profile, &combined, sweep, caps, chart, cx.policy,
+                        ),
+                        None => tessellate_revolve(profile, &combined, sweep, caps, cx.policy),
+                    }
                     .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);

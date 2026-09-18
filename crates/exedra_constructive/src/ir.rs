@@ -26,6 +26,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use exedra_mesh_ops::{RoundKind, RoundPolicy};
 
+use crate::chart::{ChartError, SurfaceChart};
 use crate::edge_finish::EdgeSelection;
 use crate::len_u32;
 use crate::profile::{CanonBytes, Profile2};
@@ -498,9 +499,11 @@ pub enum NodeKind {
     },
 }
 
-/// One node: kind plus optional source reference and material slot.
+/// One node: kind plus optional source, material and construction-chart bindings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
+    /// Opt-in rest coordinates for this generating operation; not inherited.
+    pub surface_chart: Option<SurfaceChart>,
     /// What this node constructs.
     pub kind: NodeKind,
     /// Opaque frontend-assigned source reference.
@@ -710,6 +713,8 @@ impl Recipe {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RecipeError {
+    /// An authored surface chart is invalid or does not match its node kind.
+    SurfaceChart(ChartError),
     /// A referenced profile does not exist.
     UnknownProfile {
         /// The offending reference.
@@ -783,6 +788,7 @@ pub enum RecipeError {
 impl core::fmt::Display for RecipeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::SurfaceChart(error) => error.fmt(f),
             Self::UnknownProfile { profile } => write!(f, "unknown profile id {profile}"),
             Self::UnknownNode { node } => write!(f, "unknown node id {node}"),
             Self::InvalidParameter { what } => write!(f, "invalid parameter: {what}"),
@@ -822,6 +828,7 @@ pub struct RecipeBuilder {
     policies: Vec<String>,
     imports: Vec<exedra_mesh::Mesh>,
     pending_source: Option<SourceId>,
+    pending_surface_chart: Option<SurfaceChart>,
     pending_material: Option<SlotId>,
     pending_issue: Option<SourceId>,
 }
@@ -845,6 +852,7 @@ impl RecipeBuilder {
             policies: recipe.policies.clone(),
             imports: recipe.imports.clone(),
             pending_source: None,
+            pending_surface_chart: None,
             pending_material: None,
             pending_issue: None,
         }
@@ -964,6 +972,16 @@ impl RecipeBuilder {
         self
     }
 
+    /// Authors construction UV coordinates on the next node.
+    ///
+    /// Extrusion and revolution metrics must match the generating node.
+    /// Other nodes fail with [`RecipeError::SurfaceChart`]; charts are not
+    /// inherited through wrappers. Material values remain outside geometry.
+    pub fn with_surface_chart(&mut self, chart: SurfaceChart) -> &mut Self {
+        self.pending_surface_chart = Some(chart);
+        self
+    }
+
     /// Adds a node after validating its parameters and references.
     ///
     /// # Errors
@@ -978,6 +996,7 @@ impl RecipeBuilder {
         // typed errors here, never a downstream index panic. Taken even on
         // error so a rejected binding does not leak onto the next node.
         let source = self.pending_source.take();
+        let surface_chart = self.pending_surface_chart.take();
         let material = self.pending_material.take();
         let issue = self.pending_issue.take();
         for id in [source, issue].into_iter().flatten() {
@@ -990,7 +1009,18 @@ impl RecipeBuilder {
         {
             return Err(RecipeError::UnknownSlot { slot: slot.0 });
         }
+        if let Some(chart) = surface_chart {
+            chart.validate().map_err(RecipeError::SurfaceChart)?;
+            if !matches!(
+                (&kind, chart),
+                (NodeKind::Extrude { .. }, SurfaceChart::Extrude { .. })
+                    | (NodeKind::Revolve { .. }, SurfaceChart::Revolve { .. })
+            ) {
+                return Err(RecipeError::SurfaceChart(ChartError::WrongOperation));
+            }
+        }
         let node = Node {
+            surface_chart,
             kind,
             source,
             material,
@@ -2171,6 +2201,30 @@ fn node_canon_bytes(
             put_placement(out, placement);
         }
     }
+    match node.surface_chart {
+        None => out.push(0),
+        Some(chart) => {
+            match chart {
+                SurfaceChart::Extrude { .. } => out.push(1),
+                SurfaceChart::Revolve {
+                    reference_radius, ..
+                } => {
+                    out.push(2);
+                    put_f64(out, reference_radius);
+                }
+            }
+            for transform in [chart.wall(), chart.caps()] {
+                for v in transform
+                    .matrix
+                    .into_iter()
+                    .flatten()
+                    .chain(transform.offset)
+                {
+                    put_f64(out, v);
+                }
+            }
+        }
+    }
     // Source references participate in identity: two structurally equal
     // nodes with different source labels are different provenance-wise but
     // evaluate identically, so sources are hashed into a separate trailing
@@ -2761,7 +2815,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0x14037228b5d4045249957171a5293dd4,
+            0x46811169030593166ac5e15b23ad233d,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

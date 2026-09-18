@@ -22,6 +22,7 @@ use exedra_triangulate::{
     triangulate,
 };
 
+use crate::chart::{ChartBuilder, ChartError, SurfaceChart};
 use crate::discretize::{
     CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
     DiscretizedProfile, circular_edge_count, discretize_profile,
@@ -313,6 +314,8 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TessellateError {
+    /// Construction coordinates could not be represented under the authored chart.
+    Chart(ChartError),
     /// Evaluated or imported mesh structure is invalid for a geometric operation.
     InvalidMesh(Vec<exedra_mesh::ValidationError>),
     /// A retained workplane attachment could not resolve its surface or frame.
@@ -547,6 +550,7 @@ impl core::fmt::Display for TessellateError {
                 f,
                 "sweep band {band} collapses or reverses at section vertex {vertex}"
             ),
+            Self::Chart(error) => error.fmt(f),
             Self::NonFiniteGeometry => {
                 write!(f, "geometry is not representable at the f32 mesh boundary")
             }
@@ -619,10 +623,17 @@ fn reversed_edge_attrs<T: Copy>(values: &[T]) -> Vec<T> {
 /// A [`MeshBuilder`] that reverses face loops (and their per-edge
 /// attributes) when the body's placement reflects, preserving outward
 /// orientation under mirrors.
+impl From<ChartError> for TessellateError {
+    fn from(error: ChartError) -> Self {
+        Self::Chart(error)
+    }
+}
+
 struct OrientedBuilder {
     inner: MeshBuilder,
     flip: bool,
     non_finite: bool,
+    chart: Option<ChartBuilder>,
 }
 
 impl OrientedBuilder {
@@ -631,7 +642,53 @@ impl OrientedBuilder {
             inner: MeshBuilder::new(),
             flip,
             non_finite: false,
+            chart: None,
         }
+    }
+
+    fn push_chart_vertex(&mut self, position: [f32; 3], profile: [f64; 2]) -> u32 {
+        if let Some(chart) = &mut self.chart {
+            chart.vertex_profile.push(profile);
+        }
+        self.push_vertex(position)
+    }
+
+    fn add_face_with_attrs(
+        &mut self,
+        corners: &[u32],
+        attrs: &FaceBuildAttrs<'_>,
+    ) -> Result<(), TessellateError> {
+        self.add_chart_face(corners, attrs, None)
+    }
+
+    fn add_chart_face(
+        &mut self,
+        corners: &[u32],
+        attrs: &FaceBuildAttrs<'_>,
+        wall: Option<&[[f64; 2]]>,
+    ) -> Result<(), TessellateError> {
+        let uvs = if let Some(chart) = &self.chart {
+            let mut uvs = if let Some(wall) = wall {
+                chart.sampling.chart.wall().map_face(wall)?
+            } else {
+                let points: Vec<_> = corners
+                    .iter()
+                    .map(|&i| chart.vertex_profile[i as usize])
+                    .collect();
+                chart.sampling.chart.caps().map_face(&points)?
+            };
+            if self.flip {
+                uvs.reverse();
+            }
+            Some(uvs)
+        } else {
+            None
+        };
+        self.emit_face(corners, attrs)?;
+        if let (Some(chart), Some(uvs)) = (&mut self.chart, uvs) {
+            chart.faces.push(uvs);
+        }
+        Ok(())
     }
 
     fn push_vertex(&mut self, position: [f32; 3]) -> u32 {
@@ -642,7 +699,7 @@ impl OrientedBuilder {
         self.inner.push_vertex(position)
     }
 
-    fn add_face_with_attrs(
+    fn emit_face(
         &mut self,
         corners: &[u32],
         attrs: &FaceBuildAttrs<'_>,
@@ -667,7 +724,43 @@ impl OrientedBuilder {
         if self.non_finite {
             return Err(TessellateError::NonFiniteGeometry);
         }
-        self.inner.build().map_err(TessellateError::from)
+        let mut result = self.inner.build()?;
+        if let Some(chart) = &self.chart {
+            let mut edit = result.mesh.edit();
+            for (edges, uvs) in result.face_edge_ids.iter().zip(&chart.faces) {
+                for (i, &edge) in edges.iter().enumerate() {
+                    // Corner attributes belong to the directed edge's destination.
+                    exedra_mesh::op::set_corner_uv(&mut edit, edge, uvs[(i + 1) % uvs.len()])
+                        .expect("new live corner");
+                }
+            }
+            #[expect(unused_must_use, reason = "discard the unit sink output")]
+            {
+                edit.finish();
+            }
+            let seams: Vec<_> = result
+                .mesh
+                .half_edges()
+                .filter(|&edge| {
+                    result.mesh.face(edge).is_some()
+                        && result
+                            .mesh
+                            .twin(edge)
+                            .and_then(|t| result.mesh.face(t))
+                            .is_some()
+                        && result.mesh.is_uv_discontinuous(edge) == Some(true)
+                })
+                .collect();
+            let mut edit = result.mesh.edit();
+            for seam in seams {
+                exedra_mesh::op::set_edge_seam(&mut edit, seam, true).expect("new live edge");
+            }
+            #[expect(unused_must_use, reason = "discard the unit sink output")]
+            {
+                edit.finish();
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -1074,6 +1167,27 @@ pub fn tessellate_extrude(
     tessellate_extrude_with_wall_sources(profile, placement, height, caps, policy, None)
 }
 
+/// Emits construction UVs with the same geometry as [`tessellate_extrude`].
+/// The chart must use [`SurfaceChart::Extrude`]. Coordinates are local to the
+/// generating operation, before placement. See [`crate::chart`] for metric/seams.
+///
+/// # Errors
+/// Includes [`TessellateError::Chart`] for invalid or unrepresentable coordinates.
+pub fn tessellate_extrude_with_chart(
+    profile: &Profile2,
+    placement: &Placement3,
+    height: f64,
+    caps: CapMode,
+    chart: SurfaceChart,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    if !matches!(chart, SurfaceChart::Extrude { .. }) {
+        return Err(ChartError::WrongOperation.into());
+    }
+    chart.validate()?;
+    extrude_impl(profile, placement, height, caps, policy, None, Some(chart))
+}
+
 /// Tessellates an extrusion while retaining wall identities through an
 /// internal profile rewrite. Public callers use the profile's segment order;
 /// constructive operators can provide the source region and segment for each
@@ -1086,6 +1200,18 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
     policy: &EvalPolicy,
     wall_sources: Option<&[Vec<ExtrudeWallSource>]>,
 ) -> Result<TessellatedBody, TessellateError> {
+    extrude_impl(profile, placement, height, caps, policy, wall_sources, None)
+}
+
+fn extrude_impl(
+    profile: &Profile2,
+    placement: &Placement3,
+    height: f64,
+    caps: CapMode,
+    policy: &EvalPolicy,
+    wall_sources: Option<&[Vec<ExtrudeWallSource>]>,
+    chart: Option<SurfaceChart>,
+) -> Result<TessellatedBody, TessellateError> {
     let d = discretize_profile(profile, &policy.discretize)?;
     let flip = det3(placement) < 0.0;
 
@@ -1094,16 +1220,19 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
     let ring_starts = ring_starts(&d);
     let total: usize = d.points_len();
     let mut builder = OrientedBuilder::new(flip);
+    builder.chart = chart
+        .map(|chart| ChartBuilder::new(chart, &d, policy.discretize))
+        .transpose()?;
 
     // Bottom ring vertices (z = 0), then top ring vertices (z = height).
     for ring in d.rings() {
         for p in &ring.points {
-            builder.push_vertex(narrow(apply_placement(placement, [p[0], p[1], 0.0])));
+            builder.push_chart_vertex(narrow(apply_placement(placement, [p[0], p[1], 0.0])), *p);
         }
     }
     for ring in d.rings() {
         for p in &ring.points {
-            builder.push_vertex(narrow(apply_placement(placement, [p[0], p[1], height])));
+            builder.push_chart_vertex(narrow(apply_placement(placement, [p[0], p[1], height])), *p);
         }
     }
     let top_offset = len_u32(total);
@@ -1165,13 +1294,23 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
                 if top_cap { 1.0 } else { 0.0 },
                 if sharp_i { 1.0 } else { 0.0 },
             ];
-            builder.add_face_with_attrs(
+            let uv = builder.chart.as_ref().map(|chart| {
+                let s = &chart.distances[ring_index];
+                [
+                    [s[i as usize], 0.0],
+                    [s[i as usize + 1], 0.0],
+                    [s[i as usize + 1], height],
+                    [s[i as usize], height],
+                ]
+            });
+            builder.add_chart_face(
                 &[b_i, b_j, t_j, t_i],
                 &FaceBuildAttrs {
                     region: Some(wall_source.region),
                     edge_seams: None,
                     edge_sharpness: Some(&sharp),
                 },
+                uv.as_ref().map(|uv| &uv[..]),
             )?;
             face_origins.push(Feature::Wall {
                 loop_index,
@@ -1216,8 +1355,8 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
             }
             let mut base = None;
             for p in generated {
-                let index =
-                    builder.push_vertex(narrow(apply_placement(placement, [p[0], p[1], z])));
+                let index = builder
+                    .push_chart_vertex(narrow(apply_placement(placement, [p[0], p[1], z])), *p);
                 base.get_or_insert(index);
                 extra_vertex_features.push(feature);
             }
@@ -1321,7 +1460,11 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
     let result = builder.build()?;
     let mut vertex_features = profile_vertex_features(&d, 2);
     vertex_features.extend(extra_vertex_features);
-    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    let mut source_map =
+        crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    if let Some(chart) = builder.chart {
+        source_map = source_map.with_chart_sampling(chart.sampling);
+    }
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
@@ -1679,6 +1822,38 @@ pub fn tessellate_revolve(
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
+    revolve_impl(profile, placement, sweep, caps, policy, None)
+}
+
+/// Emits construction UVs with the same geometry as [`tessellate_revolve`].
+/// The chart must use [`SurfaceChart::Revolve`], with an explicit angular rest
+/// radius. Placement moves the authored +X seam without changing the UV metric.
+///
+/// # Errors
+/// Includes [`TessellateError::Chart`] for invalid or unrepresentable coordinates.
+pub fn tessellate_revolve_with_chart(
+    profile: &Profile2,
+    placement: &Placement3,
+    sweep: f64,
+    caps: CapMode,
+    chart: SurfaceChart,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    if !matches!(chart, SurfaceChart::Revolve { .. }) {
+        return Err(ChartError::WrongOperation.into());
+    }
+    chart.validate()?;
+    revolve_impl(profile, placement, sweep, caps, policy, Some(chart))
+}
+
+fn revolve_impl(
+    profile: &Profile2,
+    placement: &Placement3,
+    sweep: f64,
+    caps: CapMode,
+    policy: &EvalPolicy,
+    chart: Option<SurfaceChart>,
+) -> Result<TessellatedBody, TessellateError> {
     let d = discretize_profile(profile, &policy.discretize)?;
     // The ring connectivity below uses the old +Z angular parameterization.
     // Reversing its angular direction reverses every face, independently of
@@ -1756,6 +1931,9 @@ pub fn tessellate_revolve(
     let ring_starts = ring_starts(&d);
     let total = len_u32(d.points_len());
     let mut builder = OrientedBuilder::new(flip);
+    builder.chart = chart
+        .map(|chart| ChartBuilder::new(chart, &d, policy.discretize))
+        .transpose()?;
     let vertex_capacity =
         (vertex_rings as usize)
             .checked_mul(total as usize)
@@ -1797,7 +1975,8 @@ pub fn tessellate_revolve(
                 let vertex = if let Some(vertex) = existing_axis {
                     vertex
                 } else {
-                    let vertex = builder.push_vertex(narrow(apply_placement(placement, v)));
+                    let vertex =
+                        builder.push_chart_vertex(narrow(apply_placement(placement, v)), *p);
                     if p[0] == 0.0 {
                         axis_vertices[flat as usize] = Some(vertex);
                     }
@@ -1865,40 +2044,67 @@ pub fn tessellate_revolve(
                 // entries from the wrapping neighbor would clobber the
                 // shared canonical edge's `true`.
                 let region = Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg);
+                let uv = builder.chart.as_ref().map(|chart| {
+                    let SurfaceChart::Revolve {
+                        reference_radius, ..
+                    } = chart.sampling.chart
+                    else {
+                        unreachable!()
+                    };
+                    let u0 = reference_radius * (step_angle * f64::from(k));
+                    let u1 = reference_radius
+                        * if k + 1 == steps {
+                            sweep
+                        } else {
+                            step_angle * f64::from(k + 1)
+                        };
+                    let s = &chart.distances[ring_index];
+                    [
+                        [u0, s[i as usize]],
+                        [u0, s[i as usize + 1]],
+                        [u1, s[i as usize + 1]],
+                        [u1, s[i as usize]],
+                    ]
+                });
                 if i_on_axis {
+                    let uv = uv.map(|uv| [uv[0], uv[1], uv[2]]);
                     let triangle_sharp = [sharp[0], sharp[1], sharp[2]];
                     let seams = [true, false, false];
                     let edge_seams = (meridian_start && full).then_some(&seams[..]);
-                    builder.add_face_with_attrs(
+                    builder.add_chart_face(
                         &[a, d_v, c_v],
                         &FaceBuildAttrs {
                             region,
                             edge_seams,
                             edge_sharpness: Some(&triangle_sharp),
                         },
+                        uv.as_ref().map(|uv| &uv[..]),
                     )?;
                 } else if j_on_axis {
+                    let uv = uv.map(|uv| [uv[0], uv[1], uv[3]]);
                     let triangle_sharp = [sharp[0], sharp[2], sharp[3]];
                     let seams = [true, false, false];
                     let edge_seams = (meridian_start && full).then_some(&seams[..]);
-                    builder.add_face_with_attrs(
+                    builder.add_chart_face(
                         &[a, d_v, b],
                         &FaceBuildAttrs {
                             region,
                             edge_seams,
                             edge_sharpness: Some(&triangle_sharp),
                         },
+                        uv.as_ref().map(|uv| &uv[..]),
                     )?;
                 } else {
                     let seams = [true, false, false, false];
                     let edge_seams = (meridian_start && full).then_some(&seams[..]);
-                    builder.add_face_with_attrs(
+                    builder.add_chart_face(
                         &[a, d_v, c_v, b],
                         &FaceBuildAttrs {
                             region,
                             edge_seams,
                             edge_sharpness: Some(&sharp),
                         },
+                        uv.as_ref().map(|uv| &uv[..]),
                     )?;
                 }
                 face_origins.push(Feature::Wall { loop_index, seg });
@@ -1976,7 +2182,11 @@ pub fn tessellate_revolve(
     }
 
     let result = builder.build()?;
-    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    let mut source_map =
+        crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    if let Some(chart) = builder.chart {
+        source_map = source_map.with_chart_sampling(chart.sampling);
+    }
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
@@ -3281,7 +3491,7 @@ pub fn tessellate_grid(
                     corners: [u32; 4],
                     side_index: u32,
                     feature: Feature|
-         -> Result<(), exedra_mesh::BuildError> {
+         -> Result<(), TessellateError> {
             builder.add_face_with_attrs(
                 &corners,
                 &FaceBuildAttrs {

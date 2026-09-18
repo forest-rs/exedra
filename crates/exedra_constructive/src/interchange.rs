@@ -27,11 +27,13 @@
 
 #![cfg(feature = "serde")]
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
+use crate::chart::{ChartError, ChartTransform, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
@@ -158,6 +160,91 @@ pub struct MeshDto {
     pub faces: Vec<Vec<u32>>,
 }
 
+/// Affine chart mapping; entries are repeats per recipe unit and texture phase.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ChartTransformDto {
+    /// Row-major linear mapping.
+    pub matrix: [[f64; 2]; 2],
+    /// Texture phase in repeats.
+    pub offset: [f64; 2],
+}
+impl From<ChartTransform> for ChartTransformDto {
+    fn from(t: ChartTransform) -> Self {
+        Self {
+            matrix: t.matrix,
+            offset: t.offset,
+        }
+    }
+}
+impl From<ChartTransformDto> for ChartTransform {
+    fn from(t: ChartTransformDto) -> Self {
+        Self {
+            matrix: t.matrix,
+            offset: t.offset,
+        }
+    }
+}
+
+/// Authored operation-specific construction chart.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "metric", rename_all = "snake_case")]
+pub enum SurfaceChartDto {
+    /// Sampled profile distance / extrusion height.
+    Extrude {
+        /// Wall coordinate transform.
+        wall: ChartTransformDto,
+        /// Profile-plane cap transform.
+        caps: ChartTransformDto,
+    },
+    /// Angular distance at a declared radius / sampled profile distance.
+    Revolve {
+        /// Positive angular rest radius in recipe units.
+        reference_radius: f64,
+        /// Wall coordinate transform.
+        wall: ChartTransformDto,
+        /// Profile-plane cap transform.
+        caps: ChartTransformDto,
+    },
+}
+impl From<SurfaceChart> for SurfaceChartDto {
+    fn from(chart: SurfaceChart) -> Self {
+        match chart {
+            SurfaceChart::Extrude { wall, caps } => Self::Extrude {
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+            SurfaceChart::Revolve {
+                reference_radius,
+                wall,
+                caps,
+            } => Self::Revolve {
+                reference_radius,
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+        }
+    }
+}
+impl From<SurfaceChartDto> for SurfaceChart {
+    fn from(chart: SurfaceChartDto) -> Self {
+        match chart {
+            SurfaceChartDto::Extrude { wall, caps } => Self::Extrude {
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+            SurfaceChartDto::Revolve {
+                reference_radius,
+                wall,
+                caps,
+            } => Self::Revolve {
+                reference_radius,
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+        }
+    }
+}
+
 /// One node record: kind payload plus optional source/material bindings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeDto {
@@ -232,6 +319,14 @@ pub enum PathJoinDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeKindDto {
+    /// Charted generating operation. The distinct opcode prevents old readers
+    /// from silently dropping authored coordinates. Wrappers cannot nest.
+    Charted {
+        /// Extrusion or revolution operation payload.
+        operation: Box<Self>,
+        /// Checked construction metric and UV mapping.
+        chart: SurfaceChartDto,
+    },
     /// Places a child on a freshly resolved semantic support workplane.
     OnWorkplane {
         /// Unique support subtree node.
@@ -654,7 +749,13 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
         .nodes()
         .iter()
         .map(|node| NodeDto {
-            kind: kind_dto(&node.kind),
+            kind: match node.surface_chart {
+                Some(chart) => NodeKindDto::Charted {
+                    operation: Box::new(kind_dto(&node.kind)),
+                    chart: chart.into(),
+                },
+                None => kind_dto(&node.kind),
+            },
             source: node.source.map(|SourceId(s)| s),
             material: node.material.map(|SlotId(m)| m),
             issue: node.issue.map(|SourceId(s)| s),
@@ -995,7 +1096,13 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
         if let Some(issue) = node.issue {
             builder.with_issue(SourceId(issue));
         }
-        let kind = kind_value(&node.kind)?;
+        let operation = if let NodeKindDto::Charted { operation, chart } = &node.kind {
+            builder.with_surface_chart((*chart).into());
+            operation.as_ref()
+        } else {
+            &node.kind
+        };
+        let kind = kind_value(operation)?;
         builder.add(kind).map_err(InterchangeError::Recipe)?;
     }
     builder
@@ -1005,6 +1112,11 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
 
 fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
     Ok(match dto {
+        NodeKindDto::Charted { .. } => {
+            return Err(InterchangeError::Recipe(RecipeError::SurfaceChart(
+                ChartError::WrongOperation,
+            )));
+        }
         NodeKindDto::OnWorkplane {
             support,
             child,

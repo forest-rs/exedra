@@ -18,6 +18,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use exedra_mesh::{FaceId, Mesh, MeshRevision, VertexId};
 
+use crate::chart::ChartSampling;
 use crate::discretize::DiscretizePolicy;
 use crate::path::PathSampling;
 use crate::tessellate::Feature;
@@ -89,6 +90,7 @@ pub struct SweepSampling {
 pub(crate) struct SurfaceAncestry {
     pub(crate) origin: SurfaceOrigin,
     sweep_sampling: Option<Arc<SweepSampling>>,
+    chart_sampling: Option<Arc<ChartSampling>>,
 }
 
 /// Per-element provenance for one tessellated body.
@@ -145,6 +147,7 @@ impl SourceMap {
                             source: None,
                         },
                         sweep_sampling: None,
+                        chart_sampling: None,
                     }),
                 })
                 .collect(),
@@ -204,6 +207,21 @@ impl SourceMap {
     #[must_use]
     pub fn sweep_sampling(&self, face: FaceId) -> Option<&SweepSampling> {
         self.surface_ancestry(face)?.sweep_sampling.as_deref()
+    }
+
+    /// Original construction chart and sampled metric, when authored.
+    /// This is ancestry, not a claim about current UV coverage; see [`ChartSampling`].
+    #[must_use]
+    pub fn chart_sampling(&self, face: FaceId) -> Option<&ChartSampling> {
+        self.surface_ancestry(face)?.chart_sampling.as_deref()
+    }
+
+    pub(crate) fn with_chart_sampling(mut self, sampling: ChartSampling) -> Self {
+        let sampling = Arc::new(sampling);
+        for entry in self.origins.iter_mut().flatten() {
+            entry.chart_sampling = Some(Arc::clone(&sampling));
+        }
+        self
     }
 
     pub(crate) fn surface_ancestry(&self, face: FaceId) -> Option<&SurfaceAncestry> {
@@ -310,6 +328,15 @@ impl SourceMap {
                     + sampling.path.as_ref().map_or(0, |path| path.approx_bytes())
             })
             .sum();
+        let mut seen_charts = BTreeSet::new();
+        let chart_bytes: usize = self
+            .origins
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.chart_sampling.as_ref())
+            .filter(|chart| seen_charts.insert(Arc::as_ptr(chart)))
+            .map(|chart| chart.approx_bytes())
+            .sum();
         SourceMapStats {
             face_entries: self.face_features.len(),
             vertex_entries: self.vertex_features.len(),
@@ -321,6 +348,7 @@ impl SourceMap {
                 + self.by_feature.len() * reverse
                 + self.origins.len() * size_of::<Option<SurfaceAncestry>>()
                 + sampling_bytes
+                + chart_bytes
                 + self
                     .origins
                     .iter()

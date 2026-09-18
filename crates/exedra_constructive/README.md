@@ -41,6 +41,29 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+## Construction UV charts
+
+Call `RecipeBuilder::with_surface_chart` before an ordinary `Extrude` or `Revolve`
+node. `SurfaceChart::Extrude` maps walls by sampled profile distance and extrusion
+height. `SurfaceChart::Revolve` maps them by angle times an explicit reference
+radius and sampled profile distance. Caps use the source profile plane. Each
+wall/cap transform controls repeats per recipe unit, direction and texture phase.
+
+Profile seams follow the authored loop start (`Loop2::with_seam`); a revolution's
+angular seam is its local +X meridian. Placements preserve these rest coordinates,
+including reflections. Profile distance uses sampled chords; the revolution's
+angular scale describes the reference radius and stretches elsewhere. Source maps
+expose this original metric via `chart_sampling(face)`. Compilation and GLB export
+preserve corner UVs. `RegionRange::has_uvs` reports actual coverage; Boolean mesh
+reconstruction currently drops UVs even when ancestry survives.
+
+Charts are opt-in. Unsupported operations and invalid transforms fail explicitly;
+f32 realization refuses collapsed chart edges or changed triangle winding. The
+`surface_charts` binary in `material_gallery` exports a textured vault and vessels,
+including a mirrored occurrence. Schema 39 invalidates old fingerprints; `Node`
+adds `surface_chart`, with ordinary builder calls unchanged. See
+[chart semantics and migration](docs/adr-0023-construction-surface-charts.md).
+
 ## Profile offsets
 
 `Profile2::offset_with_policy` trims inside corners beside fitted cubics, including
