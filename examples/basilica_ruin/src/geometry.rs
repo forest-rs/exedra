@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use exedra_constructive::builders;
-use exedra_constructive::ir::{CapMode, LoftPolicy, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{
+    CapMode, LoftPolicy, LoftSection, NodeKind, Placement3, Recipe, RecipeBuilder,
+};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
 use exedra_math::scale;
 use setout_joiner::lower_point;
@@ -66,7 +68,7 @@ pub(super) fn ruled_loft_recipe(
     let surface = builder.material_slot("surface");
     let sections = sections
         .into_iter()
-        .map(|(placement, profile)| (placement, builder.add_profile(profile)))
+        .map(|(placement, profile)| LoftSection::new(placement, builder.add_profile(profile)))
         .collect();
     let node = builder
         .with_source(source)
@@ -95,7 +97,7 @@ pub(super) fn dome_recipe(radius: f64, height: f64) -> Recipe {
         .into_iter()
         .map(|(ring_radius, z)| {
             let profile = builder.add_profile(polygon_profile(ring_radius, 24));
-            (Placement3::translate(0.0, 0.0, z), profile)
+            LoftSection::new(Placement3::translate(0.0, 0.0, z), profile)
         })
         .collect();
     let node = builder
@@ -126,7 +128,7 @@ pub(super) fn apse_conch_recipe(radius: f64, height: f64) -> Recipe {
         .into_iter()
         .map(|(outer_radius, inner_radius, z)| {
             let profile = builder.add_profile(apse_shell_profile(outer_radius, inner_radius, 16));
-            (Placement3::translate(0.0, 0.0, z), profile)
+            LoftSection::new(Placement3::translate(0.0, 0.0, z), profile)
         })
         .collect();
     let node = builder

@@ -8,6 +8,7 @@
 //! Usage: `constructive_probe <out_dir>` writes `<name>.glb` per scenario,
 //! `all.glb` with every scenario laid out on a grid, and `report.txt`.
 
+use exedra_constructive::ir::LoftSection;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -451,8 +452,8 @@ fn tapered_loft() -> Probe {
     let root = b
         .add(NodeKind::Loft {
             sections: vec![
-                (Placement3::IDENTITY, base),
-                (Placement3::translate(50.0, 30.0, 150.0), top),
+                LoftSection::new(Placement3::IDENTITY, base),
+                LoftSection::new(Placement3::translate(50.0, 30.0, 150.0), top),
             ],
             policy: LoftPolicy::Ruled,
             caps: CapMode::Both,
@@ -480,8 +481,8 @@ fn loft_between_circles() -> Probe {
     let root = b
         .add(NodeKind::Loft {
             sections: vec![
-                (Placement3::IDENTITY, big),
-                (Placement3::translate(0.0, 0.0, 120.0), small),
+                LoftSection::new(Placement3::IDENTITY, big),
+                LoftSection::new(Placement3::translate(0.0, 0.0, 120.0), small),
             ],
             policy: LoftPolicy::Ruled,
             caps: CapMode::Both,

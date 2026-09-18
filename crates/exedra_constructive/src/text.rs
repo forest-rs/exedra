@@ -23,8 +23,8 @@ use kurbo::Point;
 
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, LoftPolicy, NodeId, NodeKind, Path3, Placement3, Plane3,
-    PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
+    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, Placement3,
+    Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -317,9 +317,12 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             };
             let _ = write!(line, "loft {mode} sections {} caps ", sections.len());
             put_caps(line, *caps);
-            for (placement, profile) in sections {
-                let _ = write!(line, " section {} placement", profile.0);
-                put_placement(line, placement);
+            for section in sections {
+                let _ = write!(line, " section {} placement", section.profile.0);
+                put_placement(line, &section.placement);
+                if let Some(source) = section.source {
+                    let _ = write!(line, " section_source {}", source.0);
+                }
             }
         }
         NodeKind::Sweep {
@@ -1084,7 +1087,12 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 let profile = ProfileId(next_u32(&mut tokens, line)?);
                 expect(&mut tokens, "placement", line)?;
                 let placement = parse_placement(&mut tokens, line)?;
-                sections.push((placement, profile));
+                let mut section = LoftSection::new(placement, profile);
+                if tokens.clone().next() == Some("section_source") {
+                    tokens.next();
+                    section.source = Some(crate::ir::SourceId(next_u32(&mut tokens, line)?));
+                }
+                sections.push(section);
             }
             NodeKind::Loft {
                 sections,
@@ -1456,8 +1464,8 @@ pub(crate) mod tests_support {
         let loft = b
             .add(NodeKind::Loft {
                 sections: vec![
-                    (Placement3::IDENTITY, rect),
-                    (Placement3::translate(0.0, 0.0, 2.0), rect),
+                    LoftSection::new(Placement3::IDENTITY, rect),
+                    LoftSection::new(Placement3::translate(0.0, 0.0, 2.0), rect),
                 ],
                 policy: LoftPolicy::Ruled,
                 caps: CapMode::None,

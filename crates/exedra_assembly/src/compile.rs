@@ -18,6 +18,8 @@
 //! Shared aliases refer to the same cache entry. Binding and metadata edits
 //! never touch this layer; callers can explicitly release the whole cache.
 
+use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -32,6 +34,8 @@ use invalidation::{Channel, InvalidationSet};
 use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
 
 mod evaluated;
+#[cfg(test)]
+mod failure_tests;
 mod snapshot;
 use evaluated::EvaluatedPart;
 pub use evaluated::{
@@ -282,13 +286,17 @@ pub enum CompileError {
     Evaluate {
         /// The failing part.
         part: PartId,
+        /// Owned authored key, retained independently of the assembly.
+        part_key: String,
         /// The underlying evaluation failure.
-        error: EvalError,
+        error: Box<EvalError>,
     },
     /// Evaluation explicitly refused a recipe and produced no geometry.
     NoGeometry {
         /// The rejected part.
         part: PartId,
+        /// Owned authored key, retained independently of the assembly.
+        part_key: String,
         /// The complete constructive report, including the refusal reason.
         report: Arc<GeometryReport>,
     },
@@ -297,10 +305,21 @@ pub enum CompileError {
 impl core::fmt::Display for CompileError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Evaluate { part, error } => {
-                write!(f, "part {part:?} failed to evaluate: {error}")
+            Self::Evaluate {
+                part,
+                part_key,
+                error,
+            } => {
+                write!(
+                    f,
+                    "part {part_key:?} ({part:?}) failed to evaluate: {error}"
+                )
             }
-            Self::NoGeometry { part, report } => {
+            Self::NoGeometry {
+                part,
+                part_key,
+                report,
+            } => {
                 let diagnostic = report
                     .diagnostics
                     .iter()
@@ -308,11 +327,11 @@ impl core::fmt::Display for CompileError {
                 if let Some(diagnostic) = diagnostic {
                     write!(
                         f,
-                        "part {part:?} produced no geometry: {}: {}",
+                        "part {part_key:?} ({part:?}) produced no geometry: {}: {}",
                         diagnostic.code, diagnostic.message
                     )
                 } else {
-                    write!(f, "part {part:?} produced no geometry")
+                    write!(f, "part {part_key:?} ({part:?}) produced no geometry")
                 }
             }
         }
@@ -502,7 +521,7 @@ impl PartCompiler {
                 continue;
             }
             let (part, report, geometry) =
-                compile_source(id, def.source(), policy, content_fp, retain)?;
+                compile_source(id, def.key(), def.source(), policy, content_fp, retain)?;
             let compiled = CachedCompilation {
                 evaluated: geometry.map(Arc::new),
                 part: Arc::new(part),
@@ -557,6 +576,7 @@ fn part_fingerprint(source: &PartSource) -> PartFingerprint {
 
 fn compile_source(
     part: PartId,
+    part_key: &str,
     source: &PartSource,
     policy: &CompilePolicy,
     fingerprint: PartFingerprint,
@@ -564,8 +584,12 @@ fn compile_source(
 ) -> Result<(CompiledPart, Option<GeometryReport>, Option<EvaluatedPart>), CompileError> {
     let (bodies, report, evaluated) = match source {
         PartSource::Recipe(recipe) => {
-            let evaluation = evaluate(recipe, &policy.evaluation)
-                .map_err(|error| CompileError::Evaluate { part, error })?;
+            let evaluation =
+                evaluate(recipe, &policy.evaluation).map_err(|error| CompileError::Evaluate {
+                    part,
+                    part_key: String::from(part_key),
+                    error: Box::new(error),
+                })?;
             // Constructive refusals are represented as reports rather than
             // `EvalError`s. Reject only when an Error leaves the entire part
             // empty: partial geometry stays usable, but its complete report is
@@ -573,6 +597,7 @@ fn compile_source(
             if evaluation.bodies.is_empty() && !evaluation.report.clean_at(Severity::Error) {
                 return Err(CompileError::NoGeometry {
                     part,
+                    part_key: String::from(part_key),
                     report: Arc::new(evaluation.report),
                 });
             }
@@ -1176,12 +1201,14 @@ mod tests {
             .expect_err("an error diagnostic with no geometry must fail compilation");
         let CompileError::NoGeometry {
             part: rejected,
+            part_key,
             report,
         } = error
         else {
             panic!("expected the report-bearing no-geometry error");
         };
         assert_eq!(rejected, part);
+        assert_eq!(part_key, "refused");
         assert!(
             report
                 .diagnostics
@@ -1260,7 +1287,9 @@ mod tests {
     fn tolerance_budget_failure_keeps_its_typed_payload_through_compilation() {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::circle(1.0).expect("circle"));
+        let source = builder.source_ref("circle/profile-extrusion");
         let node = builder
+            .with_source(source)
             .add(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
@@ -1286,20 +1315,26 @@ mod tests {
         let error = PartCompiler::new()
             .compile_parts(&assembly, &policy.into())
             .expect_err("insufficient tolerance budget must fail compilation");
-        assert!(matches!(
+        let CompileError::Evaluate {
+            part: failed_part,
+            part_key,
             error,
-            CompileError::Evaluate {
-                part: failed_part,
-                error: EvalError {
-                    node: failed_node,
-                    error: TessellateError::Discretize(
-                        DiscretizeError::ToleranceBudgetExceeded {
-                            required,
-                            maximum: 4,
-                        }
-                    ),
-                },
-            } if failed_part == part && failed_node == node && required > 4
+        } = error
+        else {
+            panic!("expected evaluation failure");
+        };
+        assert_eq!(failed_part, part);
+        assert_eq!(part_key, "tight-circle");
+        assert!(matches!(*error,
+            EvalError {
+                source,
+                loft_sections: None,
+                node: failed_node,
+                error: TessellateError::Discretize(
+                    DiscretizeError::ToleranceBudgetExceeded { required, maximum: 4 }
+                ),
+            } if failed_node == node && required > 4
+                && source.as_deref() == Some("circle/profile-extrusion")
         ));
     }
 

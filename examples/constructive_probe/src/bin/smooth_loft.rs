@@ -12,7 +12,7 @@
 use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::evaluate::{Fidelity, evaluate};
 use exedra_constructive::ir::{
-    CapMode, LoftPolicy, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, LoftPolicy, LoftSection, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 use exedra_constructive::tessellate::EvalPolicy;
@@ -50,7 +50,7 @@ fn loft(sections: &[(Placement3, Profile2)], policy: LoftPolicy) -> Recipe {
     let finish = b.material_slot("finish");
     let sections = sections
         .iter()
-        .map(|(placement, profile)| (*placement, b.add_profile(profile.clone())))
+        .map(|(placement, profile)| LoftSection::new(*placement, b.add_profile(profile.clone())))
         .collect();
     let root = b
         .with_material(finish)

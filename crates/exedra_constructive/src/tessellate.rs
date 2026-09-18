@@ -2047,7 +2047,23 @@ pub fn tessellate_loft(
         })
         .collect();
     let (placed, loft_sampling) = if smooth {
-        let sampled = crate::loft::sample(&placed, policy.loft).map_err(TessellateError::Loft)?;
+        let sampled = crate::loft::sample(&placed, policy.loft).map_err(|mut error| {
+            if let crate::loft::LoftError::Foldover {
+                band,
+                vertex,
+                witness,
+            } = &mut error
+            {
+                witness.profile_points = Some(core::array::from_fn(|i| {
+                    diagnostics::profile_point(
+                        sections[*band + i].1,
+                        &discretized[*band + i],
+                        *vertex,
+                    )
+                }));
+            }
+            TessellateError::Loft(error)
+        })?;
         (sampled.rings, Some(sampled.evidence))
     } else {
         (placed, None)

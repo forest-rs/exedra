@@ -30,8 +30,8 @@ use alloc::vec::Vec;
 
 use exedra_assembly::{Assembly, AssemblyError, InstancePath, PartId, PartSource};
 use exedra_constructive::ir::{
-    CsgOp, ImportId, NodeId, NodeKind, Placement3, ProfileId, Recipe, RecipeBuilder, RecipeError,
-    SlotId, SourceId,
+    CsgOp, ImportId, LoftSection, NodeId, NodeKind, Placement3, ProfileId, Recipe, RecipeBuilder,
+    RecipeError, SlotId, SourceId,
 };
 use hashbrown::HashMap;
 
@@ -350,8 +350,8 @@ fn splice(builder: &mut RecipeBuilder, source: &Recipe) -> Result<NodeId, Splice
 
     let mut nodes: Vec<NodeId> = Vec::with_capacity(source.nodes().len());
     for node in source.nodes() {
-        let kind =
-            remap(&node.kind, &profiles, &nodes, &imports).ok_or(SpliceError::UnsupportedNode)?;
+        let kind = remap(&node.kind, &profiles, &nodes, &imports, &sources)
+            .ok_or(SpliceError::UnsupportedNode)?;
         if let Some(id) = node.source.and_then(|id| sources.get(id.0 as usize)) {
             builder.with_source(*id);
         }
@@ -379,6 +379,7 @@ fn remap(
     profiles: &[ProfileId],
     nodes: &[NodeId],
     imports: &[ImportId],
+    sources: &[SourceId],
 ) -> Option<NodeKind> {
     let profile = |id: ProfileId| profiles.get(id.0 as usize).copied();
     let node = |id: NodeId| nodes.get(id.0 as usize).copied();
@@ -412,7 +413,16 @@ fn remap(
         } => NodeKind::Loft {
             sections: sections
                 .iter()
-                .map(|(placement, id)| profile(*id).map(|id| (*placement, id)))
+                .map(|section| {
+                    Some(LoftSection {
+                        placement: section.placement,
+                        profile: profile(section.profile)?,
+                        source: match section.source {
+                            Some(id) => Some(*sources.get(id.0 as usize)?),
+                            None => None,
+                        },
+                    })
+                })
                 .collect::<Option<Vec<_>>>()?,
             policy: *policy,
             caps: *caps,

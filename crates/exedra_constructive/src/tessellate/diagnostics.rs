@@ -32,6 +32,44 @@ impl core::fmt::Display for ProfileBoundaryEdge {
     }
 }
 
+pub(super) fn profile_point(
+    profile: &Profile2,
+    d: &DiscretizedProfile,
+    mut vertex: usize,
+) -> ProfileBoundaryEdge {
+    for (loop_index, boundary) in d.rings().enumerate() {
+        if vertex < boundary.points.len() {
+            return source_edge(
+                profile,
+                d,
+                BoundaryEdge {
+                    hole: loop_index.checked_sub(1),
+                    edge: vertex,
+                },
+            );
+        }
+        vertex -= boundary.points.len();
+    }
+    unreachable!("trajectory vertices come from the same profile discretization")
+}
+
+fn source_edge(
+    profile: &Profile2,
+    d: &DiscretizedProfile,
+    sampled: BoundaryEdge,
+) -> ProfileBoundaryEdge {
+    let (boundary, authored) = match sampled.hole {
+        None => (&d.outer, profile.outer()),
+        Some(hole) => (&d.holes[hole], &profile.holes()[hole]),
+    };
+    let segment = boundary.edge_seg[sampled.edge];
+    ProfileBoundaryEdge {
+        sampled,
+        segment,
+        tag: authored.segs()[segment as usize].tag,
+    }
+}
+
 pub(super) fn triangulation_error(
     profile: &Profile2,
     d: &DiscretizedProfile,
@@ -43,21 +81,9 @@ pub(super) fn triangulation_error(
         kind,
     } = error
     {
-        let source = |sampled: BoundaryEdge| {
-            let (boundary, authored) = match sampled.hole {
-                None => (&d.outer, profile.outer()),
-                Some(hole) => (&d.holes[hole], &profile.holes()[hole]),
-            };
-            let segment = boundary.edge_seg[sampled.edge];
-            ProfileBoundaryEdge {
-                sampled,
-                segment,
-                tag: authored.segs()[segment as usize].tag,
-            }
-        };
         TessellateError::ProfileBoundaryContact {
-            first: source(first),
-            second: source(second),
+            first: source_edge(profile, d, first),
+            second: source_edge(profile, d, second),
             kind,
         }
     } else {

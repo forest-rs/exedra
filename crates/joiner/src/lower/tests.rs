@@ -14,6 +14,55 @@ use crate::{
     RuleOutput, ToolSolid,
 };
 
+#[test]
+fn splicing_remaps_authored_loft_section_sources() {
+    use exedra_constructive::builders;
+    use exedra_constructive::ir::{CapMode, LoftPolicy};
+    let mut source = RecipeBuilder::new();
+    let profile = source.add_profile(builders::circle(1.0).unwrap());
+    let bottom = source.source_ref("part/bottom");
+    let top = source.source_ref("part/top");
+    let root = source
+        .add(NodeKind::Loft {
+            sections: vec![
+                LoftSection::new(Placement3::IDENTITY, profile).with_source(bottom),
+                LoftSection::new(Placement3::translate(0.0, 0.0, 2.0), profile).with_source(top),
+            ],
+            policy: LoftPolicy::Ruled,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let source = source.finish(root).unwrap();
+    let mut destination = RecipeBuilder::new();
+    destination.source_ref("already-present");
+    destination.add_profile(builders::circle(3.0).unwrap());
+    let root =
+        splice(&mut destination, &source).unwrap_or_else(|_| panic!("valid loft must splice"));
+    let destination = destination.finish(root).unwrap();
+    assert_eq!(
+        source.recipe_fingerprint(),
+        destination.recipe_fingerprint()
+    );
+    let NodeKind::Loft { sections, .. } = &destination.node(root).unwrap().kind else {
+        panic!("loft")
+    };
+    assert_eq!(
+        destination.source(sections[0].source.unwrap()),
+        Some("part/bottom")
+    );
+    assert_eq!(
+        destination.source(sections[1].source.unwrap()),
+        Some("part/top")
+    );
+    assert_eq!(
+        evaluate(&destination, &EvalPolicy::default())
+            .unwrap()
+            .bodies
+            .len(),
+        1
+    );
+}
+
 fn block(builder: &mut RecipeBuilder, size: [f64; 3], slot: &str, finish: bool) -> NodeId {
     let material = builder.material_slot(slot);
     let source = builder.source_ref(slot);

@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::ir::LoftSection;
 use alloc::collections::BTreeMap;
 use exedra_math::{cross, dot, scale, sub};
 use exedra_mesh::{FaceTriangulation, MeshBuilder};
@@ -345,7 +346,10 @@ fn converted_profile_can_be_retained_extruded_and_lofted() {
     end.rows[2][3] += 2.5;
     let loft = builder
         .add(NodeKind::Loft {
-            sections: alloc::vec![(converted.placement, profile), (end, profile)],
+            sections: alloc::vec![
+                LoftSection::new(converted.placement, profile),
+                LoftSection::new(end, profile)
+            ],
             policy: LoftPolicy::Ruled,
             caps: CapMode::Both,
         })

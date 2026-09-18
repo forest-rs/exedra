@@ -7,6 +7,8 @@
 //! sections geometrically. Smooth interpolation is C1 in section-index space,
 //! with centered interior tangents and one-sided endpoint secants.
 
+use crate::tessellate::ProfileBoundaryEdge;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use exedra_math::{add, dot, lerp, norm, scale, sub};
 
@@ -76,7 +78,7 @@ pub struct LoftSampling {
 }
 
 /// A smooth loft could not honor its interpolation or sampling contract.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum LoftError {
     /// Tolerance must be positive and finite, and budgets must be nonzero.
@@ -93,7 +95,32 @@ pub enum LoftError {
         band: usize,
         /// Flattened corresponding profile point.
         vertex: usize,
+        /// Cubic control geometry and the failed sufficient forward-motion check.
+        witness: Box<LoftFoldoverWitness>,
     },
+}
+
+/// Evidence for a smooth-loft forward-motion refusal.
+///
+/// This does not establish an actual surface self-intersection. The algorithm
+/// requires all three cubic control edges to advance along the band secant;
+/// failure means it cannot certify forward motion using that sufficient check.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoftFoldoverWitness {
+    /// Cubic Bézier control points in the coordinates supplied to tessellation.
+    /// The first and last points lie on the two authored sections. Retained
+    /// evaluation uses its current construction frame, before any later placement
+    /// of an instantiated definition; these are not assembly occurrence coordinates.
+    pub trajectory: [[f64; 3]; 4],
+    /// Refused edge from `trajectory[control_edge]` to the next control point.
+    pub control_edge: usize,
+    /// Dot product of that edge with `trajectory[3] - trajectory[0]`, in squared
+    /// coordinate units. A nonpositive value caused the refusal.
+    pub advance: f64,
+    /// Outgoing sampled edges at the trajectory endpoints, mapped to the two
+    /// authored section profiles. Public profile tessellation fills this field;
+    /// the internal trajectory sampler has no profile correspondence by itself.
+    pub profile_points: Option<[ProfileBoundaryEdge; 2]>,
 }
 
 impl core::fmt::Display for LoftError {
@@ -105,10 +132,21 @@ impl core::fmt::Display for LoftError {
             }
             Self::BudgetExceeded => f.write_str("smooth-loft sampling budget exceeded"),
             Self::NumericLimit => f.write_str("smooth-loft construction exceeds numeric limits"),
-            Self::Foldover { band, vertex } => write!(
-                f,
-                "smooth-loft band {band} point {vertex} cannot establish forward motion"
-            ),
+            Self::Foldover {
+                band,
+                vertex,
+                witness,
+            } => {
+                write!(
+                    f,
+                    "smooth-loft band {band} point {vertex} cannot establish forward motion: control edge {} has advance {}",
+                    witness.control_edge, witness.advance
+                )?;
+                if let Some(points) = &witness.profile_points {
+                    write!(f, "; {} to {}", points[0], points[1])?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -175,13 +213,22 @@ pub(crate) fn sample(
                 return Err(LoftError::NumericLimit);
             }
             let secant = sub(c[3], c[0]);
-            for pair in c.windows(2) {
+            for (control_edge, pair) in c.windows(2).enumerate() {
                 let advance = dot(sub(pair[1], pair[0]), secant);
                 if !advance.is_finite() {
                     return Err(LoftError::NumericLimit);
                 }
                 if advance <= 0.0 {
-                    return Err(LoftError::Foldover { band, vertex });
+                    return Err(LoftError::Foldover {
+                        band,
+                        vertex,
+                        witness: Box::new(LoftFoldoverWitness {
+                            trajectory: c,
+                            control_edge,
+                            advance,
+                            profile_points: None,
+                        }),
+                    });
                 }
             }
             for triple in c.windows(3) {

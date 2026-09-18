@@ -540,20 +540,15 @@ mod tests {
             };
             compile(&mut compiler, false).unwrap();
             let error = compile(&mut compiler, true).unwrap_err();
+            let crate::CompileError::Evaluate { error, .. } = error else {
+                panic!("expected evaluation failure");
+            };
             assert!(matches!(
-                error,
-                crate::CompileError::Evaluate {
-                    error: exedra_constructive::evaluate::EvalError {
-                        error: exedra_constructive::tessellate::TessellateError::Attachment(
-                            WorkplaneFailure {
-                                kind: WorkplaneError::AmbiguousSelection,
-                                ..
-                            }
-                        ),
-                        ..
-                    },
+                error.error,
+                exedra_constructive::tessellate::TessellateError::Attachment(WorkplaneFailure {
+                    kind: WorkplaneError::AmbiguousSelection,
                     ..
-                }
+                })
             ));
             compile(&mut compiler, false).unwrap();
         }
