@@ -90,6 +90,14 @@ Migration: existing `round_sharp_edges` calls retain their return type. Use
 silently clamped band counts must choose a supported count or tolerance.
 Exhaustive `RoundError` matches must handle the new `InvalidEdge` variant.
 
+## Polygon footprints
+
+`PlanarPatch::polygon_clearance` checks a simple filled polygon against the whole
+material domain, including concavities and holes. Inspect containment separately
+from nearest boundary distance: a plate can enclose a hole while its edges remain
+clear. Results include footprint/source-boundary witnesses and bounded query work.
+See [polygon clearance semantics](docs/adr-0002-polygon-footprint-clearance.md).
+
 ## License
 
 Apache-2.0 OR MIT

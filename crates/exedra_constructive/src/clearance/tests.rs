@@ -201,3 +201,41 @@ fn tilted_patch_and_retriangulated_cap_preserve_clearance() {
     assert!((patch.circle_clearance([1.0, 1.25], 0.2).unwrap().clearance - 0.8).abs() < 2e-6);
     assert!(patch.stats().corners_examined > patch.stats().boundary_edges);
 }
+
+#[test]
+fn polygon_hole_violation_retains_constructive_boundary_evidence() {
+    use crate::profile::{Loop2, Profile2, Seg2};
+    let profile = Profile2::new(
+        builders::rect_from_corner(10.0, 10.0)
+            .unwrap()
+            .outer()
+            .clone(),
+        alloc::vec![
+            Loop2::new(alloc::vec![
+                Seg2::line((4.0, 4.0)),
+                Seg2::line((4.0, 6.0)),
+                Seg2::line((6.0, 6.0)),
+                Seg2::line((6.0, 4.0))
+            ])
+            .unwrap()
+        ],
+    )
+    .unwrap();
+    let patch = patch(&profile);
+    let result = patch
+        .polygon_clearance(
+            &[[3.0, 3.0], [7.0, 3.0], [7.0, 7.0], [3.0, 7.0]],
+            &PolygonClearancePolicy::default(),
+        )
+        .unwrap();
+    let Some(PolygonViolation::CoveredHole { boundary }) = result.violation else {
+        panic!("expected covered hole: {result:?}")
+    };
+    assert_eq!(boundary.loop_index, 1);
+    assert_eq!(boundary.source.feature, Feature::CapEnd);
+    assert!(matches!(
+        boundary.source.adjacent_feature,
+        Some(Feature::Wall { loop_index: 1, .. })
+    ));
+    assert_eq!(result.boundary_distance, 1.0);
+}
