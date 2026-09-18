@@ -5,10 +5,13 @@
 
 use exedra_spatial::Aabb;
 
-use crate::{ScalarField, ScalarField2d};
-use exedra_math::{add, norm, scale, sub};
+use crate::{Aabb2, ScalarField, ScalarField2d};
+use exedra_math::{add, scale};
 
 /// Finite extrusion of a 2D profile field along the world-space z axis.
+///
+/// Interval evaluation composes the profile's bounds with the axial bounds.
+/// A profile without a known interval remains uncullable.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Extrude<F> {
     profile: F,
@@ -16,6 +19,9 @@ pub struct Extrude<F> {
 }
 
 /// Revolution of a 2D radius-height profile around the world-space y axis.
+///
+/// Interval evaluation maps the box to radius-height bounds and queries the
+/// profile. A profile without a known interval remains uncullable.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Revolve<F> {
     profile: F,
@@ -66,7 +72,17 @@ impl<F> Revolve<F> {
 
 impl<F: ScalarField2d> ScalarField for Extrude<F> {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        Some(conservative_sampled_interval(self, bounds))
+        let profile_bounds = Aabb2::new(
+            [bounds.min[0], bounds.min[1]],
+            [bounds.max[0], bounds.max[1]],
+        )?;
+        let [lower, upper] = self.profile.eval_interval(&profile_bounds)?;
+        let [near, far] = absolute_interval(bounds.min[2], bounds.max[2]);
+        // The cap composition is monotone in both profile value and |z|.
+        Some([
+            capped_distance(lower, near, self.half_height),
+            capped_distance(upper, far, self.half_height),
+        ])
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
@@ -114,7 +130,13 @@ impl<F: ScalarField2d> ScalarField for Extrude<F> {
 
 impl<F: ScalarField2d> ScalarField for Revolve<F> {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        Some(conservative_sampled_interval(self, bounds))
+        let x = absolute_interval(bounds.min[0], bounds.max[0]);
+        let z = absolute_interval(bounds.min[2], bounds.max[2]);
+        let profile_bounds = Aabb2::new(
+            [radial_distance([x[0], 0.0, z[0]]), bounds.min[1]],
+            [radial_distance([x[1], 0.0, z[1]]), bounds.max[1]],
+        )?;
+        self.profile.eval_interval(&profile_bounds)
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
@@ -167,47 +189,13 @@ fn revolved_gradient(profile_gradient: [f32; 2], point: [f32; 3], radial: f32) -
     ]
 }
 
-fn conservative_sampled_interval<F: ScalarField>(field: &F, bounds: &Aabb) -> [f32; 2] {
-    let samples = sample_points(bounds);
-    let mut values = [0.0_f32; 9];
-    field.eval_points(&samples, &mut values);
-
-    let inflation = norm(sub(bounds.max, bounds.min));
-    let mut minimum = values[0];
-    let mut maximum = values[0];
-    for value in values {
-        minimum = minimum.min(value);
-        maximum = maximum.max(value);
-    }
-    [minimum - inflation, maximum + inflation]
-}
-
-fn sample_points(bounds: &Aabb) -> [[f32; 3]; 9] {
-    let corners = corners(bounds);
-    [
-        corners[0],
-        corners[1],
-        corners[2],
-        corners[3],
-        corners[4],
-        corners[5],
-        corners[6],
-        corners[7],
-        bounds.center(),
-    ]
-}
-
-fn corners(bounds: &Aabb) -> [[f32; 3]; 8] {
-    [
-        [bounds.min[0], bounds.min[1], bounds.min[2]],
-        [bounds.max[0], bounds.min[1], bounds.min[2]],
-        [bounds.min[0], bounds.max[1], bounds.min[2]],
-        [bounds.max[0], bounds.max[1], bounds.min[2]],
-        [bounds.min[0], bounds.min[1], bounds.max[2]],
-        [bounds.max[0], bounds.min[1], bounds.max[2]],
-        [bounds.min[0], bounds.max[1], bounds.max[2]],
-        [bounds.max[0], bounds.max[1], bounds.max[2]],
-    ]
+fn absolute_interval(minimum: f32, maximum: f32) -> [f32; 2] {
+    let near = if minimum <= 0.0 && maximum >= 0.0 {
+        0.0
+    } else {
+        abs(minimum).min(abs(maximum))
+    };
+    [near, abs(minimum).max(abs(maximum))]
 }
 
 fn radial_distance(point: [f32; 3]) -> f32 {
@@ -260,7 +248,7 @@ mod tests {
     use exedra_spatial::Aabb;
 
     use crate::{
-        EdgeSearchParams, ScalarField,
+        Aabb2, EdgeSearchParams, ScalarField, ScalarField2d,
         analytic::{CylinderField, TorusField},
         analytic2d::CircleField2d,
         dual_contour::{DualContourParams, dual_contour},
@@ -432,5 +420,115 @@ mod tests {
 
         assert_eq!(field.profile(), &profile);
         assert_eq!(field.half_height(), 0.75);
+    }
+
+    struct ScaledCircle {
+        scale: f32,
+        interval_known: bool,
+    }
+
+    impl ScalarField2d for ScaledCircle {
+        fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]> {
+            self.interval_known.then(|| {
+                self.circle()
+                    .eval_interval(bounds)
+                    .unwrap()
+                    .map(|v| self.scale * v)
+            })
+        }
+
+        fn eval_points(&self, points: &[[f32; 2]], out: &mut [f32]) {
+            self.circle().eval_points(points, out);
+            for value in out {
+                *value *= self.scale;
+            }
+        }
+
+        fn eval_gradients(&self, points: &[[f32; 2]], out: &mut [[f32; 3]]) {
+            self.circle().eval_gradients(points, out);
+            for value in out {
+                *value = value.map(|v| self.scale * v);
+            }
+        }
+    }
+
+    impl ScaledCircle {
+        fn circle(&self) -> CircleField2d {
+            CircleField2d {
+                center: [0.015, 0.0],
+                radius: 0.005,
+            }
+        }
+    }
+
+    #[test]
+    fn lifted_intervals_preserve_unknown_profile_bounds() {
+        let bounds = Aabb::new([-0.032; 3], [0.032; 3]).unwrap();
+        let profile = || ScaledCircle {
+            scale: 1000.0,
+            interval_known: false,
+        };
+        assert_eq!(Revolve::new(profile()).eval_interval(&bounds), None);
+        assert_eq!(
+            Extrude::new(profile(), 0.01)
+                .unwrap()
+                .eval_interval(&bounds),
+            None
+        );
+    }
+
+    #[test]
+    fn scaled_revolution_is_not_culled_as_empty() {
+        let field = Revolve::new(ScaledCircle {
+            scale: 1000.0,
+            interval_known: true,
+        });
+        let bounds = Aabb::new([-0.0317, -0.0313, -0.0319], [0.0323, 0.0327, 0.0321]).unwrap();
+        let interval = field.eval_interval(&bounds).unwrap();
+        assert!(interval[0] < 0.0 && interval[1] > 0.0);
+        let result = dual_contour(&field, &params(bounds, 5)).unwrap();
+        assert!(result.stats.faces > 0);
+        assert!(result.mesh.validate_deep().is_empty());
+        assert!(result.mesh.boundary_loops().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lifted_intervals_enclose_scaled_fields_across_and_away_from_the_axis() {
+        for scale in [0.01, 1.0, 1000.0] {
+            let profile = || ScaledCircle {
+                scale,
+                interval_known: true,
+            };
+            let revolved = Revolve::new(profile());
+            let extruded = Extrude::new(profile(), 0.01).unwrap();
+            for (min, max) in [
+                ([-0.032; 3], [0.032; 3]),
+                ([0.011, -0.003, -0.006], [0.020, 0.002, 0.013]),
+                ([-0.020, -0.012, -0.010], [-0.011, -0.004, -0.002]),
+                ([0.04, 0.03, 0.06], [0.08, 0.07, 0.09]),
+            ] {
+                let bounds = Aabb::new(min, max).unwrap();
+                for field in [&revolved as &dyn ScalarField, &extruded as &dyn ScalarField] {
+                    let interval = field.eval_interval(&bounds).unwrap();
+                    for x in 0_u8..=8 {
+                        for y in 0_u8..=8 {
+                            for z in 0_u8..=8 {
+                                let steps = [x, y, z];
+                                let p = core::array::from_fn(|i| {
+                                    (min[i] + (max[i] - min[i]) * f32::from(steps[i]) / 8.0)
+                                        .clamp(min[i], max[i])
+                                });
+                                let mut value = [0.0];
+                                field.eval_points(&[p], &mut value);
+                                assert!(
+                                    interval[0] <= value[0] && value[0] <= interval[1],
+                                    "scale={scale}, point={p:?}, value={value:?}, interval={interval:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

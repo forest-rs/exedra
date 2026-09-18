@@ -120,6 +120,11 @@ pub trait ScalarField {
 /// introducing a distinct scene-graph layer.
 pub trait ScalarField2d {
     /// Evaluates conservative interval bounds for one 2D region.
+    ///
+    /// The interval must contain every field value in `bounds`. Return `None`
+    /// when no bound is known; lifting preserves that uncertainty. Fields need
+    /// not be unit-distance functions, so spatial distances alone do not bound
+    /// their changes in value.
     fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]>;
 
     /// Evaluates field values at `points`, writing one output per point.
