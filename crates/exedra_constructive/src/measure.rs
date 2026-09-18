@@ -15,12 +15,12 @@
 //!
 //! ```
 //! use exedra_constructive::{
-//!     builders::rect,
+//!     builders::rect_from_corner,
 //!     ir::{CapMode, Placement3, Plane3},
 //!     section::{SectionPolicy, section_body},
 //!     tessellate::{EvalPolicy, tessellate_extrude},
 //! };
-//! let body = tessellate_extrude(&rect(4.0, 3.0)?, &Placement3::IDENTITY,
+//! let body = tessellate_extrude(&rect_from_corner(4.0, 3.0)?, &Placement3::IDENTITY,
 //!     2.0, CapMode::Both, &EvalPolicy::default())?;
 //! let section = section_body(&body,
 //!     Plane3 { normal: [0.0, 0.0, 1.0], distance: 1.0 },

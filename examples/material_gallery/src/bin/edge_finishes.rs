@@ -19,7 +19,7 @@ fn rail(profile_rounding: bool) -> Result<Recipe, Box<dyn Error>> {
     let mut b = RecipeBuilder::new();
     let surface = b.material_slot("surface");
     let root = if profile_rounding {
-        let profile = b.add_profile(builders::rounded_rect(0.09, 0.2, 0.006)?);
+        let profile = b.add_profile(builders::rounded_rect_from_corner(0.09, 0.2, 0.006)?);
         b.with_material(surface).add(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,

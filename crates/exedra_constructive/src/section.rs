@@ -13,12 +13,12 @@
 //!
 //! ```
 //! use exedra_constructive::{
-//!     builders::rect,
+//!     builders::rect_from_corner,
 //!     ir::{CapMode, Placement3, Plane3},
 //!     section::{CutCap, SectionPolicy, split_body},
 //!     tessellate::{EvalPolicy, tessellate_extrude},
 //! };
-//! let body = tessellate_extrude(&rect(2.0, 3.0)?, &Placement3::IDENTITY,
+//! let body = tessellate_extrude(&rect_from_corner(2.0, 3.0)?, &Placement3::IDENTITY,
 //!     4.0, CapMode::Both, &EvalPolicy::default())?;
 //! let cut = split_body(&body,
 //!     Plane3 { normal: [0.3, -0.2, 1.0], distance: 1.71 },
@@ -89,10 +89,10 @@ impl PlaneSection {
     /// for conversion from plain mesh sections.
     ///
     /// ```
-    /// # use exedra_constructive::{builders::rect, ir::{CapMode, Placement3, Plane3},
+    /// # use exedra_constructive::{builders::rect_from_corner, ir::{CapMode, Placement3, Plane3},
     /// # section::{section_body, SectionPolicy}, tessellate::{EvalPolicy, tessellate_extrude}};
     /// # let policy = EvalPolicy::default();
-    /// # let body = tessellate_extrude(&rect(4.0, 3.0)?, &Placement3::IDENTITY,
+    /// # let body = tessellate_extrude(&rect_from_corner(4.0, 3.0)?, &Placement3::IDENTITY,
     /// #     2.0, CapMode::Both, &policy)?;
     /// # let section = section_body(&body,
     /// #     Plane3 { normal: [0.2, 0.0, 1.0], distance: 1.0 }, &SectionPolicy::default())?;

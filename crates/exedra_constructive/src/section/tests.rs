@@ -45,7 +45,7 @@ fn volume(body: &TessellatedBody) -> f64 {
 }
 fn block() -> TessellatedBody {
     tessellate_extrude(
-        &crate::builders::rect(2.0, 3.0).unwrap(),
+        &crate::builders::rect_from_corner(2.0, 3.0).unwrap(),
         &Placement3::IDENTITY,
         4.0,
         CapMode::Both,
@@ -130,7 +130,7 @@ fn section_profiles_preserve_holes_disconnected_regions_and_nested_islands() {
     )
     .unwrap();
     let island = tessellate_extrude(
-        &crate::builders::rect(0.4, 0.3).unwrap(),
+        &crate::builders::rect_from_corner(0.4, 0.3).unwrap(),
         &Placement3::IDENTITY,
         4.0,
         CapMode::Both,
@@ -502,9 +502,9 @@ fn holed_section_retains_collinear_diagonal_crossings_and_opposite_cap_winding()
 #[test]
 fn asymmetric_smooth_loft_supports_oblique_cuts() {
     let profiles = [
-        crate::builders::rect(1.0, 0.7).unwrap(),
-        crate::builders::rect(1.5, 0.9).unwrap(),
-        crate::builders::rect(0.8, 1.1).unwrap(),
+        crate::builders::rect_from_corner(1.0, 0.7).unwrap(),
+        crate::builders::rect_from_corner(1.5, 0.9).unwrap(),
+        crate::builders::rect_from_corner(0.8, 1.1).unwrap(),
     ];
     let sections = [
         (Placement3::IDENTITY, &profiles[0]),
@@ -590,7 +590,7 @@ fn contacts_invalid_inputs_and_budgets_are_explicit() {
         Err(SectionError::InvalidPolicy)
     ));
     let open = tessellate_extrude(
-        &crate::builders::rect(2.0, 3.0).unwrap(),
+        &crate::builders::rect_from_corner(2.0, 3.0).unwrap(),
         &Placement3::IDENTITY,
         4.0,
         CapMode::None,

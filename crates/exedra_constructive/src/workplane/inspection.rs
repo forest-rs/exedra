@@ -356,11 +356,11 @@ impl SurfaceInventory {
 /// Individual geometric or selection refusals are evidence in successful entries.
 ///
 /// ```
-/// use exedra_constructive::{builders::rect, ir::{CapMode, Placement3},
+/// use exedra_constructive::{builders::rect_from_corner, ir::{CapMode, Placement3},
 ///     tessellate::{tessellate_extrude, EvalPolicy},
 ///     workplane::{inspect_surfaces, SurfaceInventoryPolicy, SurfaceSelector,
 ///         WorkplaneAttachment, WorkplanePolicy}};
-/// let body = tessellate_extrude(&rect(4.0, 3.0)?, &Placement3::IDENTITY,
+/// let body = tessellate_extrude(&rect_from_corner(4.0, 3.0)?, &Placement3::IDENTITY,
 ///     2.0, CapMode::Both, &EvalPolicy::default())?;
 /// let inventory = inspect_surfaces(&body, &SurfaceInventoryPolicy::default())?;
 /// let cap = inventory.entries().iter()

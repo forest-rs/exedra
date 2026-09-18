@@ -4,7 +4,7 @@
 use super::*;
 
 use exedra_assembly::{CompilePolicy, PartCompiler};
-use exedra_constructive::builders::{circle, rect};
+use exedra_constructive::builders::{circle, rect_from_corner};
 use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
 
 use crate::{Anchor, Evidence, EvidenceClass, OrientedBox, Part, lower, measure_contact};
@@ -113,7 +113,7 @@ fn purlin(seat: bool) -> Recipe {
     if !seat {
         return builder.finish(cylinder).unwrap();
     }
-    let cutter_profile = builder.add_profile(rect(0.2, 0.4).unwrap());
+    let cutter_profile = builder.add_profile(rect_from_corner(0.2, 0.4).unwrap());
     let cutter = builder
         .with_material(slot)
         .add(NodeKind::Extrude {
@@ -140,7 +140,7 @@ fn beam(shape: SupportShape) -> Recipe {
     } else {
         (0.2, 0.0)
     };
-    let profile = builder.add_profile(rect(0.2, width).unwrap());
+    let profile = builder.add_profile(rect_from_corner(0.2, width).unwrap());
     let z = if matches!(shape, SupportShape::Gap) {
         -0.002
     } else {

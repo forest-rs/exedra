@@ -19,6 +19,7 @@
 use alloc::vec::Vec;
 
 use crate::TriError;
+use crate::boundary::{between, contact};
 use crate::predicates::{Orientation, orient2d};
 
 /// Splices `holes` into `ring`, returning the composite ring.
@@ -245,33 +246,7 @@ fn blocks_bridge(h: [f64; 2], o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> bool {
     if a == h || a == o || b == h || b == o {
         return false;
     }
-    let abh = orient2d(a, b, h);
-    let abo = orient2d(a, b, o);
-    let hoa = orient2d(h, o, a);
-    let hob = orient2d(h, o, b);
-
-    // Proper crossing: each segment strictly straddles the other's line.
-    if abh != abo
-        && hoa != hob
-        && abh != Orientation::Collinear
-        && abo != Orientation::Collinear
-        && hoa != Orientation::Collinear
-        && hob != Orientation::Collinear
-    {
-        return true;
-    }
-    // Exact touches and collinear overlaps: any endpoint lying on the other
-    // segment blocks the bridge.
-    (hoa == Orientation::Collinear && between(h, o, a))
-        || (hob == Orientation::Collinear && between(h, o, b))
-        || (abh == Orientation::Collinear && between(a, b, h))
-        || (abo == Orientation::Collinear && between(a, b, o))
-}
-
-/// True when collinear point `q` lies within the axis-aligned span of `(a, b)`.
-fn between(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> bool {
-    (a[0].min(b[0]) <= q[0] && q[0] <= a[0].max(b[0]))
-        && (a[1].min(b[1]) <= q[1] && q[1] <= a[1].max(b[1]))
+    contact(h, o, a, b).is_some()
 }
 
 /// Builds the composite ring: `ring[..=pos], hole cycle from the anchor,

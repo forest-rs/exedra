@@ -112,7 +112,7 @@ mod tests {
     fn direct_stretch_and_constructive_binding_agree_on_geometry_materials_and_features() {
         let policy = EvalPolicy::default();
         let mut source = tessellate_extrude(
-            &builders::rect(4.0, 3.0).unwrap(),
+            &builders::rect_from_corner(4.0, 3.0).unwrap(),
             &Placement3::IDENTITY,
             2.0,
             CapMode::Both,

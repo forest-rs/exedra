@@ -242,7 +242,8 @@ fn drilled_block_recipe() -> Result<Recipe, String> {
     use exedra_constructive::builders;
 
     let mut b = RecipeBuilder::new();
-    let block = b.add_profile(builders::rect(200.0, 100.0).map_err(|e| format!("{e}"))?);
+    let block =
+        b.add_profile(builders::rect_from_corner(200.0, 100.0).map_err(|e| format!("{e}"))?);
     let drill = b.add_profile(builders::circle(30.0).map_err(|e| format!("{e}"))?);
     let slab_src = b.source_ref("demo:drilled_block/slab");
     let e1 = b

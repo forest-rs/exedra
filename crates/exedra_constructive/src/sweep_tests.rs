@@ -209,7 +209,7 @@ fn caps_and_holes_close_only_when_requested() {
 
 #[test]
 fn invalid_inputs_and_local_foldovers_are_typed_failures() {
-    let profile = builders::rect(2.0, 1.0).expect("rectangle");
+    let profile = builders::rect_from_corner(2.0, 1.0).expect("rectangle");
     let straight = [[0.0; 3], [0.0, 0.0, 3.0]];
     for x in [
         [0.0; 3],

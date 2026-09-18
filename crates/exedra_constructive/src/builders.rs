@@ -9,8 +9,9 @@
 //! vocabulary living here.
 //!
 //! All builders produce validated counter-clockwise [`Profile2`] values in
-//! the XY plane with the origin at the profile's minimum corner (or center,
-//! for circular shapes). Each segment is tagged with its index so downstream
+//! the XY plane. Rectangles name their origin explicitly: minimum corner or
+//! center. Circular shapes are centered; L profiles start at their minimum
+//! corner. Each segment is tagged with its index so downstream
 //! source maps can name features without the caller doing anything; callers
 //! that want their own tags rebuild the loops with [`Seg2`] directly.
 
@@ -39,7 +40,7 @@ fn positive_finite(v: f64) -> bool {
 /// # Errors
 ///
 /// Both dimensions must be positive and finite.
-pub fn rect(width: f64, height: f64) -> Result<Profile2, ProfileError> {
+pub fn rect_from_corner(width: f64, height: f64) -> Result<Profile2, ProfileError> {
     if !positive_finite(width) || !positive_finite(height) {
         return Err(ProfileError::InvalidDimension);
     }
@@ -52,7 +53,20 @@ pub fn rect(width: f64, height: f64) -> Result<Profile2, ProfileError> {
     Profile2::simple(outer)
 }
 
-/// An axis-aligned rectangle with four rounded corners of equal radius.
+/// An axis-aligned rectangle centered at `(0, 0)`, counter-clockwise.
+///
+/// Bounds are `[-width/2, width/2] × [-height/2, height/2]`. Segment order
+/// and tags match [`rect_from_corner`]: bottom, right, top, left. A centered
+/// [`circle`] can be used as a concentric hole without translating its loop.
+///
+/// # Errors
+/// Dimensions must be positive and finite; translated edges must remain distinct.
+pub fn rect_centered(width: f64, height: f64) -> Result<Profile2, ProfileError> {
+    center_rectangle(rect_from_corner(width, height)?, width, height)
+}
+
+/// An axis-aligned rectangle with its minimum corner at `(0, 0)` and four
+/// rounded corners of equal radius.
 ///
 /// Alternates straight edges and 90-degree arcs, eight segments total,
 /// tagged 0..8 starting from the bottom edge.
@@ -61,7 +75,11 @@ pub fn rect(width: f64, height: f64) -> Result<Profile2, ProfileError> {
 ///
 /// Dimensions must be positive and finite, and the radius must be positive
 /// and strictly less than half of each dimension.
-pub fn rounded_rect(width: f64, height: f64, radius: f64) -> Result<Profile2, ProfileError> {
+pub fn rounded_rect_from_corner(
+    width: f64,
+    height: f64,
+    radius: f64,
+) -> Result<Profile2, ProfileError> {
     if !positive_finite(width) || !positive_finite(height) || !positive_finite(radius) {
         return Err(ProfileError::InvalidDimension);
     }
@@ -80,6 +98,35 @@ pub fn rounded_rect(width: f64, height: f64, radius: f64) -> Result<Profile2, Pr
         Seg2::arc((radius, 0.0), b).tagged(SegTag(7)),
     ])?;
     Profile2::simple(outer)
+}
+
+/// A rectangle centered at `(0, 0)` with four rounded corners of equal radius.
+///
+/// Bounds, winding and tags follow [`rect_centered`] and
+/// [`rounded_rect_from_corner`]; centering preserves arc bulges.
+///
+/// # Errors
+/// Same dimension requirements as [`rounded_rect_from_corner`]. Refuses edges
+/// that become indistinguishable after translation to the centered coordinates.
+pub fn rounded_rect_centered(
+    width: f64,
+    height: f64,
+    radius: f64,
+) -> Result<Profile2, ProfileError> {
+    center_rectangle(
+        rounded_rect_from_corner(width, height, radius)?,
+        width,
+        height,
+    )
+}
+
+fn center_rectangle(profile: Profile2, width: f64, height: f64) -> Result<Profile2, ProfileError> {
+    let mut segments = profile.outer().segs().to_vec();
+    for segment in &mut segments {
+        segment.to.x -= width * 0.5;
+        segment.to.y -= height * 0.5;
+    }
+    Profile2::simple(Loop2::new(segments)?)
 }
 
 /// An L-shaped corner profile: a `width x height` rectangle with a
@@ -278,25 +325,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn centered_builders_align_with_circles_and_preserve_boundary_tags() {
+        use crate::ir::{CapMode, Placement3};
+        use crate::tessellate::{EvalPolicy, tessellate_extrude};
+        use kurbo::Shape;
+        for (corner, centered) in [
+            (
+                rect_from_corner(4.0, 2.0).unwrap(),
+                rect_centered(4.0, 2.0).unwrap(),
+            ),
+            (
+                rounded_rect_from_corner(4.0, 2.0, 0.25).unwrap(),
+                rounded_rect_centered(4.0, 2.0, 0.25).unwrap(),
+            ),
+        ] {
+            assert_eq!(
+                centered.outer().to_bez_path().bounding_box(),
+                kurbo::Rect::new(-2.0, -1.0, 2.0, 1.0)
+            );
+            assert_eq!(profile_tags(&centered), profile_tags(&corner));
+            for (a, b) in corner.outer().segs().iter().zip(centered.outer().segs()) {
+                assert_eq!((b.to.x, b.to.y), (a.to.x - 2.0, a.to.y - 1.0));
+                assert_eq!(a.kind, b.kind);
+            }
+            let hole = circle(0.5).unwrap().outer().reversed();
+            assert!(matches!(
+                Profile2::new(corner.outer().clone(), vec![hole.clone()]),
+                Err(ProfileError::HoleOutsideOuter { hole: 0 })
+            ));
+            let profile = Profile2::new(centered.outer().clone(), vec![hole]).unwrap();
+            let body = tessellate_extrude(
+                &profile,
+                &Placement3::IDENTITY,
+                1.0,
+                CapMode::Both,
+                &EvalPolicy::default(),
+            )
+            .unwrap();
+            assert!(body.mesh.boundary_loops().unwrap().is_empty());
+            assert!(body.mesh.validate_deep().is_empty());
+        }
+        for dimension in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                rect_centered(dimension, 2.0),
+                Err(ProfileError::InvalidDimension)
+            );
+            assert_eq!(
+                rounded_rect_centered(4.0, dimension, 0.25),
+                Err(ProfileError::InvalidDimension)
+            );
+        }
+        assert_eq!(
+            rounded_rect_centered(4.0, 2.0, 1.0),
+            Err(ProfileError::InvalidDimension)
+        );
+    }
+
+    #[test]
     fn rect_builder() {
-        let r = rect(3.0, 2.0).expect("valid rect");
+        let r = rect_from_corner(3.0, 2.0).expect("valid rect");
         assert!((profile_area(&r) - 6.0).abs() < 1e-12);
         assert_eq!(classify_profile(&r), ProfileShapeClass::Convex);
         let c = profile_centroid(&r).expect("has area");
         assert!((c.x - 1.5).abs() < 1e-9 && (c.y - 1.0).abs() < 1e-9);
-        assert!(rect(0.0, 1.0).is_err());
-        assert!(rect(1.0, f64::INFINITY).is_err());
+        assert!(rect_from_corner(0.0, 1.0).is_err());
+        assert!(rect_from_corner(1.0, f64::INFINITY).is_err());
     }
 
     #[test]
     fn rounded_rect_builder() {
-        let r = rounded_rect(4.0, 2.0, 0.5).expect("valid rounded rect");
+        let r = rounded_rect_from_corner(4.0, 2.0, 0.5).expect("valid rounded rect");
         // Area = full rect minus corner squares plus quarter circles.
         let expected = 4.0 * 2.0 - (4.0 - core::f64::consts::PI) * 0.25;
         assert!((profile_area(&r) - expected).abs() < 1e-6);
         assert_eq!(classify_profile(&r), ProfileShapeClass::Convex);
         assert!(
-            rounded_rect(4.0, 2.0, 1.0).is_err(),
+            rounded_rect_from_corner(4.0, 2.0, 1.0).is_err(),
             "radius = h/2 rejected"
         );
     }
@@ -323,7 +427,7 @@ mod tests {
 
     #[test]
     fn builder_tags_enumerate() {
-        let r = rounded_rect(4.0, 2.0, 0.5).expect("valid");
+        let r = rounded_rect_from_corner(4.0, 2.0, 0.5).expect("valid");
         let tags = profile_tags(&r);
         assert_eq!(tags.len(), 8);
         assert_eq!(tags[0], SegTag(0));

@@ -7,6 +7,17 @@ material slot binding, content-addressed part compilation, and a flat
 once-per-part, part-local geometry accounting; render lists expose placed,
 world-space accounting with instance multiplicity.
 
+`CompiledBody::signed_volume()` measures the existing part-local triangle buffers
+without retaining topology or evaluating geometry again. The returned
+`SignedVolume` records its reference point and triangle count. Apply
+`measurement.transformed(&render_item.world)` to include occurrence scale and
+handedness in constant time; a reflection changes the signed sum. This does not
+repair winding or account for subsequent renderer rounding. Enclosed volume
+requires a closed, consistently oriented boundary; a positive sum alone cannot
+certify every face or component. Malformed indices and nonfinite inputs return
+typed `VolumeError`s. The query is additive and shares its implementation with
+`exedra_mesh_ops::measure::signed_volume`.
+
 ```rust
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::{

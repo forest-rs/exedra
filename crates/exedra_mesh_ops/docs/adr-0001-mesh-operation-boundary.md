@@ -36,6 +36,14 @@ state independently of any application runner.
   Constructive patch/section measurements delegate and keep their semantic owner
   for frame and provenance. Arithmetic and refusal behavior are unchanged.
 
+- `measure::signed_volume` measures existing indexed triangle buffers with a
+  translated reference and compensated f64 summation. It identifies invalid
+  indices/nonfinite positions and does no topology validation or tessellation.
+  `SignedVolume::transformed` transports the measurement by an affine determinant
+  and reference-point transform, preserving the supplied winding. This separates
+  body orientation from occurrence scale/reflection. See the
+  [authoring contract](../../exedra_constructive/docs/adr-0018-authored-geometry-diagnostics.md).
+
 - `exedra_mesh_ops::transform::transform` places plain meshes and returns typed
   numeric, structure and rebuild errors. Face/vertex iteration order supplies
   explicit source correspondence. Existing reflection behavior transfers only

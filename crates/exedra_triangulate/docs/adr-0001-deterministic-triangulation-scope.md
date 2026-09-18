@@ -199,6 +199,16 @@ or Steiner point removal is offered; those are separate decisions.
 
 ## Consequences
 
+Failed cover construction now searches original nonadjacent boundary edges for
+an exact crossing or touch, returning `BoundaryContact` with both cyclic edge
+identities. This is a failure-only, allocation-free search of at most N(N-1)/2
+pairs; successful geometry is unchanged. Adjacent edges in a loop are excluded.
+If no witness is found, the original failure remains. Constructive maps these
+sampled edge indices to authored segments and tags. See the
+[authoring contract](../../exedra_constructive/docs/adr-0018-authored-geometry-diagnostics.md).
+Callers inspecting `TriError` should handle this new variant; the triangulator
+does not attach mesh identities or claim an analytic curve intersection.
+
 - `exedra_analytic` will retire its private clipper and epsilon (`ea-ds4b`).
 - `exedra_mesh` render extraction and boolean split retriangulation gain a robust
   strategy without the kernel owning triangulation math (`exe-hi4e`,

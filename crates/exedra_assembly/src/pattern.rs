@@ -815,7 +815,8 @@ mod tests {
     fn add_part(assembly: &mut Assembly, key: &str) -> PartId {
         let mut builder = RecipeBuilder::new();
         let surface = builder.material_slot("surface");
-        let profile = builder.add_profile(builders::rect(1.0, 1.0).expect("valid rectangle"));
+        let profile =
+            builder.add_profile(builders::rect_from_corner(1.0, 1.0).expect("valid rectangle"));
         let root = builder
             .with_material(surface)
             .add(NodeKind::Extrude {

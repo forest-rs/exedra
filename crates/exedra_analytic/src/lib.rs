@@ -927,15 +927,15 @@ fn map_triangulate_error(
     error: exedra_triangulate::TriError,
 ) -> TessellateError {
     use exedra_triangulate::TriError;
-    match error {
-        TriError::HoleOutsideOuter { hole } | TriError::UnbridgeableHole { hole } => {
-            let openings = &shell.faces[face.index() as usize].openings;
-            match openings.get(hole) {
-                Some(&opening) => TessellateError::OpeningBridgeFailed { face, opening },
-                None => TessellateError::EarClipFailed { face },
-            }
-        }
-        _ => TessellateError::EarClipFailed { face },
+    let hole = match error {
+        TriError::HoleOutsideOuter { hole } | TriError::UnbridgeableHole { hole } => Some(hole),
+        TriError::BoundaryContact { first, second, .. } => first.hole.or(second.hole),
+        _ => None,
+    };
+    let openings = &shell.faces[face.index() as usize].openings;
+    match hole.and_then(|hole| openings.get(hole)) {
+        Some(&opening) => TessellateError::OpeningBridgeFailed { face, opening },
+        None => TessellateError::EarClipFailed { face },
     }
 }
 
@@ -1093,7 +1093,7 @@ mod tests {
 
     use super::{
         AnalyticFaceId, AnalyticShellBuilder, BuildError, EditError, RectFrameParams,
-        RectOpeningParams, RegionId, TessellateParams, rect_frame_xy,
+        RectOpeningParams, RegionId, TessellateError, TessellateParams, rect_frame_xy,
     };
 
     #[test]
@@ -1467,6 +1467,25 @@ mod tests {
                 .iter()
                 .all(|(analytic_face, _)| *analytic_face == face)
         );
+    }
+
+    #[test]
+    fn touching_opening_failure_preserves_its_identity() {
+        let mut builder = AnalyticShellBuilder::new();
+        let outer = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]
+            .map(|[x, y]| builder.push_vertex([x, y, 0.0]));
+        let hole = [[2.0, 0.0], [2.0, 2.0], [3.0, 2.0], [3.0, 0.0]]
+            .map(|[x, y]| builder.push_vertex([x, y, 0.0]));
+        let face = builder
+            .add_planar_face_with_openings(&outer, &[&hole], RegionId(0))
+            .unwrap();
+        let shell = builder.build();
+        let opening = shell.faces()[face.index() as usize].openings[0];
+        assert!(matches!(
+            shell.to_exedra_mesh(&TessellateParams::default()),
+            Err(TessellateError::OpeningBridgeFailed { face: f, opening: o })
+                if f == face && o == opening
+        ));
     }
 
     #[test]

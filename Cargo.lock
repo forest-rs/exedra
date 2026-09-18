@@ -283,6 +283,7 @@ version = "0.1.0"
 dependencies = [
  "exedra_constructive",
  "exedra_mesh",
+ "exedra_mesh_ops",
  "hashbrown",
  "invalidation",
  "serde",

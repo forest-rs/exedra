@@ -14,8 +14,9 @@ use exedra_mesh::{FaceId, FaceTriangulation};
 fn recessed_panel(scale: f64, holes: bool, chained: bool) -> Recipe {
     let mut b = RecipeBuilder::new();
     let finish = b.material_slot("finish");
-    let profile =
-        b.add_profile(builders::rounded_rect(0.6 * scale, 0.8 * scale, 0.02 * scale).unwrap());
+    let profile = b.add_profile(
+        builders::rounded_rect_from_corner(0.6 * scale, 0.8 * scale, 0.02 * scale).unwrap(),
+    );
     let panel = b
         .add(NodeKind::Extrude {
             profile,
@@ -24,8 +25,9 @@ fn recessed_panel(scale: f64, holes: bool, chained: bool) -> Recipe {
             placement: Placement3::IDENTITY,
         })
         .unwrap();
-    let profile =
-        b.add_profile(builders::rounded_rect(0.5 * scale, 0.7 * scale, 0.012 * scale).unwrap());
+    let profile = b.add_profile(
+        builders::rounded_rect_from_corner(0.5 * scale, 0.7 * scale, 0.012 * scale).unwrap(),
+    );
     let pocket = b
         .add(NodeKind::Extrude {
             profile,

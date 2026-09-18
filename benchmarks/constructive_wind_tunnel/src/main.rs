@@ -212,7 +212,8 @@ fn build_recipe(index: u32) -> Recipe {
 
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(
-        builders::rounded_rect(width, height, radius).expect("wind-tunnel dimensions are valid"),
+        builders::rounded_rect_from_corner(width, height, radius)
+            .expect("wind-tunnel dimensions are valid"),
     );
     let node = b
         .add(NodeKind::Extrude {
@@ -327,7 +328,7 @@ fn build_ct2_recipe(nodes: u32, edit_index: u32, edited: Option<f64>) -> Recipe 
             depth = d;
         }
         let profile = b.add_profile(
-            builders::rounded_rect(width, height, radius)
+            builders::rounded_rect_from_corner(width, height, radius)
                 .expect("wind-tunnel dimensions are valid"),
         );
         let node = b
@@ -505,7 +506,8 @@ fn build_gallery_drill_operands() -> (Mesh, Mesh) {
 /// process sample.
 fn build_gallery_csg_recipe(mixed_materials: bool) -> Recipe {
     let mut builder = RecipeBuilder::new();
-    let block = builder.add_profile(builders::rect(200.0, 100.0).expect("valid block profile"));
+    let block =
+        builder.add_profile(builders::rect_from_corner(200.0, 100.0).expect("valid block profile"));
     let drill = builder.add_profile(builders::circle(30.0).expect("valid drill profile"));
     if mixed_materials {
         let slot = builder.material_slot("panel");
@@ -718,8 +720,9 @@ fn build_ct4_exact_box() -> Recipe {
 
 fn build_ct4_exact_extrude() -> Recipe {
     let mut builder = RecipeBuilder::new();
-    let profile = builder
-        .add_profile(builders::rounded_rect(800.0, 450.0, 25.0).expect("CT-4 profile is valid"));
+    let profile = builder.add_profile(
+        builders::rounded_rect_from_corner(800.0, 450.0, 25.0).expect("CT-4 profile is valid"),
+    );
     let child = builder
         .add(NodeKind::Extrude {
             profile,

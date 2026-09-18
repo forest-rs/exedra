@@ -15,6 +15,15 @@ Current scope:
   tolerances,
 - affine `Placement3` matrices and `Plane3` with checked normalization.
 
+`Placement3::try_from_orthonormal_axes(x, y, z, origin, tolerance)` checks a
+finite right-handed frame without changing authored values. `FrameError`
+identifies non-unit axes, non-orthogonal pairs and nonpositive determinants.
+Tolerance measures absolute error in squared axis length and pairwise dot
+products. Use `from_axes` when scale, shear or reflection is intentional.
+This API is additive; the cross-crate
+[authoring contract](../exedra_constructive/docs/adr-0018-authored-geometry-diagnostics.md)
+records its scope.
+
 Vector arithmetic is correctly rounded, so its `std` and `libm` backends produce
 bit-identical results. Shared `Placement3` and `Plane3` types also live here,
 independent of recipes and meshes. Rotation constructors use libm when enabled,

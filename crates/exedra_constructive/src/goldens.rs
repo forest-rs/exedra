@@ -40,7 +40,7 @@ fn fixtures() -> Vec<Fixture> {
     // 1. A plain rectangular prism.
     {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(600.0, 400.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(600.0, 400.0).expect("rect"));
         let src = b.source_ref("gallery:rect_prism");
         let n = b
             .with_source(src)
@@ -80,7 +80,8 @@ fn fixtures() -> Vec<Fixture> {
     // 3. A rounded-front profile with true arcs.
     {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rounded_rect(400.0, 300.0, 50.0).expect("rounded"));
+        let p =
+            b.add_profile(builders::rounded_rect_from_corner(400.0, 300.0, 50.0).expect("rounded"));
         let src = b.source_ref("gallery:rounded_prism");
         let n = b
             .with_source(src)
@@ -174,7 +175,8 @@ fn fixtures() -> Vec<Fixture> {
     // golden pins both preserved corner arcs and the inserted profile seams.
     {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rounded_rect(400.0, 300.0, 50.0).expect("rounded"));
+        let p =
+            b.add_profile(builders::rounded_rect_from_corner(400.0, 300.0, 50.0).expect("rounded"));
         let src = b.source_ref("gallery:stretched_panel");
         let child = b
             .with_source(src)
@@ -273,8 +275,8 @@ fn axis_closed_semicircle(radius: f64) -> crate::profile::Profile2 {
 /// diagnostic (until the boolean pipeline lands).
 fn csg_fixture() -> Recipe {
     let mut b = RecipeBuilder::new();
-    let block = b.add_profile(builders::rect(200.0, 100.0).expect("rect"));
-    let cut = b.add_profile(builders::rect(80.0, 80.0).expect("rect"));
+    let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).expect("rect"));
+    let cut = b.add_profile(builders::rect_from_corner(80.0, 80.0).expect("rect"));
     let e1 = b
         .add(NodeKind::Extrude {
             profile: block,

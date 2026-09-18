@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::builders::rect;
+use crate::builders::rect_from_corner;
 use crate::profile::{Loop2, Seg2};
 use crate::tessellate::{Feature, REGION_CAP_START};
 use exedra_math::{cross, sub};
@@ -82,7 +82,7 @@ fn run(profile: &Profile2, placement: &Placement3, plane: Plane3) -> PlaneExtrus
 #[test]
 fn oblique_rectangle_has_expected_volume_and_cap_orientation() {
     let result = run(
-        &rect(2.0, 1.0).unwrap(),
+        &rect_from_corner(2.0, 1.0).unwrap(),
         &Placement3::IDENTITY,
         Plane3 {
             normal: [-0.25, 0.0, 1.0],
@@ -114,7 +114,7 @@ fn oblique_rectangle_has_expected_volume_and_cap_orientation() {
 
 #[test]
 fn holes_and_reflected_sheared_placements_remain_closed() {
-    let outer = rect(4.0, 4.0).unwrap();
+    let outer = rect_from_corner(4.0, 4.0).unwrap();
     let inner = Profile2::simple(
         Loop2::new(alloc::vec![
             Seg2::line((1.0, 1.0)),
@@ -148,7 +148,7 @@ fn holes_and_reflected_sheared_placements_remain_closed() {
 
 #[test]
 fn parallel_touching_crossing_and_backward_targets_are_refused() {
-    let profile = rect(2.0, 2.0).unwrap();
+    let profile = rect_from_corner(2.0, 2.0).unwrap();
     for plane in [
         Plane3 {
             normal: [0.0, 0.0, 1.0],
@@ -222,7 +222,7 @@ fn curves_and_work_budgets_are_respected() {
 
 #[test]
 fn invalid_inputs_and_unrepresentable_start_caps_are_refused() {
-    let profile = rect(2.0, 2.0).unwrap();
+    let profile = rect_from_corner(2.0, 2.0).unwrap();
     let plane = Plane3 {
         normal: [0.0, 0.0, 1.0],
         distance: 2.0,
@@ -307,7 +307,7 @@ fn concave_profile_and_refined_caps_are_supported() {
 
 #[test]
 fn policy_wrapped_lines_have_the_same_forward_clearance() {
-    let plain = rect(2.0, 1.0).unwrap();
+    let plain = rect_from_corner(2.0, 1.0).unwrap();
     let tagged = Profile2::simple(
         Loop2::new(
             plain

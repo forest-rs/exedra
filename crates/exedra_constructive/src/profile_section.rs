@@ -184,7 +184,7 @@ mod tests {
         // An uncapped extrusion has two boundary loops: the mesh-side
         // sections we convert.
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let n = b
             .add(NodeKind::Extrude {
                 profile: p,

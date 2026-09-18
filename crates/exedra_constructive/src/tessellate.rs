@@ -15,6 +15,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
+pub use exedra_triangulate::BoundaryContactKind;
 use exedra_triangulate::{
     BoundarySplits, PolygonInput, RefineParams, RefineStats, SteinerOrigin, TriParams, refine,
     triangulate,
@@ -27,6 +28,9 @@ use crate::discretize::{
 use crate::ir::{CapMode, LoftPolicy, Placement3, PrimitiveSpec, SlotId};
 use crate::len_u32;
 use crate::profile::Profile2;
+mod diagnostics;
+pub use diagnostics::ProfileBoundaryEdge;
+use diagnostics::triangulation_error;
 use exedra_math::{add, cross, dot, narrow, norm, scale, sub};
 
 /// Evaluation policy shared by body tessellation.
@@ -324,6 +328,16 @@ pub enum TessellateError {
     /// Profile-area triangulation failed; the profile was not simple after
     /// discretization.
     Triangulate(exedra_triangulate::TriError),
+    /// Failed profile triangulation with a witnessed boundary contact and
+    /// authored segment correspondence. Curves refer to their sampled chords.
+    ProfileBoundaryContact {
+        /// First sampled edge and its authored segment/tag.
+        first: ProfileBoundaryEdge,
+        /// Second sampled edge and its authored segment/tag.
+        second: ProfileBoundaryEdge,
+        /// Exact relationship between the sampled edges.
+        kind: BoundaryContactKind,
+    },
     /// Mesh construction failed (an internal invariant violation).
     Build(exedra_mesh::BuildError),
     /// A revolved profile crosses into negative radius.
@@ -430,6 +444,17 @@ impl core::fmt::Display for TessellateError {
             Self::Path(e) => write!(f, "sweep path sampling failed: {e}"),
             Self::Discretize(e) => write!(f, "discretization failed: {e}"),
             Self::Triangulate(e) => write!(f, "profile triangulation failed: {e}"),
+            Self::ProfileBoundaryContact {
+                first,
+                second,
+                kind,
+            } => {
+                let relation = match kind {
+                    BoundaryContactKind::Crossing => "crosses",
+                    BoundaryContactKind::Touching => "touches or overlaps",
+                };
+                write!(f, "profile {first} {relation} {second}")
+            }
             Self::Build(e) => write!(f, "mesh construction failed: {e:?}"),
             Self::NegativeRadius { min_radius } => write!(
                 f,
@@ -917,10 +942,13 @@ pub fn tessellate_planar_face(
                 .rings()
                 .flat_map(|ring| ring.points.iter().copied())
                 .collect(),
-            triangulate(&input, &TriParams::default())?.triangles,
+            triangulate(&input, &TriParams::default())
+                .map_err(|e| triangulation_error(profile, &discretized, e))?
+                .triangles,
         ),
         Some(params) => {
-            let refined = refine(&input, &params)?;
+            let refined = refine(&input, &params)
+                .map_err(|e| triangulation_error(profile, &discretized, e))?;
             refinement_stats = Some(refined.stats);
             let generated = &refined.points[refined.input_vertex_count as usize..];
             debug_assert_eq!(
@@ -1119,7 +1147,8 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
                 holes: &holes,
             },
             &params,
-        )?;
+        )
+        .map_err(|e| triangulation_error(profile, &d, e))?;
         refinement_stats = Some(refined.stats);
         debug_assert!(
             refined
@@ -1202,7 +1231,7 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
                 holes: &holes,
             };
             let points: Vec<_> = d.rings().flat_map(|ring| &ring.points).collect();
-            let triangles = triangulate_cap(&input, |triangle| {
+            let triangles = triangulate_cap(profile, &d, &input, |triangle| {
                 for (enabled, z) in [(bottom_cap, 0.0), (top_cap, height)] {
                     if enabled {
                         check_triangle_realization(triangle.map(|i| {
@@ -1259,10 +1288,14 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
 // the usual ear-clipped cover when it already does; otherwise use the same
 // boundary-preserving legalized cover as mesh plane cuts, with no new vertices.
 fn triangulate_cap(
+    profile: &Profile2,
+    d: &DiscretizedProfile,
     input: &PolygonInput<'_>,
     mut check: impl FnMut([u32; 3]) -> Result<(), TessellateError>,
 ) -> Result<Vec<[u32; 3]>, TessellateError> {
-    let triangles = triangulate(input, &TriParams::default())?.triangles;
+    let triangles = triangulate(input, &TriParams::default())
+        .map_err(|e| triangulation_error(profile, d, e))?
+        .triangles;
     let mut used = alloc::vec![false; input.vertex_count()];
     for &index in triangles.iter().flatten() {
         used[index as usize] = true;
@@ -1273,7 +1306,9 @@ fn triangulate_cap(
     let params = RefineParams::default()
         .with_max_steiner_points(0)
         .with_boundary_splits(BoundarySplits::Forbidden);
-    let triangles = refine(input, &params)?.triangles;
+    let triangles = refine(input, &params)
+        .map_err(|e| triangulation_error(profile, d, e))?
+        .triangles;
     for &triangle in &triangles {
         check(triangle)?;
     }
@@ -1858,7 +1893,8 @@ pub fn tessellate_revolve(
                 outer: &d.outer.points,
                 holes: &holes,
             };
-            let tri = triangulate(&input, &TriParams::default())?;
+            let tri = triangulate(&input, &TriParams::default())
+                .map_err(|e| triangulation_error(profile, &d, e))?;
             for t in &tri.triangles {
                 if start_cap {
                     builder.add_face_with_attrs(
@@ -2143,9 +2179,16 @@ pub fn tessellate_loft(
                 } else {
                     &placed[placed.len() - 1]
                 };
-                let triangles = triangulate_cap(&input, |t| {
-                    check_triangle_realization(t.map(|i| ring[i as usize]))
-                })?;
+                let triangles = triangulate_cap(
+                    if reverse {
+                        sections[0].1
+                    } else {
+                        sections[sections.len() - 1].1
+                    },
+                    d,
+                    &input,
+                    |t| check_triangle_realization(t.map(|i| ring[i as usize])),
+                )?;
                 for t in &triangles {
                     let corners = if reverse {
                         [offset + t[2], offset + t[1], offset + t[0]]
@@ -2821,7 +2864,7 @@ fn tessellate_sweep_rings(
                     .flat_map(|ring| &ring.points)
                     .map(|&point| apply_placement(placement, sweep_point(frame, point)))
                     .collect();
-                let triangles = triangulate_cap(&input, |t| {
+                let triangles = triangulate_cap(profile, d, &input, |t| {
                     check_triangle_realization(t.map(|i| placed[i as usize]))
                 })?;
                 for t in &triangles {
@@ -3929,7 +3972,7 @@ mod tests {
 
     #[test]
     fn rect_extrude_is_a_box() {
-        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(2.0, 1.0).expect("rect");
         let body = tessellate_extrude(
             &profile,
             &Placement3::IDENTITY,
@@ -4001,7 +4044,7 @@ mod tests {
 
     #[test]
     fn rounded_profile_walls_are_smooth_at_tangent_junctions() {
-        let profile = builders::rounded_rect(4.0, 2.0, 0.5).expect("rounded rect");
+        let profile = builders::rounded_rect_from_corner(4.0, 2.0, 0.5).expect("rounded rect");
         let body = tessellate_extrude(
             &profile,
             &Placement3::IDENTITY,
@@ -4043,7 +4086,7 @@ mod tests {
 
     #[test]
     fn square_corners_crease_laterals() {
-        let profile = builders::rect(1.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let body = tessellate_extrude(
             &profile,
             &Placement3::IDENTITY,
@@ -4077,7 +4120,7 @@ mod tests {
 
     #[test]
     fn open_shell_has_boundaries() {
-        let profile = builders::rect(1.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let body = tessellate_extrude(
             &profile,
             &Placement3::IDENTITY,
@@ -4092,7 +4135,7 @@ mod tests {
 
     #[test]
     fn placement_moves_the_body() {
-        let profile = builders::rect(1.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let placed = Placement3::translate(10.0, 0.0, 5.0);
         let body = tessellate_extrude(
             &profile,
@@ -4116,7 +4159,7 @@ mod tests {
 
     #[test]
     fn tessellation_is_deterministic() {
-        let profile = builders::rounded_rect(4.0, 2.0, 0.5).expect("rounded rect");
+        let profile = builders::rounded_rect_from_corner(4.0, 2.0, 0.5).expect("rounded rect");
         let policy = EvalPolicy::default();
         let sig = |body: &TessellatedBody| {
             let (tri, _) = body.mesh.to_trimesh(&exedra_mesh::ExtractParams::default());
@@ -4790,7 +4833,7 @@ mod tests {
     #[test]
     fn two_section_rect_loft_matches_extrude() {
         // A loft between two identical rects offset along z is a prism.
-        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(2.0, 1.0).expect("rect");
         let sections = [
             (Placement3::IDENTITY, &profile),
             (Placement3::translate(0.0, 0.0, 3.0), &profile),
@@ -4808,7 +4851,7 @@ mod tests {
 
     #[test]
     fn zero_span_loft_is_rejected() {
-        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(2.0, 1.0).expect("rect");
         let sections = [
             (Placement3::IDENTITY, &profile),
             (Placement3::translate(1.0, 0.0, 0.0), &profile),
@@ -4828,8 +4871,8 @@ mod tests {
     fn tapered_loft_volume_matches_frustum() {
         // Similar rectangles: 4x2 at z=0 to 2x1 at z=3, centered. Frustum
         // volume: h/3 (A1 + A2 + sqrt(A1 A2)) = 1 * (8 + 2 + 4) = 14.
-        let big = builders::rect(4.0, 2.0).expect("rect");
-        let small = builders::rect(2.0, 1.0).expect("rect");
+        let big = builders::rect_from_corner(4.0, 2.0).expect("rect");
+        let small = builders::rect_from_corner(2.0, 1.0).expect("rect");
         let sections = [
             (Placement3::IDENTITY, &big),
             (Placement3::translate(1.0, 0.5, 3.0), &small),
@@ -4851,8 +4894,8 @@ mod tests {
 
     #[test]
     fn three_section_loft_creases_intermediate_ring() {
-        let profile = builders::rect(1.0, 1.0).expect("rect");
-        let wide = builders::rect(1.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(1.0, 1.0).expect("rect");
+        let wide = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let sections = [
             (Placement3::IDENTITY, &profile),
             (Placement3::translate(0.4, 0.0, 1.0), &wide),
@@ -4899,7 +4942,7 @@ mod tests {
 
     #[test]
     fn mismatched_sections_are_rejected() {
-        let rect = builders::rect(1.0, 1.0).expect("rect");
+        let rect = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let ring = builders::ring(1.0, 0.5).expect("ring");
         let sections = [
             (Placement3::IDENTITY, &rect),
@@ -5009,7 +5052,7 @@ mod tests {
 
     #[test]
     fn loft_refuses_different_segment_structure() {
-        let rect = builders::rect(4.0, 2.0).expect("rect");
+        let rect = builders::rect_from_corner(4.0, 2.0).expect("rect");
         let triangle = Profile2::simple(
             Loop2::new(vec![
                 Seg2::line((3.0, 0.0)),
@@ -5036,8 +5079,8 @@ mod tests {
 
     #[test]
     fn loft_is_deterministic() {
-        let big = builders::rect(4.0, 2.0).expect("rect");
-        let small = builders::rect(2.0, 1.0).expect("rect");
+        let big = builders::rect_from_corner(4.0, 2.0).expect("rect");
+        let small = builders::rect_from_corner(2.0, 1.0).expect("rect");
         let sections = [
             (Placement3::IDENTITY, &big),
             (Placement3::translate(1.0, 0.5, 3.0), &small),
@@ -5067,7 +5110,7 @@ mod tests {
     fn straight_sweep_matches_extrude_volume() {
         // A straight +Z path reproduces the extrusion exactly (the frame
         // seed keeps u x v = t right-handed).
-        let profile = builders::rect(2.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(2.0, 1.0).expect("rect");
         let path = [[0.0, 0.0, 0.0], [0.0, 0.0, 3.0]];
         let body = tessellate_sweep(
             &profile,
@@ -5083,7 +5126,7 @@ mod tests {
 
     #[test]
     fn l_path_sweep_is_clean_and_creases_the_corner() {
-        let profile = builders::rect(0.4, 0.4).expect("rect");
+        let profile = builders::rect_from_corner(0.4, 0.4).expect("rect");
         let path = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [2.0, 0.0, 2.0]];
         let body = tessellate_sweep(
             &profile,
@@ -5122,7 +5165,7 @@ mod tests {
 
     #[test]
     fn cusp_paths_are_rejected() {
-        let profile = builders::rect(0.4, 0.4).expect("rect");
+        let profile = builders::rect_from_corner(0.4, 0.4).expect("rect");
         let path = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [0.0, 0.0, 0.0]];
         let result = tessellate_sweep(
             &profile,
@@ -5139,7 +5182,7 @@ mod tests {
 
     #[test]
     fn sweep_is_deterministic() {
-        let profile = builders::rounded_rect(0.6, 0.4, 0.1).expect("rounded");
+        let profile = builders::rounded_rect_from_corner(0.6, 0.4, 0.1).expect("rounded");
         let path = [
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 2.0],

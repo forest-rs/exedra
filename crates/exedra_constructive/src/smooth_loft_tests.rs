@@ -251,7 +251,7 @@ fn smooth_loft_degenerate_sections_never_claim_a_section_envelope() {
     // the section union as its interpolation envelope.
     for height in [0.0, 1e-15] {
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(crate::builders::rect(1.0, 1.0).unwrap());
+        let profile = builder.add_profile(crate::builders::rect_from_corner(1.0, 1.0).unwrap());
         let root = builder
             .add(NodeKind::Loft {
                 sections: vec![
@@ -276,8 +276,8 @@ fn smooth_loft_degenerate_sections_never_claim_a_section_envelope() {
 
 #[test]
 fn smooth_square_volume_converges_to_the_integrated_cubic_area() {
-    let small = crate::builders::rect(1.0, 1.0).unwrap();
-    let large = crate::builders::rect(2.0, 2.0).unwrap();
+    let small = crate::builders::rect_from_corner(1.0, 1.0).unwrap();
+    let large = crate::builders::rect_from_corner(2.0, 2.0).unwrap();
     let sections = [
         (Placement3::IDENTITY, &small),
         (Placement3::translate(0.0, 0.0, 1.0), &large),
@@ -326,7 +326,7 @@ fn smooth_holed_sections_support_all_cap_modes_and_refuse_structure_mismatch() {
         assert_clean(&body);
         assert_eq!(body.mesh.boundary_loops().unwrap().len(), boundaries);
     }
-    let rectangle = crate::builders::rect(1.0, 1.0).unwrap();
+    let rectangle = crate::builders::rect_from_corner(1.0, 1.0).unwrap();
     let mismatched = [
         (Placement3::IDENTITY, &a),
         (Placement3::translate(0.0, 0.0, 2.0), &rectangle),

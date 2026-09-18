@@ -446,8 +446,8 @@ fn bent_pipe_sweep() -> Probe {
 /// A rectangle lofted to a smaller, raised rectangle: a truncated pyramid.
 fn tapered_loft() -> Probe {
     let mut b = RecipeBuilder::new();
-    let base = b.add_profile(builders::rect(200.0, 120.0).expect("rect"));
-    let top = b.add_profile(builders::rect(100.0, 60.0).expect("rect"));
+    let base = b.add_profile(builders::rect_from_corner(200.0, 120.0).expect("rect"));
+    let top = b.add_profile(builders::rect_from_corner(100.0, 60.0).expect("rect"));
     let root = b
         .add(NodeKind::Loft {
             sections: vec![
@@ -716,7 +716,8 @@ fn rotated_boxes() -> Probe {
 /// table instanced twice, one of them mirrored.
 fn nested_instances() -> Probe {
     let mut b = RecipeBuilder::new();
-    let leg_profile = b.add_profile(builders::rounded_rect(30.0, 30.0, 6.0).expect("rounded"));
+    let leg_profile =
+        b.add_profile(builders::rounded_rect_from_corner(30.0, 30.0, 6.0).expect("rounded"));
     let leg = add_extrude(&mut b, leg_profile, Placement3::IDENTITY, 400.0);
     let legs: Vec<NodeId> = [(10.0, 10.0), (360.0, 10.0), (10.0, 210.0), (360.0, 210.0)]
         .into_iter()
@@ -749,7 +750,8 @@ fn nested_instances() -> Probe {
             children: vec![table, table_b, table_c],
         })
         .expect("valid group");
-    let leg_area = builders::profile_area(&builders::rounded_rect(30.0, 30.0, 6.0).expect("r"));
+    let leg_area =
+        builders::profile_area(&builders::rounded_rect_from_corner(30.0, 30.0, 6.0).expect("r"));
     Probe {
         name: "nested_instances",
         intent: "instances of a group of instances, one rotated, one mirrored",

@@ -6,7 +6,7 @@
 
 use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::{
-    builders::{circle, rect},
+    builders::{circle, rect_from_corner},
     ir::{CapMode, Placement3},
     profile::Profile2,
     tessellate::{EvalPolicy, REGION_CAP_END, tessellate_extrude, tessellate_sweep},
@@ -37,7 +37,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut policy = EvalPolicy::default();
     policy.discretize.chord_tolerance = 0.002;
     let placement = Placement3::rotate_x_then_translate(0.5, -2.0, -1.0, 0.4);
-    let panel = tessellate_extrude(&rect(4.0, 3.0)?, &placement, 0.35, CapMode::Both, &policy)?;
+    let panel = tessellate_extrude(
+        &rect_from_corner(4.0, 3.0)?,
+        &placement,
+        0.35,
+        CapMode::Both,
+        &policy,
+    )?;
     let origin = placement.rows.map(|row| row[2] * 0.35 + row[3]);
     let frame = face_workplane(
         &panel,

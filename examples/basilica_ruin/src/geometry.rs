@@ -36,7 +36,7 @@ pub(super) fn extruded_profile_recipe(
 
 pub(super) fn box_recipe(size: [f64; 3], source_name: &str) -> Recipe {
     extruded_profile_recipe(
-        builders::rect(size[0], size[1]).expect("positive box footprint"),
+        builders::rect_from_corner(size[0], size[1]).expect("positive box footprint"),
         size[2],
         Placement3::IDENTITY,
         source_name,
@@ -229,7 +229,7 @@ pub(super) fn round_head_hole(center: f64, width: f64, sill: f64, spring: f64) -
 }
 
 pub(super) fn drum_panel_profile(width: f64, height: f64, window: bool) -> Profile2 {
-    let outer = builders::rect(width, height).expect("positive drum panel");
+    let outer = builders::rect_from_corner(width, height).expect("positive drum panel");
     if !window {
         return outer;
     }

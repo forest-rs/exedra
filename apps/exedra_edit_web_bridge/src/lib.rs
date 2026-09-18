@@ -218,8 +218,9 @@ pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String>
 
     let mut b = RecipeBuilder::new();
     let front = b.material_slot("front");
-    let profile =
-        b.add_profile(builders::rounded_rect(600.0, 400.0, 40.0).map_err(|e| format!("{e}"))?);
+    let profile = b.add_profile(
+        builders::rounded_rect_from_corner(600.0, 400.0, 40.0).map_err(|e| format!("{e}"))?,
+    );
     let node = b
         .with_material(front)
         .add(NodeKind::Extrude {

@@ -236,7 +236,7 @@ fn hostile_recipes_never_panic_and_evaluate_typed() {
         }
         // One guaranteed-valid profile keeps the corpus honest about the
         // success path; everything after it is hostile.
-        b.add_profile(crate::builders::rect(2.0, 1.0).expect("rect"));
+        b.add_profile(crate::builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let mut profiles = 1;
         for _ in 0..rng.range(4) {
             let segs: Vec<Seg2> = (0..rng.range(7)).map(|_| hostile_seg(&mut rng)).collect();
@@ -317,7 +317,7 @@ fn hostile_recipes_never_panic_and_evaluate_typed() {
 #[test]
 fn hostile_ids_never_panic_on_lookups() {
     let mut b = RecipeBuilder::new();
-    let p = b.add_profile(crate::builders::rect(1.0, 1.0).expect("rect"));
+    let p = b.add_profile(crate::builders::rect_from_corner(1.0, 1.0).expect("rect"));
     let n = b
         .add(NodeKind::Extrude {
             profile: p,
@@ -342,7 +342,7 @@ fn extreme_finite_parameters_fail_typed_not_infinite() {
     // 1e300 is finite in f64 but overflows the f32 mesh boundary; the
     // narrowing guard must reject it rather than emit infinite geometry.
     let mut b = RecipeBuilder::new();
-    let p = b.add_profile(crate::builders::rect(1.0, 1.0).expect("rect"));
+    let p = b.add_profile(crate::builders::rect_from_corner(1.0, 1.0).expect("rect"));
     let n = b
         .add(NodeKind::Extrude {
             profile: p,

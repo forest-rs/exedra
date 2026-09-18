@@ -43,7 +43,7 @@ fn assert_coverage(result: &OffsetResult) {
 
 #[test]
 fn analytic_offsets_keep_geometry_and_charge_before_work() {
-    let source = builders::rect(40.0, 20.0).expect("rectangle");
+    let source = builders::rect_from_corner(40.0, 20.0).expect("rectangle");
     let corners = CornerPolicy::Miter { limit: 2.0 };
     let policy = OffsetPolicy {
         max_source_segments: 4,
@@ -163,7 +163,7 @@ fn fitted_runs_keep_source_tags_and_explicit_fitting_target() {
 
 #[test]
 fn checking_accuracy_changes_work_without_refitting_analytic_geometry() {
-    let source = builders::rect(40.0, 20.0).expect("rectangle");
+    let source = builders::rect_from_corner(40.0, 20.0).expect("rectangle");
     let coarse = OffsetPolicy::default();
     let fine = OffsetPolicy {
         check_tolerance: 0.001,
@@ -246,7 +246,7 @@ fn zero_distance_records_identity_and_validates_policy_first() {
 #[test]
 fn collapse_and_unsupported_cubic_trimming_remain_failures() {
     let policy = OffsetPolicy::default();
-    let rect = builders::rect(40.0, 20.0).expect("rectangle");
+    let rect = builders::rect_from_corner(40.0, 20.0).expect("rectangle");
     assert!(
         rect.offset_with_policy(-11.0, CornerPolicy::Miter { limit: 2.0 }, &policy)
             .is_err()
@@ -348,7 +348,7 @@ fn hole_pair_checks_are_bounded_and_contacts_are_refused() {
 #[test]
 fn explicit_units_scale_geometry_and_charges_together() {
     let reference = OffsetPolicy::default();
-    let base = builders::rect(40.0, 20.0)
+    let base = builders::rect_from_corner(40.0, 20.0)
         .expect("rectangle")
         .offset_with_policy(1.0, CornerPolicy::Round, &reference)
         .expect("reference");
@@ -359,7 +359,7 @@ fn explicit_units_scale_geometry_and_charges_together() {
             undercut_slack: reference.undercut_slack * units,
             ..reference
         };
-        let scaled = builders::rect(40.0 * units, 20.0 * units)
+        let scaled = builders::rect_from_corner(40.0 * units, 20.0 * units)
             .expect("rectangle")
             .offset_with_policy(units, CornerPolicy::Round, &policy)
             .expect("scaled");
@@ -411,7 +411,7 @@ fn fitted_curve_meets_requested_target_at_independent_normal_samples() {
 
 #[test]
 fn unresolvable_check_accuracy_and_nonpositive_clearance_floor_fail() {
-    let source = builders::rect(40.0, 20.0).expect("rectangle");
+    let source = builders::rect_from_corner(40.0, 20.0).expect("rectangle");
     let policy = OffsetPolicy {
         check_tolerance: 1e-15,
         fit_tolerance: 1e-16,

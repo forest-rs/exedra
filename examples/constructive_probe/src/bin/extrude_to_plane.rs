@@ -6,7 +6,7 @@
 
 use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::{
-    builders::{circle, rect},
+    builders::{circle, rect_from_corner},
     extrude::extrude_to_plane,
     ir::{Placement3, Plane3},
     profile::{Loop2, Profile2, Seg2},
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (circle(0.65)?, circle(0.45)?)
         } else {
             (
-                rect(1.2, 1.0)?,
+                rect_from_corner(1.2, 1.0)?,
                 Profile2::simple(Loop2::new(vec![
                     Seg2::line((0.2, 0.2)),
                     Seg2::line((1.0, 0.2)),

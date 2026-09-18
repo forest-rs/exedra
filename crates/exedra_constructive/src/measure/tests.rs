@@ -20,7 +20,10 @@ fn near(a: f64, b: f64) {
 #[test]
 fn patch_and_section_measure_off_center_hole_in_their_own_frames() {
     let profile = Profile2::new(
-        builders::rect(6.0, 4.0).unwrap().outer().clone(),
+        builders::rect_from_corner(6.0, 4.0)
+            .unwrap()
+            .outer()
+            .clone(),
         vec![
             Loop2::new(vec![
                 Seg2::line((1.0, 1.0)),

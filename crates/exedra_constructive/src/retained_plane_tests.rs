@@ -16,7 +16,7 @@ fn recipe(side: PlaneSide, distance: f64, parent: Placement3) -> Recipe {
     let mut b = RecipeBuilder::new();
     let wall = b.material_slot("wall");
     let cap = b.material_slot("cut");
-    let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let child = b
         .with_material(wall)
         .add(NodeKind::Extrude {
@@ -233,7 +233,7 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
     let mut b = RecipeBuilder::new();
     let red = b.material_slot("red");
     let blue = b.material_slot("blue");
-    let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let a = b
         .with_material(red)
         .add(NodeKind::Extrude {
@@ -296,7 +296,7 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
         );
     }
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let open = b
         .add(NodeKind::PlanarFace {
             profile,
@@ -332,7 +332,7 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
 #[test]
 fn reflected_scaled_parents_place_completed_extrusion_and_cut() {
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let leaf = b
         .add(NodeKind::ExtrudeToPlane {
             profile,

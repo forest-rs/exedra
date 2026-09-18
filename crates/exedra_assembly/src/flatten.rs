@@ -215,7 +215,7 @@ mod tests {
         let front = b.material_slot("front");
         let body = b.material_slot("body");
         let _ = (front, body);
-        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let node = b
             .add(NodeKind::Extrude {
                 profile,
