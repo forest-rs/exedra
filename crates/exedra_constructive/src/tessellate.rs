@@ -27,7 +27,9 @@ use crate::discretize::{
     CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
     DiscretizedProfile, circular_edge_count, discretize_profile,
 };
-use crate::ir::{CapMode, LoftPolicy, PathClosure, PathJoin, Placement3, PrimitiveSpec, SlotId};
+use crate::ir::{
+    CapMode, LoftPolicy, Path3, PathClosure, PathJoin, Placement3, PrimitiveSpec, SlotId,
+};
 use crate::len_u32;
 use crate::profile::Profile2;
 mod closed_sweep;
@@ -2229,6 +2231,48 @@ pub fn tessellate_loft(
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
+    loft_impl(sections, interpolation, caps, policy, None)
+}
+
+/// Tessellates a loft with an explicit reference-section and longitudinal rest chart.
+///
+/// Uses [`SurfaceChart::Loft`]; geometry, correspondence and sampling match
+/// [`tessellate_loft`]. See [`crate::chart`] for the intentional stretch policy.
+///
+/// # Errors
+///
+/// Also refuses a mismatched metric, missing reference section, invalid rest
+/// length, or construction coordinates unrepresentable as corner UVs.
+pub fn tessellate_loft_with_chart(
+    sections: &[(Placement3, &Profile2)],
+    interpolation: LoftPolicy,
+    caps: CapMode,
+    chart: SurfaceChart,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    chart.validate()?;
+    let SurfaceChart::Loft {
+        reference_section, ..
+    } = chart
+    else {
+        return Err(ChartError::WrongOperation.into());
+    };
+    if reference_section as usize >= sections.len() {
+        return Err(ChartError::InvalidReferenceSection {
+            section: reference_section,
+        }
+        .into());
+    }
+    loft_impl(sections, interpolation, caps, policy, Some(chart))
+}
+
+fn loft_impl(
+    sections: &[(Placement3, &Profile2)],
+    interpolation: LoftPolicy,
+    caps: CapMode,
+    policy: &EvalPolicy,
+    chart: Option<SurfaceChart>,
+) -> Result<TessellatedBody, TessellateError> {
     if sections.len() < 2 {
         return Err(TessellateError::Loft(
             crate::loft::LoftError::InvalidSections,
@@ -2328,9 +2372,46 @@ pub fn tessellate_loft(
         (placed, None)
     };
     let mut builder = OrientedBuilder::new(flip);
-    for ring in &placed {
-        for &p in ring {
-            builder.push_vertex(narrow(p));
+    if let Some(chart) = chart {
+        let SurfaceChart::Loft {
+            reference_section,
+            rest_length,
+            ..
+        } = chart
+        else {
+            return Err(ChartError::WrongOperation.into());
+        };
+        let mut chart = ChartBuilder::new(
+            chart,
+            &discretized[reference_section as usize],
+            policy.discretize,
+        )?;
+        let bands = f64::from(len_u32(sections.len() - 1));
+        let distances =
+            if let Some(sampling) = &loft_sampling {
+                core::iter::once(0.0)
+                    .chain(sampling.spans.iter().map(|span| {
+                        rest_length * ((f64::from(span.band) + span.parameter[1]) / bands)
+                    }))
+                    .collect()
+            } else {
+                (0..sections.len())
+                    .map(|i| rest_length * (f64::from(len_u32(i)) / bands))
+                    .collect()
+            };
+        chart.set_stations(distances)?;
+        builder.chart = Some(chart);
+    }
+    for (index, ring) in placed.iter().enumerate() {
+        // Only the terminal rings have cap faces. Intermediate rings can retain
+        // reference coordinates because their caps are never emitted.
+        let cap_profile = if index + 1 == placed.len() {
+            &discretized[discretized.len() - 1]
+        } else {
+            reference
+        };
+        for (&p, &profile_point) in ring.iter().zip(cap_profile.rings().flat_map(|r| &r.points)) {
+            builder.push_chart_vertex(narrow(p), profile_point);
         }
     }
     let section_offset = |k: usize| len_u32(k) * total;
@@ -2397,7 +2478,11 @@ pub fn tessellate_loft(
                         placed[band + 1][(base + i) as usize],
                     ])?;
                 }
-                builder.add_face_with_attrs(
+                let uv = builder
+                    .chart
+                    .as_ref()
+                    .map(|chart| chart.wall_quad(ring_index, i as usize, band));
+                builder.add_chart_face(
                     &[
                         below + base + i,
                         below + base + j,
@@ -2409,6 +2494,7 @@ pub fn tessellate_loft(
                         edge_seams: None,
                         edge_sharpness: Some(&sharp),
                     },
+                    uv.as_ref().map(|uv| uv.as_slice()),
                 )?;
                 face_origins.push(Feature::LoftWall {
                     band: band_u16,
@@ -2505,7 +2591,11 @@ pub fn tessellate_loft(
 
     let result = builder.build()?;
     let vertex_features = profile_vertex_features(reference, len_u32(placed.len()));
-    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    let mut source_map =
+        crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    if let Some(chart) = builder.chart {
+        source_map = source_map.with_chart_sampling(chart.sampling);
+    }
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
@@ -2855,7 +2945,7 @@ fn check_sweep_realization(
 /// # Migration
 ///
 /// Existing callers add `[0.0; 2]` and `PathClosure::Open` after `section_x`.
-/// Use this function or [`crate::ir::Path3::MiteredPolyline`] to opt into
+/// Use this function or [`Path3::MiteredPolyline`] to opt into
 /// authored orientation and dimensional joins. Existing `tessellate_sweep`
 /// and `Path3::Polyline` retain their automatic seed and legacy ring joins.
 /// The new recipe operation round-trips through text and interchange;
@@ -2875,6 +2965,32 @@ pub fn tessellate_mitered_sweep(
     miter_limit: f64,
     caps: CapMode,
     policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    mitered_sweep_impl(
+        profile,
+        placement,
+        path,
+        section_x,
+        section_origin,
+        closure,
+        miter_limit,
+        caps,
+        policy,
+        None,
+    )
+}
+
+fn mitered_sweep_impl(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &[[f64; 3]],
+    section_x: [f64; 3],
+    section_origin: [f64; 2],
+    closure: PathClosure,
+    miter_limit: f64,
+    caps: CapMode,
+    policy: &EvalPolicy,
+    chart: Option<SurfaceChart>,
 ) -> Result<TessellatedBody, TessellateError> {
     policy
         .sweep_path
@@ -2930,6 +3046,7 @@ pub fn tessellate_mitered_sweep(
         }),
         None,
         closed,
+        chart,
     )
 }
 
@@ -3008,6 +3125,34 @@ pub fn tessellate_curved_sweep(
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
+    curved_sweep_impl(
+        profile,
+        placement,
+        start,
+        segments,
+        section_x,
+        section_origin,
+        closure,
+        joins,
+        caps,
+        policy,
+        None,
+    )
+}
+
+fn curved_sweep_impl(
+    profile: &Profile2,
+    placement: &Placement3,
+    start: [f64; 3],
+    segments: &[crate::path::PathSegment3],
+    section_x: [f64; 3],
+    section_origin: [f64; 2],
+    closure: PathClosure,
+    joins: PathJoin,
+    caps: CapMode,
+    policy: &EvalPolicy,
+    chart: Option<SurfaceChart>,
+) -> Result<TessellatedBody, TessellateError> {
     let closed = matches!(closure, PathClosure::ClosedPlanar { .. });
     if closed && caps != CapMode::None {
         return Err(TessellateError::ClosedSweepCaps);
@@ -3053,6 +3198,7 @@ pub fn tessellate_curved_sweep(
         }),
         Some(sampled.sampling),
         closed,
+        chart,
     )
 }
 
@@ -3077,12 +3223,93 @@ pub fn tessellate_sweep(
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
+    sweep_impl(profile, placement, path, caps, policy, None)
+}
+
+fn sweep_impl(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &[[f64; 3]],
+    caps: CapMode,
+    policy: &EvalPolicy,
+    chart: Option<SurfaceChart>,
+) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
     let d = discretize_profile(profile, &policy.discretize)?;
     let frames = sweep_frames(path, policy)?;
     tessellate_sweep_rings(
-        profile, placement, path, caps, policy, &d, &frames, None, None, false,
+        profile, placement, path, caps, policy, &d, &frames, None, None, false, chart,
     )
+}
+
+/// Tessellates any retained path form with a sampled-centerline rest chart.
+///
+/// Uses [`SurfaceChart::Sweep`]. Profile and path seams, framing, joins,
+/// sampling and geometry checks are the same as the corresponding uncharted
+/// sweep. Placement moves geometry without changing these rest coordinates.
+///
+/// # Errors
+///
+/// Propagates the selected sweep's typed geometry failures and refuses invalid,
+/// mismatched or unrepresentable charts.
+pub fn tessellate_sweep_with_chart(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &Path3,
+    caps: CapMode,
+    chart: SurfaceChart,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    chart.validate()?;
+    if !matches!(chart, SurfaceChart::Sweep { .. }) {
+        return Err(ChartError::WrongOperation.into());
+    }
+    match path {
+        Path3::Polyline { points, .. } => {
+            if points.len() < 2 {
+                return Err(TessellateError::InvalidSweepPath);
+            }
+            sweep_impl(profile, placement, points, caps, policy, Some(chart))
+        }
+        Path3::MiteredPolyline {
+            points,
+            section_x,
+            section_origin,
+            closure,
+            miter_limit,
+        } => mitered_sweep_impl(
+            profile,
+            placement,
+            points,
+            *section_x,
+            *section_origin,
+            *closure,
+            *miter_limit,
+            caps,
+            policy,
+            Some(chart),
+        ),
+        Path3::Curves {
+            start,
+            segments,
+            section_x,
+            section_origin,
+            closure,
+            joins,
+        } => curved_sweep_impl(
+            profile,
+            placement,
+            *start,
+            segments,
+            *section_x,
+            *section_origin,
+            *closure,
+            *joins,
+            caps,
+            policy,
+            Some(chart),
+        ),
+    }
 }
 
 fn tessellate_sweep_rings(
@@ -3096,6 +3323,7 @@ fn tessellate_sweep_rings(
     sweep_checks: Option<SweepChecks>,
     path_sampling: Option<crate::path::PathSampling>,
     closed: bool,
+    chart: Option<SurfaceChart>,
 ) -> Result<TessellatedBody, TessellateError> {
     let flip = det3(placement) < 0.0;
 
@@ -3130,12 +3358,23 @@ fn tessellate_sweep_rings(
     let ring_starts = ring_starts(d);
     let total = len_u32(d.points_len());
     let mut builder = OrientedBuilder::new(flip);
+    if let Some(chart) = chart {
+        let mut chart = ChartBuilder::new(chart, d, policy.discretize)?;
+        let mut distances = alloc::vec![0.0];
+        for band in 0..frames.len() - 1 {
+            let a = path[band];
+            let b = path[(band + 1) % path.len()];
+            distances.push(distances[band] + norm(sub(b, a)));
+        }
+        chart.set_stations(distances)?;
+        builder.chart = Some(chart);
+    }
     let ring_count = frames.len() - usize::from(closed);
     for (origin, u, v, _) in frames.iter().take(ring_count) {
         for ring in d.rings() {
             for p in &ring.points {
                 let local = add(add(*origin, scale(*u, p[0])), scale(*v, p[1]));
-                builder.push_vertex(narrow(apply_placement(placement, local)));
+                builder.push_chart_vertex(narrow(apply_placement(placement, local)), *p);
             }
         }
     }
@@ -3183,7 +3422,11 @@ fn tessellate_sweep_rings(
                     if top_crease { 1.0 } else { 0.0 },
                     if sharp_at(i) { 1.0 } else { 0.0 },
                 ];
-                builder.add_face_with_attrs(
+                let uv = builder
+                    .chart
+                    .as_ref()
+                    .map(|chart| chart.wall_quad(ring_index, i as usize, band));
+                builder.add_chart_face(
                     &[
                         below + base + i,
                         below + base + j,
@@ -3195,6 +3438,7 @@ fn tessellate_sweep_rings(
                         edge_seams: None,
                         edge_sharpness: Some(&sharp),
                     },
+                    uv.as_ref().map(|uv| uv.as_slice()),
                 )?;
                 face_origins.push(Feature::SweepWall {
                     band: band_u16,
@@ -3293,11 +3537,15 @@ fn tessellate_sweep_rings(
     let result = builder.build()?;
     let vertex_features = profile_vertex_features(d, len_u32(ring_count));
     let path_sampling = path_sampling.map(Arc::new);
-    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features)
-        .with_sweep_sampling(crate::source_map::SweepSampling {
-            profile: policy.discretize,
-            path: path_sampling.clone(),
-        });
+    let mut source_map =
+        crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features)
+            .with_sweep_sampling(crate::source_map::SweepSampling {
+                profile: policy.discretize,
+                path: path_sampling.clone(),
+            });
+    if let Some(chart) = builder.chart {
+        source_map = source_map.with_chart_sampling(chart.sampling);
+    }
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,

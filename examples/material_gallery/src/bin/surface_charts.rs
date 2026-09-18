@@ -1,13 +1,18 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! One-meter rest grids on a curved vault and turned vessels, including a mirror.
+//! One-meter rest grids on a vault, vessels, draped loft and curved rail.
 //! `cargo run -p material_gallery --bin surface_charts -- target/surface-charts.glb`
 
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::{
+    builders,
     chart::{ChartTransform, SurfaceChart},
-    ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder},
+    ir::{
+        CapMode, LoftPolicy, LoftSection, NodeKind, Path3, PathClosure, PathJoin, Placement3,
+        Recipe, RecipeBuilder,
+    },
+    path::PathSegment3,
     profile::{Loop2, Profile2, Seg2},
 };
 use exedra_gltf::{GltfExportOptions, MaterialResolver, Texture, export_glb_with_materials};
@@ -118,11 +123,84 @@ fn vessel() -> Recipe {
         .unwrap();
     b.finish(root).unwrap()
 }
+fn draped_strip() -> Recipe {
+    let mut b = RecipeBuilder::new();
+    let profile = b.add_profile(builders::rect_centered(2.5, 0.12).unwrap());
+    let slot = b.material_slot("surface");
+    let sections = [(0.0, 2.4), (1.8, 1.2), (3.6, 2.0), (5.4, 3.1)]
+        .into_iter()
+        .map(|(y, z)| {
+            LoftSection::new(
+                Placement3::euler_extrinsic_xyz_then_translate(
+                    -std::f64::consts::FRAC_PI_2,
+                    0.0,
+                    0.0,
+                    [0.0, y, z],
+                ),
+                profile,
+            )
+        })
+        .collect();
+    let root = b
+        .with_material(slot)
+        .with_surface_chart(SurfaceChart::Loft {
+            reference_section: 0,
+            // Authored undeformed length: 2 m per uniformly parameterized band.
+            // The chart deliberately stretches as this strip drapes.
+            rest_length: 6.0,
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        })
+        .add(NodeKind::Loft {
+            sections,
+            policy: LoftPolicy::Smooth,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    b.finish(root).unwrap()
+}
+
+fn curved_rail() -> Recipe {
+    let mut b = RecipeBuilder::new();
+    let profile = b.add_profile(builders::rect_centered(0.5, 0.8).unwrap());
+    let slot = b.material_slot("surface");
+    let root = b
+        .with_material(slot)
+        .with_surface_chart(SurfaceChart::Sweep {
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        })
+        .add(NodeKind::Sweep {
+            profile,
+            path: Path3::Curves {
+                start: [0.0, 0.0, 0.6],
+                segments: vec![PathSegment3::Cubic {
+                    control1: [0.0, 2.0, 0.6],
+                    control2: [2.0, 3.0, 1.8],
+                    to: [2.0, 5.4, 1.8],
+                }],
+                section_x: [1.0, 0.0, 0.0],
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
+                joins: PathJoin::Smooth,
+            },
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    b.finish(root).unwrap()
+}
+
 fn scene() -> Assembly {
     let mut assembly = Assembly::new();
     let arch = assembly.add_recipe_part("vault", vault()).unwrap();
     let vase = assembly.add_recipe_part("vessel", vessel()).unwrap();
-    for part in [arch, vase] {
+    let strip = assembly
+        .add_recipe_part("draped-strip", draped_strip())
+        .unwrap();
+    let rail = assembly
+        .add_recipe_part("curved-rail", curved_rail())
+        .unwrap();
+    for part in [arch, vase, strip, rail] {
         assembly
             .set_part_material(part, "surface", "unit-grid")
             .unwrap();
@@ -145,6 +223,36 @@ fn scene() -> Assembly {
                     [0.0, 0.0, 1.0, 0.0],
                 ],
             },
+        )
+        .unwrap();
+    assembly
+        .add_instance(
+            None,
+            "draped-strip",
+            strip,
+            Placement3::translate(0.0, 7.0, 0.0),
+        )
+        .unwrap();
+    assembly
+        .add_instance(
+            None,
+            "reflected-strip",
+            strip,
+            Placement3 {
+                rows: [
+                    [-1.0, 0.0, 0.0, 3.5],
+                    [0.0, 1.0, 0.0, 7.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
+            },
+        )
+        .unwrap();
+    assembly
+        .add_instance(
+            None,
+            "curved-rail",
+            rail,
+            Placement3::translate(6.0, 7.0, 0.0),
         )
         .unwrap();
     assembly
@@ -188,7 +296,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::write(&output, glb.bytes)?;
     println!(
-        "{}: two compiled parts, three occurrences, one-meter rest grid, material edit reused geometry",
+        "{}: four compiled parts, six occurrences, one-meter rest grid, material edit reused geometry",
         output.display()
     );
     Ok(())
@@ -213,6 +321,7 @@ mod tests {
                 );
                 assert!(body.tri.uvs.iter().flatten().all(|x| x.is_finite()));
                 assert!(body.tri.uvs.iter().any(|uv| uv[0] > 1.0 && uv[1] > 1.0));
+                assert!(body.tri.normals.iter().flatten().all(|x| x.is_finite()));
             }
         }
         let baseline = compiler.counters();
@@ -259,37 +368,54 @@ mod tests {
     #[test]
     fn evaluation_snapshot_retains_chart_metric_after_cache_eviction() {
         let assembly = scene();
-        let part = assembly.part_by_key("vessel").unwrap();
-        let mut compiler = PartCompiler::new();
-        let snapshot = compiler
-            .compile_snapshot(&assembly, &CompilePolicy::default())
-            .unwrap();
-        let body = snapshot.body(part, 0).unwrap();
-        let triangles = snapshot.compiled().part(part).unwrap().triangle_count();
-        compiler.clear_cache();
-        drop(snapshot);
-        let geometry = body.geometry();
-        geometry.source_map.check(&geometry.mesh).unwrap();
-        assert!(triangles > 0);
-        for face in geometry.mesh.faces() {
-            let chart = geometry.source_map.chart_sampling(face).unwrap();
-            assert!(matches!(
-                chart.chart,
-                SurfaceChart::Revolve {
-                    reference_radius: 1.0,
-                    ..
-                }
-            ));
-            assert_eq!(chart.loop_lengths.len(), 1);
-            assert!(geometry.mesh.face_loop(face).all(|corner| {
-                geometry
-                    .mesh
-                    .attrs()
-                    .sparse(exedra_mesh::attr::CORNER_UV)
-                    .unwrap()
-                    .get(corner.as_id())
-                    .is_some()
-            }));
+        for (key, expected) in [
+            ("vessel", "revolve"),
+            ("draped-strip", "loft"),
+            ("curved-rail", "sweep"),
+        ] {
+            let part = assembly.part_by_key(key).unwrap();
+            let mut compiler = PartCompiler::new();
+            let snapshot = compiler
+                .compile_snapshot(&assembly, &CompilePolicy::default())
+                .unwrap();
+            let body = snapshot.body(part, 0).unwrap();
+            let triangles = snapshot.compiled().part(part).unwrap().triangle_count();
+            compiler.clear_cache();
+            drop(snapshot);
+            let geometry = body.geometry();
+            geometry.source_map.check(&geometry.mesh).unwrap();
+            assert!(triangles > 0);
+            for face in geometry.mesh.faces() {
+                let chart = geometry.source_map.chart_sampling(face).unwrap();
+                assert!(matches!(
+                    (chart.chart, expected),
+                    (
+                        SurfaceChart::Revolve {
+                            reference_radius: 1.0,
+                            ..
+                        },
+                        "revolve"
+                    ) | (
+                        SurfaceChart::Loft {
+                            reference_section: 0,
+                            rest_length: 6.0,
+                            ..
+                        },
+                        "loft"
+                    ) | (SurfaceChart::Sweep { .. }, "sweep")
+                ));
+                assert_eq!(chart.station_distances.is_empty(), expected == "revolve");
+                assert_eq!(chart.loop_lengths.len(), 1);
+                assert!(geometry.mesh.face_loop(face).all(|corner| {
+                    geometry
+                        .mesh
+                        .attrs()
+                        .sparse(exedra_mesh::attr::CORNER_UV)
+                        .unwrap()
+                        .get(corner.as_id())
+                        .is_some()
+                }));
+            }
         }
     }
 }

@@ -43,14 +43,21 @@ geometry alone as success. Use the `serde` feature for host-side interchange.
 
 ## Construction UV charts
 
-Call `RecipeBuilder::with_surface_chart` before an ordinary `Extrude` or `Revolve`
-node. `SurfaceChart::Extrude` maps walls by sampled profile distance and extrusion
+Call `RecipeBuilder::with_surface_chart` before an ordinary `Extrude`, `Revolve`,
+`Loft` or `Sweep` node. `SurfaceChart::Extrude` maps walls by sampled profile distance and extrusion
 height. `SurfaceChart::Revolve` maps them by angle times an explicit reference
-radius and sampled profile distance. Caps use the source profile plane. Each
+radius and sampled profile distance. `SurfaceChart::Loft` uses the sampled
+perimeter of an explicitly selected `reference_section`, with `rest_length`
+distributed over the existing uniform section parameter. Uneven station spacing
+and changes of section deliberately stretch this authored rest chart.
+`SurfaceChart::Sweep` uses sampled profile and pre-placement centerline distances;
+inner and outer rails intentionally stretch at bends. Caps use each cap's own
+source profile plane. Each
 wall/cap transform controls repeats per recipe unit, direction and texture phase.
 
 Profile seams follow the authored loop start (`Loop2::with_seam`); a revolution's
-angular seam is its local +X meridian. Placements preserve these rest coordinates,
+angular seam is its local +X meridian, and closed sweeps close at authored station
+zero. Placements preserve these rest coordinates,
 including reflections. Profile distance uses sampled chords; the revolution's
 angular scale describes the reference radius and stretches elsewhere. Source maps
 expose this original metric via `chart_sampling(face)`. Compilation and GLB export
@@ -60,8 +67,10 @@ reconstruction currently drops UVs even when ancestry survives.
 Charts are opt-in. Unsupported operations and invalid transforms fail explicitly;
 f32 realization refuses collapsed chart edges or changed triangle winding. The
 `surface_charts` binary in `material_gallery` exports a textured vault and vessels,
-including a mirrored occurrence. Schema 39 invalidates old fingerprints; `Node`
-adds `surface_chart`, with ordinary builder calls unchanged. See
+plus a draped loft and a spatial cubic rail, including mirrored occurrences.
+Loft/sweep support preserves existing recipe fingerprints (schema 40). Callers
+matching `SurfaceChart` handle the new variants; direct `ChartSampling` literals
+add `station_distances`. Older readers reject the new metrics explicitly. See
 [chart semantics and migration](docs/adr-0023-construction-surface-charts.md).
 
 ## Profile offsets

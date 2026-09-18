@@ -30,8 +30,9 @@ use crate::ir::{
 use crate::source_map::SurfaceAncestry;
 use crate::tessellate::{
     EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude,
-    tessellate_extrude_with_chart, tessellate_loft, tessellate_planar_face, tessellate_primitive,
-    tessellate_revolve, tessellate_revolve_with_chart, tessellate_sweep,
+    tessellate_extrude_with_chart, tessellate_loft, tessellate_loft_with_chart,
+    tessellate_planar_face, tessellate_primitive, tessellate_revolve,
+    tessellate_revolve_with_chart, tessellate_sweep, tessellate_sweep_with_chart,
 };
 
 /// How faithfully a node's output represents its constructive intent.
@@ -602,9 +603,19 @@ impl EvalCx<'_> {
                 let caps = *caps;
                 let profile_ids: Vec<ProfileId> =
                     sections.iter().map(|section| section.profile).collect();
+                let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_loft(&placed, *interpolation, caps, cx.policy)
-                        .map_err(|error| EvalError::new(node_id, error))
+                    match chart {
+                        Some(chart) => tessellate_loft_with_chart(
+                            &placed,
+                            *interpolation,
+                            caps,
+                            chart,
+                            cx.policy,
+                        ),
+                        None => tessellate_loft(&placed, *interpolation, caps, cx.policy),
+                    }
+                    .map_err(|error| EvalError::new(node_id, error))
                 });
                 // Ruled loft refusals retain section envelopes. Smooth curves
                 // can overshoot those bounds even for coplanar sections, so
@@ -650,7 +661,19 @@ impl EvalCx<'_> {
                 let path = path.clone();
                 let caps = *caps;
                 let profile = *profile;
+                let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
+                    if let Some(chart) = chart {
+                        return tessellate_sweep_with_chart(
+                            cx.recipe.profile(profile).expect("validated profile id"),
+                            world,
+                            &path,
+                            caps,
+                            chart,
+                            cx.policy,
+                        )
+                        .map_err(|error| EvalError::new(node_id, error));
+                    }
                     match &path {
                         crate::ir::Path3::Polyline { points, .. } => tessellate_sweep(
                             cx.recipe.profile(profile).expect("validated profile id"),

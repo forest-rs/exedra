@@ -6,8 +6,8 @@ Status: accepted
 
 Opt-in `SurfaceChart` metadata belongs on the generating recipe node, next to
 its source and material bindings. `RecipeBuilder::with_surface_chart` validates
-that its metric matches an ordinary extrusion or revolution. Other operations
-refuse the binding. Mesh corner UVs own the realized attribute; constructive
+that its metric matches an ordinary extrusion, revolution, loft or sweep. Other
+operations refuse the binding. Mesh corner UVs own the realized attribute; constructive
 owns its authored metric and source evidence. Render-only callers pay no chart
 allocation unless they request it. No material representation enters geometry.
 
@@ -35,10 +35,37 @@ maps retain the policy and loop lengths as original construction evidence.
 
 Chart ancestry is independent of current attribute coverage. Compilation reports
 that through `RegionRange::has_uvs`. Mesh Boolean reconstruction currently drops
-corner UVs; retained chart ancestry must not claim otherwise. Smooth loft and
-sweep charts need their own explicit rest policies and are outside this slice.
-The exact extrusion stretch rewrite falls back to mapped-mesh stretching when a
+corner UVs; retained chart ancestry must not claim otherwise. Loft and sweep
+charts use the explicit policies below. The exact extrusion stretch rewrite falls back to mapped-mesh stretching when a
 chart is authored, so a structural optimization cannot silently erase its UVs.
+
+## Loft and sweep rest policies
+
+Loft charts select `reference_section` explicitly. Its jointly discretized
+profile supplies U for corresponding vertices throughout the loft, including
+holes with independent authored seams. V spans the authored positive
+`rest_length` uniformly over section indices. Smooth samples use their retained
+band/parameter evidence. V is therefore not measured station distance, nor an
+estimate of the draped surface length. Uneven station spacing and changes in
+section intentionally stretch the chart. This policy introduces no new profile
+correspondence: existing authored seam/segment correspondence remains required.
+Each cap uses its own profile coordinates, independently of the reference section.
+
+Sweep charts use sampled profile perimeter and cumulative sampled centerline
+chord length before placement. They support legacy polylines, authored miters,
+and analytic curved paths with their existing checks. The profile datum and
+frame do not move this metric. Miter cuts preserve longitudinal continuity;
+inner/outer rails deliberately stretch relative to the centerline. A closed
+path reuses the first geometric ring while its terminal corners carry the full
+path length. Its only longitudinal discontinuity is at authored station zero.
+
+`ChartSampling` retains the reference loop lengths and all longitudinal rest
+station coordinates, including the closing coordinate for cyclic sweeps. It
+continues to describe original generation, independent of subsequent placements
+or loss of UV coverage. Existing sweep/loft sampling records retain their own
+geometry evidence. Normals follow unchanged geometry/crease rules; corner UVs
+follow any reversed face order under reflection. The current publication path
+supplies normals and UVs, leaving tangent generation to the rendering consumer.
 
 ## Migration
 
@@ -51,3 +78,13 @@ schema 39 invalidates prior caches; chart transforms participate in fingerprints
 Material value edits remain outside recipe geometry identity and reuse buffers.
 
 No new production dependency or unsafe code is required.
+
+Loft/sweep extension: `SurfaceChart` and its interchange DTO gain `Loft` and
+`Sweep` variants. `ChartSampling` adds `station_distances` (empty on previous
+metrics); update direct struct literals and exhaustive matches. Immediate callers
+can use `tessellate_loft_with_chart` and `tessellate_sweep_with_chart`. Unknown
+text/JSON metrics fail in older readers, rather than dropping chart intent.
+Existing None/Extrude/Revolve canonical bytes and geometry stay unchanged, so
+schema 40 remains valid; regression fingerprints are taken from the pre-extension
+revision. No dependency, geometry algorithm, material or placement convention
+changes are involved.
