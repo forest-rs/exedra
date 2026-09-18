@@ -72,7 +72,9 @@ constraints:
   authoritative cell geometry for interval classification, Hermite/QEF
   analysis, projection bounds, cache ownership, and output ordering; integer
   coordinate zero and `resolution` reproduce the caller's exact root bounds,
-  while only interior coordinates use step recomposition,
+  while interior coordinates interpolate the exact endpoint values in `f64`
+  before one final `f32` rounding; depth validation uses the same endpoint
+  extent and requires a step at least as large as the largest coordinate ULP,
 - balance all face-adjacent leaves to a depth difference of at most one through
   deterministic, monotone refinement before emission,
 - enumerate minimal primal-edge segments from sorted dyadic edge intervals,
@@ -106,6 +108,32 @@ constraints:
   leaf actually excluded by a binding cap authorizes omission of its patches.
 
 ## Consequences
+
+### Coincident transition vertices and migration
+
+`DualContourParams::vertex_merge_tolerance` is a finite nonnegative distance in
+field coordinates. Set it to `0.0` to join only exactly coincident vertices;
+choose a positive value explicitly when sampled gradients or QEF roundoff leave
+near-coincident representatives. Only edges of otherwise degenerate transition
+patches initiate joining. The mesh kernel checks topology before each collapse,
+and surviving vertices keep their original positions. Extraction reports the
+number of joins and the largest displacement from an original representative.
+No domain shift, field perturbation, or triangle deletion substitutes for a
+successful checked join. A remaining degenerate patch is an error.
+
+The tolerance bounds total displacement from each original representative,
+including chains of joins; it is not a surface-error or feature-preservation
+guarantee. Existing parameter literals must add `vertex_merge_tolerance: 0.0`
+to preserve exact-only behavior. Stats gain join counts and displacement, and
+errors distinguish failed topology surgery from mesh construction.
+
+Interior grid coordinates now avoid rounding the offset product in `f32`, which
+could alias adjacent keys even when their final coordinates were representable.
+Non-dyadic roots can therefore produce different last-bit coordinates from the
+previous two-step `f32` computation. Root endpoints remain exact; callers that
+persist exact vertex sequences must deliberately rebaseline those coordinates.
+
+### Extraction scope
 
 - The workspace now has a real field-to-mesh path for spheres, boxes,
   cylinders, simple CSG references, and multi-scale adaptive leaves.

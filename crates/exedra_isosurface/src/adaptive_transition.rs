@@ -215,26 +215,22 @@ impl<'a, F: ScalarField> AdaptiveGrid<'a, F> {
     }
 
     pub(super) fn point(&self, key: CornerKey) -> [f32; 3] {
-        let step = self.step();
         [
             axis_point(
                 self.root_bounds.min[0],
                 self.root_bounds.max[0],
-                step[0],
                 key.x,
                 self.resolution,
             ),
             axis_point(
                 self.root_bounds.min[1],
                 self.root_bounds.max[1],
-                step[1],
                 key.y,
                 self.resolution,
             ),
             axis_point(
                 self.root_bounds.min[2],
                 self.root_bounds.max[2],
-                step[2],
                 key.z,
                 self.resolution,
             ),
@@ -643,13 +639,20 @@ fn coordinate_axis(root_min: f32, value: f32, step: f32) -> u32 {
     }
 }
 
-fn axis_point(min: f32, max: f32, step: f32, key: u32, resolution: u32) -> f32 {
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "grid coordinates round to the mesh f32 representation only after interpolation"
+)]
+fn axis_point(min: f32, max: f32, key: u32, resolution: u32) -> f32 {
     if key == 0 {
         min
     } else if key == resolution {
         max
     } else {
-        min + step * key as f32
+        // Keep intermediate arithmetic in f64 and round to f32 only once.
+        // Rounding the product in f32 can alias representable adjacent keys.
+        let fraction = f64::from(key) / f64::from(resolution);
+        (f64::from(min) + (f64::from(max) - f64::from(min)) * fraction) as f32
     }
 }
 

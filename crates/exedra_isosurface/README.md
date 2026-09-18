@@ -16,6 +16,7 @@ let params = DualContourParams {
     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
     max_depth: 4,
     cell_budget: None,
+    vertex_merge_tolerance: 0.0,
     edge_search: EdgeSearchParams::default(),
     qef: QefParams::default(),
 };
@@ -48,13 +49,23 @@ Current scope:
 The current mesher is intentionally phase-1:
 
 - interval-driven octree culling with conservative mixed-depth leaf retention,
-- one dual vertex per active octree leaf,
+- one dual vertex per classified surface component in each active octree leaf,
 - explicit triangle emission from primal-edge patches with deterministic diagonal choice,
 - QEF placement with edge-sharpness tagging and Hermite mass-point anchoring,
 - authored corner normals from field gradients for smoother render extraction,
 - optional face-region tagging from `ProvenanceField<u32>`,
 - first-pass seam tagging on shared edges where adjacent face regions differ,
-- conservative triangle deduplication and edge-incidence limiting across coarse/fine transitions.
+- balanced, component-aware transitions across coarse/fine boundaries,
+- topology-checked joining of coincident transition vertices, with an explicit
+  field-coordinate tolerance for near-coincident solves and measured displacement.
+
+Existing parameter literals must add `vertex_merge_tolerance`. Use `0.0` for
+exact coincidences only. A positive tolerance allows bounded joins on degenerate
+transition patches; it does not certify surface accuracy or feature retention.
+Remaining degeneracies and topology refusals return errors. Invalid bounds,
+unrepresentable grid depths, QEF policies and join tolerances fail before field
+evaluation. `DualContourStats` gains join counts and displacement and implements
+`PartialEq` rather than `Eq`.
 
 `dual_contour_semi_analytic` additionally projects eligible cell vertices onto
 the dominating tagged primitive and snaps transverse feature cells for

@@ -33,6 +33,8 @@ use crate::report::TopologyReport;
 use exedra_math::dot;
 
 const H1_PRIVATE_STATS: DualContourStats = DualContourStats {
+    coincident_edge_collapses: 0,
+    max_vertex_merge_displacement: 0.0,
     octree_cells: 100_937,
     active_cells: 30_122,
     vertices: 30_122,
@@ -42,6 +44,8 @@ const H1_PRIVATE_FINAL_DEPTHS: [usize; 8] = [0, 0, 0, 199, 1_388, 5_277, 21_744,
 const H1_PRIVATE_CONTRIBUTING_DEPTHS: [usize; 8] = [0, 0, 0, 0, 0, 0, 0, 30_122];
 const H1_PRIVATE_REGIONS: [(u32, usize); 2] = [(BOX_A_REGION, 38_884), (BOX_B_REGION, 21_356)];
 const H1_ADAPTIVE_STATS: DualContourStats = DualContourStats {
+    coincident_edge_collapses: 0,
+    max_vertex_merge_displacement: 0.0,
     octree_cells: 4_089,
     active_cells: 939,
     vertices: 939,
@@ -795,6 +799,7 @@ mod tests {
             root_bounds: Aabb::new([-1.3; 3], [1.4; 3]).expect("root"),
             max_depth: 4,
             cell_budget: None,
+            vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,
             },
