@@ -3,6 +3,7 @@
 
 //! Independent fixed scenarios for opt-in semi-analytic field extraction.
 
+use exedra_isosurface::ExtractionLimits;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -490,6 +491,8 @@ fn params(root_bounds: Aabb, max_depth: u8) -> DualContourParams {
         root_bounds,
         max_depth,
         cell_budget: None,
+        limits: ExtractionLimits::default(),
+        witness_limit: 16,
         vertex_merge_tolerance: 0.0,
         edge_search: EdgeSearchParams {
             bisection_steps: 10,

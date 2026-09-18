@@ -23,26 +23,28 @@
 //! Build one subdivision level and attach each leaf's depth as its payload:
 //!
 //! ```
+//! use core::convert::Infallible;
 //! use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
 //!
 //! struct OneLevel;
 //!
 //! impl OctreeVisitor for OneLevel {
 //!     type Payload = u8;
+//!     type Error = Infallible;
 //!
-//!     fn should_subdivide(&mut self, cell: CellRef) -> bool {
-//!         cell.depth == 0
+//!     fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error> {
+//!         Ok(cell.depth == 0)
 //!     }
 //!
-//!     fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
-//!         cell.depth
+//!     fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error> {
+//!         Ok(cell.depth)
 //!     }
 //! }
 //!
 //! let bounds = Aabb::new([0.0; 3], [1.0; 3]).expect("ordered bounds");
-//! let tree = Octree::build(bounds, 1, &mut OneLevel);
-//! assert_eq!(tree.leaf_ids().len(), 8);
-//! assert!(tree.leaf_ids().iter().all(|&id| tree.cell(id).unwrap().payload() == Some(&1)));
+//! let tree = Octree::build(bounds, 1, Some(9), &mut OneLevel).expect("bounded tree");
+//! assert_eq!(tree.leaf_ids().count(), 8);
+//! assert!(tree.leaf_ids().all(|id| tree.cell(id).unwrap().payload() == Some(&1)));
 //! ```
 
 #![no_std]
@@ -265,11 +267,88 @@ pub trait OctreeVisitor {
     /// Payload type stored on leaf cells.
     type Payload;
 
+    /// Failure returned immediately to stop traversal. Use
+    /// [`core::convert::Infallible`] when callbacks cannot fail.
+    type Error;
+
     /// Returns whether `cell` should subdivide further.
-    fn should_subdivide(&mut self, cell: CellRef) -> bool;
+    fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error>;
 
     /// Builds the payload stored on a leaf cell.
-    fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload;
+    fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error>;
+}
+
+/// A stopped octree construction or refinement.
+///
+/// Counts describe storage at the failure, before a failed refinement rolls
+/// back. Visitor side effects are never rolled back.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OctreeError<E> {
+    /// The requested refinement did not identify a refinable leaf.
+    Refine(RefineError),
+    /// Root or child allocation would exceed the caller's stored-cell limit.
+    CellLimit {
+        /// Cell whose creation or subdivision was refused.
+        cell: CellRef,
+        /// Cells already stored when allocation was refused.
+        stored_cells: usize,
+        /// Requested additional cells: one root or eight children.
+        additional_cells: usize,
+        /// Caller-supplied limit.
+        limit: usize,
+    },
+    /// The arena cannot represent the requested additional cell IDs.
+    IdCapacity {
+        /// Cell whose subdivision was refused.
+        cell: CellRef,
+        /// Cells stored before the refused allocation.
+        stored_cells: usize,
+    },
+    /// A callback failed; no subsequent callback was invoked.
+    Visitor {
+        /// Cell being visited at failure.
+        cell: CellRef,
+        /// Cells stored at the failure, including unvisited siblings.
+        stored_cells: usize,
+        /// Caller-owned failure.
+        source: E,
+    },
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for OctreeError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Refine(error) => error.fmt(f),
+            Self::CellLimit {
+                cell,
+                stored_cells,
+                additional_cells,
+                limit,
+            } => write!(
+                f,
+                "octree cell limit {limit} at {:?}: {stored_cells} stored, {additional_cells} requested",
+                cell.bounds
+            ),
+            Self::IdCapacity { cell, stored_cells } => write!(
+                f,
+                "octree ID capacity at {:?}: {stored_cells} cells stored",
+                cell.bounds
+            ),
+            Self::Visitor { cell, source, .. } => {
+                write!(f, "octree visitor failed at {:?}: {source}", cell.bounds)
+            }
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for OctreeError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Visitor { source, .. } => Some(source),
+            Self::Refine(source) => Some(source),
+            Self::CellLimit { .. } | Self::IdCapacity { .. } => None,
+        }
+    }
 }
 
 /// Spatial adjacency class for neighbor queries.
@@ -324,12 +403,27 @@ pub struct Octree<P> {
 }
 
 impl<P> Octree<P> {
-    /// Builds one tree from `root_bounds`, `max_depth`, and a visitor.
-    #[must_use]
-    pub fn build<V>(root_bounds: Aabb, max_depth: u8, visitor: &mut V) -> Self
+    /// Builds one tree, checking `cell_limit` before root and child allocation.
+    ///
+    /// `None` imposes no caller limit. Visitor failure or exhausted capacity
+    /// stops immediately and discards the incomplete tree. Limits count stored
+    /// cells, not bytes allocated by payloads or visitor implementations.
+    pub fn build<V>(
+        root_bounds: Aabb,
+        max_depth: u8,
+        cell_limit: Option<usize>,
+        visitor: &mut V,
+    ) -> Result<Self, OctreeError<V::Error>>
     where
         V: OctreeVisitor<Payload = P>,
     {
+        let root = CellRef {
+            id: CellId::from_index(0),
+            bounds: root_bounds,
+            depth: 0,
+            parent: None,
+        };
+        check_cell_capacity(root, 0, 1, cell_limit)?;
         let mut tree = Self {
             cells: Vec::from([OctreeCell {
                 id: CellId::from_index(0),
@@ -340,8 +434,8 @@ impl<P> Octree<P> {
                 payload: None,
             }]),
         };
-        tree.build_subtree(CellId::from_index(0), max_depth, visitor);
-        tree
+        tree.build_subtree(CellId::from_index(0), max_depth, cell_limit, visitor)?;
+        Ok(tree)
     }
 
     /// Returns the root cell.
@@ -380,14 +474,12 @@ impl<P> Octree<P> {
         self.cells.get_mut(id.index() as usize)
     }
 
-    /// Returns all leaf cell IDs in deterministic storage order.
-    #[must_use]
-    pub fn leaf_ids(&self) -> Vec<CellId> {
+    /// Iterates over leaf cell IDs in deterministic storage order without allocation.
+    pub fn leaf_ids(&self) -> impl Iterator<Item = CellId> + '_ {
         self.cells
             .iter()
             .filter(|cell| cell.is_leaf())
             .map(|cell| cell.id)
-            .collect()
     }
 
     /// Returns all cell IDs in deterministic depth-first pre-order.
@@ -416,35 +508,49 @@ impl<P> Octree<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`RefineError`] when `id` is missing, names an internal cell,
-    /// or is already at the requested maximum depth.
+    /// Returns [`OctreeError`] for invalid refinement, exhausted cell capacity,
+    /// or visitor failure. On error, the original leaf and existing cells are
+    /// restored; visitor side effects remain. Discard visitor state associated
+    /// with rolled-back cell IDs before retrying.
     pub fn refine_leaf<V>(
         &mut self,
         id: CellId,
         max_depth: u8,
+        cell_limit: Option<usize>,
         visitor: &mut V,
-    ) -> Result<[CellId; 8], RefineError>
+    ) -> Result<[CellId; 8], OctreeError<V::Error>>
     where
         V: OctreeVisitor<Payload = P>,
     {
         let depth = {
-            let cell = self.cell(id).ok_or(RefineError::MissingCell(id))?;
+            let cell = self
+                .cell(id)
+                .ok_or(OctreeError::Refine(RefineError::MissingCell(id)))?;
             if !cell.is_leaf() {
-                return Err(RefineError::NotLeaf(id));
+                return Err(OctreeError::Refine(RefineError::NotLeaf(id)));
             }
             cell.depth
         };
 
         if depth >= max_depth {
-            return Err(RefineError::MaxDepth {
+            return Err(OctreeError::Refine(RefineError::MaxDepth {
                 cell: id,
                 max_depth,
-            });
+            }));
         }
 
+        check_cell_capacity(self.cell_ref(id), self.cells.len(), 8, cell_limit)?;
+        let original_len = self.cells.len();
+        let original_payload = self.cell_mut(id).expect("checked leaf").payload.take();
         let children = self.insert_children(id);
         for child in children {
-            self.build_subtree(child, max_depth, visitor);
+            if let Err(error) = self.build_subtree(child, max_depth, cell_limit, visitor) {
+                self.cells.truncate(original_len);
+                let leaf = self.cell_mut(id).expect("original leaf survives rollback");
+                leaf.children = None;
+                leaf.payload = original_payload;
+                return Err(error);
+            }
         }
         Ok(children)
     }
@@ -471,23 +577,45 @@ impl<P> Octree<P> {
             .collect()
     }
 
-    fn build_subtree<V>(&mut self, id: CellId, max_depth: u8, visitor: &mut V)
+    fn build_subtree<V>(
+        &mut self,
+        id: CellId,
+        max_depth: u8,
+        cell_limit: Option<usize>,
+        visitor: &mut V,
+    ) -> Result<(), OctreeError<V::Error>>
     where
         V: OctreeVisitor<Payload = P>,
     {
         let cell_ref = self.cell_ref(id);
-        let should_subdivide = cell_ref.depth < max_depth && visitor.should_subdivide(cell_ref);
+        let should_subdivide = cell_ref.depth < max_depth
+            && visitor
+                .should_subdivide(cell_ref)
+                .map_err(|source| OctreeError::Visitor {
+                    cell: cell_ref,
+                    stored_cells: self.cells.len(),
+                    source,
+                })?;
         if should_subdivide {
+            check_cell_capacity(cell_ref, self.cells.len(), 8, cell_limit)?;
             let children = self.insert_children(id);
             for child in children {
-                self.build_subtree(child, max_depth, visitor);
+                self.build_subtree(child, max_depth, cell_limit, visitor)?;
             }
         } else {
-            let payload = visitor.make_leaf_payload(cell_ref);
+            let payload =
+                visitor
+                    .make_leaf_payload(cell_ref)
+                    .map_err(|source| OctreeError::Visitor {
+                        cell: cell_ref,
+                        stored_cells: self.cells.len(),
+                        source,
+                    })?;
             self.cell_mut(id)
                 .expect("live leaf should remain valid")
                 .payload = Some(payload);
         }
+        Ok(())
     }
 
     fn collect_depth_first(&self, id: CellId, out: &mut Vec<CellId>) {
@@ -535,6 +663,31 @@ impl<P> Octree<P> {
     }
 }
 
+fn check_cell_capacity<E>(
+    cell: CellRef,
+    stored_cells: usize,
+    additional_cells: usize,
+    limit: Option<usize>,
+) -> Result<(), OctreeError<E>> {
+    let Some(total) = stored_cells.checked_add(additional_cells) else {
+        return Err(OctreeError::IdCapacity { cell, stored_cells });
+    };
+    if let Some(limit) = limit
+        && total > limit
+    {
+        return Err(OctreeError::CellLimit {
+            cell,
+            stored_cells,
+            additional_cells,
+            limit,
+        });
+    }
+    if u32::try_from(total.saturating_sub(1)).is_err() {
+        return Err(OctreeError::IdCapacity { cell, stored_cells });
+    }
+    Ok(())
+}
+
 fn adjacency_matches(a: Aabb, b: Aabb, adjacency: CellAdjacency) -> bool {
     let touch_x = axis_touches(a.min[0], a.max[0], b.min[0], b.max[0]);
     let touch_y = axis_touches(a.min[1], a.max[1], b.min[1], b.max[1]);
@@ -568,20 +721,22 @@ fn usize_to_u32(value: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Aabb, CellAdjacency, CellRef, Octree, OctreeVisitor, RefineError};
+    use super::{Aabb, CellAdjacency, CellRef, Octree, OctreeError, OctreeVisitor, RefineError};
+    use core::convert::Infallible;
 
     #[derive(Default)]
     struct DepthVisitor;
 
     impl OctreeVisitor for DepthVisitor {
         type Payload = u8;
+        type Error = Infallible;
 
-        fn should_subdivide(&mut self, cell: CellRef) -> bool {
-            cell.depth < 1
+        fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error> {
+            Ok(cell.depth < 1)
         }
 
-        fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
-            cell.depth
+        fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error> {
+            Ok(cell.depth)
         }
     }
 
@@ -590,14 +745,146 @@ mod tests {
 
     impl OctreeVisitor for SelectiveVisitor {
         type Payload = u8;
+        type Error = Infallible;
 
-        fn should_subdivide(&mut self, cell: CellRef) -> bool {
-            cell.depth == 0 || (cell.depth == 1 && cell.bounds.min == [0.0, 0.0, 0.0])
+        fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error> {
+            Ok(cell.depth == 0 || (cell.depth == 1 && cell.bounds.min == [0.0, 0.0, 0.0]))
         }
 
-        fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
-            cell.depth
+        fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error> {
+            Ok(cell.depth)
         }
+    }
+
+    struct FallibleVisitor {
+        stop_at: Option<u32>,
+        visits: alloc::vec::Vec<u32>,
+    }
+
+    impl OctreeVisitor for FallibleVisitor {
+        type Payload = u8;
+        type Error = &'static str;
+
+        fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error> {
+            self.visit(cell)?;
+            Ok(true)
+        }
+
+        fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error> {
+            self.visit(cell)?;
+            Ok(cell.depth)
+        }
+    }
+
+    impl FallibleVisitor {
+        fn visit(&mut self, cell: CellRef) -> Result<(), &'static str> {
+            self.visits.push(cell.id.index());
+            if self.stop_at == Some(cell.id.index()) {
+                Err("stop")
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn capacity_checks_precede_root_and_child_allocation() {
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).unwrap();
+        let mut visitor = FallibleVisitor {
+            stop_at: None,
+            visits: alloc::vec::Vec::new(),
+        };
+        assert!(matches!(
+            Octree::build(bounds, 4, Some(0), &mut visitor),
+            Err(OctreeError::CellLimit {
+                stored_cells: 0,
+                additional_cells: 1,
+                limit: 0,
+                ..
+            })
+        ));
+        assert!(visitor.visits.is_empty());
+        assert!(matches!(
+            Octree::build(bounds, 4, Some(9), &mut visitor),
+            Err(OctreeError::CellLimit {
+                stored_cells: 9,
+                additional_cells: 8,
+                limit: 9,
+                ..
+            })
+        ));
+        assert_eq!(visitor.visits, [0, 1]);
+        visitor.visits.clear();
+        let tree = Octree::build(bounds, 1, Some(9), &mut visitor).unwrap();
+        assert_eq!(tree.len(), 9);
+        assert_eq!(visitor.visits, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn visitor_failure_stops_before_later_siblings() {
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).unwrap();
+        for (depth, stop_at, expected) in [
+            (1, 3, alloc::vec![0, 1, 2, 3]),
+            (2, 10, alloc::vec![0, 1, 9, 10]),
+        ] {
+            let mut visitor = FallibleVisitor {
+                stop_at: Some(stop_at),
+                visits: alloc::vec::Vec::new(),
+            };
+            let error = Octree::build(bounds, depth, None, &mut visitor).unwrap_err();
+            let OctreeError::Visitor {
+                cell,
+                stored_cells,
+                source,
+            } = error
+            else {
+                panic!("visitor failure");
+            };
+            assert_eq!(cell.id.index(), stop_at);
+            assert_eq!(source, "stop");
+            assert_eq!(stored_cells, if depth == 1 { 9 } else { 17 });
+            assert_eq!(visitor.visits, expected);
+        }
+    }
+
+    #[test]
+    fn failed_refinement_restores_tree_but_preserves_visitor_evidence() {
+        let bounds = Aabb::new([0.0; 3], [1.0; 3]).unwrap();
+        let mut tree = Octree::build(bounds, 0, None, &mut DepthVisitor).unwrap();
+        let before = tree.clone();
+        let root = tree.root_id();
+        let mut visitor = FallibleVisitor {
+            stop_at: Some(10),
+            visits: alloc::vec::Vec::new(),
+        };
+        assert!(matches!(
+            tree.refine_leaf(root, 2, None, &mut visitor),
+            Err(OctreeError::Visitor {
+                stored_cells: 17,
+                source: "stop",
+                ..
+            })
+        ));
+        assert_eq!(tree, before);
+        assert_eq!(visitor.visits, [1, 9, 10]);
+
+        visitor.stop_at = None;
+        visitor.visits.clear();
+        assert!(matches!(
+            tree.refine_leaf(root, 2, Some(17), &mut visitor),
+            Err(OctreeError::CellLimit {
+                stored_cells: 17,
+                additional_cells: 8,
+                limit: 17,
+                ..
+            })
+        ));
+        assert_eq!(tree, before);
+        assert_eq!(visitor.visits, [1, 9, 10, 11, 12, 13, 14, 15, 16, 2]);
+        visitor.visits.clear();
+        tree.refine_leaf(root, 1, Some(9), &mut visitor).unwrap();
+        assert_eq!(tree.len(), 9);
+        assert_eq!(visitor.visits, [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
@@ -637,7 +924,7 @@ mod tests {
     fn octree_traversal_orders_are_deterministic() {
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = DepthVisitor;
-        let tree = Octree::build(bounds, 3, &mut visitor);
+        let tree = Octree::build(bounds, 3, None, &mut visitor).unwrap();
 
         assert_eq!(tree.len(), 9);
         assert_eq!(
@@ -654,18 +941,18 @@ mod tests {
                 .collect::<alloc::vec::Vec<_>>(),
             alloc::vec![0, 1, 2, 3, 4, 5, 6, 7, 8]
         );
-        assert!(tree.leaf_ids().iter().all(|id| *id != tree.root_id()));
+        assert!(tree.leaf_ids().all(|id| id != tree.root_id()));
     }
 
     #[test]
     fn incremental_refinement_adds_children_without_rebuild() {
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = DepthVisitor;
-        let mut tree = Octree::build(bounds, 0, &mut visitor);
+        let mut tree = Octree::build(bounds, 0, None, &mut visitor).unwrap();
         assert_eq!(tree.len(), 1);
 
         let children = tree
-            .refine_leaf(tree.root_id(), 1, &mut visitor)
+            .refine_leaf(tree.root_id(), 1, None, &mut visitor)
             .expect("root leaf should refine");
         assert_eq!(tree.len(), 9);
         assert_eq!(
@@ -675,8 +962,8 @@ mod tests {
             children
         );
         assert_eq!(
-            tree.refine_leaf(tree.root_id(), 1, &mut visitor),
-            Err(RefineError::NotLeaf(tree.root_id()))
+            tree.refine_leaf(tree.root_id(), 1, None, &mut visitor),
+            Err(OctreeError::Refine(RefineError::NotLeaf(tree.root_id())))
         );
     }
 
@@ -686,16 +973,16 @@ mod tests {
         // subdivision and could keep a caller's refinement loop alive forever.
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = DepthVisitor;
-        let mut tree = Octree::build(bounds, 0, &mut visitor);
+        let mut tree = Octree::build(bounds, 0, None, &mut visitor).unwrap();
         let root = tree.root_id();
         let before = tree.clone();
 
         assert_eq!(
-            tree.refine_leaf(root, 0, &mut visitor),
-            Err(RefineError::MaxDepth {
+            tree.refine_leaf(root, 0, None, &mut visitor),
+            Err(OctreeError::Refine(RefineError::MaxDepth {
                 cell: root,
                 max_depth: 0,
-            })
+            }))
         );
         assert_eq!(tree, before);
     }
@@ -704,16 +991,14 @@ mod tests {
     fn leaf_neighbors_find_face_and_edge_adjacency_across_depths() {
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = SelectiveVisitor;
-        let tree = Octree::build(bounds, 2, &mut visitor);
+        let tree = Octree::build(bounds, 2, None, &mut visitor).unwrap();
 
         let fine_leaf = tree
             .leaf_ids()
-            .into_iter()
             .find(|id| tree.cell(*id).expect("leaf should exist").bounds.min == [0.25, 0.25, 0.0])
             .expect("expected fine leaf");
         let coarse_face_neighbor = tree
             .leaf_ids()
-            .into_iter()
             .find(|id| tree.cell(*id).expect("leaf should exist").bounds.min == [0.5, 0.0, 0.0])
             .expect("expected coarse face neighbor");
 
@@ -732,12 +1017,11 @@ mod tests {
         // spatial partition and the parent/child topology that stable IDs name.
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = SelectiveVisitor;
-        let tree = Octree::build(bounds, 2, &mut visitor);
+        let tree = Octree::build(bounds, 2, None, &mut visitor).unwrap();
 
         let leaf_volume = tree
             .leaf_ids()
-            .iter()
-            .map(|&id| tree.cell(id).expect("leaf should exist").bounds.volume())
+            .map(|id| tree.cell(id).expect("leaf should exist").bounds.volume())
             .sum::<f32>();
         assert_eq!(leaf_volume, bounds.volume());
 
@@ -760,7 +1044,7 @@ mod tests {
         // asymmetric overlap/touch predicates and unstable result ordering.
         let bounds = Aabb::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).expect("valid bounds");
         let mut visitor = SelectiveVisitor;
-        let tree = Octree::build(bounds, 2, &mut visitor);
+        let tree = Octree::build(bounds, 2, None, &mut visitor).unwrap();
 
         for adjacency in [
             CellAdjacency::Face,

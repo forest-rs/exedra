@@ -37,6 +37,8 @@
 //!     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
 //!     max_depth: 4,
 //!     cell_budget: None,
+//!     limits: Default::default(),
+//!     witness_limit: 16,
 //!     vertex_merge_tolerance: 0.0,
 //!     edge_search: EdgeSearchParams::default(),
 //!     qef: QefParams::default(),
@@ -70,9 +72,12 @@ pub use exedra_spatial::Aabb;
 
 pub use bounds2::Aabb2;
 pub use dual_contour::{
-    DualContourError, DualContourParameter, DualContourParams, DualContourResult, DualContourStats,
-    SemiAnalyticContourResult, SemiAnalyticContourStats, dual_contour, dual_contour_semi_analytic,
-    dual_contour_with_regions,
+    DualContourError, DualContourErrorKind, DualContourParameter, DualContourParams,
+    DualContourResult, DualContourStats, ExtractionCandidate, ExtractionCell, ExtractionCellIssue,
+    ExtractionCellWitness, ExtractionCompletion, ExtractionFailureContext, ExtractionLimits,
+    ExtractionReport, ExtractionResource, ExtractionStage, ExtractionWitness, ExtractionWork,
+    SemiAnalyticContourResult, SemiAnalyticContourStats, TransitionWitness, dual_contour,
+    dual_contour_semi_analytic, dual_contour_with_regions,
 };
 pub use hermite::{
     CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
