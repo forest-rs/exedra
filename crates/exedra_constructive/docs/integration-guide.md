@@ -39,7 +39,7 @@ let mut b = RecipeBuilder::new();
 let source = b.source_ref("yourspec:part/7#body");
 let front = b.material_slot("front");
 
-let profile = b.add_profile(builders::rounded_rect(600.0, 400.0, 40.0)?);
+let profile = b.add_profile(builders::rounded_rect_from_corner(600.0, 400.0, 40.0)?);
 let node = b
     .with_source(source)
     .with_material(front)

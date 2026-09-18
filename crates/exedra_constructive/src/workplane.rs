@@ -157,10 +157,10 @@ pub use exedra_mesh_ops::workplane::{Workplane, WorkplaneError, WorkplanePolicy}
 /// curved-face tangent frames.
 ///
 /// ```
-/// use exedra_constructive::{builders::rect, ir::{CapMode, Placement3},
+/// use exedra_constructive::{builders::rect_from_corner, ir::{CapMode, Placement3},
 ///     tessellate::{EvalPolicy, REGION_CAP_END, tessellate_extrude},
 ///     workplane::{WorkplaneSelection, WorkplanePolicy, face_workplane}};
-/// let body = tessellate_extrude(&rect(4.0, 3.0)?, &Placement3::IDENTITY,
+/// let body = tessellate_extrude(&rect_from_corner(4.0, 3.0)?, &Placement3::IDENTITY,
 ///     2.0, CapMode::Both, &EvalPolicy::default())?;
 /// let plane = face_workplane(&body, WorkplaneSelection::Region(REGION_CAP_END),
 ///     [0.0, 0.0, 2.0], [1.0, 0.0, 0.0], &WorkplanePolicy::default())?;

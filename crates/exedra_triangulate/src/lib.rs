@@ -52,7 +52,9 @@
 #![no_std]
 extern crate alloc;
 
+mod boundary;
 mod bridge;
+pub use boundary::{BoundaryContactKind, BoundaryEdge};
 mod delaunay;
 mod earclip;
 pub mod predicates;
@@ -155,6 +157,9 @@ fn validate_loop(points: &[[f64; 2]], hole: Option<usize>) -> Result<(), TriErro
 /// geometric violations surface as [`TriError::WrongWinding`],
 /// [`TriError::HoleOutsideOuter`], [`TriError::UnbridgeableHole`], and
 /// [`TriError::NonSimple`].
+/// After cover construction fails, a failure-only scan of at most N(N-1)/2
+/// original nonadjacent edge pairs can replace the failure with a witnessed
+/// [`TriError::BoundaryContact`]. No extra scan occurs for successful input.
 pub fn triangulate(
     input: &PolygonInput<'_>,
     params: &TriParams,
@@ -396,7 +401,7 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
             edge_flips,
         });
     }
-    Err(last_error)
+    Err(boundary::diagnose(input).unwrap_or(last_error))
 }
 
 /// Checks that triangle edge incidence reproduces exactly the simplified
@@ -547,6 +552,16 @@ pub enum TriError {
         /// Index of the offending hole.
         hole: usize,
     },
+    /// Failed triangulation found crossing or touching nonadjacent input edges.
+    /// The edge pair is a geometric witness, not a rejected candidate bridge.
+    BoundaryContact {
+        /// First edge in original outer-then-hole boundary order.
+        first: BoundaryEdge,
+        /// Second original edge.
+        second: BoundaryEdge,
+        /// Exact relationship of these sampled segments.
+        kind: BoundaryContactKind,
+    },
     /// Total vertex count exceeds the `u32` index budget.
     TooManyVertices,
     /// The refinement quality bound is non-finite or not positive.
@@ -556,6 +571,17 @@ pub enum TriError {
 impl core::fmt::Display for TriError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::BoundaryContact {
+                first,
+                second,
+                kind,
+            } => {
+                let relation = match kind {
+                    BoundaryContactKind::Crossing => "crosses",
+                    BoundaryContactKind::Touching => "touches or overlaps",
+                };
+                write!(f, "{first} {relation} {second}")
+            }
             Self::DegenerateLoop { hole: None } => {
                 write!(f, "outer loop has fewer than three vertices")
             }

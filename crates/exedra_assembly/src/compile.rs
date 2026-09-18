@@ -25,6 +25,7 @@ use exedra_constructive::EVAL_SCHEMA_VERSION;
 use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_mesh::{ExtractParams, FaceTriangulation, NormalsSource, TriMesh, UvSource};
+pub use exedra_mesh_ops::measure::{SignedVolume, VolumeError};
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
 
@@ -160,6 +161,21 @@ pub struct CompiledBody {
 }
 
 impl CompiledBody {
+    /// Measures signed volume from the existing part-local render triangles.
+    ///
+    /// No evaluation, tessellation or topology retention is required. This is
+    /// an algebraic measurement, not a closed-solid certificate. A positive sum
+    /// does not prove every connected component faces outward. Assembly instance
+    /// placement is separate: call [`SignedVolume::transformed`] with a render
+    /// item's world placement to include its scale and handedness.
+    ///
+    /// # Errors
+    /// Identifies malformed triangle indices, nonfinite referenced positions or
+    /// nonrepresentable arithmetic. No partial measurement is returned.
+    pub fn signed_volume(&self) -> Result<SignedVolume, VolumeError> {
+        exedra_mesh_ops::measure::signed_volume(&self.tri)
+    }
+
     /// Axis-aligned bounds of the emitted render positions in part-local space.
     ///
     /// Bounds are derived on demand from [`TriMesh::positions`], after
@@ -890,7 +906,7 @@ mod tests {
 
     fn prism_recipe(width: f64) -> Recipe {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(width, 20.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(width, 20.0).unwrap());
         let node = b
             .add(NodeKind::Extrude {
                 profile,
@@ -904,7 +920,7 @@ mod tests {
 
     fn two_body_recipe() -> Recipe {
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let profile = builder.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let first = builder
             .add(NodeKind::Extrude {
                 profile,
@@ -931,7 +947,7 @@ mod tests {
 
     fn refused_open_shell_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let face = b
             .add(NodeKind::PlanarFace {
                 profile,
@@ -953,7 +969,7 @@ mod tests {
 
     fn partially_supported_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let solid = b
             .add(NodeKind::Extrude {
                 profile,
@@ -999,6 +1015,42 @@ mod tests {
             .unwrap();
         }
         asm
+    }
+
+    #[test]
+    fn body_volume_is_local_and_occurrence_scale_is_explicit() {
+        let mut assembly = Assembly::new();
+        let part = assembly
+            .add_recipe_part("two-bodies", two_body_recipe())
+            .unwrap();
+        let placement = Placement3::from_axes(
+            [-2.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [0.0, 0.0, 4.0],
+            [100.0; 3],
+        );
+        assembly
+            .add_instance(None, "original", part, Placement3::IDENTITY)
+            .unwrap();
+        assembly
+            .add_instance(None, "scaled-reflection", part, placement)
+            .unwrap();
+        let mut compiler = PartCompiler::new();
+        let compiled = compiler
+            .compile_parts(&assembly, &CompilePolicy::default())
+            .unwrap();
+        let entry = compiled.part(part).unwrap();
+        for body in &entry.bodies {
+            let measurement = body.signed_volume().unwrap();
+            assert_eq!(measurement.value, 8000.0);
+            assert_eq!(
+                measurement.transformed(&placement).unwrap().value,
+                -192_000.0
+            );
+            assert_eq!(measurement.triangles_examined, body.tri.indices.len() / 3);
+        }
+        assert_eq!(compiler.counters().parts_compiled, 1);
+        assert_eq!(crate::flatten(&assembly, &compiled).items.len(), 4);
     }
 
     #[test]

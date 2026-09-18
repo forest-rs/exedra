@@ -432,7 +432,7 @@ mod tests {
 
     fn naming_context(duplicate: bool, retained: bool) -> Assembly {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
         let label = b.source_ref("panel");
         let kind = NodeKind::Extrude {
             profile,
@@ -566,7 +566,7 @@ mod tests {
             workplane::{SurfaceSelector, WorkplaneEvidence},
         };
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(4.0, 3.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
         let mut operands = Vec::new();
         for (source, x) in [("left", 0.0), ("right", 6.0)] {
             let source = b.source_ref(source);
@@ -657,7 +657,7 @@ mod tests {
 
     fn assembly(height: f64) -> Assembly {
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(builders::rect(2.0, 3.0).unwrap());
+        let profile = builder.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
         let label = builder.source_ref("panel");
         let node = builder
             .with_source(label)
@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn baked_meshes_keep_imported_provenance_and_aliases_have_distinct_selection_identity() {
         let mesh = exedra_constructive::tessellate::tessellate_extrude(
-            &builders::rect(2.0, 3.0).unwrap(),
+            &builders::rect_from_corner(2.0, 3.0).unwrap(),
             &Placement3::IDENTITY,
             4.0,
             CapMode::Both,
@@ -829,7 +829,7 @@ mod tests {
         let make = |width, duplicate| {
             let mut b = RecipeBuilder::new();
             let label = b.source_ref("panel/origin");
-            let profile = b.add_profile(builders::rect(width, 3.0).unwrap());
+            let profile = b.add_profile(builders::rect_from_corner(width, 3.0).unwrap());
             let support = b
                 .with_source(label)
                 .add(NodeKind::ExtrudeToPlane {
@@ -841,7 +841,7 @@ mod tests {
                     },
                 })
                 .unwrap();
-            let hole_profile = b.add_profile(builders::rect(0.2, 0.2).unwrap());
+            let hole_profile = b.add_profile(builders::rect_from_corner(0.2, 0.2).unwrap());
             let hole = b
                 .add(NodeKind::Extrude {
                     profile: hole_profile,

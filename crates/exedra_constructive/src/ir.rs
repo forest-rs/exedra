@@ -62,7 +62,7 @@ pub struct ImportId(pub u32);
 pub struct Fingerprint(pub u128);
 
 /// Shared geometric placement and plane representations.
-pub use exedra_math::{Placement3, Plane3};
+pub use exedra_math::{FrameError, Placement3, Plane3};
 
 /// Which caps an extrusion or revolution closes.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -2042,7 +2042,7 @@ mod tests {
 
     fn simple_recipe(height: f64) -> Recipe {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+        let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let src = b.source_ref("test:panel");
         let node = b
             .with_source(src)
@@ -2068,7 +2068,7 @@ mod tests {
             }),
             Err(RecipeError::UnknownProfile { profile: 0 })
         );
-        let profile = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         assert_eq!(
             b.add(NodeKind::Extrude {
                 profile,
@@ -2137,7 +2137,7 @@ mod tests {
         // hashes; changing the child changes the parent hash.
         let build = |height: f64| {
             let mut b = RecipeBuilder::new();
-            let profile = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+            let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
             let child = b
                 .add(NodeKind::Extrude {
                     profile,
@@ -2346,7 +2346,7 @@ mod tests {
     fn source_and_material_participate_in_identity() {
         let bare = {
             let mut b = RecipeBuilder::new();
-            let profile = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+            let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
             let n = b
                 .add(NodeKind::Extrude {
                     profile,
@@ -2377,7 +2377,7 @@ mod tests {
     #[test]
     fn stretch_orientation_is_buildable_in_the_ir() {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+        let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let body = b
             .add(NodeKind::Extrude {
                 profile,
@@ -2466,7 +2466,7 @@ mod tests {
         );
 
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         assert_eq!(
             b.add(NodeKind::Extrude {
                 profile,

@@ -19,7 +19,7 @@ fn shelf_difference(rotated: bool, order: &[usize], chained: bool, front: Front)
     let slot = b.material_slot("finish");
     let (profile, height, placement) = match front {
         Front::Square => (
-            builders::rect(0.6, 0.56).unwrap(),
+            builders::rect_from_corner(0.6, 0.56).unwrap(),
             0.018,
             Placement3::translate(0.0, 0.0, 0.351),
         ),

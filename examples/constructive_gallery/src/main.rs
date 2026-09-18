@@ -73,7 +73,7 @@ fn grid_shell() -> Scenario {
 
 fn rect_prism() -> Scenario {
     let mut b = RecipeBuilder::new();
-    let p = b.add_profile(builders::rect(600.0, 400.0).expect("rect"));
+    let p = b.add_profile(builders::rect_from_corner(600.0, 400.0).expect("rect"));
     let src = b.source_ref("gallery:rect_prism");
     let n = b
         .with_source(src)
@@ -111,7 +111,7 @@ fn l_prism() -> Scenario {
 
 fn rounded_prism() -> Scenario {
     let mut b = RecipeBuilder::new();
-    let p = b.add_profile(builders::rounded_rect(400.0, 300.0, 50.0).expect("rounded"));
+    let p = b.add_profile(builders::rounded_rect_from_corner(400.0, 300.0, 50.0).expect("rounded"));
     let src = b.source_ref("gallery:rounded_prism");
     let n = b
         .with_source(src)
@@ -178,7 +178,7 @@ fn quarter_sweep() -> Scenario {
 
 fn csg_difference() -> Scenario {
     let mut b = RecipeBuilder::new();
-    let block = b.add_profile(builders::rect(200.0, 100.0).expect("rect"));
+    let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).expect("rect"));
     let drill = b.add_profile(builders::circle(30.0).expect("circle"));
     let e1 = b
         .add(NodeKind::Extrude {

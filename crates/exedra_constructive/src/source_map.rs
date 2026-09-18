@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn stale_maps_are_rejected() {
-        let profile = builders::rect(1.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let mut body = tessellate_extrude(
             &profile,
             &Placement3::IDENTITY,
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn dump_is_deterministic() {
-        let profile = builders::rect(1.0, 1.0).expect("rect");
+        let profile = builders::rect_from_corner(1.0, 1.0).expect("rect");
         let make = || {
             tessellate_extrude(
                 &profile,

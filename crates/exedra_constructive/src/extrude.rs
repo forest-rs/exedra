@@ -85,9 +85,9 @@ impl core::error::Error for ExtrudeToPlaneError {}
 /// subject to the same numeric and distance checks.
 ///
 /// ```
-/// use exedra_constructive::{builders::rect, extrude::extrude_to_plane,
+/// use exedra_constructive::{builders::rect_from_corner, extrude::extrude_to_plane,
 ///     ir::{Placement3, Plane3}, section::SectionPolicy, tessellate::EvalPolicy};
-/// let result = extrude_to_plane(&rect(2.0, 1.0)?, &Placement3::IDENTITY,
+/// let result = extrude_to_plane(&rect_from_corner(2.0, 1.0)?, &Placement3::IDENTITY,
 ///     Plane3 { normal: [-0.25, 0.0, 1.0], distance: 2.0 },
 ///     &EvalPolicy::default(), &SectionPolicy::default())?;
 /// assert!(result.body.mesh.boundary_loops()?.is_empty());

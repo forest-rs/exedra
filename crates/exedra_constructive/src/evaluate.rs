@@ -2157,7 +2157,7 @@ mod tests {
 
     fn extrude_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let e = b
             .add(NodeKind::Extrude {
                 profile: p,
@@ -2224,7 +2224,7 @@ mod tests {
         // missing evaluator contract: a square becomes one single-sided open
         // surface, triangulated with winding toward the placement's local +Z.
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
+        let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rectangle"));
         let face = builder
             .add(NodeKind::PlanarFace {
                 profile,
@@ -2262,7 +2262,8 @@ mod tests {
         use exedra_triangulate::RefineParams;
 
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(builders::rect(10.0, 1.0).expect("rectangle"));
+        let profile =
+            builder.add_profile(builders::rect_from_corner(10.0, 1.0).expect("rectangle"));
         let face = builder
             .add(NodeKind::PlanarFace {
                 profile,
@@ -2316,7 +2317,7 @@ mod tests {
         // inner mirror repairs winding and the transform moves the face before
         // reflection; none of those steps may turn it into opaque geometry.
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
+        let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rectangle"));
         let face = builder
             .add(NodeKind::PlanarFace {
                 profile,
@@ -2381,7 +2382,7 @@ mod tests {
         // Its resolved source must remain available after the recipe is gone.
         let mut builder = RecipeBuilder::new();
         let source = builder.source_ref("o1.o2");
-        let profile = builder.add_profile(builders::rect(2.0, 1.0).expect("rectangle"));
+        let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rectangle"));
         let face = builder
             .add(NodeKind::PlanarFace {
                 profile,
@@ -2861,7 +2862,7 @@ mod tests {
         // leaves the rest of the model alive instead of failing the whole
         // evaluation.
         let mut b = RecipeBuilder::new();
-        let big = b.add_profile(builders::rect(120.0, 120.0).expect("rect"));
+        let big = b.add_profile(builders::rect_from_corner(120.0, 120.0).expect("rect"));
         let small = b.add_profile(
             crate::profile::Profile2::simple(
                 crate::profile::Loop2::new(vec![
@@ -3233,7 +3234,7 @@ mod tests {
         // supported geometry must be emitted as an exact, deeply valid body
         // without the old envelope-only fallback diagnostic.
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let e1 = b
             .add(NodeKind::Extrude {
                 profile: p,
@@ -3311,7 +3312,7 @@ mod tests {
     #[test]
     fn groups_emit_all_children() {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let e1 = b
             .add(NodeKind::Extrude {
                 profile: p,
@@ -3344,7 +3345,7 @@ mod tests {
     fn csg_reports_are_deterministic() {
         let build = || {
             let mut b = RecipeBuilder::new();
-            let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+            let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
             let e1 = b
                 .add(NodeKind::Extrude {
                     profile: p,
@@ -3456,7 +3457,7 @@ mod tests {
     #[test]
     fn instances_reuse_tessellation() {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let def = b
             .add(NodeKind::Extrude {
                 profile: p,
@@ -3634,7 +3635,7 @@ mod tests {
     #[test]
     fn declared_issues_report_conflicted() {
         let mut b = RecipeBuilder::new();
-        let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+        let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let issue = b.source_ref("spec.issue.nonclosing-profile");
         let n = b
             .with_issue(issue)
@@ -4023,7 +4024,8 @@ mod nary_intersection_regression {
             if with_refused {
                 // Stretching an open planar face is a deterministic typed
                 // refusal that emits no geometry.
-                let sheet = builder.add_profile(crate::builders::rect(1.0, 1.0).expect("rect"));
+                let sheet =
+                    builder.add_profile(crate::builders::rect_from_corner(1.0, 1.0).expect("rect"));
                 let face = builder
                     .add(NodeKind::PlanarFace {
                         profile: sheet,
@@ -4613,7 +4615,8 @@ mod multi_cutter_regression {
     }
 
     fn add_box(builder: &mut RecipeBuilder, size: [f64; 3], origin: [f64; 3]) -> NodeId {
-        let profile = builder.add_profile(builders::rect(size[0], size[1]).expect("valid box"));
+        let profile =
+            builder.add_profile(builders::rect_from_corner(size[0], size[1]).expect("valid box"));
         builder
             .add(NodeKind::Extrude {
                 profile,
@@ -4973,7 +4976,7 @@ mod drill_regression {
     fn drill_succeeds_across_resolutions() {
         for tol in [3.0, 1.0, 0.3, 0.1, 0.03, 0.01] {
             let mut b = RecipeBuilder::new();
-            let block = b.add_profile(builders::rect(200.0, 100.0).unwrap());
+            let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).unwrap());
             let drill = b.add_profile(builders::circle(30.0).unwrap());
             let e1 = b
                 .add(NodeKind::Extrude {
@@ -5034,7 +5037,7 @@ mod drill_regression {
             1.1,
         ] {
             let mut b = RecipeBuilder::new();
-            let block = b.add_profile(builders::rect(200.0, 100.0).unwrap());
+            let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).unwrap());
             let drill = b.add_profile(builders::circle(30.0).unwrap());
             let e1 = b
                 .add(NodeKind::Extrude {
@@ -5099,7 +5102,7 @@ mod cache_regression {
     /// drilled CSG difference under a transform.
     fn mixed_recipe(drill_radius: f64) -> Recipe {
         let mut b = RecipeBuilder::new();
-        let rect = b.add_profile(builders::rect(200.0, 100.0).unwrap());
+        let rect = b.add_profile(builders::rect_from_corner(200.0, 100.0).unwrap());
         let ring = b.add_profile(builders::ring(60.0, 30.0).unwrap());
         let drill = b.add_profile(builders::circle(drill_radius).unwrap());
         let slab = b
@@ -5231,7 +5234,7 @@ mod cache_regression {
             let mut b = RecipeBuilder::new();
             let mut children = Vec::new();
             for (i, height) in heights.iter().enumerate() {
-                let p = b.add_profile(builders::rect(100.0, 50.0).unwrap());
+                let p = b.add_profile(builders::rect_from_corner(100.0, 50.0).unwrap());
                 let n = b
                     .add(NodeKind::Extrude {
                         profile: p,

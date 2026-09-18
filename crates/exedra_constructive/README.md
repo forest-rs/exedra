@@ -41,6 +41,30 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+## Authoring coordinates and diagnosing boundaries
+
+Choose `builders::rect_from_corner` or `builders::rect_centered`, and the
+corresponding `rounded_rect_*` builders. Circles and rings are centered at the
+origin. Centered rectangles compose directly with concentric circular holes.
+Migration: the old `rect` and `rounded_rect` names are replaced by their
+`*_from_corner` names for identical geometry; existing serialized recipes do
+not change.
+
+`Placement3::try_from_orthonormal_axes` checks a finite right-handed frame using
+an explicit tolerance. It reports the offending axis or axis pair and measured
+length/dot product through `ir::FrameError`; it does not normalize or repair axes.
+`from_axes` remains available for general affine placements including scale and
+reflection.
+
+When failed triangulation finds an actual boundary contact,
+`TessellateError::ProfileBoundaryContact` identifies both authored segments,
+their optional tags, the sampled edge indices, and crossing versus touching.
+A ground-reaching opening belongs in the outer boundary as a notch; it cannot
+be a touching hole. Curve diagnostics describe the operation's sampled chords.
+An unexplained triangulation failure keeps its original error instead of
+inventing a boundary culprit. See the
+[authoring contract](docs/adr-0018-authored-geometry-diagnostics.md).
+
 `workplane::face_workplane` builds an orthonormal frame on a face or connected
 planar region. Callers author the origin and X direction in body coordinates;
 face winding supplies +Z. Operand-qualified regions disambiguate reused Boolean

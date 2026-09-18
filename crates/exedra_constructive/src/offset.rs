@@ -190,7 +190,7 @@ impl Profile2 {
     /// use exedra_constructive::builders;
     /// use exedra_constructive::offset::CornerPolicy;
     ///
-    /// let tenon = builders::rect(40.0, 20.0).unwrap();
+    /// let tenon = builders::rect_from_corner(40.0, 20.0).unwrap();
     /// // The receiving side is the same profile with 0.2 of clearance.
     /// let mortise = tenon.offset(0.2, CornerPolicy::Miter { limit: 2.0 }).unwrap();
     /// assert_eq!(mortise.outer().segs().len(), 4);
@@ -223,7 +223,7 @@ impl Profile2 {
     ///
     /// ```
     /// use exedra_constructive::{builders, offset::{CornerPolicy, OffsetMethod, OffsetPolicy}};
-    /// let tenon = builders::rect(40.0, 20.0).unwrap();
+    /// let tenon = builders::rect_from_corner(40.0, 20.0).unwrap();
     /// let policy = OffsetPolicy {
     ///     fit_tolerance: 0.0001,
     ///     check_tolerance: 0.001,
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[test]
     fn rect_offset_outward_is_exact_and_keeps_tags() {
-        let grown = builders::rect(10.0, 6.0)
+        let grown = builders::rect_from_corner(10.0, 6.0)
             .expect("rect")
             .offset(2.0, MITER)
             .expect("offset");
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn rect_offset_inward_is_exact() {
-        let shrunk = builders::rect(10.0, 6.0)
+        let shrunk = builders::rect_from_corner(10.0, 6.0)
             .expect("rect")
             .offset(-2.0, MITER)
             .expect("offset");
@@ -1115,13 +1115,13 @@ mod tests {
 
     #[test]
     fn rect_offset_inward_past_half_width_is_rejected() {
-        let err = builders::rect(10.0, 6.0)
+        let err = builders::rect_from_corner(10.0, 6.0)
             .expect("rect")
             .offset(-3.0, MITER)
             .expect_err("degenerate");
         assert_eq!(err, ProfileError::OffsetLoopDegenerate { hole: None });
         assert!(
-            builders::rect(10.0, 6.0)
+            builders::rect_from_corner(10.0, 6.0)
                 .expect("rect")
                 .offset(-4.0, MITER)
                 .is_err()
@@ -1130,7 +1130,7 @@ mod tests {
 
     #[test]
     fn rect_offset_round_corners_insert_quarter_arcs() {
-        let grown = builders::rect(10.0, 6.0)
+        let grown = builders::rect_from_corner(10.0, 6.0)
             .expect("rect")
             .offset(2.0, CornerPolicy::Round)
             .expect("offset");
@@ -1158,7 +1158,7 @@ mod tests {
 
     #[test]
     fn rounded_rect_arcs_stay_concentric() {
-        let source = builders::rounded_rect(10.0, 6.0, 1.5).expect("rounded rect");
+        let source = builders::rounded_rect_from_corner(10.0, 6.0, 1.5).expect("rounded rect");
         let grown = source.offset(0.5, MITER).expect("offset");
         assert_eq!(grown.outer().segs().len(), source.outer().segs().len());
 
@@ -1193,7 +1193,7 @@ mod tests {
 
     #[test]
     fn rounded_rect_inward_past_corner_radius_is_rejected() {
-        let source = builders::rounded_rect(10.0, 6.0, 1.5).expect("rounded rect");
+        let source = builders::rounded_rect_from_corner(10.0, 6.0, 1.5).expect("rounded rect");
         assert!(source.offset(-1.0, MITER).is_ok(), "inside the radius");
         // At and beyond the corner radius no concentric arc exists.
         assert_eq!(
@@ -1377,14 +1377,14 @@ mod tests {
 
     #[test]
     fn zero_distance_is_the_identity() {
-        let source = builders::rounded_rect(10.0, 6.0, 1.5).expect("rounded rect");
+        let source = builders::rounded_rect_from_corner(10.0, 6.0, 1.5).expect("rounded rect");
         assert_eq!(source.offset(0.0, MITER), Ok(source.clone()));
         assert_eq!(source.offset(0.0, CornerPolicy::Round), Ok(source));
     }
 
     #[test]
     fn invalid_inputs_are_rejected() {
-        let source = builders::rect(10.0, 6.0).expect("rect");
+        let source = builders::rect_from_corner(10.0, 6.0).expect("rect");
         assert_eq!(
             source.offset(f64::NAN, MITER),
             Err(ProfileError::OffsetDistanceNotFinite)
@@ -1405,7 +1405,7 @@ mod tests {
 
     #[test]
     fn offset_canon_bytes_are_pinned() {
-        let grown = builders::rect(10.0, 6.0)
+        let grown = builders::rect_from_corner(10.0, 6.0)
             .expect("rect")
             .offset(2.0, CornerPolicy::Round)
             .expect("offset");
@@ -1435,7 +1435,7 @@ mod tests {
         assert_eq!(actual_bytes, expected_bytes);
 
         // Recomputing the offset reproduces the same bits.
-        let again = builders::rect(10.0, 6.0)
+        let again = builders::rect_from_corner(10.0, 6.0)
             .expect("rect")
             .offset(2.0, CornerPolicy::Round)
             .expect("offset");

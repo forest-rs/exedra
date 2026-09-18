@@ -22,7 +22,7 @@ fn attachment() -> WorkplaneAttachment {
 
 fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> Recipe {
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(4.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
     let source = b.source_ref("panel");
     let panel = b
         .with_source(source)
@@ -52,7 +52,7 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
             (0.5, 0.5, 2.5, 1.0, -1.0, 5.0)
         ],
     } {
-        let hole = b.add_profile(builders::rect(width, height).unwrap());
+        let hole = b.add_profile(builders::rect_from_corner(width, height).unwrap());
         if duplicate {
             b.with_source(source);
         }
@@ -72,7 +72,7 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
             .unwrap();
     }
     if attach {
-        let profile = b.add_profile(builders::rect(0.1, 0.1).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(0.1, 0.1).unwrap());
         let child = b
             .add(NodeKind::Extrude {
                 profile,
@@ -230,7 +230,7 @@ fn reflected_boolean_retains_authored_cap_and_outward_frame() {
 fn union_intersection_and_difference_keep_source_roles_separate() {
     for op in [CsgOp::Union, CsgOp::Intersection, CsgOp::Difference] {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(4.0, 3.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
         let label = b.source_ref("panel");
         let panel = b
             .with_source(label)
@@ -241,7 +241,7 @@ fn union_intersection_and_difference_keep_source_roles_separate() {
                 caps: CapMode::Both,
             })
             .unwrap();
-        let profile = b.add_profile(builders::rect(1.0, 1.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
         let label = b.source_ref("tool");
         let tool = b
             .with_source(label)
@@ -294,7 +294,7 @@ fn qualified_selectors_round_trip_without_source_table_indices() {
             SurfaceSelector::SourceEndCap(source.into()),
         ] {
             let mut b = RecipeBuilder::new();
-            let p = b.add_profile(builders::rect(1.0, 1.0).unwrap());
+            let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
             let support = b
                 .add(NodeKind::Extrude {
                     profile: p,
@@ -343,7 +343,7 @@ fn unused_duplicate_labels_do_not_change_cached_attachment_semantics() {
 fn naming_context_changes_recipe_identity_without_invalidating_subtree_geometry() {
     let make = |duplicate| {
         let mut b = RecipeBuilder::new();
-        let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
         let label = b.source_ref("panel");
         let kind = NodeKind::Extrude {
             profile,

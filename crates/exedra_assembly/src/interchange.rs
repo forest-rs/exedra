@@ -387,7 +387,7 @@ mod tests {
     fn slotted_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
         let front = b.material_slot("front");
-        let profile = b.add_profile(builders::rounded_rect(60.0, 40.0, 8.0).unwrap());
+        let profile = b.add_profile(builders::rounded_rect_from_corner(60.0, 40.0, 8.0).unwrap());
         let node = b
             .with_material(front)
             .add(NodeKind::Extrude {

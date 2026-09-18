@@ -747,7 +747,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let front = b.material_slot("front");
         let body = b.material_slot("body");
-        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let _ = body;
         let node = b
             .with_material(front)
@@ -764,7 +764,7 @@ mod tests {
     fn single_slot_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
         let surface = b.material_slot("surface");
-        let profile = b.add_profile(builders::rect(40.0, 20.0).unwrap());
+        let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let node = b
             .with_material(surface)
             .add(NodeKind::Extrude {

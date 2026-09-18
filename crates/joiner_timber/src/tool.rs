@@ -12,7 +12,7 @@ use joiner::{OrientedBox, RuleError, ToolSolid, Vec3};
 use crate::FitClass;
 
 pub(crate) fn nominal_rect(width: f64, depth: f64) -> Result<Profile2, RuleError> {
-    builders::rect(width, depth).map_err(|_| RuleError::InvalidParameter {
+    builders::rect_from_corner(width, depth).map_err(|_| RuleError::InvalidParameter {
         what: "nominal interface dimensions",
     })
 }

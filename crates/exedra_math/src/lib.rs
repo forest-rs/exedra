@@ -52,7 +52,9 @@
 
 #![no_std]
 
+mod frame;
 mod geometry;
+pub use frame::FrameError;
 pub use geometry::{Placement3, Plane3, intersect_plane_edge};
 
 #[cfg(not(any(feature = "std", feature = "libm")))]

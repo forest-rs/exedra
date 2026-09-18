@@ -1428,8 +1428,9 @@ pub(crate) mod tests_support {
     /// A recipe exercising every node kind and segment kind.
     pub(crate) fn full_coverage_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
-        let rect = b.add_profile(builders::rect(2.0, 1.0).expect("rect"));
-        let rounded = b.add_profile(builders::rounded_rect(3.0, 2.0, 0.25).expect("rounded"));
+        let rect = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
+        let rounded =
+            b.add_profile(builders::rounded_rect_from_corner(3.0, 2.0, 0.25).expect("rounded"));
         let ring = b.add_profile(builders::ring(1.0, 0.5).expect("ring"));
         let src = b.source_ref("text:demo");
         let slot = b.material_slot("front");
@@ -1627,7 +1628,7 @@ mod tests {
         // through the builder, not silently.
         let recipe = {
             let mut b = RecipeBuilder::new();
-            let p = b.add_profile(builders::rect(1.0, 1.0).expect("rect"));
+            let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
             let n = b
                 .add(NodeKind::Extrude {
                     profile: p,

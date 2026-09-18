@@ -14,8 +14,9 @@
 /// documentation names both the axis space and the order in which rotations
 /// are applied to avoid relying on ambiguous Euler shorthand.
 ///
-/// Constructors do not validate finiteness, rigidity, or invertibility.
-/// Callers validate the constraints required by each geometric operation.
+/// General affine constructors do not validate finiteness, rigidity, or
+/// invertibility. Use [`Self::try_from_orthonormal_axes`] for checked frames;
+/// other callers validate the constraints required by each geometric operation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Placement3 {
     /// Rows of the 3x4 matrix: `[r0x, r0y, r0z, tx]`, etc.

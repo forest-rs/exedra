@@ -26,7 +26,7 @@ fn attached(
     parent: Placement3,
 ) -> Recipe {
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(4.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
     let support = b
         .add(NodeKind::ExtrudeToPlane {
             profile,
@@ -37,7 +37,7 @@ fn attached(
             },
         })
         .unwrap();
-    let peg = b.add_profile(builders::rect(0.2, 0.2).unwrap());
+    let peg = b.add_profile(builders::rect_from_corner(0.2, 0.2).unwrap());
     let source = b.source_ref("mount");
     let child = b
         .with_source(source)
@@ -229,7 +229,7 @@ fn ancestor_affine_placement_applies_after_local_resolution() {
 #[test]
 fn multiple_support_bodies_are_ambiguous() {
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(1.0, 1.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
     let a = b
         .add(NodeKind::Extrude {
             profile,
@@ -299,7 +299,7 @@ fn disconnected_terminal_features_are_rejected_without_picking_the_first_patch()
 fn removed_terminal_cap_is_missing_even_when_a_new_cut_reuses_its_region() {
     use crate::{ir::PlaneSide, section::CutCap};
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(2.0, 2.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(2.0, 2.0).unwrap());
     let child = b
         .add(NodeKind::Extrude {
             profile,
@@ -351,7 +351,7 @@ fn removed_terminal_cap_is_missing_even_when_a_new_cut_reuses_its_region() {
 fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
     use crate::{edge_finish::OperandRegion, ir::CsgOp};
     let mut b = RecipeBuilder::new();
-    let panel = b.add_profile(builders::rect(2.0, 2.0).unwrap());
+    let panel = b.add_profile(builders::rect_from_corner(2.0, 2.0).unwrap());
     let panel = b
         .add(NodeKind::Extrude {
             profile: panel,
@@ -360,7 +360,7 @@ fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
             caps: CapMode::Both,
         })
         .unwrap();
-    let hole = b.add_profile(builders::rect(0.5, 0.5).unwrap());
+    let hole = b.add_profile(builders::rect_from_corner(0.5, 0.5).unwrap());
     let hole = b
         .add(NodeKind::Extrude {
             profile: hole,
@@ -404,7 +404,7 @@ fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
 #[test]
 fn incomplete_support_cannot_attach_to_a_surviving_body_even_when_cached() {
     let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect(2.0, 3.0).unwrap());
+    let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let solid = b
         .add(NodeKind::Extrude {
             profile,

@@ -337,7 +337,8 @@ fn box_recipe(size: Vec3, source_name: &str) -> Recipe {
     let source = builder.source_ref(source_name);
     let surface = builder.material_slot("surface");
     let profile = builder.add_profile(
-        builders::rect(size[0], size[1]).expect("validated positive structural box footprint"),
+        builders::rect_from_corner(size[0], size[1])
+            .expect("validated positive structural box footprint"),
     );
     let node = builder
         .with_source(source)

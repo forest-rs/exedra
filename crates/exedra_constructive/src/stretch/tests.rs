@@ -366,7 +366,7 @@ mod tests {
             ([0.0, 0.0, 1.0], 4.0, [10.0, 4.0, 13.0]),
         ] {
             let mut builder = RecipeBuilder::new();
-            let profile = builder.add_profile(crate::builders::rect(10.0, 4.0).unwrap());
+            let profile = builder.add_profile(crate::builders::rect_from_corner(10.0, 4.0).unwrap());
             let child = builder
                 .add(NodeKind::Extrude {
                     profile,
@@ -395,7 +395,7 @@ mod tests {
         // bottom segments. Those split pieces keep their original tags; right
         // corner arcs translate rigidly, left arcs remain bit-identical, and
         // no arc is flattened into policy-dependent lines.
-        let profile = crate::builders::rounded_rect(400.0, 300.0, 50.0).unwrap();
+        let profile = crate::builders::rounded_rect_from_corner(400.0, 300.0, 50.0).unwrap();
         let source = profile.outer().segs().to_vec();
         let mut builder = RecipeBuilder::new();
         let profile_id = builder.add_profile(profile);
@@ -456,7 +456,7 @@ mod tests {
         // renumbering every wall after a cut.
         let mut builder = RecipeBuilder::new();
         let profile = builder
-            .add_profile(crate::builders::rounded_rect(400.0, 300.0, 50.0).unwrap());
+            .add_profile(crate::builders::rounded_rect_from_corner(400.0, 300.0, 50.0).unwrap());
         let child = builder
             .add(NodeKind::Extrude {
                 profile,
@@ -512,7 +512,7 @@ mod tests {
         // drops the intervening pieces, and preserves their segment tags and
         // original wall-region identities.
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(crate::builders::rect(10.0, 4.0).unwrap());
+        let profile = builder.add_profile(crate::builders::rect_from_corner(10.0, 4.0).unwrap());
         let child = builder
             .add(NodeKind::Extrude {
                 profile,

@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::builders::rect;
+use crate::builders::rect_from_corner;
 use crate::ir::{CapMode, Placement3};
 use crate::tessellate::{EvalPolicy, REGION_CAP_END, tessellate_extrude};
 use exedra_math::{cross, dot};
 
 fn block() -> TessellatedBody {
     tessellate_extrude(
-        &rect(4.0, 3.0).unwrap(),
+        &rect_from_corner(4.0, 3.0).unwrap(),
         &Placement3::IDENTITY,
         2.0,
         CapMode::Both,
@@ -286,7 +286,7 @@ fn operand_qualified_regions_resolve_reused_region_numbers() {
 #[test]
 fn holed_refined_cap_and_reflection_preserve_outward_normal() {
     use crate::profile::{Loop2, Profile2, Seg2};
-    let outer = rect(4.0, 3.0).unwrap();
+    let outer = rect_from_corner(4.0, 3.0).unwrap();
     let inner = Loop2::new(alloc::vec![
         Seg2::line((1.0, 1.0)),
         Seg2::line((1.0, 2.0)),

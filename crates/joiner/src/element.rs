@@ -84,7 +84,7 @@ impl Part {
     ///
     /// This is the default part [`Element::new`] derives from an extent: the
     /// smallest honest recipe that fills the declared extent exactly. It is
-    /// sugar over [`exedra_constructive::builders::rect`], not a shape
+    /// sugar over [`exedra_constructive::builders::rect_from_corner`], not a shape
     /// library — `joiner` grows no catalogue of profiles.
     ///
     /// Returns `None` when `size` is not strictly positive and finite.
@@ -96,7 +96,7 @@ impl Part {
         let mut builder = RecipeBuilder::new();
         let source = builder.source_ref(source);
         let slot = builder.material_slot(DEFAULT_SLOT);
-        let profile = builder.add_profile(builders::rect(size[0], size[1]).ok()?);
+        let profile = builder.add_profile(builders::rect_from_corner(size[0], size[1]).ok()?);
         let node = builder
             .with_source(source)
             .with_material(slot)

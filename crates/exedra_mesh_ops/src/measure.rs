@@ -1,11 +1,14 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Planar polygon measurements independent of construction recipes.
+//! Polygon and triangle measurements independent of construction recipes.
 //!
 //! Lengths use the input coordinate units and areas use squared units. Holes
 //! subtract area and first moments while adding boundary length. No analytic
 //! curves or tessellation error bound are inferred.
+
+mod volume;
+pub use volume::{SignedVolume, VolumeError, signed_volume};
 
 /// One oriented polygon boundary in a shared local XY frame.
 #[derive(Copy, Clone, Debug, PartialEq)]

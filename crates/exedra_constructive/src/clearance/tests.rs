@@ -31,7 +31,7 @@ fn patch(profile: &crate::profile::Profile2) -> PlanarPatch {
 
 #[test]
 fn rectangle_clearance_has_boundary_witness_and_explicit_threshold_band() {
-    let patch = patch(&builders::rect(4.0, 3.0).unwrap());
+    let patch = patch(&builders::rect_from_corner(4.0, 3.0).unwrap());
     let result = patch.circle_clearance([1.0, 1.25], 0.2).unwrap();
     assert!(result.center_inside);
     assert!((result.clearance - 0.8).abs() < 1e-12);
@@ -59,7 +59,10 @@ fn rectangle_clearance_has_boundary_witness_and_explicit_threshold_band() {
 fn holes_are_exclusions_and_nearest_witness_can_belong_to_a_hole() {
     use crate::profile::{Loop2, Profile2, Seg2};
     let profile = Profile2::new(
-        builders::rect(6.0, 5.0).unwrap().outer().clone(),
+        builders::rect_from_corner(6.0, 5.0)
+            .unwrap()
+            .outer()
+            .clone(),
         alloc::vec![
             Loop2::new(alloc::vec![
                 Seg2::line((2.0, 2.0)),
@@ -108,7 +111,7 @@ fn concavity_does_not_get_replaced_by_a_bounding_box() {
 #[test]
 fn extraction_and_queries_reject_stale_invalid_and_over_budget_inputs() {
     let mut body = tessellate_extrude(
-        &builders::rect(4.0, 3.0).unwrap(),
+        &builders::rect_from_corner(4.0, 3.0).unwrap(),
         &Placement3::IDENTITY,
         1.0,
         CapMode::Both,
@@ -179,7 +182,7 @@ fn tilted_patch_and_retriangulated_cap_preserve_clearance() {
         ..EvalPolicy::default()
     };
     let body = tessellate_extrude(
-        &builders::rect(4.0, 3.0).unwrap(),
+        &builders::rect_from_corner(4.0, 3.0).unwrap(),
         &placement,
         1.0,
         CapMode::Both,

@@ -11,7 +11,7 @@
 
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::{
-    builders::{circle, rect, ring},
+    builders::{circle, rect_from_corner, ring},
     clearance::{BoundaryPolicy, ClearanceDecision},
     evaluate::Severity,
     ir::{CapMode, CsgOp, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder},
@@ -42,7 +42,7 @@ fn recipe(
     slope: f64,
 ) -> Result<Recipe, Box<dyn std::error::Error>> {
     let mut b = RecipeBuilder::new();
-    let panel_profile = b.add_profile(rect(width, height)?);
+    let panel_profile = b.add_profile(rect_from_corner(width, height)?);
     let surface_source = b.source_ref("panel/surface");
     let definition = b
         .with_source(surface_source)
