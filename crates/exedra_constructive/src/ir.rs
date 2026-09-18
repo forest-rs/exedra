@@ -440,7 +440,8 @@ pub enum NodeKind {
     /// the positive half-space moves by `length` along the normalized normal.
     /// Positive length fills the resulting gap from the cut section. Negative
     /// length removes the slab from the plane to its positive offset by
-    /// `-length`, then re-stitches only when the two sections match.
+    /// `-length`, then re-stitches only when the two sections match. Zero
+    /// length leaves the child unchanged.
     ///
     /// The plane is expressed in this node's input coordinate space: after
     /// the child (including any inner stretch) has evaluated and before this
@@ -1320,7 +1321,7 @@ impl RecipeBuilder {
             } => {
                 self.check_node(*child)?;
                 self.check_plane(plane)?;
-                if length.is_finite() && *length != 0.0 {
+                if length.is_finite() {
                     Ok(())
                 } else {
                     Err(RecipeError::InvalidParameter {
@@ -2465,10 +2466,7 @@ mod tests {
     }
 
     #[test]
-    fn stretch_rejects_zero_and_non_finite_lengths_at_construction() {
-        // A zero displacement has no insert/remove meaning and would create
-        // degenerate band faces on the mesh path. Reject it, along with
-        // non-finite lengths, before either evaluation lane can observe it.
+    fn stretch_rejects_non_finite_lengths_at_construction() {
         let mut b = RecipeBuilder::new();
         let body = b
             .add(NodeKind::Primitive {
@@ -2478,7 +2476,7 @@ mod tests {
                 placement: Placement3::IDENTITY,
             })
             .unwrap();
-        for length in [0.0, f64::NAN, f64::INFINITY] {
+        for length in [f64::NAN, f64::INFINITY] {
             assert_eq!(
                 b.add(NodeKind::Stretch {
                     child: body,

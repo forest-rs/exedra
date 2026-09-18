@@ -339,6 +339,67 @@ mod tests {
     }
 
     #[test]
+    fn zero_length_stretch_leaves_the_child_unchanged() {
+        let plain = Aabb3 {
+            min: [0.0, 0.0, 0.0],
+            max: [10.0, 4.0, 2.0],
+        };
+        let (exact, result) = evaluate_bounds(&stretched_box([1.0, 0.0, 0.0], 4.0, 0.0));
+        assert_eq!(exact, plain);
+        assert_eq!(result.report.counters.stretch_exact, 0);
+        assert!(result.report.clean_at(Severity::Warning));
+
+        let (imported, result) = evaluate_bounds(&stretched_import(0.0));
+        assert_eq!(imported, plain);
+        assert_eq!(
+            result.bodies[0].body.mesh.faces().count(),
+            imported_box().faces().count()
+        );
+        assert!(result.report.clean_at(Severity::Warning));
+
+        // Nested under a live stretch, a zero length is transparent to the
+        // exact rewrite.
+        let mut builder = RecipeBuilder::new();
+        let child = builder
+            .add(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [10.0, 4.0, 2.0],
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .expect("box is valid");
+        let inner = builder
+            .add(NodeKind::Stretch {
+                child,
+                plane: Plane3 {
+                    normal: [0.0, 1.0, 0.0],
+                    distance: 2.0,
+                },
+                length: 0.0,
+            })
+            .expect("zero-length stretch is valid");
+        let outer = builder
+            .add(NodeKind::Stretch {
+                child: inner,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 4.0,
+                },
+                length: 3.0,
+            })
+            .expect("stretch is valid");
+        let (nested, result) = evaluate_bounds(&builder.finish(outer).expect("recipe is valid"));
+        assert_eq!(
+            nested,
+            Aabb3 {
+                min: [0.0, 0.0, 0.0],
+                max: [13.0, 4.0, 2.0],
+            }
+        );
+        assert_eq!(result.report.counters.stretch_exact, 1);
+    }
+
+    #[test]
     fn contraction_removes_the_positive_offset_slab() {
         // A -3 stretch at x=4 removes input x=[4, 7], then moves x>=7 back
         // by three. It must not scale the ten-unit box or fold x in (4, 7).

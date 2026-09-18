@@ -169,6 +169,9 @@ fn stretch_exact_plan(
     plane: &Plane3,
     length: f64,
 ) -> Result<Option<ExactStretchPlan>, StretchRefusal> {
+    if length == 0.0 {
+        return Ok(Some(plan));
+    }
     match plan {
         ExactStretchPlan::Primitive {
             spec: PrimitiveSpec::Box { size },
