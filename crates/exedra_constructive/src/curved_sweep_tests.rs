@@ -24,6 +24,9 @@ fn boolean_descendants_retain_shared_original_curve_sampling() {
         .add(NodeKind::Sweep {
             profile: p,
             path: Path3::Curves {
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
+                joins: PathJoin::Smooth,
                 start: [0.0; 3],
                 segments: vec![PathSegment3::Arc {
                     axis_origin: [4.0, 0.0, 0.0],
@@ -123,6 +126,9 @@ fn curved(
         [0.0; 3],
         segments,
         [1.0, 0.0, 0.0],
+        [0.0; 2],
+        PathClosure::Open,
+        PathJoin::Smooth,
         CapMode::Both,
         policy,
     )
@@ -239,6 +245,9 @@ fn source_correspondence_serialization_and_cache_replay_are_preserved() {
         .add(NodeKind::Sweep {
             profile: p,
             path: Path3::Curves {
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
+                joins: PathJoin::Smooth,
                 start: [0.0; 3],
                 segments: mixed_path(),
                 section_x: [1.0, 0.0, 0.0],
@@ -248,7 +257,7 @@ fn source_correspondence_serialization_and_cache_replay_are_preserved() {
         .expect("node");
     let r = b.finish(root).expect("recipe");
     let text = crate::text::dump_recipe(&r);
-    assert!(text.contains("curved_sweep"));
+    assert!(text.contains("curved_path_sweep"));
     let parsed = crate::text::parse_recipe(&text).expect("text roundtrip");
     assert_eq!(r.recipe_fingerprint(), parsed.recipe_fingerprint());
     #[cfg(feature = "serde")]
@@ -344,8 +353,11 @@ fn tight_curves_and_invalid_orientation_fail_without_a_partial_body() {
             [0.0; 3],
             &segments,
             [0.0, 0.0, 1.0],
+            [0.0; 2],
+            PathClosure::Open,
+            PathJoin::Smooth,
             CapMode::Both,
-            &EvalPolicy::default()
+            &EvalPolicy::default(),
         ),
         Err(TessellateError::InvalidSweepOrientation)
     ));
@@ -369,6 +381,9 @@ fn mirrored_curved_sweep_keeps_cap_winding_and_provenance() {
         [0.0; 3],
         &segments,
         [1.0, 0.0, 0.0],
+        [0.0; 2],
+        PathClosure::Open,
+        PathJoin::Smooth,
         CapMode::Both,
         &policy,
     )
@@ -420,6 +435,9 @@ fn instances_preserve_source_sampling_without_claiming_placed_checks() {
             .add(NodeKind::Sweep {
                 profile,
                 path: Path3::Curves {
+                    section_origin: [0.0; 2],
+                    closure: PathClosure::Open,
+                    joins: PathJoin::Smooth,
                     start: [0.0; 3],
                     segments: mixed_path(),
                     section_x: [1.0, 0.0, 0.0],

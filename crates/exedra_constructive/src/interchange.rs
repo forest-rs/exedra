@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
-    Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId,
-    SourceId,
+    PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
+    SlotId, SourceId,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -215,6 +215,19 @@ pub enum PathClosureDto {
     },
 }
 
+/// Authored behavior at curve segment boundaries and the closing seam.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathJoinDto {
+    /// Require matching analytic tangent directions.
+    Smooth,
+    /// Join on bounded tangent-bisector planes.
+    Miter {
+        /// Maximum section-plane stretch, finite and at least one.
+        limit: f64,
+    },
+}
+
 /// Node kind payloads. Unknown kinds are deserialization errors by design.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -358,6 +371,26 @@ pub enum NodeKindDto {
         /// Authored initial section-X direction.
         section_x: [f64; 3],
         /// Cap mode.
+        caps: String,
+    },
+    /// Analytic path sweep with an explicit datum, connectivity and corner policy.
+    /// A distinct operation prevents older readers ignoring these controls.
+    CurvedPathSweep {
+        /// Profile index.
+        profile: u32,
+        /// Path-local starting endpoint.
+        start: [f64; 3],
+        /// Ordered spatial segments, including the closed path's final segment.
+        segments: Vec<PathSegmentDto>,
+        /// Authored initial section-X direction.
+        section_x: [f64; 3],
+        /// Profile datum mapped to the path.
+        section_origin: [f64; 2],
+        /// Authored endpoint connectivity.
+        closure: PathClosureDto,
+        /// Authored join behavior.
+        joins: PathJoinDto,
+        /// Cap mode; closed paths require none.
         caps: String,
     },
     /// Single-sided planar face.
@@ -769,11 +802,25 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
                 start,
                 segments,
                 section_x,
-            } => NodeKindDto::CurvedSweep {
+                section_origin,
+                closure,
+                joins,
+            } => NodeKindDto::CurvedPathSweep {
                 profile: profile.0,
                 start: *start,
                 segments: segments.iter().map(path_segment_dto).collect(),
                 section_x: *section_x,
+                section_origin: *section_origin,
+                closure: match closure {
+                    PathClosure::Open => PathClosureDto::Open,
+                    PathClosure::ClosedPlanar { normal } => {
+                        PathClosureDto::ClosedPlanar { normal: *normal }
+                    }
+                },
+                joins: match joins {
+                    PathJoin::Smooth => PathJoinDto::Smooth,
+                    PathJoin::Miter { limit } => PathJoinDto::Miter { limit: *limit },
+                },
                 caps: caps_name(*caps),
             },
         },
@@ -1115,6 +1162,38 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
                 start: *start,
                 segments: segments.iter().map(path_segment_value).collect(),
                 section_x: *section_x,
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
+                joins: PathJoin::Smooth,
+            },
+            caps: caps_value(caps)?,
+        },
+        NodeKindDto::CurvedPathSweep {
+            profile,
+            start,
+            segments,
+            section_x,
+            section_origin,
+            closure,
+            joins,
+            caps,
+        } => NodeKind::Sweep {
+            profile: ProfileId(*profile),
+            path: Path3::Curves {
+                start: *start,
+                segments: segments.iter().map(path_segment_value).collect(),
+                section_x: *section_x,
+                section_origin: *section_origin,
+                closure: match closure {
+                    PathClosureDto::Open => PathClosure::Open,
+                    PathClosureDto::ClosedPlanar { normal } => {
+                        PathClosure::ClosedPlanar { normal: *normal }
+                    }
+                },
+                joins: match joins {
+                    PathJoinDto::Smooth => PathJoin::Smooth,
+                    PathJoinDto::Miter { limit } => PathJoin::Miter { limit: *limit },
+                },
             },
             caps: caps_value(caps)?,
         },

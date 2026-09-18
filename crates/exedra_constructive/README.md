@@ -64,8 +64,17 @@ unique stations without a repeated endpoint, `section_origin` in profile
 coordinates, and `CapMode::None`. The existing `section_x` controls the starting
 roll. The closing corner gets the same bounded miter and local checks as the
 other corners, sharing vertices without seam caps. Curved sections and holes
-are supported; closed curved paths and global intersection certification are
-not. The `closed_surround` binary in `constructive_probe` exports a GLB example.
+are supported. The `closed_surround` binary in `constructive_probe` exports a GLB
+example. Global self-intersection certification remains outside this contract.
+
+`Path3::Curves` accepts the same datum and closure, plus `PathJoin::Smooth` or
+`PathJoin::Miter { limit }`. An arched surround can combine straight runs, tangent
+arcs and sharp base corners. Closed curves explicitly end at their exact starting
+point; no fuzzy snapping closes a gap. Smooth seams share one ring without caps
+or a final twist. Sampling records authored corners separately from curved spans.
+Migration: existing curved paths add a zero `section_origin`, `PathClosure::Open`
+and `PathJoin::Smooth`; schema 38 invalidates old fingerprints. See
+[closed curved sweep semantics](docs/adr-0022-closed-curved-sweeps.md).
 
 `SourceMap::sweep_sampling(face)` preserves source sampling policies and curved
 path spans through Boolean cuts. These are original construction records,

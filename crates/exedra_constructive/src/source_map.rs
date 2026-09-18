@@ -19,7 +19,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use exedra_mesh::{FaceId, Mesh, MeshRevision, VertexId};
 
 use crate::discretize::DiscretizePolicy;
-use crate::path::{PathSampling, PathSpan};
+use crate::path::PathSampling;
 use crate::tessellate::Feature;
 
 /// The source map was built for an earlier revision of the mesh.
@@ -307,10 +307,7 @@ impl SourceMap {
             .filter(|sampling| seen.insert(Arc::as_ptr(sampling)))
             .map(|sampling| {
                 size_of::<SweepSampling>()
-                    + sampling
-                        .path
-                        .as_ref()
-                        .map_or(0, |path| path.spans.len() * size_of::<PathSpan>())
+                    + sampling.path.as_ref().map_or(0, |path| path.approx_bytes())
             })
             .sum();
         SourceMapStats {

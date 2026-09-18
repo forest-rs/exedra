@@ -128,12 +128,11 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 37 adds explicit closed planar mitered sweeps and profile datums,
-/// bounds controlled-sweep vertex work, and retains sweep sampling ancestry
-/// through Boolean splits. This evidence describes the generating operation,
-/// never validity or world-space accuracy of the resulting mesh.
+/// Schema 38 adds authored closure, section datums and corner policies to
+/// analytic curve paths. Closed planar frames meet at one shared seam; sampling
+/// evidence distinguishes authored corners from smooth interior stations.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped text.
-pub const EVAL_SCHEMA_VERSION: u32 = 37;
+pub const EVAL_SCHEMA_VERSION: u32 = 38;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;

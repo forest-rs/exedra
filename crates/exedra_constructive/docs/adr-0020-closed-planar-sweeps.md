@@ -57,3 +57,6 @@ keep dereferencing it; code constructing it wraps the value in `Arc::new`.
 `SourceMap` retains `PartialEq` but no longer derives `Eq`, because sampling
 evidence contains floating-point policies. `EvalPolicy` literals should keep
 using `..Default::default()` and can set `max_sweep_vertices` explicitly.
+
+Closed analytic paths and authored curved-path corners are added by
+[ADR-0022](adr-0022-closed-curved-sweeps.md).

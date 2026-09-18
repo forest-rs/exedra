@@ -149,24 +149,8 @@ pub enum FramePolicy {
     RotationMinimizing,
 }
 
-/// Authored endpoint connectivity of a controlled polyline sweep.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum PathClosure {
-    /// A spatial rail with distinct endpoints and optional caps.
-    #[default]
-    Open,
-    /// A cyclic path in the plane through its first station.
-    ///
-    /// Stations do not repeat the first endpoint. The closing run and corner
-    /// are explicit; caps must be [`CapMode::None`]. Only f64 rounding-scale
-    /// deviation from the plane is accepted, without projecting the points.
-    ClosedPlanar {
-        /// Finite nonzero plane normal in path-local coordinates.
-        /// Its magnitude and sign do not change section orientation, which
-        /// remains controlled by `section_x` and traversal direction.
-        normal: [f64; 3],
-    },
-}
+/// Shared authored connectivity and join policies for controlled paths.
+pub use crate::path::{PathClosure, PathJoin};
 
 /// A 3D sweep path.
 #[derive(Clone, Debug, PartialEq)]
@@ -200,11 +184,12 @@ pub enum Path3 {
         /// Exceeding it fails rather than changing the join style.
         miter_limit: f64,
     },
-    /// Tangent-continuous lines, circular arcs and spatial cubics.
+    /// Lines, circular arcs and spatial cubics with authored joins and closure.
     ///
     /// Initial section orientation is authored; analytic tangents guide
     /// rotation-minimizing transport. Sampling uses `EvalPolicy::sweep_path`.
-    /// Sharp joins fail explicitly; use `MiteredPolyline` for corners.
+    /// Planar closure reconstructs the same roll around the loop; no final twist
+    /// or endpoint snapping is applied. Sharp joins require `PathJoin::Miter`.
     Curves {
         /// First endpoint, in path-local coordinates.
         start: [f64; 3],
@@ -213,6 +198,12 @@ pub enum Path3 {
         /// Initial section-X direction before placement, projected normal to
         /// the first analytic tangent. Must have a usable perpendicular part.
         section_x: [f64; 3],
+        /// Profile-space datum placed on the path before framing and mitering.
+        section_origin: [f64; 2],
+        /// Authored endpoint connectivity; closed curves terminate exactly at `start`.
+        closure: PathClosure,
+        /// Behavior at authored segment boundaries and the closed seam.
+        joins: PathJoin,
     },
 }
 
@@ -1187,6 +1178,9 @@ impl RecipeBuilder {
                     start,
                     segments,
                     section_x,
+                    section_origin,
+                    closure,
+                    joins,
                 } = path
                 {
                     crate::path::validate_path_structure(*start, segments).map_err(|_| {
@@ -1198,6 +1192,30 @@ impl RecipeBuilder {
                         return Err(RecipeError::InvalidParameter {
                             what: "sweep section-X",
                         });
+                    }
+                    if section_origin.iter().any(|v| !v.is_finite()) {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "sweep section origin",
+                        });
+                    }
+                    if let PathJoin::Miter { limit } = joins
+                        && (!limit.is_finite() || *limit < 1.0)
+                    {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "sweep miter limit",
+                        });
+                    }
+                    if let PathClosure::ClosedPlanar { normal } = closure {
+                        if normal.iter().any(|v| !v.is_finite()) || *normal == [0.0; 3] {
+                            return Err(RecipeError::InvalidParameter {
+                                what: "sweep plane normal",
+                            });
+                        }
+                        if *caps != CapMode::None {
+                            return Err(RecipeError::InvalidParameter {
+                                what: "closed sweep caps",
+                            });
+                        }
                     }
                     return Ok(());
                 }
@@ -1930,8 +1948,30 @@ fn node_canon_bytes(
                     start,
                     segments,
                     section_x,
+                    section_origin,
+                    closure,
+                    joins,
                 } => {
                     out.push(2);
+                    for &v in section_origin {
+                        put_f64(out, v);
+                    }
+                    match closure {
+                        PathClosure::Open => out.push(0),
+                        PathClosure::ClosedPlanar { normal } => {
+                            out.push(1);
+                            for &v in normal {
+                                put_f64(out, v);
+                            }
+                        }
+                    }
+                    match joins {
+                        PathJoin::Smooth => out.push(0),
+                        PathJoin::Miter { limit } => {
+                            out.push(1);
+                            put_f64(out, *limit);
+                        }
+                    }
                     for &v in start {
                         put_f64(out, v);
                     }
@@ -2721,7 +2761,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xde1ec96c09409ab1adc4d63b4db73354,
+            0x14037228b5d4045249957171a5293dd4,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

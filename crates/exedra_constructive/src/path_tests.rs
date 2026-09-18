@@ -39,7 +39,8 @@ fn spatial_cubic_chord_and_tangent_bounds_hold_between_samples() {
         max_tangent_angle: 0.12,
         ..Default::default()
     };
-    let sampled = discretize_path(p[0], &[curve], &policy).expect("spatial cubic");
+    let sampled = discretize_path(p[0], &[curve], PathClosure::Open, PathJoin::Smooth, &policy)
+        .expect("spatial cubic");
     assert_eq!(sampled.stations[0].point, p[0]);
     assert_eq!(sampled.stations.last().expect("end").point, p[3]);
     for (span, stations) in sampled
@@ -89,6 +90,8 @@ fn arc_sampling_matches_right_handed_rotation_and_sagitta() {
                 axis: [0.0, 1e200, 0.0],
                 sweep,
             }],
+            PathClosure::Open,
+            PathJoin::Smooth,
             &policy,
         )
         .expect("arc in a plane normal to Y");
@@ -129,10 +132,19 @@ fn tighter_policies_refine_and_budgets_never_silently_clamp() {
         max_tangent_angle: 0.4,
         ..Default::default()
     };
-    let coarse = discretize_path([0.0; 3], &segments, &coarse_policy).expect("coarse");
+    let coarse = discretize_path(
+        [0.0; 3],
+        &segments,
+        PathClosure::Open,
+        PathJoin::Smooth,
+        &coarse_policy,
+    )
+    .expect("coarse");
     let fine = discretize_path(
         [0.0; 3],
         &segments,
+        PathClosure::Open,
+        PathJoin::Smooth,
         &PathDiscretizePolicy {
             chord_tolerance: 0.001,
             max_tangent_angle: 0.02,
@@ -153,10 +165,12 @@ fn tighter_policies_refine_and_budgets_never_silently_clamp() {
             discretize_path(
                 [0.0; 3],
                 &[segment],
+                PathClosure::Open,
+                PathJoin::Smooth,
                 &PathDiscretizePolicy {
                     max_segment_edges: 1,
                     ..coarse_policy
-                }
+                },
             ),
             Err(PathDiscretizeError::SegmentBudgetExceeded {
                 segment: 0,
@@ -168,10 +182,12 @@ fn tighter_policies_refine_and_budgets_never_silently_clamp() {
         discretize_path(
             [0.0; 3],
             &segments,
+            PathClosure::Open,
+            PathJoin::Smooth,
             &PathDiscretizePolicy {
                 max_path_edges: 1,
                 ..coarse_policy
-            }
+            },
         ),
         Err(PathDiscretizeError::PathBudgetExceeded { maximum: 1 })
     ));
@@ -194,8 +210,14 @@ fn endpoints_and_segment_parameter_intervals_survive_refinement() {
             to: [8.0, 2.0, 7.0],
         },
     ];
-    let sampled = discretize_path([0.0; 3], &segments, &PathDiscretizePolicy::default())
-        .expect("line/arc/cubic");
+    let sampled = discretize_path(
+        [0.0; 3],
+        &segments,
+        PathClosure::Open,
+        PathJoin::Smooth,
+        &PathDiscretizePolicy::default(),
+    )
+    .expect("line/arc/cubic");
     assert_eq!(sampled.stations.len(), sampled.sampling.spans.len() + 1);
     assert_eq!(sampled.stations[1].point, [0.0, 0.0, 3.0]);
     assert_eq!(sampled.stations.last().expect("end").point, [8.0, 2.0, 7.0]);
@@ -218,11 +240,17 @@ fn endpoints_and_segment_parameter_intervals_survive_refinement() {
 fn invalid_geometry_stationary_tangents_and_sharp_joins_fail() {
     let policy = PathDiscretizePolicy::default();
     assert!(matches!(
-        discretize_path([0.0; 3], &[], &policy),
+        discretize_path([0.0; 3], &[], PathClosure::Open, PathJoin::Smooth, &policy,),
         Err(PathDiscretizeError::InvalidPath)
     ));
     assert!(matches!(
-        discretize_path([0.0; 3], &[PathSegment3::Line { to: [0.0; 3] }], &policy),
+        discretize_path(
+            [0.0; 3],
+            &[PathSegment3::Line { to: [0.0; 3] }],
+            PathClosure::Open,
+            PathJoin::Smooth,
+            &policy,
+        ),
         Err(PathDiscretizeError::InvalidSegment { segment: 0 })
     ));
     let kink = [
@@ -234,7 +262,13 @@ fn invalid_geometry_stationary_tangents_and_sharp_joins_fail() {
         },
     ];
     assert!(matches!(
-        discretize_path([0.0; 3], &kink, &policy),
+        discretize_path(
+            [0.0; 3],
+            &kink,
+            PathClosure::Open,
+            PathJoin::Smooth,
+            &policy,
+        ),
         Err(PathDiscretizeError::DiscontinuousTangent { segment: 1 })
     ));
     let stationary = PathSegment3::Cubic {
@@ -243,7 +277,13 @@ fn invalid_geometry_stationary_tangents_and_sharp_joins_fail() {
         to: [2.0, 0.0, 0.0],
     };
     assert!(matches!(
-        discretize_path([0.0; 3], &[stationary], &policy),
+        discretize_path(
+            [0.0; 3],
+            &[stationary],
+            PathClosure::Open,
+            PathJoin::Smooth,
+            &policy,
+        ),
         Err(PathDiscretizeError::StationaryTangent {
             segment: 0,
             parameter: 0.0
@@ -255,7 +295,14 @@ fn invalid_geometry_stationary_tangents_and_sharp_joins_fail() {
         to: [0.1, 0.0, 0.0],
     };
     assert!(
-        discretize_path([0.0; 3], &[reversal], &policy).is_err(),
+        discretize_path(
+            [0.0; 3],
+            &[reversal],
+            PathClosure::Open,
+            PathJoin::Smooth,
+            &policy,
+        )
+        .is_err(),
         "interior reversals cannot pass the tangent cone"
     );
     assert!(matches!(
@@ -266,7 +313,9 @@ fn invalid_geometry_stationary_tangents_and_sharp_joins_fail() {
                 axis: [0.0, 0.0, 1.0],
                 sweep: core::f64::consts::TAU
             }],
-            &policy
+            PathClosure::Open,
+            PathJoin::Smooth,
+            &policy,
         ),
         Err(PathDiscretizeError::InvalidPath)
     ));
@@ -279,7 +328,9 @@ fn invalid_geometry_stationary_tangents_and_sharp_joins_fail() {
                     axis,
                     sweep: 1.0
                 }],
-                &policy
+                PathClosure::Open,
+                PathJoin::Smooth,
+                &policy,
             ),
             Err(PathDiscretizeError::InvalidSegment { segment: 0 })
         ));
@@ -297,10 +348,12 @@ fn unrepresentable_accuracy_and_invalid_policy_are_explicit() {
         discretize_path(
             [1e12, 0.0, 0.0],
             &segments,
+            PathClosure::Open,
+            PathJoin::Smooth,
             &PathDiscretizePolicy {
                 chord_tolerance: 1e-8,
                 ..Default::default()
-            }
+            },
         ),
         Err(PathDiscretizeError::NumericLimit { segment: 0 })
     ));
@@ -328,7 +381,7 @@ fn unrepresentable_accuracy_and_invalid_policy_are_explicit() {
     ] {
         assert!(
             matches!(
-                discretize_path([0.0; 3], &[], &policy),
+                discretize_path([0.0; 3], &[], PathClosure::Open, PathJoin::Smooth, &policy,),
                 Err(PathDiscretizeError::InvalidPolicy)
             ),
             "policy validation precedes traversal"
@@ -345,6 +398,8 @@ fn collinear_cubic_preserves_authored_geometry_without_false_curvature() {
             control2: [2.0, 4.0, 6.0],
             to: [3.0, 6.0, 9.0],
         }],
+        PathClosure::Open,
+        PathJoin::Smooth,
         &PathDiscretizePolicy {
             max_segment_edges: 1,
             ..Default::default()
@@ -367,6 +422,8 @@ fn bounds_remain_truthful_across_extreme_recipe_units() {
                 control2: p[2],
                 to: p[3],
             }],
+            PathClosure::Open,
+            PathJoin::Smooth,
             &PathDiscretizePolicy {
                 chord_tolerance: 0.001 * units,
                 max_tangent_angle: 0.1,
