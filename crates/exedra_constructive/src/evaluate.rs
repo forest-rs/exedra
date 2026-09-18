@@ -1150,6 +1150,9 @@ impl EvalCx<'_> {
         emit: bool,
         material: Option<SlotId>,
     ) -> Result<Aabb3, EvalError> {
+        if length == 0.0 {
+            return self.walk(child, world, emit, material);
+        }
         match crate::stretch::exact_plan(self.recipe, child, plane, length, world) {
             Ok(Some(plan)) => {
                 let (profiles, material) = self.record_exact_stretch_child(child, material);
