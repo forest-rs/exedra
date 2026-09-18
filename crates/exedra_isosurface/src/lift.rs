@@ -262,6 +262,7 @@ mod tests {
             root_bounds: bounds,
             max_depth,
             cell_budget: None,
+            vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,
             },

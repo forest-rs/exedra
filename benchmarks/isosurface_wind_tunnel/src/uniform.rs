@@ -138,6 +138,8 @@ pub(crate) fn extract(fixture: &H1Fixture) -> UniformResult {
     };
     UniformResult {
         stats: DualContourStats {
+            coincident_edge_collapses: 0,
+            max_vertex_merge_displacement: 0.0,
             octree_cells: stored_cells,
             active_cells: active.len(),
             vertices: mesh.vertices().count(),

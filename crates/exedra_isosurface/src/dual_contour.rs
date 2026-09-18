@@ -32,6 +32,14 @@ const MIN_EMITTER_DEPTH: u8 = 2;
 const LEGACY_SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
 const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
+mod joining;
+#[cfg(test)]
+mod regression;
+
+use joining::{
+    collapse_coincident_edges, merge_distance, transition_is_nondegenerate, triangulate_joined_mesh,
+};
+
 /// Parameters controlling dual-contouring extraction.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct DualContourParams {
@@ -45,6 +53,13 @@ pub struct DualContourParams {
     /// The cap does not bound interval analysis, balancing, or sparse corner
     /// sampling. Truncation is deterministic but may leave an open mesh.
     pub cell_budget: Option<usize>,
+    /// Maximum displacement in field coordinates when joining vertices on
+    /// degenerate transition patches. Must be finite and nonnegative.
+    ///
+    /// `0.0` joins exact coincidences only. Positive values explicitly admit
+    /// near-coincident solves; cumulative displacement of each representative
+    /// is bounded by this tolerance. Topology checks can still refuse a join.
+    pub vertex_merge_tolerance: f32,
     /// Edge intersection search parameters.
     ///
     /// If an exact edge-endpoint crossing has an undefined gradient, the
@@ -56,7 +71,7 @@ pub struct DualContourParams {
 }
 
 /// Extraction statistics for one dual-contouring run.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct DualContourStats {
     /// Total octree cells stored after initial interval/error subdivision plus
     /// transition balancing and completion refinement.
@@ -68,6 +83,12 @@ pub struct DualContourStats {
     pub vertices: usize,
     /// Output face count.
     pub faces: usize,
+    /// Coincident or tolerance-admitted edges joined with checked topology
+    /// surgery. Surviving vertices keep their original positions.
+    pub coincident_edge_collapses: usize,
+    /// Greatest displacement of any original representative after joining.
+    /// Zero when no join moved a representative.
+    pub max_vertex_merge_displacement: f64,
 }
 
 /// Successful dual-contouring result.
@@ -115,17 +136,49 @@ pub struct SemiAnalyticContourResult {
 /// Dual-contouring extraction failure.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DualContourError {
+    /// A policy field is invalid; no field evaluation was performed.
+    InvalidParameter(DualContourParameter),
     /// The generated polygon mesh failed to build.
     Build(BuildError),
     /// QEF solve failed for an active cell.
     Solve(QefSolveError),
+    /// Coincident vertices could not be joined without invalidating topology.
+    Collapse(op::CollapseEdgeError),
+    /// A vertex involved in joining has a disconnected incident-face fan.
+    DisconnectedVertexLink {
+        /// Vertex index in the intermediate transition mesh.
+        vertex: u32,
+    },
+}
+
+/// Invalid input category reported before extraction starts.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DualContourParameter {
+    /// Bounds must be finite, strictly ordered, and have finite extents.
+    RootBounds,
+    /// Depth must fit the integer grid and yield distinct `f32` grid positions.
+    MaxDepth,
+    /// Join tolerance must be finite and nonnegative.
+    VertexMergeTolerance,
+    /// QEF parameters must satisfy [`QefParams::is_valid`].
+    Qef,
 }
 
 impl fmt::Display for DualContourError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidParameter(parameter) => {
+                write!(f, "invalid dual contour parameter: {parameter:?}")
+            }
             Self::Build(error) => write!(f, "dual contour mesh build failed: {error}"),
             Self::Solve(error) => write!(f, "dual contour QEF solve failed: {error:?}"),
+            Self::Collapse(error) => {
+                write!(f, "dual contour coincident edge collapse failed: {error}")
+            }
+            Self::DisconnectedVertexLink { vertex } => write!(
+                f,
+                "dual contour join has disconnected vertex link at {vertex}"
+            ),
         }
     }
 }
@@ -348,7 +401,7 @@ where
     R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
     P: Fn([f32; 3], &Aabb) -> Option<SemiAnalyticProjectionOutcome>,
 {
-    let resolution = 1_u32 << params.max_depth;
+    let resolution = validate_params(params)?;
     let mut visitor = IntervalVisitor {
         field,
         params,
@@ -390,6 +443,8 @@ where
                     active_cells: 0,
                     vertices: 0,
                     faces: 0,
+                    coincident_edge_collapses: 0,
+                    max_vertex_merge_displacement: 0.0,
                 },
             },
             SemiAnalyticContourStats::default(),
@@ -403,7 +458,7 @@ where
     }
 
     let mut builder = MeshBuilder::new();
-    emit_transition_faces(
+    let needs_joining = emit_transition_faces(
         &segments,
         &locator,
         &visitor.grid,
@@ -411,10 +466,18 @@ where
         &mut active_cells,
         &mut builder,
         &region_at,
+        params.vertex_merge_tolerance,
     )?;
 
     let result = builder.build().map_err(DualContourError::Build)?;
     let mut mesh = result.mesh;
+    let (coincident_edge_collapses, max_vertex_merge_displacement) = if needs_joining {
+        let stats = collapse_coincident_edges(&mut mesh, params.vertex_merge_tolerance)?;
+        mesh = triangulate_joined_mesh(&mesh)?;
+        stats
+    } else {
+        (0, 0.0)
+    };
     populate_corner_normals(field, &mut mesh);
     populate_region_boundary_seams(&mut mesh);
     Ok((
@@ -424,11 +487,52 @@ where
                 active_cells: active_cells.len(),
                 vertices: mesh.vertices().count(),
                 faces: mesh.faces().count(),
+                coincident_edge_collapses,
+                max_vertex_merge_displacement,
             },
             mesh,
         },
         semi_analytic,
     ))
+}
+
+fn validate_params(params: &DualContourParams) -> Result<u32, DualContourError> {
+    let bounds = params.root_bounds;
+    let extent = bounds.extent();
+    if Aabb::new(bounds.min, bounds.max).is_none()
+        || extent.iter().any(|&v| !v.is_finite() || v <= 0.0)
+    {
+        return Err(DualContourError::InvalidParameter(
+            DualContourParameter::RootBounds,
+        ));
+    }
+    let resolution = 1_u32.checked_shl(u32::from(params.max_depth)).ok_or(
+        DualContourError::InvalidParameter(DualContourParameter::MaxDepth),
+    )?;
+    if params.max_depth > 24
+        || (0..3).any(|axis| {
+            let step =
+                (f64::from(bounds.max[axis]) - f64::from(bounds.min[axis])) / f64::from(resolution);
+            let magnitude = bounds.min[axis].abs().max(bounds.max[axis].abs());
+            let ulp = magnitude.next_up() - magnitude;
+            !step.is_finite() || step <= 0.0 || step < f64::from(ulp)
+        })
+    {
+        return Err(DualContourError::InvalidParameter(
+            DualContourParameter::MaxDepth,
+        ));
+    }
+    if !params.vertex_merge_tolerance.is_finite() || params.vertex_merge_tolerance < 0.0 {
+        return Err(DualContourError::InvalidParameter(
+            DualContourParameter::VertexMergeTolerance,
+        ));
+    }
+    if !params.qef.is_valid() {
+        return Err(DualContourError::InvalidParameter(
+            DualContourParameter::Qef,
+        ));
+    }
+    Ok(resolution)
 }
 
 fn project_active_cell<P>(cell: &mut ActiveCell, project: &P, stats: &mut SemiAnalyticContourStats)
@@ -473,7 +577,8 @@ fn emit_transition_faces<F, R>(
     active_cells: &mut [ActiveCell],
     builder: &mut MeshBuilder,
     region_at: &R,
-) -> Result<(), DualContourError>
+    vertex_merge_tolerance: f32,
+) -> Result<bool, DualContourError>
 where
     F: ScalarField,
     R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
@@ -515,6 +620,8 @@ where
     }
 
     let mut face_count = 0_usize;
+    let mut patches = Vec::new();
+    let mut needs_joining = false;
     for &segment in segments {
         let start_value = grid
             .value(segment.start)
@@ -561,9 +668,44 @@ where
             grid.point(end_key),
             average_points(&face),
         );
-        emit_transition_polygon(builder, &face, region, &mut face_count)?;
+        if !transition_is_nondegenerate(&face) {
+            if !face.iter().enumerate().any(|(i, vertex)| {
+                merge_distance(vertex.position, face[(i + 1) % face.len()].position)
+                    <= f64::from(vertex_merge_tolerance)
+            }) {
+                return Err(DualContourError::Build(BuildError::DegenerateTriangle {
+                    triangle: face_count,
+                }));
+            }
+            needs_joining = true;
+        }
+        face_count += face.len() - 2;
+        patches.push((face, region));
     }
-    Ok(())
+    face_count = 0;
+    for (face, region) in patches {
+        if needs_joining {
+            let indices = face.iter().map(|v| v.builder_index).collect::<Vec<_>>();
+            let sharpness = face
+                .iter()
+                .enumerate()
+                .map(|(i, v)| v.sharpness.max(face[(i + 1) % face.len()].sharpness))
+                .collect::<Vec<_>>();
+            builder
+                .add_face_with_attrs(
+                    &indices,
+                    &FaceBuildAttrs {
+                        region: Some(region),
+                        edge_sharpness: Some(&sharpness),
+                        ..FaceBuildAttrs::default()
+                    },
+                )
+                .map_err(DualContourError::Build)?;
+        } else {
+            emit_transition_polygon(builder, &face, region, &mut face_count)?;
+        }
+    }
+    Ok(needs_joining)
 }
 
 fn component_entry(cell: &ActiveCell, route: ComponentRoute) -> Option<VertexEntry> {
@@ -661,6 +803,26 @@ fn emit_transition_polygon(
     region: u32,
     face_count: &mut usize,
 ) -> Result<(), DualContourError> {
+    let sharpness = face
+        .iter()
+        .enumerate()
+        .map(|(i, v)| v.sharpness.max(face[(i + 1) % face.len()].sharpness))
+        .collect::<Vec<_>>();
+    let diagonal = match face {
+        [a, b, c, d] => select_quad_diagonal([a.position, b.position, c.position, d.position]),
+        _ => None,
+    };
+    emit_transition_with_sharpness(builder, face, &sharpness, region, face_count, diagonal)
+}
+
+fn emit_transition_with_sharpness(
+    builder: &mut MeshBuilder,
+    face: &[VertexEntry],
+    sharpness: &[f32],
+    region: u32,
+    face_count: &mut usize,
+    diagonal: Option<QuadDiagonal>,
+) -> Result<(), DualContourError> {
     match face {
         [a, b, c] => {
             if !triangle_is_nondegenerate([a.position, b.position, c.position]) {
@@ -669,13 +831,12 @@ fn emit_transition_polygon(
                 }));
             }
             let builder_loop = [a.builder_index, b.builder_index, c.builder_index];
-            let sharpness = loop_sharpness3(face);
             builder
                 .add_face_with_attrs(
                     &builder_loop,
                     &FaceBuildAttrs {
                         region: Some(region),
-                        edge_sharpness: Some(&sharpness),
+                        edge_sharpness: Some(sharpness),
                         ..FaceBuildAttrs::default()
                     },
                 )
@@ -683,15 +844,13 @@ fn emit_transition_polygon(
             *face_count += 1;
         }
         [a, b, c, d] => {
-            let positions = [a.position, b.position, c.position, d.position];
-            let sharpness = loop_sharpness4(face);
             let builder_loop = [
                 a.builder_index,
                 b.builder_index,
                 c.builder_index,
                 d.builder_index,
             ];
-            let (triangles, triangle_sharpness) = match select_quad_diagonal(positions) {
+            let (triangles, triangle_sharpness) = match diagonal {
                 Some(QuadDiagonal::ZeroTwo) => (
                     [
                         [builder_loop[0], builder_loop[1], builder_loop[2]],
@@ -1356,23 +1515,6 @@ fn average_points(points: &[VertexEntry]) -> [f32; 3] {
     [sum[0] * inv, sum[1] * inv, sum[2] * inv]
 }
 
-fn loop_sharpness3(face: &[VertexEntry]) -> [f32; 3] {
-    [
-        face[0].sharpness.max(face[1].sharpness),
-        face[1].sharpness.max(face[2].sharpness),
-        face[2].sharpness.max(face[0].sharpness),
-    ]
-}
-
-fn loop_sharpness4(face: &[VertexEntry]) -> [f32; 4] {
-    [
-        face[0].sharpness.max(face[1].sharpness),
-        face[1].sharpness.max(face[2].sharpness),
-        face[2].sharpness.max(face[3].sharpness),
-        face[3].sharpness.max(face[0].sharpness),
-    ]
-}
-
 fn edge_has_crossing(start: f32, end: f32) -> bool {
     (start <= 0.0 && end > 0.0) || (start > 0.0 && end <= 0.0)
 }
@@ -1923,6 +2065,7 @@ mod tests {
             root_bounds: bounds,
             max_depth,
             cell_budget: None,
+            vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,
             },
@@ -2292,6 +2435,41 @@ mod tests {
     }
 
     #[test]
+    fn accepted_finest_grid_keeps_adjacent_coordinates_distinct() {
+        use crate::adaptive_transition::CornerKey;
+        let field = SphereField {
+            center: [0.0; 3],
+            radius: 1.0,
+        };
+        let original = params(Aabb::new([-1.5; 3], [1.5; 3]).unwrap(), 24);
+        assert_eq!(super::validate_params(&original).unwrap(), 1 << 24);
+        for bounds in [
+            Aabb::new([-1.5; 3], [1.5; 3]).unwrap(),
+            Aabb::new([-0.38, -0.05, -0.03], [0.38, 0.29, 0.49]).unwrap(),
+            Aabb::new([1000.0, -1003.0, -1.0], [1003.0, -1000.0, 1.0]).unwrap(),
+        ] {
+            for depth in 10..=24 {
+                let extraction_params = params(bounds, depth);
+                let Ok(resolution) = super::validate_params(&extraction_params) else {
+                    continue;
+                };
+                let grid = AdaptiveGrid::new(&field, bounds, resolution);
+                let indices = (0..64)
+                    .chain(resolution - 64..resolution)
+                    .chain((0..1024).map(|i| i * (resolution / 1024)));
+                for key in indices {
+                    let a = grid.point(CornerKey::new(key, key, key));
+                    let b = grid.point(CornerKey::new(key + 1, key + 1, key + 1));
+                    assert!(
+                        (0..3).all(|axis| a[axis] < b[axis]),
+                        "depth={depth} key={key}: {a:?} / {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dual_contour_sphere_builds_valid_deterministic_mesh() {
         let field = SphereField {
             center: [0.0, 0.0, 0.0],
@@ -2308,6 +2486,8 @@ mod tests {
         assert_eq!(
             first.stats,
             super::DualContourStats {
+                coincident_edge_collapses: 0,
+                max_vertex_merge_displacement: 0.0,
                 octree_cells: 585,
                 active_cells: 320,
                 vertices: 320,
@@ -4546,14 +4726,18 @@ mod tests {
         panic!("cell endpoint {target:?} is not an exact integer-grid coordinate")
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the reference interpolation rounds its result to the f32 grid"
+    )]
     fn forced_pin_axis_point(root: Aabb, resolution: u32, axis: usize, key: u32) -> f32 {
         if key == 0 {
             root.min[axis]
         } else if key == resolution {
             root.max[axis]
         } else {
-            let step = root.extent()[axis] / resolution as f32;
-            root.min[axis] + step * key as f32
+            let t = f64::from(key) / f64::from(resolution);
+            (f64::from(root.min[axis]) * (1.0 - t) + f64::from(root.max[axis]) * t) as f32
         }
     }
 
@@ -4689,6 +4873,8 @@ mod tests {
         assert_eq!(
             result.stats,
             super::DualContourStats {
+                coincident_edge_collapses: 0,
+                max_vertex_merge_displacement: 0.0,
                 octree_cells: 100_937,
                 active_cells: 30_122,
                 vertices: 30_122,

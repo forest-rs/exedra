@@ -37,6 +37,7 @@
 //!     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
 //!     max_depth: 4,
 //!     cell_budget: None,
+//!     vertex_merge_tolerance: 0.0,
 //!     edge_search: EdgeSearchParams::default(),
 //!     qef: QefParams::default(),
 //! };
@@ -69,7 +70,7 @@ pub use exedra_spatial::Aabb;
 
 pub use bounds2::Aabb2;
 pub use dual_contour::{
-    DualContourError, DualContourParams, DualContourResult, DualContourStats,
+    DualContourError, DualContourParameter, DualContourParams, DualContourResult, DualContourStats,
     SemiAnalyticContourResult, SemiAnalyticContourStats, dual_contour, dual_contour_semi_analytic,
     dual_contour_with_regions,
 };
