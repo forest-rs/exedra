@@ -26,3 +26,10 @@ snapshot wrapper is needed for this read-only query.
 
 Additive `measure()` methods and `measure` result/error types; no caller changes,
 recipe serialization changes, or evaluation-schema changes are required.
+
+## Polygon footprint queries
+
+`PlanarPatch::polygon_clearance` delegates to the shared mesh-operations query
+and binds constructive boundary evidence. Algorithm ownership, containment,
+contact, budget and migration semantics are in the [mesh-operations decision](../../exedra_mesh_ops/docs/adr-0002-polygon-footprint-clearance.md).
+Assembly snapshot workplanes expose this through their existing `planar_patch`.

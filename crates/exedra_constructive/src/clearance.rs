@@ -9,6 +9,8 @@
 //! A circular footprint is contained exactly when its center is inside material
 //! and its distance to every boundary exceeds its radius (subject to arithmetic
 //! and the caller's decision tolerance). Holes are material exclusions.
+//! Polygon queries additionally inspect full boundary intervals and excluded
+//! holes enclosed by the footprint, returning separate containment evidence.
 
 use crate::{
     tessellate::{Feature, TessellatedBody},
@@ -17,7 +19,14 @@ use crate::{
 use exedra_math::Placement3;
 use exedra_mesh::{FaceId, HalfEdgeId};
 use exedra_mesh_ops::clearance as geometry;
-pub use geometry::{BoundaryPolicy, BoundaryStats, ClearanceDecision};
+pub use geometry::{
+    BoundaryPolicy, BoundaryStats, ClearanceDecision, FootprintWitness, PolygonClearanceError,
+    PolygonClearancePolicy,
+};
+/// Filled polygon containment and distance with constructive boundary evidence.
+pub type PolygonClearance = geometry::PolygonClearance<BoundarySource>;
+/// A polygon containment violation with constructive boundary evidence.
+pub type PolygonViolation = geometry::PolygonViolation<BoundarySource>;
 
 /// Provenance of a boundary segment, scoped to the source body snapshot.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -163,6 +172,17 @@ impl PlanarPatch {
     ) -> Result<crate::measure::PlanarMeasurements, crate::measure::MeasurementError> {
         self.geometry.measure()
     }
+    /// Measures a filled polygon against this snapshot, including concave edges
+    /// and enclosed support holes. Points and witnesses use patch-local units.
+    /// See [`geometry::PlanarPatch::polygon_clearance`] for contact and budget semantics.
+    pub fn polygon_clearance(
+        &self,
+        footprint: &[[f64; 2]],
+        policy: &PolygonClearancePolicy,
+    ) -> Result<PolygonClearance, PolygonClearanceError> {
+        self.geometry.polygon_clearance(footprint, policy)
+    }
+
     /// Measures a circular footprint against every boundary, including holes.
     /// Coordinates and radius use patch-local units. Work is linear in boundary
     /// edges, without allocation or tessellation. Invalid inputs are refused.

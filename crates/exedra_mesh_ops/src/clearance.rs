@@ -9,6 +9,14 @@
 //! A circular footprint is contained exactly when its center is inside material
 //! and its distance to every boundary exceeds its radius (subject to arithmetic
 //! and the caller's decision tolerance). Holes are material exclusions.
+//! Polygon queries additionally inspect full boundary intervals and excluded
+//! holes enclosed by the footprint, returning separate containment evidence.
+
+mod polygon;
+pub use polygon::{
+    FootprintWitness, PolygonClearance, PolygonClearanceError, PolygonClearancePolicy,
+    PolygonViolation,
+};
 
 use crate::workplane::{Workplane, WorkplaneError};
 use alloc::vec::Vec;

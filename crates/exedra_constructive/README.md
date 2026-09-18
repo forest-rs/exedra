@@ -418,6 +418,11 @@ The runnable comparison is
 `cargo run -p material_gallery --bin edge_finishes -- target/edge-finishes`.
 Exhaustive `NodeKindDto` matches must handle its new `EdgeFinish` variant.
 
+Polygon mounting footprints use `PlanarPatch::polygon_clearance` with an explicit
+work policy. Results distinguish containment from nearest boundary distance and
+carry source witnesses for crossings, exterior intervals and covered holes.
+The `footprint_clearance` example queries retained snapshots and exports a GLB.
+
 ## License
 
 Apache-2.0 OR MIT
