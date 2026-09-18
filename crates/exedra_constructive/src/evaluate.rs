@@ -1151,7 +1151,10 @@ impl EvalCx<'_> {
         material: Option<SlotId>,
     ) -> Result<Aabb3, EvalError> {
         if length == 0.0 {
-            return self.walk(child, world, emit, material);
+            let bounds = self.walk(child, world, emit, material)?;
+            let fidelity = self.body_fidelity(node_id, &[]);
+            self.report.fidelity.push((node_id, fidelity));
+            return Ok(bounds);
         }
         match crate::stretch::exact_plan(self.recipe, child, plane, length, world) {
             Ok(Some(plan)) => {
