@@ -13,8 +13,8 @@ use alloc::vec::Vec;
 
 use crate::evaluate::evaluate;
 use crate::ir::{
-    CapMode, CsgOp, ImportId, NodeId, NodeKind, Path3, Placement3, Plane3, PolicyId, PrimitiveSpec,
-    ProfileId, RecipeBuilder, SlotId, SourceId,
+    CapMode, CsgOp, ImportId, LoftSection, NodeId, NodeKind, Path3, Placement3, Plane3, PolicyId,
+    PrimitiveSpec, ProfileId, RecipeBuilder, SlotId, SourceId,
 };
 use crate::profile::{Loop2, Profile2, Seg2, SegKind};
 use crate::tessellate::EvalPolicy;
@@ -142,7 +142,7 @@ fn hostile_kind(rng: &mut Rng, profiles: usize, nodes: usize) -> NodeKind {
         },
         2 => NodeKind::Loft {
             sections: (0..rng.range(4))
-                .map(|_| (hostile_placement(rng), profile))
+                .map(|_| LoftSection::new(hostile_placement(rng), profile))
                 .collect(),
             policy: crate::ir::LoftPolicy::Ruled,
             caps: CapMode::Both,

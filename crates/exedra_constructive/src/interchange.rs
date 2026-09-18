@@ -34,8 +34,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, LoftPolicy, NodeId, NodeKind, Path3, Placement3, Plane3,
-    PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId, SourceId,
+    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, Placement3,
+    Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId, SourceId,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -285,6 +285,9 @@ pub enum NodeKindDto {
     Loft {
         /// Sections as `(placement, profile)` pairs.
         sections: Vec<(PlacementDto, u32)>,
+        /// Optional source ids parallel to sections; empty means all unlabeled.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        section_sources: Vec<Option<u32>>,
         /// Explicit interpolation policy: `ruled` or `smooth`.
         policy: String,
         /// Cap mode.
@@ -688,8 +691,13 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             }),
             sections: sections
                 .iter()
-                .map(|(placement, profile)| (placement_dto(placement), profile.0))
+                .map(|section| (placement_dto(&section.placement), section.profile.0))
                 .collect(),
+            section_sources: if sections.iter().any(|s| s.source.is_some()) {
+                sections.iter().map(|s| s.source.map(|id| id.0)).collect()
+            } else {
+                Vec::new()
+            },
             caps: caps_name(*caps),
         },
         NodeKind::Sweep {
@@ -970,13 +978,26 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
         },
         NodeKindDto::Loft {
             sections,
+            section_sources,
             policy,
             caps,
         } => NodeKind::Loft {
-            sections: sections
-                .iter()
-                .map(|(placement, profile)| (placement_value(*placement), ProfileId(*profile)))
-                .collect(),
+            sections: {
+                if !section_sources.is_empty() && section_sources.len() != sections.len() {
+                    return Err(InterchangeError::Recipe(RecipeError::InvalidParameter {
+                        what: "loft section sources",
+                    }));
+                }
+                sections
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (placement, profile))| LoftSection {
+                        placement: placement_value(*placement),
+                        profile: ProfileId(*profile),
+                        source: section_sources.get(i).copied().flatten().map(SourceId),
+                    })
+                    .collect()
+            },
             policy: match policy.as_str() {
                 "ruled" => LoftPolicy::Ruled,
                 "smooth" => LoftPolicy::Smooth,

@@ -236,6 +236,14 @@ without texture coordinates.
 
 ### Surface inspection and attachment recovery
 
+Compilation failures own the authored `part_key` alongside `PartId`. Hard
+evaluation errors also retain the node's source and, for smooth-loft band
+refusals, named section context and geometric evidence. `Display` includes
+those labels; callers can inspect the structured fields without parsing prose
+or retaining the assembly. No-geometry failures retain their full report as
+before. When matching `CompileError` or `EvalError`, include the new fields or
+use `..`. See [constructive failure context](../exedra_constructive/docs/adr-0019-construction-failure-context.md).
+
 `SnapshotBody::inspect_surfaces` returns a `SnapshotSurfaceInventory`, retaining
 its immutable source body. Entries expose surviving semantic selectors, original
 surface roles/labels, connected patches, measured planarity, and typed refusals.

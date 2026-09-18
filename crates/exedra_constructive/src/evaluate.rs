@@ -290,23 +290,8 @@ impl PlacedBody {
     }
 }
 
-/// Hard evaluation failure: a body could not be tessellated or a checked
-/// retained plane operation was refused.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EvalError {
-    /// The failing node.
-    pub node: NodeId,
-    /// The underlying tessellation or retained-operation failure.
-    pub error: TessellateError,
-}
-
-impl core::fmt::Display for EvalError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "node {:?} failed to evaluate: {}", self.node, self.error)
-    }
-}
-
-impl core::error::Error for EvalError {}
+mod failure;
+pub use failure::{EvalError, LoftSectionContext};
 
 /// Evaluates `recipe` under `policy`.
 ///
@@ -375,7 +360,8 @@ fn evaluate_inner(
             schema_version: crate::EVAL_SCHEMA_VERSION,
         },
     };
-    cx.walk(recipe.root(), &Placement3::IDENTITY, true, None)?;
+    cx.walk(recipe.root(), &Placement3::IDENTITY, true, None)
+        .map_err(|error| error.with_recipe_context(recipe))?;
     let ambiguous = recipe.ambiguous_sources();
     for placed in &mut cx.bodies {
         if !ambiguous.is_empty() {
@@ -540,9 +526,11 @@ impl EvalCx<'_> {
                         &cx.policy.section,
                     )
                     .map(|result| result.body)
-                    .map_err(|error| EvalError {
-                        node: node_id,
-                        error: TessellateError::ExtrudeToPlane(alloc::boxed::Box::new(error)),
+                    .map_err(|error| {
+                        EvalError::new(
+                            node_id,
+                            TessellateError::ExtrudeToPlane(alloc::boxed::Box::new(error)),
+                        )
                     })
                 })?;
                 let body = self.place_plane_body(node_id, body, world)?;
@@ -565,10 +553,7 @@ impl EvalCx<'_> {
                         caps,
                         cx.policy,
                     )
-                    .map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -589,10 +574,7 @@ impl EvalCx<'_> {
                         caps,
                         cx.policy,
                     )
-                    .map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -604,23 +586,21 @@ impl EvalCx<'_> {
             } => {
                 let placed: Vec<(Placement3, &crate::profile::Profile2)> = sections
                     .iter()
-                    .map(|(placement, profile)| {
+                    .map(|section| {
                         (
-                            compose(world, placement),
-                            self.recipe.profile(*profile).expect("validated profile id"),
+                            compose(world, &section.placement),
+                            self.recipe
+                                .profile(section.profile)
+                                .expect("validated profile id"),
                         )
                     })
                     .collect();
                 let caps = *caps;
                 let profile_ids: Vec<ProfileId> =
-                    sections.iter().map(|(_, profile)| *profile).collect();
+                    sections.iter().map(|section| section.profile).collect();
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_loft(&placed, *interpolation, caps, cx.policy).map_err(|error| {
-                        EvalError {
-                            node: node_id,
-                            error,
-                        }
-                    })
+                    tessellate_loft(&placed, *interpolation, caps, cx.policy)
+                        .map_err(|error| EvalError::new(node_id, error))
                 });
                 // Ruled loft refusals retain section envelopes. Smooth curves
                 // can overshoot those bounds even for coplanar sections, so
@@ -702,10 +682,7 @@ impl EvalCx<'_> {
                             cx.policy,
                         ),
                     }
-                    .map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -719,10 +696,7 @@ impl EvalCx<'_> {
                         &combined,
                         cx.policy,
                     )
-                    .map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -731,10 +705,8 @@ impl EvalCx<'_> {
                 let combined = compose(world, placement);
                 let spec = *spec;
                 let body = self.body_cached(node_id, world, |cx| {
-                    tessellate_primitive(spec, &combined, cx.policy).map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    tessellate_primitive(spec, &combined, cx.policy)
+                        .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -782,10 +754,7 @@ impl EvalCx<'_> {
                     crate::tessellate::tessellate_grid(
                         &points, rows, cols, close_u, close_w, thickness, &combined,
                     )
-                    .map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -795,13 +764,8 @@ impl EvalCx<'_> {
                 let import = *import;
                 let body = self.body_cached(node_id, world, |cx| {
                     let source = cx.recipe.import(import).expect("validated import id");
-                    let mesh =
-                        crate::import_mesh::transform(source, &placement).map_err(|error| {
-                            EvalError {
-                                node: node_id,
-                                error,
-                            }
-                        })?;
+                    let mesh = crate::import_mesh::transform(source, &placement)
+                        .map_err(|error| EvalError::new(node_id, error))?;
                     let face_features = alloc::vec![Feature::Imported; mesh.faces().count()];
                     let vertex_features = alloc::vec![Feature::Imported; mesh.vertices().count()];
                     let source_map =
@@ -855,11 +819,8 @@ impl EvalCx<'_> {
                 let fidelity = self.body_fidelity(node_id, &[]);
                 let mut bounds = Aabb3::EMPTY;
                 for source in local.iter() {
-                    let body =
-                        instantiate(&source.body, &placement).map_err(|error| EvalError {
-                            node: node_id,
-                            error,
-                        })?;
+                    let body = instantiate(&source.body, &placement)
+                        .map_err(|error| EvalError::new(node_id, error))?;
                     let body = Rc::new(body);
                     bounds.union(&mesh_bounds(&body.mesh));
                     self.report.fidelity.push((node_id, fidelity));
@@ -960,10 +921,7 @@ impl EvalCx<'_> {
         let body = if *world == Placement3::IDENTITY {
             body
         } else {
-            Rc::new(instantiate(&body, world).map_err(|error| EvalError {
-                node: node_id,
-                error,
-            })?)
+            Rc::new(instantiate(&body, world).map_err(|error| EvalError::new(node_id, error))?)
         };
         let fidelity = self.body_fidelity(node_id, &[]);
         Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -1001,7 +959,7 @@ impl EvalCx<'_> {
         let result = self.walk(support, &Placement3::IDENTITY, true, None);
         let collected = core::mem::replace(&mut self.bodies, taken);
         result?;
-        let fail = |error| EvalError { node, error };
+        let fail = |error| EvalError::new(node, error);
         if self.error_count() != errors_before {
             return Err(fail(TessellateError::IncompleteAttachmentSupport));
         }
@@ -1057,7 +1015,7 @@ impl EvalCx<'_> {
         } else {
             instantiate(&body, world)
                 .map(Rc::new)
-                .map_err(|error| EvalError { node, error })
+                .map_err(|error| EvalError::new(node, error))
         }
     }
 
@@ -1081,10 +1039,7 @@ impl EvalCx<'_> {
         let collected = core::mem::replace(&mut self.bodies, taken);
         result?;
         if self.error_count() != errors_before {
-            return Err(EvalError {
-                node,
-                error: TessellateError::IncompletePlaneCut,
-            });
+            return Err(EvalError::new(node, TessellateError::IncompletePlaneCut));
         }
         // The body cache stores one nonempty body. Multi-body and empty cuts
         // still reuse child evaluations but do not masquerade as singleton hits.
@@ -1109,10 +1064,7 @@ impl EvalCx<'_> {
             } else {
                 let split =
                     crate::section::split_body(&placed.body, plane, &self.policy.section, cap)
-                        .map_err(|error| EvalError {
-                            node,
-                            error: TessellateError::PlaneCut(error),
-                        })?;
+                        .map_err(|error| EvalError::new(node, TessellateError::PlaneCut(error)))?;
                 self.report.counters.tessellations += 1;
                 match side {
                     crate::ir::PlaneSide::Negative => split.negative,
@@ -1154,10 +1106,8 @@ impl EvalCx<'_> {
             Ok(Some(plan)) => {
                 let (profiles, material) = self.record_exact_stretch_child(child, material);
                 let body = self.body_cached(node_id, world, |cx| {
-                    plan.tessellate(cx.policy).map_err(|error| EvalError {
-                        node: node_id,
-                        error,
-                    })
+                    plan.tessellate(cx.policy)
+                        .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 self.report.counters.stretch_exact += plan.stretch_nodes();
                 let fidelity = self.body_fidelity(node_id, &profiles);
@@ -2031,6 +1981,7 @@ mod tests {
     use super::*;
     use crate::builders;
     use crate::discretize::{DiscretizeError, DiscretizePolicy};
+    use crate::ir::LoftSection;
     use crate::ir::{CapMode, CsgOp, Plane3, PrimitiveSpec, RecipeBuilder};
     use alloc::vec;
 
@@ -2877,8 +2828,8 @@ mod tests {
         let loft = b
             .add(NodeKind::Loft {
                 sections: vec![
-                    (Placement3::IDENTITY, big),
-                    (Placement3::translate(0.0, 0.0, 120.0), small),
+                    LoftSection::new(Placement3::IDENTITY, big),
+                    LoftSection::new(Placement3::translate(0.0, 0.0, 120.0), small),
                 ],
                 policy: crate::ir::LoftPolicy::Ruled,
                 caps: CapMode::Both,
@@ -3138,6 +3089,7 @@ mod tests {
                         maximum: 4,
                     }
                 ),
+                ..
             } if *failed_node == node && *required > 4
         ));
 

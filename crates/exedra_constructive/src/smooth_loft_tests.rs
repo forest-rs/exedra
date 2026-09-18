@@ -3,8 +3,10 @@
 
 use super::tests::{assert_clean, mesh_volume};
 use super::*;
+use crate::builders;
 use crate::cache::{EvalCache, policy_fingerprint};
 use crate::evaluate::{Fidelity, evaluate, evaluate_with_cache};
+use crate::ir::LoftSection;
 use crate::ir::{NodeKind, Recipe, RecipeBuilder};
 use crate::profile::{Loop2, Seg2};
 use alloc::vec;
@@ -22,6 +24,32 @@ fn section(x: f64, y: f64) -> Profile2 {
     )
     .unwrap()
 }
+
+#[test]
+fn inner_trajectory_refusal_maps_to_the_hole_boundary() {
+    let profiles: Vec<_> = [10.0, 80.0, 20.0, 21.0]
+        .map(|inner| builders::ring(100.0, inner).unwrap())
+        .into();
+    let sections: Vec<_> = [0.0, 1.0, 2.0, 3.0]
+        .into_iter()
+        .zip(&profiles)
+        .map(|(z, profile)| (Placement3::translate(0.0, 0.0, z), profile))
+        .collect();
+    let mut policy = EvalPolicy::default();
+    policy.discretize.chord_tolerance = 1.0;
+    let error = tessellate_loft(&sections, LoftPolicy::Smooth, CapMode::Both, &policy).unwrap_err();
+    let TessellateError::Loft(crate::loft::LoftError::Foldover { band, witness, .. }) = error
+    else {
+        panic!("expected an inner trajectory refusal")
+    };
+    for (i, point) in witness.profile_points.unwrap().iter().enumerate() {
+        assert_eq!(point.sampled.hole, Some(0));
+        assert_eq!(
+            point.tag,
+            profiles[band + i].holes()[0].segs()[point.segment as usize].tag
+        );
+    }
+}
 fn recipe(mode: LoftPolicy) -> Recipe {
     let mut b = RecipeBuilder::new();
     let a = b.add_profile(section(1.0, 1.0));
@@ -30,9 +58,9 @@ fn recipe(mode: LoftPolicy) -> Recipe {
     let node = b
         .add(NodeKind::Loft {
             sections: vec![
-                (Placement3::IDENTITY, a),
-                (Placement3::translate(0.3, 0.1, 1.5), middle),
-                (Placement3::translate(-0.1, 0.2, 3.0), c),
+                LoftSection::new(Placement3::IDENTITY, a),
+                LoftSection::new(Placement3::translate(0.3, 0.1, 1.5), middle),
+                LoftSection::new(Placement3::translate(-0.1, 0.2, 3.0), c),
             ],
             policy: mode,
             caps: CapMode::Both,
@@ -68,7 +96,10 @@ fn asymmetric_smooth_loft_retains_sections_caps_and_source_bands() {
         .vertices()
         .map(|v| *body.mesh.vertex_position(v).unwrap())
         .collect();
-    for (placement, profile) in sections {
+    for LoftSection {
+        placement, profile, ..
+    } in sections
+    {
         let discretized =
             discretize_profile(recipe.profile(*profile).unwrap(), &policy.discretize).unwrap();
         for p in discretized.outer.points {
@@ -251,13 +282,13 @@ fn smooth_loft_degenerate_sections_never_claim_a_section_envelope() {
     // the section union as its interpolation envelope.
     for height in [0.0, 1e-15] {
         let mut builder = RecipeBuilder::new();
-        let profile = builder.add_profile(crate::builders::rect_from_corner(1.0, 1.0).unwrap());
+        let profile = builder.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
         let root = builder
             .add(NodeKind::Loft {
                 sections: vec![
-                    (Placement3::IDENTITY, profile),
-                    (Placement3::translate(1.0, 0.0, height), profile),
-                    (Placement3::translate(1.0, 1.0, 2.0 * height), profile),
+                    LoftSection::new(Placement3::IDENTITY, profile),
+                    LoftSection::new(Placement3::translate(1.0, 0.0, height), profile),
+                    LoftSection::new(Placement3::translate(1.0, 1.0, 2.0 * height), profile),
                 ],
                 policy: LoftPolicy::Smooth,
                 caps: CapMode::Both,
@@ -276,8 +307,8 @@ fn smooth_loft_degenerate_sections_never_claim_a_section_envelope() {
 
 #[test]
 fn smooth_square_volume_converges_to_the_integrated_cubic_area() {
-    let small = crate::builders::rect_from_corner(1.0, 1.0).unwrap();
-    let large = crate::builders::rect_from_corner(2.0, 2.0).unwrap();
+    let small = builders::rect_from_corner(1.0, 1.0).unwrap();
+    let large = builders::rect_from_corner(2.0, 2.0).unwrap();
     let sections = [
         (Placement3::IDENTITY, &small),
         (Placement3::translate(0.0, 0.0, 1.0), &large),
@@ -307,9 +338,9 @@ fn smooth_square_volume_converges_to_the_integrated_cubic_area() {
 
 #[test]
 fn smooth_holed_sections_support_all_cap_modes_and_refuse_structure_mismatch() {
-    let a = crate::builders::ring(0.5, 0.2).unwrap();
-    let b = crate::builders::ring(0.6, 0.25).unwrap();
-    let c = crate::builders::ring(0.45, 0.15).unwrap();
+    let a = builders::ring(0.5, 0.2).unwrap();
+    let b = builders::ring(0.6, 0.25).unwrap();
+    let c = builders::ring(0.45, 0.15).unwrap();
     let sections = [
         (Placement3::IDENTITY, &a),
         (Placement3::translate(0.0, 0.0, 1.0), &b),
@@ -326,7 +357,7 @@ fn smooth_holed_sections_support_all_cap_modes_and_refuse_structure_mismatch() {
         assert_clean(&body);
         assert_eq!(body.mesh.boundary_loops().unwrap().len(), boundaries);
     }
-    let rectangle = crate::builders::rect_from_corner(1.0, 1.0).unwrap();
+    let rectangle = builders::rect_from_corner(1.0, 1.0).unwrap();
     let mismatched = [
         (Placement3::IDENTITY, &a),
         (Placement3::translate(0.0, 0.0, 2.0), &rectangle),

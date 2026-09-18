@@ -43,6 +43,17 @@ geometry alone as success. Use the `serde` feature for host-side interchange.
 
 ## Authoring coordinates and diagnosing boundaries
 
+Hard evaluation failures own the failed node's source string. Smooth-loft
+forward-motion refusals also retain both section labels, profile ids, authored
+placements, and cubic control geometry with source segment/tag correspondence.
+Errors remain inspectable after dropping the recipe. The witness explains the
+existing sufficient check; it does not prove a surface self-intersection.
+
+Retained loft sections now use `LoftSection::new(placement, profile)` in place
+of tuples. Add `.with_source(builder.source_ref("vessel/shoulder"))` to name a
+section independently of its reusable profile. JSON and text round trips retain
+these labels. See [failure context and migration](docs/adr-0019-construction-failure-context.md).
+
 Choose `builders::rect_from_corner` or `builders::rect_centered`, and the
 corresponding `rounded_rect_*` builders. Circles and rings are centered at the
 origin. Centered rectangles compose directly with concentric circular holes.

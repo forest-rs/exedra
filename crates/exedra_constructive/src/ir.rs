@@ -96,6 +96,50 @@ pub enum LoftPolicy {
     Smooth,
 }
 
+/// One retained loft section with optional authored identity.
+///
+/// Source labels describe section occurrences, independently of shared profiles.
+/// They do not change correspondence: loop and segment order still define it.
+///
+/// ```
+/// use exedra_constructive::{builders, ir::{LoftSection, Placement3, RecipeBuilder}};
+/// let mut builder = RecipeBuilder::new();
+/// let profile = builder.add_profile(builders::circle(0.25)?);
+/// let shoulder = builder.source_ref("vessel/shoulder");
+/// let section = LoftSection::new(Placement3::translate(0.0, 0.0, 0.2), profile)
+///     .with_source(shoulder);
+/// assert_eq!(section.source, Some(shoulder));
+/// # Ok::<(), exedra_constructive::profile::ProfileError>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoftSection {
+    /// Section placement relative to the loft's incoming construction frame.
+    pub placement: Placement3,
+    /// Profile supplying this section's boundary.
+    pub profile: ProfileId,
+    /// Optional opaque label interned with [`RecipeBuilder::source_ref`].
+    pub source: Option<SourceId>,
+}
+
+impl LoftSection {
+    /// Creates an unlabeled section.
+    #[must_use]
+    pub const fn new(placement: Placement3, profile: ProfileId) -> Self {
+        Self {
+            placement,
+            profile,
+            source: None,
+        }
+    }
+
+    /// Binds an authored section label; recipe construction validates the id.
+    #[must_use]
+    pub const fn with_source(mut self, source: SourceId) -> Self {
+        self.source = Some(source);
+        self
+    }
+}
+
 /// Frame policy for polyline sweeps.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -309,7 +353,7 @@ pub enum NodeKind {
     /// `eval.loft.section_mismatch` diagnostic.
     Loft {
         /// Sections in order; at least two.
-        sections: Vec<(Placement3, ProfileId)>,
+        sections: Vec<LoftSection>,
         /// Interpolation policy; correspondence is authored segment order.
         policy: LoftPolicy,
         /// Which end caps to close.
@@ -1096,9 +1140,14 @@ impl RecipeBuilder {
                         count: sections.len(),
                     });
                 }
-                for (placement, profile) in sections {
-                    self.check_placement(placement)?;
-                    self.check_profile(*profile)?;
+                for section in sections {
+                    self.check_placement(&section.placement)?;
+                    self.check_profile(section.profile)?;
+                    if let Some(source) = section.source
+                        && self.sources.get(source.0 as usize).is_none()
+                    {
+                        return Err(RecipeError::UnknownSource { source: source.0 });
+                    }
                 }
                 Ok(())
             }
@@ -1749,15 +1798,31 @@ fn node_canon_bytes(
         } => {
             out.push(2);
             put_u32(out, len_u32(sections.len()));
-            for (placement, profile) in sections {
-                put_placement(out, placement);
-                put_u128(out, profile_hashes[profile.0 as usize]);
+            for section in sections {
+                put_placement(out, &section.placement);
+                put_u128(out, profile_hashes[section.profile.0 as usize]);
             }
             out.push(match policy {
                 LoftPolicy::Ruled => 0,
                 LoftPolicy::Smooth => 1,
             });
             put_caps(out, *caps);
+            // Keep unlabeled loft identities unchanged. Labels are content,
+            // never source-table indices, just like node provenance below.
+            if sections.iter().any(|section| section.source.is_some()) {
+                out.push(0xF0);
+                for section in sections {
+                    match section.source {
+                        None => out.push(0),
+                        Some(id) => {
+                            out.push(1);
+                            let label = sources[id.0 as usize].as_bytes();
+                            put_u32(out, len_u32(label.len()));
+                            out.extend_from_slice(label);
+                        }
+                    }
+                }
+            }
         }
         NodeKind::Sweep {
             profile,
