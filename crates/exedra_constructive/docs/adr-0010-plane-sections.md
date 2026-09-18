@@ -34,9 +34,39 @@ UVs, and corner normals. New caps and cut vertices have dedicated features. Cap
 region and material are caller-authored; cap UVs use section-frame coordinates.
 Source sampling/realization evidence is cleared on derived bodies.
 
-This additive API requires no caller migration. It adds evaluated-body operations
-without changing recipe formats or cache identity. Recipe-level cuts can use this
-same implementation in a later slice.
+`PlaneSection::to_profiles` converts each filled region into an owned `Profile2`
+and its unchanged placement. `profile_section::profiles_from_mesh_section` provides
+the same conversion for plain mesh sections, retaining face IDs instead of
+construction features. This adapter belongs in constructive, which owns the
+profile vocabulary; mesh operations remain independent of constructive.
+
+The conversion preserves every boundary sample, cyclic starting point, winding,
+hole and region order. It emits line segments without fitting curves or choosing
+correspondence between independent loft sections. Segment tags index an owned
+source table across the outer loop and holes of each profile. These sources need
+their original mesh/body or snapshot context; they are not persistent selectors
+or a retained dependency on the section's source geometry. Reusing the profile
+after the source changes does not recompute the section.
+
+Extraction establishes simple separated boundaries and correct nesting. Callers
+editing public section data must preserve those invariants. Conversion checks
+frame validity, source counts, polygon degeneracy, tag limits and ordinary profile
+construction requirements; it does not repeat all budgeted section-topology checks.
+Invalid input returns a typed error without a partial profile list.
+
+Reusing section samples exposed two gaps in extrusion, loft and sweep caps:
+ear clipping could discard collinear rim samples or produce a thin triangle that
+collapses at mesh precision. Those caps now retain a successful ear-clipped cover
+when it uses every boundary sample and its triangles survive placement/narrowing.
+Otherwise they reuse the boundary-preserving Delaunay cover already used by plane
+cuts, without inserting new vertices. Still-unrepresentable cap triangles are
+typed failures. This does not certify the whole body's geometry.
+
+The conversion API is additive and its profiles use normal recipe serialization
+and fingerprints. The cap correction changes evaluation semantics: schema 36
+invalidates prior cache entries. Migration: reevaluate cached recipes and regenerate
+schema-stamped text. Retained plane cuts already use the shared geometry
+implementation through `NodeKind::PlaneCut`.
 
 The `plane_cut` example exports an obliquely cut asymmetric loft, separated capped
 halves, and a section outline. Volume is measured against the same robust face

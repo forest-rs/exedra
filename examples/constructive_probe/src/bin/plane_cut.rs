@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Oblique cut through an asymmetric smooth loft, with separated capped halves
-//! and the section outline. Run `cargo run -p constructive_probe --bin plane_cut
+//! and the section reused as an extruded plate. Run `cargo run -p constructive_probe --bin plane_cut
 //! -- target/plane-cut.glb`.
 
 use exedra_assembly::{Assembly, PartCompiler};
@@ -10,7 +10,7 @@ use exedra_constructive::ir::{CapMode, LoftPolicy, Placement3, Plane3};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 use exedra_constructive::section::{CutCap, SectionPolicy, split_body};
 use exedra_constructive::tessellate::{
-    EvalPolicy, TessellatedBody, tessellate_loft, tessellate_sweep,
+    EvalPolicy, TessellatedBody, tessellate_extrude, tessellate_loft, tessellate_sweep,
 };
 use exedra_gltf::{GltfExportOptions, export_glb_with_options};
 use exedra_mesh::{FaceTriangulation, Mesh};
@@ -153,6 +153,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [0.25, 0.0, 0.75],
         "surface.blue",
     );
+    for (index, converted) in split.section.to_profiles()?.into_iter().enumerate() {
+        let plate = tessellate_extrude(
+            &converted.profile,
+            &converted.placement,
+            0.2,
+            CapMode::Both,
+            &policy,
+        )?;
+        assert!(plate.mesh.validate_deep().is_empty(), "valid section plate");
+        assert!(
+            plate.mesh.boundary_loops()?.is_empty(),
+            "closed section plate"
+        );
+        add(
+            &mut assembly,
+            &format!("section-plate-{index}"),
+            plate.mesh,
+            [2.4, 0.0, 0.0],
+            "surface.blue",
+        );
+    }
     let frame = split.section.frame.rows;
     let ring_profile = exedra_constructive::builders::circle(0.012)?;
     let mut edge_index = 0;

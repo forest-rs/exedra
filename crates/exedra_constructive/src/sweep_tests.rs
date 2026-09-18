@@ -467,13 +467,43 @@ fn mesh_narrowing_must_not_silently_collapse_caps_with_distinct_edges() {
 }
 
 #[test]
-fn nearly_collinear_cap_triangulation_is_refused_after_narrowing() {
+fn legacy_sweep_refuses_unrepresentable_triangulated_caps() {
+    let result = tessellate_sweep(
+        &builders::ring(1.0, 0.5).unwrap(),
+        &Placement3::translate(1e12, 0.0, 0.0),
+        &[[0.0; 3], [0.0, 0.0, 5.0]],
+        CapMode::Both,
+        &EvalPolicy::default(),
+    );
+    assert!(matches!(result, Err(TessellateError::CollapsedGeometry)));
+}
+
+#[test]
+fn nearly_collinear_cap_triangulation_retries_without_losing_boundary() {
     // At this sampling the existing triangulator chooses an almost-collinear
     // triangle joining two outer vertices and one inner vertex. It has zero
-    // area in f32. A closed topology must not conceal that missing cap area.
+    // area in f32. A different cover must retain the rim and positive cap area.
     let profile = builders::ring(1.0, 0.5).expect("ring");
-    assert!(matches!(
-        rail(&profile, &[[0.0; 3], [0.0, 0.0, 5.0]]),
-        Err(TessellateError::CollapsedGeometry)
-    ));
+    let body = rail(&profile, &[[0.0; 3], [0.0, 0.0, 5.0]]).expect("realizable cover");
+    assert_clean(&body);
+    assert!(body.mesh.boundary_loops().unwrap().is_empty());
+    for face in body.mesh.faces() {
+        let outward = match body.source_map.face_feature(face).unwrap() {
+            Feature::CapStart => -1.0,
+            Feature::CapEnd => 1.0,
+            _ => continue,
+        };
+        let points: Vec<_> = body
+            .mesh
+            .face_loop(face)
+            .map(|c| {
+                body.mesh
+                    .vertex_position(body.mesh.to_vertex(c).unwrap())
+                    .unwrap()
+                    .map(f64::from)
+            })
+            .collect();
+        assert_eq!(points.len(), 3);
+        assert!(cross(sub(points[1], points[0]), sub(points[2], points[0]))[2] * outward > 0.0);
+    }
 }

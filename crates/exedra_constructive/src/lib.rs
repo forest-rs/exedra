@@ -128,13 +128,12 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 35 shares surface analysis between inventory and workplane resolution.
-/// Workplane corner budgets now count connectivity and geometry visits (twice
-/// per selected corner on success); increase explicitly tuned limits accordingly.
-/// Resolution returns `WorkplaneFailure`, retaining the selection, coarse `kind`
-/// and structured `evidence`. `TessellateError::Attachment` carries that failure.
+/// Schema 36 preserves collinear rim samples in unrefined extrusion, loft and
+/// sweep caps, retrying an unrepresentable ear-clipped cover with boundary-preserving
+/// Delaunay triangulation. Cap triangles that still collapse or reverse at mesh
+/// precision are refused with `TessellateError::CollapsedGeometry`.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped text.
-pub const EVAL_SCHEMA_VERSION: u32 = 35;
+pub const EVAL_SCHEMA_VERSION: u32 = 36;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
