@@ -104,6 +104,9 @@ pub(crate) fn exact_plan(
 /// nested rewrites are folded into the outer plan.
 fn exact_child_plan(recipe: &Recipe, node: NodeId) -> Option<ExactStretchPlan> {
     let node = recipe.node(node).expect("stretch child is validated");
+    if node.surface_chart.is_some() {
+        return None;
+    }
     match &node.kind {
         NodeKind::Transform { child, xf } => {
             exact_child_plan(recipe, *child).map(|plan| plan.under(xf))

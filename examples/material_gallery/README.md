@@ -75,8 +75,27 @@ then a 4 mm chamfer and a 4 mm fillet of the same door. The finish happens insid
 the constructive recipe, before assembly compilation and GLB export.
 
 The Blender script renders checkerboard and woodgrain views using only the
-exported UVs; it never unwraps or repairs the imported mesh. Textures are supplied
-by the script because the Exedra material resolver currently supports untextured
-materials. Fillet and chamfer mapping projects the owning source face's chart:
+exported UVs; it never unwraps or repairs the imported mesh. Textures in this older example are supplied
+by the script. The construction-chart example below embeds its texture through
+the material resolver. Fillet and chamfer mapping projects the owning source face's chart:
 the close views show both texture continuity on that side and stretching toward
 the other tangency. Source-chart changes at bands and corner patches are seams.
+
+
+## Construction surface charts
+
+```sh
+cargo run -p material_gallery --bin surface_charts -- target/surface-charts.glb
+```
+
+A half-round vault and two turned vessels use an embedded procedural grid.
+Dark grid lines are one metre apart in the authored rest coordinates; pale
+intermediate lines divide a repeat in half. Extrusion measures sampled perimeter
+distance and depth. The vessels use a one-metre reference radius for angular
+distance, so the grid deliberately stretches with the actual radius. One vessel
+is a reflected occurrence of the same compiled part. No box projection is used.
+
+The example checks complete UV coverage and that a material-color edit reuses
+compiled geometry. The integration test checks texture/normal accessors and the
+embedded image in the exported GLB. See the constructive crate's
+[chart contract](../../crates/exedra_constructive/docs/adr-0023-construction-surface-charts.md).

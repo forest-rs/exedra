@@ -21,6 +21,7 @@ use core::fmt::Write as _;
 
 use kurbo::Point;
 
+use crate::chart::{ChartTransform, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
@@ -93,6 +94,24 @@ pub fn dump_recipe(recipe: &Recipe) -> String {
     let _ = writeln!(out, "nodes {}", recipe.nodes().len());
     for (index, node) in recipe.nodes().iter().enumerate() {
         let mut line = format!("  node {index} ");
+        if let Some(chart) = node.surface_chart {
+            line.push_str("charted ");
+            match chart {
+                SurfaceChart::Extrude { .. } => line.push_str("extrude "),
+                SurfaceChart::Revolve {
+                    reference_radius, ..
+                } => {
+                    let _ = write!(line, "revolve radius {} ", hex(reference_radius));
+                }
+            }
+            for (label, t) in [("wall", chart.wall()), ("caps", chart.caps())] {
+                let _ = write!(line, "{label} ");
+                for v in t.matrix.into_iter().flatten().chain(t.offset) {
+                    let _ = write!(line, "{} ", hex(v));
+                }
+            }
+            line.push_str("operation ");
+        }
         dump_kind(&mut line, &node.kind);
         match node.source {
             None => line.push_str(" source -"),
@@ -967,7 +986,40 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
     }
 
     let mut tokens = body.split_whitespace();
-    let kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+    let mut kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+    if kind_name == "charted" {
+        let metric = tokens.next().ok_or(TextError::Malformed { line })?;
+        let radius = if metric == "revolve" {
+            expect(&mut tokens, "radius", line)?;
+            Some(next_f64(&mut tokens, line)?)
+        } else if metric == "extrude" {
+            None
+        } else {
+            return Err(TextError::Malformed { line });
+        };
+        let mut transform = |label| -> Result<ChartTransform, TextError> {
+            expect(&mut tokens, label, line)?;
+            Ok(ChartTransform {
+                matrix: [
+                    [next_f64(&mut tokens, line)?, next_f64(&mut tokens, line)?],
+                    [next_f64(&mut tokens, line)?, next_f64(&mut tokens, line)?],
+                ],
+                offset: [next_f64(&mut tokens, line)?, next_f64(&mut tokens, line)?],
+            })
+        };
+        let wall = transform("wall")?;
+        let caps = transform("caps")?;
+        builder.with_surface_chart(match radius {
+            None => SurfaceChart::Extrude { wall, caps },
+            Some(reference_radius) => SurfaceChart::Revolve {
+                reference_radius,
+                wall,
+                caps,
+            },
+        });
+        expect(&mut tokens, "operation", line)?;
+        kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+    }
     let kind = match kind_name {
         "on_workplane" => {
             use crate::workplane::{SurfaceSelector, WorkplaneAttachment};
@@ -1694,14 +1746,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 38\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 39\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 38\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 39\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

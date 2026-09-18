@@ -76,6 +76,7 @@ pub use kurbo;
 
 pub mod builders;
 pub mod cache;
+pub mod chart;
 pub mod clearance;
 pub mod discretize;
 #[cfg(test)]
@@ -128,11 +129,11 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 38 adds authored closure, section datums and corner policies to
-/// analytic curve paths. Closed planar frames meet at one shared seam; sampling
-/// evidence distinguishes authored corners from smooth interior stations.
+/// Schema 39 adds opt-in construction UV charts to generating nodes and their
+/// canonical identity. Charted surfaces retain the original rest metric and
+/// profile sampling alongside mesh corner coordinates.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped text.
-pub const EVAL_SCHEMA_VERSION: u32 = 38;
+pub const EVAL_SCHEMA_VERSION: u32 = 39;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
