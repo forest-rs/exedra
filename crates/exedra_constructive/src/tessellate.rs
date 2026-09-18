@@ -12,6 +12,7 @@
 //! emission (`as f32`, round-to-nearest-even).
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use exedra_mesh::{FaceBuildAttrs, MeshBuilder};
@@ -25,9 +26,10 @@ use crate::discretize::{
     CircularEdgeConstraints, DiscretizeError, DiscretizePolicy, DiscretizedLoop,
     DiscretizedProfile, circular_edge_count, discretize_profile,
 };
-use crate::ir::{CapMode, LoftPolicy, Placement3, PrimitiveSpec, SlotId};
+use crate::ir::{CapMode, LoftPolicy, PathClosure, Placement3, PrimitiveSpec, SlotId};
 use crate::len_u32;
 use crate::profile::Profile2;
+mod closed_sweep;
 mod diagnostics;
 pub use diagnostics::ProfileBoundaryEdge;
 use diagnostics::triangulation_error;
@@ -43,8 +45,12 @@ pub struct EvalPolicy {
     /// Curve discretization policy.
     pub discretize: DiscretizePolicy,
     /// Centerline chord/tangent accuracy and work budgets for analytic sweep
-    /// paths. Independent of profile discretization and mesh quantization.
+    /// paths. The total edge budget also bounds controlled polyline runs.
+    /// Independent of profile discretization and mesh quantization.
     pub sweep_path: crate::path::PathDiscretizePolicy,
+    /// Maximum mesh vertices in a controlled mitered or curved sweep.
+    /// Checked before allocating mesh vertices, including caps' shared rims.
+    pub max_sweep_vertices: u32,
     /// Point-trajectory accuracy and work budgets for smooth lofts.
     pub loft: crate::loft::LoftSamplingPolicy,
     /// Accuracy and per-body work budgets for retained plane operations, in
@@ -103,6 +109,7 @@ impl Default for EvalPolicy {
         Self {
             discretize: DiscretizePolicy::default(),
             sweep_path: crate::path::PathDiscretizePolicy::default(),
+            max_sweep_vertices: 1_000_000,
             loft: crate::loft::LoftSamplingPolicy::default(),
             section: crate::section::SectionPolicy::default(),
             workplane: crate::workplane::WorkplanePolicy::default(),
@@ -224,9 +231,11 @@ pub struct TessellatedBody {
     /// sampling bounds for a curved sweep. `SweepWall::band` indexes these
     /// spans. Cache hits and instances (including reflections and nonuniform
     /// scaling) retain this provenance; geometry-changing operations clear it.
+    /// Boolean descendants retain original sampling ancestry per face through
+    /// [`crate::source_map::SourceMap::sweep_sampling`].
     /// These bounds do not describe the placed mesh's world-space accuracy
     /// or certify its winding. See [`Self::sweep_checks`] for realization checks.
-    pub path_sampling: Option<crate::path::PathSampling>,
+    pub path_sampling: Option<Arc<crate::path::PathSampling>>,
     /// Original smooth-loft sampling and local realization evidence.
     /// `None` for ruled lofts and geometry derived by other operations.
     /// Retained as source evidence by instances; not a solid certificate.
@@ -374,11 +383,34 @@ pub enum TessellateError {
     /// an overflow to infinity or a positive primitive extent narrowing to
     /// zero).
     NonFiniteGeometry,
-    /// An open sweep needs finite points, distinct endpoints, distinct adjacent
-    /// points, and usable segment lengths.
+    /// A controlled sweep needs finite stations, distinct adjacent points and
+    /// usable runs. A closed path needs at least three stations, without a
+    /// repeated closing endpoint; an open path needs at least two.
     InvalidSweepPath,
     /// Section-X is nonfinite, zero, or within 1e-12 of parallel to the tangent.
     InvalidSweepOrientation,
+    /// The declared closed-path plane normal is nonfinite or zero.
+    InvalidSweepPlane,
+    /// A station lies outside the f64 rounding allowance of the declared plane.
+    NonPlanarSweep {
+        /// Authored station index.
+        point: usize,
+        /// Absolute plane distance in path-local units.
+        distance: f64,
+        /// Accepted f64 rounding allowance in the same units.
+        tolerance: f64,
+    },
+    /// A closed path has no endpoints to cap; request [`CapMode::None`].
+    ClosedSweepCaps,
+    /// The section datum contains a nonfinite coordinate.
+    InvalidSectionOrigin,
+    /// The requested sweep exceeds the caller's mesh-vertex work budget.
+    SweepVertexBudgetExceeded {
+        /// Required shared ring vertices.
+        required: u64,
+        /// Caller-supplied vertex limit.
+        maximum: u32,
+    },
     /// The miter limit must be finite and at least one.
     InvalidMiterLimit,
     /// The corner needs more section-plane stretch than the authored limit.
@@ -483,6 +515,22 @@ impl core::fmt::Display for TessellateError {
                 f,
                 "sweep section-X must have a usable component perpendicular to the first segment"
             ),
+            Self::InvalidSweepPlane => {
+                write!(f, "closed sweep plane needs a finite nonzero normal")
+            }
+            Self::NonPlanarSweep {
+                point,
+                distance,
+                tolerance,
+            } => write!(
+                f,
+                "sweep station {point} is {distance} from its declared plane, exceeding {tolerance}"
+            ),
+            Self::ClosedSweepCaps => write!(f, "a closed sweep requires no end caps"),
+            Self::InvalidSectionOrigin => write!(f, "sweep section origin must be finite"),
+            Self::SweepVertexBudgetExceeded { required, maximum } => {
+                write!(f, "sweep needs {required} vertices, exceeding {maximum}")
+            }
             Self::InvalidMiterLimit => {
                 write!(f, "sweep miter limit must be finite and at least one")
             }
@@ -2453,38 +2501,18 @@ fn mitered_frames(
     section_x: [f64; 3],
     miter_limit: f64,
 ) -> Result<Vec<SweepFrame>, TessellateError> {
-    validate_mitered_path(points, section_x, miter_limit)?;
     let mut t = sweep_direction(points[0], points[1])?;
     let mut u = initial_section_x(t, section_x)?;
     let mut frames = Vec::with_capacity(points.len());
     frames.push((points[0], u, cross(t, u), t));
     for i in 1..points.len() - 1 {
         let next = sweep_direction(points[i], points[i + 1])?;
+        let frame = miter_frame(points[i], i, t, next, u, miter_limit)?;
+        let m = frame.3;
+        frames.push(frame);
         if next == t {
-            frames.push((points[i], u, cross(t, u), t));
             continue;
         }
-        let sum = add(t, next);
-        let sum_length = norm(sum);
-        if sum_length <= 1e-12 {
-            return Err(TessellateError::PathCusp { point: i });
-        }
-        let m = scale(sum, 1.0 / sum_length);
-        // Half-angle identity avoids cancellation in dot(t, m) near reversal.
-        let cosine = sum_length * 0.5;
-        let ratio = 1.0 / cosine;
-        if ratio > miter_limit {
-            return Err(TessellateError::MiterLimitExceeded {
-                point: i,
-                required: ratio,
-                maximum: miter_limit,
-            });
-        }
-        let v = cross(t, u);
-        // Intersection of each incoming longitudinal line with the common
-        // bisector plane. These bases are intentionally not unit vectors.
-        let cut = |axis| sub(axis, scale(t, dot(axis, m) / cosine));
-        frames.push((points[i], cut(u), cut(v), m));
         // Two reflections implement the shortest rotation taking t to next.
         // Since u is perpendicular to t, the first reflection leaves u fixed.
         u = sub(u, scale(m, 2.0 * dot(u, m)));
@@ -2493,6 +2521,52 @@ fn mitered_frames(
     }
     frames.push((*points.last().expect("validated path"), u, cross(t, u), t));
     Ok(frames)
+}
+
+/// Intersects longitudinal generators with the shared tangent-bisector plane.
+fn miter_frame(
+    origin: [f64; 3],
+    point: usize,
+    t: [f64; 3],
+    next: [f64; 3],
+    u: [f64; 3],
+    miter_limit: f64,
+) -> Result<SweepFrame, TessellateError> {
+    if next == t {
+        return Ok((origin, u, cross(t, u), t));
+    }
+    let sum = add(t, next);
+    let sum_length = norm(sum);
+    if sum_length <= 1e-12 {
+        return Err(TessellateError::PathCusp { point });
+    }
+    let m = scale(sum, 1.0 / sum_length);
+    let cosine = sum_length * 0.5;
+    let ratio = 1.0 / cosine;
+    if ratio > miter_limit {
+        return Err(TessellateError::MiterLimitExceeded {
+            point,
+            required: ratio,
+            maximum: miter_limit,
+        });
+    }
+    let cut = |axis| sub(axis, scale(t, dot(axis, m) / cosine));
+    Ok((origin, cut(u), cut(cross(t, u)), m))
+}
+
+fn check_sweep_vertex_budget(
+    rings: usize,
+    section: usize,
+    policy: &EvalPolicy,
+) -> Result<(), TessellateError> {
+    let required = (rings as u64).saturating_mul(section as u64);
+    if required > u64::from(policy.max_sweep_vertices) {
+        return Err(TessellateError::SweepVertexBudgetExceeded {
+            required,
+            maximum: policy.max_sweep_vertices,
+        });
+    }
+    Ok(())
 }
 
 fn sweep_point(frame: &SweepFrame, point: [f64; 2]) -> [f64; 3] {
@@ -2560,13 +2634,21 @@ fn check_sweep_realization(
 /// triangulation. Caps that still degenerate at f32 precision are refused.
 /// Provenance and crease attribution follow [`tessellate_sweep`].
 ///
+/// `section_origin` is the profile-space datum mapped to the path, before
+/// mitering. `ClosedPlanar` uses a shared closing ring and checks every corner,
+/// including station zero; supply no duplicate endpoint and `CapMode::None`.
+/// The plane normal validates planarity; its sign does not change the authored
+/// roll. Both controlled sweep forms honor `sweep_path.max_path_edges` and
+/// `max_sweep_vertices`.
+///
 /// # Migration
 ///
+/// Existing callers add `[0.0; 2]` and `PathClosure::Open` after `section_x`.
 /// Use this function or [`crate::ir::Path3::MiteredPolyline`] to opt into
 /// authored orientation and dimensional joins. Existing `tessellate_sweep`
 /// and `Path3::Polyline` retain their automatic seed and legacy ring joins.
 /// The new recipe operation round-trips through text and interchange;
-/// older readers cannot read it. Evaluation schema 26 invalidates old hashes.
+/// older readers cannot read it. Evaluation schema 37 invalidates old hashes.
 ///
 /// # Errors
 ///
@@ -2577,13 +2659,52 @@ pub fn tessellate_mitered_sweep(
     placement: &Placement3,
     path: &[[f64; 3]],
     section_x: [f64; 3],
+    section_origin: [f64; 2],
+    closure: PathClosure,
     miter_limit: f64,
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
-    let frames = mitered_frames(path, section_x, miter_limit)?;
+    policy
+        .sweep_path
+        .validate()
+        .map_err(TessellateError::Path)?;
+    let closed = matches!(closure, PathClosure::ClosedPlanar { .. });
+    if closed && caps != CapMode::None {
+        return Err(TessellateError::ClosedSweepCaps);
+    }
+    if section_origin.iter().any(|v| !v.is_finite()) {
+        return Err(TessellateError::InvalidSectionOrigin);
+    }
+    let bands = path.len().saturating_sub(usize::from(!closed));
+    if bands > policy.sweep_path.max_path_edges as usize {
+        return Err(TessellateError::Path(
+            crate::path::PathDiscretizeError::PathBudgetExceeded {
+                maximum: policy.sweep_path.max_path_edges,
+            },
+        ));
+    }
+    validate_mitered_path(path, section_x, miter_limit)?;
+    let mut frames = match closure {
+        PathClosure::Open => mitered_frames(path, section_x, miter_limit)?,
+        PathClosure::ClosedPlanar { normal } => {
+            closed_sweep::frames(path, section_x, normal, miter_limit)?
+        }
+    };
+    if section_origin != [0.0; 2] {
+        for frame in &mut frames {
+            frame.0 = sub(
+                frame.0,
+                add(
+                    scale(frame.1, section_origin[0]),
+                    scale(frame.2, section_origin[1]),
+                ),
+            );
+        }
+    }
     let d = discretize_profile(profile, &policy.discretize)?;
-    check_sweep_spans(&frames, &d, placement)?;
+    check_sweep_vertex_budget(path.len(), d.points_len(), policy)?;
+    check_sweep_spans(&frames, &d, placement, path)?;
     tessellate_sweep_rings(
         profile,
         placement,
@@ -2593,10 +2714,11 @@ pub fn tessellate_mitered_sweep(
         &d,
         &frames,
         Some(SweepChecks {
-            bands: path.len() - 1,
+            bands,
             section_vertices: d.points_len(),
         }),
         None,
+        closed,
     )
 }
 
@@ -2604,9 +2726,10 @@ fn check_sweep_spans(
     frames: &[SweepFrame],
     d: &DiscretizedProfile,
     placement: &Placement3,
+    path: &[[f64; 3]],
 ) -> Result<(), TessellateError> {
     for (band, pair) in frames.windows(2).enumerate() {
-        let direction = sweep_direction(pair[0].0, pair[1].0)?;
+        let direction = sweep_direction(path[band], path[(band + 1) % path.len()])?;
         for (vertex, point) in d.rings().flat_map(|r| &r.points).enumerate() {
             let start = sweep_point(&pair[0], *point);
             let end = sweep_point(&pair[1], *point);
@@ -2686,8 +2809,9 @@ pub fn tessellate_curved_sweep(
         frames.push((next.point, u, cross(next.tangent, u), next.tangent));
     }
     let d = discretize_profile(profile, &policy.discretize)?;
-    check_sweep_spans(&frames, &d, placement)?;
+    check_sweep_vertex_budget(frames.len(), d.points_len(), policy)?;
     let points: Vec<_> = sampled.stations.iter().map(|s| s.point).collect();
+    check_sweep_spans(&frames, &d, placement, &points)?;
     tessellate_sweep_rings(
         profile,
         placement,
@@ -2701,6 +2825,7 @@ pub fn tessellate_curved_sweep(
             section_vertices: d.points_len(),
         }),
         Some(sampled.sampling),
+        false,
     )
 }
 
@@ -2729,7 +2854,7 @@ pub fn tessellate_sweep(
     let d = discretize_profile(profile, &policy.discretize)?;
     let frames = sweep_frames(path, policy)?;
     tessellate_sweep_rings(
-        profile, placement, path, caps, policy, &d, &frames, None, None,
+        profile, placement, path, caps, policy, &d, &frames, None, None, false,
     )
 }
 
@@ -2743,6 +2868,7 @@ fn tessellate_sweep_rings(
     frames: &[SweepFrame],
     sweep_checks: Option<SweepChecks>,
     path_sampling: Option<crate::path::PathSampling>,
+    closed: bool,
 ) -> Result<TessellatedBody, TessellateError> {
     let flip = det3(placement) < 0.0;
 
@@ -2758,13 +2884,22 @@ fn tessellate_sweep_rings(
             let cross = norm(cross(a, b));
             flags[i] = cross > policy.sharp_sin_threshold * norm(a) * norm(b);
         }
+        if closed {
+            for i in [0, path.len() - 1] {
+                let a = sub(path[i], path[(i + path.len() - 1) % path.len()]);
+                let b = sub(path[(i + 1) % path.len()], path[i]);
+                flags[i] = norm(cross(a, b)) > policy.sharp_sin_threshold * norm(a) * norm(b);
+            }
+            flags[frames.len() - 1] = flags[0];
+        }
         flags
     };
 
     let ring_starts = ring_starts(d);
     let total = len_u32(d.points_len());
     let mut builder = OrientedBuilder::new(flip);
-    for (origin, u, v, _) in frames {
+    let ring_count = frames.len() - usize::from(closed);
+    for (origin, u, v, _) in frames.iter().take(ring_count) {
         for ring in d.rings() {
             for p in &ring.points {
                 let local = add(add(*origin, scale(*u, p[0])), scale(*v, p[1]));
@@ -2787,7 +2922,7 @@ fn tessellate_sweep_rings(
 
     for band in 0..bands {
         let below = ring_offset(band);
-        let above = ring_offset(band + 1);
+        let above = ring_offset((band + 1) % ring_count);
         let band_u16 = u16::try_from(band).unwrap_or(u16::MAX);
         for (ring_index, ring) in d.rings().enumerate() {
             let base = ring_starts[ring_index];
@@ -2800,12 +2935,12 @@ fn tessellate_sweep_rings(
                     ring.is_endpoint(point)
                         && corner_sharp[ring_index][ring.edge_seg[point as usize] as usize]
                 };
-                let bottom_crease = if band == 0 {
+                let bottom_crease = if band == 0 && !closed {
                     start_cap
                 } else {
                     corner_ring_sharp[band]
                 };
-                let top_crease = if band + 1 == bands {
+                let top_crease = if band + 1 == bands && !closed {
                     end_cap
                 } else {
                     corner_ring_sharp[band + 1]
@@ -2924,8 +3059,13 @@ fn tessellate_sweep_rings(
     }
 
     let result = builder.build()?;
-    let vertex_features = profile_vertex_features(d, len_u32(frames.len()));
-    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features);
+    let vertex_features = profile_vertex_features(d, len_u32(ring_count));
+    let path_sampling = path_sampling.map(Arc::new);
+    let source_map = crate::source_map::SourceMap::new(&result.mesh, face_origins, vertex_features)
+        .with_sweep_sampling(crate::source_map::SweepSampling {
+            profile: policy.discretize,
+            path: path_sampling.clone(),
+        });
     Ok(TessellatedBody {
         mesh: result.mesh,
         source_map,
@@ -5409,6 +5549,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "closed_sweep_tests.rs"]
+mod closed_sweep_tests;
 #[cfg(test)]
 #[path = "sweep_tests.rs"]
 mod sweep_tests;

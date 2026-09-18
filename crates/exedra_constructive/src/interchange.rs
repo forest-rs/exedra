@@ -34,8 +34,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, Placement3,
-    Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId, SourceId,
+    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
+    Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError, SlotId,
+    SourceId,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -201,6 +202,19 @@ pub enum EdgeBoundariesDto {
     Operands(Vec<[OperandRegionDto; 2]>),
 }
 
+/// Explicit controlled-path connectivity, independent of endpoint coordinates.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathClosureDto {
+    /// Spatial open rail.
+    Open,
+    /// Closed path in the plane through its first station.
+    ClosedPlanar {
+        /// Finite nonzero normal in path-local coordinates.
+        normal: [f64; 3],
+    },
+}
+
 /// Node kind payloads. Unknown kinds are deserialization errors by design.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -313,6 +327,24 @@ pub enum NodeKindDto {
         /// Maximum section-plane stretch ratio.
         miter_limit: f64,
         /// Cap mode.
+        caps: String,
+    },
+    /// Controlled polyline sweep with an explicit section datum and connectivity.
+    /// This distinct operation prevents older readers ignoring closure fields.
+    MiteredPathSweep {
+        /// Profile index.
+        profile: u32,
+        /// Unique path-local stations; closed paths do not repeat the endpoint.
+        points: Vec<[f64; 3]>,
+        /// Authored initial section-X direction.
+        section_x: [f64; 3],
+        /// Profile datum mapped to the path.
+        section_origin: [f64; 2],
+        /// Explicit endpoint connectivity.
+        closure: PathClosureDto,
+        /// Maximum section-plane stretch ratio.
+        miter_limit: f64,
+        /// Cap mode; closed paths require none.
         caps: String,
     },
     /// Sweep along tangent-continuous analytic spatial segments.
@@ -716,11 +748,20 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             Path3::MiteredPolyline {
                 points,
                 section_x,
+                section_origin,
+                closure,
                 miter_limit,
-            } => NodeKindDto::MiteredSweep {
+            } => NodeKindDto::MiteredPathSweep {
                 profile: profile.0,
                 points: points.clone(),
                 section_x: *section_x,
+                section_origin: *section_origin,
+                closure: match closure {
+                    PathClosure::Open => PathClosureDto::Open,
+                    PathClosure::ClosedPlanar { normal } => {
+                        PathClosureDto::ClosedPlanar { normal: *normal }
+                    }
+                },
                 miter_limit: *miter_limit,
                 caps: caps_name(*caps),
             },
@@ -1032,6 +1073,32 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             path: Path3::MiteredPolyline {
                 points: points.clone(),
                 section_x: *section_x,
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
+                miter_limit: *miter_limit,
+            },
+            caps: caps_value(caps)?,
+        },
+        NodeKindDto::MiteredPathSweep {
+            profile,
+            points,
+            section_x,
+            section_origin,
+            closure,
+            miter_limit,
+            caps,
+        } => NodeKind::Sweep {
+            profile: ProfileId(*profile),
+            path: Path3::MiteredPolyline {
+                points: points.clone(),
+                section_x: *section_x,
+                section_origin: *section_origin,
+                closure: match closure {
+                    PathClosureDto::Open => PathClosure::Open,
+                    PathClosureDto::ClosedPlanar { normal } => {
+                        PathClosure::ClosedPlanar { normal: *normal }
+                    }
+                },
                 miter_limit: *miter_limit,
             },
             caps: caps_value(caps)?,

@@ -149,6 +149,25 @@ pub enum FramePolicy {
     RotationMinimizing,
 }
 
+/// Authored endpoint connectivity of a controlled polyline sweep.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PathClosure {
+    /// A spatial rail with distinct endpoints and optional caps.
+    #[default]
+    Open,
+    /// A cyclic path in the plane through its first station.
+    ///
+    /// Stations do not repeat the first endpoint. The closing run and corner
+    /// are explicit; caps must be [`CapMode::None`]. Only f64 rounding-scale
+    /// deviation from the plane is accepted, without projecting the points.
+    ClosedPlanar {
+        /// Finite nonzero plane normal in path-local coordinates.
+        /// Its magnitude and sign do not change section orientation, which
+        /// remains controlled by `section_x` and traversal direction.
+        normal: [f64; 3],
+    },
+}
+
 /// A 3D sweep path.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -166,11 +185,17 @@ pub enum Path3 {
     /// segment directions. Local reversed spans fail; distant intersections
     /// are not checked. See [`crate::tessellate::SweepChecks`].
     MiteredPolyline {
-        /// Open path with at least two finite points; adjacent points differ.
+        /// Finite stations: at least two for open paths, three for closed paths.
+        /// Adjacent points differ; do not repeat the first station at the end.
         points: Vec<[f64; 3]>,
         /// Authored section-X direction in path-local coordinates. Projected
         /// perpendicular to the first segment; must not be nearly parallel.
         section_x: [f64; 3],
+        /// Profile coordinates of the datum placed on the path. No recentering
+        /// or inferred section offset is applied.
+        section_origin: [f64; 2],
+        /// Authored connectivity; closure is never inferred from coordinates.
+        closure: PathClosure,
         /// Maximum section-plane stretch, `1 / cos(turn / 2)`, finite and >= 1.
         /// Exceeding it fails rather than changing the join style.
         miter_limit: f64,
@@ -1155,7 +1180,7 @@ impl RecipeBuilder {
             NodeKind::Sweep {
                 profile,
                 path,
-                caps: _,
+                caps,
             } => {
                 self.check_profile(*profile)?;
                 if let Path3::Curves {
@@ -1193,6 +1218,8 @@ impl RecipeBuilder {
                 }
                 if let Path3::MiteredPolyline {
                     section_x,
+                    section_origin,
+                    closure,
                     miter_limit,
                     ..
                 } = path
@@ -1207,9 +1234,32 @@ impl RecipeBuilder {
                             what: "sweep section-X",
                         });
                     }
+                    if section_origin.iter().any(|v| !v.is_finite()) {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "sweep section origin",
+                        });
+                    }
+                    if let PathClosure::ClosedPlanar { normal } = closure {
+                        if points.len() < 3 {
+                            return Err(RecipeError::TooFewOperands {
+                                what: "closed sweep stations",
+                                count: points.len(),
+                            });
+                        }
+                        if normal.iter().any(|v| !v.is_finite()) || *normal == [0.0; 3] {
+                            return Err(RecipeError::InvalidParameter {
+                                what: "sweep plane normal",
+                            });
+                        }
+                        if *caps != CapMode::None {
+                            return Err(RecipeError::InvalidParameter {
+                                what: "closed sweep caps",
+                            });
+                        }
+                    }
                     if points.first() == points.last() {
                         return Err(RecipeError::InvalidParameter {
-                            what: "closed mitered sweep path",
+                            what: "sweep path repeated endpoint",
                         });
                     }
                 }
@@ -1848,6 +1898,8 @@ fn node_canon_bytes(
                 Path3::MiteredPolyline {
                     points,
                     section_x,
+                    section_origin,
+                    closure,
                     miter_limit,
                 } => {
                     out.push(1);
@@ -1861,6 +1913,18 @@ fn node_canon_bytes(
                         put_f64(out, v);
                     }
                     put_f64(out, *miter_limit);
+                    for &v in section_origin {
+                        put_f64(out, v);
+                    }
+                    match closure {
+                        PathClosure::Open => out.push(0),
+                        PathClosure::ClosedPlanar { normal } => {
+                            out.push(1);
+                            for &v in normal {
+                                put_f64(out, v);
+                            }
+                        }
+                    }
                 }
                 Path3::Curves {
                     start,
@@ -2657,7 +2721,7 @@ mod tests {
         let r = simple_recipe(3.0);
         assert_eq!(
             r.recipe_fingerprint().0,
-            0xe2a991167c3be3bcb1007e8302ceadf,
+            0xde1ec96c09409ab1adc4d63b4db73354,
             "canonical encoding changed; bump EVAL_SCHEMA_VERSION"
         );
     }

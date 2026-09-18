@@ -8,7 +8,7 @@ use super::*;
 use crate::builders;
 use crate::cache::EvalCache;
 use crate::evaluate::{evaluate, evaluate_with_cache};
-use crate::ir::{NodeKind, Path3, Recipe, RecipeBuilder};
+use crate::ir::{NodeKind, Path3, PathClosure, Recipe, RecipeBuilder};
 use alloc::vec;
 
 fn asymmetric() -> Profile2 {
@@ -21,6 +21,8 @@ fn rail(profile: &Profile2, path: &[[f64; 3]]) -> Result<TessellatedBody, Tessel
         &Placement3::IDENTITY,
         path,
         [1.0, 0.0, 0.0],
+        [0.0; 2],
+        PathClosure::Open,
         4.0,
         CapMode::Both,
         &EvalPolicy::default(),
@@ -163,6 +165,8 @@ fn reflected_placement_keeps_outward_winding_and_provenance() {
         &placement,
         &path,
         [1.0, 0.0, 0.0],
+        [0.0; 2],
+        PathClosure::Open,
         4.0,
         CapMode::Both,
         &EvalPolicy::default(),
@@ -189,6 +193,8 @@ fn caps_and_holes_close_only_when_requested() {
             &Placement3::IDENTITY,
             &path,
             [1.0, 0.0, 0.0],
+            [0.0; 2],
+            PathClosure::Open,
             4.0,
             caps,
             &EvalPolicy::default(),
@@ -223,6 +229,8 @@ fn invalid_inputs_and_local_foldovers_are_typed_failures() {
                 &Placement3::IDENTITY,
                 &straight,
                 x,
+                [0.0; 2],
+                PathClosure::Open,
                 4.0,
                 CapMode::Both,
                 &EvalPolicy::default()
@@ -249,6 +257,8 @@ fn invalid_inputs_and_local_foldovers_are_typed_failures() {
                 &Placement3::IDENTITY,
                 &straight,
                 [1.0, 0.0, 0.0],
+                [0.0; 2],
+                PathClosure::Open,
                 limit,
                 CapMode::Both,
                 &EvalPolicy::default()
@@ -287,6 +297,8 @@ fn recipe(x: [f64; 3], miter_limit: f64) -> Recipe {
             path: Path3::MiteredPolyline {
                 points: vec![[0.0; 3], [0.0, 0.0, 4.0], [3.0, 0.0, 4.0]],
                 section_x: x,
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
                 miter_limit,
             },
             caps: CapMode::Both,
@@ -301,7 +313,7 @@ fn recipe_roundtrips_and_cache_preserve_orientation_and_evidence() {
     let text = crate::text::dump_recipe(&r);
     let parsed = crate::text::parse_recipe(&text).expect("text roundtrip");
     assert_eq!(r.recipe_fingerprint(), parsed.recipe_fingerprint());
-    assert!(crate::text::parse_recipe(&text.replace("mitered_sweep", "sweep")).is_err());
+    assert!(crate::text::parse_recipe(&text.replace("mitered_path_sweep", "sweep")).is_err());
     #[cfg(feature = "serde")]
     {
         let dto = crate::interchange::to_dto(&r);
@@ -309,6 +321,21 @@ fn recipe_roundtrips_and_cache_preserve_orientation_and_evidence() {
         let dto = serde_json::from_str(&json).expect("read json");
         let rebuilt = crate::interchange::from_dto(&dto).expect("interchange");
         assert_eq!(r.recipe_fingerprint(), rebuilt.recipe_fingerprint());
+        // Existing v1 JSON keeps its original open, zero-datum semantics.
+        let mut legacy = serde_json::to_value(&dto).expect("JSON value");
+        let node = legacy["nodes"][r.root().0 as usize]
+            .as_object_mut()
+            .unwrap();
+        node.insert("op".into(), "mitered_sweep".into());
+        node.remove("section_origin");
+        node.remove("closure");
+        let legacy = serde_json::from_value(legacy).expect("legacy DTO");
+        assert_eq!(
+            r.recipe_fingerprint(),
+            crate::interchange::from_dto(&legacy)
+                .unwrap()
+                .recipe_fingerprint()
+        );
     }
     assert_ne!(
         r.recipe_fingerprint(),
@@ -349,6 +376,8 @@ fn collinear_runs_allow_unit_miter_limit_and_scaled_authored_directions() {
             &Placement3::IDENTITY,
             &path,
             x,
+            [0.0; 2],
+            PathClosure::Open,
             1.0,
             CapMode::Both,
             &EvalPolicy::default(),
@@ -405,6 +434,8 @@ fn evaluation_keeps_miter_failure_node_and_payload() {
             path: Path3::MiteredPolyline {
                 points: vec![[0.0; 3], [0.0, 0.0, 4.0], [3.0, 0.0, 4.0]],
                 section_x: [1.0, 0.0, 0.0],
+                section_origin: [0.0; 2],
+                closure: PathClosure::Open,
                 miter_limit: 1.1,
             },
             caps: CapMode::Both,
@@ -430,6 +461,8 @@ fn mesh_narrowing_must_not_silently_collapse_rail_walls() {
         &Placement3::translate(1e12, 0.0, 0.0),
         &[[0.0; 3], [0.0, 0.0, 4.0]],
         [1.0, 0.0, 0.0],
+        [0.0; 2],
+        PathClosure::Open,
         2.0,
         CapMode::Both,
         &EvalPolicy::default(),
@@ -456,6 +489,8 @@ fn mesh_narrowing_must_not_silently_collapse_caps_with_distinct_edges() {
         &Placement3::translate(0.0, 1e8, 0.0),
         &[[0.0; 3], [0.0, 0.0, 4.0]],
         [1.0, 0.0, 0.0],
+        [0.0; 2],
+        PathClosure::Open,
         2.0,
         CapMode::Both,
         &EvalPolicy::default(),

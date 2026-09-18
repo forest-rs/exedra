@@ -23,8 +23,8 @@ use kurbo::Point;
 
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, Placement3,
-    Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
+    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
+    Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -385,13 +385,28 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 }
                 Path3::MiteredPolyline {
                     section_x,
+                    section_origin,
+                    closure,
                     miter_limit,
                     ..
                 } => {
                     let _ = write!(
                         line,
-                        "mitered_sweep profile {} section_x {} {} {} miter_limit {} points {} caps ",
+                        "mitered_path_sweep profile {} section_origin {} {} closure ",
                         profile.0,
+                        hex(section_origin[0]),
+                        hex(section_origin[1])
+                    );
+                    match closure {
+                        PathClosure::Open => line.push_str("open"),
+                        PathClosure::ClosedPlanar { normal } => {
+                            line.push_str("closed_planar");
+                            put_vector3(line, *normal);
+                        }
+                    }
+                    let _ = write!(
+                        line,
+                        " section_x {} {} {} miter_limit {} points {} caps ",
                         hex(section_x[0]),
                         hex(section_x[1]),
                         hex(section_x[2]),
@@ -1141,15 +1156,30 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 caps,
             }
         }
-        "sweep" | "mitered_sweep" => {
+        "sweep" | "mitered_sweep" | "mitered_path_sweep" => {
             expect(&mut tokens, "profile", line)?;
             let profile = ProfileId(next_u32(&mut tokens, line)?);
+            let (section_origin, closure) = if kind_name == "mitered_path_sweep" {
+                expect(&mut tokens, "section_origin", line)?;
+                let origin = [next_f64(&mut tokens, line)?, next_f64(&mut tokens, line)?];
+                expect(&mut tokens, "closure", line)?;
+                let closure = match tokens.next() {
+                    Some("open") => PathClosure::Open,
+                    Some("closed_planar") => PathClosure::ClosedPlanar {
+                        normal: parse_vector3(&mut tokens, line)?,
+                    },
+                    _ => return Err(TextError::Malformed { line }),
+                };
+                (origin, closure)
+            } else {
+                ([0.0; 2], PathClosure::Open)
+            };
             let orientation = match tokens.next() {
                 Some("frame") if kind_name == "sweep" => {
                     expect(&mut tokens, "rmf", line)?;
                     None
                 }
-                Some("section_x") if kind_name == "mitered_sweep" => {
+                Some("section_x") if kind_name != "sweep" => {
                     let x = [
                         next_f64(&mut tokens, line)?,
                         next_f64(&mut tokens, line)?,
@@ -1182,6 +1212,8 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                     Some((section_x, miter_limit)) => Path3::MiteredPolyline {
                         points,
                         section_x,
+                        section_origin,
+                        closure,
                         miter_limit,
                     },
                 },
@@ -1614,14 +1646,14 @@ mod tests {
         let a = dump_recipe(&recipe);
         let b = dump_recipe(&recipe);
         assert_eq!(a, b);
-        assert!(a.starts_with("constructive-ir-v1\nschema 36\n"));
+        assert!(a.starts_with("constructive-ir-v1\nschema 37\n"));
     }
 
     #[test]
     fn parse_rejects_garbage() {
         assert!(matches!(parse_recipe("nope"), Err(TextError::BadHeader)));
         let mut text = String::from(
-            "constructive-ir-v1\nschema 36\nsources 0\nslots 0\npolicies 0\nimports 0\n",
+            "constructive-ir-v1\nschema 37\nsources 0\nslots 0\npolicies 0\nimports 0\n",
         );
         text.push_str("profiles 0\nnodes 1\n  node 0 fancy thing source - material -\nroot 0\n");
         assert!(matches!(

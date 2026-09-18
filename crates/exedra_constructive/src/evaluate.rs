@@ -27,6 +27,7 @@ use crate::edge_finish::{EdgeSelection, finish_edges};
 use crate::ir::{
     CsgOp, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SlotId, SourceId,
 };
+use crate::source_map::SurfaceAncestry;
 use crate::tessellate::{
     EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude, tessellate_loft,
     tessellate_planar_face, tessellate_primitive, tessellate_revolve, tessellate_sweep,
@@ -411,7 +412,7 @@ const CSG_TRIANGULATION: FaceTriangulation = FaceTriangulation::Robust;
 struct CsgMesh {
     mesh: Mesh,
     face_operands: HashMap<FaceId, u16>,
-    surface_origins: BTreeMap<FaceId, crate::source_map::SurfaceOrigin>,
+    surface_origins: BTreeMap<FaceId, SurfaceAncestry>,
     face_materials: BTreeMap<FaceId, SlotId>,
 }
 
@@ -658,12 +659,16 @@ impl EvalCx<'_> {
                         crate::ir::Path3::MiteredPolyline {
                             points,
                             section_x,
+                            section_origin,
+                            closure,
                             miter_limit,
                         } => crate::tessellate::tessellate_mitered_sweep(
                             cx.recipe.profile(profile).expect("validated profile id"),
                             world,
                             points,
                             *section_x,
+                            *section_origin,
+                            *closure,
                             *miter_limit,
                             caps,
                             cx.policy,
@@ -1376,7 +1381,7 @@ impl EvalCx<'_> {
                         placed
                             .body
                             .source_map
-                            .surface_origin(face)
+                            .surface_ancestry(face)
                             .map(|origin| (face, origin.clone()))
                     })
                     .collect();
@@ -1943,7 +1948,7 @@ fn instantiate(
             source
                 .mesh
                 .faces()
-                .map(|face| map.surface_origin(face).cloned())
+                .map(|face| map.surface_ancestry(face).cloned())
                 .collect(),
         )
     } else {

@@ -6,12 +6,84 @@ use super::*;
 use crate::builders;
 use crate::cache::{EvalCache, policy_fingerprint};
 use crate::evaluate::{evaluate, evaluate_with_cache};
-use crate::ir::{NodeKind, Path3, RecipeBuilder};
+use crate::ir::{CsgOp, NodeKind, Path3, RecipeBuilder};
 use crate::path::{PathDiscretizeError, PathSegment3};
 use alloc::vec;
 
 fn profile() -> Profile2 {
     builders::l_profile(0.3, 0.2, 0.1, 0.05).expect("asymmetric section")
+}
+
+#[test]
+fn boolean_descendants_retain_shared_original_curve_sampling() {
+    let mut builder = RecipeBuilder::new();
+    let source = builder.source_ref("arc-rail");
+    let p = builder.add_profile(profile());
+    let rail = builder
+        .with_source(source)
+        .add(NodeKind::Sweep {
+            profile: p,
+            path: Path3::Curves {
+                start: [0.0; 3],
+                segments: vec![PathSegment3::Arc {
+                    axis_origin: [4.0, 0.0, 0.0],
+                    axis: [0.0, 1.0, 0.0],
+                    sweep: core::f64::consts::FRAC_PI_2,
+                }],
+                section_x: [1.0, 0.0, 0.0],
+            },
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let cut = builder
+        .add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [20.0, 20.0, 0.2],
+            },
+            placement: Placement3::translate(-5.0, -5.0, 1.4),
+        })
+        .unwrap();
+    let root = builder
+        .add(NodeKind::Csg {
+            op: CsgOp::Difference,
+            operands: vec![rail, cut],
+        })
+        .unwrap();
+    let result = evaluate(&builder.finish(root).unwrap(), &EvalPolicy::default()).unwrap();
+    assert!(
+        result.report.clean_at(crate::evaluate::Severity::Error),
+        "{:?}",
+        result.report.diagnostics
+    );
+    let body = &result.bodies[0].body;
+    assert_clean(body);
+    assert!(body.path_sampling.is_none());
+    assert!(body.sweep_checks.is_none());
+    let mut shared = None;
+    let mut walls = 0;
+    for face in body.mesh.faces() {
+        let origin = body.source_map.surface_origin(face).unwrap();
+        if let Feature::SweepWall { band, .. } = origin.feature {
+            assert_eq!(origin.source.as_deref(), Some("arc-rail"));
+            let path = body
+                .source_map
+                .sweep_sampling(face)
+                .unwrap()
+                .path
+                .as_ref()
+                .unwrap();
+            if let Some(previous) = shared {
+                assert!(Arc::ptr_eq(previous, path));
+            }
+            shared = Some(path);
+            let span = path.spans[usize::from(band)];
+            assert_eq!(span.segment, 0);
+            assert!(span.parameter[0] < span.parameter[1]);
+            assert!(span.chord_bound <= path.policy.chord_tolerance);
+            walls += 1;
+        }
+    }
+    assert!(walls > 0);
 }
 fn mixed_path() -> Vec<PathSegment3> {
     vec![
