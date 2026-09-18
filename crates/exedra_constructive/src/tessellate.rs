@@ -387,7 +387,8 @@ pub enum TessellateError {
     /// position, so the placed mesh would carry a zero-length edge its
     /// source did not have (for example a placement far from the origin
     /// relative to the feature size). Also returned when a controlled sweep
-    /// wall or cap triangle collapses or reverses during placement or f32 narrowing.
+    /// wall/cap, smooth-loft wall, or unrefined extrusion/loft cap triangle
+    /// collapses or reverses during placement or f32 narrowing.
     CollapsedGeometry,
     /// A declared cylinder requests more angular edges than the evaluation
     /// policy permits for one curved segment.
@@ -1200,8 +1201,19 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
                 outer: &d.outer.points,
                 holes: &holes,
             };
-            let tri = triangulate(&input, &TriParams::default())?;
-            for t in &tri.triangles {
+            let points: Vec<_> = d.rings().flat_map(|ring| &ring.points).collect();
+            let triangles = triangulate_cap(&input, |triangle| {
+                for (enabled, z) in [(bottom_cap, 0.0), (top_cap, height)] {
+                    if enabled {
+                        check_triangle_realization(triangle.map(|i| {
+                            let p = points[i as usize];
+                            apply_placement(placement, [p[0], p[1], z])
+                        }))?;
+                    }
+                }
+                Ok(())
+            })?;
+            for t in &triangles {
                 if bottom_cap {
                     builder.add_face_with_attrs(
                         &[t[2], t[1], t[0]],
@@ -1213,7 +1225,7 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
                     face_origins.push(Feature::CapStart);
                 }
             }
-            for t in &tri.triangles {
+            for t in &triangles {
                 if top_cap {
                     builder.add_face_with_attrs(
                         &[top_offset + t[0], top_offset + t[1], top_offset + t[2]],
@@ -1241,6 +1253,31 @@ pub(crate) fn tessellate_extrude_with_wall_sources(
         loft_sampling: None,
         refinement: refinement_stats,
     })
+}
+
+// A cap must retain every rim sample and survive placement/f32 storage. Keep
+// the usual ear-clipped cover when it already does; otherwise use the same
+// boundary-preserving legalized cover as mesh plane cuts, with no new vertices.
+fn triangulate_cap(
+    input: &PolygonInput<'_>,
+    mut check: impl FnMut([u32; 3]) -> Result<(), TessellateError>,
+) -> Result<Vec<[u32; 3]>, TessellateError> {
+    let triangles = triangulate(input, &TriParams::default())?.triangles;
+    let mut used = alloc::vec![false; input.vertex_count()];
+    for &index in triangles.iter().flatten() {
+        used[index as usize] = true;
+    }
+    if used.iter().all(|&used| used) && triangles.iter().all(|&t| check(t).is_ok()) {
+        return Ok(triangles);
+    }
+    let params = RefineParams::default()
+        .with_max_steiner_points(0)
+        .with_boundary_splits(BoundarySplits::Forbidden);
+    let triangles = refine(input, &params)?.triangles;
+    for &triangle in &triangles {
+        check(triangle)?;
+    }
+    Ok(triangles)
 }
 
 /// Provenance of one generated vertex: a boundary point inherits the wall
@@ -2101,16 +2138,15 @@ pub fn tessellate_loft(
                     outer: &d.outer.points,
                     holes: &holes,
                 };
-                let tri = triangulate(&input, &TriParams::default())?;
-                for t in &tri.triangles {
-                    if smooth {
-                        let ring = if reverse {
-                            &placed[0]
-                        } else {
-                            &placed[placed.len() - 1]
-                        };
-                        check_loft_triangle(t.map(|i| ring[i as usize]))?;
-                    }
+                let ring = if reverse {
+                    &placed[0]
+                } else {
+                    &placed[placed.len() - 1]
+                };
+                let triangles = triangulate_cap(&input, |t| {
+                    check_triangle_realization(t.map(|i| ring[i as usize]))
+                })?;
+                for t in &triangles {
                     let corners = if reverse {
                         [offset + t[2], offset + t[1], offset + t[0]]
                     } else {
@@ -2163,7 +2199,7 @@ pub fn tessellate_loft(
     })
 }
 
-fn check_loft_triangle(placed: [[f64; 3]; 3]) -> Result<(), TessellateError> {
+fn check_triangle_realization(placed: [[f64; 3]; 3]) -> Result<(), TessellateError> {
     let rounded = placed.map(|p| narrow(p).map(f64::from));
     if rounded.iter().flatten().any(|x| !x.is_finite()) {
         return Err(TessellateError::NonFiniteGeometry);
@@ -2180,7 +2216,7 @@ fn check_loft_triangle(placed: [[f64; 3]; 3]) -> Result<(), TessellateError> {
 fn check_loft_wall(placed: [[f64; 3]; 4]) -> Result<(), TessellateError> {
     let expected = cross(sub(placed[1], placed[0]), sub(placed[3], placed[0]));
     for [a, b, c] in [[0, 1, 2], [0, 2, 3], [0, 1, 3], [1, 2, 3]] {
-        check_loft_triangle([placed[a], placed[b], placed[c]])?;
+        check_triangle_realization([placed[a], placed[b], placed[c]])?;
         let rounded = [placed[a], placed[b], placed[c]].map(|p| narrow(p).map(f64::from));
         let actual = cross(sub(rounded[1], rounded[0]), sub(rounded[2], rounded[0]));
         let orientation = dot(actual, expected);
@@ -2460,9 +2496,9 @@ fn check_sweep_realization(
 /// local f64 check, **not** global solid validity. Nonadjacent runs may still
 /// intersect. Curved profile interiors between samples are not certified.
 /// Placed f32 wall and cap triangles must also retain their f64 winding
-/// without collapse. Caps always use profile triangulation. If the chosen
-/// triangulation degenerates at f32 precision, evaluation fails rather than
-/// silently dropping triangles or selecting a different triangulation.
+/// without collapse. Caps preserve every profile boundary sample, retrying an
+/// unrepresentable ear-clipped cover with boundary-preserving Delaunay
+/// triangulation. Caps that still degenerate at f32 precision are refused.
 /// Provenance and crease attribution follow [`tessellate_sweep`].
 ///
 /// # Migration
@@ -2745,11 +2781,6 @@ fn tessellate_sweep_rings(
 
     if start_cap || end_cap {
         // Controlled caps are triangles so each realized face can be checked.
-        let cap_points: Option<Vec<[f64; 2]>> = sweep_checks.map(|_| {
-            d.rings()
-                .flat_map(|ring| ring.points.iter().copied())
-                .collect()
-        });
         let convex_simple =
             sweep_checks.is_none() && d.holes.is_empty() && is_convex_ring(&d.outer);
         let emit = |builder: &mut OrientedBuilder,
@@ -2780,29 +2811,20 @@ fn tessellate_sweep_rings(
                     outer: &d.outer.points,
                     holes: &holes,
                 };
-                let tri = triangulate(&input, &TriParams::default())?;
-                for t in &tri.triangles {
-                    if let Some(points) = &cap_points {
-                        let frame = if reverse {
-                            &frames[0]
-                        } else {
-                            &frames[frames.len() - 1]
-                        };
-                        let placed = t.map(|i| {
-                            apply_placement(placement, sweep_point(frame, points[i as usize]))
-                        });
-                        let rounded = placed.map(|p| narrow(p).map(f64::from));
-                        if rounded.iter().flatten().any(|v| !v.is_finite()) {
-                            return Err(TessellateError::NonFiniteGeometry);
-                        }
-                        let expected = cross(sub(placed[1], placed[0]), sub(placed[2], placed[0]));
-                        let actual =
-                            cross(sub(rounded[1], rounded[0]), sub(rounded[2], rounded[0]));
-                        let orientation = dot(actual, expected);
-                        if !orientation.is_finite() || orientation <= 0.0 {
-                            return Err(TessellateError::CollapsedGeometry);
-                        }
-                    }
+                let frame = if reverse {
+                    &frames[0]
+                } else {
+                    &frames[frames.len() - 1]
+                };
+                let placed: Vec<_> = d
+                    .rings()
+                    .flat_map(|ring| &ring.points)
+                    .map(|&point| apply_placement(placement, sweep_point(frame, point)))
+                    .collect();
+                let triangles = triangulate_cap(&input, |t| {
+                    check_triangle_realization(t.map(|i| placed[i as usize]))
+                })?;
+                for t in &triangles {
                     let corners = if reverse {
                         [offset + t[2], offset + t[1], offset + t[0]]
                     } else {

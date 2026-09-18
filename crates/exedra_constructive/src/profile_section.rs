@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Convert ordered mesh loops into reusable constructive profiles.
+//! Convert mesh boundaries into reusable constructive profiles.
 //!
 //! The authoritative pre-mesh profile model is
 //! [`Profile2`]. This module converts *mesh*
@@ -9,6 +9,13 @@
 //! `Profile2` polyline sections, so interactive loft/sweep tooling and the
 //! constructive operators speak one vocabulary instead of maintaining
 //! parallel profile models.
+//!
+//! For a whole plane section, use [`profiles_from_mesh_section`] or
+//! [`PlaneSection::to_profiles`](crate::section::PlaneSection::to_profiles).
+//! Each disconnected region becomes one profile, retaining its holes, frame,
+//! and per-segment source correspondence. These conversions preserve the
+//! section's existing order and coordinates; the projection contract below
+//! applies only to [`section_from_loop`].
 //!
 //! ## Contract
 //!
@@ -28,6 +35,9 @@ use alloc::vec::Vec;
 
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegTag};
 use exedra_mesh::{HalfEdgeId, Mesh, VertexId};
+
+pub(crate) mod plane;
+pub use plane::{SectionProfile, SectionProfileError, profiles_from_mesh_section};
 
 /// Parameters for mesh-loop conversion.
 #[derive(Copy, Clone, Debug, PartialEq)]

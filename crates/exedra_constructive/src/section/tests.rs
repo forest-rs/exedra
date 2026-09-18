@@ -22,7 +22,16 @@ fn volume(body: &TessellatedBody) -> f64 {
     let mut triangles = Vec::new();
     let mut result = 0.0;
     for face in mesh.faces() {
-        assert!(!mesh.face_triangles_into(face, FaceTriangulation::Robust, &mut triangles));
+        assert!(
+            !mesh.face_triangles_into(face, FaceTriangulation::Robust, &mut triangles),
+            "cannot triangulate {face:?}, {:?}: {:?}",
+            body.source_map.face_feature(face),
+            mesh.face_loop(face)
+                .map(|corner| mesh
+                    .vertex_position(mesh.to_vertex(corner).unwrap())
+                    .unwrap())
+                .collect::<Vec<_>>()
+        );
         for triangle in &triangles {
             let p = triangle.map(|c| {
                 mesh.vertex_position(mesh.to_vertex(c).unwrap())
@@ -43,6 +52,324 @@ fn block() -> TessellatedBody {
         &EvalPolicy::default(),
     )
     .unwrap()
+}
+
+#[test]
+fn oblique_section_profiles_retain_geometry_frame_and_sources() {
+    use crate::profile::SegKind;
+    use crate::profile_section::profiles_from_mesh_section;
+    let body = block();
+    let plane = Plane3 {
+        normal: [0.3, -0.2, 1.0],
+        distance: 1.71,
+    };
+    let section = section_body(&body, plane, &SectionPolicy::default()).unwrap();
+    let mesh_section =
+        exedra_mesh_ops::section::section_mesh(&body.mesh, plane, &SectionPolicy::default())
+            .unwrap();
+    let converted = section.to_profiles().unwrap().remove(0);
+    let direct = profiles_from_mesh_section(&mesh_section).unwrap().remove(0);
+    assert_eq!(converted.profile, direct.profile);
+    assert_eq!(converted.placement, section.frame);
+    assert_eq!(direct.placement, section.frame);
+    // Section samples include triangulation-diagonal crossings. Keep all of them.
+    let boundary = &section.regions[0].outer;
+    assert!(boundary.points.len() > 4);
+    assert_eq!(
+        converted.profile.outer().segs().len(),
+        boundary.points.len()
+    );
+    for (i, (start, segment)) in converted.profile.outer().iter_with_starts().enumerate() {
+        assert_eq!([start.x, start.y], boundary.points[i]);
+        assert_eq!(
+            [segment.to.x, segment.to.y],
+            boundary.points[(i + 1) % boundary.points.len()]
+        );
+        assert_eq!(segment.kind, SegKind::Line);
+        let tag = segment.tag.unwrap();
+        assert_eq!(converted.source(tag), Some(&boundary.edge_features[i]));
+        assert_eq!(
+            converted.source(tag).copied(),
+            body.source_map.face_feature(*direct.source(tag).unwrap())
+        );
+    }
+    let expected_volume = section.measure().unwrap().area * 0.75;
+    drop(body);
+    drop(section);
+    let extruded = tessellate_extrude(
+        &converted.profile,
+        &converted.placement,
+        0.75,
+        CapMode::Both,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    assert!(extruded.mesh.validate_deep().is_empty());
+    assert!(extruded.mesh.boundary_loops().unwrap().is_empty());
+    assert!((volume(&extruded) - expected_volume).abs() < 1e-5);
+    let (normal, distance) = plane.normalized().unwrap();
+    for vertex in extruded.mesh.vertices() {
+        let point = extruded
+            .mesh
+            .vertex_position(vertex)
+            .unwrap()
+            .map(f64::from);
+        let height = dot(normal, point) - distance;
+        assert!(height.abs() < 1e-6 || (height - 0.75).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn section_profiles_preserve_holes_disconnected_regions_and_nested_islands() {
+    let ring = tessellate_extrude(
+        &crate::builders::ring(2.0, 0.7).unwrap(),
+        &Placement3::IDENTITY,
+        4.0,
+        CapMode::Both,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    let island = tessellate_extrude(
+        &crate::builders::rect(0.4, 0.3).unwrap(),
+        &Placement3::IDENTITY,
+        4.0,
+        CapMode::Both,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    let source = combine(&[(&ring, 0.0), (&island, 0.0), (&block(), 6.0)]);
+    for normal in [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
+        let section = section_body(
+            &source,
+            Plane3 {
+                normal,
+                distance: normal[2] * 1.37,
+            },
+            &SectionPolicy::default(),
+        )
+        .unwrap();
+        let profiles = section.to_profiles().unwrap();
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|p| p.profile.holes().len())
+                .sum::<usize>(),
+            1
+        );
+        let mut total_volume = 0.0;
+        for (converted, region) in profiles.iter().zip(&section.regions) {
+            assert_eq!(converted.placement, section.frame);
+            assert_eq!(converted.profile.holes().len(), region.holes.len());
+            let boundaries = core::iter::once(&region.outer).chain(&region.holes);
+            let loops =
+                core::iter::once(converted.profile.outer()).chain(converted.profile.holes());
+            let mut tags = alloc::collections::BTreeSet::new();
+            for (boundary, profile_loop) in boundaries.zip(loops) {
+                assert_eq!(profile_loop.segs().len(), boundary.points.len());
+                for ((start, segment), (point, source)) in profile_loop
+                    .iter_with_starts()
+                    .zip(boundary.points.iter().zip(&boundary.edge_features))
+                {
+                    assert_eq!([start.x, start.y], *point);
+                    let tag = segment.tag.unwrap();
+                    assert!(tags.insert(tag.0));
+                    assert_eq!(converted.source(tag), Some(source));
+                }
+            }
+            assert_eq!(tags.len(), converted.segment_sources.len());
+            let body = tessellate_extrude(
+                &converted.profile,
+                &converted.placement,
+                0.6,
+                CapMode::Both,
+                &EvalPolicy::default(),
+            )
+            .unwrap();
+            assert!(body.mesh.validate_deep().is_empty());
+            assert!(body.mesh.boundary_loops().unwrap().is_empty());
+            body.source_map.check(&body.mesh).unwrap();
+            assert!(
+                (volume(&body) - crate::builders::profile_area(&converted.profile) * 0.6).abs()
+                    < 1e-5
+            );
+            total_volume += volume(&body);
+        }
+        assert!((total_volume - section.measure().unwrap().area * 0.6).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn section_profiles_sweep_with_connected_caps() {
+    use crate::path::PathSegment3;
+    use crate::tessellate::{tessellate_curved_sweep, tessellate_mitered_sweep, tessellate_sweep};
+
+    let policy = EvalPolicy::default();
+    let annulus = tessellate_extrude(
+        &crate::builders::ring(2.0, 0.7).unwrap(),
+        &Placement3::IDENTITY,
+        4.0,
+        CapMode::Both,
+        &policy,
+    )
+    .unwrap();
+    for source in [annulus, block()] {
+        let section = section_body(
+            &source,
+            Plane3 {
+                normal: [0.0, 0.0, 1.0],
+                distance: 1.371,
+            },
+            &SectionPolicy::default(),
+        )
+        .unwrap();
+        let converted = section.to_profiles().unwrap().remove(0);
+        let boundary_count = 1 + converted.profile.holes().len();
+        for reflected in [false, true] {
+            let mut placement = converted.placement;
+            if reflected {
+                for row in &mut placement.rows {
+                    row[0] = -row[0];
+                }
+            }
+            for (caps, open_ends) in [
+                (CapMode::Both, 0),
+                (CapMode::Start, 1),
+                (CapMode::End, 1),
+                (CapMode::None, 2),
+            ] {
+                for kind in ["polyline", "mitered", "curved"] {
+                    let path = [[0.0; 3], [0.0, 0.0, 0.6]];
+                    let body = match kind {
+                        "polyline" => {
+                            tessellate_sweep(&converted.profile, &placement, &path, caps, &policy)
+                        }
+                        "mitered" => tessellate_mitered_sweep(
+                            &converted.profile,
+                            &placement,
+                            &path,
+                            [1.0, 0.0, 0.0],
+                            4.0,
+                            caps,
+                            &policy,
+                        ),
+                        "curved" => tessellate_curved_sweep(
+                            &converted.profile,
+                            &placement,
+                            [0.0; 3],
+                            &[PathSegment3::Arc {
+                                axis_origin: [10.0, 0.0, 0.0],
+                                axis: [0.0, 1.0, 0.0],
+                                sweep: core::f64::consts::FRAC_PI_6,
+                            }],
+                            [1.0, 0.0, 0.0],
+                            caps,
+                            &policy,
+                        ),
+                        _ => unreachable!(),
+                    }
+                    .unwrap();
+                    assert!(body.mesh.validate_deep().is_empty());
+                    body.source_map.check(&body.mesh).unwrap();
+                    assert_eq!(
+                        body.mesh.boundary_loops().unwrap().len(),
+                        boundary_count * open_ends,
+                        "{kind}, {caps:?}, reflected={reflected}",
+                    );
+                    if caps == CapMode::Both {
+                        if kind == "curved" {
+                            assert!(volume(&body) > 0.0);
+                        } else {
+                            let expected = section.measure().unwrap().area * 0.6;
+                            assert!((volume(&body) - expected).abs() < 1e-5);
+                        }
+                    }
+                    for face in body.mesh.faces() {
+                        let tangent = match body.source_map.face_feature(face).unwrap() {
+                            Feature::CapStart => [0.0, 0.0, -1.0],
+                            Feature::CapEnd if kind == "curved" => {
+                                [0.5, 0.0, libm::cos(core::f64::consts::FRAC_PI_6)]
+                            }
+                            Feature::CapEnd => [0.0, 0.0, 1.0],
+                            _ => continue,
+                        };
+                        let outward = placement.rows.map(|r| dot([r[0], r[1], r[2]], tangent));
+                        let mut triangles = Vec::new();
+                        assert!(!body.mesh.face_triangles_into(
+                            face,
+                            FaceTriangulation::Robust,
+                            &mut triangles,
+                        ));
+                        for triangle in triangles {
+                            let p = triangle.map(|c| {
+                                body.mesh
+                                    .vertex_position(body.mesh.to_vertex(c).unwrap())
+                                    .unwrap()
+                                    .map(f64::from)
+                            });
+                            assert!(dot(cross(sub(p[1], p[0]), sub(p[2], p[0])), outward) > 0.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn converted_profile_can_be_retained_extruded_and_lofted() {
+    use crate::evaluate::evaluate;
+    use crate::ir::{NodeKind, RecipeBuilder};
+    let section = section_body(
+        &block(),
+        Plane3 {
+            normal: [0.0, 0.0, 1.0],
+            distance: 1.37,
+        },
+        &SectionPolicy::default(),
+    )
+    .unwrap();
+    let converted = section.to_profiles().unwrap().remove(0);
+    let mut builder = RecipeBuilder::new();
+    let profile = builder.add_profile(converted.profile);
+    let extrusion = builder
+        .add(NodeKind::Extrude {
+            profile,
+            placement: converted.placement,
+            height: 2.5,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    // Reuse one profile at two stations: correspondence is explicitly identical.
+    let mut end = converted.placement;
+    end.rows[2][3] += 2.5;
+    let loft = builder
+        .add(NodeKind::Loft {
+            sections: alloc::vec![(converted.placement, profile), (end, profile)],
+            policy: LoftPolicy::Ruled,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let group = builder
+        .add(NodeKind::Group {
+            children: alloc::vec![extrusion, loft],
+        })
+        .unwrap();
+    let recipe = builder.finish(group).unwrap();
+    #[cfg(feature = "serde")]
+    let recipe = {
+        let json = serde_json::to_string(&crate::interchange::to_dto(&recipe)).unwrap();
+        let restored = crate::interchange::from_dto(&serde_json::from_str(&json).unwrap()).unwrap();
+        assert_eq!(recipe.recipe_fingerprint(), restored.recipe_fingerprint());
+        restored
+    };
+    let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
+    assert_eq!(result.bodies.len(), 2);
+    for placed in &result.bodies {
+        assert!(placed.body.mesh.validate_deep().is_empty());
+        assert!(placed.body.mesh.boundary_loops().unwrap().is_empty());
+        assert!((volume(&placed.body) - 15.0).abs() < 1e-5);
+    }
 }
 fn cap() -> CutCap {
     CutCap {

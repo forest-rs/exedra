@@ -29,6 +29,8 @@
 //! ```
 
 use crate::ir::{Placement3, Plane3, SlotId};
+use crate::profile_section::plane::{check_frame, convert_region};
+use crate::profile_section::{SectionProfile, SectionProfileError};
 use crate::tessellate::{Feature, TessellatedBody};
 use alloc::vec::Vec;
 use exedra_mesh_ops::section as geometry;
@@ -72,6 +74,63 @@ pub struct PlaneSection {
     pub stats: SectionStats,
 }
 impl PlaneSection {
+    /// Converts each filled region into a reusable profile with its placement
+    /// and per-segment construction features. An empty section gives no profiles.
+    ///
+    /// Holes, region order, cyclic starting points and all boundary samples are
+    /// preserved. No mesh traversal, tessellation, curve fitting or automatic
+    /// loft correspondence occurs. Segment tags index the returned source table;
+    /// they are not persistent selectors for a subsequently edited body.
+    ///
+    /// As with [`Self::measure`], callers editing section fields must preserve
+    /// simplicity, separation and nesting. Conversion performs ordinary profile
+    /// construction checks, not a fresh certification of section topology.
+    /// See [`profiles_from_mesh_section`](crate::profile_section::profiles_from_mesh_section)
+    /// for conversion from plain mesh sections.
+    ///
+    /// ```
+    /// # use exedra_constructive::{builders::rect, ir::{CapMode, Placement3, Plane3},
+    /// # section::{section_body, SectionPolicy}, tessellate::{EvalPolicy, tessellate_extrude}};
+    /// # let policy = EvalPolicy::default();
+    /// # let body = tessellate_extrude(&rect(4.0, 3.0)?, &Placement3::IDENTITY,
+    /// #     2.0, CapMode::Both, &policy)?;
+    /// # let section = section_body(&body,
+    /// #     Plane3 { normal: [0.2, 0.0, 1.0], distance: 1.0 }, &SectionPolicy::default())?;
+    /// use exedra_constructive::ir::{NodeKind, RecipeBuilder};
+    /// for converted in section.to_profiles()? {
+    ///     let mut builder = RecipeBuilder::new();
+    ///     let profile = builder.add_profile(converted.profile);
+    ///     let extrusion = builder.add(NodeKind::Extrude {
+    ///         profile, placement: converted.placement, height: 0.5, caps: CapMode::Both,
+    ///     })?;
+    ///     let recipe = builder.finish(extrusion)?;
+    ///     // Evaluate or serialize this ordinary recipe independently of the source body.
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Refuses invalid frames, malformed source arrays, degenerate polygon area,
+    /// exhausted segment tags, and profile construction failures.
+    pub fn to_profiles(&self) -> Result<Vec<SectionProfile<Feature>>, SectionProfileError> {
+        check_frame(self.frame)?;
+        self.regions
+            .iter()
+            .enumerate()
+            .map(|(index, region)| {
+                convert_region(
+                    self.frame,
+                    index,
+                    (&region.outer.points, &region.outer.edge_features),
+                    region
+                        .holes
+                        .iter()
+                        .map(|hole| (hole.points.as_slice(), hole.edge_features.as_slice())),
+                )
+            })
+            .collect()
+    }
+
     /// Measures all filled regions in this section's local XY frame.
     ///
     /// Holes subtract area and add perimeter; disconnected regions contribute

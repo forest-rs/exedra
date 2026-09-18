@@ -74,6 +74,13 @@ clear source sampling evidence on derived bodies; they do not certify distant
 self-intersections. See the `section` rustdoc example and the `plane_cut` binary
 in `constructive_probe` for an oblique cut through a smooth loft.
 
+`PlaneSection::to_profiles` turns each filled region into an owned `Profile2`,
+placement and segment-source table, ready for extrusion, sweeping or authored
+loft correspondence. Holes and disconnected regions remain distinct, and every
+polyline sample is preserved. `profile_section::profiles_from_mesh_section`
+accepts sections from `exedra_mesh_ops` with the same conversion. These are
+copies of evaluated boundaries, without a retained dependency on the source body.
+
 ## Retained attachments and clearance
 
 `NodeKind::OnWorkplane { support, child, attachment }` evaluates one complete
