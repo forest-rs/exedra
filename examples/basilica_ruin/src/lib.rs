@@ -408,7 +408,7 @@ mod tests {
         );
         assert_eq!(
             assembly_fingerprint(&a.assembly),
-            0x0c9fe34dc54261791a46845d4bea9947
+            0x64e467d7684fe2b4459f3fb33e25c718
         );
         assert_eq!(obj_a, obj_b);
         assert_eq!(gltf_a.json, gltf_b.json);

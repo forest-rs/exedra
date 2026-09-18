@@ -37,6 +37,25 @@ assert_eq!(result.len(), 2);
 See the [triangulation scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_triangulate/docs/adr-0001-deterministic-triangulation-scope.md)
 for contract details.
 
+## Hole bridges and failures
+
+Hole bridges preserve the material wedge at each endpoint. When earlier
+bridges visit the same vertex more than once, the new bridge selects the
+occurrence with the correct neighboring edges. Segment visibility alone is
+insufficient: a wrong occurrence can cross the boundary traversal at the
+shared vertex even when no open segments cross.
+
+`TriError::BoundaryContact` identifies an actual crossing or touch between
+original input edges. `TriError::TriangulationFailed { stage }` instead reports
+an unresolved ear-clipping or boundary-incidence failure; it does not prove
+the input invalid. `UnbridgeableHole` names the hole whose selected anchor
+could not be connected. No geometry is silently repaired.
+
+Migration: exhaustive error matches must handle `TriangulationFailed`.
+`NonSimple` now describes a loop that degenerates under collinear pruning,
+not failure to triangulate a synthesized bridge traversal. Constructive
+evaluation schema 40 invalidates cached geometry affected by this bridge fix.
+
 ## Exact predicate exponent domain
 
 `predicates::orient2d` keeps the ordinary floating-point filter for clear

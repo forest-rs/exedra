@@ -447,6 +447,73 @@ fn duplicate_vertex_mutations_survive() {
 }
 
 #[test]
+fn multiple_holes_preserve_boundaries_and_occupancy() {
+    let outer = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+    let mut rng = Rng(0xE0DA_0006);
+    for case in 0..24 {
+        // Separate horizontal bands prove the generated holes are disjoint.
+        // Mixed sizes and shears scramble anchor order and bridge directions.
+        let mut holes: Vec<Vec<[f64; 2]>> = (0..5)
+            .map(|row| {
+                let x = rng.unit(2.0, 8.0);
+                let y = 1.0 + 2.0 * f64::from(row);
+                let w = rng.unit(0.2, 0.8);
+                let h = rng.unit(0.2, 0.8);
+                let shear = rng.unit(-0.4, 0.4);
+                let mut hole: Vec<_> = [
+                    [0.0, h],
+                    [w, h * 0.4],
+                    [w, -h * 0.4],
+                    [0.0, -h],
+                    [-w, -h * 0.4],
+                    [-w, h * 0.4],
+                ]
+                .into_iter()
+                .map(|[a, b]| [x + a + shear * b, y + b])
+                .collect();
+                hole.rotate_left(rng.range(6));
+                hole
+            })
+            .collect();
+        holes.rotate_left(case % 5);
+        if case % 2 == 0 {
+            holes.reverse();
+        }
+        let transform = |p: [f64; 2]| {
+            let [x, y] = if case % 3 == 0 { [-p[1], p[0]] } else { p };
+            [2.0 * x + 16.0, 2.0 * y - 32.0]
+        };
+        let mut outer = outer.map(transform);
+        outer.rotate_left(case % 4);
+        for hole in &mut holes {
+            for p in hole {
+                *p = transform(*p);
+            }
+        }
+        let slices: Vec<_> = holes.iter().map(Vec::as_slice).collect();
+        let label = alloc::format!("multiple holes {case}");
+        let result = check_invariants(&outer, &slices, &label);
+        let points: Vec<_> = outer
+            .into_iter()
+            .chain(holes.iter().flatten().copied())
+            .collect();
+        let mut base = 0_u32;
+        let mut expected = Vec::new();
+        for ring in core::iter::once(outer.as_slice()).chain(slices.iter().copied()) {
+            for i in 0..ring.len() {
+                let a = base + u32::try_from(i).unwrap();
+                let b = base + u32::try_from((i + 1) % ring.len()).unwrap();
+                expected.push((a.min(b), a.max(b)));
+            }
+            base += u32::try_from(ring.len()).unwrap();
+        }
+        expected.sort_unstable();
+        assert_eq!(boundary_edges(&result.triangles), expected, "{label}");
+        assert_sampled_occupancy(&outer, &slices, &points, &result.triangles, &label);
+    }
+}
+
+#[test]
 fn collinear_midpoint_mutations_survive() {
     let mut rng = Rng(0xE0DA_0004);
     for case in 0..100 {

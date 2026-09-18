@@ -155,8 +155,9 @@ fn validate_loop(points: &[[f64; 2]], hole: Option<usize>) -> Result<(), TriErro
 ///
 /// Structural violations are reported by [`PolygonInput::validate`];
 /// geometric violations surface as [`TriError::WrongWinding`],
-/// [`TriError::HoleOutsideOuter`], [`TriError::UnbridgeableHole`], and
-/// [`TriError::NonSimple`].
+/// [`TriError::HoleOutsideOuter`], and [`TriError::NonSimple`].
+/// [`TriError::UnbridgeableHole`] and [`TriError::TriangulationFailed`] report
+/// construction failures without claiming the original boundary is invalid.
 /// After cover construction fails, a failure-only scan of at most N(N-1)/2
 /// original nonadjacent edge pairs can replace the failure with a witnessed
 /// [`TriError::BoundaryContact`]. No extra scan occurs for successful input.
@@ -357,7 +358,9 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
     // wrong; bounded fallbacks reverse the exact-x hole tie and prefer short
     // visible bridges. The incidence check below, not successful ear clipping
     // alone, decides whether an attempt represents these exact input rings.
-    let mut last_error = TriError::NonSimple;
+    let mut last_error = TriError::TriangulationFailed {
+        stage: TriangulationStage::BoundaryIncidence,
+    };
     for (descending_y_ties, nearest_candidates) in
         [(false, false), (true, false), (false, true), (true, true)]
     {
@@ -385,7 +388,9 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
             &hole_ranges,
             &triangles,
         ) {
-            last_error = TriError::NonSimple;
+            last_error = TriError::TriangulationFailed {
+                stage: TriangulationStage::BoundaryIncidence,
+            };
             continue;
         }
         // Legalize only an accepted cover: boundary incidence is already
@@ -536,18 +541,24 @@ pub enum TriError {
         /// Index of the offending hole, or `None` for the outer loop.
         hole: Option<usize>,
     },
-    /// The input is not a simple polygon with positive area:
-    /// self-intersecting, zero-width, or degenerate. Detected honestly — a
-    /// simple polygon always has an ear under exact predicates, so running
-    /// out of ears proves non-simplicity.
+    /// An input loop degenerates to fewer than three vertices after removing
+    /// collinear samples. This does not describe an ear-clipping failure on
+    /// the composite ring synthesized by hole bridging.
     NonSimple,
+    /// A cover could not be constructed or its boundary incidence was wrong.
+    /// No crossing/touching input-edge witness was found. This is not proof
+    /// that the original input is invalid; do not report it as such.
+    TriangulationFailed {
+        /// Stage that refused the final deterministic attempt.
+        stage: TriangulationStage,
+    },
     /// A hole's anchor vertex is not strictly inside the outer loop.
     HoleOutsideOuter {
         /// Index of the offending hole.
         hole: usize,
     },
-    /// No valid bridge exists between this hole and the rest of the polygon:
-    /// every candidate segment crosses or touches an edge.
+    /// No admissible bridge was found from this hole's chosen anchor to the
+    /// current composite ring. This does not prove the input boundary invalid.
     UnbridgeableHole {
         /// Index of the offending hole.
         hole: usize,
@@ -613,13 +624,23 @@ impl core::fmt::Display for TriError {
                 write!(f, "hole {i} must wind clockwise")
             }
             Self::NonSimple => {
-                write!(f, "input is not a simple polygon with positive area")
+                write!(f, "an input loop degenerates after collinear pruning")
+            }
+            Self::TriangulationFailed { stage } => {
+                let step = match stage {
+                    TriangulationStage::EarClipping => "ear clipping",
+                    TriangulationStage::BoundaryIncidence => "boundary incidence validation",
+                };
+                write!(
+                    f,
+                    "triangulation failed during {step}; input validity is undetermined"
+                )
             }
             Self::HoleOutsideOuter { hole } => {
                 write!(f, "hole {hole} is not strictly inside the outer loop")
             }
             Self::UnbridgeableHole { hole } => {
-                write!(f, "hole {hole} cannot be bridged without crossing an edge")
+                write!(f, "no admissible bridge found for hole {hole}")
             }
             Self::TooManyVertices => write!(f, "total vertex count exceeds u32 indices"),
             Self::InvalidParams => {
@@ -630,6 +651,15 @@ impl core::fmt::Display for TriError {
 }
 
 impl core::error::Error for TriError {}
+
+/// Construction stage that failed without a proven input-boundary violation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TriangulationStage {
+    /// The synthesized ring could not be completely clipped into CCW ears.
+    EarClipping,
+    /// Triangle edges did not reproduce the original simplified boundaries.
+    BoundaryIncidence,
+}
 
 /// Triangulation output: triangles as indices into the input concatenation.
 ///

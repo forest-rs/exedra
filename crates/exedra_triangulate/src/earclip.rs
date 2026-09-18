@@ -9,15 +9,15 @@
 //! tie-break Exedra brief 11 prescribes — so output triangle order is a pure
 //! function of the input.
 //!
-//! With exact-sign predicates, the two-ears theorem gives an honest failure
-//! mode: a simple polygon always has an ear, so exhausting candidates proves
-//! the input was not a simple polygon (or degenerated to one), reported as
-//! [`TriError::NonSimple`] rather than guessed around.
+//! Hole bridging synthesizes a weakly simple traversal with repeated vertices.
+//! Exhausting ears in that traversal is a construction failure, not evidence
+//! that the original input boundaries intersect. The caller diagnoses original
+//! boundary contacts separately.
 
 use alloc::vec::Vec;
 
-use crate::TriError;
 use crate::predicates::{Orientation, orient2d};
+use crate::{TriError, TriangulationStage};
 
 /// Narrows a validated count to `u32`.
 ///
@@ -64,7 +64,7 @@ pub(crate) fn earclip_ring(
                     // input boundary the triangulation represents.
                     let _ = collinear.get_or_insert(pos);
                 }
-                VertexClass::Spike => return Err(TriError::NonSimple),
+                VertexClass::Spike => return Err(stalled()),
                 VertexClass::Reflex => {}
                 VertexClass::Convex => {
                     if live.is_ear(pos) {
@@ -81,9 +81,7 @@ pub(crate) fn earclip_ring(
             clipped = true;
         }
         if !clipped {
-            // Two-ears theorem: a simple polygon always has an ear, so the
-            // input cannot have been simple.
-            return Err(TriError::NonSimple);
+            return Err(stalled());
         }
     }
 
@@ -95,10 +93,16 @@ pub(crate) fn earclip_ring(
             VertexClass::Convex => live.emit(pos, out),
             // Final degenerate triangle: nothing left worth emitting.
             VertexClass::CollinearBetween | VertexClass::Spike => {}
-            VertexClass::Reflex => return Err(TriError::NonSimple),
+            VertexClass::Reflex => return Err(stalled()),
         }
     }
     Ok(())
+}
+
+fn stalled() -> TriError {
+    TriError::TriangulationFailed {
+        stage: TriangulationStage::EarClipping,
+    }
 }
 
 /// Computes twice the signed area of `ring` over `points`, in ring order.

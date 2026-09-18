@@ -13,8 +13,9 @@
 //! label). The caller can request two fixed fallback orderings for aligned
 //! holes: reverse only the equal-x y tie and/or scan bridge candidates by
 //! distance. Every ordering has explicit final tie-breaks. Geometric tests use
-//! exact-sign predicates; a bridge that passes through a vertex or lies in a
-//! boundary edge's local cone is rejected rather than resolved by epsilon.
+//! exact-sign predicates. A bridge must clear other edges and enter the
+//! material wedge at the selected occurrence of each endpoint. Passage through
+//! another vertex or collinearity with an incident edge is refused exactly.
 
 use alloc::vec::Vec;
 
@@ -173,7 +174,8 @@ fn bridge_one(
         // collinear with either incident boundary edge, splicing duplicates
         // that edge as a zero-width corridor. A composite ring can contain
         // the same target coordinate more than once after earlier bridges,
-        // so every occurrence must admit the new bridge.
+        // so all incident edges must clear this collinearity check. The
+        // material-cone test below selects the correct occurrence to splice.
         let anchor_position = hole
             .iter()
             .position(|&index| index == anchor)
@@ -198,6 +200,18 @@ fn bridge_one(
             {
                 continue 'candidate;
             }
+        }
+        // Visibility of the segment alone does not select its topological
+        // endpoint. Earlier bridges can visit `o` several times, each with a
+        // different material wedge. Splice only into the occurrence whose
+        // wedge contains this direction, or the traversal crosses itself at
+        // `o` even though no open edge segments cross.
+        let previous = points[ring[(pos + ring.len() - 1) % ring.len()] as usize];
+        let next = points[ring[(pos + 1) % ring.len()] as usize];
+        if !in_material_cone(previous, o, next, h)
+            || !in_material_cone(hole_previous, h, hole_next, o)
+        {
+            continue;
         }
         // The bridge must clear every edge of the current composite ring…
         for i in 0..ring.len() {
@@ -234,6 +248,19 @@ fn bridge_one(
         ));
     }
     Err(TriError::UnbridgeableHole { hole: hole_index })
+}
+
+/// Strictly inside the material wedge to the left of the directed boundary.
+/// Convex corners require both left half-planes; reflex corners require one.
+/// This also applies to clockwise holes, whose material is on their outside.
+fn in_material_cone(previous: [f64; 2], vertex: [f64; 2], next: [f64; 2], q: [f64; 2]) -> bool {
+    let incoming = orient2d(previous, vertex, q) == Orientation::Ccw;
+    let outgoing = orient2d(vertex, next, q) == Orientation::Ccw;
+    if orient2d(previous, vertex, next) == Orientation::Cw {
+        incoming || outgoing
+    } else {
+        incoming && outgoing
+    }
 }
 
 /// True when edge `(a, b)` blocks the bridge segment `(h, o)`.
@@ -317,4 +344,52 @@ pub(crate) fn inside_ring(points: &[[f64; 2]], ring: &[u32], q: [f64; 2]) -> boo
         }
     }
     inside
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{TriangulationStage, earclip::earclip_ring};
+    use alloc::vec;
+
+    #[test]
+    fn bridges_enter_the_selected_occurrence_of_a_shared_vertex() {
+        let points = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [2.0, 8.0],
+            [3.0, 7.0],
+            [2.0, 6.0],
+            [1.0, 7.0],
+            [2.0, 3.25],
+            [2.25, 3.0],
+            [2.0, 2.75],
+            [1.75, 3.0],
+        ];
+        let ring =
+            bridge_holes(&points, vec![0, 1, 2, 3], &[(4, 4), (8, 4)], false, false).unwrap();
+        // The upper bridge leaves the first occurrence of vertex zero. The
+        // lower bridge must enter the second occurrence's remaining wedge.
+        assert_eq!(ring, vec![0, 5, 6, 7, 4, 5, 0, 9, 10, 11, 8, 9, 0, 1, 2, 3]);
+        let mut triangles = Vec::new();
+        earclip_ring(&points, &ring, &mut triangles).unwrap();
+        assert!(crate::triangulation_preserves_boundaries(
+            &points,
+            4,
+            &[(4, 4), (8, 4)],
+            &triangles
+        ));
+
+        // The old splice crossed the traversal at vertex zero. Its failure
+        // says nothing about the validity of these disjoint input holes.
+        let old_ring = [0, 9, 10, 11, 8, 9, 0, 5, 6, 7, 4, 5, 0, 1, 2, 3];
+        assert_eq!(
+            earclip_ring(&points, &old_ring, &mut Vec::new()),
+            Err(TriError::TriangulationFailed {
+                stage: TriangulationStage::EarClipping,
+            })
+        );
+    }
 }
