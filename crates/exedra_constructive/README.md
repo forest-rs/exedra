@@ -43,6 +43,20 @@ geometry alone as success. Use the `serde` feature for host-side interchange.
 
 ## Authoring coordinates and diagnosing boundaries
 
+Closed planar surrounds use the ordinary `NodeKind::Sweep` with
+`Path3::MiteredPolyline`. Supply `closure: PathClosure::ClosedPlanar { normal }`,
+unique stations without a repeated endpoint, `section_origin` in profile
+coordinates, and `CapMode::None`. The existing `section_x` controls the starting
+roll. The closing corner gets the same bounded miter and local checks as the
+other corners, sharing vertices without seam caps. Curved sections and holes
+are supported; closed curved paths and global intersection certification are
+not. The `closed_surround` binary in `constructive_probe` exports a GLB example.
+
+`SourceMap::sweep_sampling(face)` preserves source sampling policies and curved
+path spans through Boolean cuts. These are original construction records,
+not validity checks on the Boolean result. See [closed sweep semantics and
+migration](docs/adr-0020-closed-planar-sweeps.md).
+
 Hard evaluation failures own the failed node's source string. Smooth-loft
 forward-motion refusals also retain both section labels, profile ids, authored
 placements, and cubic control geometry with source segment/tag correspondence.

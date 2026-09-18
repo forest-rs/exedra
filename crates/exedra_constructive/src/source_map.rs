@@ -13,10 +13,13 @@
 //! (feature → faces) is built once at construction and queried by binary
 //! search.
 
+use alloc::collections::BTreeSet;
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use exedra_mesh::{FaceId, Mesh, MeshRevision, VertexId};
 
+use crate::discretize::DiscretizePolicy;
+use crate::path::{PathSampling, PathSpan};
 use crate::tessellate::Feature;
 
 /// The source map was built for an earlier revision of the mesh.
@@ -66,12 +69,34 @@ pub struct SurfaceOrigin {
     pub source: Option<Arc<str>>,
 }
 
+/// Sampling contract of the sweep that originally generated a surface.
+///
+/// Retained through Boolean face splits and placements, in the generating
+/// operation's original profile/path units. This is ancestry, not an error
+/// bound or validity check on the current mesh. A Boolean intersection does
+/// not acquire sweep-local checks from either operand.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SweepSampling {
+    /// Profile chord accuracy and subdivision budget used at construction.
+    pub profile: DiscretizePolicy,
+    /// Curved centerline spans and bounds. `None` denotes a polyline: the
+    /// originating `SweepWall::band` is the authored run, including the final
+    /// last-to-first run for a closed path.
+    pub path: Option<Arc<PathSampling>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SurfaceAncestry {
+    pub(crate) origin: SurfaceOrigin,
+    sweep_sampling: Option<Arc<SweepSampling>>,
+}
+
 /// Per-element provenance for one tessellated body.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceMap {
     face_ids: Vec<FaceId>,
     face_features: Vec<Feature>,
-    origins: Vec<Option<SurfaceOrigin>>,
+    origins: Vec<Option<SurfaceAncestry>>,
     ambiguous_sources: Vec<String>,
     vertex_ids: Vec<VertexId>,
     vertex_features: Vec<Feature>,
@@ -114,9 +139,12 @@ impl SourceMap {
                 .iter()
                 .map(|&feature| match feature {
                     Feature::BooleanFace { .. } | Feature::BooleanSeam => None,
-                    _ => Some(SurfaceOrigin {
-                        feature,
-                        source: None,
+                    _ => Some(SurfaceAncestry {
+                        origin: SurfaceOrigin {
+                            feature,
+                            source: None,
+                        },
+                        sweep_sampling: None,
                     }),
                 })
                 .collect(),
@@ -167,6 +195,18 @@ impl SourceMap {
     /// `None` means unknown ancestry; callers must not infer it from regions.
     #[must_use]
     pub fn surface_origin(&self, face: FaceId) -> Option<&SurfaceOrigin> {
+        self.surface_ancestry(face).map(|entry| &entry.origin)
+    }
+
+    /// Original sweep's sampling contract for a surviving face, if known.
+    /// Use [`Self::surface_origin`] to resolve the generating label and band.
+    /// As with other lookups, call [`Self::check`] after possible mesh edits.
+    #[must_use]
+    pub fn sweep_sampling(&self, face: FaceId) -> Option<&SweepSampling> {
+        self.surface_ancestry(face)?.sweep_sampling.as_deref()
+    }
+
+    pub(crate) fn surface_ancestry(&self, face: FaceId) -> Option<&SurfaceAncestry> {
         let index = self
             .face_ids
             .binary_search_by_key(&face.index(), |id| id.index())
@@ -182,7 +222,7 @@ impl SourceMap {
         self.ambiguous_sources.iter().any(|label| label == source)
     }
 
-    pub(crate) fn with_origins(mut self, origins: Vec<Option<SurfaceOrigin>>) -> Self {
+    pub(crate) fn with_origins(mut self, origins: Vec<Option<SurfaceAncestry>>) -> Self {
         assert_eq!(
             origins.len(),
             self.face_ids.len(),
@@ -192,11 +232,19 @@ impl SourceMap {
         self
     }
 
+    pub(crate) fn with_sweep_sampling(mut self, sampling: SweepSampling) -> Self {
+        let sampling = Arc::new(sampling);
+        for entry in self.origins.iter_mut().flatten() {
+            entry.sweep_sampling = Some(Arc::clone(&sampling));
+        }
+        self
+    }
+
     pub(crate) fn bind_source(&mut self, source: &str) {
         let source: Arc<str> = Arc::from(source);
         for origin in self.origins.iter_mut().flatten() {
-            if origin.source.is_none() {
-                origin.source = Some(Arc::clone(&source));
+            if origin.origin.source.is_none() {
+                origin.origin.source = Some(Arc::clone(&source));
             }
         }
     }
@@ -248,6 +296,23 @@ impl SourceMap {
     pub fn stats(&self) -> SourceMapStats {
         let entry = size_of::<Feature>();
         let reverse = size_of::<(Feature, u32)>();
+        // A sampled path can be large. Count each shared allocation once in
+        // this map; counting it per face would imply quadratic residency.
+        let mut seen = BTreeSet::new();
+        let sampling_bytes: usize = self
+            .origins
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.sweep_sampling.as_ref())
+            .filter(|sampling| seen.insert(Arc::as_ptr(sampling)))
+            .map(|sampling| {
+                size_of::<SweepSampling>()
+                    + sampling
+                        .path
+                        .as_ref()
+                        .map_or(0, |path| path.spans.len() * size_of::<PathSpan>())
+            })
+            .sum();
         SourceMapStats {
             face_entries: self.face_features.len(),
             vertex_entries: self.vertex_features.len(),
@@ -257,12 +322,13 @@ impl SourceMap {
                 + self.face_ids.len() * size_of::<FaceId>()
                 + self.vertex_ids.len() * size_of::<VertexId>()
                 + self.by_feature.len() * reverse
-                + self.origins.len() * size_of::<Option<SurfaceOrigin>>()
+                + self.origins.len() * size_of::<Option<SurfaceAncestry>>()
+                + sampling_bytes
                 + self
                     .origins
                     .iter()
                     .flatten()
-                    .filter_map(|o| o.source.as_ref())
+                    .filter_map(|o| o.origin.source.as_ref())
                     .map(|s| s.len())
                     .sum::<usize>()
                 + self
@@ -271,6 +337,19 @@ impl SourceMap {
                     .map(|s| size_of::<String>() + s.len())
                     .sum::<usize>(),
         }
+    }
+
+    pub(crate) fn retains_path_sampling(&self, path: &Arc<PathSampling>) -> bool {
+        self.origins
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.sweep_sampling.as_ref())
+            .any(|sampling| {
+                sampling
+                    .path
+                    .as_ref()
+                    .is_some_and(|stored| Arc::ptr_eq(stored, path))
+            })
     }
 
     /// The same map re-pinned to `mesh`'s current revision.

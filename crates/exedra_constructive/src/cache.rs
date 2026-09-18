@@ -52,6 +52,7 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.sweep_path.max_tangent_angle.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.sweep_path.max_segment_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.sweep_path.max_path_edges.to_le_bytes());
+    bytes.extend_from_slice(&policy.max_sweep_vertices.to_le_bytes());
     bytes.extend_from_slice(&policy.loft.chord_tolerance.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.loft.max_band_edges.to_le_bytes());
     bytes.extend_from_slice(&policy.loft.max_vertices.to_le_bytes());
@@ -299,9 +300,13 @@ fn approx_body_bytes(body: &TessellatedBody) -> u64 {
         + body.loft_sampling.as_ref().map_or(0, |sampling| {
             (sampling.spans.len() * size_of::<crate::loft::LoftSpan>()) as u64
         })
-        + body.path_sampling.as_ref().map_or(0, |sampling| {
-            (sampling.spans.len() * size_of::<crate::path::PathSpan>()) as u64
-        })
+        + body
+            .path_sampling
+            .as_ref()
+            .filter(|sampling| !body.source_map.retains_path_sampling(sampling))
+            .map_or(0, |sampling| {
+                (sampling.spans.len() * size_of::<crate::path::PathSpan>()) as u64
+            })
 }
 
 #[cfg(test)]

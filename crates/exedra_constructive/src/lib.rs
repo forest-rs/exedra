@@ -128,12 +128,12 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 36 preserves collinear rim samples in unrefined extrusion, loft and
-/// sweep caps, retrying an unrepresentable ear-clipped cover with boundary-preserving
-/// Delaunay triangulation. Cap triangles that still collapse or reverse at mesh
-/// precision are refused with `TessellateError::CollapsedGeometry`.
+/// Schema 37 adds explicit closed planar mitered sweeps and profile datums,
+/// bounds controlled-sweep vertex work, and retains sweep sampling ancestry
+/// through Boolean splits. This evidence describes the generating operation,
+/// never validity or world-space accuracy of the resulting mesh.
 /// Migration: reevaluate cached recipes and regenerate schema-stamped text.
-pub const EVAL_SCHEMA_VERSION: u32 = 36;
+pub const EVAL_SCHEMA_VERSION: u32 = 37;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
