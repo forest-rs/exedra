@@ -30,6 +30,21 @@ It does not yet own:
 
 ## Consequences
 
+### Conservative lifting intervals
+
+Extrusion and revolution compose the source profile's interval over mapped
+profile bounds. Extrusion combines the interval with the axial distance range;
+revolution maps the spatial box to its enclosing radius-height rectangle.
+Unknown source intervals remain unknown. Sampling values and inflating by a
+spatial distance is insufficient for generic fields, whose values need not have
+a unit Lipschitz bound. A positive rescaling must not make a surface disappear
+through incorrect interval culling.
+
+This corrects interval semantics without changing signatures. Callers with
+custom profiles must supply conservative bounds or return `None`.
+
+### Architectural consequences
+
 Positive:
 
 - extraction code can depend on one stable evaluation contract,
