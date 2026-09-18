@@ -93,7 +93,14 @@ Dark grid lines are one metre apart in the authored rest coordinates; pale
 intermediate lines divide a repeat in half. Extrusion measures sampled perimeter
 distance and depth. The vessels use a one-metre reference radius for angular
 distance, so the grid deliberately stretches with the actual radius. One vessel
-is a reflected occurrence of the same compiled part. No box projection is used.
+is a reflected occurrence of the same compiled part.
+
+A smooth draped strip uses its first section as the transverse reference and
+an authored six-metre longitudinal rest length, distributed as two metres per
+section band. A mirrored strip shares its compiled geometry. The spatial cubic
+rail uses sampled centerline distance, deliberately stretching on inner and
+outer curves. The grid remains continuous through their sampled stations.
+No box projection is used.
 
 The example checks complete UV coverage and that a material-color edit reuses
 compiled geometry. The integration test checks texture/normal accessors and the

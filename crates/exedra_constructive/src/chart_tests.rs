@@ -658,3 +658,6 @@ fn underflowed_angular_metric_cannot_succeed_as_a_collapsed_chart() {
         Err(TessellateError::Chart(ChartError::NumericLimit))
     ));
 }
+
+#[path = "chart_loft_sweep_tests.rs"]
+mod loft_sweep;

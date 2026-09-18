@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Opt-in construction coordinates for extrusion and revolution surfaces.
+//! Opt-in construction coordinates for extrusion, revolution, loft and sweep surfaces.
 //!
 //! Charts are authored on generating nodes, in their local recipe units. They
 //! are carried by mesh corner UVs, so topology can stay shared across a texture
@@ -194,6 +194,37 @@ pub enum SurfaceChart {
         /// Cap mapping from local profile `(radius, height)`, on both caps.
         caps: ChartTransform,
     },
+    /// Loft walls use `(reference profile distance, authored longitudinal distance)`.
+    ///
+    /// Profile distance is measured along the jointly sampled reference section,
+    /// in its own profile coordinates before placement. Corresponding points keep
+    /// this U coordinate throughout the loft. V advances uniformly with the
+    /// existing authored-section parameter, from zero to `rest_length`; smooth
+    /// intermediate samples interpolate that parameter. Uneven station spacing,
+    /// differing sections and draping deliberately stretch this rest chart.
+    Loft {
+        /// Explicit zero-based section whose sampled perimeter supplies U.
+        reference_section: u32,
+        /// Finite positive total rest length in recipe units, not measured span.
+        rest_length: f64,
+        /// Wall mapping in reference-profile/longitudinal order.
+        wall: ChartTransform,
+        /// Mapping from each cap's own local profile `(x, y)` coordinates.
+        caps: ChartTransform,
+    },
+    /// Sweep walls use `(sampled profile distance, sampled path distance)`.
+    ///
+    /// Path distance is cumulative centerline chord length before placement,
+    /// independent of the section datum and transported frame. Inner and outer
+    /// rails at bends intentionally stretch this rest metric; miter cuts do not
+    /// reset it. Closed paths have their longitudinal seam at authored station
+    /// zero. This does not change the path's frame policy or geometry checks.
+    Sweep {
+        /// Wall mapping in profile-distance/path-distance order.
+        wall: ChartTransform,
+        /// Mapping from local profile `(x, y)` coordinates on either cap.
+        caps: ChartTransform,
+    },
 }
 impl SurfaceChart {
     /// Checks chart scalars; the recipe builder also checks the node kind.
@@ -205,17 +236,28 @@ impl SurfaceChart {
         {
             return Err(ChartError::InvalidReferenceRadius);
         }
+        if let Self::Loft { rest_length, .. } = self
+            && (!rest_length.is_finite() || *rest_length <= 0.0)
+        {
+            return Err(ChartError::InvalidRestLength);
+        }
         self.wall().validate()?;
         self.caps().validate()
     }
     pub(crate) fn wall(self) -> ChartTransform {
         match self {
-            Self::Extrude { wall, .. } | Self::Revolve { wall, .. } => wall,
+            Self::Extrude { wall, .. }
+            | Self::Revolve { wall, .. }
+            | Self::Loft { wall, .. }
+            | Self::Sweep { wall, .. } => wall,
         }
     }
     pub(crate) fn caps(self) -> ChartTransform {
         match self {
-            Self::Extrude { caps, .. } | Self::Revolve { caps, .. } => caps,
+            Self::Extrude { caps, .. }
+            | Self::Revolve { caps, .. }
+            | Self::Loft { caps, .. }
+            | Self::Sweep { caps, .. } => caps,
         }
     }
 }
@@ -233,11 +275,21 @@ pub struct ChartSampling {
     /// Original profile discretization policy.
     pub profile: DiscretizePolicy,
     /// Total sampled chord length of each loop, outer then holes.
+    /// Loft lengths refer to the authored reference section after joint sampling.
     pub loop_lengths: Vec<f64>,
+    /// Longitudinal rest coordinate at every emitted station for lofts/sweeps.
+    ///
+    /// Closed sweeps include the closing endpoint coordinate even though its
+    /// geometry reuses station zero. Loft values use authored uniform section
+    /// parameters; sweep values use pre-placement centerline chords. Empty for
+    /// extrusion/revolution. These are original construction evidence, not
+    /// distances measured on the subsequently transformed surface.
+    pub station_distances: Vec<f64>,
 }
 impl ChartSampling {
     pub(crate) fn approx_bytes(&self) -> usize {
-        size_of::<Self>() + self.loop_lengths.len() * size_of::<f64>()
+        size_of::<Self>()
+            + (self.loop_lengths.len() + self.station_distances.len()) * size_of::<f64>()
     }
 }
 
@@ -249,6 +301,13 @@ pub enum ChartError {
     InvalidTransform,
     /// The angular rest radius is nonfinite or nonpositive.
     InvalidReferenceRadius,
+    /// The authored longitudinal rest length is nonfinite or nonpositive.
+    InvalidRestLength,
+    /// The requested reference section does not exist in this loft.
+    InvalidReferenceSection {
+        /// Requested zero-based section.
+        section: u32,
+    },
     /// The generating operation does not match the requested chart metric.
     WrongOperation,
     /// Coordinates exceeded the exact-predicate/f32 range, or rounding collapsed
@@ -261,6 +320,13 @@ impl core::fmt::Display for ChartError {
             Self::InvalidTransform => "surface chart transform must be finite and nonsingular",
             Self::InvalidReferenceRadius => {
                 "surface chart reference radius must be finite and positive"
+            }
+            Self::InvalidRestLength => "surface chart rest length must be finite and positive",
+            Self::InvalidReferenceSection { section } => {
+                return write!(
+                    f,
+                    "surface chart reference section {section} does not exist"
+                );
             }
             Self::WrongOperation => "surface chart metric does not match the generating operation",
             Self::NumericLimit => "surface chart exceeds numeric representation limits",
@@ -277,6 +343,27 @@ pub(crate) struct ChartBuilder {
     pub(crate) faces: Vec<Vec<[f32; 2]>>,
 }
 impl ChartBuilder {
+    pub(crate) fn set_stations(&mut self, distances: Vec<f64>) -> Result<(), ChartError> {
+        if distances.iter().any(|v| !v.is_finite())
+            || distances.windows(2).any(|pair| pair[1] <= pair[0])
+        {
+            return Err(ChartError::NumericLimit);
+        }
+        self.sampling.station_distances = distances;
+        Ok(())
+    }
+
+    pub(crate) fn wall_quad(&self, ring: usize, point: usize, band: usize) -> [[f64; 2]; 4] {
+        let s = &self.distances[ring];
+        let v = &self.sampling.station_distances;
+        [
+            [s[point], v[band]],
+            [s[point + 1], v[band]],
+            [s[point + 1], v[band + 1]],
+            [s[point], v[band + 1]],
+        ]
+    }
+
     pub(crate) fn new(
         chart: SurfaceChart,
         d: &DiscretizedProfile,
@@ -304,6 +391,7 @@ impl ChartBuilder {
                 chart,
                 profile,
                 loop_lengths,
+                station_distances: Vec::new(),
             },
             distances,
             vertex_profile: Vec::new(),

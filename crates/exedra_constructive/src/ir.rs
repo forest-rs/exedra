@@ -974,7 +974,7 @@ impl RecipeBuilder {
 
     /// Authors construction UV coordinates on the next node.
     ///
-    /// Extrusion and revolution metrics must match the generating node.
+    /// Extrusion, revolution, loft and sweep metrics must match the generating node.
     /// Other nodes fail with [`RecipeError::SurfaceChart`]; charts are not
     /// inherited through wrappers. Material values remain outside geometry.
     pub fn with_surface_chart(&mut self, chart: SurfaceChart) -> &mut Self {
@@ -1015,9 +1015,25 @@ impl RecipeBuilder {
                 (&kind, chart),
                 (NodeKind::Extrude { .. }, SurfaceChart::Extrude { .. })
                     | (NodeKind::Revolve { .. }, SurfaceChart::Revolve { .. })
+                    | (NodeKind::Loft { .. }, SurfaceChart::Loft { .. })
+                    | (NodeKind::Sweep { .. }, SurfaceChart::Sweep { .. })
             ) {
                 return Err(RecipeError::SurfaceChart(ChartError::WrongOperation));
             }
+        }
+        if let (
+            NodeKind::Loft { sections, .. },
+            Some(SurfaceChart::Loft {
+                reference_section, ..
+            }),
+        ) = (&kind, surface_chart)
+            && reference_section as usize >= sections.len()
+        {
+            return Err(RecipeError::SurfaceChart(
+                ChartError::InvalidReferenceSection {
+                    section: reference_section,
+                },
+            ));
         }
         let node = Node {
             surface_chart,
@@ -2206,6 +2222,16 @@ fn node_canon_bytes(
         Some(chart) => {
             match chart {
                 SurfaceChart::Extrude { .. } => out.push(1),
+                SurfaceChart::Loft {
+                    reference_section,
+                    rest_length,
+                    ..
+                } => {
+                    out.push(3);
+                    out.extend_from_slice(&reference_section.to_le_bytes());
+                    put_f64(out, rest_length);
+                }
+                SurfaceChart::Sweep { .. } => out.push(4),
                 SurfaceChart::Revolve {
                     reference_radius, ..
                 } => {

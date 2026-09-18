@@ -205,10 +205,43 @@ pub enum SurfaceChartDto {
         /// Profile-plane cap transform.
         caps: ChartTransformDto,
     },
+    /// Explicit reference perimeter / uniformly parameterized authored rest length.
+    Loft {
+        /// Zero-based reference section.
+        reference_section: u32,
+        /// Finite positive longitudinal rest length in recipe units.
+        rest_length: f64,
+        /// Wall coordinate transform.
+        wall: ChartTransformDto,
+        /// Each cap's profile-plane transform.
+        caps: ChartTransformDto,
+    },
+    /// Sampled profile distance / sampled centerline distance before placement.
+    Sweep {
+        /// Wall coordinate transform.
+        wall: ChartTransformDto,
+        /// Profile-plane cap transform.
+        caps: ChartTransformDto,
+    },
 }
 impl From<SurfaceChart> for SurfaceChartDto {
     fn from(chart: SurfaceChart) -> Self {
         match chart {
+            SurfaceChart::Loft {
+                reference_section,
+                rest_length,
+                wall,
+                caps,
+            } => Self::Loft {
+                reference_section,
+                rest_length,
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+            SurfaceChart::Sweep { wall, caps } => Self::Sweep {
+                wall: wall.into(),
+                caps: caps.into(),
+            },
             SurfaceChart::Extrude { wall, caps } => Self::Extrude {
                 wall: wall.into(),
                 caps: caps.into(),
@@ -228,6 +261,21 @@ impl From<SurfaceChart> for SurfaceChartDto {
 impl From<SurfaceChartDto> for SurfaceChart {
     fn from(chart: SurfaceChartDto) -> Self {
         match chart {
+            SurfaceChartDto::Loft {
+                reference_section,
+                rest_length,
+                wall,
+                caps,
+            } => Self::Loft {
+                reference_section,
+                rest_length,
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+            SurfaceChartDto::Sweep { wall, caps } => Self::Sweep {
+                wall: wall.into(),
+                caps: caps.into(),
+            },
             SurfaceChartDto::Extrude { wall, caps } => Self::Extrude {
                 wall: wall.into(),
                 caps: caps.into(),

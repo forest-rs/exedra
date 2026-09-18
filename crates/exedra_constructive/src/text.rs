@@ -98,6 +98,18 @@ pub fn dump_recipe(recipe: &Recipe) -> String {
             line.push_str("charted ");
             match chart {
                 SurfaceChart::Extrude { .. } => line.push_str("extrude "),
+                SurfaceChart::Sweep { .. } => line.push_str("sweep "),
+                SurfaceChart::Loft {
+                    reference_section,
+                    rest_length,
+                    ..
+                } => {
+                    let _ = write!(
+                        line,
+                        "loft reference {reference_section} rest_length {} ",
+                        hex(rest_length)
+                    );
+                }
                 SurfaceChart::Revolve {
                     reference_radius, ..
                 } => {
@@ -989,14 +1001,23 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
     let mut kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
     if kind_name == "charted" {
         let metric = tokens.next().ok_or(TextError::Malformed { line })?;
-        let radius = if metric == "revolve" {
-            expect(&mut tokens, "radius", line)?;
-            Some(next_f64(&mut tokens, line)?)
-        } else if metric == "extrude" {
-            None
-        } else {
-            return Err(TextError::Malformed { line });
-        };
+        let mut reference_radius = 1.0;
+        let mut reference_section = 0;
+        let mut rest_length = 1.0;
+        match metric {
+            "revolve" => {
+                expect(&mut tokens, "radius", line)?;
+                reference_radius = next_f64(&mut tokens, line)?;
+            }
+            "loft" => {
+                expect(&mut tokens, "reference", line)?;
+                reference_section = next_u32(&mut tokens, line)?;
+                expect(&mut tokens, "rest_length", line)?;
+                rest_length = next_f64(&mut tokens, line)?;
+            }
+            "extrude" | "sweep" => {}
+            _ => return Err(TextError::Malformed { line }),
+        }
         let mut transform = |label| -> Result<ChartTransform, TextError> {
             expect(&mut tokens, label, line)?;
             Ok(ChartTransform {
@@ -1009,13 +1030,21 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
         };
         let wall = transform("wall")?;
         let caps = transform("caps")?;
-        builder.with_surface_chart(match radius {
-            None => SurfaceChart::Extrude { wall, caps },
-            Some(reference_radius) => SurfaceChart::Revolve {
+        builder.with_surface_chart(match metric {
+            "extrude" => SurfaceChart::Extrude { wall, caps },
+            "revolve" => SurfaceChart::Revolve {
                 reference_radius,
                 wall,
                 caps,
             },
+            "loft" => SurfaceChart::Loft {
+                reference_section,
+                rest_length,
+                wall,
+                caps,
+            },
+            "sweep" => SurfaceChart::Sweep { wall, caps },
+            _ => unreachable!("metric checked above"),
         });
         expect(&mut tokens, "operation", line)?;
         kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
