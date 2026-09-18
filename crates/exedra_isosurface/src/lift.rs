@@ -243,6 +243,7 @@ fn sqrt(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::ExtractionLimits;
     use alloc::vec;
 
     use exedra_spatial::Aabb;
@@ -262,6 +263,8 @@ mod tests {
             root_bounds: bounds,
             max_depth,
             cell_budget: None,
+            limits: ExtractionLimits::default(),
+            witness_limit: 16,
             vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,

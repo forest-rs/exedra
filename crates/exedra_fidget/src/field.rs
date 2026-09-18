@@ -266,6 +266,7 @@ fn assert_same_len(expected: usize, found: usize, label: &str) {
 
 #[cfg(test)]
 mod tests {
+    use exedra_isosurface::ExtractionLimits;
     use exedra_isosurface::{
         Aabb, DualContourParams, EdgeSearchParams, QefParams, ScalarField, SpecializableField,
         dual_contour,
@@ -279,6 +280,8 @@ mod tests {
             root_bounds: bounds,
             max_depth,
             cell_budget: None,
+            limits: ExtractionLimits::default(),
+            witness_limit: 16,
             vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,

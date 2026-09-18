@@ -6,6 +6,7 @@
 //! Run with:
 //! `cargo run --release -p exedra_render_bench`
 
+use exedra_isosurface::ExtractionLimits;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -135,6 +136,8 @@ fn implicit_toothed_torus_mesh() -> Mesh {
         root_bounds: Aabb::new([-1.15, -1.15, -0.55], [1.15, 1.15, 0.55]).expect("valid bounds"),
         max_depth: 6,
         cell_budget: None,
+        limits: ExtractionLimits::default(),
+        witness_limit: 16,
         vertex_merge_tolerance: 0.0,
         edge_search: EdgeSearchParams {
             bisection_steps: 10,

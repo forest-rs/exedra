@@ -3,6 +3,7 @@
 
 //! Consumer-derived alignment regressions, using only public extraction APIs.
 
+use crate::ExtractionLimits;
 use crate::analytic::{SphereField, TaggedField};
 use crate::{
     Aabb, DualContourError, DualContourParameter, DualContourParams, EdgeSearchParams, QefParams,
@@ -23,6 +24,8 @@ fn small_aligned_sphere_remains_closed() {
             root_bounds: Aabb::new([-0.032; 3], [0.032; 3]).unwrap(),
             max_depth: 5,
             cell_budget: None,
+            limits: ExtractionLimits::default(),
+            witness_limit: 16,
             vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 14,
@@ -126,6 +129,8 @@ fn junction_aligned_domain_remains_closed() {
                         },
                         max_depth: depth,
                         cell_budget: None,
+                        limits: ExtractionLimits::default(),
+                        witness_limit: 16,
                         vertex_merge_tolerance: 0.000002,
                         edge_search: EdgeSearchParams {
                             bisection_steps: 14,
@@ -165,6 +170,8 @@ fn extraction_params() -> DualContourParams {
         root_bounds: Aabb::new([-0.38, -0.05, -0.03], [0.38, 0.29, 0.49]).unwrap(),
         max_depth: 5,
         cell_budget: None,
+        limits: ExtractionLimits::default(),
+        witness_limit: 16,
         vertex_merge_tolerance: 0.0,
         edge_search: EdgeSearchParams {
             bisection_steps: 14,
@@ -174,13 +181,65 @@ fn extraction_params() -> DualContourParams {
 }
 
 #[test]
-fn insufficient_join_tolerance_is_an_error() {
+fn insufficient_join_tolerance_preserves_patch_and_source_evidence() {
+    use crate::{DualContourErrorKind, ExtractionStage, ExtractionWitness};
+    let field = TaggedField {
+        field: Junction { finish: false },
+        provenance: 37,
+    };
+    let error = dual_contour_with_regions(&field, &extraction_params()).unwrap_err();
     assert!(matches!(
-        dual_contour(&Junction { finish: false }, &extraction_params()),
-        Err(DualContourError::Build(
-            exedra_mesh::BuildError::DegenerateTriangle { .. }
-        ))
+        error.kind,
+        DualContourErrorKind::Build(exedra_mesh::BuildError::DegenerateTriangle { .. })
     ));
+    assert_eq!(error.context.stage, ExtractionStage::Joining);
+    let Some(ExtractionWitness::MeshPatch { positions, source }) = error.context.witness else {
+        panic!("missing joining evidence")
+    };
+    assert_eq!(source, Some(37));
+    assert!((3..=4).contains(&positions.len()));
+    assert!(
+        positions
+            .iter()
+            .all(|&position| extraction_params().root_bounds.contains(position))
+    );
+    assert!(error.context.work.vertex_joins > 0);
+    assert_eq!(error.context.stats.max_vertex_merge_displacement, 0.0);
+    assert!(error.context.work.point_evaluations > 0);
+    assert!(error.context.stats.octree_cells > 0);
+}
+
+#[test]
+fn refused_face_preserves_transition_and_source_evidence() {
+    use crate::{DualContourErrorKind, ExtractionResource, ExtractionStage, ExtractionWitness};
+    let field = TaggedField {
+        field: Junction { finish: false },
+        provenance: 37,
+    };
+    let mut params = extraction_params();
+    params.limits.faces = Some(0);
+    let error = dual_contour_with_regions(&field, &params).unwrap_err();
+    assert!(matches!(
+        error.kind,
+        DualContourErrorKind::LimitExceeded {
+            resource: ExtractionResource::Faces,
+            used: 0,
+            limit: 0,
+            ..
+        }
+    ));
+    assert_eq!(error.context.stage, ExtractionStage::Emission);
+    let Some(ExtractionWitness::Transition(witness)) = error.context.witness else {
+        panic!("missing transition evidence")
+    };
+    assert_eq!(witness.sampled_source, Some(37));
+    assert_ne!(witness.start, witness.end);
+    assert!(witness.candidates.iter().all(Option::is_some));
+    for candidate in witness.candidates.into_iter().flatten() {
+        assert!(candidate.cell.bounds.contains(candidate.position));
+    }
+    assert!(error.context.work.point_evaluations > 0);
+    assert!(error.context.stats.octree_cells > 0);
 }
 
 #[test]
@@ -205,7 +264,7 @@ fn invalid_policies_fail_before_field_evaluation() {
         };
         assert_eq!(
             dual_contour(&NoEvaluation, &params).unwrap_err(),
-            DualContourError::InvalidParameter(DualContourParameter::VertexMergeTolerance)
+            DualContourError::invalid(DualContourParameter::VertexMergeTolerance)
         );
     }
     for depth in [32, 255] {
@@ -215,7 +274,7 @@ fn invalid_policies_fail_before_field_evaluation() {
         };
         assert_eq!(
             dual_contour(&NoEvaluation, &params).unwrap_err(),
-            DualContourError::InvalidParameter(DualContourParameter::MaxDepth)
+            DualContourError::invalid(DualContourParameter::MaxDepth)
         );
     }
     let params = DualContourParams {
@@ -227,7 +286,7 @@ fn invalid_policies_fail_before_field_evaluation() {
     };
     assert_eq!(
         dual_contour(&NoEvaluation, &params).unwrap_err(),
-        DualContourError::InvalidParameter(DualContourParameter::RootBounds)
+        DualContourError::invalid(DualContourParameter::RootBounds)
     );
     let params = DualContourParams {
         root_bounds: Aabb::new([1_000_000.0; 3], [1_000_001.0; 3]).unwrap(),
@@ -235,7 +294,7 @@ fn invalid_policies_fail_before_field_evaluation() {
     };
     assert_eq!(
         dual_contour(&NoEvaluation, &params).unwrap_err(),
-        DualContourError::InvalidParameter(DualContourParameter::MaxDepth)
+        DualContourError::invalid(DualContourParameter::MaxDepth)
     );
     let params = DualContourParams {
         qef: QefParams {
@@ -246,7 +305,7 @@ fn invalid_policies_fail_before_field_evaluation() {
     };
     assert_eq!(
         dual_contour(&NoEvaluation, &params).unwrap_err(),
-        DualContourError::InvalidParameter(DualContourParameter::Qef)
+        DualContourError::invalid(DualContourParameter::Qef)
     );
 }
 

@@ -768,6 +768,7 @@ fn millis(duration: Duration) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use exedra_isosurface::ExtractionLimits;
     use exedra_isosurface::analytic::{BoxField, TaggedField};
     use exedra_isosurface::{DualContourParams, EdgeSearchParams, dual_contour_semi_analytic};
     use exedra_qef::QefParams;
@@ -799,6 +800,8 @@ mod tests {
             root_bounds: Aabb::new([-1.3; 3], [1.4; 3]).expect("root"),
             max_depth: 4,
             cell_budget: None,
+            limits: ExtractionLimits::default(),
+            witness_limit: 16,
             vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,

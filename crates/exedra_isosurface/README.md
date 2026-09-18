@@ -16,6 +16,8 @@ let params = DualContourParams {
     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
     max_depth: 4,
     cell_budget: None,
+    limits: Default::default(),
+    witness_limit: 16,
     vertex_merge_tolerance: 0.0,
     edge_search: EdgeSearchParams::default(),
     qef: QefParams::default(),
@@ -66,6 +68,41 @@ Remaining degeneracies and topology refusals return errors. Invalid bounds,
 unrepresentable grid depths, QEF policies and join tolerances fail before field
 evaluation. `DualContourStats` gains join counts and displacement and implements
 `PartialEq` rather than `Eq`.
+
+## Work limits and evidence
+
+`cell_budget` deliberately limits contributing output cells. It still performs
+analysis, and may return an empty or open mesh. Inspect `result.report.completion`:
+`TruncatedByCellBudget` gives exact omitted-cell and omitted-patch counts, omitted
+bounds, and bounded cell witnesses. `Complete` means no eligible interior patches
+were omitted by that budget. It does **not** certify a closed surface, feature
+retention, geometric accuracy, or enclosure within the caller's root domain.
+The report also counts root-boundary crossings, unresolved finest cells and
+finest cells using compatibility evidence. `witness_limit` bounds only the detail
+list; counts remain exact, including `unreported_witnesses`.
+
+Use `limits: ExtractionLimits { ... }` to stop analysis and generation. Independent
+caps cover octree cells (including later refinements), cached corners, transition
+worklists, mesh vertices/faces, field evaluations, topology passes and attempted
+vertex joins. A hard limit returns an error and no mesh. `None` leaves a resource
+unrestricted; use finite caps for all relevant resources to bound a run. Storage
+counts are logical entries, including reserved worklist bounds, not allocator
+bytes or process RSS. Evaluation work counts calls/rows through the supplied
+field's public methods, not arbitrary work performed inside those methods.
+
+Both success and failure preserve accumulated work. Failure additionally carries
+the stage and spatial evidence: cell bounds, a generating transition with routed
+component positions, a queried point/domain, or an intermediate mesh patch.
+A sampled source ID is attribution at the generating crossing; it is not a
+complete CSG contributor trace. Non-finite scalar values and invalid interval
+responses are typed failures. Undefined gradient directions remain permissible.
+
+Migration: parameter literals must add `limits: Default::default()` and
+`witness_limit` (for example, `16`). Match `error.kind: DualContourErrorKind`
+instead of variants on `DualContourError`; inspect `error.context` for stage,
+work, geometry progress and witnesses. Errors are now `Clone + PartialEq`, not
+`Copy + Eq`. Results gain `work` and `report`; existing `stats` describe geometry.
+Default hard limits preserve the previous unrestricted resource policy.
 
 `dual_contour_semi_analytic` additionally projects eligible cell vertices onto
 the dominating tagged primitive and snaps transverse feature cells for

@@ -8,10 +8,13 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
+use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeError, OctreeVisitor};
 use hashbrown::HashMap;
 
 use crate::ScalarField;
+use crate::dual_contour::control::{
+    DualContourError, ExtractionResource, ExtractionWitness, RunContext, query_bounds,
+};
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct CornerKey {
@@ -123,6 +126,16 @@ impl<'a, F: ScalarField> AdaptiveGrid<'a, F> {
             .key
     }
 
+    pub(super) fn known_cell_key(&self, id: CellId) -> Option<CellKey> {
+        self.locations
+            .get(id.index() as usize)
+            .and_then(|location| location.map(|cell| cell.key))
+    }
+
+    pub(super) const fn field(&self) -> &'a F {
+        self.field
+    }
+
     pub(super) fn locate_cell(&mut self, cell: CellRef) -> CellKey {
         let index = cell.id.index() as usize;
         if let Some(key) = self
@@ -177,18 +190,26 @@ impl<'a, F: ScalarField> AdaptiveGrid<'a, F> {
         key
     }
 
-    pub(super) fn sample_cell_corners(&mut self, cell: CellKey) -> [f32; 8] {
+    pub(super) fn sample_cell_corners(
+        &mut self,
+        cell: CellKey,
+        run: &RunContext,
+    ) -> Result<[f32; 8], DualContourError> {
         let keys = cell_corner_keys(cell);
-        self.sample_keys(&keys);
-        keys.map(|key| {
+        self.sample_keys(&keys, run)?;
+        Ok(keys.map(|key| {
             *self
                 .samples
                 .get(&key)
                 .expect("every requested corner must be cached")
-        })
+        }))
     }
 
-    pub(super) fn sample_keys(&mut self, keys: &[CornerKey]) {
+    pub(super) fn sample_keys(
+        &mut self,
+        keys: &[CornerKey],
+        run: &RunContext,
+    ) -> Result<(), DualContourError> {
         let mut missing = keys
             .iter()
             .copied()
@@ -197,17 +218,29 @@ impl<'a, F: ScalarField> AdaptiveGrid<'a, F> {
         missing.sort_unstable();
         missing.dedup();
         if missing.is_empty() {
-            return;
+            return Ok(());
         }
+        run.grow(
+            ExtractionResource::CachedCorners,
+            self.samples.len(),
+            missing.len(),
+        )
+        .map_err(|error| {
+            error.with_witness(ExtractionWitness::Query {
+                bounds: query_bounds(missing.iter().map(|key| self.point(*key))),
+            })
+        })?;
         let points = missing
             .iter()
             .map(|key| self.point(*key))
             .collect::<Vec<_>>();
         let mut values = vec![0.0_f32; points.len()];
         self.field.eval_points(&points, &mut values);
+        run.check()?;
         for (key, value) in missing.into_iter().zip(values) {
             self.samples.insert(key, value);
         }
+        Ok(())
     }
 
     pub(super) fn value(&self, key: CornerKey) -> Option<f32> {
@@ -359,14 +392,30 @@ pub(super) trait BalanceContext: OctreeVisitor {
 
     fn transition_grid(&self) -> &AdaptiveGrid<'_, Self::Field>;
     fn global_max_depth(&self) -> u8;
-    fn failed(&self) -> bool;
+    fn cell_limit(&self) -> Option<usize>;
+    fn begin_balance_pass(&self, leaves: usize) -> Result<(), Self::Error>;
 }
 
-pub(super) fn balance_tree<V>(tree: &mut Octree<V::Payload>, visitor: &mut V)
+pub(super) fn balance_tree<V>(
+    tree: &mut Octree<V::Payload>,
+    visitor: &mut V,
+) -> Result<(), OctreeError<V::Error>>
 where
     V: BalanceContext,
 {
     loop {
+        visitor
+            .begin_balance_pass(tree.leaf_ids().count())
+            .map_err(|source| OctreeError::Visitor {
+                cell: CellRef {
+                    id: tree.root_id(),
+                    bounds: tree.root().bounds,
+                    depth: 0,
+                    parent: None,
+                },
+                stored_cells: tree.len(),
+                source,
+            })?;
         let leaves = sorted_leaf_keys(tree, visitor.transition_grid());
         let mut faces = HashMap::<FacePatchKey, [Option<CellId>; 2]>::new();
         for &(id, key) in &leaves {
@@ -418,15 +467,11 @@ where
         refine.sort_unstable_by_key(|&(key, id)| (key, id));
         refine.dedup_by_key(|entry| entry.1);
         if refine.is_empty() {
-            return;
+            return Ok(());
         }
         let max_depth = visitor.global_max_depth();
         for (_, id) in refine {
-            tree.refine_leaf(id, max_depth, visitor)
-                .expect("balancing candidates are current octree leaves");
-        }
-        if visitor.failed() {
-            return;
+            tree.refine_leaf(id, max_depth, visitor.cell_limit(), visitor)?;
         }
     }
 }
@@ -438,8 +483,11 @@ pub(super) fn leaf_keys<P, F: ScalarField>(
     sorted_leaf_keys(tree, grid)
 }
 
-pub(super) fn enumerate_segments(leaves: &[(CellId, CellKey)]) -> Vec<EdgeSegmentKey> {
-    let mut intervals = Vec::with_capacity(leaves.len() * 12);
+pub(super) fn enumerate_segments(
+    leaves: &[(CellId, CellKey)],
+    run: &RunContext,
+) -> Result<Vec<EdgeSegmentKey>, DualContourError> {
+    let mut intervals = Vec::with_capacity(run.records(leaves.len(), 12)?);
     for &(_, cell) in leaves {
         for axis in 0_u8..3 {
             for first_high in [false, true] {
@@ -460,20 +508,23 @@ pub(super) fn enumerate_segments(leaves: &[(CellId, CellKey)]) -> Vec<EdgeSegmen
             end += 1;
         }
         let group = &intervals[first..end];
-        let mut breakpoints = Vec::with_capacity(group.len() * 2);
+        let mut breakpoints = Vec::with_capacity(run.records(group.len(), 2)?);
         for interval in group {
             breakpoints.push(interval.start);
             breakpoints.push(interval.end);
         }
         breakpoints.sort_unstable();
         breakpoints.dedup();
-        for interval in group {
-            for window in breakpoints.windows(2) {
-                let start = window[0];
-                let finish = window[1];
-                if start >= interval.start && finish <= interval.end {
-                    segments.push(segment_from_line(line, start, finish - start));
-                }
+        let mut next_interval = 0;
+        let mut covered_end = 0;
+        for window in breakpoints.windows(2) {
+            while next_interval < group.len() && group[next_interval].start <= window[0] {
+                covered_end = covered_end.max(group[next_interval].end);
+                next_interval += 1;
+            }
+            if covered_end >= window[1] {
+                run.grow(ExtractionResource::TransitionRecords, segments.len(), 1)?;
+                segments.push(segment_from_line(line, window[0], window[1] - window[0]));
             }
         }
         first = end;
@@ -487,8 +538,7 @@ pub(super) fn enumerate_segments(leaves: &[(CellId, CellKey)]) -> Vec<EdgeSegmen
             segment.length,
         )
     });
-    segments.dedup();
-    segments
+    Ok(segments)
 }
 
 pub(super) fn segment_end(segment: EdgeSegmentKey) -> CornerKey {
@@ -514,7 +564,6 @@ pub(super) fn segment_end(segment: EdgeSegmentKey) -> CornerKey {
 fn sorted_leaf_keys<P, F: ScalarField>(tree: &Octree<P>, grid: &AdaptiveGrid<'_, F>) -> LeafSet {
     let mut leaves = tree
         .leaf_ids()
-        .into_iter()
         .map(|id| (id, grid.cell_key(id)))
         .collect::<Vec<_>>();
     leaves.sort_unstable_by_key(|&(id, key)| (key, id));
@@ -670,6 +719,7 @@ fn abs(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExtractionLimits;
 
     struct ConstantField;
 
@@ -696,19 +746,21 @@ mod tests {
 
     impl OctreeVisitor for SplitVisitor<'_> {
         type Payload = ();
+        type Error = core::convert::Infallible;
 
-        fn should_subdivide(&mut self, cell: CellRef) -> bool {
+        fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error> {
             self.grid.locate_cell(cell);
             let in_fine_half = if self.fine_high {
                 cell.bounds.min[self.axis] >= 0.0
             } else {
                 cell.bounds.max[self.axis] <= 0.0
             };
-            cell.depth == 0 || (cell.depth < self.target_depth && in_fine_half)
+            Ok(cell.depth == 0 || (cell.depth < self.target_depth && in_fine_half))
         }
 
-        fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
+        fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error> {
             self.grid.locate_cell(cell);
+            Ok(())
         }
     }
 
@@ -723,8 +775,11 @@ mod tests {
             self.target_depth
         }
 
-        fn failed(&self) -> bool {
-            false
+        fn cell_limit(&self) -> Option<usize> {
+            None
+        }
+        fn begin_balance_pass(&self, _: usize) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 
@@ -774,6 +829,45 @@ mod tests {
     }
 
     #[test]
+    fn refused_corner_batch_bounds_exclude_cached_points() {
+        use crate::DualContourErrorKind;
+        use crate::dual_contour::control::CheckedField;
+
+        let run = RunContext::new(ExtractionLimits {
+            cached_corners: Some(1),
+            ..Default::default()
+        });
+        let field = CheckedField {
+            field: &ConstantField,
+            run: &run,
+        };
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).unwrap();
+        let mut grid = AdaptiveGrid::new(&field, bounds, 4);
+        let cached = CornerKey::new(0, 0, 0);
+        grid.samples.insert(cached, 1.0);
+        let a = CornerKey::new(2, 1, 3);
+        let b = CornerKey::new(4, 3, 1);
+        let error = grid.sample_keys(&[cached, a, b, a], &run).unwrap_err();
+        assert_eq!(
+            error.kind,
+            DualContourErrorKind::LimitExceeded {
+                resource: ExtractionResource::CachedCorners,
+                used: 1,
+                requested: 3,
+                limit: 1,
+            }
+        );
+        assert_eq!(
+            error.context.witness,
+            Some(ExtractionWitness::Query {
+                bounds: Aabb::new([0.0, -0.5, -0.5], [1.0, 0.5, 0.5]).unwrap(),
+            })
+        );
+        assert_eq!(run.work.get().point_evaluations, 0);
+        assert_eq!(grid.samples.len(), 1);
+    }
+
+    #[test]
     fn integer_grid_preserves_exact_root_endpoints_and_shared_boundaries() {
         let field = ConstantField;
         let min = 0.021_897_81_f32;
@@ -812,7 +906,7 @@ mod tests {
                         axis,
                         fine_high,
                     };
-                    let mut tree = Octree::build(bounds, target_depth, &mut visitor);
+                    let mut tree = Octree::build(bounds, target_depth, None, &mut visitor).unwrap();
                     let before = leaf_keys(&tree, &visitor.grid);
                     assert!(before.iter().any(|(_, a)| {
                         before.iter().any(|(_, b)| {
@@ -820,7 +914,7 @@ mod tests {
                         })
                     }));
 
-                    balance_tree(&mut tree, &mut visitor);
+                    balance_tree(&mut tree, &mut visitor).unwrap();
                     let after = leaf_keys(&tree, &visitor.grid);
                     for (index, &(_, a)) in after.iter().enumerate() {
                         for &(_, b) in &after[index + 1..] {
@@ -896,7 +990,11 @@ mod tests {
                     locator.component_route(CellId::from_index(2), segment),
                     ComponentRoute::LocalEdge(expected_edges[1])
                 );
-                assert!(enumerate_segments(&leaves).contains(&segment));
+                assert!(
+                    enumerate_segments(&leaves, &RunContext::new(ExtractionLimits::default()))
+                        .unwrap()
+                        .contains(&segment)
+                );
             }
         }
     }

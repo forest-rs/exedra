@@ -8,6 +8,7 @@ use exedra_math::{norm, sub};
 use exedra_mesh::{BuildError, Mesh, MeshBuilder, VertexId, attr, op};
 use hashbrown::{HashMap, HashSet};
 
+use super::control::{ExtractionResource, ExtractionWitness, RunContext};
 use super::{
     DualContourError, QuadDiagonal, VertexEntry, emit_transition_with_sharpness,
     select_quad_diagonal, triangle_is_nondegenerate,
@@ -16,6 +17,8 @@ use super::{
 pub(super) fn collapse_coincident_edges(
     mesh: &mut Mesh,
     tolerance: f32,
+    has_provenance: bool,
+    run: &RunContext,
 ) -> Result<(usize, f64), DualContourError> {
     let mut sources = HashMap::<_, Vec<[f32; 3]>>::new();
     let candidates = mesh
@@ -58,8 +61,26 @@ pub(super) fn collapse_coincident_edges(
             break;
         };
         let removed_position = *mesh.vertex_position(remove).unwrap();
-        check_vertex_link(mesh, keep)?;
-        check_vertex_link(mesh, remove)?;
+        let witness = ExtractionWitness::MeshPatch {
+            positions: alloc::vec![*mesh.vertex_position(keep).unwrap(), removed_position],
+            source: has_provenance
+                .then(|| {
+                    mesh.face(edge).and_then(|face| {
+                        mesh.attrs()
+                            .dense(attr::FACE_REGION)
+                            .and_then(|layer| layer.get(face.as_id()).copied())
+                    })
+                })
+                .flatten(),
+        };
+        run.grow(
+            ExtractionResource::VertexJoins,
+            run.work.get().vertex_joins,
+            1,
+        )
+        .map_err(|error| error.with_witness(witness.clone()))?;
+        check_vertex_link(mesh, keep).map_err(|error| error.with_witness(witness.clone()))?;
+        check_vertex_link(mesh, remove).map_err(|error| error.with_witness(witness.clone()))?;
         let mut edit = mesh.edit();
         let result = op::collapse_edge(&mut edit, edge);
         #[expect(
@@ -69,13 +90,25 @@ pub(super) fn collapse_coincident_edges(
         {
             edit.finish();
         }
-        result.map_err(DualContourError::Collapse)?;
-        check_vertex_link(mesh, keep)?;
+        result.map_err(|error| DualContourError::collapse(error).with_witness(witness.clone()))?;
+        check_vertex_link(mesh, keep).map_err(|error| error.with_witness(witness))?;
         let removed = sources.remove(&remove).unwrap_or_default();
         let kept_sources = sources.entry(keep).or_default();
         kept_sources.push(removed_position);
         kept_sources.extend(removed);
         count += 1;
+        let mut stats = run.stats.get();
+        stats.coincident_edge_collapses = count;
+        stats.vertices = mesh.vertices().count();
+        stats.faces = mesh.faces().count();
+        stats.max_vertex_merge_displacement = sources
+            .iter()
+            .flat_map(|(vertex, originals)| {
+                let position = *mesh.vertex_position(*vertex).unwrap();
+                originals.iter().map(move |&p| merge_distance(position, p))
+            })
+            .fold(0.0_f64, f64::max);
+        run.stats.set(stats);
     }
     for (triangle, face) in mesh.faces().enumerate() {
         let points = mesh
@@ -87,9 +120,20 @@ pub(super) fn collapse_coincident_edges(
             })
             .collect::<Vec<_>>();
         if !polygon_is_nondegenerate(&points) {
-            return Err(DualContourError::Build(BuildError::DegenerateTriangle {
-                triangle,
-            }));
+            return Err(
+                DualContourError::build(BuildError::DegenerateTriangle { triangle }).with_witness(
+                    ExtractionWitness::MeshPatch {
+                        positions: points,
+                        source: has_provenance
+                            .then(|| {
+                                mesh.attrs()
+                                    .dense(attr::FACE_REGION)
+                                    .and_then(|layer| layer.get(face.as_id()).copied())
+                            })
+                            .flatten(),
+                    },
+                ),
+            );
         }
     }
     let max_displacement = sources
@@ -105,9 +149,7 @@ pub(super) fn collapse_coincident_edges(
 fn check_vertex_link(mesh: &Mesh, vertex: VertexId) -> Result<(), DualContourError> {
     let degree = mesh.vertex_star(vertex).count();
     let Some(start) = mesh.vertex_out(vertex) else {
-        return Err(DualContourError::DisconnectedVertexLink {
-            vertex: vertex.index(),
-        });
+        return Err(DualContourError::disconnected(vertex.index()));
     };
     let mut edge = start;
     for step in 0..degree {
@@ -115,15 +157,18 @@ fn check_vertex_link(mesh: &Mesh, vertex: VertexId) -> Result<(), DualContourErr
             .next(mesh.twin(edge).expect("built twin"))
             .expect("built successor");
         if mesh.from_vertex(edge) != Some(vertex) || (edge == start) != (step + 1 == degree) {
-            return Err(DualContourError::DisconnectedVertexLink {
-                vertex: vertex.index(),
-            });
+            return Err(DualContourError::disconnected(vertex.index()));
         }
     }
     Ok(())
 }
 
-pub(super) fn triangulate_joined_mesh(mesh: &Mesh) -> Result<Mesh, DualContourError> {
+pub(super) fn triangulate_joined_mesh(
+    mesh: &Mesh,
+    has_provenance: bool,
+    run: &RunContext,
+) -> Result<Mesh, DualContourError> {
+    run.reserve(ExtractionResource::Vertices, 0, mesh.vertices().count())?;
     let mut builder = MeshBuilder::new();
     let indices = mesh
         .vertices()
@@ -201,6 +246,12 @@ pub(super) fn triangulate_joined_mesh(mesh: &Mesh) -> Result<Mesh, DualContourEr
         } else {
             None
         };
+        let witness = || ExtractionWitness::MeshPatch {
+            positions: entries.iter().map(|entry| entry.position).collect(),
+            source: has_provenance.then_some(region),
+        };
+        run.grow(ExtractionResource::Faces, face_count, entries.len() - 2)
+            .map_err(|error| error.with_witness(witness()))?;
         emit_transition_with_sharpness(
             &mut builder,
             &entries,
@@ -208,9 +259,10 @@ pub(super) fn triangulate_joined_mesh(mesh: &Mesh) -> Result<Mesh, DualContourEr
             region,
             &mut face_count,
             diagonal,
-        )?;
+        )
+        .map_err(|error| error.with_witness(witness()))?;
     }
-    Ok(builder.build().map_err(DualContourError::Build)?.mesh)
+    Ok(builder.build().map_err(DualContourError::build)?.mesh)
 }
 
 pub(super) fn merge_distance(a: [f32; 3], b: [f32; 3]) -> f64 {
@@ -239,7 +291,8 @@ pub(super) fn transition_is_nondegenerate(face: &[VertexEntry]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DualContourError, MeshBuilder, collapse_coincident_edges};
+    use super::{DualContourError, MeshBuilder, RunContext, collapse_coincident_edges};
+    use crate::ExtractionLimits;
     use exedra_mesh::{BuildError, op::CollapseEdgeError};
 
     #[test]
@@ -253,10 +306,18 @@ mod tests {
         }
         let mut mesh = builder.build().unwrap().mesh;
         assert!(matches!(
-            collapse_coincident_edges(&mut mesh, 0.0),
-            Err(DualContourError::Collapse(
-                CollapseEdgeError::DegenerateShell { .. }
-            ))
+            collapse_coincident_edges(
+                &mut mesh,
+                0.0,
+                false,
+                &RunContext::new(ExtractionLimits::default())
+            ),
+            Err(DualContourError {
+                kind: crate::DualContourErrorKind::Collapse(
+                    CollapseEdgeError::DegenerateShell { .. }
+                ),
+                ..
+            })
         ));
         assert_eq!(mesh.faces().count(), 4);
         assert!(mesh.boundary_loops().unwrap().is_empty());
@@ -279,10 +340,16 @@ mod tests {
         // The first join moves x=0 to x=1e-7. A second hop to x=2e-7
         // would pass an edge-length-only check but exceed the original bound.
         assert!(matches!(
-            collapse_coincident_edges(&mut mesh, 1.5e-7),
-            Err(DualContourError::Build(
-                BuildError::DegenerateTriangle { .. }
-            ))
+            collapse_coincident_edges(
+                &mut mesh,
+                1.5e-7,
+                false,
+                &RunContext::new(ExtractionLimits::default())
+            ),
+            Err(DualContourError {
+                kind: crate::DualContourErrorKind::Build(BuildError::DegenerateTriangle { .. }),
+                ..
+            })
         ));
         assert_eq!(mesh.faces().count(), 1);
         assert!(
@@ -327,8 +394,12 @@ mod tests {
             )
             .unwrap();
         let mut mesh = builder.build().unwrap().mesh;
-        assert_eq!(collapse_coincident_edges(&mut mesh, 0.0).unwrap(), (1, 0.0));
-        let mesh = triangulate_joined_mesh(&mesh).unwrap();
+        let run = RunContext::new(ExtractionLimits::default());
+        assert_eq!(
+            collapse_coincident_edges(&mut mesh, 0.0, true, &run).unwrap(),
+            (1, 0.0)
+        );
+        let mesh = triangulate_joined_mesh(&mesh, true, &run).unwrap();
         assert!(mesh.validate_deep().is_empty());
         assert_eq!(mesh.faces().count(), 2);
         assert!(mesh.faces().all(|f| {

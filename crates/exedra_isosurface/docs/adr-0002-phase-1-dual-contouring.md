@@ -133,6 +133,49 @@ Non-dyadic roots can therefore produce different last-bit coordinates from the
 previous two-step `f32` computation. Root endpoints remain exact; callers that
 persist exact vertex sequences must deliberately rebaseline those coordinates.
 
+### Bounded analysis, completion and failure evidence
+
+Extraction owns resource policy and evidence; the reusable spatial tree owns
+fallible traversal and checks its stored-cell cap before allocation. See
+[spatial ADR-0001](../../exedra_spatial/docs/adr-0001-flat-octree-scope.md).
+Initial subdivision, balancing and transition completion all use the same hard
+cell limit. Tree refinement restores the original leaf on failure; extraction
+stops and discards its entire private run rather than reusing visitor state.
+
+`ExtractionLimits` applies before controlled allocations, field callback batches,
+topology passes and checked joins. Octree and cache limits bound analysis;
+transition limits bound each worklist, with conservative reservations where
+appropriate. Segment enumeration sweeps sorted intervals to emit unique covered
+subsegments, avoiding quadratic duplicate accumulation. Vertex and face limits
+apply to intermediate meshes too; per-cell storage has a fixed cube-topology
+bound, and mesh scratch storage is bounded by the vertex/face caps. No limits
+claim exact allocator bytes, wall time or control over arbitrary caller code.
+
+A checked field adapter meters interval queries, point/gradient rows, provenance
+and projection requests. Invalid scalar values and NaN/reversed intervals stop
+extraction with query locations; infinite outward intervals and undefined gradient
+directions remain legal. Refused batches do not appear as completed work. The
+first field failure takes precedence over consequential solver errors.
+
+Hard exhaustion returns a typed error, accumulated work and geometry progress,
+and spatial evidence where the failed operation has a location. Transition
+witnesses preserve root-relative edge identity, routed cell/component positions
+and sampled source attribution where available. Joining witnesses describe
+intermediate geometry. IDs are extraction-scoped, not durable source features.
+The error contains a boxed context so the ordinary `Result` remains small.
+
+The separate output `cell_budget` retains its deterministic truncation policy.
+`ExtractionReport` distinguishes completion from truncation, with exact eligible,
+omitted, boundary-crossing, unresolved-finest-cell and compatibility counts.
+Witness detail is caller-capped independently of exact counts. Complete means
+that the finite run omitted no eligible interior patch; it does not upgrade
+sampling evidence to topology, feature-preservation or geometric-error proof.
+
+Migration: add `limits` and `witness_limit` to parameter literals. `None` limits
+preserve unrestricted behavior. Results gain `work` and `report`. Match the
+former error variants through `DualContourError::kind` and inspect the boxed
+`context`; errors are no longer `Copy` or `Eq` because they preserve geometry.
+
 ### Extraction scope
 
 - The workspace now has a real field-to-mesh path for spheres, boxes,

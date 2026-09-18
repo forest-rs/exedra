@@ -6,13 +6,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt;
 
 use exedra_mesh::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
-use exedra_qef::{PlaneConstraint, QefBounds, QefResult, QefSolveError, QefSolver, SharpnessClass};
-use exedra_spatial::{CellId, CellRef, Octree, OctreeVisitor};
+use exedra_qef::{PlaneConstraint, QefBounds, QefResult, QefSolver, SharpnessClass};
+use exedra_spatial::{CellId, CellRef, Octree, OctreeError, OctreeVisitor};
 use hashbrown::HashMap;
 
 use crate::adaptive_transition::{
@@ -32,7 +30,15 @@ const MIN_EMITTER_DEPTH: u8 = 2;
 const LEGACY_SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
 const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
+pub(crate) mod control;
 mod joining;
+use control::{CheckedField, Evaluation, RunContext};
+pub use control::{
+    DualContourError, DualContourErrorKind, ExtractionCandidate, ExtractionCell,
+    ExtractionCellIssue, ExtractionCellWitness, ExtractionCompletion, ExtractionFailureContext,
+    ExtractionLimits, ExtractionReport, ExtractionResource, ExtractionStage, ExtractionWitness,
+    ExtractionWork, TransitionWitness,
+};
 #[cfg(test)]
 mod regression;
 
@@ -68,6 +74,11 @@ pub struct DualContourParams {
     pub edge_search: EdgeSearchParams,
     /// QEF solve parameters.
     pub qef: QefParams,
+    /// Hard analysis, storage and generation limits. Exhaustion returns an error.
+    pub limits: ExtractionLimits,
+    /// Maximum spatial cell witnesses retained in the completion report.
+    /// Counts remain exact when this cap is zero or reached.
+    pub witness_limit: usize,
 }
 
 /// Extraction statistics for one dual-contouring run.
@@ -98,6 +109,10 @@ pub struct DualContourResult {
     pub mesh: Mesh,
     /// Extraction statistics.
     pub stats: DualContourStats,
+    /// Accumulated evaluation work and peak logical storage.
+    pub work: ExtractionWork,
+    /// Completion, omission and resolution evidence.
+    pub report: ExtractionReport,
 }
 
 /// Semi-analytic projection and fallback counts for one extraction.
@@ -129,26 +144,12 @@ pub struct SemiAnalyticContourResult {
     pub mesh: Mesh,
     /// Ordinary dual-contouring statistics.
     pub stats: DualContourStats,
+    /// Accumulated evaluation work and peak logical storage.
+    pub work: ExtractionWork,
+    /// Completion, omission and resolution evidence.
+    pub report: ExtractionReport,
     /// Semi-analytic projection and fallback statistics.
     pub semi_analytic: SemiAnalyticContourStats,
-}
-
-/// Dual-contouring extraction failure.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum DualContourError {
-    /// A policy field is invalid; no field evaluation was performed.
-    InvalidParameter(DualContourParameter),
-    /// The generated polygon mesh failed to build.
-    Build(BuildError),
-    /// QEF solve failed for an active cell.
-    Solve(QefSolveError),
-    /// Coincident vertices could not be joined without invalidating topology.
-    Collapse(op::CollapseEdgeError),
-    /// A vertex involved in joining has a disconnected incident-face fan.
-    DisconnectedVertexLink {
-        /// Vertex index in the intermediate transition mesh.
-        vertex: u32,
-    },
 }
 
 /// Invalid input category reported before extraction starts.
@@ -164,33 +165,12 @@ pub enum DualContourParameter {
     Qef,
 }
 
-impl fmt::Display for DualContourError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidParameter(parameter) => {
-                write!(f, "invalid dual contour parameter: {parameter:?}")
-            }
-            Self::Build(error) => write!(f, "dual contour mesh build failed: {error}"),
-            Self::Solve(error) => write!(f, "dual contour QEF solve failed: {error:?}"),
-            Self::Collapse(error) => {
-                write!(f, "dual contour coincident edge collapse failed: {error}")
-            }
-            Self::DisconnectedVertexLink { vertex } => write!(
-                f,
-                "dual contour join has disconnected vertex link at {vertex}"
-            ),
-        }
-    }
-}
-
-impl core::error::Error for DualContourError {}
-
 /// Extracts a mesh from `field`, defaulting all face regions to `0`.
 pub fn dual_contour<F: ScalarField>(
     field: &F,
     params: &DualContourParams,
 ) -> Result<DualContourResult, DualContourError> {
-    dual_contour_impl(field, params, |_, _, _| 0)
+    dual_contour_impl(field, params, None)
 }
 
 /// Extracts a mesh from `field`, sampling `FACE_REGION` from field provenance
@@ -202,11 +182,7 @@ pub fn dual_contour_with_regions<F>(
 where
     F: ProvenanceField<Provenance = u32>,
 {
-    dual_contour_impl(field, params, |start, end, fallback| {
-        let point = locate_edge_zero(field, start, end, &params.edge_search)
-            .map_or(fallback, |(point, _)| point);
-        field.point_provenance(point)
-    })
+    dual_contour_impl(field, params, Some(&|point| field.point_provenance(point)))
 }
 
 /// Extracts a mesh while projecting supported cells onto analytic primitive
@@ -226,17 +202,15 @@ where
     let (result, semi_analytic) = dual_contour_projected_impl(
         field,
         params,
-        |start, end, fallback| {
-            let point = locate_edge_zero(field, start, end, &params.edge_search)
-                .map_or(fallback, |(point, _)| point);
-            field.primitive_at(point)
-        },
-        |point, cell| Some(field.project_cell_vertex_detailed(point, cell)),
+        Some(&|point| field.primitive_at(point)),
+        Some(&|point, cell| field.project_cell_vertex_detailed(point, cell)),
         RefinementMode::ErrorDriven,
     )?;
     Ok(SemiAnalyticContourResult {
         mesh: result.mesh,
         stats: result.stats,
+        work: result.work,
+        report: result.report,
         semi_analytic,
     })
 }
@@ -370,58 +344,65 @@ struct VertexEntry {
     sharpness: f32,
 }
 
-fn dual_contour_impl<F, R>(
+type RegionQuery<'a> = dyn Fn([f32; 3]) -> u32 + 'a;
+type ProjectionQuery<'a> = dyn Fn([f32; 3], &Aabb) -> SemiAnalyticProjectionOutcome + 'a;
+
+fn dual_contour_impl<F>(
     field: &F,
     params: &DualContourParams,
-    region_at: R,
+    region_at: Option<&RegionQuery<'_>>,
 ) -> Result<DualContourResult, DualContourError>
 where
     F: ScalarField,
-    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
 {
-    dual_contour_projected_impl(
-        field,
-        params,
-        region_at,
-        |_, _| None,
-        RefinementMode::ErrorDriven,
-    )
-    .map(|(result, _)| result)
+    dual_contour_projected_impl(field, params, region_at, None, RefinementMode::ErrorDriven)
+        .map(|(result, _)| result)
 }
 
-fn dual_contour_projected_impl<F, R, P>(
+fn dual_contour_projected_impl<F: ScalarField>(
     field: &F,
     params: &DualContourParams,
-    region_at: R,
-    project: P,
+    region_at: Option<&RegionQuery<'_>>,
+    project: Option<&ProjectionQuery<'_>>,
     refinement_mode: RefinementMode,
-) -> Result<(DualContourResult, SemiAnalyticContourStats), DualContourError>
-where
-    F: ScalarField,
-    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
-    P: Fn([f32; 3], &Aabb) -> Option<SemiAnalyticProjectionOutcome>,
-{
+) -> Result<(DualContourResult, SemiAnalyticContourStats), DualContourError> {
+    let run = RunContext::new(params.limits);
+    let field = CheckedField { field, run: &run };
+    dual_contour_run(&field, params, region_at, project, refinement_mode, &run)
+        .map_err(|error| run.decorate(run.check().err().unwrap_or(error)))
+}
+
+fn dual_contour_run<F: ScalarField>(
+    field: &F,
+    params: &DualContourParams,
+    region_at: Option<&RegionQuery<'_>>,
+    project: Option<&ProjectionQuery<'_>>,
+    refinement_mode: RefinementMode,
+    run: &RunContext,
+) -> Result<(DualContourResult, SemiAnalyticContourStats), DualContourError> {
     let resolution = validate_params(params)?;
+    run.stage.set(ExtractionStage::Subdivision);
     let mut visitor = IntervalVisitor {
         field,
         params,
         refinement_mode,
         grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
         pending: None,
-        failure: None,
+        run,
     };
-    let mut tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
-    if let Some(error) = visitor.failure {
-        return Err(error);
-    }
+    let mut tree = Octree::build(
+        params.root_bounds,
+        params.max_depth,
+        params.limits.octree_cells,
+        &mut visitor,
+    )
+    .map_err(|error| visitor.spatial_error(error))?;
+    run.record_tree(tree.len())?;
     debug_assert!(
         visitor.pending.is_none(),
         "octree construction must consume every retained leaf payload"
     );
     let (leaf_keys, segments) = prepare_transitions(&mut tree, &mut visitor)?;
-    if let Some(error) = visitor.failure {
-        return Err(error);
-    }
 
     let octree_cells = tree.len();
     let ActiveSelection {
@@ -429,7 +410,33 @@ where
         omitted_by_budget,
     } = collect_active_cells(params, &tree, &visitor.grid);
     let locator = LeafLocator::new(&leaf_keys, resolution);
+    let mut report = extraction_report(params, &tree, &visitor.grid, &omitted_by_budget);
+    report.eligible_cells = active_cells.len() + omitted_by_budget.len();
+    for &segment in &segments {
+        if !edge_has_crossing(
+            visitor.grid.value(segment.start).unwrap(),
+            visitor.grid.value(segment_end(segment)).unwrap(),
+        ) {
+            continue;
+        }
+        match locator.incident_leaves(segment) {
+            Ok(None) => report.boundary_crossings += 1,
+            Ok(Some(incident))
+                if incident
+                    .iter()
+                    .any(|id| omitted_by_budget.binary_search(id).is_ok()) =>
+            {
+                report.omitted_patches += 1;
+            }
+            _ => {}
+        }
+    }
     drop(tree);
+    run.stats.set(DualContourStats {
+        octree_cells,
+        active_cells: active_cells.len(),
+        ..DualContourStats::default()
+    });
 
     if active_cells.is_empty() {
         return Ok((
@@ -446,6 +453,8 @@ where
                     coincident_edge_collapses: 0,
                     max_vertex_merge_displacement: 0.0,
                 },
+                work: run.work.get(),
+                report,
             },
             SemiAnalyticContourStats::default(),
         ));
@@ -453,32 +462,65 @@ where
 
     active_cells.sort_by_key(|cell| (cell.key, cell.id));
     let mut semi_analytic = SemiAnalyticContourStats::default();
+    run.stage.set(ExtractionStage::Projection);
     for cell in &mut active_cells {
-        project_active_cell(cell, &project, &mut semi_analytic);
+        project_active_cell(
+            cell,
+            &|point, bounds| {
+                let project = project?;
+                if let Err(error) = run.evaluate(Evaluation::Projection, 1) {
+                    run.fail(error.with_witness(ExtractionWitness::Query { bounds: *bounds }));
+                    return None;
+                }
+                Some(project(point, bounds))
+            },
+            &mut semi_analytic,
+        );
+        run.check()?;
     }
 
-    let mut builder = MeshBuilder::new();
-    let needs_joining = emit_transition_faces(
+    run.stage.set(ExtractionStage::Emission);
+    let (mut mesh, needs_joining) = emit_transition_faces(
         &segments,
         &locator,
         &visitor.grid,
         &omitted_by_budget,
         &mut active_cells,
-        &mut builder,
-        &region_at,
-        params.vertex_merge_tolerance,
+        region_at,
+        params,
+        run,
     )?;
 
-    let result = builder.build().map_err(DualContourError::Build)?;
-    let mut mesh = result.mesh;
+    let mut progress = run.stats.get();
+    progress.vertices = mesh.vertices().count();
+    progress.faces = mesh.faces().count();
+    run.stats.set(progress);
     let (coincident_edge_collapses, max_vertex_merge_displacement) = if needs_joining {
-        let stats = collapse_coincident_edges(&mut mesh, params.vertex_merge_tolerance)?;
-        mesh = triangulate_joined_mesh(&mesh)?;
+        run.stage.set(ExtractionStage::Joining);
+        let stats = collapse_coincident_edges(
+            &mut mesh,
+            params.vertex_merge_tolerance,
+            region_at.is_some(),
+            run,
+        )?;
+        run.stage.set(ExtractionStage::Triangulation);
+        mesh = triangulate_joined_mesh(&mesh, region_at.is_some(), run)?;
         stats
     } else {
         (0, 0.0)
     };
-    populate_corner_normals(field, &mut mesh);
+    run.stats.set(DualContourStats {
+        octree_cells,
+        active_cells: active_cells.len(),
+        vertices: mesh.vertices().count(),
+        faces: mesh.faces().count(),
+        coincident_edge_collapses,
+        max_vertex_merge_displacement,
+    });
+    run.stage.set(ExtractionStage::Normals);
+    populate_corner_normals(field, &mut mesh, run)?;
+    run.check()?;
+    run.stage.set(ExtractionStage::RegionSeams);
     populate_region_boundary_seams(&mut mesh);
     Ok((
         DualContourResult {
@@ -491,6 +533,8 @@ where
                 max_vertex_merge_displacement,
             },
             mesh,
+            work: run.work.get(),
+            report,
         },
         semi_analytic,
     ))
@@ -502,13 +546,11 @@ fn validate_params(params: &DualContourParams) -> Result<u32, DualContourError> 
     if Aabb::new(bounds.min, bounds.max).is_none()
         || extent.iter().any(|&v| !v.is_finite() || v <= 0.0)
     {
-        return Err(DualContourError::InvalidParameter(
-            DualContourParameter::RootBounds,
-        ));
+        return Err(DualContourError::invalid(DualContourParameter::RootBounds));
     }
-    let resolution = 1_u32.checked_shl(u32::from(params.max_depth)).ok_or(
-        DualContourError::InvalidParameter(DualContourParameter::MaxDepth),
-    )?;
+    let resolution = 1_u32
+        .checked_shl(u32::from(params.max_depth))
+        .ok_or(DualContourError::invalid(DualContourParameter::MaxDepth))?;
     if params.max_depth > 24
         || (0..3).any(|axis| {
             let step =
@@ -518,19 +560,15 @@ fn validate_params(params: &DualContourParams) -> Result<u32, DualContourError> 
             !step.is_finite() || step <= 0.0 || step < f64::from(ulp)
         })
     {
-        return Err(DualContourError::InvalidParameter(
-            DualContourParameter::MaxDepth,
-        ));
+        return Err(DualContourError::invalid(DualContourParameter::MaxDepth));
     }
     if !params.vertex_merge_tolerance.is_finite() || params.vertex_merge_tolerance < 0.0 {
-        return Err(DualContourError::InvalidParameter(
+        return Err(DualContourError::invalid(
             DualContourParameter::VertexMergeTolerance,
         ));
     }
     if !params.qef.is_valid() {
-        return Err(DualContourError::InvalidParameter(
-            DualContourParameter::Qef,
-        ));
+        return Err(DualContourError::invalid(DualContourParameter::Qef));
     }
     Ok(resolution)
 }
@@ -569,20 +607,43 @@ where
     }
 }
 
-fn emit_transition_faces<F, R>(
+fn emit_transition_faces<F>(
     segments: &[EdgeSegmentKey],
     locator: &LeafLocator,
     grid: &AdaptiveGrid<'_, F>,
     omitted_by_budget: &[CellId],
     active_cells: &mut [ActiveCell],
-    builder: &mut MeshBuilder,
-    region_at: &R,
-    vertex_merge_tolerance: f32,
-) -> Result<bool, DualContourError>
+    region_at: Option<&RegionQuery<'_>>,
+    params: &DualContourParams,
+    run: &RunContext,
+) -> Result<(Mesh, bool), DualContourError>
 where
     F: ScalarField,
-    R: Fn([f32; 3], [f32; 3], [f32; 3]) -> u32,
 {
+    let mut builder = MeshBuilder::new();
+    let mut vertex_count = 0;
+    for cell in active_cells.iter() {
+        let count = if cell.components.is_empty() {
+            1
+        } else {
+            let usable = cell
+                .components
+                .iter()
+                .filter(|component| component_is_usable(component))
+                .count();
+            usable
+                + usize::from(
+                    usable < cell.components.len()
+                        && (component_is_usable(&cell.compatibility)
+                            || cell.compatibility_fallback),
+                )
+        };
+        vertex_count = run
+            .grow(ExtractionResource::Vertices, vertex_count, count)
+            .map_err(|error| {
+                error.with_witness(ExtractionWitness::Cell(cell_witness(grid, cell.key)))
+            })?;
+    }
     let mut active_by_id = HashMap::with_capacity(active_cells.len());
     for (index, cell) in active_cells.iter_mut().enumerate() {
         active_by_id.insert(cell.id, index);
@@ -619,6 +680,9 @@ where
         }
     }
 
+    let mut progress = run.stats.get();
+    progress.vertices = vertex_count;
+    run.stats.set(progress);
     let mut face_count = 0_usize;
     let mut patches = Vec::new();
     let mut needs_joining = false;
@@ -637,7 +701,10 @@ where
             Ok(Some(incident)) => incident,
             Ok(None) => continue,
             Err(()) => {
-                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort));
+                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort)
+                    .with_witness(ExtractionWitness::Transition(transition_witness(
+                        grid, segment,
+                    ))));
             }
         };
         if incident
@@ -647,43 +714,83 @@ where
             continue;
         }
 
+        let mut witness = transition_witness(grid, segment);
         let mut entries = Vec::with_capacity(4);
-        for leaf in incident {
+        for (slot, leaf) in incident.into_iter().enumerate() {
             let Some(&cell_index) = active_by_id.get(&leaf) else {
-                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort));
+                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort)
+                    .with_witness(ExtractionWitness::Transition(transition_witness(
+                        grid, segment,
+                    ))));
             };
             let cell = &active_cells[cell_index];
             let route = locator.component_route(leaf, segment);
             let Some(entry) = component_entry(cell, route) else {
-                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort));
+                return Err(invalid_transition(face_count, FaceLoopErrorKind::TooShort)
+                    .with_witness(ExtractionWitness::Transition(transition_witness(
+                        grid, segment,
+                    ))));
             };
+            let component = match route {
+                ComponentRoute::LocalEdge(edge) => cell.topology.component_for_edge(edge),
+                ComponentRoute::OnlyComponent => (!cell.components.is_empty()).then_some(0),
+            }
+            .filter(|&index| {
+                cell.components
+                    .get(usize::from(index))
+                    .is_some_and(component_is_usable)
+            });
+            witness.candidates[slot] = Some(ExtractionCandidate {
+                cell: cell_witness(grid, cell.key),
+                component,
+                position: entry.position,
+            });
             entries.push(entry);
         }
-        let mut face = cyclic_vertex_entries(entries, face_count)?;
+        let mut face = cyclic_vertex_entries(entries, face_count)
+            .map_err(|error| error.with_witness(ExtractionWitness::Transition(witness.clone())))?;
         if start_value > 0.0 {
             face.reverse();
         }
-        let region = region_at(
-            grid.point(segment.start),
-            grid.point(end_key),
-            average_points(&face),
-        );
+        let region = if let Some(region_at) = region_at {
+            let point = locate_edge_zero(
+                grid.field(),
+                grid.point(segment.start),
+                grid.point(end_key),
+                &params.edge_search,
+            )
+            .map_or_else(|_| average_points(&face), |(point, _)| point);
+            run.check()?;
+            run.evaluate(Evaluation::Provenance, 1).map_err(|error| {
+                error.with_witness(ExtractionWitness::Transition(witness.clone()))
+            })?;
+            region_at(point)
+        } else {
+            0
+        };
+        witness.sampled_source = region_at.map(|_| region);
         if !transition_is_nondegenerate(&face) {
             if !face.iter().enumerate().any(|(i, vertex)| {
                 merge_distance(vertex.position, face[(i + 1) % face.len()].position)
-                    <= f64::from(vertex_merge_tolerance)
+                    <= f64::from(params.vertex_merge_tolerance)
             }) {
-                return Err(DualContourError::Build(BuildError::DegenerateTriangle {
+                return Err(DualContourError::build(BuildError::DegenerateTriangle {
                     triangle: face_count,
-                }));
+                })
+                .with_witness(ExtractionWitness::Transition(witness)));
             }
             needs_joining = true;
         }
-        face_count += face.len() - 2;
+        let reserve = || {
+            run.grow(ExtractionResource::TransitionRecords, patches.len(), 1)?;
+            run.grow(ExtractionResource::Faces, face_count, face.len() - 2)
+        };
+        face_count = reserve()
+            .map_err(|error| error.with_witness(ExtractionWitness::Transition(witness)))?;
         patches.push((face, region));
     }
     face_count = 0;
-    for (face, region) in patches {
+    for (face, region) in &patches {
         if needs_joining {
             let indices = face.iter().map(|v| v.builder_index).collect::<Vec<_>>();
             let sharpness = face
@@ -695,17 +802,72 @@ where
                 .add_face_with_attrs(
                     &indices,
                     &FaceBuildAttrs {
-                        region: Some(region),
+                        region: Some(*region),
                         edge_sharpness: Some(&sharpness),
                         ..FaceBuildAttrs::default()
                     },
                 )
-                .map_err(DualContourError::Build)?;
+                .map_err(|error| {
+                    DualContourError::build(error)
+                        .with_witness(patch_witness(face, region_at.map(|_| *region)))
+                })?;
         } else {
-            emit_transition_polygon(builder, &face, region, &mut face_count)?;
+            emit_transition_polygon(&mut builder, face, *region, &mut face_count).map_err(
+                |error| error.with_witness(patch_witness(face, region_at.map(|_| *region))),
+            )?;
         }
     }
-    Ok(needs_joining)
+    let mut progress = run.stats.get();
+    progress.faces = if needs_joining {
+        patches.len()
+    } else {
+        face_count
+    };
+    run.stats.set(progress);
+    run.stage.set(ExtractionStage::MeshBuild);
+    let mesh = builder
+        .build()
+        .map_err(|error| {
+            let mut index = 0;
+            let patch = patches.iter().find(|(face, _)| {
+                let face_count = if needs_joining { 1 } else { face.len() - 2 };
+                let matches = match error {
+                    BuildError::InvalidFaceLoop { face, .. }
+                    | BuildError::InvalidFaceAttrs { face, .. } => {
+                        (index..index + face_count).contains(&face)
+                    }
+                    BuildError::IndexOutOfBounds { triangle, .. }
+                    | BuildError::DegenerateTriangle { triangle } => {
+                        (index..index + face_count).contains(&triangle)
+                    }
+                    BuildError::NonManifoldEdge { a, b, .. } => {
+                        face.iter().any(|v| v.builder_index == a)
+                            && face.iter().any(|v| v.builder_index == b)
+                    }
+                    BuildError::BoundaryStitchFailed { vertex, .. } => {
+                        face.iter().any(|v| v.builder_index == vertex)
+                    }
+                    BuildError::InvalidWeldTolerance => false,
+                };
+                index += face_count;
+                matches
+            });
+            let error = DualContourError::build(error);
+            if let Some((face, region)) = patch {
+                error.with_witness(patch_witness(face, region_at.map(|_| *region)))
+            } else {
+                error
+            }
+        })?
+        .mesh;
+    Ok((mesh, needs_joining))
+}
+
+fn patch_witness(face: &[VertexEntry], source: Option<u32>) -> ExtractionWitness {
+    ExtractionWitness::MeshPatch {
+        positions: face.iter().map(|vertex| vertex.position).collect(),
+        source,
+    }
 }
 
 fn component_entry(cell: &ActiveCell, route: ComponentRoute) -> Option<VertexEntry> {
@@ -826,7 +988,7 @@ fn emit_transition_with_sharpness(
     match face {
         [a, b, c] => {
             if !triangle_is_nondegenerate([a.position, b.position, c.position]) {
-                return Err(DualContourError::Build(BuildError::DegenerateTriangle {
+                return Err(DualContourError::build(BuildError::DegenerateTriangle {
                     triangle: *face_count,
                 }));
             }
@@ -840,7 +1002,7 @@ fn emit_transition_with_sharpness(
                         ..FaceBuildAttrs::default()
                     },
                 )
-                .map_err(DualContourError::Build)?;
+                .map_err(DualContourError::build)?;
             *face_count += 1;
         }
         [a, b, c, d] => {
@@ -872,7 +1034,7 @@ fn emit_transition_with_sharpness(
                     ],
                 ),
                 None => {
-                    return Err(DualContourError::Build(BuildError::DegenerateTriangle {
+                    return Err(DualContourError::build(BuildError::DegenerateTriangle {
                         triangle: *face_count,
                     }));
                 }
@@ -887,7 +1049,7 @@ fn emit_transition_with_sharpness(
                             ..FaceBuildAttrs::default()
                         },
                     )
-                    .map_err(DualContourError::Build)?;
+                    .map_err(DualContourError::build)?;
                 *face_count += 1;
             }
         }
@@ -897,7 +1059,7 @@ fn emit_transition_with_sharpness(
 }
 
 fn invalid_transition(face: usize, kind: FaceLoopErrorKind) -> DualContourError {
-    DualContourError::Build(BuildError::InvalidFaceLoop { face, kind })
+    DualContourError::build(BuildError::InvalidFaceLoop { face, kind })
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1125,7 +1287,7 @@ fn solve_hermite_vertex(
             hermite_mass_point(hermite),
             params,
         )
-        .map_err(DualContourError::Solve)?;
+        .map_err(DualContourError::solve)?;
 
     Ok(ComponentVertex {
         position: result.position,
@@ -1140,22 +1302,27 @@ fn prepare_transitions<F: ScalarField>(
     visitor: &mut IntervalVisitor<'_, F>,
 ) -> Result<(LeafSet, Vec<EdgeSegmentKey>), DualContourError> {
     loop {
-        balance_tree(tree, visitor);
-        if let Some(error) = visitor.failure {
-            return Err(error);
-        }
+        balance_tree(tree, visitor).map_err(|error| visitor.spatial_error(error))?;
+        visitor.run.record_tree(tree.len())?;
+        visitor.run.stage.set(ExtractionStage::TransitionCompletion);
+        visitor.run.grow(
+            ExtractionResource::TopologyPasses,
+            visitor.run.work.get().topology_passes,
+            1,
+        )?;
         let leaves = leaf_keys(tree, &visitor.grid);
-        let segments = enumerate_segments(&leaves);
-        let mut endpoints = Vec::with_capacity(segments.len() * 2);
+        let segments = enumerate_segments(&leaves, visitor.run)?;
+        let mut endpoints = Vec::with_capacity(visitor.run.records(segments.len(), 2)?);
         for &segment in &segments {
             endpoints.push(segment.start);
             endpoints.push(segment_end(segment));
         }
-        visitor.grid.sample_keys(&endpoints);
+        visitor.grid.sample_keys(&endpoints, visitor.run)?;
 
         let locator = LeafLocator::new(&leaves, visitor.grid.resolution());
+        visitor.run.records(segments.len(), 4)?;
         let mut refine = Vec::new();
-        let mut unresolved = false;
+        let mut unresolved = None;
         for &segment in &segments {
             let start = visitor
                 .grid
@@ -1168,38 +1335,47 @@ fn prepare_transitions<F: ScalarField>(
             if !edge_has_crossing(start, end) {
                 continue;
             }
-            let incident = match locator.incident_leaves(segment) {
-                Ok(Some(incident)) => incident,
-                Ok(None) => continue,
-                Err(()) => {
-                    return Err(invalid_transition(0, FaceLoopErrorKind::TooShort));
-                }
-            };
+            let incident =
+                match locator.incident_leaves(segment) {
+                    Ok(Some(incident)) => incident,
+                    Ok(None) => continue,
+                    Err(()) => {
+                        return Err(invalid_transition(0, FaceLoopErrorKind::TooShort)
+                            .with_witness(ExtractionWitness::Transition(transition_witness(
+                                &visitor.grid,
+                                segment,
+                            ))));
+                    }
+                };
             let mut tokens = [None; 4];
             for (slot, leaf) in incident.into_iter().enumerate() {
                 let route = locator.component_route(leaf, segment);
                 tokens[slot] = transition_component_token(tree, leaf, route);
-                if tokens[slot].is_none() {
-                    unresolved |= !push_refinement_candidate(
+                if tokens[slot].is_none()
+                    && !push_refinement_candidate(
                         tree,
                         &locator,
                         leaf,
                         visitor.params.max_depth,
                         &mut refine,
-                    );
+                    )
+                {
+                    unresolved.get_or_insert(segment);
                 }
             }
             if tokens.iter().all(Option::is_some) {
                 let tokens = tokens.map(|token| token.expect("checked all transition tokens"));
                 if cyclic_distinct(tokens).is_err() {
                     for leaf in incident {
-                        unresolved |= !push_refinement_candidate(
+                        if !push_refinement_candidate(
                             tree,
                             &locator,
                             leaf,
                             visitor.params.max_depth,
                             &mut refine,
-                        );
+                        ) {
+                            unresolved.get_or_insert(segment);
+                        }
                     }
                 }
             }
@@ -1208,17 +1384,50 @@ fn prepare_transitions<F: ScalarField>(
         refine.sort_unstable_by_key(|&(key, id)| (key, id));
         refine.dedup_by_key(|entry| entry.1);
         if refine.is_empty() {
-            if unresolved {
-                return Err(invalid_transition(0, FaceLoopErrorKind::TooShort));
+            if let Some(segment) = unresolved {
+                let mut witness = transition_witness(&visitor.grid, segment);
+                if let Ok(Some(incident)) = locator.incident_leaves(segment) {
+                    for (slot, leaf) in incident.into_iter().enumerate() {
+                        if let Some((_, component)) = transition_component_token(
+                            tree,
+                            leaf,
+                            locator.component_route(leaf, segment),
+                        ) {
+                            let analysis = tree
+                                .cell(leaf)
+                                .unwrap()
+                                .payload()
+                                .unwrap()
+                                .analysis
+                                .as_ref()
+                                .unwrap();
+                            let position = if component == u8::MAX {
+                                analysis.vertices.compatibility.position
+                            } else {
+                                analysis.vertices.components[usize::from(component)].position
+                            };
+                            witness.candidates[slot] = Some(ExtractionCandidate {
+                                cell: cell_witness(&visitor.grid, locator.key(leaf)),
+                                component: (component != u8::MAX).then_some(component),
+                                position,
+                            });
+                        }
+                    }
+                }
+                return Err(invalid_transition(0, FaceLoopErrorKind::TooShort)
+                    .with_witness(ExtractionWitness::Transition(witness)));
             }
             return Ok((leaves, segments));
         }
         for (_, id) in refine {
-            tree.refine_leaf(id, visitor.params.max_depth, visitor)
-                .expect("completion candidates are current octree leaves");
-        }
-        if let Some(error) = visitor.failure {
-            return Err(error);
+            tree.refine_leaf(
+                id,
+                visitor.params.max_depth,
+                visitor.params.limits.octree_cells,
+                visitor,
+            )
+            .map_err(|error| visitor.spatial_error(error))?;
+            visitor.run.record_tree(tree.len())?;
         }
     }
 }
@@ -1355,6 +1564,77 @@ fn collect_active_cells<F: ScalarField>(
         cells: active_cells,
         omitted_by_budget,
     }
+}
+
+fn transition_witness<F: ScalarField>(
+    grid: &AdaptiveGrid<'_, F>,
+    segment: EdgeSegmentKey,
+) -> TransitionWitness {
+    TransitionWitness {
+        start: grid.point(segment.start),
+        end: grid.point(segment_end(segment)),
+        axis: segment.axis,
+        grid_start: [segment.start.x, segment.start.y, segment.start.z],
+        span: segment.length,
+        candidates: [None; 4],
+        sampled_source: None,
+    }
+}
+
+fn extraction_report<F: ScalarField>(
+    params: &DualContourParams,
+    tree: &Octree<LeafMarker>,
+    grid: &AdaptiveGrid<'_, F>,
+    omitted: &[CellId],
+) -> ExtractionReport {
+    let mut report = ExtractionReport {
+        completion: if omitted.is_empty() {
+            ExtractionCompletion::Complete
+        } else {
+            ExtractionCompletion::TruncatedByCellBudget
+        },
+        omitted_cells: omitted.len(),
+        ..ExtractionReport::default()
+    };
+    // Arena order is deterministic, and avoids allocating another sorted leaf list.
+    for id in tree.leaf_ids() {
+        let cell = tree.cell(id).unwrap();
+        let payload = cell.payload().unwrap();
+        let mut record = |issue| {
+            if report.witnesses.len() < params.witness_limit {
+                report.witnesses.push(ExtractionCellWitness {
+                    cell: cell_witness(grid, grid.cell_key(id)),
+                    issue,
+                });
+            } else {
+                report.unreported_witnesses += 1;
+            }
+        };
+        if omitted.binary_search(&id).is_ok() {
+            record(ExtractionCellIssue::OmittedByCellBudget);
+            let bounds = grid.cell_bounds(grid.cell_key(id));
+            report.omitted_bounds = Some(report.omitted_bounds.map_or(bounds, |old| Aabb {
+                min: core::array::from_fn(|axis| old.min[axis].min(bounds.min[axis])),
+                max: core::array::from_fn(|axis| old.max[axis].max(bounds.max[axis])),
+            }));
+        }
+        match payload.decision {
+            RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth) => {
+                record(if payload.analysis.is_some() {
+                    ExtractionCellIssue::NoHermiteAtMaxDepth
+                } else {
+                    ExtractionCellIssue::NoCrossingAtMaxDepth
+                });
+                report.unresolved_cells += 1;
+            }
+            RefinementDecision::MaxDepthCompatibility => {
+                record(ExtractionCellIssue::MaxDepthCompatibility);
+                report.compatibility_cells += 1;
+            }
+            _ => {}
+        }
+    }
+    report
 }
 
 fn step_size(root_bounds: Aabb, resolution: u32) -> [f32; 3] {
@@ -1525,10 +1805,64 @@ struct IntervalVisitor<'a, F> {
     refinement_mode: RefinementMode,
     grid: AdaptiveGrid<'a, F>,
     pending: Option<(CellId, LeafMarker)>,
-    failure: Option<DualContourError>,
+    run: &'a RunContext,
 }
 
 impl<F: ScalarField> IntervalVisitor<'_, F> {
+    fn spatial_error(&self, error: OctreeError<DualContourError>) -> DualContourError {
+        let (cell, stored, error) = match error {
+            OctreeError::Refine(error) => {
+                return DualContourError::new(DualContourErrorKind::Spatial(error));
+            }
+            OctreeError::Visitor {
+                cell,
+                stored_cells,
+                source,
+            } => (cell, stored_cells, source),
+            OctreeError::CellLimit {
+                cell,
+                stored_cells,
+                additional_cells,
+                limit,
+            } => (
+                cell,
+                stored_cells,
+                DualContourError::new(DualContourErrorKind::LimitExceeded {
+                    resource: ExtractionResource::OctreeCells,
+                    used: stored_cells,
+                    requested: stored_cells.saturating_add(additional_cells),
+                    limit,
+                }),
+            ),
+            OctreeError::IdCapacity { cell, stored_cells } => (
+                cell,
+                stored_cells,
+                DualContourError::new(DualContourErrorKind::LimitExceeded {
+                    resource: ExtractionResource::OctreeCells,
+                    used: stored_cells,
+                    requested: stored_cells.saturating_add(8),
+                    limit: usize::try_from(u64::from(u32::MAX) + 1).unwrap_or(usize::MAX),
+                }),
+            ),
+        };
+        let mut work = self.run.work.get();
+        work.peak_octree_cells = work.peak_octree_cells.max(stored);
+        self.run.work.set(work);
+        let mut stats = self.run.stats.get();
+        stats.octree_cells = stored;
+        self.run.stats.set(stats);
+        let witness = self.grid.known_cell_key(cell.id).map_or(
+            ExtractionCell {
+                origin: [0; 3],
+                span: self.grid.resolution(),
+                depth: cell.depth,
+                bounds: cell.bounds,
+            },
+            |key| cell_witness(&self.grid, key),
+        );
+        error.with_witness(ExtractionWitness::Cell(witness))
+    }
+
     fn inspect_cell(
         &mut self,
         cell: CellRef,
@@ -1540,6 +1874,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
             .field
             .eval_interval(&cell_bounds)
             .is_none_or(interval_crosses_zero);
+        self.run.check()?;
         if !intersects {
             return Ok(LeafMarker {
                 decision: RefinementDecision::Inactive(InactiveReason::IntervalExcluded),
@@ -1565,7 +1900,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
             });
         }
 
-        let corner_values = self.grid.sample_cell_corners(cell_key);
+        let corner_values = self.grid.sample_cell_corners(cell_key, self.run)?;
         let expected_crossings = crossing_edge_count(&corner_values);
 
         if expected_crossings == 0 {
@@ -1605,6 +1940,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         }
 
         let analysis = analyze_crossing_cell(self.field, self.params, corner_values, cell_bounds)?;
+        self.run.check()?;
         let decision = if at_max_depth {
             if analysis.hermite.intersections.is_empty() {
                 RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
@@ -1628,14 +1964,6 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
             decision,
             analysis: Some(Box::new(analysis)),
         })
-    }
-
-    fn record_failure(&mut self, error: DualContourError) -> LeafMarker {
-        self.failure.get_or_insert(error);
-        LeafMarker {
-            decision: RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth),
-            analysis: None,
-        }
     }
 }
 
@@ -1724,25 +2052,23 @@ fn classify_redundant_hermite_planes(
 
 impl<F: ScalarField> OctreeVisitor for IntervalVisitor<'_, F> {
     type Payload = LeafMarker;
+    type Error = DualContourError;
 
-    fn should_subdivide(&mut self, cell: CellRef) -> bool {
+    fn should_subdivide(&mut self, cell: CellRef) -> Result<bool, Self::Error> {
         debug_assert!(
             self.pending.is_none(),
             "the prior retained leaf payload must be consumed before visiting another cell"
         );
-        let inspection = match self.inspect_cell(cell, false) {
-            Ok(inspection) => inspection,
-            Err(error) => self.record_failure(error),
-        };
+        let inspection = self.inspect_cell(cell, false)?;
         if matches!(inspection.decision, RefinementDecision::Refine(_)) {
-            true
+            Ok(true)
         } else {
             self.pending = Some((cell.id, inspection));
-            false
+            Ok(false)
         }
     }
 
-    fn make_leaf_payload(&mut self, cell: CellRef) -> Self::Payload {
+    fn make_leaf_payload(&mut self, cell: CellRef) -> Result<Self::Payload, Self::Error> {
         // `Octree::build_subtree` calls `make_leaf_payload` immediately after
         // `should_subdivide` returns false. The exact-ID assertion makes that
         // sequencing dependency visible. Max-depth cells bypass
@@ -1753,14 +2079,11 @@ impl<F: ScalarField> OctreeVisitor for IntervalVisitor<'_, F> {
                 "pending refinement evidence must be consumed by the same cell"
             );
             if pending_id == cell.id {
-                return payload;
+                return Ok(payload);
             }
         }
 
-        match self.inspect_cell(cell, true) {
-            Ok(payload) => payload,
-            Err(error) => self.record_failure(error),
-        }
+        self.inspect_cell(cell, true)
     }
 }
 
@@ -1775,8 +2098,27 @@ impl<F: ScalarField> BalanceContext for IntervalVisitor<'_, F> {
         self.params.max_depth
     }
 
-    fn failed(&self) -> bool {
-        self.failure.is_some()
+    fn cell_limit(&self) -> Option<usize> {
+        self.params.limits.octree_cells
+    }
+
+    fn begin_balance_pass(&self, leaves: usize) -> Result<(), Self::Error> {
+        self.run.stage.set(ExtractionStage::Balancing);
+        self.run.grow(
+            ExtractionResource::TopologyPasses,
+            self.run.work.get().topology_passes,
+            1,
+        )?;
+        self.run.records(leaves, 6).map(|_| ())
+    }
+}
+
+fn cell_witness<F: ScalarField>(grid: &AdaptiveGrid<'_, F>, key: CellKey) -> ExtractionCell {
+    ExtractionCell {
+        origin: [key.origin.x, key.origin.y, key.origin.z],
+        span: key.span,
+        depth: key.depth,
+        bounds: grid.cell_bounds(key),
     }
 }
 
@@ -1814,7 +2156,11 @@ fn interval_crosses_zero(interval: [f32; 2]) -> bool {
     interval[0] <= 0.0 && interval[1] >= 0.0
 }
 
-fn populate_corner_normals<F: ScalarField>(field: &F, mesh: &mut Mesh) {
+fn populate_corner_normals<F: ScalarField>(
+    field: &F,
+    mesh: &mut Mesh,
+    run: &RunContext,
+) -> Result<(), DualContourError> {
     let mut corners = Vec::new();
     let mut sample_points = Vec::new();
     for face in mesh.faces() {
@@ -1832,21 +2178,20 @@ fn populate_corner_normals<F: ScalarField>(field: &F, mesh: &mut Mesh) {
         }
     }
 
-    if corners.is_empty() {
-        return;
-    }
-
-    let mut gradients = vec![[0.0_f32; 4]; sample_points.len()];
-    field.eval_gradients(&sample_points, &mut gradients);
-
     let mut session = mesh.edit();
-    for (corner, gradient) in corners.into_iter().zip(gradients) {
-        if let Some(normal) = normalize([gradient[1], gradient[2], gradient[3]]) {
-            op::set_corner_normal_override(&mut session, corner, Some(normal))
-                .expect("collected corner must stay live during normal population");
+    for (corners, points) in corners.chunks(256).zip(sample_points.chunks(256)) {
+        let mut gradients = [[0.0_f32; 4]; 256];
+        field.eval_gradients(points, &mut gradients[..points.len()]);
+        run.check()?;
+        for (&corner, gradient) in corners.iter().zip(gradients) {
+            if let Some(normal) = normalize([gradient[1], gradient[2], gradient[3]]) {
+                op::set_corner_normal_override(&mut session, corner, Some(normal))
+                    .expect("collected corner must stay live during normal population");
+            }
         }
     }
     let _: () = session.finish();
+    Ok(())
 }
 
 fn populate_region_boundary_seams(mesh: &mut Mesh) {
@@ -2027,6 +2372,8 @@ fn inset_corner_sample(position: [f32; 3], face_center: [f32; 3]) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests {
+    use super::control::RunContext;
+    use crate::ExtractionLimits;
     use alloc::boxed::Box;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -2065,6 +2412,8 @@ mod tests {
             root_bounds: bounds,
             max_depth,
             cell_budget: None,
+            limits: ExtractionLimits::default(),
+            witness_limit: 16,
             vertex_merge_tolerance: 0.0,
             edge_search: EdgeSearchParams {
                 bisection_steps: 10,
@@ -2215,13 +2564,14 @@ mod tests {
 
     impl OctreeVisitor for FixedMarkerVisitor {
         type Payload = LeafMarker;
+        type Error = core::convert::Infallible;
 
-        fn should_subdivide(&mut self, _cell: CellRef) -> bool {
-            false
+        fn should_subdivide(&mut self, _cell: CellRef) -> Result<bool, Self::Error> {
+            Ok(false)
         }
 
-        fn make_leaf_payload(&mut self, _cell: CellRef) -> Self::Payload {
-            self.marker.clone()
+        fn make_leaf_payload(&mut self, _cell: CellRef) -> Result<Self::Payload, Self::Error> {
+            Ok(self.marker.clone())
         }
     }
 
@@ -2766,13 +3116,13 @@ mod tests {
             refinement_mode: RefinementMode::Legacy,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
-        let mut tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        let mut tree =
+            Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
         prepare_transitions(&mut tree, &mut visitor).expect("transition completion");
         let contributors = tree
             .leaf_ids()
-            .into_iter()
             .filter(|&id| {
                 tree.cell(id)
                     .and_then(|cell| cell.payload())
@@ -2817,12 +3167,13 @@ mod tests {
             params.cell_budget = budget;
             assert!(matches!(
                 dual_contour(&field, &params),
-                Err(super::DualContourError::Build(
-                    BuildError::InvalidFaceLoop {
+                Err(super::DualContourError {
+                    kind: super::DualContourErrorKind::Build(BuildError::InvalidFaceLoop {
                         face: 0,
                         kind: FaceLoopErrorKind::TooShort,
-                    }
-                ))
+                    }),
+                    ..
+                })
             ));
         }
     }
@@ -3124,9 +3475,9 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
-        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
 
         let mut found_non_center = false;
         for leaf_id in tree.leaf_ids() {
@@ -3276,7 +3627,7 @@ mod tests {
             })),
         };
         let mut visitor = FixedMarkerVisitor { marker };
-        let tree = Octree::build(bounds, 0, &mut visitor);
+        let tree = Octree::build(bounds, 0, None, &mut visitor).unwrap();
         let root = tree.root_id();
         let valid_edge = (0_u8..12)
             .find(|&edge| topology.component_for_edge(edge) == Some(0))
@@ -3340,7 +3691,7 @@ mod tests {
             })),
         };
         let mut visitor = FixedMarkerVisitor { marker };
-        let tree = Octree::build(bounds, 0, &mut visitor);
+        let tree = Octree::build(bounds, 0, None, &mut visitor).unwrap();
         let root = tree.root_id();
         let edge = (0_u8..12)
             .find(|&edge| topology.component_for_edge(edge) == Some(0))
@@ -3362,7 +3713,7 @@ mod tests {
             .evidence
             .complete_hermite = false;
         let mut partial_visitor = FixedMarkerVisitor { marker: partial };
-        let partial_tree = Octree::build(bounds, 0, &mut partial_visitor);
+        let partial_tree = Octree::build(bounds, 0, None, &mut partial_visitor).unwrap();
         assert_eq!(
             transition_component_token(
                 &partial_tree,
@@ -3380,7 +3731,7 @@ mod tests {
             .expect("partial fixture marker");
         retained.decision = RefinementDecision::Retain;
         let mut retained_visitor = FixedMarkerVisitor { marker: retained };
-        let retained_tree = Octree::build(bounds, 0, &mut retained_visitor);
+        let retained_tree = Octree::build(bounds, 0, None, &mut retained_visitor).unwrap();
         assert_eq!(
             transition_component_token(
                 &retained_tree,
@@ -3736,7 +4087,7 @@ mod tests {
             refinement_mode: RefinementMode::ForcedUniform,
             grid: AdaptiveGrid::new(&field, bounds, 1 << extraction_params.max_depth),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
 
         let marker = visitor
@@ -3936,13 +4287,15 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, extraction_params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
         let mut tree = Octree::build(
             extraction_params.root_bounds,
             extraction_params.max_depth,
+            None,
             &mut visitor,
-        );
+        )
+        .unwrap();
         let (leaves, segments) =
             prepare_transitions(&mut tree, &mut visitor).expect("transition preparation");
         let active = collect_active_cells(&extraction_params, &tree, &visitor.grid).cells;
@@ -3967,7 +4320,7 @@ mod tests {
             (1_361, 1_191, 246, 246, 5_403, 2_182, 274_625)
         );
         assert!(sparse_samples * 5 < finest_lattice);
-        assert_eq!(leaves.len(), tree.leaf_ids().len());
+        assert_eq!(leaves.len(), tree.leaf_ids().count());
     }
 
     #[test]
@@ -4120,13 +4473,14 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
 
-        let _tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        let _tree =
+            Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
 
         assert!(visitor.pending.is_none());
-        assert_eq!(visitor.failure, None);
+        assert!(visitor.run.check().is_ok());
     }
 
     fn inspect_root<F: ScalarField>(
@@ -4151,7 +4505,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
         visitor
             .inspect_cell(
@@ -4171,7 +4525,7 @@ mod tests {
         params: &DualContourParams,
         mode: RefinementMode,
     ) -> super::DualContourResult {
-        dual_contour_projected_impl(field, params, |_, _, _| 0, |_, _| None, mode)
+        dual_contour_projected_impl(field, params, None, None, mode)
             .expect("test extraction")
             .0
     }
@@ -4189,9 +4543,9 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
-        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
         collect_active_cells(&params, &tree, &visitor.grid)
             .cells
             .into_iter()
@@ -4240,12 +4594,11 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
-        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
-        assert_eq!(visitor.failure, None);
+        let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
+        assert!(visitor.run.check().is_ok());
         tree.leaf_ids()
-            .into_iter()
             .filter_map(|id| {
                 let cell = tree.cell(id)?;
                 (cell.payload()?.decision == RefinementDecision::RetainRedundantHermitePlanes)
@@ -4342,9 +4695,9 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
-            failure: None,
+            run: &RunContext::new(ExtractionLimits::default()),
         };
-        let tree = Octree::build(params.root_bounds, params.max_depth, &mut visitor);
+        let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
         let active = collect_active_cells(&params, &tree, &visitor.grid).cells;
 
         assert!(active.iter().any(|cell| cell.key.depth < params.max_depth));
@@ -4410,9 +4763,12 @@ mod tests {
         let mut face_count = 0;
         assert!(matches!(
             emit_transition_polygon(&mut builder, &face, 0, &mut face_count),
-            Err(super::DualContourError::Build(
-                BuildError::DegenerateTriangle { triangle: 0 }
-            ))
+            Err(super::DualContourError {
+                kind: super::DualContourErrorKind::Build(BuildError::DegenerateTriangle {
+                    triangle: 0
+                }),
+                ..
+            })
         ));
     }
 
@@ -4616,17 +4972,8 @@ mod tests {
         dual_contour_projected_impl(
             measured,
             extraction_params,
-            |start, end, fallback| {
-                let point = crate::hermite::locate_edge_zero(
-                    measured,
-                    start,
-                    end,
-                    &extraction_params.edge_search,
-                )
-                .map_or(fallback, |(point, _)| point);
-                measured.primitive_at(point)
-            },
-            |point, cell| Some(measured.project_cell_vertex_detailed(point, cell)),
+            Some(&|point| measured.primitive_at(point)),
+            Some(&|point, cell| measured.project_cell_vertex_detailed(point, cell)),
             RefinementMode::ForcedUniform,
         )
         .expect("forced-uniform H1 extraction")
@@ -4786,7 +5133,9 @@ mod tests {
                         span: 1,
                         depth: extraction_params.max_depth,
                     };
-                    let corner_values = grid.sample_cell_corners(key);
+                    let corner_values = grid
+                        .sample_cell_corners(key, &RunContext::new(ExtractionLimits::default()))
+                        .unwrap();
                     if super::crossing_edge_count(&corner_values) == 0 {
                         continue;
                     }
@@ -4813,7 +5162,9 @@ mod tests {
                 span: cell.span,
                 depth: cell.depth,
             };
-            let corner_values = grid.sample_cell_corners(key);
+            let corner_values = grid
+                .sample_cell_corners(key, &RunContext::new(ExtractionLimits::default()))
+                .unwrap();
             let analysis = analyze_crossing_cell(
                 field,
                 extraction_params,
