@@ -38,7 +38,7 @@ use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
     PathClosure, PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder,
-    RecipeError, SectionLaw, SlotId, SourceId,
+    RecipeError, SectionLaw, SlotId, SourceId, VertexStretchStep,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -356,6 +356,15 @@ pub type PlacementDto = [[f64; 4]; 3];
 /// Plane as `[nx, ny, nz, d]` (`dot(n, p) = d`).
 pub type PlaneDto = [f64; 4];
 
+/// One ordered plane-selected vertex displacement.
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct VertexStretchStepDto {
+    /// Selection plane in the node's input frame.
+    pub plane: PlaneDto,
+    /// Signed displacement along the normalized plane normal.
+    pub length: f64,
+}
+
 /// An operand-qualified face region in an edge-boundary selection.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct OperandRegionDto {
@@ -667,7 +676,14 @@ pub enum NodeKindDto {
         /// Placement.
         placement: PlacementDto,
     },
-    /// Reserved plane-split stretch.
+    /// Simultaneous vertex displacement preserving triangle topology.
+    StretchVertices {
+        /// Child node index.
+        child: u32,
+        /// Nonempty steps selecting the same input positions.
+        steps: Vec<VertexStretchStepDto>,
+    },
+    /// Plane-split stretch.
     Stretch {
         /// Child node index.
         child: u32,
@@ -1140,6 +1156,16 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
                 max_tangent_turn: policy.max_tangent_turn,
             }
         }
+        NodeKind::StretchVertices { child, steps } => NodeKindDto::StretchVertices {
+            child: child.0,
+            steps: steps
+                .iter()
+                .map(|step| VertexStretchStepDto {
+                    plane: plane_dto(&step.plane),
+                    length: step.length,
+                })
+                .collect(),
+        },
         NodeKind::Stretch {
             child,
             plane,
@@ -1571,6 +1597,16 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
                 max_planar_deviation: *max_planar_deviation,
                 max_tangent_turn: *max_tangent_turn,
             },
+        },
+        NodeKindDto::StretchVertices { child, steps } => NodeKind::StretchVertices {
+            child: NodeId(*child),
+            steps: steps
+                .iter()
+                .map(|step| VertexStretchStep {
+                    plane: plane_value(step.plane),
+                    length: step.length,
+                })
+                .collect(),
         },
         NodeKindDto::Stretch {
             child,

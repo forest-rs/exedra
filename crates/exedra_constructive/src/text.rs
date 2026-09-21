@@ -26,7 +26,7 @@ use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
     PathClosure, PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder,
-    RecipeError, SectionLaw,
+    RecipeError, SectionLaw, VertexStretchStep,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -600,6 +600,25 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 hex(policy.max_planar_deviation),
                 hex(policy.max_tangent_turn)
             );
+        }
+        NodeKind::StretchVertices { child, steps } => {
+            let _ = write!(
+                line,
+                "stretch_vertices child {} steps {}",
+                child.0,
+                steps.len()
+            );
+            for step in steps {
+                let _ = write!(
+                    line,
+                    " plane {} {} {} {} length {}",
+                    hex(step.plane.normal[0]),
+                    hex(step.plane.normal[1]),
+                    hex(step.plane.normal[2]),
+                    hex(step.plane.distance),
+                    hex(step.length)
+                );
+            }
         }
         NodeKind::Stretch {
             child,
@@ -1567,6 +1586,23 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                     max_tangent_turn,
                 },
             }
+        }
+        "stretch_vertices" => {
+            expect(&mut tokens, "child", line)?;
+            let child = NodeId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "steps", line)?;
+            let count = next_u32(&mut tokens, line)?;
+            let mut steps = Vec::new();
+            for _ in 0..count {
+                expect(&mut tokens, "plane", line)?;
+                let plane = parse_plane(&mut tokens, line)?;
+                expect(&mut tokens, "length", line)?;
+                steps.push(VertexStretchStep {
+                    plane,
+                    length: next_f64(&mut tokens, line)?,
+                });
+            }
+            NodeKind::StretchVertices { child, steps }
         }
         "stretch" => {
             expect(&mut tokens, "child", line)?;

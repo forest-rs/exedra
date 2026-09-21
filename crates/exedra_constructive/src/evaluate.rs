@@ -155,6 +155,8 @@ pub struct EvalCounters {
     pub stretch_exact: u32,
     /// Stretch nodes evaluated through the general closed-mesh path.
     pub stretch_mesh: u32,
+    /// Triangle-mesh vertex-displacement passes (zero on cache hits).
+    pub vertex_stretch_passes: u32,
     /// Input mesh faces partitioned by stretch section planes.
     pub stretch_faces_split: u64,
     /// Prismatic band faces emitted by mesh-backed expansion.
@@ -775,6 +777,9 @@ impl EvalCx<'_> {
                 let fidelity = self.body_fidelity(node_id, &[]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
+            NodeKind::StretchVertices { child, steps } => {
+                self.evaluate_stretch_vertices(node_id, *child, steps, world, emit, material)
+            }
             NodeKind::Stretch {
                 child,
                 plane,
@@ -1084,6 +1089,81 @@ impl EvalCx<'_> {
         Ok(bounds)
     }
 
+    fn evaluate_stretch_vertices(
+        &mut self,
+        node_id: NodeId,
+        child: NodeId,
+        steps: &[crate::ir::VertexStretchStep],
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+    ) -> Result<Aabb3, EvalError> {
+        if steps.iter().all(|step| step.length == 0.0) {
+            let bounds = self.walk(child, world, emit, material)?;
+            let fidelity = self.body_fidelity(node_id, &[]);
+            self.report.fidelity.push((node_id, fidelity));
+            return Ok(bounds);
+        }
+        let taken = core::mem::take(&mut self.bodies);
+        let errors_before = self.error_count();
+        // Revisit the child even on a cache hit to retain its report. Ancestor
+        // material defaults belong to this occurrence, not the cached body.
+        let child_result = self.walk(child, world, true, None);
+        let collected = core::mem::replace(&mut self.bodies, taken);
+        let bounds = child_result?;
+        if self.error_count() != errors_before || collected.is_empty() {
+            return Ok(self.record_stretch_refusal(
+                node_id,
+                bounds,
+                "eval.stretch_vertices.incomplete_child",
+                "vertex stretching requires a completely evaluated nonempty child",
+            ));
+        }
+        let key = (collected.len() == 1)
+            .then(|| self.cache_key(node_id, world))
+            .flatten();
+        let cached = self.lookup_cached_body(key.as_ref());
+        let mut stretched = Vec::with_capacity(collected.len());
+        if let Some(body) = cached {
+            stretched.push((body, collected[0].material));
+        } else {
+            for placed in collected {
+                match crate::stretch::stretch_body_vertices(&placed.body, steps, world) {
+                    Ok(body) => {
+                        self.report.counters.vertex_stretch_passes += 1;
+                        stretched.push((Rc::new(body), placed.material));
+                    }
+                    Err(error) => {
+                        let code = crate::stretch::vertex_refusal_code(error);
+                        return Ok(self.record_stretch_refusal(
+                            node_id,
+                            bounds,
+                            code,
+                            alloc::format!("{error}"),
+                        ));
+                    }
+                }
+            }
+            if let (Some(cache), Some(key), [(body, _)]) =
+                (self.cache.as_deref_mut(), key, stretched.as_slice())
+            {
+                cache.insert(key, Rc::clone(body));
+            }
+        }
+        let mut result_bounds = Aabb3::EMPTY;
+        for (body, child_material) in stretched {
+            let fidelity = self.body_fidelity(node_id, &[]);
+            result_bounds.union(&self.finish_body(
+                node_id,
+                body,
+                emit,
+                fidelity,
+                child_material.or(material),
+            ));
+        }
+        Ok(result_bounds)
+    }
+
     fn evaluate_stretch(
         &mut self,
         node_id: NodeId,
@@ -1151,18 +1231,7 @@ impl EvalCx<'_> {
                         .sparse(exedra_mesh::attr::CORNER_UV)
                         .is_none();
                 let key = cacheable.then(|| self.cache_key(node_id, world)).flatten();
-                let cached =
-                    if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
-                        let hit = cache.get(key);
-                        if hit.is_some() {
-                            self.report.counters.cache_hits += 1;
-                        } else {
-                            self.report.counters.cache_misses += 1;
-                        }
-                        hit
-                    } else {
-                        None
-                    };
+                let cached = self.lookup_cached_body(key.as_ref());
 
                 let mut stretched = Vec::with_capacity(collected.len());
                 let mut stats = crate::stretch::MeshStretchStats::default();
@@ -1311,7 +1380,7 @@ impl EvalCx<'_> {
         node_id: NodeId,
         bounds: Aabb3,
         code: &'static str,
-        message: &'static str,
+        message: impl Into<String>,
     ) -> Aabb3 {
         self.report.counters.envelope_only += 1;
         self.report.counters.stretch_refusals += 1;
@@ -1319,7 +1388,7 @@ impl EvalCx<'_> {
         if !bounds.is_empty() {
             self.report.envelopes.push((node_id, bounds));
         }
-        self.push_diagnostic(node_id, Severity::Error, code, String::from(message));
+        self.push_diagnostic(node_id, Severity::Error, code, message.into());
         bounds
     }
 
@@ -1753,6 +1822,19 @@ impl EvalCx<'_> {
         }
     }
 
+    fn lookup_cached_body(&mut self, key: Option<&CacheKey>) -> Option<Rc<TessellatedBody>> {
+        let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key) else {
+            return None;
+        };
+        let body = cache.get(key);
+        if body.is_some() {
+            self.report.counters.cache_hits += 1;
+        } else {
+            self.report.counters.cache_misses += 1;
+        }
+        body
+    }
+
     /// Cache key for `node` under `world`, when a cache is attached.
     fn cache_key(&self, node: NodeId, world: &Placement3) -> Option<CacheKey> {
         self.cache.as_ref()?;
@@ -1780,12 +1862,8 @@ impl EvalCx<'_> {
         build: impl FnOnce(&mut Self) -> Result<TessellatedBody, EvalError>,
     ) -> Result<Rc<TessellatedBody>, EvalError> {
         let key = self.cache_key(node_id, world);
-        if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), key.as_ref()) {
-            if let Some(body) = cache.get(key) {
-                self.report.counters.cache_hits += 1;
-                return Ok(body);
-            }
-            self.report.counters.cache_misses += 1;
+        if let Some(body) = self.lookup_cached_body(key.as_ref()) {
+            return Ok(body);
         }
         let mut body = build(self)?;
         if let Some(source) = self.recipe.source_of(node_id) {

@@ -46,11 +46,8 @@ deformed output of an inner stretch. Nested parallel stretches therefore
 compose sequentially in recipe order, which lets frontends build multi-zone
 stretching without a second coordinate convention.
 
-This is deliberately not a simultaneous zone solver. If profiling and
-frontend experience later justify `zones: Vec<(Plane3, f64)>`, that operator
-should define all planes in one undeformed input space and apply a stable
-plane ordering. It must be a new variant or schema version, not a silent
-reinterpretation of nested `Stretch` nodes.
+Nested `Stretch` nodes remain sequential. Simultaneous vertex displacement
+has a separate node and does not reinterpret this contract.
 
 ### Two evaluation paths, one result contract
 
@@ -100,6 +97,51 @@ so both band rims remain continuous. Missing, partial, underdetermined, or
 non-tangent UV data remains absent on the new band; texture-space repair and
 higher-level UV operations belong to Exedra Edit. Evaluation counts those faces
 and reports `eval.stretch.uv_unmapped` rather than inventing coordinates.
+
+### Vertex displacement
+
+`NodeKind::StretchVertices { child, steps }` selects a different geometric
+operation explicitly. Each `VertexStretchStep` contains a plane and signed
+length along its normalized local normal. All steps classify the same input
+positions; positive-side displacements accumulate in supplied order in f64
+and narrow once to stored f32 positions. On-plane vertices stay stationary.
+Negative lengths move selected vertices backward without removing a slab.
+Nested displacement nodes still compose sequentially. Ancestor transforms
+transport selection planes by the inverse transpose and displacement by the
+forward linear map, including nonuniform scale, shear and reflection.
+
+The mesh operation lives in `exedra_mesh_ops::stretch::stretch_vertices`.
+Constructive evaluation supplies the evaluated child meshes and preserves
+face materials and source correspondence. Open triangle meshes are accepted.
+Faces crossing a plane retain their corners and connectivity; no cut, band,
+weld or repair occurs. Active operations refuse polygon faces, invalid
+structure, unrepresentable arithmetic and triangles collapsed at stored
+precision. Exact orientation predicates distinguish zero area from merely
+small triangles. This check does not certify winding or self-intersection.
+Any child or body refusal prevents output of the entire displacement node.
+All-zero steps evaluate the child unchanged, including polygon faces.
+
+UVs, regions, sharpness and other attributes retain their original IDs and
+values. Faces whose corners receive different displacements lose authored
+normal overrides so extraction with `CustomOrDerived` uses the resulting
+geometry. Rigid faces retain their overrides. Derivation respects existing
+connectivity and smoothing boundaries; it cannot reconstruct authored
+smoothing across disconnected seams. UV density is not adjusted. Source maps
+are re-pinned to the resulting revision; source chart metrics remain ancestry,
+while body sampling, refinement and sweep-validation evidence is cleared.
+
+The evaluator revisits children on cache hits to retain their reports and
+occurrence materials. Single-body results are cached by node content, world
+placement and policy; multi-body results are evaluated in child order.
+`vertex_stretch_passes` counts completed mesh passes in the current run and
+is zero for a warm hit or an all-zero bypass.
+
+This additive variant uses canonical tag 18 and the text and JSON kind
+`stretch_vertices`. Its child and complete ordered step list participate in
+fingerprints. Existing canonical encodings and evaluated recipes are
+unchanged, so schema 40 remains valid. Callers matching `NodeKind` handle
+the new variant; older text readers reject its opcode. There is no automatic
+selection by child body kind and no compatibility wrapper.
 
 ## Consequences
 
