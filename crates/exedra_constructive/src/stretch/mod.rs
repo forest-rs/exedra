@@ -5,6 +5,8 @@
 
 mod exact;
 mod mesh;
+mod vertices;
+pub(crate) use vertices::{stretch_body_vertices, vertex_refusal_code};
 
 pub(crate) use exact::exact_plan;
 pub(crate) use mesh::stretch_mesh;

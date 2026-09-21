@@ -76,6 +76,17 @@ matching `SurfaceChart` handle the new variants; direct `ChartSampling` literals
 add `station_distances`. Older readers reject the new metrics explicitly. See
 [chart semantics and migration](docs/adr-0023-construction-surface-charts.md).
 
+## Vertex displacement
+
+`NodeKind::StretchVertices { child, steps }` moves positive-side vertices of
+open or closed triangle meshes without changing topology. Each step contains a
+plane and signed displacement along its normalized normal; all steps classify
+the original input. This differs from `Stretch`, which cuts and inserts or
+removes a band. UVs and material assignments survive; changed faces clear normal
+overrides for subsequent derivation. Active operations refuse polygon faces
+and collapsed triangles. See [stretch semantics](docs/adr-0005-stretch-semantics.md)
+for composition, normals, refusals and cache behavior.
+
 ## Profile offsets
 
 `Profile2::offset_with_policy` trims inside corners beside fitted cubics, including

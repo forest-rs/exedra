@@ -21,7 +21,7 @@ See the [boundary and migration decision](docs/adr-0001-mesh-operation-boundary.
 | Boolean solids or finish selected edges | `boolean`, `round` |
 | Section or split a mesh with capped halves | `section` |
 | Resolve an authored planar frame or measure clearance | `workplane`, `clearance` |
-| Transform or stretch a mesh | `transform`, `stretch` |
+| Transform or stretch a mesh | `transform`, `stretch`, `stretch::stretch_vertices` |
 | Project a mesh loop, measure boundaries, inspect bounds | `planar`, `measure`, `inspect` |
 | Select regions, author normals or UVs | `region`, `normal_edit`, `uv` |
 

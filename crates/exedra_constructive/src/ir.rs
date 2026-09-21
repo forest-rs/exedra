@@ -64,6 +64,8 @@ pub struct Fingerprint(pub u128);
 
 /// Shared geometric placement and plane representations.
 pub use exedra_math::{FrameError, Placement3, Plane3};
+/// One plane-selected displacement for [`NodeKind::StretchVertices`].
+pub use exedra_mesh_ops::stretch::VertexStretchStep;
 
 /// Which caps an extrusion or revolution closes.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -477,6 +479,21 @@ pub enum NodeKind {
         plane: Plane3,
         /// Signed insert/remove distance along the normalized plane normal.
         length: f64,
+    },
+    /// Displaces selected vertices without cutting or rebuilding triangle faces.
+    ///
+    /// Steps classify the same input positions in this node's local frame and
+    /// accumulate their signed movements before output positions are stored.
+    /// On-plane vertices remain stationary. Nested nodes still act sequentially.
+    /// Open triangle meshes are supported; active operations refuse polygon
+    /// faces and collapsed triangles. All-zero steps leave the child unchanged.
+    /// UVs and topology survive; deformed faces lose authored normal overrides
+    /// so extraction can derive normals using existing smoothing boundaries.
+    StretchVertices {
+        /// The child whose evaluated triangle meshes are displaced.
+        child: NodeId,
+        /// Nonempty, ordered displacements evaluated against unchanged input.
+        steps: Vec<VertexStretchStep>,
     },
     /// A point-grid surface body: a row-major grid of 3D points
     /// tessellated as bilinear quad patches.
@@ -1463,6 +1480,31 @@ impl RecipeBuilder {
                 }
                 Ok(())
             }
+            NodeKind::StretchVertices { child, steps } => {
+                self.check_node(*child)?;
+                if steps.is_empty() {
+                    return Err(RecipeError::TooFewOperands {
+                        what: "vertex stretch steps",
+                        count: 0,
+                    });
+                }
+                if steps.len() > u32::MAX as usize {
+                    return Err(RecipeError::TooManyOperands {
+                        what: "vertex stretch steps",
+                        count: steps.len(),
+                        max: u32::MAX as usize,
+                    });
+                }
+                for step in steps {
+                    self.check_plane(&step.plane)?;
+                    if !step.length.is_finite() {
+                        return Err(RecipeError::InvalidParameter {
+                            what: "vertex stretch length",
+                        });
+                    }
+                }
+                Ok(())
+            }
             NodeKind::Stretch {
                 child,
                 plane,
@@ -1723,7 +1765,8 @@ fn ambiguous_sources(nodes: &[Node], sources: &[String], root: NodeId) -> Vec<St
             | NodeKind::EdgeFinish { child, .. }
             | NodeKind::Transform { child, .. }
             | NodeKind::Mirror { child, .. }
-            | NodeKind::Stretch { child, .. } => visit(*child),
+            | NodeKind::Stretch { child, .. }
+            | NodeKind::StretchVertices { child, .. } => visit(*child),
             NodeKind::Instance { of, .. } => visit(*of),
             NodeKind::Group { children }
             | NodeKind::Csg {
@@ -2219,6 +2262,15 @@ fn node_canon_bytes(
             out.push(12);
             put_u128(out, import_hashes[import.0 as usize]);
             put_placement(out, placement);
+        }
+        NodeKind::StretchVertices { child: c, steps } => {
+            out.push(18);
+            child(out, *c);
+            put_u32(out, len_u32(steps.len()));
+            for step in steps {
+                put_plane(out, &step.plane);
+                put_f64(out, step.length);
+            }
         }
         NodeKind::Stretch {
             child: c,
