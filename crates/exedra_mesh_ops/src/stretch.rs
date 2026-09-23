@@ -9,6 +9,8 @@ use alloc::vec::Vec;
 use exedra_math::{Placement3, Plane3};
 use exedra_mesh::{FaceId, Mesh, VertexId};
 
+use crate::layers::{CornerSample, Transfer, VertexSample};
+
 /// Geometric policy for edges created by a stretched band or contraction seam.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct StretchPolicy {
@@ -78,6 +80,10 @@ pub struct StretchStats {
     pub band_faces: u64,
     /// Crossing faces whose UVs could not be extended through the displacement.
     pub uv_unmapped_faces: u64,
+    /// Caller-defined attribute values whose layer has no
+    /// [`Propagation`](exedra_mesh::attributes::Propagation) rule, so the
+    /// rebuild could not carry them.
+    pub unpropagated_attribute_values: u64,
 }
 
 /// Geometric source of an output face.
@@ -140,8 +146,13 @@ pub struct StretchResult {
 /// this does not certify freedom from self-intersections. Expansion joins section
 /// rims with polygon bands. Contraction requires matching polygonal section edges.
 /// Rebuilt topology preserves regions, seam/sharpness, corner UVs and normal
-/// overrides; arbitrary custom attributes are not transferred. Existing UVs are
-/// extended when a planar mapping can be inferred, otherwise stats report it.
+/// overrides. Existing UVs are extended when a planar mapping can be inferred,
+/// otherwise stats report it. Caller-defined layers keep their registration and
+/// [`Propagation`](exedra_mesh::attributes::Propagation) rule and are carried
+/// along the same correspondence: each output face from its source face, and
+/// each corner and generated vertex from the source face's corners or vertices
+/// at its unmoved source position, weighted barycentrically (a source vertex
+/// selects its own corner; a section point interpolates its source edge).
 /// Noncrossing meshes keep all attributes and IDs. All failures leave input alone.
 pub fn stretch_mesh(
     source: &Mesh,
@@ -173,7 +184,10 @@ pub fn stretch_mesh(
     } else {
         stretch_mesh_expansion(source, &geometry, policy)?
     };
-    result.stats = stats;
+    result.stats = StretchStats {
+        unpropagated_attribute_values: result.stats.unpropagated_attribute_values,
+        ..stats
+    };
     Ok(result)
 }
 
@@ -391,6 +405,8 @@ struct SectionSegment {
 struct OutputVertex {
     key: OutputKey,
     point: [f64; 3],
+    /// The position on the source face before any displacement.
+    source_point: [f64; 3],
     source: StretchVertexSource,
     uv: Option<[f64; 2]>,
     normal_override: Option<[f32; 3]>,
@@ -407,6 +423,8 @@ struct OutputMesh {
     face_sources: Vec<StretchFaceSource>,
     face_uvs: Vec<Vec<Option<[f32; 2]>>>,
     face_normal_overrides: Vec<Vec<Option<[f32; 3]>>>,
+    face_source_points: Vec<Vec<[f64; 3]>>,
+    vertex_samples: Vec<Option<VertexSample>>,
 }
 
 impl OutputMesh {
@@ -447,6 +465,8 @@ impl OutputMesh {
             face_sources: Vec::new(),
             face_uvs: Vec::new(),
             face_normal_overrides: Vec::new(),
+            face_source_points: Vec::new(),
+            vertex_samples: Vec::new(),
         }
     }
 
@@ -470,6 +490,7 @@ impl OutputMesh {
         let index = self.builder.push_vertex(narrowed);
         self.vertices.insert(key, index);
         self.vertex_sources.push(source);
+        self.vertex_samples.push(None);
         let sharpness = match key {
             OutputKey::Original { vertex, .. } => {
                 self.source_vertex_sharpness.get(&vertex).copied()
@@ -532,10 +553,25 @@ impl OutputMesh {
                 .map(|vertex| vertex.normal_override)
                 .collect(),
         );
+        self.face_source_points
+            .push(vertices.iter().map(|vertex| vertex.source_point).collect());
+        // A vertex shared by several faces takes its first face's sample.
+        for (&index, vertex) in corners.iter().zip(vertices) {
+            let slot = &mut self.vertex_samples[index as usize];
+            if slot.is_none() {
+                *slot = Some(match vertex.source {
+                    StretchVertexSource::Original(original) => VertexSample::Vertex(original),
+                    StretchVertexSource::Seam { .. } => VertexSample::Point {
+                        face: source.source.face(),
+                        point: vertex.source_point,
+                    },
+                });
+            }
+        }
         Ok(())
     }
 
-    fn finish(self) -> Result<StretchResult, StretchError> {
+    fn finish(self, source: &Mesh) -> Result<StretchResult, StretchError> {
         let mut built = self
             .builder
             .build()
@@ -581,6 +617,33 @@ impl OutputMesh {
                 edit.finish();
             }
         }
+        let mut unpropagated_attribute_values = 0;
+        if let Some(mut transfer) = Transfer::new(source) {
+            for (((&face, edges), points), face_source) in built
+                .face_ids
+                .iter()
+                .zip(&built.face_edge_ids)
+                .zip(&self.face_source_points)
+                .zip(&self.face_sources)
+            {
+                transfer.face(
+                    face,
+                    face_source.face(),
+                    vertex_corners(edges)
+                        .copied()
+                        .zip(points.iter().map(|&point| CornerSample::Point(point)))
+                        .collect(),
+                );
+            }
+            for (&vertex, sample) in built.vertex_ids.iter().zip(&self.vertex_samples) {
+                if let Some(sample) = sample {
+                    transfer.vertex(vertex, *sample);
+                }
+            }
+            unpropagated_attribute_values = transfer
+                .apply(&mut built.mesh)
+                .map_err(|_| StretchError::BuildFailed)?;
+        }
         let validation = built.mesh.validate_deep();
         if !validation.is_empty() {
             return Err(StretchError::BuildFailed);
@@ -594,7 +657,10 @@ impl OutputMesh {
                 .collect(),
             mesh: built.mesh,
             topology_rebuilt: true,
-            stats: StretchStats::default(),
+            stats: StretchStats {
+                unpropagated_attribute_values,
+                ..StretchStats::default()
+            },
         })
     }
 }
@@ -786,6 +852,7 @@ fn stretch_mesh_expansion(
                 OutputVertex {
                     key: OutputKey::Cut { cut: a_key, rim: 0 },
                     point: a,
+                    source_point: a,
                     source: seam0,
                     uv: a_uv,
                     normal_override: a_band_normal,
@@ -794,6 +861,7 @@ fn stretch_mesh_expansion(
                 OutputVertex {
                     key: OutputKey::Cut { cut: a_key, rim: 1 },
                     point: moved_a,
+                    source_point: a,
                     source: seam1,
                     uv: mapped_a_uv,
                     normal_override: a_band_normal,
@@ -802,6 +870,7 @@ fn stretch_mesh_expansion(
                 OutputVertex {
                     key: OutputKey::Cut { cut: b_key, rim: 1 },
                     point: moved_b,
+                    source_point: b,
                     source: seam1,
                     uv: mapped_b_uv,
                     normal_override: b_band_normal,
@@ -810,6 +879,7 @@ fn stretch_mesh_expansion(
                 OutputVertex {
                     key: OutputKey::Cut { cut: b_key, rim: 0 },
                     point: b,
+                    source_point: b,
                     source: seam0,
                     uv: b_uv,
                     normal_override: b_band_normal,
@@ -824,7 +894,7 @@ fn stretch_mesh_expansion(
         )?;
         stats.band_faces += 1;
     }
-    Ok((output.finish()?, stats))
+    Ok((output.finish(source)?, stats))
 }
 
 fn stretch_mesh_contraction(
@@ -1004,7 +1074,7 @@ fn stretch_mesh_contraction(
             output.add_polygon(&vertices, face.source, Some(&sharpness))?;
         }
     }
-    Ok((output.finish()?, stats))
+    Ok((output.finish(source)?, stats))
 }
 
 fn original_index(vertex: ClipVertex) -> Result<u32, StretchError> {
@@ -1111,6 +1181,7 @@ fn contraction_output_vertex(
                 moved,
             },
             point,
+            source_point: vertex.point,
             source: vertex
                 .source_vertex
                 .expect("original clip vertices retain source provenance"),
@@ -1123,6 +1194,7 @@ fn contraction_output_vertex(
                 position: position_bits(point),
             },
             point,
+            source_point: vertex.point,
             source: StretchVertexSource::Seam { rim: 0 },
             uv,
             normal_override: vertex.normal_override,
@@ -1374,6 +1446,7 @@ fn output_vertex(
                 moved,
             },
             point,
+            source_point: vertex.point,
             source: vertex
                 .source_vertex
                 .expect("original clip vertices retain source provenance"),
@@ -1384,6 +1457,7 @@ fn output_vertex(
         ClipKey::Cut(cut) => OutputVertex {
             key: OutputKey::Cut { cut, rim },
             point,
+            source_point: vertex.point,
             source: StretchVertexSource::Seam { rim },
             uv,
             normal_override: vertex.normal_override,

@@ -46,8 +46,9 @@ state independently of any application runner.
 
 - `exedra_mesh_ops::transform::transform` places plain meshes and returns typed
   numeric, structure and rebuild errors. Face/vertex iteration order supplies
-  explicit source correspondence. Existing reflection behavior transfers only
-  built-in attributes; non-reflecting clones retain custom attributes too.
+  explicit source correspondence. Reflection re-winds faces and carries built-in
+  attributes and caller-defined layers verbatim; non-reflecting clones retain
+  every attribute (ADR-0003).
   Constructive retains its error vocabulary and adds `InvalidMesh` for invalid
   source structure previously assumed to have been validated upstream.
 
@@ -83,7 +84,8 @@ state independently of any application runner.
   whether topology was rebuilt. Constructive keeps exact recipe recognition and
   binds feature/material evidence to those results. Rigid paths preserve IDs,
   custom attributes and existing source-map origins; rebuilt paths preserve the
-  same built-ins and feature attribution as before. Raw calls now validate inputs
+  same built-ins and feature attribution as before, and carry caller-defined
+  layers by position (ADR-0003). Raw calls now validate inputs
   previously checked by recipes, and whole-mesh translation refuses f32 overflow
   instead of ignoring a failed vertex-position update.
 

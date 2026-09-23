@@ -75,17 +75,8 @@ after a deletion could inherit a deleted element's caller-defined value.
   differs from the caller-defined rule (the corner at the diagonal's vertex);
   unifying them would change pinned outputs and is left for a deliberate
   follow-up.
-- `exedra_mesh_ops` does not carry caller-defined layers yet, in two classes
-  (gap 13b):
-  - Operations that edit in place through the kernels (face edits, poke,
-    patch and connect operations) delete through `op::delete_faces`, so
-    deleted values are cleared and counted; their new elements start empty
-    and uncounted, which render extraction reports as attribute fallbacks.
-  - Operations that return a fresh `Mesh` built with `MeshBuilder` (Booleans,
-    stretch, sections, and reflecting transforms) copy only built-in layers.
-    Caller-defined layers and their rules vanish from the result with no
-    counter; extraction reports them only as missing layers, and only if
-    asked for. The API below lets them carry layers.
+- `exedra_mesh_ops` carries caller-defined layers along each operation's
+  source correspondence (its ADR-0003), through the public API below.
 
 ## Amendment: capture and restore for operations
 

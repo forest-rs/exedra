@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use exedra_mesh::attributes::CapturedAttributes;
 use exedra_mesh::{FaceId, HalfEdgeId, VertexId};
 
 use crate::face_edit::FaceEditError;
@@ -14,6 +15,10 @@ pub(crate) struct SelectedFace {
     pub(crate) face: FaceId,
     pub(crate) vertices: Vec<VertexId>,
     pub(crate) vertex_uvs: Vec<Option<[f32; 2]>>,
+    /// Caller-defined corner values, parallel to `vertices`.
+    pub(crate) corner_layers: Vec<CapturedAttributes>,
+    /// Caller-defined face values.
+    pub(crate) face_layers: CapturedAttributes,
     pub(crate) edge_attrs: Vec<SourceEdgeAttrs>,
     pub(crate) normal: [f32; 3],
     pub(crate) region: u32,
@@ -71,6 +76,11 @@ pub(crate) fn selected_face_region(
                 .and_then(|layer| layer.get(corner.as_id()).copied());
             vertex_uvs.push(uv);
         }
+        let corner_layers = corners
+            .iter()
+            .map(|&corner| mesh.capture_attributes(&[(corner, 1.0)]))
+            .collect();
+        let face_layers = mesh.capture_attributes(&[(face, 1.0)]);
         let mut edge_attrs = Vec::with_capacity(vertices.len());
         for i in 0..vertices.len() {
             let edge_corner = corners[(i + 1) % corners.len()];
@@ -84,6 +94,8 @@ pub(crate) fn selected_face_region(
             face,
             vertices,
             vertex_uvs,
+            corner_layers,
+            face_layers,
             edge_attrs,
             normal,
             region,

@@ -279,6 +279,9 @@ fn boolean_pipeline_fuzz_never_panics_and_honors_its_contract() {
                         BooleanError::InvariantViolation { count } => {
                             panic!("pair {pair} {op:?}: {count} invariant violations")
                         }
+                        BooleanError::AttributeLayerConflict => {
+                            panic!("pair {pair} {op:?}: corpus meshes carry no caller layers")
+                        }
                     }
                 }
                 _ => panic!("pair {pair} {op:?}: Ok/Err diverged between reruns"),

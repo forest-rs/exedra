@@ -9,8 +9,11 @@ use exedra_mesh::{
     op,
 };
 
+use exedra_mesh::attributes::CapturedAttributes;
+
 use crate::patch::attrs::{
-    SourceEdgeAttrs, propagate_edge_attrs_for_vertices, propagate_face_corner_uvs,
+    SourceEdgeAttrs, propagate_edge_attrs_for_vertices, propagate_face_corner_layers,
+    propagate_face_corner_uvs,
 };
 use crate::patch::source::{CaptureError, FaceInput, capture_inputs};
 
@@ -169,8 +172,13 @@ impl PokeFacesPlan {
     /// Applies the prepared fans to an eager edit session.
     ///
     /// Regions and authored UVs follow the source face; outer edge tags follow
-    /// `propagate.edge_attr`, and new radial edges start clear. Source corner
-    /// normal overrides and custom layers are not transferred to new topology.
+    /// `propagate.edge_attr`, and new radial edges start clear. Caller-defined
+    /// layers follow their own [`Propagation`](exedra_mesh::attributes::Propagation)
+    /// rules: every fan triangle takes the source face's values, outer corners
+    /// take the source corner's, and the center corner and center vertex take
+    /// all source corners and vertices with equal weights (their average under
+    /// `Interpolate`, the first under `Copy`). Source corner normal overrides are
+    /// not transferred.
     /// Stale preparation is refused before editing. An insertion or attribute
     /// failure can leave partial edits in the caller's session; there is no
     /// rollback. Finish the caller's change sink even after such a failure.
@@ -184,12 +192,18 @@ impl PokeFacesPlan {
         {
             return Err(PokeError::StalePreparation);
         }
+        let layers: Vec<FanLayers> = self
+            .inputs
+            .iter()
+            .map(|input| FanLayers::capture(txn.mesh(), input))
+            .collect();
         op::delete_faces(txn, &self.faces, DeletePolicy::KeepIsolated)
             .map_err(PokeError::Delete)?;
         let mut center_vertices = Vec::with_capacity(self.inputs.len());
         let mut fan_faces = Vec::new();
-        for (input, planned) in self.inputs.iter().zip(&self.centers) {
+        for ((input, planned), layers) in self.inputs.iter().zip(&self.centers).zip(&layers) {
             let center = op::add_vertex(txn, planned.position);
+            let _ = op::restore_attributes(txn, center, &layers.center_vertex);
             center_vertices.push(center);
             for i in 0..input.corners.len() {
                 let current = &input.corners[i];
@@ -235,6 +249,16 @@ impl PokeFacesPlan {
                         (center, planned.uv),
                     ],
                 );
+                propagate_face_corner_layers(
+                    txn,
+                    triangle,
+                    &[
+                        (current.vertex, &layers.corners[i]),
+                        (next.vertex, &layers.corners[(i + 1) % input.corners.len()]),
+                        (center, &layers.center_corner),
+                    ],
+                );
+                let _ = op::restore_attributes(txn, triangle, &layers.face);
                 fan_faces.push(triangle);
             }
         }
@@ -243,6 +267,32 @@ impl PokeFacesPlan {
             center_vertices,
             fan_faces,
         })
+    }
+}
+
+/// Caller-defined values of one source face, captured before it is deleted.
+struct FanLayers {
+    face: CapturedAttributes,
+    corners: Vec<CapturedAttributes>,
+    center_corner: CapturedAttributes,
+    center_vertex: CapturedAttributes,
+}
+
+impl FanLayers {
+    fn capture(mesh: &Mesh, input: &FaceInput) -> Self {
+        let corners = input
+            .corners
+            .iter()
+            .map(|corner| mesh.capture_attributes(&[(corner.corner, 1.0)]))
+            .collect();
+        let all_corners: Vec<_> = input.corners.iter().map(|c| (c.corner, 1.0)).collect();
+        let all_vertices: Vec<_> = input.corners.iter().map(|c| (c.vertex, 1.0)).collect();
+        Self {
+            face: mesh.capture_attributes(&[(input.face, 1.0)]),
+            corners,
+            center_corner: mesh.capture_attributes(&all_corners),
+            center_vertex: mesh.capture_attributes(&all_vertices),
+        }
     }
 }
 

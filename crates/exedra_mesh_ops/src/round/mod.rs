@@ -54,6 +54,7 @@
 
 mod concave;
 mod geom;
+mod layers;
 #[cfg(test)]
 mod tests;
 mod uv;
@@ -64,10 +65,10 @@ use core::fmt;
 
 use crate::math::FloatExt;
 use exedra_mesh::op::{
-    AddFaceError, add_face, add_vertex, delete_faces, delete_vertices, set_corner_normal_override,
-    set_corner_uv, set_edge_seam, set_edge_sharpness, set_face_region,
+    AddFaceError, add_face, add_vertex, delete_faces, delete_vertices, restore_attributes,
+    set_corner_normal_override, set_corner_uv, set_edge_seam, set_edge_sharpness, set_face_region,
 };
-use exedra_mesh::{DeletePolicy, FaceId, HalfEdgeId, Mesh, VertexId, attr};
+use exedra_mesh::{ChangeSetBuilder, DeletePolicy, FaceId, HalfEdgeId, Mesh, VertexId, attr};
 
 use exedra_math::{add, cross, dot, narrow, norm, normalize, promote, scale, sub};
 use geom::{
@@ -301,6 +302,10 @@ pub struct RoundStats {
     pub added_vertices: u32,
     /// Largest band count used by any chain.
     pub max_segments: u32,
+    /// Caller-defined values the rewrite could not carry because their layer's
+    /// rule is `Unspecified`, counted once per restored element (see
+    /// [`exedra_mesh::ChangeSet::unpropagated_attribute_values`]).
+    pub unpropagated_attribute_values: u64,
 }
 
 /// Input faces responsible for one replacement or generated face.
@@ -396,6 +401,17 @@ pub fn round_sharp_edges(mesh: &mut Mesh, policy: &RoundPolicy) -> Result<RoundS
 /// Non-finite interpolation results are left unset. No default mapping or
 /// texture scale is invented for untextured inputs; callers can remap faces
 /// using [`RoundResult::face_provenance`].
+///
+/// # Caller-defined layers
+///
+/// Layers follow their own [`Propagation`](exedra_mesh::attributes::Propagation)
+/// rules along the same ownership. Rewritten faces take their first source
+/// face's values. A corner at a surviving vertex takes the source corner there;
+/// a corner or vertex at a new point takes the owner's corners or vertices
+/// weighted by the point's barycentric coordinates in its robust
+/// triangulation, clamped to the containing or least-overshot triangle so
+/// arbitrary data is never extrapolated. Consumed vertices and replaced faces
+/// lose their values as the kernels delete them.
 ///
 /// # Errors
 ///
@@ -2207,7 +2223,8 @@ fn apply(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> {
 }
 
 fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> {
-    let mut session = mesh.edit();
+    let layers = layers::capture(mesh, &plan.points, &plan.faces);
+    let mut session = mesh.edit_with(ChangeSetBuilder::new());
     if delete_faces(&mut session, &plan.affected, DeletePolicy::KeepIsolated).is_err() {
         return Err(RoundError::Internal {
             detail: "affected faces could not be deleted",
@@ -2216,7 +2233,14 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
     let vertex_ids: Vec<VertexId> = plan
         .points
         .iter()
-        .map(|&p| add_vertex(&mut session, narrow(p)))
+        .enumerate()
+        .map(|(index, &p)| {
+            let vertex = add_vertex(&mut session, narrow(p));
+            if let Some(captured) = layers.as_ref().and_then(|l| l.points[index].as_ref()) {
+                let _ = restore_attributes(&mut session, vertex, captured);
+            }
+            vertex
+        })
         .collect();
     let resolve = |tok: Tok| match tok {
         Tok::Old(v) => v,
@@ -2270,6 +2294,16 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
             let _ = set_corner_normal_override(&mut session, corner, Some(normal));
             if let Some(uv) = uv {
                 let _ = set_corner_uv(&mut session, corner, uv);
+            }
+        }
+        if let Some((face_values, corner_values)) = layers.as_ref().map(|l| &l.faces[index]) {
+            let _ = restore_attributes(&mut session, face, face_values);
+            let corners: Vec<_> = session.mesh().face_loop(face).collect();
+            for corner in corners {
+                let vertex = session.mesh().to_vertex(corner).expect("live new corner");
+                if let Some(entry) = loop_vertices.iter().position(|&v| v == vertex) {
+                    let _ = restore_attributes(&mut session, corner, &corner_values[entry]);
+                }
             }
         }
         for vertex in loop_vertices {
@@ -2382,12 +2416,12 @@ fn apply_staged(mesh: &mut Mesh, plan: Plan) -> Result<RoundResult, RoundError> 
             detail: "consumed chain vertices could not be removed",
         });
     }
-    #[expect(unused_must_use, reason = "discard sink output")]
-    {
-        session.finish();
-    }
+    let changes = session.finish();
     Ok(RoundResult {
-        stats: plan.stats,
+        stats: RoundStats {
+            unpropagated_attribute_values: changes.unpropagated_attribute_values,
+            ..plan.stats
+        },
         face_provenance: added
             .into_iter()
             .zip(plan.faces.into_iter().map(|f| f.source))

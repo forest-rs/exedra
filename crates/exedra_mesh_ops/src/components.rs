@@ -15,6 +15,9 @@ pub struct ComponentCleanup {
     pub faces_examined: u64,
     /// Edge-connected components visited.
     pub components_examined: u64,
+    /// Caller-defined attribute values cleared with the removed elements
+    /// ([`ChangeSet::cleared_attribute_values`](exedra_mesh::ChangeSet::cleared_attribute_values)).
+    pub cleared_attribute_values: u64,
 }
 
 /// Removes entire edge-connected face components smaller than `min_faces`.
@@ -22,7 +25,9 @@ pub struct ComponentCleanup {
 /// Traversal ignores region tags. A zero threshold removes nothing. Isolated
 /// vertices left by removed faces are cleaned up. Deletion uses the kernel's
 /// checked preflight and propagates its failure; success reports actual removals.
-/// Other attributes and source meanings remain the caller's responsibility.
+/// Caller-defined attribute values on removed elements are cleared and counted
+/// in [`ComponentCleanup::cleared_attribute_values`]. Other source meanings
+/// remain the caller's responsibility.
 pub fn remove_small_components(
     mesh: &mut Mesh,
     min_faces: u32,
@@ -62,20 +67,22 @@ pub fn remove_small_components(
     }
 
     doomed.sort_unstable();
+    let mut cleared_attribute_values = 0;
     if !doomed.is_empty() {
-        let mut edit = mesh.edit();
+        let mut edit = mesh.edit_with(exedra_mesh::ChangeSetBuilder::new());
         let result = op::delete_faces(
             &mut edit,
             &doomed,
             exedra_mesh::DeletePolicy::CleanupIsolated,
         );
-        let _: () = edit.finish();
+        cleared_attribute_values = edit.finish().cleared_attribute_values;
         result?;
     }
     Ok(ComponentCleanup {
         removed_faces: doomed,
         faces_examined: faces.len() as u64,
         components_examined,
+        cleared_attribute_values,
     })
 }
 

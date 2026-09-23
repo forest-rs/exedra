@@ -213,8 +213,9 @@ impl BridgeBoundaryLoopsPlan {
     }
     /// Builds the prepared quad strip after checking source revision and exact
     /// adjacent-face state, including unfinished edits. Equivalent clones are
-    /// accepted. Strip rims are sharp and columns smooth; region, UV, normal
-    /// overrides and custom attributes are not copied onto generated faces.
+    /// accepted. Strip rims are sharp and columns smooth. Generated faces have no
+    /// source face, so region, UVs, normal overrides and caller-defined layers
+    /// start empty; nothing is deleted, so no value is lost.
     /// Kernel failures may leave partial edits; finish the caller's change sink
     /// after success or failure. This method does not imply rollback.
     pub fn apply<S: exedra_mesh::ChangeSink>(
