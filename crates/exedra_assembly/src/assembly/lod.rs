@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use super::{Assembly, AssemblyError, PartDef, PartId, SlotIndex};
+use super::{Assembly, AssemblyError, Occurrence, PartDef, PartId, SlotIndex};
 
 /// One level of a part's level-of-detail chain.
 ///
@@ -135,6 +135,49 @@ impl Assembly {
             }
         }
         Ok(())
+    }
+
+    /// The material key `slot` of `level` resolves to for `occurrence`.
+    ///
+    /// `level` is the occurrence's own part or a lower level of its chain.
+    /// A lower level's slot maps to the owning part's slot of the same name,
+    /// then resolves through the occurrence's binding, else the owning part's
+    /// default; a slot the owner does not name falls back to the level part's
+    /// own default. `level` must belong to the occurrence's chain (checked
+    /// in debug builds); any other part resolves by slot name the same way.
+    /// For the occurrence's own part this is exactly
+    /// [`Assembly::resolved_material`] (or
+    /// [`Assembly::resolved_placement_material`]). Returns `None` for an
+    /// unknown occurrence or part, or an unbound slot.
+    #[must_use]
+    pub fn resolved_level_material(
+        &self,
+        occurrence: Occurrence,
+        level: PartId,
+        slot: SlotIndex,
+    ) -> Option<&str> {
+        let owner = match occurrence {
+            Occurrence::Instance(id) => self.instances.get(id.0 as usize)?.part?,
+            Occurrence::PlacementSet(id) => self.placement_sets.get(id.0 as usize)?.part(),
+        };
+        let binding = |owned: SlotIndex| match occurrence {
+            Occurrence::Instance(id) => self.instances[id.0 as usize].binding(owned),
+            Occurrence::PlacementSet(id) => self.placement_sets[id.0 as usize].binding(owned),
+        };
+        self.parts.get(level.0 as usize)?;
+        debug_assert!(
+            level == owner
+                || self.parts[owner.0 as usize]
+                    .lods()
+                    .iter()
+                    .any(|l| l.part == level),
+            "level must be the occurrence's part or a level of its chain"
+        );
+        let owned = self.owner_slot(owner, level, slot);
+        owned
+            .and_then(binding)
+            .or_else(|| owned.and_then(|o| self.parts[owner.0 as usize].default_material(o)))
+            .or_else(|| self.parts[level.0 as usize].default_material(slot))
     }
 
     /// Maps a lower-level part's slot to the owning part's slot of the same

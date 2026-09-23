@@ -31,6 +31,16 @@ use siblings::{Records, Sibling, SiblingIndex};
 #[cfg(test)]
 mod frame_tests;
 
+/// A placed occurrence of a part that binds materials: one instance or a
+/// placement set.
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Occurrence {
+    /// A single instance.
+    Instance(InstanceId),
+    /// Every placement of a placement set.
+    PlacementSet(PlacementSetId),
+}
+
 /// Index of a registered part within an [`Assembly`].
 ///
 /// Handles are only meaningful for the assembly that produced them; they

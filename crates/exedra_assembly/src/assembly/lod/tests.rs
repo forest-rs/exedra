@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use super::*;
 use crate::compile::{CompilePolicy, PartCompiler, assembly_fingerprint};
 use crate::flatten::{FlattenOptions, LodEmission, flatten, flatten_with};
-use crate::{InstancePath, RenderItem};
+use crate::{InstanceId, InstancePath, PlacementSetId, RenderItem};
 use exedra_constructive::builders;
 use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
 
@@ -192,6 +192,37 @@ fn bindings_reach_lower_levels_by_slot_name() {
         .map(|b| b.regions[0].material.clone())
         .collect();
     assert_eq!(batch_materials, [None, Some("grey".into()), None]);
+}
+
+#[test]
+fn resolved_level_material_is_the_flatten_rule() {
+    let (mut asm, [fine, mid, card]) = grove();
+    let hero = asm.roots()[0];
+    let slot = |asm: &Assembly, part: PartId| asm.part(part).unwrap().slot_index("bark").unwrap();
+    for level in [fine, mid, card] {
+        assert_eq!(
+            asm.resolved_level_material(Occurrence::Instance(hero), level, slot(&asm, level)),
+            Some("mossy")
+        );
+    }
+    fn set_bark(asm: &Assembly, level: PartId) -> Option<&str> {
+        let slot = asm.part(level).unwrap().slot_index("bark").unwrap();
+        asm.resolved_level_material(Occurrence::PlacementSet(PlacementSetId(0)), level, slot)
+    }
+    assert_eq!(set_bark(&asm, fine), None);
+    assert_eq!(set_bark(&asm, mid), Some("grey"));
+    asm.bind_placement_material(PlacementSetId(0), "bark", "wet")
+        .unwrap();
+    assert_eq!(set_bark(&asm, card), Some("wet"));
+    // For the occurrence's own part it is the ordinary resolution.
+    assert_eq!(
+        asm.resolved_level_material(Occurrence::Instance(hero), fine, slot(&asm, fine)),
+        asm.resolved_material(hero, slot(&asm, fine))
+    );
+    assert_eq!(
+        asm.resolved_level_material(Occurrence::Instance(InstanceId(99)), fine, slot(&asm, fine)),
+        None
+    );
 }
 
 #[test]
