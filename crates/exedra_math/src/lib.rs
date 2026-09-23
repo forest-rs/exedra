@@ -13,7 +13,8 @@
 //! same functions; the arrays choose the precision.
 //!
 //! [`Placement3`] and [`Plane3`] provide shared affine and plane representations
-//! for geometry crates, independent of recipes and meshes.
+//! for geometry crates, independent of recipes and meshes. [`keyed`] provides
+//! the stable keyed randomness procedural generators share.
 //!
 //! Design rules:
 //!
@@ -54,6 +55,7 @@
 
 mod frame;
 mod geometry;
+pub mod keyed;
 pub use frame::FrameError;
 pub use geometry::{Placement3, Plane3, intersect_plane_edge};
 
