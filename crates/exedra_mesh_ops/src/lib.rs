@@ -55,6 +55,7 @@ pub mod clearance;
 pub mod components;
 pub mod face_edit;
 pub mod inspect;
+pub mod junction;
 #[cfg(test)]
 mod layer_tests;
 mod layers;
