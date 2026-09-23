@@ -209,6 +209,76 @@ impl GlbDocument {
         })
     }
 
+    /// Vertex attribute semantics used by any primitive, sorted and unique.
+    #[must_use]
+    pub fn attribute_semantics(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .primitives()
+            .filter_map(|primitive| primitive.get("attributes").and_then(Value::as_object))
+            .flat_map(|attributes| attributes.keys().map(String::as_str))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    /// Components of the first primitive attribute named `semantic`, read
+    /// from the BIN chunk as `f32`.
+    ///
+    /// Supports `FLOAT` and `UNSIGNED_SHORT` components, the types this
+    /// exporter writes for vertex attributes, and honors buffer-view strides.
+    /// Returns `None` when the attribute is absent or its accessor, view, or
+    /// bytes are malformed.
+    #[must_use]
+    pub fn attribute_components(&self, semantic: &str) -> Option<Vec<f32>> {
+        let index = self
+            .primitives()
+            .find_map(|primitive| primitive.get("attributes")?.get(semantic)?.as_u64())?;
+        let accessor = self.array("accessors")?.get(usize::try_from(index).ok()?)?;
+        let count = usize::try_from(accessor.get("count")?.as_u64()?).ok()?;
+        let components = match accessor.get("type")?.as_str()? {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            _ => return None,
+        };
+        let size = match accessor.get("componentType")?.as_u64()? {
+            5126 => 4,
+            5123 => 2,
+            _ => return None,
+        };
+        let view_index = usize::try_from(accessor.get("bufferView")?.as_u64()?).ok()?;
+        let view = self.array("bufferViews")?.get(view_index)?;
+        let view_offset =
+            usize::try_from(view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0)).ok()?;
+        let offset = view_offset
+            + usize::try_from(
+                accessor
+                    .get("byteOffset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            )
+            .ok()?;
+        let stride = match view.get("byteStride").and_then(Value::as_u64) {
+            Some(stride) => usize::try_from(stride).ok()?,
+            None => components * size,
+        };
+        let mut out = Vec::with_capacity(count * components);
+        for element in 0..count {
+            for component in 0..components {
+                let at = offset + element * stride + component * size;
+                let bytes = self.bin.get(at..at + size)?;
+                out.push(if size == 4 {
+                    f32::from_le_bytes(bytes.try_into().ok()?)
+                } else {
+                    f32::from(u16::from_le_bytes(bytes.try_into().ok()?))
+                });
+            }
+        }
+        Some(out)
+    }
+
     /// Parsed JSON document for assertions beyond the semantic helpers.
     #[must_use]
     pub fn json(&self) -> &Value {

@@ -200,7 +200,10 @@ fn retained_hierarchy_matches_evaluated_vertices_through_intermediate_poses() {
         previous = Some(Arc::clone(arm_part));
         let draw = flatten(&assembly, &compiled);
         for coordinates in [GltfCoordinates::Preserve, GltfCoordinates::ZUpToYUp] {
-            let options = GltfExportOptions { coordinates };
+            let options = GltfExportOptions {
+                coordinates,
+                ..GltfExportOptions::default()
+            };
             let export = export_glb_with_options(&assembly, &compiled, options).unwrap();
             assert_eq!(
                 export.bytes,

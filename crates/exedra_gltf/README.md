@@ -111,10 +111,41 @@ The original functions below use hashed preview colors. See the runnable
 
 - `export_gltf` and `export_glb` preserve authored coordinates.
 - `export_gltf_with_options` and `export_glb_with_options` accept explicit
-  coordinate conversion through `GltfExportOptions`.
+  coordinate conversion and vertex attribute mappings through
+  `GltfExportOptions`.
 - `GltfExport` and `GlbExport` return bytes plus `GltfStats` work counters.
 - `GlbDocument` is a focused inspection helper for tests, not a general glTF
   loader or validator.
+
+## Vertex attributes
+
+Bodies compiled with `CompilePolicy::tangents` export `TANGENT`
+automatically. Other extracted streams (`CompilePolicy::attributes`) are
+exported only through explicit `GltfAttribute` mappings:
+
+```rust,ignore
+use exedra_gltf::{GltfAttribute, GltfExportOptions};
+use exedra_mesh::attr;
+use exedra_mesh::attributes::{AttrKey, Domain};
+
+const PIVOT: AttrKey<[f32; 4]> = AttrKey::new(Domain::Vertex, "vertex.pivot");
+
+let mappings = [
+    GltfAttribute::tex_coord(attr::CORNER_UV1, 1),
+    GltfAttribute::color(attr::CORNER_COLOR, 0),
+    GltfAttribute::custom(PIVOT, "_WIND_PIVOT"),
+];
+let options = GltfExportOptions::z_up_to_y_up().with_attributes(&mappings);
+```
+
+Mappings name streams by their layer's `AttrKey`, matching domain and name.
+The same example is compiled as a doctest on `GltfAttribute`.
+Invalid mappings (including indexed sets that are not contiguous:
+`TEXCOORD_1..=k`, `COLOR_0..=k`), stream types that do not fit their
+semantic, a body missing a lower set below a present higher one, and `u32`
+values the chosen `IntegerEncoding` cannot hold exactly are typed errors.
+`GltfStats` counts unmapped and missing streams. See
+[ADR-0002](docs/adr-0002-vertex-attribute-export.md).
 
 ## License
 
