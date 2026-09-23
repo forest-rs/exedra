@@ -12,10 +12,14 @@ use hashbrown::HashMap;
 #[cfg(test)]
 mod attribute_tests;
 mod attributes;
+#[cfg(test)]
+mod tangent_tests;
+mod tangents;
 mod validate;
 pub use attributes::{
     AttributeBuffer, AttributeKind, AttributeStream, AttributeValue, ExtractAttribute, StreamValue,
 };
+pub use tangents::TangentUv;
 pub use validate::TriMeshGeometryError;
 
 use attributes::BoundAttribute;
@@ -30,9 +34,9 @@ use crate::{
 /// Triangle mesh suitable for GPU upload.
 ///
 /// Produced by [`Mesh::to_trimesh`]. The buffers are parallel by
-/// render-vertex index: `positions[i]`, `uvs[i]`, `normals[i]`, and value
-/// `i` of every stream in `attributes` describe vertex `i`, and `indices`
-/// references those vertices in triangle order.
+/// render-vertex index: `positions[i]`, `uvs[i]`, `normals[i]`, `tangents[i]`
+/// (when requested), and value `i` of every stream in `attributes` describe
+/// vertex `i`, and `indices` references those vertices in triangle order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TriMesh {
     /// Triangle index buffer.
@@ -43,6 +47,10 @@ pub struct TriMesh {
     pub uvs: Vec<[f32; 2]>,
     /// Render-vertex normals.
     pub normals: Vec<[f32; 3]>,
+    /// Render-vertex tangents: unit `xyz` and handedness `w` (`±1`), with the
+    /// bitangent `cross(normal, xyz) * w`. Empty unless
+    /// [`ExtractParams::tangents`] requests them.
+    pub tangents: Vec<[f32; 4]>,
     /// Extra render-vertex streams, in [`ExtractParams::attributes`] order.
     pub attributes: Vec<AttributeStream>,
 }
@@ -128,6 +136,19 @@ pub struct ExtractParams {
     /// Empty by default, which preserves the historical output exactly.
     /// See [`ExtractAttribute`] for resolution and splitting rules.
     pub attributes: Vec<ExtractAttribute>,
+    /// Generates MikkTSpace tangents from the selected UV set into
+    /// [`TriMesh::tangents`].
+    ///
+    /// `None` (the default) emits no tangents. Tangents are computed on the
+    /// extracted triangles from the emitted positions, normals and UVs, so they
+    /// follow [`Self::normals`] and [`Self::uvs`]. Corners of one render vertex
+    /// with different tangents split it; see
+    /// [`ExtractStats::tangent_split_count`].
+    ///
+    /// [`TangentUv::Attribute`] reads a carried stream, so its key must also
+    /// be listed in [`Self::attributes`]; otherwise every tangent is a
+    /// fallback and [`ExtractStats::missing_tangent_uv_sets`] is set.
+    pub tangents: Option<TangentUv>,
 }
 
 impl Default for ExtractParams {
@@ -139,6 +160,7 @@ impl Default for ExtractParams {
             face_triangulation: FaceTriangulation::Fan,
             uvs: UvSource::CustomOnly,
             attributes: Vec::new(),
+            tangents: None,
         }
     }
 }
@@ -172,6 +194,16 @@ pub struct ExtractStats {
     /// Number of carried attributes with no layer of the requested value type.
     /// Every value of such a stream is its missing value.
     pub missing_attribute_layers: u64,
+    /// Number of render-vertex splits driven by tangent differences.
+    pub tangent_split_count: u64,
+    /// Number of render vertices whose tangent is the deterministic fallback
+    /// perpendicular to the normal: corners of triangles without a usable UV
+    /// gradient that no MikkTSpace group reaches, or whose averaged tangent
+    /// vanishes.
+    pub tangent_fallback_count: u64,
+    /// `1` when [`ExtractParams::tangents`] names a stream that is not a
+    /// carried `[f32; 2]` stream. Tangents are then all fallbacks.
+    pub missing_tangent_uv_sets: u64,
     /// Number of faces where [`FaceTriangulation::Robust`] fell back to the
     /// fan because the projected polygon was not simple. Always zero under
     /// [`FaceTriangulation::Fan`].
@@ -416,8 +448,13 @@ impl Mesh {
         }
 
         let Emission {
-            mesh, mut stats, ..
+            mut mesh,
+            mut stats,
+            ..
         } = out;
+        if let Some(uv_set) = params.tangents {
+            mesh = tangents::apply(mesh, uv_set, &mut stats);
+        }
         stats.render_vertex_count = mesh.positions.len() as u64;
         (mesh, stats)
     }

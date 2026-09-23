@@ -317,3 +317,42 @@ fn baked_parts_recompile_when_a_carried_layer_changes() {
     assert_eq!(compiler.counters().parts_compiled, 2);
     assert_eq!(compiler.counters().cache_hits, 0);
 }
+
+#[test]
+fn tangent_policy_reaches_compiled_bodies_and_separates_cached_results() {
+    let mut mesh = triangle(&[]);
+    let corners: Vec<_> = mesh.faces().flat_map(|f| mesh.face_loop(f)).collect();
+    let mut edit = mesh.edit();
+    for &corner in &corners {
+        let v = edit.mesh().to_vertex(corner).unwrap();
+        let p = *edit.mesh().vertex_position(v).unwrap();
+        op::set_corner_uv(&mut edit, corner, [p[0], p[1]]).unwrap();
+    }
+    let _: () = edit.finish();
+    let mut assembly = Assembly::new();
+    let part = assembly.add_baked_part("tangent", mesh, &[]).unwrap();
+    let mut compiler = PartCompiler::new();
+    let plain = CompilePolicy::default();
+    let tangents = CompilePolicy {
+        tangents: Some(TangentUv::Primary),
+        ..CompilePolicy::default()
+    };
+    let uv1 = CompilePolicy {
+        tangents: Some(TangentUv::Attribute(exedra_mesh::attr::CORNER_UV1)),
+        ..CompilePolicy::default()
+    };
+    assert_ne!(policy_fingerprint(&plain), policy_fingerprint(&tangents));
+    assert_ne!(policy_fingerprint(&tangents), policy_fingerprint(&uv1));
+
+    let compiled = compiler.compile_parts(&assembly, &plain).unwrap();
+    assert!(
+        compiled.part(part).unwrap().bodies[0]
+            .tri
+            .tangents
+            .is_empty()
+    );
+    let compiled = compiler.compile_parts(&assembly, &tangents).unwrap();
+    let body = &compiled.part(part).unwrap().bodies[0];
+    assert_eq!(body.tri.tangents, [[1.0, 0.0, 0.0, 1.0]; 3]);
+    assert!(body.regions.iter().all(|range| range.has_uvs));
+}

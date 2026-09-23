@@ -29,7 +29,7 @@ use exedra_constructive::tessellate::EvalPolicy;
 use exedra_mesh::attributes::Domain;
 use exedra_mesh::{
     AttributeValue, ExtractAttribute, ExtractParams, ExtractStats, FaceTriangulation,
-    NormalsSource, TriMesh, UvSource,
+    NormalsSource, TangentUv, TriMesh, UvSource,
 };
 pub use exedra_mesh_ops::measure::{SignedVolume, VolumeError};
 use hashbrown::HashMap;
@@ -80,6 +80,13 @@ pub struct CompilePolicy {
     /// Attribute layers emitted as extra streams on every compiled body, in
     /// this order. See [`ExtractAttribute`] for resolution and splitting.
     pub attributes: Vec<ExtractAttribute>,
+    /// MikkTSpace tangents for every compiled body, from the selected UV set.
+    /// See [`ExtractParams::tangents`].
+    ///
+    /// [`TangentUv::Attribute`] reads a carried stream: list its key in
+    /// [`Self::attributes`] too, or every tangent is a fallback (counted in
+    /// [`CompileCounters::missing_tangent_uv_sets`]).
+    pub tangents: Option<TangentUv>,
 }
 
 impl From<EvalPolicy> for CompilePolicy {
@@ -104,14 +111,14 @@ pub struct PolicyFingerprint(pub u64);
 /// Computes the policy fingerprint for `policy`.
 ///
 /// Combines the constructive policy fingerprint with the normal and UV
-/// sources and the carried attributes. Constructive evaluation owns
-/// fingerprinting its settings, including refinement budgets and
-/// [`EVAL_SCHEMA_VERSION`]. The prefix advanced to `v3` when carried
-/// attributes joined the identity, so fingerprints persisted from earlier
-/// versions never collide with current ones.
+/// sources, the carried attributes, and the tangent request. Constructive
+/// evaluation owns fingerprinting its settings, including refinement budgets
+/// and [`EVAL_SCHEMA_VERSION`]. The prefix advanced to `v4` when tangents
+/// joined the identity, so fingerprints persisted from earlier versions never
+/// collide with current ones.
 #[must_use]
 pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v3"[..]);
+    let mut bytes = Vec::from(&b"assembly-compile-v4"[..]);
     bytes.extend_from_slice(
         &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
     );
@@ -149,6 +156,21 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
             AttributeValue::Vec3(v) => push(2, &v.map(f32::to_bits)),
             AttributeValue::Vec4(v) => push(3, &v.map(f32::to_bits)),
             AttributeValue::U32(v) => push(4, &[v]),
+        }
+    }
+    match policy.tangents {
+        None => bytes.push(0),
+        Some(TangentUv::Primary) => bytes.push(1),
+        Some(TangentUv::Attribute(key)) => {
+            bytes.push(2);
+            bytes.push(match key.domain() {
+                Domain::Vertex => 0,
+                Domain::Face => 1,
+                Domain::HalfEdge => 2,
+            });
+            let name = key.name().as_bytes();
+            bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(name);
         }
     }
     let h = fnv128(&bytes);
@@ -320,6 +342,14 @@ pub struct CompileCounters {
     /// body over cache-miss compilations
     /// ([`ExtractStats::missing_attribute_layers`]).
     pub missing_attribute_layers: u64,
+    /// Render vertices given the fallback tangent, summed over cache-miss
+    /// compilations ([`ExtractStats::tangent_fallback_count`]).
+    pub tangent_fallbacks: u64,
+    /// Bodies whose tangent UV stream was not carried, summed over cache-miss
+    /// compilations ([`ExtractStats::missing_tangent_uv_sets`]). Nonzero
+    /// means [`CompilePolicy::tangents`] names a key that
+    /// [`CompilePolicy::attributes`] does not carry.
+    pub missing_tangent_uv_sets: u64,
 }
 
 /// Typed compilation failure.
@@ -576,6 +606,8 @@ impl PartCompiler {
             for body in &compiled.part.bodies {
                 self.counters.attribute_fallbacks += body.extraction.attribute_fallback_count;
                 self.counters.missing_attribute_layers += body.extraction.missing_attribute_layers;
+                self.counters.tangent_fallbacks += body.extraction.tangent_fallback_count;
+                self.counters.missing_tangent_uv_sets += body.extraction.missing_tangent_uv_sets;
             }
             self.cache.insert(key, compiled.clone());
             if retain {
@@ -692,6 +724,7 @@ fn compile_body(
         uvs: policy.uvs,
         face_triangulation: FaceTriangulation::Robust,
         attributes: policy.attributes.clone(),
+        tangents: policy.tangents,
         ..ExtractParams::default()
     };
     let (tri, extraction) = mesh.to_trimesh(&params);

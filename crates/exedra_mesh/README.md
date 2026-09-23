@@ -92,7 +92,7 @@ fn main() -> Result<(), exedra_mesh::BuildError> {
 - `ExtractParams`, `TriMesh`, `ExtractStats`: render extraction.
 - `ExtractAttribute`, `AttributeStream`, `AttributeBuffer`: extra render-vertex
   streams (second UV set, colors, caller-defined data) carried from attribute
-  layers.
+  layers, and `TangentUv` for MikkTSpace tangents.
 - `NormalsSource`, `UvSource`, `dominant_box_plane`, `project_corner_box`:
   extraction policies and the shared box projection behind `UvSource`.
 

@@ -1,1 +1,4 @@
 # Clippy configuration for Lightweald.
+
+# Proper names that are not code identifiers.
+doc-valid-idents = ["MikkTSpace", ".."]

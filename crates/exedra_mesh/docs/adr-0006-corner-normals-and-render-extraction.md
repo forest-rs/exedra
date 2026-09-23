@@ -222,4 +222,60 @@ domain and name, since one name in two domains names two layers;
 - Constructive recipes refuse imported meshes carrying caller-defined layers,
   so carried streams are end to end only for baked assembly parts. On recipe
   parts they resolve to the missing value and are counted.
-- Tangent generation and glTF export of the streams are separate steps.
+- glTF export of the streams is a separate step.
+
+## Amendment: MikkTSpace tangents
+
+Normal-mapped assets need tangents that match the baker, and bakers
+(Blender, Substance, dapple) assume MikkTSpace. `ExtractParams::tangents:
+Option<TangentUv>` generates them at extraction from the primary UV set or
+a carried `[f32; 2]` stream, such as `attr::CORNER_UV1`.
+
+- **First-class field, not a stream.** `TriMesh::tangents` holds unit `xyz`
+  and handedness `w` (`±1`), empty unless requested. Tangents are derived,
+  like normals, and exporters map them to a fixed semantic (`TANGENT`). A
+  named stream would collide with caller layer names and suggest authored
+  data. The bitangent is `cross(normal, xyz) * w`, glTF's convention.
+- **Algorithm.** An in-crate, dependency-free port of MikkTSpace over the
+  extracted triangles:
+  - corners weld by equal position, normal, and UV;
+  - per-triangle UV gradients, with orientation from the signed UV area;
+  - groups of edge-connected, same-orientation triangles around each
+    welded vertex, seeded only by triangles with a usable UV gradient, as
+    the reference does. Seeding no longer depends on face order; like the
+    reference, a "group with any" triangle between neighbours of opposite
+    orientation still joins whichever group reaches it first;
+  - angle-weighted averaging in each corner normal's plane;
+  - degenerate triangles copy from a valid corner on the same vertex.
+
+  It runs after emission on the emitted positions, normals, and UVs, so
+  tangents follow the normal and UV policies exactly as a renderer would
+  see them.
+- **Splitting.** Corners of one render vertex whose tangents differ split it
+  (for example at mirrored UV seams). The pass re-keys vertices by
+  `(render vertex, tangent bits)` in index order, which reproduces the
+  prior vertex order when nothing splits. `ExtractStats::tangent_split_count`
+  counts these splits, and `split_count` includes them.
+- **Deviations from the reference, stated rather than hidden.**
+  - Input is triangles, so an ngon's tangents follow Exedra's triangulation
+    rather than the reference's quad split.
+  - Float evaluation order is not promised to match `mikktspace.c` bit for
+    bit; directions agree to rounding.
+  - The reference gives a corner that no group reaches (a triangle without
+    a usable UV gradient and no valid neighbour) its default `(1, 0, 0)`
+    with `w = -1`. Here such a corner, or one whose averaged tangent
+    vanishes, gets a deterministic unit tangent perpendicular to its normal,
+    with `w = 1`. Those corners are counted in `tangent_fallback_count`.
+  - Group growth uses an explicit worklist in the reference's visiting
+    order, so high-valence vertices cannot overflow the stack.
+  - A named UV stream that is absent or not `[f32; 2]` makes every tangent
+    a fallback and sets `missing_tangent_uv_sets`.
+- **Named UV sets must be carried.** `TangentUv::Attribute(key)` reads the
+  extracted stream, so the key must also be in `ExtractParams::attributes`.
+  Binding the layer behind the caller's back would make the tangent request
+  silently change which streams are extracted; the soft failure is counted
+  instead.
+- **Assembly.** `CompilePolicy::tangents` passes the request through and
+  joins `policy_fingerprint` (prefix `assembly-compile-v4`).
+  `CompileCounters` sums `tangent_fallbacks` and `missing_tangent_uv_sets`
+  over cache-miss compilations, beside the attribute counters.
