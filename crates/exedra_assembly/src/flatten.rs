@@ -35,7 +35,7 @@ use exedra_constructive::evaluate::Aabb3;
 use exedra_constructive::ir::Placement3;
 
 use crate::assembly::{
-    Assembly, InstanceId, InstancePath, LodLevel, PartId, PlacementSetId, SlotIndex,
+    Assembly, InstanceId, InstancePath, LodLevel, Occurrence, PartId, PlacementSetId, SlotIndex,
 };
 use crate::compile::{CompiledBody, CompiledParts};
 
@@ -366,23 +366,6 @@ impl Flattener<'_> {
         )
     }
 
-    /// The material a lower level's `slot` resolves to: the occurrence's
-    /// binding of the owning slot with the same name, else the owning part's
-    /// default for that slot, else the level part's own default.
-    fn level_material<'a>(
-        assembly: &'a Assembly,
-        owner: PartId,
-        level: PartId,
-        slot: SlotIndex,
-        binding: impl FnOnce(SlotIndex) -> Option<&'a str>,
-    ) -> Option<&'a str> {
-        let owned = assembly.owner_slot(owner, level, slot);
-        owned
-            .and_then(binding)
-            .or_else(|| owned.and_then(|o| assembly.part(owner)?.default_material(o)))
-            .or_else(|| assembly.part(level)?.default_material(slot))
-    }
-
     fn emit_instance(&mut self, id: InstanceId, world: &Placement3) {
         let assembly = self.assembly;
         let Some(owner) = assembly.instance(id).and_then(|inst| inst.part()) else {
@@ -400,11 +383,7 @@ impl Flattener<'_> {
                 let regions = resolve_regions(
                     body,
                     |region| def.region_slot(region),
-                    |slot| {
-                        Self::level_material(assembly, owner, part, slot, |owned| {
-                            assembly.instance(id)?.binding(owned)
-                        })
-                    },
+                    |slot| assembly.resolved_level_material(Occurrence::Instance(id), part, slot),
                 );
                 self.list.items.push(RenderItem {
                     path: path.clone(),
@@ -447,9 +426,7 @@ impl Flattener<'_> {
                     body,
                     |region| def.region_slot(region),
                     |slot| {
-                        Self::level_material(assembly, owner, part, slot, |owned| {
-                            set.binding(owned)
-                        })
+                        assembly.resolved_level_material(Occurrence::PlacementSet(id), part, slot)
                     },
                 );
                 self.list.batches.push(RenderBatch {

@@ -76,8 +76,8 @@ pub mod interchange;
 pub mod pattern;
 
 pub use assembly::{
-    AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, LodLevel, PartDef,
-    PartId, PartSource, PlacementPath, PlacementSet, PlacementSetId, SlotIndex,
+    AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, LodLevel, Occurrence,
+    PartDef, PartId, PartSource, PlacementPath, PlacementSet, PlacementSetId, SlotIndex,
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{
