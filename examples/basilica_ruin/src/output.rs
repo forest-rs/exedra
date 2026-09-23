@@ -348,6 +348,14 @@ fn counter_delta(before: CompileCounters, after: CompileCounters) -> CompileCoun
             .triangles_emitted
             .checked_sub(before.triangles_emitted)
             .expect("compiler counters are monotonic"),
+        attribute_fallbacks: after
+            .attribute_fallbacks
+            .checked_sub(before.attribute_fallbacks)
+            .expect("compiler counters are monotonic"),
+        missing_attribute_layers: after
+            .missing_attribute_layers
+            .checked_sub(before.missing_attribute_layers)
+            .expect("compiler counters are monotonic"),
     }
 }
 

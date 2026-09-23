@@ -37,7 +37,7 @@ fn normal_policy_handles_partial_coverage_and_separates_cached_results() {
 
     let hybrid = CompilePolicy {
         normals: NormalsSource::CustomOrDerived,
-        ..default
+        ..default.clone()
     };
     let preserved = compiler.compile_parts(&assembly, &hybrid).unwrap();
     let tri = &preserved.part(part).unwrap().bodies[0].tri;
@@ -54,7 +54,7 @@ fn normal_policy_handles_partial_coverage_and_separates_cached_results() {
 
     let custom = CompilePolicy {
         normals: NormalsSource::CustomOnly,
-        ..default
+        ..default.clone()
     };
     let only = compiler.compile_parts(&assembly, &custom).unwrap();
     let tri = &only.part(part).unwrap().bodies[0].tri;
@@ -139,7 +139,7 @@ fn compile_identity_includes_constructive_refinement_settings() {
     assembly.add_baked_part("part", triangle(&[]), &[]).unwrap();
     let mut compiler = PartCompiler::new();
     let default = CompilePolicy::default();
-    let mut refined = default;
+    let mut refined = default.clone();
     refined.evaluation.cap_refinement.get_or_insert_default();
     assert_ne!(policy_fingerprint(&default), policy_fingerprint(&refined));
     compiler.compile_parts(&assembly, &default).unwrap();
@@ -206,4 +206,114 @@ fn baked_fingerprints_keep_positions_attached_to_sparse_vertex_ids() {
         );
     }
     assert_eq!(compiler.counters().parts_compiled, 2);
+}
+
+#[test]
+fn carried_attributes_reach_compiled_bodies_and_separate_cached_results() {
+    let mut mesh = triangle(&[]);
+    let corners: Vec<_> = mesh.faces().flat_map(|f| mesh.face_loop(f)).collect();
+    let mut edit = mesh.edit();
+    op::set_attribute(
+        &mut edit,
+        exedra_mesh::attr::CORNER_COLOR,
+        corners[0],
+        [0.25, 0.5, 0.75, 1.0],
+    )
+    .unwrap();
+    let _: () = edit.finish();
+
+    let mut assembly = Assembly::new();
+    let part = assembly.add_baked_part("colored", mesh, &[]).unwrap();
+    let mut compiler = PartCompiler::new();
+    let plain = CompilePolicy::default();
+    let colored = CompilePolicy {
+        attributes: alloc::vec![ExtractAttribute::new(
+            exedra_mesh::attr::CORNER_COLOR,
+            [1.0; 4]
+        )],
+        ..CompilePolicy::default()
+    };
+    assert_ne!(policy_fingerprint(&plain), policy_fingerprint(&colored));
+    let white = CompilePolicy {
+        attributes: alloc::vec![ExtractAttribute::new(
+            exedra_mesh::attr::CORNER_COLOR,
+            [0.0; 4]
+        )],
+        ..CompilePolicy::default()
+    };
+    assert_ne!(
+        policy_fingerprint(&colored),
+        policy_fingerprint(&white),
+        "the missing value is output-affecting"
+    );
+
+    let compiled = compiler.compile_parts(&assembly, &plain).unwrap();
+    assert!(
+        compiled.part(part).unwrap().bodies[0]
+            .tri
+            .attributes
+            .is_empty()
+    );
+    let compiled = compiler.compile_parts(&assembly, &colored).unwrap();
+    let tri = &compiled.part(part).unwrap().bodies[0].tri;
+    let Some(exedra_mesh::AttributeBuffer::Vec4(colors)) =
+        tri.attribute(exedra_mesh::attr::CORNER_COLOR)
+    else {
+        panic!("color stream");
+    };
+    assert_eq!(colors.len(), tri.positions.len());
+    assert_eq!(
+        colors
+            .iter()
+            .filter(|c| **c == [0.25, 0.5, 0.75, 1.0])
+            .count(),
+        1
+    );
+    assert_eq!(colors.iter().filter(|c| **c == [1.0; 4]).count(), 2);
+    assert_eq!(compiler.counters().parts_compiled, 2);
+}
+
+#[test]
+fn baked_parts_recompile_when_a_carried_layer_changes() {
+    let colored = |color: [f32; 4]| {
+        let mut mesh = triangle(&[]);
+        let corners: Vec<_> = mesh.faces().flat_map(|f| mesh.face_loop(f)).collect();
+        let mut edit = mesh.edit();
+        for corner in corners {
+            op::set_attribute(&mut edit, exedra_mesh::attr::CORNER_COLOR, corner, color).unwrap();
+        }
+        let _: () = edit.finish();
+        mesh
+    };
+    let policy = CompilePolicy {
+        attributes: alloc::vec![ExtractAttribute::new(
+            exedra_mesh::attr::CORNER_COLOR,
+            [0.0; 4]
+        )],
+        ..CompilePolicy::default()
+    };
+    let color_of = |assembly: &Assembly, compiler: &mut PartCompiler| {
+        let compiled = compiler.compile_parts(assembly, &policy).unwrap();
+        let tri = &compiled.parts[0].bodies[0].tri;
+        match tri.attribute(exedra_mesh::attr::CORNER_COLOR) {
+            Some(exedra_mesh::AttributeBuffer::Vec4(colors)) => colors[0],
+            other => panic!("color stream: {other:?}"),
+        }
+    };
+
+    let mut compiler = PartCompiler::new();
+    let mut red = Assembly::new();
+    red.add_baked_part("tri", colored([1.0, 0.0, 0.0, 1.0]), &[])
+        .unwrap();
+    assert_eq!(color_of(&red, &mut compiler), [1.0, 0.0, 0.0, 1.0]);
+    let mut blue = Assembly::new();
+    blue.add_baked_part("tri", colored([0.0, 0.0, 1.0, 1.0]), &[])
+        .unwrap();
+    assert_eq!(
+        color_of(&blue, &mut compiler),
+        [0.0, 0.0, 1.0, 1.0],
+        "a changed carried layer must not reuse the red compilation"
+    );
+    assert_eq!(compiler.counters().parts_compiled, 2);
+    assert_eq!(compiler.counters().cache_hits, 0);
 }

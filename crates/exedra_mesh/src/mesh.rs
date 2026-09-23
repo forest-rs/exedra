@@ -906,32 +906,56 @@ impl Mesh {
     /// Registers a dense attribute layer under `key`, filled with `default`
     /// for every current and future slot of its domain.
     ///
-    /// Registration changes no element value, so it neither advances the
-    /// mesh revision nor marks anything dirty. Values are written through
-    /// edit sessions, which own dirty tracking.
+    /// Registration writes no element value and marks nothing dirty; values
+    /// are written through edit sessions, which own dirty tracking. It does
+    /// advance [`Self::revision`], because a carried
+    /// [`ExtractAttribute`](crate::ExtractAttribute) now resolves to the
+    /// layer's values instead of its missing value, so revision-pinned caches
+    /// such as [`TrimeshCache`](crate::TrimeshCache) must not reuse earlier
+    /// output.
     ///
     /// # Errors
     ///
-    /// Returns [`AttrError`] when a layer already exists under the key with
-    /// this or another value type.
+    /// Returns [`AttrError`] when the key is reserved
+    /// ([`attr::RESERVED`]) or a layer already exists under it with this or
+    /// another value type. A failed registration leaves the revision unchanged.
     pub fn define_dense_layer<T: LayerValue>(
         &mut self,
         key: AttrKey<T>,
         default: T,
     ) -> Result<(), AttrError> {
-        self.attrs.define_dense(key, default)
+        if attr::is_reserved(key.domain(), key.name()) {
+            return Err(AttrError::Reserved);
+        }
+        self.attrs.define_dense(key, default)?;
+        self.advance_revision();
+        Ok(())
     }
 
     /// Registers a sparse attribute layer under `key`.
     ///
-    /// Like [`Self::define_dense_layer`], registration is not an edit.
+    /// Like [`Self::define_dense_layer`], registration writes no value and
+    /// marks nothing dirty but advances [`Self::revision`].
     ///
     /// # Errors
     ///
-    /// Returns [`AttrError`] when a layer already exists under the key with
-    /// this or another value type.
+    /// Returns [`AttrError`] when the key is reserved
+    /// ([`attr::RESERVED`]) or a layer already exists under it with this or
+    /// another value type.
     pub fn define_sparse_layer<T: LayerValue>(&mut self, key: AttrKey<T>) -> Result<(), AttrError> {
-        self.attrs.define_sparse(key)
+        if attr::is_reserved(key.domain(), key.name()) {
+            return Err(AttrError::Reserved);
+        }
+        self.attrs.define_sparse(key)?;
+        self.advance_revision();
+        Ok(())
+    }
+
+    fn advance_revision(&mut self) {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("mesh revision overflowed u64");
     }
 
     /// Adds a new vertex with a required position value.

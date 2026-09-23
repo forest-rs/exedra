@@ -12,9 +12,21 @@
 //!
 //! # Split Semantics
 //!
-//! Render vertices are keyed by `(VertexId, corner_uv_bits, corner_normal_bits)`.
-//! This means one topology vertex can map to multiple render vertices when
-//! corner UVs or corner normals differ across incident faces.
+//! Render vertices are keyed by `(VertexId, corner_uv_bits, corner_normal_bits)`
+//! plus the bits of every carried attribute value. This means one topology
+//! vertex can map to multiple render vertices when corner UVs, corner normals,
+//! or carried values differ across incident faces.
+//!
+//! # Carried Attributes
+//!
+//! [`ExtractParams::attributes`](crate::ExtractParams::attributes) lists
+//! further attribute layers, such as `attr::CORNER_UV1`, `attr::CORNER_COLOR`,
+//! or caller-defined vertex, face, and corner layers, to emit as
+//! [`TriMesh::attributes`](crate::TriMesh::attributes) streams. Each
+//! [`ExtractAttribute`](crate::ExtractAttribute) names the value emitted where
+//! the layer has none; [`ExtractStats`](crate::ExtractStats) counts those
+//! fallbacks, missing layers, and attribute-driven splits. Write
+//! caller-defined layers with `op::set_attribute` inside an edit scope.
 //!
 //! # Source Policies
 //!

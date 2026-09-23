@@ -90,6 +90,9 @@ fn main() -> Result<(), exedra_mesh::BuildError> {
 - `EditSession`, `ChangeSet`, `DirtySet`, `PropagatePolicy`: edit hosting and
   change reporting.
 - `ExtractParams`, `TriMesh`, `ExtractStats`: render extraction.
+- `ExtractAttribute`, `AttributeStream`, `AttributeBuffer`: extra render-vertex
+  streams (second UV set, colors, caller-defined data) carried from attribute
+  layers.
 - `NormalsSource`, `UvSource`, `dominant_box_plane`, `project_corner_box`:
   extraction policies and the shared box projection behind `UvSource`.
 

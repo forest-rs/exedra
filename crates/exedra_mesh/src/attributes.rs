@@ -85,13 +85,67 @@ pub enum Domain {
     HalfEdge,
 }
 
+#[doc(hidden)]
+pub mod sealed {
+    /// Closes value and element traits to this crate's implementations.
+    pub trait Sealed {}
+}
+
+/// An element handle that addresses one attribute [`Domain`].
+///
+/// Implemented for [`VertexId`](crate::VertexId), [`FaceId`](crate::FaceId),
+/// and [`HalfEdgeId`](crate::HalfEdgeId) (corners). Generic attribute
+/// operations use it to reject an ID from another domain instead of writing
+/// whichever element shares its slot. The trait is sealed.
+pub trait AttributeElement: sealed::Sealed + Copy {
+    /// The domain this handle addresses.
+    const DOMAIN: Domain;
+
+    /// Returns the untyped slot ID.
+    fn id(self) -> Id;
+}
+
+impl sealed::Sealed for crate::VertexId {}
+impl AttributeElement for crate::VertexId {
+    const DOMAIN: Domain = Domain::Vertex;
+    fn id(self) -> Id {
+        self.as_id()
+    }
+}
+
+impl sealed::Sealed for crate::FaceId {}
+impl AttributeElement for crate::FaceId {
+    const DOMAIN: Domain = Domain::Face;
+    fn id(self) -> Id {
+        self.as_id()
+    }
+}
+
+impl sealed::Sealed for crate::HalfEdgeId {}
+impl AttributeElement for crate::HalfEdgeId {
+    const DOMAIN: Domain = Domain::HalfEdge;
+    fn id(self) -> Id {
+        self.as_id()
+    }
+}
+
 /// Typed attribute key scoped by domain and name.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+///
+/// Keys are `Copy` for every value type: they hold only the domain and name.
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub struct AttrKey<T> {
     domain: Domain,
     name: &'static str,
     marker: PhantomData<fn() -> T>,
 }
+
+impl<T> Clone for AttrKey<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for AttrKey<T> {}
 
 impl<T> AttrKey<T> {
     /// Creates a new typed key.
@@ -159,6 +213,12 @@ impl<T: Clone> DenseLayer<T> {
         self.values.get(id.index() as usize)
     }
 
+    /// Returns the value new and cleared slots hold.
+    #[must_use]
+    pub fn default(&self) -> &T {
+        &self.default
+    }
+
     /// Sets value for a stable ID slot.
     ///
     /// Returns `true` when set succeeds.
@@ -215,15 +275,70 @@ impl<T> SparseLayer<T> {
     }
 }
 
+/// Value type of a stored attribute layer.
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub enum LayerKind {
+    /// `f32` values.
+    F32,
+    /// `[f32; 2]` values.
+    Vec2,
+    /// `[f32; 3]` values.
+    Vec3,
+    /// `[f32; 4]` values.
+    Vec4,
+    /// `u32` values.
+    U32,
+    /// `bool` values.
+    Bool,
+}
+
+/// One stored attribute value as canonical 32-bit words.
+///
+/// Float components are their bit patterns, `u32` is itself, and `bool` is
+/// `0` or `1`. Returned by [`Attributes::value_words`] for content
+/// fingerprints and other consumers that must read layers of any type.
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ValueWords {
+    kind: LayerKind,
+    words: [u32; 4],
+    len: u8,
+}
+
+impl ValueWords {
+    fn new(kind: LayerKind, value: &[u32]) -> Self {
+        let mut words = [0; 4];
+        words[..value.len()].copy_from_slice(value);
+        Self {
+            kind,
+            words,
+            len: u8::try_from(value.len()).expect("at most four words"),
+        }
+    }
+
+    /// Returns the layer's value kind.
+    #[must_use]
+    pub const fn kind(&self) -> LayerKind {
+        self.kind
+    }
+
+    /// Returns the value's words in component order.
+    #[must_use]
+    pub fn words(&self) -> &[u32] {
+        &self.words[..usize::from(self.len)]
+    }
+}
+
 /// Internal concrete storage variants used by [`Attributes`].
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub enum Layer {
+    DenseVec4(DenseLayer<[f32; 4]>),
     DenseVec3(DenseLayer<[f32; 3]>),
     DenseVec2(DenseLayer<[f32; 2]>),
     DenseF32(DenseLayer<f32>),
     DenseU32(DenseLayer<u32>),
     DenseBool(DenseLayer<bool>),
+    SparseVec4(SparseLayer<[f32; 4]>),
     SparseVec3(SparseLayer<[f32; 3]>),
     SparseVec2(SparseLayer<[f32; 2]>),
     SparseF32(SparseLayer<f32>),
@@ -248,6 +363,19 @@ pub trait LayerValue: Clone + 'static {
     fn sparse_ref(layer: &Layer) -> Option<&SparseLayer<Self>>;
     /// Downcasts a mutable sparse layer reference for this value type.
     fn sparse_mut(layer: &mut Layer) -> Option<&mut SparseLayer<Self>>;
+}
+
+impl Layer {
+    pub(crate) fn kind(&self) -> LayerKind {
+        match self {
+            Self::DenseF32(_) | Self::SparseF32(_) => LayerKind::F32,
+            Self::DenseVec2(_) | Self::SparseVec2(_) => LayerKind::Vec2,
+            Self::DenseVec3(_) | Self::SparseVec3(_) => LayerKind::Vec3,
+            Self::DenseVec4(_) | Self::SparseVec4(_) => LayerKind::Vec4,
+            Self::DenseU32(_) | Self::SparseU32(_) => LayerKind::U32,
+            Self::DenseBool(_) | Self::SparseBool(_) => LayerKind::Bool,
+        }
+    }
 }
 
 macro_rules! impl_layer_value {
@@ -292,6 +420,7 @@ macro_rules! impl_layer_value {
     };
 }
 
+impl_layer_value!([f32; 4], DenseVec4, SparseVec4);
 impl_layer_value!([f32; 3], DenseVec3, SparseVec3);
 impl_layer_value!([f32; 2], DenseVec2, SparseVec2);
 impl_layer_value!(f32, DenseF32, SparseF32);
@@ -319,13 +448,19 @@ pub struct Attributes {
 ///
 /// You receive this from [`Attributes::define_dense`] and
 /// [`Attributes::define_sparse`] when a requested `(domain, name)` cannot be
-/// registered with the provided type.
+/// registered with the provided type, and from
+/// [`Mesh::define_dense_layer`](crate::Mesh::define_dense_layer) and
+/// [`Mesh::define_sparse_layer`](crate::Mesh::define_sparse_layer) also
+/// for reserved keys.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AttrError {
     /// `(domain, name)` already exists with a different Rust value type.
     TypeMismatch,
     /// `(domain, name)` already exists with the same Rust value type.
     AlreadyExists,
+    /// `(domain, name)` is a built-in layer listed in
+    /// [`attr::RESERVED`](crate::attr::RESERVED), which owns its registration.
+    Reserved,
 }
 
 impl fmt::Display for AttrError {
@@ -333,6 +468,7 @@ impl fmt::Display for AttrError {
         let text = match self {
             Self::TypeMismatch => "attribute layer exists with different type",
             Self::AlreadyExists => "attribute layer already exists",
+            Self::Reserved => "attribute layer is reserved",
         };
         f.write_str(text)
     }
@@ -375,12 +511,14 @@ impl Attributes {
                 Domain::HalfEdge => half_edge,
             };
             match &mut entry.layer {
+                Layer::DenseVec4(layer) => layer.ensure_len(cap),
                 Layer::DenseVec3(layer) => layer.ensure_len(cap),
                 Layer::DenseVec2(layer) => layer.ensure_len(cap),
                 Layer::DenseF32(layer) => layer.ensure_len(cap),
                 Layer::DenseU32(layer) => layer.ensure_len(cap),
                 Layer::DenseBool(layer) => layer.ensure_len(cap),
-                Layer::SparseVec3(_)
+                Layer::SparseVec4(_)
+                | Layer::SparseVec3(_)
                 | Layer::SparseVec2(_)
                 | Layer::SparseF32(_)
                 | Layer::SparseU32(_)
@@ -476,7 +614,52 @@ impl Attributes {
         T::sparse_mut(&mut entry.layer)
     }
 
-    fn find_dense_entry(&self, domain: Domain, name: &'static str) -> Option<&Entry> {
+    /// Returns the value kind of the layer registered under `(domain, name)`.
+    #[must_use]
+    pub fn layer_kind(&self, domain: Domain, name: &str) -> Option<LayerKind> {
+        self.layer(domain, name).map(Layer::kind)
+    }
+
+    /// Returns the value stored at `id` in the layer registered under
+    /// `(domain, name)`, dense or sparse.
+    ///
+    /// Returns `None` when no such layer exists or a sparse layer holds no
+    /// value for `id`. A dense layer returns its value for any slot within its
+    /// capacity, including its default.
+    #[must_use]
+    pub fn value_words(&self, domain: Domain, name: &str, id: Id) -> Option<ValueWords> {
+        fn floats<const N: usize>(kind: LayerKind, v: Option<&[f32; N]>) -> Option<ValueWords> {
+            v.map(|v| ValueWords::new(kind, &v.map(f32::to_bits)))
+        }
+        let layer = self.layer(domain, name)?;
+        match layer {
+            Layer::DenseF32(l) => floats(LayerKind::F32, l.get(id).map(core::array::from_ref)),
+            Layer::SparseF32(l) => floats(LayerKind::F32, l.get(id).map(core::array::from_ref)),
+            Layer::DenseVec2(l) => floats(LayerKind::Vec2, l.get(id)),
+            Layer::SparseVec2(l) => floats(LayerKind::Vec2, l.get(id)),
+            Layer::DenseVec3(l) => floats(LayerKind::Vec3, l.get(id)),
+            Layer::SparseVec3(l) => floats(LayerKind::Vec3, l.get(id)),
+            Layer::DenseVec4(l) => floats(LayerKind::Vec4, l.get(id)),
+            Layer::SparseVec4(l) => floats(LayerKind::Vec4, l.get(id)),
+            Layer::DenseU32(l) => l.get(id).map(|v| ValueWords::new(LayerKind::U32, &[*v])),
+            Layer::SparseU32(l) => l.get(id).map(|v| ValueWords::new(LayerKind::U32, &[*v])),
+            Layer::DenseBool(l) => l
+                .get(id)
+                .map(|v| ValueWords::new(LayerKind::Bool, &[u32::from(*v)])),
+            Layer::SparseBool(l) => l
+                .get(id)
+                .map(|v| ValueWords::new(LayerKind::Bool, &[u32::from(*v)])),
+        }
+    }
+
+    /// Returns the layer registered under `(domain, name)`, dense or sparse.
+    pub(crate) fn layer(&self, domain: Domain, name: &str) -> Option<&Layer> {
+        self.find_dense_entry(domain, name)
+            .or_else(|| self.find_sparse_entry(domain, name))
+            .map(|entry| &entry.layer)
+    }
+
+    fn find_dense_entry(&self, domain: Domain, name: &str) -> Option<&Entry> {
         self.dense
             .iter()
             .find(|entry| entry.domain == domain && entry.name == name)
@@ -488,7 +671,7 @@ impl Attributes {
             .find(|entry| entry.domain == domain && entry.name == name)
     }
 
-    fn find_sparse_entry(&self, domain: Domain, name: &'static str) -> Option<&Entry> {
+    fn find_sparse_entry(&self, domain: Domain, name: &str) -> Option<&Entry> {
         self.sparse
             .iter()
             .find(|entry| entry.domain == domain && entry.name == name)
@@ -507,12 +690,14 @@ impl Attributes {
         for entry in &self.dense {
             let expected = self.domain_capacity(entry.domain);
             let actual = match &entry.layer {
+                Layer::DenseVec4(layer) => layer.len(),
                 Layer::DenseVec3(layer) => layer.len(),
                 Layer::DenseVec2(layer) => layer.len(),
                 Layer::DenseF32(layer) => layer.len(),
                 Layer::DenseU32(layer) => layer.len(),
                 Layer::DenseBool(layer) => layer.len(),
-                Layer::SparseVec3(_)
+                Layer::SparseVec4(_)
+                | Layer::SparseVec3(_)
                 | Layer::SparseVec2(_)
                 | Layer::SparseF32(_)
                 | Layer::SparseU32(_)
@@ -596,12 +781,14 @@ fn domain_map<'a>(
 
 fn compact_dense_layer(layer: &Layer, map: &[Option<Id>], len: usize) -> Layer {
     match layer {
+        Layer::DenseVec4(layer) => Layer::DenseVec4(compact_dense_values(layer, map, len)),
         Layer::DenseVec3(layer) => Layer::DenseVec3(compact_dense_values(layer, map, len)),
         Layer::DenseVec2(layer) => Layer::DenseVec2(compact_dense_values(layer, map, len)),
         Layer::DenseF32(layer) => Layer::DenseF32(compact_dense_values(layer, map, len)),
         Layer::DenseU32(layer) => Layer::DenseU32(compact_dense_values(layer, map, len)),
         Layer::DenseBool(layer) => Layer::DenseBool(compact_dense_values(layer, map, len)),
-        Layer::SparseVec3(_)
+        Layer::SparseVec4(_)
+        | Layer::SparseVec3(_)
         | Layer::SparseVec2(_)
         | Layer::SparseF32(_)
         | Layer::SparseU32(_)
@@ -629,12 +816,14 @@ fn compact_dense_values<T: Clone>(
 
 fn compact_sparse_layer(layer: &Layer, map: &[Option<Id>]) -> Layer {
     match layer {
+        Layer::SparseVec4(layer) => Layer::SparseVec4(compact_sparse_values(layer, map)),
         Layer::SparseVec3(layer) => Layer::SparseVec3(compact_sparse_values(layer, map)),
         Layer::SparseVec2(layer) => Layer::SparseVec2(compact_sparse_values(layer, map)),
         Layer::SparseF32(layer) => Layer::SparseF32(compact_sparse_values(layer, map)),
         Layer::SparseU32(layer) => Layer::SparseU32(compact_sparse_values(layer, map)),
         Layer::SparseBool(layer) => Layer::SparseBool(compact_sparse_values(layer, map)),
-        Layer::DenseVec3(_)
+        Layer::DenseVec4(_)
+        | Layer::DenseVec3(_)
         | Layer::DenseVec2(_)
         | Layer::DenseF32(_)
         | Layer::DenseU32(_)

@@ -40,6 +40,7 @@ pub(crate) enum FaceEdgeUse {
 }
 
 mod attrs;
+pub(crate) use attrs::AttributeWrite;
 mod bookkeeping;
 pub(crate) mod propagation;
 
