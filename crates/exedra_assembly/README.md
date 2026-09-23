@@ -83,6 +83,17 @@ until it writes them with `EXT_mesh_gpu_instancing`. Interchange carries
 sets as a `placement_sets` list.
 See [ADR-0003](docs/adr-0003-placement-scale.md).
 
+## Levels of detail
+
+`Assembly::set_part_lods(part, levels)` gives a part an ordered
+level-of-detail chain, finest first, with level 0 the part itself. Each
+`LodLevel` names a part, the smallest screen coverage at which it is drawn,
+and a crossfade band. Instances and placement sets of the part carry the
+chain; their bindings reach lower levels by slot name. `flatten` emits only
+level 0 by default; `FlattenOptions::default().with_lods(LodEmission::AllLevels)`
+emits every level, each tagged with a `LodTag`. See
+[ADR-0004](docs/adr-0004-level-of-detail.md).
+
 The crate accepts both recipe-backed and baked-mesh parts. It owns their
 placement and identity, not their geometry algorithms or rendering.
 

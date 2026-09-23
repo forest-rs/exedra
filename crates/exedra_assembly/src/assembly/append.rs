@@ -44,7 +44,8 @@ impl AppendMap {
 impl Assembly {
     /// Appends source instance trees under `parent`, or at the root when `None`.
     ///
-    /// Copies each referenced source part once, preserving sharing, slot order,
+    /// Copies each referenced source part once, with the lower levels of its
+    /// level-of-detail chain, preserving sharing, slot order,
     /// region mappings and default materials. Instance bindings and metadata are
     /// copied unchanged. Unreferenced part definitions are omitted. Existing
     /// destination parts are not interned or reused by this operation.
@@ -125,6 +126,14 @@ impl Assembly {
                 used[set.part.0 as usize] = true;
             }
         }
+        // A used part brings its lower levels of detail.
+        for (i, def) in source.parts.iter().enumerate() {
+            if used[i] {
+                for level in def.lods.iter().skip(1) {
+                    used[level.part.0 as usize] = true;
+                }
+            }
+        }
         let part_count = used.iter().filter(|v| **v).count();
         let instance_count = selected.iter().filter(|v| **v).count();
         let set_count = set_selected.iter().filter(|v| **v).count();
@@ -151,6 +160,11 @@ impl Assembly {
             copied.key = key;
             map.parts[i] = Some(id);
             parts.push(copied);
+        }
+        for copied in &mut parts {
+            for level in &mut copied.lods {
+                level.part = map.part(level.part).expect("lower levels are copied");
+            }
         }
         let mut instances: Vec<Instance> = Vec::with_capacity(instance_count);
         let mut roots = Vec::new();

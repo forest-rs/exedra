@@ -19,8 +19,9 @@
 //! pass and parents always precede children.
 //!
 //! Placement sets follow the instances, each naming its parent instance by
-//! index. Keys are validated as the [`Assembly`] API validates them, so a key
-//! containing `/` or `#` does not load.
+//! index, and parts carry their level-of-detail chains by part index. Keys
+//! are validated as the [`Assembly`] API validates them, so a key containing
+//! `/` or `#` does not load.
 
 #![cfg(feature = "serde")]
 
@@ -69,6 +70,20 @@ pub struct PartDto {
     /// Part-default material keys per slot.
     #[serde(default)]
     pub default_materials: Vec<SlotMaterialDto>,
+    /// Level-of-detail chain, finest first; empty when the part has none.
+    #[serde(default)]
+    pub lods: Vec<LodLevelDto>,
+}
+
+/// One level of a part's level-of-detail chain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LodLevelDto {
+    /// Index into `parts`.
+    pub part: u32,
+    /// Smallest screen coverage at which the level is drawn.
+    pub min_coverage: f32,
+    /// Fade band below `min_coverage`.
+    pub crossfade: f32,
 }
 
 /// The geometry source of a part.
@@ -241,6 +256,15 @@ pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
                     })
                     .collect(),
                 default_slot: def.default_slot().map(slot_name),
+                lods: def
+                    .lods()
+                    .iter()
+                    .map(|level| LodLevelDto {
+                        part: level.part.0,
+                        min_coverage: level.min_coverage,
+                        crossfade: level.crossfade,
+                    })
+                    .collect(),
                 default_materials: def
                     .default_materials()
                     .iter()
@@ -359,6 +383,23 @@ pub fn from_dto(dto: &AssemblyDto) -> Result<Assembly, AssemblyInterchangeError>
         for entry in &part.default_materials {
             assembly.set_part_material(id, &entry.slot, &entry.material)?;
         }
+    }
+    // Chains name parts by index, so they are set once every part exists.
+    for (index, part) in dto.parts.iter().enumerate() {
+        if part.lods.is_empty() {
+            continue;
+        }
+        let mut levels = Vec::with_capacity(part.lods.len());
+        for level in &part.lods {
+            if level.part as usize >= dto.parts.len() {
+                return Err(AssemblyInterchangeError::DanglingPart(level.part));
+            }
+            levels.push(
+                crate::assembly::LodLevel::new(PartId(level.part), level.min_coverage)
+                    .with_crossfade(level.crossfade),
+            );
+        }
+        assembly.set_part_lods(PartId(crate::len_u32(index)), levels)?;
     }
     for (index, inst) in dto.instances.iter().enumerate() {
         if let Some(part) = inst.part
