@@ -103,6 +103,7 @@ pub fn dump_recipe(recipe: &Recipe) -> String {
                 SurfaceChart::Loft {
                     reference_section,
                     rest_length,
+                    stations,
                     ..
                 } => {
                     let _ = write!(
@@ -110,6 +111,9 @@ pub fn dump_recipe(recipe: &Recipe) -> String {
                         "loft reference {reference_section} rest_length {} ",
                         hex(rest_length)
                     );
+                    if stations == crate::chart::LoftStations::DatumDistance {
+                        line.push_str("stations datum_distance ");
+                    }
                 }
                 SurfaceChart::Revolve {
                     reference_radius, ..
@@ -1048,6 +1052,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
         let mut reference_radius = 1.0;
         let mut reference_section = 0;
         let mut rest_length = 1.0;
+        let mut stations = crate::chart::LoftStations::SectionIndex;
         match metric {
             "revolve" => {
                 expect(&mut tokens, "radius", line)?;
@@ -1058,6 +1063,11 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 reference_section = next_u32(&mut tokens, line)?;
                 expect(&mut tokens, "rest_length", line)?;
                 rest_length = next_f64(&mut tokens, line)?;
+                if tokens.clone().next() == Some("stations") {
+                    tokens.next();
+                    expect(&mut tokens, "datum_distance", line)?;
+                    stations = crate::chart::LoftStations::DatumDistance;
+                }
             }
             "extrude" | "sweep" => {}
             _ => return Err(TextError::Malformed { line }),
@@ -1084,6 +1094,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             "loft" => SurfaceChart::Loft {
                 reference_section,
                 rest_length,
+                stations,
                 wall,
                 caps,
             },

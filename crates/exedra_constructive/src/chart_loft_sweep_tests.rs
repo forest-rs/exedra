@@ -12,6 +12,7 @@ fn loft(reference_section: u32, rest_length: f64) -> SurfaceChart {
     SurfaceChart::Loft {
         reference_section,
         rest_length,
+        stations: LoftStations::SectionIndex,
         wall: ChartTransform::IDENTITY,
         caps: ChartTransform::IDENTITY,
     }
@@ -555,5 +556,128 @@ fn reflected_retained_lofts_and_sweeps_preserve_rest_coordinates() {
                 );
             }
         }
+    }
+}
+
+fn distance_loft(rest_length: f64) -> SurfaceChart {
+    SurfaceChart::Loft {
+        reference_section: 0,
+        rest_length,
+        stations: LoftStations::DatumDistance,
+        wall: ChartTransform::IDENTITY,
+        caps: ChartTransform::IDENTITY,
+    }
+}
+
+#[test]
+fn distance_stations_follow_section_datum_spacing() {
+    let circle = builders::circle(1.0).unwrap();
+    let sections = [
+        (Placement3::IDENTITY, &circle),
+        (Placement3::translate(0.0, 0.0, 1.0), &circle),
+        (Placement3::translate(0.0, 0.0, 4.0), &circle),
+    ];
+    let policy = EvalPolicy::default();
+    let ruled = tessellate_loft_with_chart(
+        &sections,
+        LoftPolicy::Ruled,
+        CapMode::None,
+        distance_loft(8.0),
+        &policy,
+    )
+    .unwrap();
+    clean(&ruled);
+    let face = ruled.mesh.faces().next().unwrap();
+    // Index stations would give [0, 4, 8]; datum spacing is 1 : 3.
+    assert_eq!(
+        ruled
+            .source_map
+            .chart_sampling(face)
+            .unwrap()
+            .station_distances,
+        [0.0, 2.0, 8.0]
+    );
+    for face in ruled.mesh.faces() {
+        for (p, uv) in corners(&ruled, face) {
+            near(uv[1], p[2] * 2.0);
+        }
+    }
+
+    let smooth = tessellate_loft_with_chart(
+        &sections,
+        LoftPolicy::Smooth,
+        CapMode::None,
+        distance_loft(8.0),
+        &policy,
+    )
+    .unwrap();
+    clean(&smooth);
+    let face = smooth.mesh.faces().next().unwrap();
+    let stations = &smooth
+        .source_map
+        .chart_sampling(face)
+        .unwrap()
+        .station_distances;
+    assert_eq!(stations.first(), Some(&0.0));
+    assert_eq!(stations.last(), Some(&8.0));
+    assert!(stations.windows(2).all(|w| w[0] < w[1]));
+    assert!(
+        stations.contains(&2.0),
+        "authored sections keep their stations"
+    );
+    assert_wall_continuity(&smooth);
+}
+
+#[test]
+fn coincident_datums_are_refused_for_distance_stations() {
+    let small = builders::circle(1.0).unwrap();
+    let large = builders::circle(2.0).unwrap();
+    let sections = [
+        (Placement3::IDENTITY, &small),
+        (Placement3::IDENTITY, &large),
+        (Placement3::translate(0.0, 0.0, 1.0), &small),
+    ];
+    let policy = EvalPolicy::default();
+    assert_eq!(
+        tessellate_loft_with_chart(
+            &sections,
+            LoftPolicy::Ruled,
+            CapMode::None,
+            distance_loft(1.0),
+            &policy,
+        )
+        .err(),
+        Some(TessellateError::Chart(ChartError::CoincidentLoftDatums {
+            band: 0
+        }))
+    );
+}
+
+#[test]
+fn distance_stations_are_distinct_identity_that_roundtrips() {
+    let index = retained(loft(0, 2.0), false);
+    let distance = retained(
+        SurfaceChart::Loft {
+            reference_section: 0,
+            rest_length: 2.0,
+            stations: LoftStations::DatumDistance,
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        },
+        false,
+    );
+    assert_ne!(index.recipe_fingerprint(), distance.recipe_fingerprint());
+    let text = crate::text::dump_recipe(&distance);
+    assert!(text.contains("stations datum_distance"));
+    assert!(!crate::text::dump_recipe(&index).contains("stations"));
+    let parsed = crate::text::parse_recipe(&text).unwrap();
+    assert_eq!(parsed.recipe_fingerprint(), distance.recipe_fingerprint());
+    #[cfg(feature = "serde")]
+    {
+        let dto = crate::interchange::to_dto(&distance);
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"metric\":\"loft_distance\""));
+        let back = crate::interchange::from_dto(&dto).unwrap();
+        assert_eq!(back.recipe_fingerprint(), distance.recipe_fingerprint());
     }
 }

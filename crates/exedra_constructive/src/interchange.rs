@@ -33,7 +33,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use crate::chart::{ChartError, ChartTransform, SurfaceChart};
+use crate::chart::{ChartError, ChartTransform, LoftStations, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
     CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
@@ -216,6 +216,19 @@ pub enum SurfaceChartDto {
         /// Each cap's profile-plane transform.
         caps: ChartTransformDto,
     },
+    /// Explicit reference perimeter / authored rest length divided by the
+    /// chord length between section datums. A distinct metric, so older
+    /// readers refuse it rather than place sections uniformly.
+    LoftDistance {
+        /// Zero-based reference section.
+        reference_section: u32,
+        /// Finite positive longitudinal rest length in recipe units.
+        rest_length: f64,
+        /// Wall coordinate transform.
+        wall: ChartTransformDto,
+        /// Each cap's profile-plane transform.
+        caps: ChartTransformDto,
+    },
     /// Sampled profile distance / sampled centerline distance before placement.
     Sweep {
         /// Wall coordinate transform.
@@ -230,9 +243,22 @@ impl From<SurfaceChart> for SurfaceChartDto {
             SurfaceChart::Loft {
                 reference_section,
                 rest_length,
+                stations: LoftStations::SectionIndex,
                 wall,
                 caps,
             } => Self::Loft {
+                reference_section,
+                rest_length,
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+            SurfaceChart::Loft {
+                reference_section,
+                rest_length,
+                stations: LoftStations::DatumDistance,
+                wall,
+                caps,
+            } => Self::LoftDistance {
                 reference_section,
                 rest_length,
                 wall: wall.into(),
@@ -269,6 +295,19 @@ impl From<SurfaceChartDto> for SurfaceChart {
             } => Self::Loft {
                 reference_section,
                 rest_length,
+                stations: LoftStations::SectionIndex,
+                wall: wall.into(),
+                caps: caps.into(),
+            },
+            SurfaceChartDto::LoftDistance {
+                reference_section,
+                rest_length,
+                wall,
+                caps,
+            } => Self::Loft {
+                reference_section,
+                rest_length,
+                stations: LoftStations::DatumDistance,
                 wall: wall.into(),
                 caps: caps.into(),
             },

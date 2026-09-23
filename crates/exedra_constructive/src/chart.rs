@@ -198,15 +198,18 @@ pub enum SurfaceChart {
     ///
     /// Profile distance is measured along the jointly sampled reference section,
     /// in its own profile coordinates before placement. Corresponding points keep
-    /// this U coordinate throughout the loft. V advances uniformly with the
-    /// existing authored-section parameter, from zero to `rest_length`; smooth
-    /// intermediate samples interpolate that parameter. Uneven station spacing,
-    /// differing sections and draping deliberately stretch this rest chart.
+    /// this U coordinate throughout the loft. V runs from zero to `rest_length`,
+    /// placing each authored section by `stations`; smooth intermediate samples
+    /// interpolate between their bounding sections. Differing sections and
+    /// draping deliberately stretch this rest chart, as does uneven station
+    /// spacing under [`LoftStations::SectionIndex`].
     Loft {
         /// Explicit zero-based section whose sampled perimeter supplies U.
         reference_section: u32,
         /// Finite positive total rest length in recipe units, not measured span.
         rest_length: f64,
+        /// How authored sections divide `rest_length`.
+        stations: LoftStations,
         /// Wall mapping in reference-profile/longitudinal order.
         wall: ChartTransform,
         /// Mapping from each cap's own local profile `(x, y)` coordinates.
@@ -262,6 +265,23 @@ impl SurfaceChart {
     }
 }
 
+/// How a loft chart places its authored sections along `rest_length`.
+#[derive(Copy, Clone, Debug, Default, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LoftStations {
+    /// Uniformly by section index: section `i` of `n` sits at `i / (n - 1)`.
+    #[default]
+    SectionIndex,
+    /// In proportion to the chord length between consecutive section datums,
+    /// the profile origins after each section's placement.
+    ///
+    /// Measured on the placements the loft receives, so rigid and uniformly
+    /// scaled occurrences keep these ratios (up to rounding), while
+    /// nonuniform placements change them. Coincident consecutive datums give
+    /// a zero-length band and are refused.
+    DatumDistance,
+}
+
 /// Original chart metric and profile sampling, retained as surface ancestry.
 ///
 /// This describes the generating operation, not the metric after nonuniform
@@ -310,6 +330,12 @@ pub enum ChartError {
     },
     /// The generating operation does not match the requested chart metric.
     WrongOperation,
+    /// [`LoftStations::DatumDistance`] found two consecutive sections with
+    /// coincident datums.
+    CoincidentLoftDatums {
+        /// Zero-based band between sections `band` and `band + 1`.
+        band: u32,
+    },
     /// Coordinates exceeded the exact-predicate/f32 range, or rounding collapsed
     /// a distinct chart edge or changed a nondegenerate face triangle's winding.
     NumericLimit,
@@ -322,6 +348,13 @@ impl core::fmt::Display for ChartError {
                 "surface chart reference radius must be finite and positive"
             }
             Self::InvalidRestLength => "surface chart rest length must be finite and positive",
+            Self::CoincidentLoftDatums { band } => {
+                return write!(
+                    f,
+                    "loft sections {band} and {} have coincident datums",
+                    band + 1
+                );
+            }
             Self::InvalidReferenceSection { section } => {
                 return write!(
                     f,
