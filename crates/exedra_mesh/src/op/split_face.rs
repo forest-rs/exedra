@@ -162,6 +162,16 @@ pub fn split_face<S: ChangeSink>(
         .expect("new face must be live")
         .degree = new_face_degree;
 
+    // Dense layers must cover the new slots before any attribute is written:
+    // the new face may extend the face arena.
+    let vertex_slots = session.mesh().vertices.slot_count();
+    let face_slots = session.mesh().faces.slot_count();
+    let half_edge_slots = session.mesh().half_edges.slot_count();
+    session
+        .mesh_mut()
+        .attrs
+        .sync_capacities(vertex_slots, face_slots, half_edge_slots);
+
     if let Some(region_layer) = session.mesh_mut().attrs_mut().dense_mut(attr::FACE_REGION) {
         let region = region_layer.get(face.as_id()).copied().unwrap_or(0);
         let _ = region_layer.set(new_face.as_id(), region);
@@ -198,14 +208,6 @@ pub fn split_face<S: ChangeSink>(
     if diagonal_sharp > 0.0 {
         let _ = session.set_edge_sharpness_impl(diagonal_a_b, diagonal_sharp);
     }
-
-    let vertex_slots = session.mesh().vertices.slot_count();
-    let face_slots = session.mesh().faces.slot_count();
-    let half_edge_slots = session.mesh().half_edges.slot_count();
-    session
-        .mesh_mut()
-        .attrs
-        .sync_capacities(vertex_slots, face_slots, half_edge_slots);
 
     session.record_created_face(new_face);
     session.record_created_half_edge(diagonal_a_b);
