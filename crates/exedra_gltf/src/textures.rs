@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
+use crate::materials::TEXTURE_SLOTS;
 use crate::{GltfError, GltfStats, MaterialResolver, push_view};
 
 #[derive(Default)]
@@ -26,74 +27,78 @@ pub(crate) fn embed(
     let mut tables = TextureTables::default();
     let mut texture_indices = HashMap::new();
     let mut image_indices = HashMap::new();
+    // Resources resolve in first-use order: materials in emission order,
+    // then the fixed `TEXTURE_SLOTS` order within each material.
     for material in materials {
-        let Some(info) = material.pointer_mut("/pbrMetallicRoughness/baseColorTexture") else {
-            continue;
-        };
-        let source_index =
-            u32::try_from(info["index"].as_u64().expect("validated index")).expect("validated u32");
-        let index = if let Some(&index) = texture_indices.get(&source_index) {
-            index
-        } else {
-            let texture =
-                resolver
-                    .resolve_texture(source_index)
-                    .ok_or(GltfError::MissingTexture {
-                        index: source_index,
-                    })?;
-            let invalid = |field| GltfError::InvalidTexture {
-                index: source_index,
-                field,
+        for slot in TEXTURE_SLOTS {
+            let Some(info) = material.pointer_mut(slot.pointer) else {
+                continue;
             };
-            let signature_matches = match texture.mime_type {
-                "image/png" => texture.image.starts_with(b"\x89PNG\r\n\x1a\n"),
-                "image/jpeg" => texture.image.starts_with(b"\xff\xd8\xff"),
-                _ => return Err(invalid("mimeType")),
+            let source_index = u32::try_from(info["index"].as_u64().expect("validated index"))
+                .expect("validated u32");
+            let index = if let Some(&index) = texture_indices.get(&source_index) {
+                index
+            } else {
+                let texture =
+                    resolver
+                        .resolve_texture(source_index)
+                        .ok_or(GltfError::MissingTexture {
+                            index: source_index,
+                        })?;
+                let invalid = |field| GltfError::InvalidTexture {
+                    index: source_index,
+                    field,
+                };
+                let signature_matches = match texture.mime_type {
+                    "image/png" => texture.image.starts_with(b"\x89PNG\r\n\x1a\n"),
+                    "image/jpeg" => texture.image.starts_with(b"\xff\xd8\xff"),
+                    _ => return Err(invalid("mimeType")),
+                };
+                if !signature_matches {
+                    return Err(invalid("image"));
+                }
+                let sampler = texture
+                    .sampler
+                    .map(|sampler| {
+                        validate_sampler(&sampler).map_err(invalid)?;
+                        let index = tables
+                            .samplers
+                            .iter()
+                            .position(|s| *s == sampler)
+                            .unwrap_or_else(|| {
+                                tables.samplers.push(sampler);
+                                tables.samplers.len() - 1
+                            });
+                        Ok::<_, GltfError>(index)
+                    })
+                    .transpose()?;
+                let image = *image_indices
+                    .entry((texture.mime_type, texture.image))
+                    .or_insert_with(|| {
+                        let view = push_view(buffer, views, texture.image);
+                        tables
+                            .images
+                            .push(json!({"bufferView": view, "mimeType": texture.mime_type}));
+                        stats.image_bytes += texture.image.len() as u64;
+                        tables.images.len() - 1
+                    });
+                let mut value = json!({"source": image});
+                if let Some(sampler) = sampler {
+                    value["sampler"] = json!(sampler);
+                }
+                let index = tables
+                    .textures
+                    .iter()
+                    .position(|t| *t == value)
+                    .unwrap_or_else(|| {
+                        tables.textures.push(value);
+                        tables.textures.len() - 1
+                    });
+                texture_indices.insert(source_index, index);
+                index
             };
-            if !signature_matches {
-                return Err(invalid("image"));
-            }
-            let sampler = texture
-                .sampler
-                .map(|sampler| {
-                    validate_sampler(&sampler).map_err(invalid)?;
-                    let index = tables
-                        .samplers
-                        .iter()
-                        .position(|s| *s == sampler)
-                        .unwrap_or_else(|| {
-                            tables.samplers.push(sampler);
-                            tables.samplers.len() - 1
-                        });
-                    Ok::<_, GltfError>(index)
-                })
-                .transpose()?;
-            let image = *image_indices
-                .entry((texture.mime_type, texture.image))
-                .or_insert_with(|| {
-                    let view = push_view(buffer, views, texture.image);
-                    tables
-                        .images
-                        .push(json!({"bufferView": view, "mimeType": texture.mime_type}));
-                    stats.image_bytes += texture.image.len() as u64;
-                    tables.images.len() - 1
-                });
-            let mut value = json!({"source": image});
-            if let Some(sampler) = sampler {
-                value["sampler"] = json!(sampler);
-            }
-            let index = tables
-                .textures
-                .iter()
-                .position(|t| *t == value)
-                .unwrap_or_else(|| {
-                    tables.textures.push(value);
-                    tables.textures.len() - 1
-                });
-            texture_indices.insert(source_index, index);
-            index
-        };
-        info["index"] = json!(index);
+            info["index"] = json!(index);
+        }
     }
     stats.images = tables.images.len() as u64;
     stats.textures = tables.textures.len() as u64;

@@ -18,6 +18,8 @@
 //!   points produce deterministic preview colors derived from those keys;
 //! - compiled tangents export as `TANGENT`; other extracted streams export
 //!   through explicit [`GltfAttribute`] mappings in [`GltfExportOptions`];
+//! - materials may reference base-color, metallic-roughness, normal and
+//!   occlusion textures on any exported UV set (see [`MaterialResolver`]);
 //! - exact empty parts keep their identity without illegal zero-count meshes.
 //!   Geometry-free scenes omit buffers and the optional GLB BIN chunk;
 //! - mismatched compiled sources and error-level partial geometry are refused.
@@ -138,6 +140,10 @@ pub struct GltfStats {
     /// Mappings, per exported geometry, whose stream that geometry does not
     /// carry. The attribute is omitted from its primitives.
     pub missing_attribute_streams: u64,
+    /// Primitives whose material has a `normalTexture` but whose geometry
+    /// carries no `TANGENT`. Exported as is: glTF consumers then derive
+    /// MikkTSpace tangents themselves, which may not match the baker.
+    pub normal_maps_without_tangents: u64,
 }
 
 /// Coordinate-system handling for a glTF export.
@@ -209,10 +215,27 @@ pub enum GltfError {
         /// Rejected resource field.
         field: &'static str,
     },
-    /// A textured region contains missing or non-finite authored UVs.
+    /// A texture samples `TEXCOORD_0`, but its region contains missing or
+    /// non-finite authored UVs.
     MissingTextureCoordinates {
         /// Bound material key.
         material: String,
+        /// Assembly-local part.
+        part: u32,
+        /// Body within the part.
+        body: usize,
+        /// Geometric region within the body.
+        region: u32,
+    },
+    /// A material's texture samples `TEXCOORD_n` (`n >= 1`), but the
+    /// primitive's geometry exports no such attribute.
+    MissingTextureCoordinateSet {
+        /// Bound material key.
+        material: String,
+        /// The texture reference, for example `"normalTexture"`.
+        texture: &'static str,
+        /// The UV set the texture samples.
+        set: u32,
         /// Assembly-local part.
         part: u32,
         /// Body within the part.
@@ -328,6 +351,17 @@ impl std::fmt::Display for GltfError {
             } => write!(
                 f,
                 "material {material:?} requires authored UVs in part {part}, body {body}, region {region}"
+            ),
+            Self::MissingTextureCoordinateSet {
+                material,
+                texture,
+                set,
+                part,
+                body,
+                region,
+            } => write!(
+                f,
+                "material {material:?} {texture} samples TEXCOORD_{set}, which part {part}, body {body}, region {region} does not export"
             ),
             Self::MissingMaterial { key } => write!(f, "no material description for {key:?}"),
             Self::InvalidMaterial { key, field } => {
@@ -973,17 +1007,36 @@ fn emit_mesh(
                     *entry.insert(materials.len() - 1)
                 }
             };
-            if materials[index]
-                .pointer("/pbrMetallicRoughness/baseColorTexture")
-                .is_some()
-                && !source.has_uvs
-            {
-                return Err(GltfError::MissingTextureCoordinates {
-                    material: material.clone(),
-                    part: part.0,
-                    body: body_index,
-                    region: region.region,
-                });
+            let exports = |semantic: &str| geometry.extra.iter().any(|(s, _)| s == semantic);
+            for slot in materials::TEXTURE_SLOTS {
+                let Some(info) = materials[index].pointer(slot.pointer) else {
+                    continue;
+                };
+                match materials::tex_coord(info) {
+                    0 if !source.has_uvs => {
+                        return Err(GltfError::MissingTextureCoordinates {
+                            material: material.clone(),
+                            part: part.0,
+                            body: body_index,
+                            region: region.region,
+                        });
+                    }
+                    0 => {}
+                    set if !exports(&format!("TEXCOORD_{set}")) => {
+                        return Err(GltfError::MissingTextureCoordinateSet {
+                            material: material.clone(),
+                            texture: slot.field,
+                            set,
+                            part: part.0,
+                            body: body_index,
+                            region: region.region,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            if materials[index].get("normalTexture").is_some() && !exports("TANGENT") {
+                stats.normal_maps_without_tangents += 1;
             }
             primitive.insert("material".into(), json!(index));
         }

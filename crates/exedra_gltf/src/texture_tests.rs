@@ -276,13 +276,13 @@ fn rejects_missing_resources_invalid_encoding_and_sampler_fields() {
 }
 
 #[test]
-fn texture_info_refuses_missing_indices_other_sets_and_extensions() {
+fn texture_info_refuses_missing_indices_fractional_sets_and_extensions() {
     for info in [
         json!({}),
         json!({"index":-1}),
         json!({"index":1.5}),
         json!({"index":4294967296_u64}),
-        json!({"index":0,"texCoord":1}),
+        json!({"index":0,"texCoord":1.5}),
         json!({"index":0,"extensions":{}}),
     ] {
         assert!(
@@ -387,5 +387,221 @@ fn different_samplers_share_the_image_but_keep_distinct_textures() {
     assert_ne!(
         doc.json()["textures"][0]["sampler"],
         doc.json()["textures"][1]["sampler"]
+    );
+}
+
+/// Resolves one material using all four texture references; `normal_set`
+/// selects the UV set of the normal and occlusion maps.
+struct Layered {
+    normal_set: u32,
+    calls: RefCell<Vec<u32>>,
+}
+
+impl MaterialResolver for Layered {
+    fn resolve(&self, _key: &str) -> Option<Value> {
+        Some(json!({
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {"index": 5},
+                "metallicRoughnessTexture": {"index": 6}
+            },
+            "normalTexture": {"index": 7, "texCoord": self.normal_set, "scale": 0.5},
+            "occlusionTexture": {"index": 6, "texCoord": self.normal_set, "strength": 0.8}
+        }))
+    }
+    fn resolve_texture(&self, index: u32) -> Option<Texture<'_>> {
+        self.calls.borrow_mut().push(index);
+        Some(Texture {
+            image: PNG,
+            mime_type: "image/png",
+            sampler: None,
+        })
+    }
+}
+
+fn layered_assembly() -> Assembly {
+    layered_assembly_with_primary_uvs(3)
+}
+
+/// One textured triangle with `CORNER_UV1` authored on every corner and
+/// `primary_uvs` corners of authored `TEXCOORD_0`.
+fn layered_assembly_with_primary_uvs(primary_uvs: usize) -> Assembly {
+    let mut mesh = triangle(primary_uvs, [0.25, 0.5]);
+    let corners: Vec<_> = mesh.face_loop(mesh.faces().next().unwrap()).collect();
+    let mut edit = mesh.edit();
+    for (k, corner) in corners.into_iter().enumerate() {
+        op::set_attribute(
+            &mut edit,
+            exedra_mesh::attr::CORNER_UV1,
+            corner,
+            [k as f32, 1.0],
+        )
+        .unwrap();
+    }
+    let _: () = edit.finish();
+    let mut assembly = Assembly::new();
+    let part = assembly.add_baked_part("bark", mesh, &["surface"]).unwrap();
+    assembly.set_default_slot(part, "surface").unwrap();
+    assembly.set_part_material(part, "surface", "bark").unwrap();
+    assembly
+        .add_instance(None, "trunk", part, Placement3::IDENTITY)
+        .unwrap();
+    assembly
+}
+
+fn layered_policy(tangents: bool) -> CompilePolicy {
+    CompilePolicy {
+        attributes: vec![exedra_mesh::ExtractAttribute::new(
+            exedra_mesh::attr::CORNER_UV1,
+            [0.0, 0.0],
+        )],
+        tangents: tangents.then_some(exedra_mesh::TangentUv::Attribute(
+            exedra_mesh::attr::CORNER_UV1,
+        )),
+        ..CompilePolicy::default()
+    }
+}
+
+#[test]
+fn material_textures_round_trip_with_their_uv_sets() {
+    let assembly = layered_assembly();
+    let compiled = PartCompiler::new()
+        .compile_parts(&assembly, &layered_policy(true))
+        .unwrap();
+    let mappings = [GltfAttribute::tex_coord(exedra_mesh::attr::CORNER_UV1, 1)];
+    let options = GltfExportOptions::default().with_attributes(&mappings);
+    let resources = Layered {
+        normal_set: 1,
+        calls: RefCell::default(),
+    };
+    let export = export_glb_with_materials(&assembly, &compiled, &resources, options).unwrap();
+    // First use: base color, metallic-roughness, normal; occlusion reuses 6.
+    assert_eq!(*resources.calls.borrow(), [5, 6, 7]);
+    assert_eq!((export.stats.images, export.stats.textures), (1, 1));
+    assert_eq!(export.stats.normal_maps_without_tangents, 0);
+    let doc = GlbDocument::parse(&export.bytes).unwrap();
+    let material = &doc.json()["materials"][0];
+    assert_eq!(
+        material["normalTexture"],
+        json!({"index": 0, "texCoord": 1, "scale": 0.5})
+    );
+    assert_eq!(
+        material["occlusionTexture"],
+        json!({"index": 0, "texCoord": 1, "strength": 0.8})
+    );
+    assert_eq!(
+        material["pbrMetallicRoughness"]["metallicRoughnessTexture"],
+        json!({"index": 0})
+    );
+    let semantics = doc.attribute_semantics();
+    for semantic in ["TEXCOORD_0", "TEXCOORD_1", "TANGENT"] {
+        assert!(semantics.contains(&semantic), "{semantic} in {semantics:?}");
+    }
+    let repeat = export_glb_with_materials(&assembly, &compiled, &resources, options).unwrap();
+    assert_eq!(repeat.bytes, export.bytes);
+}
+
+#[test]
+fn textures_on_unexported_uv_sets_are_refused() {
+    let assembly = layered_assembly();
+    let compiled = PartCompiler::new()
+        .compile_parts(&assembly, &layered_policy(true))
+        .unwrap();
+    let resources = Layered {
+        normal_set: 1,
+        calls: RefCell::default(),
+    };
+    // The stream is compiled but not mapped, so no `TEXCOORD_1` exists.
+    assert_eq!(
+        export_glb_with_materials(
+            &assembly,
+            &compiled,
+            &resources,
+            GltfExportOptions::default()
+        )
+        .unwrap_err(),
+        GltfError::MissingTextureCoordinateSet {
+            material: "bark".into(),
+            texture: "normalTexture",
+            set: 1,
+            part: 0,
+            body: 0,
+            region: 0,
+        }
+    );
+}
+
+#[test]
+fn normal_maps_without_tangents_are_exported_and_counted() {
+    let assembly = layered_assembly();
+    let compiled = PartCompiler::new()
+        .compile_parts(&assembly, &layered_policy(false))
+        .unwrap();
+    let resources = Layered {
+        normal_set: 0,
+        calls: RefCell::default(),
+    };
+    let export = export_glb_with_materials(
+        &assembly,
+        &compiled,
+        &resources,
+        GltfExportOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(export.stats.normal_maps_without_tangents, 1);
+    let doc = GlbDocument::parse(&export.bytes).unwrap();
+    assert!(!doc.attribute_semantics().contains(&"TANGENT"));
+}
+
+/// Samples base color from `TEXCOORD_1` only.
+struct SecondaryBaseColor;
+
+impl MaterialResolver for SecondaryBaseColor {
+    fn resolve(&self, _key: &str) -> Option<Value> {
+        Some(json!({
+            "pbrMetallicRoughness": {"baseColorTexture": {"index": 2, "texCoord": 1}}
+        }))
+    }
+    fn resolve_texture(&self, _index: u32) -> Option<Texture<'_>> {
+        Some(Texture {
+            image: PNG,
+            mime_type: "image/png",
+            sampler: None,
+        })
+    }
+}
+
+#[test]
+fn base_color_can_sample_a_secondary_uv_set() {
+    // No authored `TEXCOORD_0`: set 1 alone satisfies a set-1 texture.
+    let assembly = layered_assembly_with_primary_uvs(0);
+    let compiled = PartCompiler::new()
+        .compile_parts(&assembly, &layered_policy(false))
+        .unwrap();
+    let mappings = [GltfAttribute::tex_coord(exedra_mesh::attr::CORNER_UV1, 1)];
+    let options = GltfExportOptions::default().with_attributes(&mappings);
+    let export =
+        export_glb_with_materials(&assembly, &compiled, &SecondaryBaseColor, options).unwrap();
+    let doc = GlbDocument::parse(&export.bytes).unwrap();
+    assert_eq!(
+        doc.json()["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"],
+        json!({"index": 0, "texCoord": 1})
+    );
+    assert!(doc.attribute_semantics().contains(&"TEXCOORD_1"));
+    assert_eq!(
+        export_glb_with_materials(
+            &assembly,
+            &compiled,
+            &SecondaryBaseColor,
+            GltfExportOptions::default()
+        )
+        .unwrap_err(),
+        GltfError::MissingTextureCoordinateSet {
+            material: "bark".into(),
+            texture: "pbrMetallicRoughness.baseColorTexture",
+            set: 1,
+            part: 0,
+            body: 0,
+            region: 0,
+        }
     );
 }
