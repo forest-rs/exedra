@@ -9,10 +9,18 @@
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 
+#[cfg(test)]
+mod attribute_tests;
+mod attributes;
 mod validate;
+pub use attributes::{
+    AttributeBuffer, AttributeKind, AttributeStream, AttributeValue, ExtractAttribute, StreamValue,
+};
 pub use validate::TriMeshGeometryError;
 
-use crate::attributes::SparseLayer;
+use attributes::BoundAttribute;
+
+use crate::attributes::{AttrKey, SparseLayer};
 use crate::{
     BoxPlane, CornerId, DEFAULT_BOX_NORMAL_EPSILON, DerivedCornerNormals, FaceId,
     FaceTriangulation, Mesh, NormalParams, NormalsSource, UvSource, VertexId, attr,
@@ -22,9 +30,9 @@ use crate::{
 /// Triangle mesh suitable for GPU upload.
 ///
 /// Produced by [`Mesh::to_trimesh`]. The buffers are parallel by
-/// render-vertex index: `positions[i]`, `uvs[i]`, and `normals[i]`
-/// describe vertex `i`, and `indices` references those vertices in
-/// triangle order.
+/// render-vertex index: `positions[i]`, `uvs[i]`, `normals[i]`, and value
+/// `i` of every stream in `attributes` describe vertex `i`, and `indices`
+/// references those vertices in triangle order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TriMesh {
     /// Triangle index buffer.
@@ -35,6 +43,23 @@ pub struct TriMesh {
     pub uvs: Vec<[f32; 2]>,
     /// Render-vertex normals.
     pub normals: Vec<[f32; 3]>,
+    /// Extra render-vertex streams, in [`ExtractParams::attributes`] order.
+    pub attributes: Vec<AttributeStream>,
+}
+
+impl TriMesh {
+    /// Returns the values extracted from the layer named by `key`.
+    ///
+    /// Matches both the key's domain and name. When a request list carried the
+    /// same layer twice, both streams hold identical values and the first is
+    /// returned.
+    #[must_use]
+    pub fn attribute<T>(&self, key: AttrKey<T>) -> Option<&AttributeBuffer> {
+        self.attributes
+            .iter()
+            .find(|stream| stream.domain == key.domain() && stream.name == key.name())
+            .map(|stream| &stream.values)
+    }
 }
 
 /// Extraction mode used by [`ExtractParams`].
@@ -62,7 +87,7 @@ pub enum ExtractMode {
 /// `normals` selects whether extraction uses derived geometry normals,
 /// authored corner overrides, or a hybrid of both. `uvs` selects what a
 /// corner without an authored UV emits: zero, or a box projection of its
-/// position.
+/// position. `attributes` lists further layers to emit as extra streams.
 ///
 /// # Example
 /// ```rust
@@ -77,7 +102,7 @@ pub enum ExtractMode {
 /// assert_eq!(params.face_triangulation, exedra_mesh::FaceTriangulation::Fan);
 /// assert_eq!(params.uvs, UvSource::CustomOnly);
 /// ```
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExtractParams {
     /// Extraction mode.
     pub mode: ExtractMode,
@@ -97,6 +122,12 @@ pub struct ExtractParams {
     /// without an authored UV emit `[0.0, 0.0]`. Projected UVs take part in
     /// render-vertex splitting exactly like authored ones.
     pub uvs: UvSource,
+    /// Attribute layers emitted as extra streams in
+    /// [`TriMesh::attributes`], in this order.
+    ///
+    /// Empty by default, which preserves the historical output exactly.
+    /// See [`ExtractAttribute`] for resolution and splitting rules.
+    pub attributes: Vec<ExtractAttribute>,
 }
 
 impl Default for ExtractParams {
@@ -107,11 +138,20 @@ impl Default for ExtractParams {
             normal_params: NormalParams::default(),
             face_triangulation: FaceTriangulation::Fan,
             uvs: UvSource::CustomOnly,
+            attributes: Vec::new(),
         }
     }
 }
 
 /// Deterministic extraction counters returned by [`Mesh::to_trimesh`].
+///
+/// `split_count` counts each render vertex created for a topology vertex that
+/// already had one. The per-cause counters (`uv_split_count`,
+/// `normal_split_count`, `attribute_split_count`) count that new render vertex
+/// under every cause whose values already vary at the vertex, not only the
+/// cause that forced this split. They can therefore sum to more than
+/// `split_count`, and carrying an attribute can raise `uv_split_count` at a
+/// vertex that also has UV seams.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExtractStats {
     /// Number of emitted triangles.
@@ -124,6 +164,14 @@ pub struct ExtractStats {
     pub uv_split_count: u64,
     /// Number of normal-driven render-vertex splits.
     pub normal_split_count: u64,
+    /// Number of render-vertex splits driven by a carried attribute value.
+    pub attribute_split_count: u64,
+    /// Number of carried attribute values, per render vertex and attribute,
+    /// that used [`ExtractAttribute::missing`] because the layer had no value.
+    pub attribute_fallback_count: u64,
+    /// Number of carried attributes with no layer of the requested value type.
+    /// Every value of such a stream is its missing value.
+    pub missing_attribute_layers: u64,
     /// Number of faces where [`FaceTriangulation::Robust`] fell back to the
     /// fan because the projected polygon was not simple. Always zero under
     /// [`FaceTriangulation::Fan`].
@@ -197,6 +245,8 @@ struct RenderVertexKey {
 struct VertexVariants {
     uv_bits: Vec<[u32; 2]>,
     normal_bits: Vec<[u32; 3]>,
+    /// Render vertices of this vertex; recorded only with carried attributes.
+    render_vertices: Vec<u32>,
 }
 
 impl VertexVariants {
@@ -228,8 +278,10 @@ impl Mesh {
     /// - render vertices appended on first encounter during traversal
     ///
     /// Render vertex splitting:
-    /// - keys are `(VertexId, corner_uv_bits, corner_normal_bits)`
-    /// - shared topology vertices split when corner UVs or corner normals differ
+    /// - keys are `(VertexId, corner_uv_bits, corner_normal_bits)` plus the
+    ///   bits of every carried [`ExtractParams::attributes`] value
+    /// - shared topology vertices split when corner UVs, corner normals, or
+    ///   carried values differ
     /// - the UV and normal of a corner are whatever [`ExtractParams::uvs`] and
     ///   [`ExtractParams::normals`] resolve for it, so projected UVs and
     ///   derived normals split exactly like authored ones
@@ -294,7 +346,7 @@ impl Mesh {
         }
         cache.entry = Some(CacheEntry {
             revision,
-            params: *params,
+            params: params.clone(),
             mesh: mesh.clone(),
             stats,
         });
@@ -323,14 +375,41 @@ impl Mesh {
             DerivedCornerNormals::default()
         };
 
+        let attributes: Vec<BoundAttribute<'_>> = params
+            .attributes
+            .iter()
+            .map(|request| BoundAttribute::bind(self, *request))
+            .collect();
         let inputs = CornerInputs {
             corner_uvs,
             normal_overrides,
             derived_normals: &derived_normals,
             normals: params.normals,
             uvs: params.uvs,
+            attributes: &attributes,
         };
-        let mut out = Emission::default();
+        let mut out = Emission {
+            mesh: TriMesh {
+                attributes: attributes
+                    .iter()
+                    .map(BoundAttribute::empty_stream)
+                    .collect(),
+                ..TriMesh::default()
+            },
+            stats: ExtractStats {
+                missing_attribute_layers: attributes
+                    .iter()
+                    .filter(|bound| !bound.is_bound())
+                    .count() as u64,
+                ..ExtractStats::default()
+            },
+            stride: params
+                .attributes
+                .iter()
+                .map(|request| request.kind().components())
+                .sum(),
+            ..Emission::default()
+        };
 
         for face in self.faces() {
             emit_face(self, face, params.face_triangulation, &inputs, &mut out);
@@ -352,15 +431,37 @@ struct CornerInputs<'a> {
     derived_normals: &'a DerivedCornerNormals,
     normals: NormalsSource,
     uvs: UvSource,
+    attributes: &'a [BoundAttribute<'a>],
 }
+
+/// Sentinel ending a [`Emission::next_same_key`] chain.
+const NO_RENDER_VERTEX: u32 = u32::MAX;
 
 /// Growing output of one extraction.
 #[derive(Debug, Default)]
 struct Emission {
     mesh: TriMesh,
     stats: ExtractStats,
+    /// First render vertex emitted for each `(vertex, uv, normal)` key.
     key_to_index: HashMap<RenderVertexKey, u32>,
     vertex_variants: HashMap<VertexId, VertexVariants>,
+    /// Total carried components per render vertex.
+    stride: usize,
+    /// Carried value bits, `stride` words per render vertex.
+    carried_bits: Vec<u32>,
+    /// Next render vertex sharing a key but differing in carried values.
+    next_same_key: Vec<u32>,
+    /// Scratch buffer for one corner's carried bits.
+    scratch: Vec<u32>,
+    /// Scratch flags: which carried attributes of the corner fell back.
+    scratch_fallbacks: Vec<bool>,
+}
+
+impl Emission {
+    fn carried(&self, index: u32) -> &[u32] {
+        let start = index as usize * self.stride;
+        &self.carried_bits[start..start + self.stride]
+    }
 }
 
 /// UV fallback resolved once per face for corners without an authored UV.
@@ -423,7 +524,7 @@ fn emit_face(
     }
     for triangle in triangles {
         for corner in triangle {
-            let index = resolve_render_vertex(source, corner, uv_fallback, inputs, out);
+            let index = resolve_render_vertex(source, face, corner, uv_fallback, inputs, out);
             out.mesh.indices.push(index);
         }
         out.stats.triangle_count = out.stats.triangle_count.saturating_add(1);
@@ -432,6 +533,7 @@ fn emit_face(
 
 fn resolve_render_vertex(
     source: &Mesh,
+    face: FaceId,
     corner: CornerId,
     uv_fallback: FaceUvFallback,
     inputs: &CornerInputs<'_>,
@@ -458,14 +560,38 @@ fn resolve_render_vertex(
         ],
     };
 
-    if let Some(&index) = out.key_to_index.get(&key) {
-        return index;
+    out.scratch.clear();
+    out.scratch_fallbacks.clear();
+    for bound in inputs.attributes {
+        let found = bound.push_corner_bits(corner, vertex, face, &mut out.scratch);
+        out.scratch_fallbacks.push(!found);
     }
 
+    // Render vertices sharing a key form a chain in emission order; the one
+    // whose carried bits match is reused. Without carried attributes every
+    // chain has one element, so output matches the historical keying.
+    let mut tail = None;
+    let mut cursor = out.key_to_index.get(&key).copied();
+    while let Some(index) = cursor {
+        if out.carried(index) == out.scratch.as_slice() {
+            return index;
+        }
+        tail = Some(index);
+        let next = out.next_same_key[index as usize];
+        cursor = (next != NO_RENDER_VERTEX).then_some(next);
+    }
+
+    let index =
+        u32::try_from(out.mesh.positions.len()).expect("render vertex index overflowed u32");
     let variants = out.vertex_variants.entry(vertex).or_default();
     let uv_split = variants.has_other_uv(key.uv_bits);
     let normal_split = variants.has_other_normal(key.normal_bits);
-    if uv_split || normal_split {
+    let attribute_split = out.stride > 0
+        && variants.render_vertices.iter().any(|&other| {
+            let start = other as usize * out.stride;
+            out.carried_bits[start..start + out.stride] != *out.scratch
+        });
+    if uv_split || normal_split || attribute_split {
         out.stats.split_count = out.stats.split_count.saturating_add(1);
         if uv_split {
             out.stats.uv_split_count = out.stats.uv_split_count.saturating_add(1);
@@ -473,15 +599,36 @@ fn resolve_render_vertex(
         if normal_split {
             out.stats.normal_split_count = out.stats.normal_split_count.saturating_add(1);
         }
+        if attribute_split {
+            out.stats.attribute_split_count = out.stats.attribute_split_count.saturating_add(1);
+        }
     }
     variants.record(key.uv_bits, key.normal_bits);
+    if out.stride > 0 {
+        variants.render_vertices.push(index);
+    }
 
-    let index =
-        u32::try_from(out.mesh.positions.len()).expect("render vertex index overflowed u32");
-    out.key_to_index.insert(key, index);
+    match tail {
+        Some(tail) => out.next_same_key[tail as usize] = index,
+        None => {
+            out.key_to_index.insert(key, index);
+        }
+    }
+    out.next_same_key.push(NO_RENDER_VERTEX);
     out.mesh.positions.push(position);
     out.mesh.uvs.push(uv);
     out.mesh.normals.push(normal);
+    let mut offset = 0;
+    for (stream, &fell_back) in out.mesh.attributes.iter_mut().zip(&out.scratch_fallbacks) {
+        let width = stream.values.kind().components();
+        attributes::push_stream_bits(stream, &out.scratch[offset..offset + width]);
+        offset += width;
+        if fell_back {
+            out.stats.attribute_fallback_count =
+                out.stats.attribute_fallback_count.saturating_add(1);
+        }
+    }
+    out.carried_bits.extend_from_slice(&out.scratch);
     index
 }
 
@@ -789,7 +936,7 @@ mod tests {
         assert_eq!(
             mesh.to_trimesh(&ExtractParams {
                 normals: NormalsSource::CustomOnly,
-                ..params
+                ..params.clone()
             }),
             authored
         );

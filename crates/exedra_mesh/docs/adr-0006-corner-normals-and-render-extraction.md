@@ -151,3 +151,75 @@ authored non-finite UV still disqualifies its range.
 
 **Out of scope.** Planar and cylindrical extraction policies, texture
 transforms in glTF, and any change to how authored UVs are read.
+
+## Amendment: carried attribute streams
+
+Render consumers need more per-vertex data than position, UV and normal: a
+second UV set, vertex colors, and caller-defined data such as wind pivots or
+provenance tags. `ExtractParams::attributes` lists attribute layers to emit
+as extra streams, and `TriMesh::attributes` returns them in that order,
+parallel to `positions`. Each `AttributeStream` records its source layer's
+domain and name, since one name in two domains names two layers;
+`TriMesh::attribute(key)` looks a stream up by `AttrKey`.
+
+- **Requests are typed and name their fallback.** `ExtractAttribute::new(key,
+  missing)` takes an `AttrKey<T>` for `f32`, `[f32; 2]`, `[f32; 3]`,
+  `[f32; 4]` or `u32`. Attribute layers gained `[f32; 4]` for this. The
+  layer may be dense or sparse. A corner reads the layer in the key's
+  domain: its own half-edge, its vertex, or its face.
+- **Fallbacks are counted, never silent.** A sparse gap emits the request's
+  `missing` value and counts in `ExtractStats::attribute_fallback_count`,
+  once per render vertex and attribute. A layer that is absent, or
+  registered under the same name with another type, is reported in
+  `missing_attribute_layers`; every value of that stream is `missing`.
+- **Carried values split render vertices** exactly like UVs and normals, by
+  bit pattern. `attribute_split_count` reports these splits, and
+  `split_count` still counts each split vertex once. Like the existing UV and
+  normal counters, a per-cause counter counts a new render vertex under every
+  cause whose values already vary at its vertex. Carrying an attribute can
+  therefore raise `uv_split_count` at a vertex that also has UV seams. The
+  fixed `(vertex, uv, normal)` key keeps its role. Render vertices that share
+  it but differ in carried bits form a chain in emission order, and a corner
+  reuses the chain entry whose bits match. Carried values therefore never
+  change traversal or emission order. With no requests (or uniform values),
+  the buffers are byte-identical to earlier versions.
+- **Requests are identity.** `ExtractParams` and `exedra_assembly`'s
+  `CompilePolicy` are `Clone`, no longer `Copy`. `TrimeshCache` compares the
+  request list, with `AttributeValue` equality by bit pattern, and
+  `CompilePolicy::attributes` joins `policy_fingerprint` (prefix
+  `assembly-compile-v3`), including each request's missing value.
+  `CompiledBody::extraction` keeps each body's `ExtractStats`, and
+  `CompileCounters` sums the attribute fallbacks and missing layers of
+  cache-miss compilations, so assembly users see them too.
+- **Carried layers are content.** A baked part's fingerprint now covers every
+  caller-defined layer: its domain, name, kind, and per-element values with
+  presence (prefix `baked-mesh-v3`). Otherwise two meshes differing only in,
+  say, vertex colors would share a compiled body. `Attributes::layer_kind`
+  and `Attributes::value_words` read any layer as canonical 32-bit words for
+  such fingerprints, and `attr::is_reserved` is public.
+- **Registration changes output.** `Mesh::define_dense_layer` and
+  `Mesh::define_sparse_layer` now advance the revision. They write no values
+  and mark nothing dirty, but a carried request resolves differently once a
+  layer exists, so revision-pinned caches must not reuse earlier output. Both
+  refuse built-in keys with dedicated operations and invariants
+  (`attr::RESERVED`, `AttrError::Reserved`).
+- **Authoring goes through edit scopes.** `op::set_attribute` and
+  `op::clear_attribute` write caller-defined layers. The element handle's
+  type (`AttributeElement`: `VertexId`, `FaceId`, `HalfEdgeId`) must match the
+  key's domain, so a mismatched ID is a `DomainMismatch` error rather than
+  whichever element shares its slot. They check liveness, mark the element
+  dirty in its domain, and refuse reserved keys. Half-edge keys accept
+  boundary half-edges, as `op::set_corner_uv` does; extraction reads only
+  face corners. `attr::CORNER_UV1` and `attr::CORNER_COLOR` (linear,
+  straight-alpha RGBA) are conventional keys written through these
+  operations.
+
+**Out of scope.**
+
+- Edit kernels and mesh operations propagate only the built-in layers;
+  caller-defined layers are not yet carried through splits, collapses, face
+  edits or Booleans.
+- Constructive recipes refuse imported meshes carrying caller-defined layers,
+  so carried streams are end to end only for baked assembly parts. On recipe
+  parts they resolve to the missing value and are counted.
+- Tangent generation and glTF export of the streams are separate steps.

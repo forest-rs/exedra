@@ -26,7 +26,11 @@ use alloc::vec::Vec;
 use exedra_constructive::EVAL_SCHEMA_VERSION;
 use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
-use exedra_mesh::{ExtractParams, FaceTriangulation, NormalsSource, TriMesh, UvSource};
+use exedra_mesh::attributes::Domain;
+use exedra_mesh::{
+    AttributeValue, ExtractAttribute, ExtractParams, ExtractStats, FaceTriangulation,
+    NormalsSource, TriMesh, UvSource,
+};
 pub use exedra_mesh_ops::measure::{SignedVolume, VolumeError};
 use hashbrown::HashMap;
 use invalidation::{Channel, InvalidationSet};
@@ -52,9 +56,10 @@ const PARTS_CHANNEL: Channel = Channel::new(0);
 /// Defaults to derived normals and authored-only UVs. Select
 /// [`NormalsSource::CustomOrDerived`] to preserve authored corner normals and
 /// derive any missing overrides; select [`UvSource::CustomOrBoxProjected`] to
-/// box-project every corner that has no authored UV. Every output-affecting
-/// setting participates in [`policy_fingerprint`].
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+/// box-project every corner that has no authored UV. List extra layers in
+/// [`Self::attributes`] to carry them into compiled bodies. Every
+/// output-affecting setting participates in [`policy_fingerprint`].
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompilePolicy {
     /// Constructive evaluation settings; baked parts skip evaluation.
     pub evaluation: EvalPolicy,
@@ -72,6 +77,9 @@ pub struct CompilePolicy {
     /// on the face's dominant-axis plane and count toward coverage whenever
     /// the emitted coordinates are finite. Authored UVs are never overwritten.
     pub uvs: UvSource,
+    /// Attribute layers emitted as extra streams on every compiled body, in
+    /// this order. See [`ExtractAttribute`] for resolution and splitting.
+    pub attributes: Vec<ExtractAttribute>,
 }
 
 impl From<EvalPolicy> for CompilePolicy {
@@ -96,13 +104,14 @@ pub struct PolicyFingerprint(pub u64);
 /// Computes the policy fingerprint for `policy`.
 ///
 /// Combines the constructive policy fingerprint with the normal and UV
-/// sources. Constructive evaluation owns fingerprinting its settings,
-/// including refinement budgets and [`EVAL_SCHEMA_VERSION`]. The prefix
-/// advanced to `v2` when the UV source joined the identity, so fingerprints
-/// persisted from earlier versions never collide with current ones.
+/// sources and the carried attributes. Constructive evaluation owns
+/// fingerprinting its settings, including refinement budgets and
+/// [`EVAL_SCHEMA_VERSION`]. The prefix advanced to `v3` when carried
+/// attributes joined the identity, so fingerprints persisted from earlier
+/// versions never collide with current ones.
 #[must_use]
 pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v2"[..]);
+    let mut bytes = Vec::from(&b"assembly-compile-v3"[..]);
     bytes.extend_from_slice(
         &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
     );
@@ -116,6 +125,30 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
         UvSource::CustomOrBoxProjected { scale } => {
             bytes.push(1);
             bytes.extend_from_slice(&scale.to_bits().to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&(policy.attributes.len() as u64).to_le_bytes());
+    for attribute in &policy.attributes {
+        bytes.push(match attribute.domain() {
+            Domain::Vertex => 0,
+            Domain::Face => 1,
+            Domain::HalfEdge => 2,
+        });
+        let name = attribute.name().as_bytes();
+        bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(name);
+        let mut push = |tag: u8, words: &[u32]| {
+            bytes.push(tag);
+            for word in words {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+        };
+        match attribute.missing() {
+            AttributeValue::F32(v) => push(0, &[v.to_bits()]),
+            AttributeValue::Vec2(v) => push(1, &v.map(f32::to_bits)),
+            AttributeValue::Vec3(v) => push(2, &v.map(f32::to_bits)),
+            AttributeValue::Vec4(v) => push(3, &v.map(f32::to_bits)),
+            AttributeValue::U32(v) => push(4, &[v]),
         }
     }
     let h = fnv128(&bytes);
@@ -162,6 +195,9 @@ pub struct CompiledBody {
     pub tri: TriMesh,
     /// Contiguous region/slot ranges covering the whole index buffer.
     pub regions: Vec<RegionRange>,
+    /// Counters from extracting this body, including carried-attribute
+    /// fallbacks and missing layers.
+    pub extraction: ExtractStats,
 }
 
 impl CompiledBody {
@@ -200,6 +236,7 @@ impl CompiledBody {
     ///         ..TriMesh::default()
     ///     },
     ///     regions: vec![],
+    ///     extraction: Default::default(),
     /// };
     /// let bounds = body.bounds().expect("two emitted positions");
     /// assert_eq!(bounds.min, [-2.0, 1.0, -1.0]);
@@ -276,6 +313,13 @@ pub struct CompileCounters {
     pub cache_evictions: u64,
     /// Triangles emitted by cache-miss compilations.
     pub triangles_emitted: u64,
+    /// Carried attribute values that used their missing value, summed over
+    /// cache-miss compilations ([`ExtractStats::attribute_fallback_count`]).
+    pub attribute_fallbacks: u64,
+    /// Carried attributes with no layer of the requested type, summed per
+    /// body over cache-miss compilations
+    /// ([`ExtractStats::missing_attribute_layers`]).
+    pub missing_attribute_layers: u64,
 }
 
 /// Typed compilation failure.
@@ -529,6 +573,10 @@ impl PartCompiler {
             };
             self.counters.parts_compiled += 1;
             self.counters.triangles_emitted += compiled.part.triangle_count();
+            for body in &compiled.part.bodies {
+                self.counters.attribute_fallbacks += body.extraction.attribute_fallback_count;
+                self.counters.missing_attribute_layers += body.extraction.missing_attribute_layers;
+            }
             self.cache.insert(key, compiled.clone());
             if retain {
                 evaluated.push(compiled.evaluated.expect("retained compilation"));
@@ -643,9 +691,10 @@ fn compile_body(
         normals: policy.normals,
         uvs: policy.uvs,
         face_triangulation: FaceTriangulation::Robust,
+        attributes: policy.attributes.clone(),
         ..ExtractParams::default()
     };
-    let (tri, _stats) = mesh.to_trimesh(&params);
+    let (tri, extraction) = mesh.to_trimesh(&params);
     // Per-triangle regions in extraction order: to_trimesh emits faces in
     // face-id order, so per-face triangle counts line up exactly.
     let regions_layer = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
@@ -719,6 +768,7 @@ fn compile_body(
     CompiledBody {
         tri: TriMesh { indices, ..tri },
         regions,
+        extraction,
     }
 }
 
@@ -727,7 +777,7 @@ fn compile_body(
 fn baked_mesh_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
-    bytes.extend_from_slice(b"baked-mesh-v2");
+    bytes.extend_from_slice(b"baked-mesh-v3");
     bytes.extend_from_slice(&crate::len_u32(mesh.vertices().count()).to_le_bytes());
     for vertex in mesh.vertices() {
         // Face loops reference slot indices, which need not be contiguous.
@@ -785,7 +835,59 @@ fn baked_mesh_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
             });
         }
     }
+    put_custom_layers(&mut bytes, mesh);
     PartFingerprint(fnv128(&bytes))
+}
+
+/// Appends every caller-defined layer: carried attribute streams read them, so
+/// they are compiled content. Layers are ordered by domain and name; values
+/// follow live elements in slot order, each with a presence byte so dense
+/// defaults and sparse gaps stay distinct.
+fn put_custom_layers(bytes: &mut Vec<u8>, mesh: &exedra_mesh::Mesh) {
+    use exedra_mesh::attributes::{Domain, LayerKind};
+    let domain_tag = |domain: Domain| match domain {
+        Domain::Vertex => 0_u8,
+        Domain::Face => 1,
+        Domain::HalfEdge => 2,
+    };
+    let mut keys: Vec<_> = mesh
+        .attrs()
+        .keys()
+        .filter(|(domain, name)| !exedra_mesh::attr::is_reserved(*domain, name))
+        .collect();
+    keys.sort_by_key(|(domain, name)| (domain_tag(*domain), *name));
+    bytes.extend_from_slice(&crate::len_u32(keys.len()).to_le_bytes());
+    for (domain, name) in keys {
+        bytes.push(domain_tag(domain));
+        bytes.extend_from_slice(&crate::len_u32(name.len()).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(match mesh.attrs().layer_kind(domain, name) {
+            Some(LayerKind::F32) => 0,
+            Some(LayerKind::Vec2) => 1,
+            Some(LayerKind::Vec3) => 2,
+            Some(LayerKind::Vec4) => 3,
+            Some(LayerKind::U32) => 4,
+            Some(LayerKind::Bool) => 5,
+            None => 6,
+        });
+        let ids: Vec<exedra_mesh::Id> = match domain {
+            Domain::Vertex => mesh.vertices().map(|v| v.as_id()).collect(),
+            Domain::Face => mesh.faces().map(|f| f.as_id()).collect(),
+            Domain::HalfEdge => mesh.half_edges().map(|h| h.as_id()).collect(),
+        };
+        for id in ids {
+            bytes.extend_from_slice(&id.index().to_le_bytes());
+            match mesh.attrs().value_words(domain, name, id) {
+                Some(value) => {
+                    bytes.push(1);
+                    for word in value.words() {
+                        bytes.extend_from_slice(&word.to_le_bytes());
+                    }
+                }
+                None => bytes.push(0),
+            }
+        }
+    }
 }
 
 fn put_optional_floats<const N: usize>(bytes: &mut Vec<u8>, values: Option<[f32; N]>) {
@@ -1139,8 +1241,43 @@ mod tests {
         let empty = CompiledBody {
             tri: TriMesh::default(),
             regions: Vec::new(),
+            extraction: ExtractStats::default(),
         };
         assert_eq!(empty.bounds(), None);
+    }
+
+    #[test]
+    fn carried_attributes_on_recipe_parts_are_reported_missing() {
+        // Constructive evaluation does not carry caller-defined layers yet,
+        // so a request resolves to its missing value and is counted.
+        let mut asm = Assembly::new();
+        let part = asm.add_recipe_part("panel", prism_recipe(40.0)).unwrap();
+        let mut compiler = PartCompiler::new();
+        let policy = CompilePolicy {
+            attributes: alloc::vec![ExtractAttribute::new(
+                exedra_mesh::attr::CORNER_COLOR,
+                [1.0; 4]
+            )],
+            ..CompilePolicy::default()
+        };
+        let compiled = compiler.compile_parts(&asm, &policy).unwrap();
+        let body = &compiled.part(part).unwrap().bodies[0];
+        assert_eq!(body.extraction.missing_attribute_layers, 1);
+        assert_eq!(
+            body.extraction.attribute_fallback_count,
+            body.tri.positions.len() as u64
+        );
+        assert_eq!(compiler.counters().missing_attribute_layers, 1);
+        assert_eq!(
+            compiler.counters().attribute_fallbacks,
+            body.tri.positions.len() as u64
+        );
+        let _ = compiler.compile_parts(&asm, &policy).unwrap();
+        assert_eq!(
+            compiler.counters().missing_attribute_layers,
+            1,
+            "cache hits add nothing"
+        );
     }
 
     #[test]

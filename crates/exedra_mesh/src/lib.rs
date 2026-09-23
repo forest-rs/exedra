@@ -131,7 +131,8 @@ pub use mesh::{
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
 pub use render::{
-    ExtractMode, ExtractParams, ExtractStats, TriMesh, TriMeshGeometryError, TrimeshCache,
+    AttributeBuffer, AttributeKind, AttributeStream, AttributeValue, ExtractAttribute, ExtractMode,
+    ExtractParams, ExtractStats, StreamValue, TriMesh, TriMeshGeometryError, TrimeshCache,
 };
 pub use session::{
     ChangeSet, ChangeSetBuilder, ChangeSink, DeletePolicy, DirtySet, DiscardChanges,

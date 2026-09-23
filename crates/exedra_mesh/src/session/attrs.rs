@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use crate::attributes::{AttrKey, Domain, LayerValue};
 
 impl<S: ChangeSink> EditSession<'_, S> {
     /// Returns an immutable view of the mesh being edited.
@@ -170,5 +171,92 @@ impl<S: ChangeSink> EditSession<'_, S> {
             self.sink.mark_corner_dirty(twin);
         }
         updated
+    }
+}
+
+/// Outcome of a generic attribute write, mapped to public errors by the ops.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AttributeWrite {
+    Written,
+    NotLive,
+    Reserved,
+    TypeMismatch,
+}
+
+impl<S: ChangeSink> EditSession<'_, S> {
+    /// True when `id` is live in `domain`. Half-edges include boundary
+    /// (OUTSIDE-face) half-edges, matching [`Self::set_corner_uv_impl`].
+    fn element_live(&self, domain: Domain, id: Id) -> bool {
+        match domain {
+            Domain::Vertex => self.mesh.vertices.get(id).is_some(),
+            Domain::Face => self.mesh.faces.get(id).is_some(),
+            Domain::HalfEdge => self.mesh.half_edges.get(id).is_some(),
+        }
+    }
+
+    fn mark_element_dirty(&mut self, domain: Domain, id: Id) {
+        match domain {
+            Domain::Vertex => self.sink.mark_vertex_dirty(VertexId::from(id)),
+            Domain::Face => self.sink.mark_face_dirty(FaceId::from(id)),
+            Domain::HalfEdge => self.sink.mark_corner_dirty(CornerId::from(id)),
+        }
+    }
+
+    pub(crate) fn set_attribute_impl<T: LayerValue>(
+        &mut self,
+        key: AttrKey<T>,
+        id: Id,
+        value: T,
+    ) -> AttributeWrite {
+        if attr::is_reserved(key.domain(), key.name()) {
+            return AttributeWrite::Reserved;
+        }
+        if !self.element_live(key.domain(), id) {
+            return AttributeWrite::NotLive;
+        }
+        let attrs = self.mesh.attrs_mut();
+        if let Some(layer) = attrs.dense_mut(key) {
+            let set = layer.set(id, value);
+            debug_assert!(set, "dense layer must cover every live slot");
+        } else if let Some(layer) = attrs.sparse_mut(key) {
+            layer.set(id, value);
+        } else if attrs.define_sparse(key).is_ok() {
+            attrs
+                .sparse_mut(key)
+                .expect("sparse layer was just defined")
+                .set(id, value);
+        } else {
+            return AttributeWrite::TypeMismatch;
+        }
+        self.mark_element_dirty(key.domain(), id);
+        AttributeWrite::Written
+    }
+
+    pub(crate) fn clear_attribute_impl<T: LayerValue>(
+        &mut self,
+        key: AttrKey<T>,
+        id: Id,
+    ) -> AttributeWrite {
+        if attr::is_reserved(key.domain(), key.name()) {
+            return AttributeWrite::Reserved;
+        }
+        if !self.element_live(key.domain(), id) {
+            return AttributeWrite::NotLive;
+        }
+        let attrs = self.mesh.attrs_mut();
+        if let Some(layer) = attrs.dense_mut(key) {
+            let default = layer.default().clone();
+            let set = layer.set(id, default);
+            debug_assert!(set, "dense layer must cover every live slot");
+        } else if let Some(layer) = attrs.sparse_mut(key) {
+            let _ = layer.remove(id);
+        } else if attrs.layer(key.domain(), key.name()).is_some() {
+            return AttributeWrite::TypeMismatch;
+        } else {
+            // No layer means no value to clear.
+            return AttributeWrite::Written;
+        }
+        self.mark_element_dirty(key.domain(), id);
+        AttributeWrite::Written
     }
 }
