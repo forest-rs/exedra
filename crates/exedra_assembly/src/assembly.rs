@@ -23,7 +23,7 @@ mod lod;
 mod placement_set;
 mod siblings;
 pub use append::AppendMap;
-pub use lod::LodLevel;
+pub use lod::{LodLevel, Occurrence};
 pub use placement_set::{PlacementPath, PlacementSet, PlacementSetId};
 
 use siblings::{Records, Sibling, SiblingIndex};
