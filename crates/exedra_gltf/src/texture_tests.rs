@@ -276,14 +276,14 @@ fn rejects_missing_resources_invalid_encoding_and_sampler_fields() {
 }
 
 #[test]
-fn texture_info_refuses_missing_indices_fractional_sets_and_extensions() {
+fn texture_info_refuses_missing_indices_fractional_sets_and_unlisted_extensions() {
     for info in [
         json!({}),
         json!({"index":-1}),
         json!({"index":1.5}),
         json!({"index":4294967296_u64}),
         json!({"index":0,"texCoord":1.5}),
-        json!({"index":0,"extensions":{}}),
+        json!({"index":0,"extensions":{"KHR_texture_basisu":{}}}),
     ] {
         assert!(
             materials::validate(

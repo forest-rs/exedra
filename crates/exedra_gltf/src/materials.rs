@@ -30,10 +30,43 @@ use serde_json::Value;
 /// [`GltfExportOptions::attributes`](crate::GltfExportOptions::attributes)).
 /// Both are checked per primitive; set `n >= 1` is checked for export, not for
 /// authored coverage. Integer fields such as `index` and `texCoord` must be
-/// JSON integers: `1.0` is refused. Other texture fields, extensions, and
-/// unknown fields are rejected, so spelling mistakes cannot silently lose
-/// intent. Colors must use glTF's linear factor convention; see
-/// [`Texture::image`] for each texture's encoding and channels.
+/// JSON integers: `1.0` is refused. Colors must use glTF's linear factor
+/// convention; see [`Texture::image`] for each texture's encoding and
+/// channels.
+///
+/// Material `extensions` may use this allowlist, each validated against its
+/// Khronos specification, with its textures resolved and checked like core
+/// textures:
+///
+/// - `KHR_materials_diffuse_transmission`: `diffuseTransmissionFactor`,
+///   `diffuseTransmissionTexture` (A), `diffuseTransmissionColorFactor`,
+///   `diffuseTransmissionColorTexture` (sRGB RGB);
+/// - `KHR_materials_transmission`: `transmissionFactor`,
+///   `transmissionTexture` (R);
+/// - `KHR_materials_volume`: `thicknessFactor`, `thicknessTexture` (G),
+///   `attenuationDistance`, `attenuationColor`. It needs a transmission
+///   extension on the same material, which glTF requires for it to have any
+///   effect, so a lone volume is refused;
+/// - `KHR_materials_ior`: `ior` (`0` or at least `1`);
+/// - `KHR_materials_specular`: `specularFactor`, `specularTexture` (A),
+///   `specularColorFactor`, `specularColorTexture` (sRGB RGB);
+/// - `KHR_materials_clearcoat`: `clearcoatFactor`, `clearcoatTexture` (R),
+///   `clearcoatRoughnessFactor`, `clearcoatRoughnessTexture` (G),
+///   `clearcoatNormalTexture` (with `scale`);
+/// - `KHR_materials_sheen`: `sheenColorFactor`, `sheenColorTexture` (sRGB
+///   RGB), `sheenRoughnessFactor`, `sheenRoughnessTexture` (A);
+/// - `KHR_materials_emissive_strength`: `emissiveStrength`.
+///
+/// Every texture reference, core or extension, may carry
+/// `extensions.KHR_texture_transform` (`offset`, `rotation`, `scale`,
+/// `texCoord`); its `texCoord` overrides the reference's own for viewers that
+/// support the extension, and both sets must be exported. Exedra
+/// defines no material model: projecting a richer model such as `OpenPBR` onto
+/// these extensions is the caller's conversion. Other extensions, texture
+/// fields, and unknown fields are rejected, so spelling mistakes cannot
+/// silently lose intent. Used extensions are listed in `extensionsUsed` and
+/// none are required; see
+/// [`GltfExportOptions::require_texture_transform`](crate::GltfExportOptions::require_texture_transform).
 ///
 /// Closures implement this trait:
 ///
@@ -80,6 +113,12 @@ pub struct Texture<'a> {
     /// - occlusion: linear, read from R (so an ORM image packs occlusion,
     ///   roughness and metalness into R, G and B);
     /// - normal: linear tangent-space XYZ in RGB, +Y up (OpenGL convention).
+    ///
+    /// Extension textures follow the same rule: color textures
+    /// (`diffuseTransmissionColorTexture`, `specularColorTexture`,
+    /// `sheenColorTexture`) are sRGB, every other one is linear and reads the
+    /// channel listed on [`MaterialResolver`]; `clearcoatNormalTexture` is a
+    /// normal map like `normalTexture`.
     pub image: &'a [u8],
     /// `image/png` or `image/jpeg`, matching the encoded image.
     pub mime_type: &'a str,
@@ -109,8 +148,10 @@ pub(crate) struct TextureSlot {
     extra: Option<ExtraField>,
 }
 
-/// Supported texture references, in the fixed order resources are resolved.
-pub(crate) const TEXTURE_SLOTS: [TextureSlot; 4] = [
+/// Supported texture references, in the fixed order resources are resolved:
+/// the core slots, then each allowlisted extension's slots in declaration
+/// order.
+pub(crate) const TEXTURE_SLOTS: [TextureSlot; 15] = [
     TextureSlot {
         pointer: "/pbrMetallicRoughness/baseColorTexture",
         field: "pbrMetallicRoughness.baseColorTexture",
@@ -131,13 +172,220 @@ pub(crate) const TEXTURE_SLOTS: [TextureSlot; 4] = [
         field: "occlusionTexture",
         extra: Some(("strength", |v| (0.0..=1.0).contains(&v))),
     },
+    ext_slot(
+        "/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionTexture",
+        "extensions.KHR_materials_diffuse_transmission.diffuseTransmissionTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionColorTexture",
+        "extensions.KHR_materials_diffuse_transmission.diffuseTransmissionColorTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_transmission/transmissionTexture",
+        "extensions.KHR_materials_transmission.transmissionTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_volume/thicknessTexture",
+        "extensions.KHR_materials_volume.thicknessTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_specular/specularTexture",
+        "extensions.KHR_materials_specular.specularTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_specular/specularColorTexture",
+        "extensions.KHR_materials_specular.specularColorTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_clearcoat/clearcoatTexture",
+        "extensions.KHR_materials_clearcoat.clearcoatTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_clearcoat/clearcoatRoughnessTexture",
+        "extensions.KHR_materials_clearcoat.clearcoatRoughnessTexture",
+    ),
+    TextureSlot {
+        pointer: "/extensions/KHR_materials_clearcoat/clearcoatNormalTexture",
+        field: "extensions.KHR_materials_clearcoat.clearcoatNormalTexture",
+        extra: Some(("scale", f64::is_finite)),
+    },
+    ext_slot(
+        "/extensions/KHR_materials_sheen/sheenColorTexture",
+        "extensions.KHR_materials_sheen.sheenColorTexture",
+    ),
+    ext_slot(
+        "/extensions/KHR_materials_sheen/sheenRoughnessTexture",
+        "extensions.KHR_materials_sheen.sheenRoughnessTexture",
+    ),
 ];
 
-/// Returns the UV set a validated texture info samples.
-pub(crate) fn tex_coord(info: &Value) -> u32 {
-    info.get("texCoord")
-        .and_then(Value::as_u64)
-        .map_or(0, |set| u32::try_from(set).expect("validated texCoord"))
+/// Pointers of the slots that hold tangent-space normal maps.
+pub(crate) const NORMAL_SLOTS: [&str; 2] = [
+    "/normalTexture",
+    "/extensions/KHR_materials_clearcoat/clearcoatNormalTexture",
+];
+
+const fn ext_slot(pointer: &'static str, field: &'static str) -> TextureSlot {
+    TextureSlot {
+        pointer,
+        field,
+        extra: None,
+    }
+}
+
+/// How a numeric extension field is validated.
+#[derive(Copy, Clone, Debug)]
+enum Factor {
+    /// A number in `[0, 1]`.
+    Unit,
+    /// A finite number `>= 0`.
+    NonNegative,
+    /// A finite number `> 0`.
+    Positive,
+    /// `0` or a finite number `>= 1` (`KHR_materials_ior`).
+    Ior,
+    /// Three numbers in `[0, 1]`.
+    UnitColor,
+    /// Three finite numbers `>= 0`.
+    NonNegativeColor,
+}
+
+impl Factor {
+    fn accepts(self, value: &Value) -> bool {
+        let number = |value: &Value, valid: fn(f64) -> bool| value.as_f64().is_some_and(valid);
+        let unit = |v: f64| (0.0..=1.0).contains(&v);
+        let non_negative = |v: f64| v.is_finite() && v >= 0.0;
+        let color = |value: &Value, valid: fn(f64) -> bool| {
+            value
+                .as_array()
+                .is_some_and(|a| a.len() == 3 && a.iter().all(|c| number(c, valid)))
+        };
+        match self {
+            Self::Unit => number(value, unit),
+            Self::NonNegative => number(value, non_negative),
+            Self::Positive => number(value, |v| v.is_finite() && v > 0.0),
+            Self::Ior => number(value, |v| v == 0.0 || (v.is_finite() && v >= 1.0)),
+            Self::UnitColor => color(value, unit),
+            Self::NonNegativeColor => color(value, non_negative),
+        }
+    }
+}
+
+/// An allowlisted material extension: its numeric fields and texture fields.
+struct ExtensionSpec {
+    name: &'static str,
+    factors: &'static [(&'static str, Factor)],
+    textures: &'static [&'static str],
+}
+
+/// Material extensions the exporter accepts, validated field by field.
+const MATERIAL_EXTENSIONS: [ExtensionSpec; 8] = [
+    ExtensionSpec {
+        name: "KHR_materials_diffuse_transmission",
+        factors: &[
+            ("diffuseTransmissionFactor", Factor::Unit),
+            ("diffuseTransmissionColorFactor", Factor::UnitColor),
+        ],
+        textures: &[
+            "diffuseTransmissionTexture",
+            "diffuseTransmissionColorTexture",
+        ],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_transmission",
+        factors: &[("transmissionFactor", Factor::Unit)],
+        textures: &["transmissionTexture"],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_volume",
+        factors: &[
+            ("thicknessFactor", Factor::NonNegative),
+            ("attenuationDistance", Factor::Positive),
+            ("attenuationColor", Factor::UnitColor),
+        ],
+        textures: &["thicknessTexture"],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_ior",
+        factors: &[("ior", Factor::Ior)],
+        textures: &[],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_specular",
+        factors: &[
+            ("specularFactor", Factor::Unit),
+            ("specularColorFactor", Factor::NonNegativeColor),
+        ],
+        textures: &["specularTexture", "specularColorTexture"],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_clearcoat",
+        factors: &[
+            ("clearcoatFactor", Factor::Unit),
+            ("clearcoatRoughnessFactor", Factor::Unit),
+        ],
+        textures: &[
+            "clearcoatTexture",
+            "clearcoatRoughnessTexture",
+            "clearcoatNormalTexture",
+        ],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_sheen",
+        factors: &[
+            ("sheenColorFactor", Factor::UnitColor),
+            ("sheenRoughnessFactor", Factor::Unit),
+        ],
+        textures: &["sheenColorTexture", "sheenRoughnessTexture"],
+    },
+    ExtensionSpec {
+        name: "KHR_materials_emissive_strength",
+        factors: &[("emissiveStrength", Factor::NonNegative)],
+        textures: &[],
+    },
+];
+
+/// The texture-coordinate transform extension allowed on texture references.
+pub(crate) const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
+
+/// Returns the UV sets a validated texture info can sample: the reference's
+/// own `texCoord` (default 0) and, when present and different, a
+/// `KHR_texture_transform` override.
+///
+/// Both must be exported. A viewer that supports the transform samples the
+/// override; one that does not falls back to the reference's own set, and
+/// `KHR_texture_transform` is only required on request.
+pub(crate) fn tex_coords(info: &Value) -> impl Iterator<Item = u32> {
+    let set = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_u64)
+            .map(|set| u32::try_from(set).expect("validated texCoord"))
+    };
+    let base = set(info.get("texCoord")).unwrap_or(0);
+    let transform =
+        set(info.pointer("/extensions/KHR_texture_transform/texCoord")).filter(|&set| set != base);
+    core::iter::once(base).chain(transform)
+}
+
+/// Extension names a validated material uses, including
+/// `KHR_texture_transform` on any texture reference, in a fixed order.
+pub(crate) fn used_extensions(material: &Value) -> impl Iterator<Item = &'static str> + '_ {
+    let transform = TEXTURE_SLOTS.iter().any(|slot| {
+        material
+            .pointer(slot.pointer)
+            .and_then(|info| info.pointer("/extensions/KHR_texture_transform"))
+            .is_some()
+    });
+    MATERIAL_EXTENSIONS
+        .iter()
+        .map(|spec| spec.name)
+        .filter(|name| {
+            material
+                .get("extensions")
+                .and_then(|e| e.get(*name))
+                .is_some()
+        })
+        .chain(transform.then_some(TEXTURE_TRANSFORM))
 }
 
 pub(crate) fn validate(mut value: Value, key: &str) -> Result<Value, crate::GltfError> {
@@ -156,6 +404,7 @@ pub(crate) fn validate(mut value: Value, key: &str) -> Result<Value, crate::Gltf
         "alphaMode",
         "alphaCutoff",
         "doubleSided",
+        "extensions",
     ];
     for field in object.keys() {
         if !supported.contains(&field.as_str()) {
@@ -200,6 +449,9 @@ pub(crate) fn validate(mut value: Value, key: &str) -> Result<Value, crate::Gltf
             }
         }
     }
+    if let Some(extensions) = object.get("extensions") {
+        validate_extensions(extensions, key)?;
+    }
     for slot in TEXTURE_SLOTS {
         if let Some(info) = value.pointer(slot.pointer) {
             validate_texture_info(info, slot, key)?;
@@ -226,6 +478,88 @@ pub(crate) fn validate(mut value: Value, key: &str) -> Result<Value, crate::Gltf
     Ok(value)
 }
 
+fn validate_extensions(extensions: &Value, key: &str) -> Result<(), crate::GltfError> {
+    let invalid = |field: String| crate::GltfError::InvalidMaterial {
+        key: key.to_owned(),
+        field,
+    };
+    let unsupported = |field: String| crate::GltfError::UnsupportedMaterialField {
+        key: key.to_owned(),
+        field,
+    };
+    let extensions = extensions
+        .as_object()
+        .ok_or_else(|| invalid("extensions".into()))?;
+    for (name, body) in extensions {
+        let spec = MATERIAL_EXTENSIONS
+            .iter()
+            .find(|spec| spec.name == name)
+            .ok_or_else(|| unsupported(format!("extensions.{name}")))?;
+        let body = body
+            .as_object()
+            .ok_or_else(|| invalid(format!("extensions.{name}")))?;
+        for (field, value) in body {
+            if field == "extras" || spec.textures.contains(&field.as_str()) {
+                // Texture references are validated with the texture slots.
+                continue;
+            }
+            let (_, factor) = spec
+                .factors
+                .iter()
+                .find(|(factor, _)| factor == field)
+                .ok_or_else(|| unsupported(format!("extensions.{name}.{field}")))?;
+            if !factor.accepts(value) {
+                return Err(invalid(format!("extensions.{name}.{field}")));
+            }
+        }
+    }
+    // Volume only describes the medium behind a transmitting surface; alone
+    // it has no effect, so it is refused rather than silently ignored.
+    if extensions.contains_key("KHR_materials_volume")
+        && !extensions.contains_key("KHR_materials_transmission")
+        && !extensions.contains_key("KHR_materials_diffuse_transmission")
+    {
+        return Err(invalid("extensions.KHR_materials_volume".into()));
+    }
+    Ok(())
+}
+
+fn validate_texture_transform(
+    value: &Value,
+    field: &str,
+    key: &str,
+) -> Result<(), crate::GltfError> {
+    let invalid = |part: &str| crate::GltfError::InvalidMaterial {
+        key: key.to_owned(),
+        field: format!("{field}.extensions.{TEXTURE_TRANSFORM}{part}"),
+    };
+    let object = value.as_object().ok_or_else(|| invalid(""))?;
+    let finite = |value: &Value| value.as_f64().is_some_and(f64::is_finite);
+    let pair = |value: &Value| {
+        value
+            .as_array()
+            .is_some_and(|a| a.len() == 2 && a.iter().all(finite))
+    };
+    for (name, value) in object {
+        let valid = match name.as_str() {
+            "offset" | "scale" => pair(value),
+            "rotation" => finite(value),
+            "texCoord" => value.as_u64().and_then(|n| u32::try_from(n).ok()).is_some(),
+            "extras" => true,
+            _ => {
+                return Err(crate::GltfError::UnsupportedMaterialField {
+                    key: key.to_owned(),
+                    field: format!("{field}.extensions.{TEXTURE_TRANSFORM}.{name}"),
+                });
+            }
+        };
+        if !valid {
+            return Err(invalid(&format!(".{name}")));
+        }
+    }
+    Ok(())
+}
+
 fn validate_texture_info(
     value: &Value,
     slot: TextureSlot,
@@ -246,6 +580,18 @@ fn validate_texture_info(
             "texCoord" => {
                 if u32_valued(value).is_none() {
                     return Err(invalid(".texCoord"));
+                }
+            }
+            "extensions" => {
+                let extensions = value.as_object().ok_or_else(|| invalid(".extensions"))?;
+                for (name, transform) in extensions {
+                    if name != TEXTURE_TRANSFORM {
+                        return Err(crate::GltfError::UnsupportedMaterialField {
+                            key: key.to_owned(),
+                            field: format!("{}.extensions.{name}", slot.field),
+                        });
+                    }
+                    validate_texture_transform(transform, slot.field, key)?;
                 }
             }
             name if slot.extra.is_some_and(|(extra, _)| extra == name) => {
@@ -330,7 +676,7 @@ mod tests {
             json!({"extensions": {"KHR_materials_unlit": {}}}),
             json!({"normalTexture": {"index": 0, "strength": 1.0}}),
             json!({"occlusionTexture": {"index": 0, "scale": 1.0}}),
-            json!({"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 0, "extensions": {}}}}),
+            json!({"pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 0, "extensions": {"EXT_texture_webp": {}}}}}),
             json!({"roughnes": 0.5}),
         ] {
             assert!(matches!(
@@ -352,11 +698,18 @@ mod tests {
         });
         let validated = validate(material.clone(), "bark").unwrap();
         assert_eq!(validated["normalTexture"], material["normalTexture"]);
+        let sets = |info: &Value| tex_coords(info).collect::<Vec<_>>();
         assert_eq!(
-            tex_coord(&validated["pbrMetallicRoughness"]["baseColorTexture"]),
-            1
+            sets(&validated["pbrMetallicRoughness"]["baseColorTexture"]),
+            [1]
         );
-        assert_eq!(tex_coord(&validated["occlusionTexture"]), 0);
+        assert_eq!(sets(&validated["occlusionTexture"]), [0]);
+        let transformed = json!({"index": 0, "texCoord": 1,
+            "extensions": {"KHR_texture_transform": {"texCoord": 0}}});
+        assert_eq!(sets(&transformed), [1, 0]);
+        let same = json!({"index": 0, "texCoord": 1,
+            "extensions": {"KHR_texture_transform": {"texCoord": 1}}});
+        assert_eq!(sets(&same), [1]);
     }
 
     #[test]

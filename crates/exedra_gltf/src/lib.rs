@@ -20,6 +20,9 @@
 //!   through explicit [`GltfAttribute`] mappings in [`GltfExportOptions`];
 //! - materials may reference base-color, metallic-roughness, normal and
 //!   occlusion textures on any exported UV set (see [`MaterialResolver`]);
+//! - materials may use an allowlist of `KHR_materials_*` extensions and
+//!   `KHR_texture_transform`, validated like core fields and listed in
+//!   `extensionsUsed`;
 //! - exact empty parts keep their identity without illegal zero-count meshes.
 //!   Geometry-free scenes omit buffers and the optional GLB BIN chunk;
 //! - mismatched compiled sources and error-level partial geometry are refused.
@@ -58,6 +61,8 @@
 #[cfg(test)]
 mod attribute_tests;
 mod attributes;
+#[cfg(test)]
+mod extension_tests;
 mod inspect;
 mod materials;
 #[cfg(test)]
@@ -140,9 +145,10 @@ pub struct GltfStats {
     /// Mappings, per exported geometry, whose stream that geometry does not
     /// carry. The attribute is omitted from its primitives.
     pub missing_attribute_streams: u64,
-    /// Primitives whose material has a `normalTexture` but whose geometry
-    /// carries no `TANGENT`. Exported as is: glTF consumers then derive
-    /// MikkTSpace tangents themselves, which may not match the baker.
+    /// Primitives whose material has a `normalTexture` or a clearcoat normal
+    /// texture but whose geometry carries no `TANGENT`. Exported as is: glTF
+    /// consumers then derive MikkTSpace tangents themselves, which may not
+    /// match the baker.
     pub normal_maps_without_tangents: u64,
 }
 
@@ -178,6 +184,13 @@ pub struct GltfExportOptions<'a> {
     /// a mapping are not exported; see
     /// [`GltfStats::unmapped_attribute_streams`].
     pub attributes: &'a [GltfAttribute],
+    /// List `KHR_texture_transform` in `extensionsRequired`, not only in
+    /// `extensionsUsed`, when a material uses it.
+    ///
+    /// Off by default: a viewer without the extension still loads the file
+    /// and samples untransformed coordinates. Require it when a wrong tiling
+    /// is worse than refusing to load.
+    pub require_texture_transform: bool,
 }
 
 impl<'a> GltfExportOptions<'a> {
@@ -188,6 +201,7 @@ impl<'a> GltfExportOptions<'a> {
         Self {
             coordinates: GltfCoordinates::ZUpToYUp,
             attributes: &[],
+            require_texture_transform: false,
         }
     }
 
@@ -195,6 +209,13 @@ impl<'a> GltfExportOptions<'a> {
     #[must_use]
     pub const fn with_attributes(mut self, mappings: &'a [GltfAttribute]) -> Self {
         self.attributes = mappings;
+        self
+    }
+
+    /// Sets [`Self::require_texture_transform`].
+    #[must_use]
+    pub const fn with_required_texture_transform(mut self, required: bool) -> Self {
+        self.require_texture_transform = required;
         self
     }
 }
@@ -726,6 +747,28 @@ fn build_export(
         "asset".into(),
         json!({ "version": "2.0", "generator": "exedra_gltf" }),
     );
+    let mut used: Vec<&str> = Vec::new();
+    for material in &materials {
+        for name in materials::used_extensions(material) {
+            if !used.contains(&name) {
+                used.push(name);
+            }
+        }
+    }
+    used.sort_unstable();
+    if !used.is_empty() {
+        let required: Vec<&str> = used
+            .iter()
+            .copied()
+            .filter(|name| {
+                *name == materials::TEXTURE_TRANSFORM && options.require_texture_transform
+            })
+            .collect();
+        document.insert("extensionsUsed".into(), json!(used));
+        if !required.is_empty() {
+            document.insert("extensionsRequired".into(), json!(required));
+        }
+    }
     document.insert("scene".into(), json!(0));
     let scene = if scene_nodes.is_empty() {
         json!({})
@@ -1012,30 +1055,35 @@ fn emit_mesh(
                 let Some(info) = materials[index].pointer(slot.pointer) else {
                     continue;
                 };
-                match materials::tex_coord(info) {
-                    0 if !source.has_uvs => {
-                        return Err(GltfError::MissingTextureCoordinates {
-                            material: material.clone(),
-                            part: part.0,
-                            body: body_index,
-                            region: region.region,
-                        });
+                for set in materials::tex_coords(info) {
+                    match set {
+                        0 if !source.has_uvs => {
+                            return Err(GltfError::MissingTextureCoordinates {
+                                material: material.clone(),
+                                part: part.0,
+                                body: body_index,
+                                region: region.region,
+                            });
+                        }
+                        0 => {}
+                        set if !exports(&format!("TEXCOORD_{set}")) => {
+                            return Err(GltfError::MissingTextureCoordinateSet {
+                                material: material.clone(),
+                                texture: slot.field,
+                                set,
+                                part: part.0,
+                                body: body_index,
+                                region: region.region,
+                            });
+                        }
+                        _ => {}
                     }
-                    0 => {}
-                    set if !exports(&format!("TEXCOORD_{set}")) => {
-                        return Err(GltfError::MissingTextureCoordinateSet {
-                            material: material.clone(),
-                            texture: slot.field,
-                            set,
-                            part: part.0,
-                            body: body_index,
-                            region: region.region,
-                        });
-                    }
-                    _ => {}
                 }
             }
-            if materials[index].get("normalTexture").is_some() && !exports("TANGENT") {
+            let normal_mapped = materials::NORMAL_SLOTS
+                .iter()
+                .any(|pointer| materials[index].pointer(pointer).is_some());
+            if normal_mapped && !exports("TANGENT") {
                 stats.normal_maps_without_tangents += 1;
             }
             primitive.insert("material".into(), json!(index));
