@@ -101,8 +101,10 @@ let export = exedra_gltf::export_glb_with_materials(
 ```
 
 The current export subset supports core material factors, base-color,
-metallic-roughness, normal and occlusion textures, alpha, and sidedness. Names and `extras` are preserved. Missing IDs, invalid fields, and
-unsupported texture fields/extensions are typed errors; unassigned regions remain
+metallic-roughness, normal and occlusion textures, alpha, sidedness, and an
+allowlist of material extensions (see below). Names and `extras` are
+preserved. Missing IDs, invalid fields, and unsupported texture
+fields/extensions are typed errors; unassigned regions remain
 unassigned. Material-only edits reuse `compiled`, and differing instance
 finishes share geometry buffers.
 
@@ -159,7 +161,8 @@ optional core glTF sampler for caller-local texture indices referenced by
 `pbrMetallicRoughness.metallicRoughnessTexture`, `normalTexture` (with
 `scale`) and `occlusionTexture` (with `strength`). The exporter remaps those
 indices, embeds only used images, and shares identical image bytes and sampler
-objects. Other texture fields (such as `emissiveTexture`) and extensions remain
+objects. Textures of the material extensions below are handled the same way.
+Other texture fields (such as `emissiveTexture`) and unlisted extensions remain
 explicit errors. The exporter checks image signatures, not full image
 decodability; callers are responsible for supplying valid encoded images.
 
@@ -179,6 +182,33 @@ geometry without tangents is exported and counted in
 `GltfStats::normal_maps_without_tangents`: glTF consumers then derive
 MikkTSpace tangents themselves, which may not match the baker. Compile with
 tangents to pin them.
+
+## Material extensions
+
+Material `extensions` may use this allowlist, each validated field by field
+against its Khronos specification (ranges, colors, texture references):
+
+| Extension | Fields |
+|---|---|
+| `KHR_materials_diffuse_transmission` | `diffuseTransmissionFactor`, `diffuseTransmissionTexture` (A), `diffuseTransmissionColorFactor`, `diffuseTransmissionColorTexture` (sRGB) |
+| `KHR_materials_transmission` | `transmissionFactor`, `transmissionTexture` (R) |
+| `KHR_materials_volume` | `thicknessFactor`, `thicknessTexture` (G), `attenuationDistance`, `attenuationColor` |
+| `KHR_materials_ior` | `ior` (`0` or at least `1`) |
+| `KHR_materials_specular` | `specularFactor`, `specularTexture` (A), `specularColorFactor`, `specularColorTexture` (sRGB) |
+| `KHR_materials_clearcoat` | `clearcoatFactor`, `clearcoatTexture` (R), `clearcoatRoughnessFactor`, `clearcoatRoughnessTexture` (G), `clearcoatNormalTexture` |
+| `KHR_materials_sheen` | `sheenColorFactor`, `sheenColorTexture` (sRGB), `sheenRoughnessFactor`, `sheenRoughnessTexture` (A) |
+| `KHR_materials_emissive_strength` | `emissiveStrength` |
+
+A volume without a transmission extension on the same material has no effect
+in glTF and is refused. Any texture reference, core or extension, may carry
+`extensions.KHR_texture_transform` (`offset`, `rotation`, `scale`,
+`texCoord`); its `texCoord` overrides the reference's own for viewers that
+support the extension. Both sets are checked per primitive, because a viewer
+without the extension samples the reference's own set. Used extensions are listed in `extensionsUsed`; none
+are required, except `KHR_texture_transform` when
+`GltfExportOptions::require_texture_transform` is set. Exedra has no material
+model of its own: projecting OpenPBR or another model onto these extensions is
+the caller's conversion.
 
 Existing untextured resolver closures need no changes. Implement the optional
 method on a resolver type to supply textures; resource indices belong to that
