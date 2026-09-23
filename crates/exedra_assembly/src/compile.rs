@@ -968,8 +968,9 @@ fn baked_geometry_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
 }
 
 /// Structural fingerprint of an assembly: recipe contents, baked geometry,
-/// slot tables and mappings, placements, bindings, metadata, and placement
-/// sets (their placements, seeds, tints, bindings and metadata).
+/// slot tables and mappings, placements, bindings, metadata, placement sets
+/// (their placements, seeds, tints, bindings and metadata), and part
+/// level-of-detail chains.
 ///
 /// Baked attributes are absent from the v1 JSON interchange and are excluded
 /// here. Rendering caches must use [`CompiledPart::fingerprint`] together with
@@ -1079,6 +1080,18 @@ pub fn assembly_fingerprint(assembly: &Assembly) -> u128 {
             for (key, value) in set.metadata() {
                 push_str(&mut bytes, key);
                 push_str(&mut bytes, value);
+            }
+        }
+    }
+    // Level-of-detail chains, likewise only when some part has one.
+    if assembly.parts().iter().any(|def| !def.lods().is_empty()) {
+        bytes.extend_from_slice(b"part-lods");
+        for def in assembly.parts() {
+            bytes.extend_from_slice(&crate::len_u32(def.lods().len()).to_le_bytes());
+            for level in def.lods() {
+                bytes.extend_from_slice(&level.part.0.to_le_bytes());
+                bytes.extend_from_slice(&level.min_coverage.to_bits().to_le_bytes());
+                bytes.extend_from_slice(&level.crossfade.to_bits().to_le_bytes());
             }
         }
     }

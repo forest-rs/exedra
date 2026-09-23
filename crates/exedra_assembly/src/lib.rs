@@ -76,8 +76,8 @@ pub mod interchange;
 pub mod pattern;
 
 pub use assembly::{
-    AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, PartDef, PartId,
-    PartSource, PlacementPath, PlacementSet, PlacementSetId, SlotIndex,
+    AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, LodLevel, PartDef,
+    PartId, PartSource, PlacementPath, PlacementSet, PlacementSetId, SlotIndex,
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{
@@ -88,8 +88,8 @@ pub use compile::{
 };
 pub use exedra_mesh::NormalsSource;
 pub use flatten::{
-    BoundsPolicy, FlattenOptions, RenderBatch, RenderItem, RenderList, ResolvedRegion, compose,
-    flatten, flatten_with,
+    BoundsPolicy, FlattenOptions, LodEmission, LodTag, RenderBatch, RenderItem, RenderList,
+    ResolvedRegion, compose, flatten, flatten_with,
 };
 
 /// Narrows a validated count to `u32`.

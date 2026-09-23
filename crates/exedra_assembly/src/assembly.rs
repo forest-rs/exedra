@@ -19,9 +19,11 @@ use exedra_constructive::ir::{Placement3, Recipe};
 use hashbrown::HashMap;
 
 mod append;
+mod lod;
 mod placement_set;
 mod siblings;
 pub use append::AppendMap;
+pub use lod::LodLevel;
 pub use placement_set::{PlacementPath, PlacementSet, PlacementSetId};
 
 use siblings::{Records, Sibling, SiblingIndex};
@@ -72,6 +74,8 @@ pub struct PartDef {
     default_slot: Option<SlotIndex>,
     /// Per-slot default material key, indexed by slot.
     default_materials: Vec<Option<String>>,
+    /// Level-of-detail chain, finest first; empty when the part has none.
+    lods: Vec<LodLevel>,
 }
 
 impl PartDef {
@@ -301,6 +305,13 @@ pub enum AssemblyError {
     NonFiniteTint,
     /// A placement set must place its part at least once.
     EmptyPlacementSet,
+    /// A level-of-detail chain breaks its rules.
+    InvalidLods {
+        /// The part whose chain was rejected.
+        part: PartId,
+        /// Which rule the chain breaks.
+        reason: &'static str,
+    },
 }
 
 impl core::fmt::Display for AssemblyError {
@@ -331,6 +342,12 @@ impl core::fmt::Display for AssemblyError {
             }
             Self::NonFiniteTint => write!(f, "placement tint contains non-finite values"),
             Self::EmptyPlacementSet => write!(f, "placement set has no placements"),
+            Self::InvalidLods { part, reason } => {
+                write!(
+                    f,
+                    "invalid level-of-detail chain on part {part:?}: {reason}"
+                )
+            }
         }
     }
 }
@@ -419,6 +436,7 @@ impl Assembly {
             region_slots: Vec::new(),
             default_slot,
             default_materials,
+            lods: Vec::new(),
         });
         self.part_lookup.insert(key.to_string(), id);
         self.content_generation += 1;

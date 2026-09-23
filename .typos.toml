@@ -23,6 +23,8 @@ blo = "blo"
 metalness = "metalness"
 # Shepperd's method for rotation-matrix to quaternion conversion.
 shepperd = "shepperd"
+# Level of detail: `LodLevel`, `lods`, `MSFT_lod`.
+lod = "lod"
 
 [files]
 # Include .github, .cargo, etc.

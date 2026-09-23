@@ -20,6 +20,12 @@
 //! Every placed body records world-space bounds chosen by [`BoundsPolicy`]:
 //! by default the part-local box transformed by the placement, which costs
 //! O(bodies) per placement instead of O(vertices).
+//!
+//! Parts with a level-of-detail chain ([`crate::LodLevel`]) emit their finest
+//! level by default, tagged with a [`LodTag`], so consumers without LOD
+//! support draw full detail. [`LodEmission::AllLevels`] emits every level,
+//! each tagged with its coverage range, for renderers that select or
+//! crossfade levels.
 
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -28,7 +34,9 @@ use alloc::vec::Vec;
 use exedra_constructive::evaluate::Aabb3;
 use exedra_constructive::ir::Placement3;
 
-use crate::assembly::{Assembly, InstanceId, InstancePath, PartId, PlacementSetId, SlotIndex};
+use crate::assembly::{
+    Assembly, InstanceId, InstancePath, LodLevel, PartId, PlacementSetId, SlotIndex,
+};
 use crate::compile::{CompiledBody, CompiledParts};
 
 /// One index range of a rendered body with its resolved material key.
@@ -54,7 +62,9 @@ pub struct RenderItem {
     pub instance: InstanceId,
     /// World placement composed down the tree (f64).
     pub world: Placement3,
-    /// The part whose compiled entry holds this body's buffers.
+    /// The part whose compiled entry holds this body's buffers. Under
+    /// [`LodEmission::AllLevels`] this is the level's part, which differs from
+    /// the placed part for lower levels.
     pub part: PartId,
     /// Index into the compiled part's body list.
     pub body: u32,
@@ -64,6 +74,28 @@ pub struct RenderItem {
     /// Index ranges with resolved material keys, in compiled region/slot order
     /// and covering the whole index buffer. Region IDs need not be unique.
     pub regions: Vec<ResolvedRegion>,
+    /// The level of detail this item draws, when the instance's part has a
+    /// level-of-detail chain.
+    pub lod: Option<LodTag>,
+}
+
+/// Where a drawable sits in its part's level-of-detail chain.
+///
+/// A renderer draws the drawable while the occurrence's screen coverage is in
+/// `[min_coverage, max_coverage)` and fades it out over `crossfade` below
+/// `min_coverage`; see [`crate::LodLevel`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LodTag {
+    /// Level index, 0 being the finest.
+    pub level: u32,
+    /// Number of levels in the chain.
+    pub levels: u32,
+    /// Smallest coverage at which this level is drawn.
+    pub min_coverage: f32,
+    /// Coverage at which the finer level takes over, or `None` for level 0.
+    pub max_coverage: Option<f32>,
+    /// Fade band below `min_coverage`.
+    pub crossfade: f32,
 }
 
 /// One compiled body of a placement set, placed at every set placement.
@@ -73,7 +105,9 @@ pub struct RenderBatch {
     pub path: InstancePath,
     /// The owning set handle (valid for the source assembly only).
     pub set: PlacementSetId,
-    /// The part whose compiled entry holds this body's buffers.
+    /// The part whose compiled entry holds this body's buffers. Under
+    /// [`LodEmission::AllLevels`] this is the level's part, which differs from
+    /// the placed part for lower levels.
     pub part: PartId,
     /// Index into the compiled part's body list.
     pub body: u32,
@@ -91,6 +125,9 @@ pub struct RenderBatch {
     pub world_bounds: Vec<Aabb3>,
     /// Index ranges with resolved material keys, shared by every placement.
     pub regions: Vec<ResolvedRegion>,
+    /// The level of detail this batch draws, when the set's part has a
+    /// level-of-detail chain.
+    pub lod: Option<LodTag>,
 }
 
 impl RenderBatch {
@@ -122,12 +159,26 @@ pub enum BoundsPolicy {
     Exact,
 }
 
+/// Which levels of detail [`flatten_with`] emits for parts with a chain.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum LodEmission {
+    /// Only level 0, the part itself: consumers without level-of-detail
+    /// support draw full detail and never overlap levels.
+    #[default]
+    BaseLevel,
+    /// Every level, each tagged with its coverage range. Consumers must select
+    /// or crossfade levels; drawing all of them overlaps the geometry.
+    AllLevels,
+}
+
 /// Options for [`flatten_with`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct FlattenOptions {
     /// How world-space bounds are computed.
     pub bounds: BoundsPolicy,
+    /// Which levels of detail are emitted.
+    pub lods: LodEmission,
 }
 
 impl FlattenOptions {
@@ -135,6 +186,13 @@ impl FlattenOptions {
     #[must_use]
     pub fn with_bounds(mut self, bounds: BoundsPolicy) -> Self {
         self.bounds = bounds;
+        self
+    }
+
+    /// These options with the given level-of-detail emission.
+    #[must_use]
+    pub fn with_lods(mut self, lods: LodEmission) -> Self {
+        self.lods = lods;
         self
     }
 }
@@ -151,7 +209,8 @@ pub struct RenderList {
 
 impl RenderList {
     /// Total placed triangle count, including every instance occurrence and
-    /// every placement of every set.
+    /// every placement of every set. Under [`LodEmission::AllLevels`] every
+    /// emitted level counts.
     ///
     /// Unlike [`crate::CompiledPart::triangle_count`], this count follows the
     /// flattened drawables: placing one compiled part twice counts its
@@ -242,6 +301,7 @@ pub fn flatten_with(
         assembly,
         compiled,
         policy: options.bounds,
+        lods: options.lods,
         local_bounds: Vec::new(),
         list: RenderList::default(),
     };
@@ -277,39 +337,86 @@ struct Flattener<'a> {
     assembly: &'a Assembly,
     compiled: &'a CompiledParts,
     policy: BoundsPolicy,
+    lods: LodEmission,
     /// Part-local body bounds, computed once per part on first use.
     local_bounds: Vec<Option<Vec<Option<Aabb3>>>>,
     list: RenderList,
 }
 
 impl Flattener<'_> {
+    /// The `(part, tag)` pairs to emit for an occurrence of `part`, without
+    /// allocating: this runs once per placed occurrence.
+    fn levels<'a>(
+        assembly: &'a Assembly,
+        lods: LodEmission,
+        part: PartId,
+    ) -> impl Iterator<Item = (PartId, Option<LodTag>)> + 'a {
+        let chain = assembly.part(part).map_or(&[][..], |def| def.lods());
+        let count = match lods {
+            LodEmission::BaseLevel => 1,
+            LodEmission::AllLevels => chain.len(),
+        };
+        let unchained = chain.is_empty().then_some((part, None));
+        unchained.into_iter().chain(
+            chain
+                .iter()
+                .take(count)
+                .enumerate()
+                .map(move |(i, level)| (level.part, Some(lod_tag(chain, i)))),
+        )
+    }
+
+    /// The material a lower level's `slot` resolves to: the occurrence's
+    /// binding of the owning slot with the same name, else the owning part's
+    /// default for that slot, else the level part's own default.
+    fn level_material<'a>(
+        assembly: &'a Assembly,
+        owner: PartId,
+        level: PartId,
+        slot: SlotIndex,
+        binding: impl FnOnce(SlotIndex) -> Option<&'a str>,
+    ) -> Option<&'a str> {
+        let owned = assembly.owner_slot(owner, level, slot);
+        owned
+            .and_then(binding)
+            .or_else(|| owned.and_then(|o| assembly.part(owner)?.default_material(o)))
+            .or_else(|| assembly.part(level)?.default_material(slot))
+    }
+
     fn emit_instance(&mut self, id: InstanceId, world: &Placement3) {
         let assembly = self.assembly;
-        let Some(part) = assembly.instance(id).and_then(|inst| inst.part()) else {
-            return;
-        };
-        let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
+        let Some(owner) = assembly.instance(id).and_then(|inst| inst.part()) else {
             return;
         };
         let path = assembly
             .path_of(id)
             .unwrap_or_else(|| InstancePath(Vec::new()));
-        for (body_index, body) in entry.bodies.iter().enumerate() {
-            let world_bounds = self.placed_bounds(part, body_index, body, world);
-            let regions = resolve_regions(
-                body,
-                |region| def.region_slot(region),
-                |slot| assembly.resolved_material(id, slot),
-            );
-            self.list.items.push(RenderItem {
-                path: path.clone(),
-                instance: id,
-                world: *world,
-                part,
-                body: crate::len_u32(body_index),
-                world_bounds,
-                regions,
-            });
+        for (part, lod) in Self::levels(assembly, self.lods, owner) {
+            let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
+                continue;
+            };
+            for (body_index, body) in entry.bodies.iter().enumerate() {
+                let world_bounds = self.placed_bounds(part, body_index, body, world);
+                let regions = resolve_regions(
+                    body,
+                    |region| def.region_slot(region),
+                    |slot| {
+                        Self::level_material(assembly, owner, part, slot, |owned| {
+                            assembly.instance(id)?.binding(owned)
+                        })
+                    },
+                );
+                self.list.items.push(RenderItem {
+                    path: path.clone(),
+                    instance: id,
+                    world: *world,
+                    part,
+                    body: crate::len_u32(body_index),
+                    world_bounds,
+                    regions,
+                    lod,
+                });
+            }
         }
     }
 
@@ -318,10 +425,7 @@ impl Flattener<'_> {
         let Some(set) = assembly.placement_set(id) else {
             return;
         };
-        let part = set.part();
-        let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
-            return;
-        };
+        let owner = set.part();
         let path = assembly
             .placement_set_path(id)
             .unwrap_or_else(|| InstancePath(Vec::new()));
@@ -330,27 +434,37 @@ impl Flattener<'_> {
             .iter()
             .map(|local| compose(parent_world, local))
             .collect();
-        for (body_index, body) in entry.bodies.iter().enumerate() {
-            let world_bounds = world
-                .iter()
-                .filter_map(|placement| self.placed_bounds(part, body_index, body, placement))
-                .collect();
-            let regions = resolve_regions(
-                body,
-                |region| def.region_slot(region),
-                |slot| assembly.resolved_placement_material(id, slot),
-            );
-            self.list.batches.push(RenderBatch {
-                path: path.clone(),
-                set: id,
-                part,
-                body: crate::len_u32(body_index),
-                world: Arc::clone(&world),
-                seeds: set.seeds.clone(),
-                tints: set.tints.clone(),
-                world_bounds,
-                regions,
-            });
+        for (part, lod) in Self::levels(assembly, self.lods, owner) {
+            let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
+                continue;
+            };
+            for (body_index, body) in entry.bodies.iter().enumerate() {
+                let world_bounds = world
+                    .iter()
+                    .filter_map(|placement| self.placed_bounds(part, body_index, body, placement))
+                    .collect();
+                let regions = resolve_regions(
+                    body,
+                    |region| def.region_slot(region),
+                    |slot| {
+                        Self::level_material(assembly, owner, part, slot, |owned| {
+                            set.binding(owned)
+                        })
+                    },
+                );
+                self.list.batches.push(RenderBatch {
+                    path: path.clone(),
+                    set: id,
+                    part,
+                    body: crate::len_u32(body_index),
+                    world: Arc::clone(&world),
+                    seeds: set.seeds.clone(),
+                    tints: set.tints.clone(),
+                    world_bounds,
+                    regions,
+                    lod,
+                });
+            }
         }
     }
 
@@ -381,6 +495,16 @@ impl Flattener<'_> {
                     .map(|local| transformed_box(&local, world))
             }
         }
+    }
+}
+
+fn lod_tag(chain: &[LodLevel], level: usize) -> LodTag {
+    LodTag {
+        level: crate::len_u32(level),
+        levels: crate::len_u32(chain.len()),
+        min_coverage: chain[level].min_coverage,
+        max_coverage: level.checked_sub(1).map(|finer| chain[finer].min_coverage),
+        crossfade: chain[level].crossfade,
     }
 }
 
