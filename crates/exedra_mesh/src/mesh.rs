@@ -988,6 +988,100 @@ impl Mesh {
             .set_propagation(key.domain(), key.name(), propagation)
     }
 
+    /// Captures every caller-defined value of `E`'s domain from weighted
+    /// `sources`, combined per each layer's [`Propagation`].
+    ///
+    /// Only sources with a finite positive weight take part; when none has
+    /// one, all do. So a sample that lands exactly on one source (weights such
+    /// as `[0, 1, 0]`) selects that source alone.
+    ///
+    /// - `Copy` takes the heaviest source's value (the first among equal
+    ///   weights);
+    /// - `Interpolate` averages the sources that hold a value, with their
+    ///   weights renormalized over them (the first held value when no weight
+    ///   is positive);
+    /// - `Unspecified` keeps the value `Copy` would take, or else the first
+    ///   held value, so restoring it counts as unpropagated;
+    /// - `Clear` captures nothing.
+    ///
+    /// A dense layer's default and a sparse gap both count as no value.
+    /// Write the result with [`op::restore_attributes`](crate::op::restore_attributes).
+    /// Stale or wrong sources contribute nothing.
+    #[must_use]
+    pub fn capture_attributes<E: crate::attributes::AttributeElement>(
+        &self,
+        sources: &[(E, f32)],
+    ) -> crate::attributes::CapturedAttributes {
+        let live: Vec<(Id, f32)> = sources
+            .iter()
+            .map(|&(element, weight)| (element.id(), weight))
+            .filter(|(id, _)| match E::DOMAIN {
+                Domain::Vertex => self.vertices.get(*id).is_some(),
+                Domain::Face => self.faces.get(*id).is_some(),
+                Domain::HalfEdge => self.half_edges.get(*id).is_some(),
+            })
+            .collect();
+        crate::attributes::CapturedAttributes {
+            domain: E::DOMAIN,
+            values: self.attrs.capture_weighted(E::DOMAIN, &live),
+            verbatim: false,
+        }
+    }
+
+    /// Captures every caller-defined value at `element` for writing as is.
+    ///
+    /// For operations that rebuild topology without changing what any element
+    /// represents, such as re-winding every face of a reflected mesh: restoring
+    /// the capture with [`op::restore_attributes`](crate::op::restore_attributes)
+    /// writes each value unchanged, whatever the layer's
+    /// [`Propagation`] rule, and counts nothing.
+    /// A stale `element` captures no values.
+    #[must_use]
+    pub fn capture_attributes_verbatim<E: crate::attributes::AttributeElement>(
+        &self,
+        element: E,
+    ) -> crate::attributes::CapturedAttributes {
+        let id = element.id();
+        let live = match E::DOMAIN {
+            Domain::Vertex => self.vertices.get(id).is_some(),
+            Domain::Face => self.faces.get(id).is_some(),
+            Domain::HalfEdge => self.half_edges.get(id).is_some(),
+        };
+        crate::attributes::CapturedAttributes {
+            domain: E::DOMAIN,
+            values: if live {
+                self.attrs.capture_caller(E::DOMAIN, id)
+            } else {
+                crate::attributes::CallerValues::default()
+            },
+            verbatim: true,
+        }
+    }
+
+    /// Registers on this mesh every caller-defined layer of `from` that this
+    /// mesh lacks, empty, with the same storage, value type, default and
+    /// [`Propagation`] rule.
+    ///
+    /// Operations that build a new mesh from existing ones call this so the
+    /// result keeps its sources' layers and rules, then carry values with
+    /// [`Self::capture_attributes`] and
+    /// [`op::restore_attributes`](crate::op::restore_attributes). Layers this
+    /// mesh already has keep their own rule and values. Returns how many
+    /// layers were registered, and advances [`Self::revision`] when any was.
+    ///
+    /// # Errors
+    ///
+    /// Registers nothing and returns [`AttrError::TypeMismatch`] when a layer
+    /// of `from` exists here with another storage, value type or default, or
+    /// [`AttrError::RuleMismatch`] when it exists with another rule.
+    pub fn adopt_attribute_layers(&mut self, from: &Self) -> Result<usize, AttrError> {
+        let adopted = self.attrs.adopt_caller_layers(&from.attrs)?;
+        if adopted > 0 {
+            self.advance_revision();
+        }
+        Ok(adopted)
+    }
+
     fn advance_revision(&mut self) {
         self.revision = self
             .revision
@@ -1014,6 +1108,10 @@ impl Mesh {
     }
 
     /// Returns the required position for a vertex.
+    ///
+    /// This reads the dense position layer by slot index, so it also answers
+    /// for a deleted vertex whose slot has not been reused. It is not a
+    /// liveness probe: use [`Self::vertices`] or [`Self::vertex_out`] for that.
     #[must_use]
     pub fn vertex_position(&self, vertex: VertexId) -> Option<&[f32; 3]> {
         self.attrs

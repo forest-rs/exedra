@@ -133,6 +133,55 @@ pub fn clear_attribute<T: LayerValue, E: AttributeElement, S: ChangeSink>(
     result(outcome, key, element)
 }
 
+/// Writes captured caller-defined values onto `target`.
+///
+/// `captured` comes from [`Mesh::capture_attributes`](crate::Mesh::capture_attributes)
+/// on this mesh, or on a source mesh whose layers this one adopted with
+/// [`Mesh::adopt_attribute_layers`](crate::Mesh::adopt_attribute_layers). Each
+/// caller-defined layer of the target's domain is written by name according to
+/// its own [`Propagation`](crate::attributes::Propagation): `Copy` and
+/// `Interpolate` write the captured value (clearing when none was captured),
+/// `Clear` clears, and `Unspecified` clears and counts a captured or existing
+/// value in [`ChangeSet::unpropagated_attribute_values`](crate::ChangeSet::unpropagated_attribute_values),
+/// once per layer and restore: restoring one capture onto several targets
+/// counts each target. Layers the capture does not cover (the source had no
+/// layer of that name) are left unchanged, so restores from several sources
+/// compose. The target is
+/// marked dirty in its domain. A capture from
+/// [`Mesh::capture_attributes_verbatim`](crate::Mesh::capture_attributes_verbatim)
+/// is written as is instead, whatever the rule, and counts nothing.
+///
+/// # Errors
+///
+/// Returns [`SetAttributeError::DomainMismatch`] when `target` addresses another
+/// domain than the capture, and [`SetAttributeError::ElementNotLive`] for a
+/// stale target.
+pub fn restore_attributes<E: AttributeElement, S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
+    target: E,
+    captured: &crate::attributes::CapturedAttributes,
+) -> Result<(), SetAttributeError> {
+    if captured.domain != E::DOMAIN {
+        return Err(SetAttributeError::DomainMismatch {
+            expected: captured.domain,
+            found: E::DOMAIN,
+        });
+    }
+    if !session.element_live(E::DOMAIN, target.id()) {
+        return Err(SetAttributeError::ElementNotLive {
+            domain: E::DOMAIN,
+            index: target.id().index(),
+        });
+    }
+    if captured.verbatim {
+        session.restore_caller_layers_verbatim(E::DOMAIN, target.id(), &captured.values);
+    } else {
+        session.restore_caller_layers(E::DOMAIN, target.id(), &captured.values);
+    }
+    session.mark_element_dirty(E::DOMAIN, target.id());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;

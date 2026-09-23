@@ -186,7 +186,7 @@ pub(crate) enum AttributeWrite {
 impl<S: ChangeSink> EditSession<'_, S> {
     /// True when `id` is live in `domain`. Half-edges include boundary
     /// (OUTSIDE-face) half-edges, matching [`Self::set_corner_uv_impl`].
-    fn element_live(&self, domain: Domain, id: Id) -> bool {
+    pub(crate) fn element_live(&self, domain: Domain, id: Id) -> bool {
         match domain {
             Domain::Vertex => self.mesh.vertices.get(id).is_some(),
             Domain::Face => self.mesh.faces.get(id).is_some(),
@@ -194,7 +194,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
         }
     }
 
-    fn mark_element_dirty(&mut self, domain: Domain, id: Id) {
+    pub(crate) fn mark_element_dirty(&mut self, domain: Domain, id: Id) {
         match domain {
             Domain::Vertex => self.sink.mark_vertex_dirty(VertexId::from(id)),
             Domain::Face => self.sink.mark_face_dirty(FaceId::from(id)),

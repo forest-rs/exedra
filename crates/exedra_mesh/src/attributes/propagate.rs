@@ -251,6 +251,134 @@ fn propagate_in<S: Store>(
     }
 }
 
+/// True when `weight` can select or contribute to a capture.
+fn positive(weight: f32) -> bool {
+    weight.is_finite() && weight > 0.0
+}
+
+/// Captures one layer's value from weighted `sources` under `rule`.
+///
+/// Only sources with a finite positive weight take part; when none has one,
+/// every source does, in the given order. [`Propagation::Copy`] takes the
+/// heaviest such source (the first among equals);
+/// [`Propagation::Interpolate`] averages those that hold a value (a dense
+/// layer's default included, as long as some participating source carries
+/// information), with their weights renormalized; [`Propagation::Unspecified`] keeps the value `Copy`
+/// would, or else the first present one, so restoring can count it as lost;
+/// [`Propagation::Clear`] captures nothing.
+fn capture_in<S: Store>(store: &S, rule: Propagation, sources: &[(Id, f32)]) -> Option<Sample> {
+    let any_positive = sources.iter().any(|&(_, weight)| positive(weight));
+    let takes_part = |weight: f32| !any_positive || positive(weight);
+    // The heaviest participating source, first among equals.
+    let heaviest = sources
+        .iter()
+        .filter(|&&(_, weight)| takes_part(weight))
+        .fold(None::<(Id, f32)>, |best, &(id, weight)| match best {
+            Some((_, best_weight))
+                if weight.partial_cmp(&best_weight) != Some(core::cmp::Ordering::Greater) =>
+            {
+                best
+            }
+            _ => Some((id, weight)),
+        })
+        .map(|(id, _)| id);
+    match rule {
+        Propagation::Clear => None,
+        Propagation::Unspecified => heaviest
+            .filter(|id| store.present(*id))
+            .or_else(|| {
+                sources
+                    .iter()
+                    .filter(|&&(_, weight)| takes_part(weight))
+                    .map(|&(id, _)| id)
+                    .find(|id| store.present(*id))
+            })
+            .and_then(|id| store.value(id))
+            .map(|v| v.sample()),
+        Propagation::Copy => heaviest
+            .filter(|id| store.present(*id))
+            .and_then(|id| store.value(id))
+            .map(|v| v.sample()),
+        Propagation::Interpolate => {
+            let mut first = None;
+            let mut acc: Option<(S::V, f32)> = None;
+            for &(id, weight) in sources {
+                if !takes_part(weight) {
+                    continue;
+                }
+                let Some(value) = store.value(id) else {
+                    continue;
+                };
+                if first.is_none() {
+                    first = Some(value.clone());
+                }
+                if !positive(weight) {
+                    continue;
+                }
+                acc = Some(match acc {
+                    None => (value, weight),
+                    Some((mean, total)) => {
+                        let sum = total + weight;
+                        let blended =
+                            S::V::blend(&mean, total / sum, &value, weight / sum).unwrap_or(mean);
+                        (blended, sum)
+                    }
+                });
+            }
+            let value = acc.map(|(mean, _)| mean).or(first)?;
+            // A dense layer's default carries no information.
+            let any_present = sources
+                .iter()
+                .any(|&(id, weight)| takes_part(weight) && store.present(id));
+            any_present.then(|| value.sample())
+        }
+    }
+}
+
+/// An empty layer with `layer`'s storage and value type, sized `len`.
+fn empty_like(layer: &Layer, len: usize) -> Layer {
+    match layer {
+        Layer::DenseF32(l) => Layer::DenseF32(DenseLayer::with_len(len, l.default)),
+        Layer::DenseVec2(l) => Layer::DenseVec2(DenseLayer::with_len(len, l.default)),
+        Layer::DenseVec3(l) => Layer::DenseVec3(DenseLayer::with_len(len, l.default)),
+        Layer::DenseVec4(l) => Layer::DenseVec4(DenseLayer::with_len(len, l.default)),
+        Layer::DenseU32(l) => Layer::DenseU32(DenseLayer::with_len(len, l.default)),
+        Layer::DenseBool(l) => Layer::DenseBool(DenseLayer::with_len(len, l.default)),
+        Layer::SparseF32(_) => Layer::SparseF32(SparseLayer::new()),
+        Layer::SparseVec2(_) => Layer::SparseVec2(SparseLayer::new()),
+        Layer::SparseVec3(_) => Layer::SparseVec3(SparseLayer::new()),
+        Layer::SparseVec4(_) => Layer::SparseVec4(SparseLayer::new()),
+        Layer::SparseU32(_) => Layer::SparseU32(SparseLayer::new()),
+        Layer::SparseBool(_) => Layer::SparseBool(SparseLayer::new()),
+    }
+}
+
+/// True when two layers share storage (dense or sparse), value type and, for
+/// dense layers, default.
+fn same_shape(a: &Layer, b: &Layer) -> bool {
+    match (a, b) {
+        (Layer::DenseF32(a), Layer::DenseF32(b)) => a.default.to_bits() == b.default.to_bits(),
+        (Layer::DenseVec2(a), Layer::DenseVec2(b)) => {
+            a.default.map(f32::to_bits) == b.default.map(f32::to_bits)
+        }
+        (Layer::DenseVec3(a), Layer::DenseVec3(b)) => {
+            a.default.map(f32::to_bits) == b.default.map(f32::to_bits)
+        }
+        (Layer::DenseVec4(a), Layer::DenseVec4(b)) => {
+            a.default.map(f32::to_bits) == b.default.map(f32::to_bits)
+        }
+        (Layer::DenseU32(a), Layer::DenseU32(b)) => a.default == b.default,
+        (Layer::DenseBool(a), Layer::DenseBool(b)) => a.default == b.default,
+        (Layer::SparseF32(_), Layer::SparseF32(_))
+        | (Layer::SparseVec2(_), Layer::SparseVec2(_))
+        | (Layer::SparseVec3(_), Layer::SparseVec3(_))
+        | (Layer::SparseVec4(_), Layer::SparseVec4(_))
+        | (Layer::SparseU32(_), Layer::SparseU32(_))
+        | (Layer::SparseBool(_), Layer::SparseBool(_)) => true,
+        _ => false,
+    }
+}
+
 fn restore_in<S: Store>(store: &mut S, rule: Propagation, target: Id, captured: Captured) -> bool {
     let Captured::Value(sample) = captured else {
         store.put(target, None);
@@ -339,7 +467,102 @@ impl Attributes {
         CallerValues { values }
     }
 
+    /// Captures every caller-defined value of `domain` from weighted
+    /// `sources`, combined per layer rule (see [`capture_in`]).
+    pub(crate) fn capture_weighted(&self, domain: Domain, sources: &[(Id, f32)]) -> CallerValues {
+        let values = self
+            .dense
+            .iter()
+            .chain(self.sparse.iter())
+            .filter(|entry| is_caller(entry, domain))
+            .map(|entry| {
+                let rule = entry.propagation;
+                let sample = each_layer!(&entry.layer, store => capture_in(store, rule, sources));
+                (entry.name, Captured::Value(sample))
+            })
+            .collect();
+        CallerValues { values }
+    }
+
+    /// Registers every caller-defined layer of `from` missing here, empty,
+    /// with the same storage, value type, default and rule. Layers already
+    /// registered here keep their own rule and values.
+    ///
+    /// Returns how many layers were registered. Nothing is registered when a
+    /// layer exists here with another storage, value type, default or rule.
+    pub(crate) fn adopt_caller_layers(&mut self, from: &Self) -> Result<usize, super::AttrError> {
+        let callers = || {
+            from.dense
+                .iter()
+                .chain(from.sparse.iter())
+                .filter(|entry| !crate::attr::is_reserved(entry.domain, entry.name))
+        };
+        for entry in callers() {
+            if let Some(existing) = self.layer(entry.domain, entry.name) {
+                if !same_shape(existing, &entry.layer) {
+                    return Err(super::AttrError::TypeMismatch);
+                }
+                if self.propagation(entry.domain, entry.name) != Some(entry.propagation) {
+                    return Err(super::AttrError::RuleMismatch);
+                }
+            }
+        }
+        let mut adopted = 0;
+        for entry in callers() {
+            if self.layer(entry.domain, entry.name).is_some() {
+                continue;
+            }
+            let len = self.domain_capacity(entry.domain);
+            let adopted_entry = Entry {
+                domain: entry.domain,
+                name: entry.name,
+                layer: empty_like(&entry.layer, len),
+                propagation: entry.propagation,
+            };
+            if matches!(
+                entry.layer,
+                Layer::DenseF32(_)
+                    | Layer::DenseVec2(_)
+                    | Layer::DenseVec3(_)
+                    | Layer::DenseVec4(_)
+                    | Layer::DenseU32(_)
+                    | Layer::DenseBool(_)
+            ) {
+                self.dense.push(adopted_entry);
+            } else {
+                self.sparse.push(adopted_entry);
+            }
+            adopted += 1;
+        }
+        Ok(adopted)
+    }
+
+    /// Writes captured values onto `target` as they are, whatever each
+    /// layer's rule: for relabeling rebuilds that change no element's meaning.
+    /// Layers the capture does not cover are left unchanged.
+    pub(crate) fn restore_verbatim(&mut self, domain: Domain, target: Id, captured: &CallerValues) {
+        for entry in self.caller_entries_mut(domain) {
+            let Some(value) = captured
+                .values
+                .iter()
+                .find(|(name, _)| *name == entry.name)
+                .map(|&(_, value)| value)
+            else {
+                continue;
+            };
+            let sample = match value {
+                Captured::Value(sample) => sample,
+                Captured::Conflict => None,
+            };
+            each_layer!(&mut entry.layer, store => {
+                store.put(target, sample.and_then(Value::from_sample));
+            });
+        }
+    }
+
     /// Restores captured values onto `target` according to each layer's rule.
+    /// Layers the capture does not cover (the source had no layer of that
+    /// name) are left unchanged, so restores from several sources compose.
     pub(crate) fn restore_caller(
         &mut self,
         domain: Domain,
@@ -349,11 +572,14 @@ impl Attributes {
         let mut carry = Carry::default();
         for entry in self.caller_entries_mut(domain) {
             let rule = entry.propagation;
-            let value = captured
+            let Some(value) = captured
                 .values
                 .iter()
                 .find(|(name, _)| *name == entry.name)
-                .map_or(Captured::Value(None), |&(_, value)| value);
+                .map(|&(_, value)| value)
+            else {
+                continue;
+            };
             let lost = each_layer!(&mut entry.layer, store => {
                 restore_in(store, rule, target, value)
             });

@@ -524,6 +524,9 @@ pub enum AttrError {
     /// [`Propagation::Interpolate`] was requested for a `u32` or `bool`
     /// layer, whose values cannot be blended.
     NotInterpolable,
+    /// `(domain, name)` already exists with the same storage and type but a
+    /// different [`Propagation`] rule.
+    RuleMismatch,
 }
 
 impl fmt::Display for AttrError {
@@ -534,6 +537,7 @@ impl fmt::Display for AttrError {
             Self::Reserved => "attribute layer is reserved",
             Self::NotDefined => "attribute layer is not defined",
             Self::NotInterpolable => "attribute layer values cannot be interpolated",
+            Self::RuleMismatch => "attribute layer exists with a different propagation rule",
         };
         f.write_str(text)
     }
@@ -951,6 +955,38 @@ fn compact_sparse_values<T: Clone>(layer: &SparseLayer<T>, map: &[Option<Id>]) -
 
 mod propagate;
 pub(crate) use propagate::CallerValues;
+
+/// Caller-defined attribute values of one domain, captured from weighted
+/// source elements for writing onto another element.
+///
+/// Produced by [`Mesh::capture_attributes`](crate::Mesh::capture_attributes)
+/// and written by [`op::restore_attributes`](crate::op::restore_attributes),
+/// in the same mesh or, after
+/// [`Mesh::adopt_attribute_layers`](crate::Mesh::adopt_attribute_layers), in
+/// a rebuilt one. Layers are matched by name within the domain. Built-in
+/// layers ([`attr::RESERVED`](crate::attr::RESERVED)) are never captured.
+#[derive(Clone, Debug)]
+pub struct CapturedAttributes {
+    pub(crate) domain: Domain,
+    pub(crate) values: CallerValues,
+    /// Written as is, whatever the target layer's rule.
+    pub(crate) verbatim: bool,
+}
+
+impl CapturedAttributes {
+    /// Returns the domain the values were captured from.
+    #[must_use]
+    pub const fn domain(&self) -> Domain {
+        self.domain
+    }
+
+    /// Whether restoring writes the values as they are, whatever each layer's
+    /// rule (see [`Mesh::capture_attributes_verbatim`](crate::Mesh::capture_attributes_verbatim)).
+    #[must_use]
+    pub const fn is_verbatim(&self) -> bool {
+        self.verbatim
+    }
+}
 
 #[cfg(test)]
 mod tests {

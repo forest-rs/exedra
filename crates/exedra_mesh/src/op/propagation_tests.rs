@@ -403,3 +403,179 @@ fn reserved_keys_report_no_caller_rule() {
         None
     );
 }
+
+/// `grid_mesh(2, 1)` with `HEAT` set to each vertex's x (vertex 0 left empty).
+fn heated_strip(rule: Propagation) -> Mesh {
+    let mut mesh = grid_mesh(2, 1);
+    mesh.define_sparse_layer(HEAT).expect("heat");
+    mesh.set_layer_propagation(HEAT, rule).expect("rule");
+    let vertices: Vec<_> = mesh.vertices().collect();
+    let mut edit = mesh.edit();
+    for vertex in vertices {
+        let x = edit.mesh().vertex_position(vertex).expect("live")[0];
+        if vertex.index() != 0 {
+            op::set_attribute(&mut edit, HEAT, vertex, x).expect("heat");
+        }
+    }
+    let _: () = edit.finish();
+    mesh
+}
+
+#[test]
+fn captures_combine_weighted_sources_per_rule() {
+    // Vertices 1 (x = 1) and 2 (x = 2) with weights 1 and 3; vertex 0 is
+    // empty and never contributes.
+    let sources = |mesh: &Mesh| {
+        [
+            (vertex(mesh, 0), 5.0),
+            (vertex(mesh, 1), 1.0),
+            (vertex(mesh, 2), 3.0),
+        ]
+    };
+    for (rule, expected, unpropagated) in [
+        (Propagation::Interpolate, Some(1.75), 0),
+        (Propagation::Copy, None, 0),
+        (Propagation::Clear, None, 0),
+        (Propagation::Unspecified, None, 1),
+    ] {
+        let mut mesh = heated_strip(rule);
+        let captured = mesh.capture_attributes(&sources(&mesh));
+        assert_eq!(captured.domain(), Domain::Vertex);
+        let target = vertex(&mesh, 3);
+        let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+        op::restore_attributes(&mut edit, target, &captured).expect("restore");
+        let changes: ChangeSet = edit.finish();
+        // Copy takes the heaviest source, vertex 0, which holds no value.
+        assert_eq!(heat(&mesh, target), expected, "{rule:?}");
+        assert_eq!(
+            changes.unpropagated_attribute_values, unpropagated,
+            "{rule:?}"
+        );
+        assert!(changes.dirty.has_dirty_vertices(), "{rule:?}");
+    }
+}
+
+#[test]
+fn only_positively_weighted_sources_take_part() {
+    // Vertex 1 has heat 1, vertex 2 heat 2, vertex 0 none.
+    let captured_heat = |rule: Propagation, weights: [(u32, f32); 2]| {
+        let mut mesh = heated_strip(rule);
+        let sources = weights.map(|(index, weight)| (vertex(&mesh, index), weight));
+        let captured = mesh.capture_attributes(&sources);
+        let target = vertex(&mesh, 3);
+        let mut edit = mesh.edit();
+        op::restore_attributes(&mut edit, target, &captured).expect("restore");
+        let _: () = edit.finish();
+        heat(&mesh, target)
+    };
+    // A sample exactly at one source selects that source, whatever the
+    // order of the zero-weight entries.
+    for rule in [Propagation::Copy, Propagation::Interpolate] {
+        assert_eq!(
+            captured_heat(rule, [(1, 0.0), (2, 1.0)]),
+            Some(2.0),
+            "{rule:?}"
+        );
+        assert_eq!(
+            captured_heat(rule, [(2, 1.0), (1, 0.0)]),
+            Some(2.0),
+            "{rule:?}"
+        );
+        // A zero-weight neighbour never fills an empty selected source.
+        assert_eq!(captured_heat(rule, [(1, 0.0), (0, 1.0)]), None, "{rule:?}");
+    }
+    // Copy takes the heaviest source, the first among equals, and every
+    // source when none has a positive weight.
+    assert_eq!(
+        captured_heat(Propagation::Copy, [(1, 1.0), (2, 3.0)]),
+        Some(2.0)
+    );
+    assert_eq!(
+        captured_heat(Propagation::Copy, [(2, 1.0), (1, 1.0)]),
+        Some(2.0)
+    );
+    assert_eq!(
+        captured_heat(Propagation::Copy, [(1, 0.0), (2, 0.0)]),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn restoring_refuses_other_domains_and_stale_targets() {
+    let mut mesh = heated_strip(Propagation::Copy);
+    let captured = mesh.capture_attributes(&[(vertex(&mesh, 1), 1.0)]);
+    let face = mesh.faces().next().expect("face");
+    let mut edit = mesh.edit();
+    assert_eq!(
+        op::restore_attributes(&mut edit, face, &captured),
+        Err(op::SetAttributeError::DomainMismatch {
+            expected: Domain::Vertex,
+            found: Domain::Face,
+        })
+    );
+    let stale = VertexId::from(crate::Id::new(99, core::num::NonZeroU32::MIN));
+    assert_eq!(
+        op::restore_attributes(&mut edit, stale, &captured),
+        Err(op::SetAttributeError::ElementNotLive {
+            domain: Domain::Vertex,
+            index: 99,
+        })
+    );
+    let _: () = edit.finish();
+}
+
+#[test]
+fn adopted_layers_accept_captures_from_their_source() {
+    let source = heated_strip(Propagation::Interpolate);
+    let mut rebuilt = grid_mesh(1, 1);
+    rebuilt.define_dense_layer(TAG, 3).expect("tag");
+    let before = rebuilt.revision();
+    assert_eq!(rebuilt.adopt_attribute_layers(&source), Ok(1));
+    assert_ne!(rebuilt.revision(), before);
+    assert_eq!(
+        rebuilt.attrs().propagation(Domain::Vertex, HEAT.name()),
+        Some(Propagation::Interpolate)
+    );
+    let adopted = rebuilt.revision();
+    assert_eq!(rebuilt.adopt_attribute_layers(&source), Ok(0));
+    assert_eq!(rebuilt.revision(), adopted, "nothing new, no revision");
+
+    let captured =
+        source.capture_attributes(&[(vertex(&source, 1), 1.0), (vertex(&source, 2), 1.0)]);
+    let target = vertex(&rebuilt, 0);
+    let mut edit = rebuilt.edit();
+    op::restore_attributes(&mut edit, target, &captured).expect("restore");
+    let _: () = edit.finish();
+    assert_eq!(heat(&rebuilt, target), Some(1.5));
+
+    // A same-named layer of another type refuses adoption of everything.
+    let mut conflicting = grid_mesh(1, 1);
+    conflicting
+        .define_sparse_layer(AttrKey::<u32>::new(Domain::Vertex, HEAT.name()))
+        .expect("u32 heat");
+    let mut other = heated_strip(Propagation::Copy);
+    other.define_sparse_layer(SHADE).expect("shade");
+    let revision = conflicting.revision();
+    assert_eq!(
+        conflicting.adopt_attribute_layers(&other),
+        Err(AttrError::TypeMismatch)
+    );
+    assert!(
+        conflicting.attrs().sparse(SHADE).is_none(),
+        "all or nothing"
+    );
+    assert_eq!(conflicting.revision(), revision);
+}
+
+#[test]
+fn verbatim_captures_ignore_rules() {
+    let mut mesh = heated_strip(Propagation::Clear);
+    let captured = mesh.capture_attributes_verbatim(vertex(&mesh, 2));
+    assert!(captured.is_verbatim());
+    let target = vertex(&mesh, 3);
+    let mut edit = mesh.edit_with(ChangeSetBuilder::new());
+    op::restore_attributes(&mut edit, target, &captured).expect("restore");
+    let changes = edit.finish();
+    assert_eq!(heat(&mesh, target), Some(2.0));
+    assert_eq!(changes.unpropagated_attribute_values, 0);
+}
