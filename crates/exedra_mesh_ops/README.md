@@ -17,6 +17,7 @@ See the [boundary and migration decision](docs/adr-0001-mesh-operation-boundary.
 | --- | --- |
 | Extrude, inset, solidify, cut a rectangular opening | `face_edit` |
 | Bridge or subdivide selected faces | `bridge`, `poke` |
+| Join open tube ends at a branch node | `junction` |
 | Boolean solids or finish selected edges | `boolean`, `round` |
 | Section or split a mesh with capped halves | `section` |
 | Resolve an authored planar frame or measure clearance | `workplane`, `clearance` |
