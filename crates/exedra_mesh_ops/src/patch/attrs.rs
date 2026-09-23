@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use exedra_mesh::attributes::CapturedAttributes;
 use exedra_mesh::{EdgeAttrPropagation, FaceId, HalfEdgeId, VertexId, op};
 
 /// Authored edge tags captured before a face edit.
@@ -32,6 +33,34 @@ pub(crate) fn propagate_face_corner_uvs<S: exedra_mesh::ChangeSink>(
             let _ = op::set_corner_uv(txn, corner, uv);
         }
     }
+}
+
+/// Writes captured caller-defined corner values onto `face`'s corners, keyed
+/// by each corner's destination vertex. Corners with no mapped capture are
+/// left empty: the edit has no source for them.
+pub(crate) fn propagate_face_corner_layers<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
+    face: FaceId,
+    layer_map: &[(VertexId, &CapturedAttributes)],
+) {
+    let corners = txn.mesh().face_loop(face).collect::<Vec<_>>();
+    for corner in corners {
+        let Some(to_vertex) = txn.mesh().to_vertex(corner) else {
+            continue;
+        };
+        if let Some((_, captured)) = layer_map.iter().find(|(vertex, _)| *vertex == to_vertex) {
+            let _ = op::restore_attributes(txn, corner, captured);
+        }
+    }
+}
+
+/// Writes captured caller-defined face values onto `face`.
+pub(crate) fn propagate_face_layers<S: exedra_mesh::ChangeSink>(
+    txn: &mut exedra_mesh::EditSession<'_, S>,
+    face: FaceId,
+    captured: &CapturedAttributes,
+) {
+    let _ = op::restore_attributes(txn, face, captured);
 }
 
 pub(crate) fn propagate_edge_attrs_for_vertices<S: exedra_mesh::ChangeSink>(

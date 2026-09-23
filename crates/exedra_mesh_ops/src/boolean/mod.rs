@@ -16,6 +16,7 @@ use exedra_math::{cross, promote, sub};
 
 use exedra_mesh::{CornerId, FaceId, FaceTriangulation, Mesh};
 
+mod attributes;
 mod classify;
 mod cleanup;
 mod coplanar;

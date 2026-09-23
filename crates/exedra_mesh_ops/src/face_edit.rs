@@ -11,8 +11,8 @@ use exedra_mesh::{DeletePolicy, FaceId, VertexId, op};
 
 use crate::math::FloatExt;
 use crate::patch::attrs::{
-    propagate_edge_attrs_for_vertices, propagate_face_corner_uvs, propagate_frame_edge_attrs,
-    set_face_edge_sharpness_for_vertices,
+    propagate_edge_attrs_for_vertices, propagate_face_corner_layers, propagate_face_corner_uvs,
+    propagate_face_layers, propagate_frame_edge_attrs, set_face_edge_sharpness_for_vertices,
 };
 use crate::patch::connect::{FrameOrientationState, add_frame_face_with_orientation};
 use crate::patch::duplicate::{create_vertex_copies, map_vertex_loop};
@@ -326,9 +326,12 @@ impl Default for InsetFacesParams {
 
 /// Extrudes selected faces in the caller's eager edit session.
 ///
-/// Source regions and corner UVs transfer to caps/walls. Edge tags follow
+/// Source regions and corner UVs transfer to caps/walls. Caller-defined layers
+/// transfer under their own [`Propagation`](exedra_mesh::attributes::Propagation)
+/// rules: face values from the source face, corner values from the source corner
+/// at the same vertex, and vertex values onto the copied vertices. Edge tags follow
 /// `propagate`; cap perimeters and wall columns are marked sharp. Normal overrides
-/// and custom attributes do not transfer. Shared vertices move along the normalized
+/// do not transfer. Shared vertices move along the normalized
 /// sum of incident selected face normals. The legacy zero-sum fallback is +Z.
 /// Preflight failures precede mutation; kernel insertion/attribute failures can
 /// leave partial edits. Finish the caller's change sink even after an error.
@@ -462,6 +465,20 @@ pub fn extrude_faces<S: exedra_mesh::ChangeSink>(
                 (next_cap, uv_next),
             ];
             propagate_face_corner_uvs(txn, wall, &uv_map);
+            let layers_current = &plan.corner_layers[boundary.edge_index];
+            let layers_next =
+                &plan.corner_layers[(boundary.edge_index + 1) % plan.corner_layers.len()];
+            propagate_face_corner_layers(
+                txn,
+                wall,
+                &[
+                    (current, layers_current),
+                    (next, layers_next),
+                    (current_cap, layers_current),
+                    (next_cap, layers_next),
+                ],
+            );
+            propagate_face_layers(txn, wall, &plan.face_layers);
             wall_faces.push(wall);
         }
     }
@@ -493,6 +510,14 @@ pub fn extrude_faces<S: exedra_mesh::ChangeSink>(
             .zip(plan.vertex_uvs.iter().copied())
             .collect::<Vec<_>>();
         propagate_face_corner_uvs(txn, top, &cap_uv_map);
+        let cap_layer_map = plan
+            .vertices
+            .iter()
+            .map(|vertex| cap_vertices[vertex])
+            .zip(plan.corner_layers.iter())
+            .collect::<Vec<_>>();
+        propagate_face_corner_layers(txn, top, &cap_layer_map);
+        propagate_face_layers(txn, top, &plan.face_layers);
         cap_faces.push(top);
     }
 
@@ -678,6 +703,20 @@ impl InsetFacesPlan {
                     (next_inset, uv_next),
                 ];
                 propagate_face_corner_uvs(txn, frame, &uv_map);
+                let layers_current = &face_plan.corner_layers[boundary.edge_index];
+                let layers_next = &face_plan.corner_layers
+                    [(boundary.edge_index + 1) % face_plan.corner_layers.len()];
+                propagate_face_corner_layers(
+                    txn,
+                    frame,
+                    &[
+                        (current, layers_current),
+                        (next, layers_next),
+                        (current_inset, layers_current),
+                        (next_inset, layers_next),
+                    ],
+                );
+                propagate_face_layers(txn, frame, &face_plan.face_layers);
                 frame_faces.push(frame);
             }
         }
@@ -710,6 +749,14 @@ impl InsetFacesPlan {
                 .zip(face_plan.vertex_uvs.iter().copied())
                 .collect::<Vec<_>>();
             propagate_face_corner_uvs(txn, inner, &inset_uv_map);
+            let inset_layer_map = face_plan
+                .vertices
+                .iter()
+                .map(|vertex| inset_vertices[vertex])
+                .zip(face_plan.corner_layers.iter())
+                .collect::<Vec<_>>();
+            propagate_face_corner_layers(txn, inner, &inset_layer_map);
+            propagate_face_layers(txn, inner, &face_plan.face_layers);
             inner_faces.push(inner);
         }
 
@@ -964,8 +1011,11 @@ impl CutRectFacePlan {
     }
     /// Applies a prepared cut after checking revision and exact consumed state,
     /// including unfinished edits. Equivalent clones are accepted. Regions and
-    /// boundary edge tags transfer; normal overrides, custom attributes and UVs
-    /// do not. The opening perimeter is sharp. Kernel failures may leave partial
+    /// boundary edge tags transfer. Caller-defined layers transfer under their
+    /// own rules: the source face's values onto every generated face, and the
+    /// source corners' values onto the frame corners at the outer vertices; the
+    /// inner corners and vertices have no source and start empty. Normal
+    /// overrides and UVs do not transfer. The opening perimeter is sharp. Kernel failures may leave partial
     /// edits; finish the caller's change sink after success or failure.
     pub fn apply<S: exedra_mesh::ChangeSink>(
         &self,
@@ -981,6 +1031,19 @@ impl CutRectFacePlan {
 
         let mut stats = FaceEditStats::default();
 
+        let face_layers = txn.mesh().capture_attributes(&[(plan.face, 1.0)]);
+        let outer_corner_layers = plan.outer_vertices.map(|vertex| {
+            let corner = txn
+                .mesh()
+                .face_loop(plan.face)
+                .find(|&corner| txn.mesh().to_vertex(corner) == Some(vertex));
+            match corner {
+                Some(corner) => txn.mesh().capture_attributes(&[(corner, 1.0)]),
+                None => txn
+                    .mesh()
+                    .capture_attributes::<exedra_mesh::HalfEdgeId>(&[]),
+            }
+        });
         let mut inner_vertices = Vec::with_capacity(4);
         for position in plan.inner_positions {
             inner_vertices.push(op::add_vertex(txn, position));
@@ -1030,6 +1093,15 @@ impl CutRectFacePlan {
                 true,
                 false,
             );
+            propagate_face_layers(txn, frame_face, &face_layers);
+            propagate_face_corner_layers(
+                txn,
+                frame_face,
+                &[
+                    (current, &outer_corner_layers[i]),
+                    (next, &outer_corner_layers[(i + 1) % 4]),
+                ],
+            );
             frame_faces.push(frame_face);
         }
 
@@ -1039,6 +1111,7 @@ impl CutRectFacePlan {
         }
         let inner_face = op::add_face(txn, &inner_loop).map_err(FaceEditError::AddFace)?;
         op::set_face_region(txn, inner_face, plan.region).map_err(FaceEditError::SetRegion)?;
+        propagate_face_layers(txn, inner_face, &face_layers);
 
         let mut boundary_edges = EdgeSet::with_capacity(4);
         for inner_corner in txn.mesh().face_loop(inner_face) {

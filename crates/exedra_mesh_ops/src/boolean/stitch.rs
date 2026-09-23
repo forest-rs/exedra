@@ -98,6 +98,13 @@ pub struct BooleanStats {
     pub welded_vertices: u64,
     /// Seam edges tagged in the output.
     pub seam_edges: u64,
+    /// Output faces whose source face has UVs but an incomplete or non-finite
+    /// chart, so their corners carry no UV.
+    pub uv_unmapped_faces: u64,
+    /// Caller-defined attribute values whose layer has no
+    /// [`Propagation`](exedra_mesh::attributes::Propagation) rule, so the
+    /// result could not carry them.
+    pub unpropagated_attribute_values: u64,
 }
 
 /// The stitched boolean result.
@@ -112,6 +119,14 @@ pub struct BooleanOutput {
     /// stage's origin mapping, so constructive source maps can attribute
     /// boolean faces to operand features.
     pub face_provenance: Vec<(FaceId, MeshSide, FaceId)>,
+    /// `(output vertex, operand side, operand vertex)` for every output vertex
+    /// that is an original vertex of an operand, mesh A's first, each in
+    /// operand vertex order. Welding is identity-based, so this is exact: a
+    /// vertex of one operand lying on a face of the other is still that
+    /// operand's vertex. A vertex original in both operands (an exact shared
+    /// seam point) appears once per operand. Intersection vertices created by
+    /// the split have no row.
+    pub vertex_provenance: Vec<(VertexId, MeshSide, VertexId)>,
     /// The patch classification the selection was made from.
     pub classification: PatchClassification,
     /// Stitch counters.
@@ -136,6 +151,10 @@ pub enum BooleanError {
     /// The output mesh could not be rebuilt (an internal invariant
     /// violation, not an input problem).
     Build(BuildError),
+    /// The operands register a caller-defined layer under one name with
+    /// different storage, value type, default or propagation rule, so the
+    /// result cannot hold both.
+    AttributeLayerConflict,
     /// A pipeline stage diagnosed an internal invariant violation
     /// ([`super::BooleanFailureKind::InternalInvariantViolation`]); the
     /// assembled result would be unreliable, so no geometry is returned.
@@ -155,6 +174,9 @@ impl core::fmt::Display for BooleanError {
                 f.write_str("operand edge contact would produce a non-manifold result")
             }
             Self::Build(e) => write!(f, "stitch rebuild failed: {e:?}"),
+            Self::AttributeLayerConflict => {
+                f.write_str("operands register one attribute layer with different types")
+            }
             Self::InvariantViolation { count } => {
                 write!(
                     f,
@@ -281,11 +303,22 @@ pub fn boolean_mesh(
         &classification,
         &mut stats,
     ) {
-        Ok((mesh, face_provenance)) => {
+        Ok((mut mesh, face_provenance, vertex_provenance)) => {
             check_output_surface(&mesh, diagnostics)?;
+            let carried = super::attributes::carry(
+                &mut mesh,
+                mesh_a,
+                mesh_b,
+                &face_provenance,
+                &vertex_provenance,
+            )
+            .map_err(|_| BooleanError::AttributeLayerConflict)?;
+            stats.uv_unmapped_faces = carried.uv_unmapped_faces;
+            stats.unpropagated_attribute_values = carried.unpropagated_attribute_values;
             Ok(BooleanOutput {
                 mesh,
                 face_provenance,
+                vertex_provenance,
                 classification,
                 stats,
             })
@@ -396,6 +429,7 @@ fn selection(op: BooleanOp, mesh: MeshSide, side: PatchSide) -> Option<bool> {
 }
 
 type Provenance = Vec<(FaceId, MeshSide, FaceId)>;
+type VertexProvenance = Vec<(VertexId, MeshSide, VertexId)>;
 
 enum StitchError {
     /// An exact edge-only operand contact, classified from source topology.
@@ -423,7 +457,7 @@ fn stitch(
     contacts: &[CoplanarContact],
     classification: &PatchClassification,
     stats: &mut BooleanStats,
-) -> Result<(Mesh, Provenance), StitchError> {
+) -> Result<(Mesh, Provenance, VertexProvenance), StitchError> {
     let mut builder = MeshBuilder::new();
 
     // --- Identity-based vertex maps, seam vertices pre-welded. One connected
@@ -697,7 +731,28 @@ fn stitch(
         }
     }
 
-    Ok((mesh, face_provenance))
+    // --- Vertex provenance from the identity maps. The split meshes are
+    // clones of the operands that only add vertices, so an operand vertex id
+    // that is live in the operand names the same original vertex.
+    let mut vertex_provenance = VertexProvenance::new();
+    for (side, source, map) in [
+        (MeshSide::A, source_mesh_a, &map_a),
+        (MeshSide::B, source_mesh_b, &map_b),
+    ] {
+        for vertex in source.vertices() {
+            let Some(output) = map.get(&vertex).and_then(|&index| vertex_of(index)) else {
+                continue;
+            };
+            // `vertex_position` reads the dense layer and still answers for
+            // the isolated vertices deleted above; only vertices that kept an
+            // outgoing half-edge are in the output.
+            if mesh.vertex_out(output).is_some() {
+                vertex_provenance.push((output, side, vertex));
+            }
+        }
+    }
+
+    Ok((mesh, face_provenance, vertex_provenance))
 }
 
 fn record_representative_position(slot: &mut Option<[f32; 3]>, position: [f32; 3]) {

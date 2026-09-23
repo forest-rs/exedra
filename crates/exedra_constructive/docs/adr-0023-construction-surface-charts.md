@@ -34,8 +34,10 @@ inverted rounded mesh positions. Profile distances use sampled chords, and sourc
 maps retain the policy and loop lengths as original construction evidence.
 
 Chart ancestry is independent of current attribute coverage. Compilation reports
-that through `RegionRange::has_uvs`. Mesh Boolean reconstruction currently drops
-corner UVs; retained chart ancestry must not claim otherwise. Loft and sweep
+that through `RegionRange::has_uvs`. Mesh Boolean reconstruction interpolates
+each output corner's UV in its operand's original face (`exedra_mesh_ops`
+ADR-0003), so charts survive CSG, cut surfaces included. A source face with an
+incomplete chart leaves its output faces without UVs, and coverage reports it. Loft and sweep
 charts use the explicit policies below. The exact extrusion stretch rewrite falls back to mapped-mesh stretching when a
 chart is authored, so a structural optimization cannot silently erase its UVs.
 

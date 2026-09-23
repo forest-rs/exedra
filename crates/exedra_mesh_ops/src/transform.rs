@@ -10,6 +10,8 @@ use exedra_mesh::{HalfEdgeId, Mesh, VertexId};
 
 use exedra_math::Placement3;
 
+use crate::layers::{CornerSample, Transfer, VertexSample};
+
 /// Refusal to transform a mesh into representable geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TransformError {
@@ -76,8 +78,12 @@ struct FaceAttrs {
 /// normal overrides transport as covectors (inverse transpose, renormalized).
 /// A non-reflecting placement retains topology IDs and all other attributes.
 /// Reflecting placements rebuild reversed face loops, preserving built-in
-/// attributes (regions, UVs, normals, seams and edge/vertex sharpness). Custom
-/// attributes are not transferred by the reflecting rebuild.
+/// attributes (regions, UVs, normals, seams and edge/vertex sharpness) and
+/// every caller-defined layer with its rule. The rebuild only re-winds faces,
+/// so caller values are carried unchanged onto the same face, corner and
+/// vertex, whatever their rule. Values whose meaning depends on handedness
+/// (a tangent frame's sign, a winding-dependent orientation) are not adjusted;
+/// callers that store such data must correct it after a reflection.
 ///
 /// In both paths, output face and vertex iteration order corresponds one-to-one
 /// with the source iteration order. Callers can zip those IDs to carry their own
@@ -225,11 +231,14 @@ fn transform_reflecting(source: &Mesh, placement: &Placement3) -> Result<Mesh, T
     let mut builder = exedra_mesh::MeshBuilder::new();
     let mut vertex_indices = BTreeMap::<u32, u32>::new();
     let mut vertex_sharpness = Vec::with_capacity(source.vertices().count());
+    let mut source_vertices_in_order = Vec::with_capacity(source.vertices().count());
     for (vertex, position) in placed_positions(source, placement)? {
         let output = builder.push_vertex(position);
         vertex_indices.insert(vertex.index(), output);
         vertex_sharpness.push(source.vertex_sharpness(vertex));
+        source_vertices_in_order.push(vertex);
     }
+    let mut layer_sources = Vec::with_capacity(source.faces().count());
 
     let mut face_attrs = Vec::with_capacity(source.faces().count());
     for face in source.faces() {
@@ -250,6 +259,19 @@ fn transform_reflecting(source: &Mesh, placement: &Placement3) -> Result<Mesh, T
             .map(|vertex| vertex_indices[vertex])
             .collect::<Vec<_>>();
         let corner_by_vertex = collect_corner_attrs(source, &source_loop, uvs, normals, inverse)?;
+        let source_corner_by_vertex: BTreeMap<u32, HalfEdgeId> = source_loop
+            .iter()
+            .map(|&corner| {
+                (
+                    source
+                        .to_vertex(corner)
+                        .expect("a validated face edge has a destination")
+                        .index(),
+                    corner,
+                )
+            })
+            .collect();
+        let mut source_corners = Vec::with_capacity(source_vertices.len());
         let mut output_edges = Vec::with_capacity(source_vertices.len());
         let mut output_corners = Vec::with_capacity(source_vertices.len());
         for index in 0..source_vertices.len() {
@@ -270,6 +292,7 @@ fn transform_reflecting(source: &Mesh, placement: &Placement3) -> Result<Mesh, T
                     .copied()
                     .expect("a rebuilt corner comes from one source corner"),
             );
+            source_corners.push(source_corner_by_vertex[&to]);
         }
 
         builder.add_face_with_attrs(
@@ -284,6 +307,7 @@ fn transform_reflecting(source: &Mesh, placement: &Placement3) -> Result<Mesh, T
             edges: output_edges,
             corners: output_corners,
         });
+        layer_sources.push((face, source_corners));
     }
 
     let mut built = builder.build()?;
@@ -331,6 +355,30 @@ fn transform_reflecting(source: &Mesh, placement: &Placement3) -> Result<Mesh, T
         {
             edit.finish();
         }
+    }
+    if let Some(mut transfer) = Transfer::verbatim(source) {
+        for ((&output, edges), (face, corners)) in built
+            .face_ids
+            .iter()
+            .zip(&built.face_edge_ids)
+            .zip(layer_sources)
+        {
+            transfer.face(
+                output,
+                face,
+                edges
+                    .iter()
+                    .copied()
+                    .zip(corners.into_iter().map(CornerSample::Corner))
+                    .collect(),
+            );
+        }
+        for (&output, source_vertex) in built.vertex_ids.iter().zip(source_vertices_in_order) {
+            transfer.vertex(output, VertexSample::Vertex(source_vertex));
+        }
+        let _ = transfer
+            .apply(&mut built.mesh)
+            .expect("a fresh mesh adopts every source layer");
     }
 
     Ok(built.mesh)

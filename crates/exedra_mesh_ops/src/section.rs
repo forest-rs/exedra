@@ -195,7 +195,12 @@ pub fn section_mesh(
 /// Surviving surface triangles retain regions, corner UVs/normals and original
 /// edge seams/sharpness. Caps use `cap_region` and section-frame XY UVs; cap rims
 /// are sharp. Results identify original source faces/vertices and generated cap
-/// faces/intersection vertices. Custom attributes are not transferred. No
+/// faces/intersection vertices. Caller-defined layers keep their registration
+/// and [`Propagation`](exedra_mesh::attributes::Propagation) rule: surviving
+/// faces take their source face's values, corners take the source face's
+/// corners weighted by position (exact at source vertices, interpolated at
+/// intersections), and intersection vertices interpolate their source edge.
+/// Caps have no source face, so their caller values start empty. No
 /// solid-validity certificate is implied.
 ///
 /// # Errors
@@ -267,6 +272,10 @@ pub struct CutMesh {
     pub face_sources: BTreeMap<FaceId, CutFaceSource>,
     /// Source of every generated vertex, keyed by its output ID.
     pub vertex_sources: BTreeMap<VertexId, CutVertexSource>,
+    /// Caller-defined attribute values whose layer has no
+    /// [`Propagation`](exedra_mesh::attributes::Propagation) rule, so the
+    /// split could not carry them.
+    pub unpropagated_attribute_values: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]

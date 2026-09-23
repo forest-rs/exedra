@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use crate::layers::{CornerSample, Transfer, VertexSample};
 
 pub(super) fn cap_triangles(prepared: &Prepared) -> Result<Vec<[u32; 3]>, SectionError> {
     let mut output = Vec::new();
@@ -64,6 +65,7 @@ pub(super) fn emit(
     let mut face_sources = Vec::new();
     let mut corner_uvs = Vec::new();
     let mut corner_normals = Vec::new();
+    let mut corner_points = Vec::new();
     let mut edge_attrs = BTreeMap::new();
     for face in source.faces() {
         for edge in source.face_loop(face) {
@@ -156,6 +158,8 @@ pub(super) fn emit(
             face_sources.push(polygon.provenance);
             // Builder edge i ends at input corner i+1.
             let destination_corners = [triangle[1], triangle[2], triangle[0]];
+            corner_points
+                .push(destination_corners.map(|c| prepared.points[c.point as usize].position));
             corner_uvs.push(destination_corners.map(|c| {
                 c.uv.map(|uv| {
                     let p = narrow([uv[0], uv[1], 0.0]);
@@ -199,6 +203,47 @@ pub(super) fn emit(
             edit.finish();
         }
     }
+    let mut unpropagated_attribute_values = 0;
+    if let Some(mut transfer) = Transfer::new(source) {
+        for (((&face, edges), points), provenance) in built
+            .face_ids
+            .iter()
+            .zip(&built.face_edge_ids)
+            .zip(&corner_points)
+            .zip(&face_sources)
+        {
+            // Caps have no source face: their caller values start empty.
+            if let CutFaceSource::Original(source_face) = *provenance {
+                transfer.face(
+                    face,
+                    source_face,
+                    edges
+                        .iter()
+                        .copied()
+                        .zip(points.map(CornerSample::Point))
+                        .collect(),
+                );
+            }
+        }
+        for (&vertex, provenance) in built.vertex_ids.iter().zip(&vertex_sources) {
+            transfer.vertex(
+                vertex,
+                match *provenance {
+                    CutVertexSource::Original(original) => VertexSample::Vertex(original),
+                    CutVertexSource::Intersection {
+                        vertices,
+                        parameter,
+                    } => VertexSample::Edge {
+                        vertices,
+                        parameter,
+                    },
+                },
+            );
+        }
+        unpropagated_attribute_values = transfer
+            .apply(&mut built.mesh)
+            .map_err(|_| SectionError::BuildFailed)?;
+    }
     if !built.mesh.validate_deep().is_empty()
         || !built
             .mesh
@@ -209,6 +254,7 @@ pub(super) fn emit(
         return Err(SectionError::BuildFailed);
     }
     Ok(Some(CutMesh {
+        unpropagated_attribute_values,
         face_sources: built.face_ids.iter().copied().zip(face_sources).collect(),
         vertex_sources: built
             .vertex_ids
