@@ -5,6 +5,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::attr;
+use crate::attributes::{CallerValues, Domain};
 use crate::{ChangeSink, EditSession, FaceId, HalfEdgeId, VertexId, op};
 
 use super::DissolveEdgesError;
@@ -38,7 +39,11 @@ pub fn dissolve_edges<S: ChangeSink>(
         if let Some(region) = plan.region {
             let _ = op::set_face_region(session, merged, region);
         }
+        session.restore_caller_layers(Domain::Face, merged.as_id(), &plan.face_values);
         let new_corners = session.mesh().face_loop(merged).collect::<Vec<_>>();
+        for (corner, values) in new_corners.iter().zip(&plan.corner_values) {
+            session.restore_caller_layers(Domain::HalfEdge, corner.as_id(), values);
+        }
         for (corner, attrs) in new_corners.into_iter().zip(plan.corner_data) {
             if let Some(uv) = attrs.uv {
                 let _ = op::set_corner_uv(session, corner, uv);
@@ -120,6 +125,10 @@ struct MergePlan {
     loop_vertices: Vec<VertexId>,
     corner_data: Vec<BoundaryCornerData>,
     region: Option<u32>,
+    /// Caller-defined values per merged-loop corner, parallel to `corner_data`.
+    corner_values: Vec<CallerValues>,
+    /// Caller-defined face values both faces agree on.
+    face_values: CallerValues,
 }
 
 fn build_merge_plan(
@@ -211,12 +220,27 @@ fn build_merge_plan(
         _ => None,
     };
 
+    let corner_values = path_b
+        .iter()
+        .chain(path_a.iter())
+        .map(|&corner| {
+            mesh.attrs()
+                .capture_caller(Domain::HalfEdge, corner.as_id())
+        })
+        .collect();
+    let face_values = CallerValues::agreed(
+        &mesh.attrs().capture_caller(Domain::Face, face_a.as_id()),
+        &mesh.attrs().capture_caller(Domain::Face, face_b.as_id()),
+    );
+
     Ok(MergePlan {
         face_a,
         face_b,
         loop_vertices,
         corner_data,
         region,
+        corner_values,
+        face_values,
     })
 }
 

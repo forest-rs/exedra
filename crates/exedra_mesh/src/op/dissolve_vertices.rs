@@ -5,6 +5,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::attr;
+use crate::attributes::{CallerValues, Domain};
 use crate::{ChangeSink, EditSession, FaceId, VertexId, op};
 
 use super::DissolveVerticesError;
@@ -21,6 +22,10 @@ struct RebuiltFacePlan {
     corner_uvs: Vec<(VertexId, [f32; 2])>,
     perimeter_edges: Vec<(VertexId, VertexId, EdgeAttrs)>,
     region: Option<u32>,
+    /// Caller-defined values of each kept corner, keyed by its vertex.
+    corner_values: Vec<(VertexId, CallerValues)>,
+    /// Caller-defined values of the rebuilt face.
+    face_values: CallerValues,
 }
 
 #[derive(Clone, Debug)]
@@ -47,11 +52,19 @@ pub fn dissolve_vertices<S: ChangeSink>(
             if let Some(region) = face_plan.region {
                 let _ = op::set_face_region(session, face, region);
             }
+            session.restore_caller_layers(Domain::Face, face.as_id(), &face_plan.face_values);
             let new_corners = session.mesh().face_loop(face).collect::<Vec<_>>();
             for corner in new_corners {
                 let Some(to) = session.mesh().to_vertex(corner) else {
                     continue;
                 };
+                if let Some((_, values)) = face_plan
+                    .corner_values
+                    .iter()
+                    .find(|(vertex, _)| *vertex == to)
+                {
+                    session.restore_caller_layers(Domain::HalfEdge, corner.as_id(), values);
+                }
                 if let Some((_, uv)) = face_plan
                     .corner_uvs
                     .iter()
@@ -183,6 +196,7 @@ fn rebuild_face_without_vertex(
 ) -> Result<RebuiltFacePlan, DissolveVerticesError> {
     let mut loop_vertices = Vec::<VertexId>::new();
     let mut corner_uvs = Vec::<(VertexId, [f32; 2])>::new();
+    let mut corner_values = Vec::<(VertexId, CallerValues)>::new();
     let mut perimeter_edges = Vec::<(VertexId, VertexId, EdgeAttrs)>::new();
 
     for corner in mesh.face_loop(face) {
@@ -200,6 +214,11 @@ fn rebuild_face_without_vertex(
                     vertex: removed_vertex.index(),
                 })?;
         loop_vertices.push(to);
+        corner_values.push((
+            to,
+            mesh.attrs()
+                .capture_caller(Domain::HalfEdge, corner.as_id()),
+        ));
         if let Some(uv) = mesh
             .attrs()
             .sparse(attr::CORNER_UV)
@@ -238,5 +257,7 @@ fn rebuild_face_without_vertex(
         corner_uvs,
         perimeter_edges,
         region,
+        corner_values,
+        face_values: mesh.attrs().capture_caller(Domain::Face, face.as_id()),
     })
 }

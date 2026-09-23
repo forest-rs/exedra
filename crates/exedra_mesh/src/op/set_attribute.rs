@@ -94,8 +94,19 @@ fn result<T, E: AttributeElement>(
 /// element, such as per-corner colors: sparse insertion in arbitrary order is
 /// quadratic. The element is marked dirty in its domain.
 ///
-/// Edit kernels do not yet propagate caller-defined layers through topology
-/// changes; write them after such edits.
+/// Topology kernels carry caller-defined layers onto the elements they create
+/// by the rule declared with
+/// [`Mesh::set_layer_propagation`](crate::Mesh::set_layer_propagation).
+/// Half-edge layers are corner data (see
+/// [`Propagation`](crate::attributes::Propagation)). `exedra_mesh_ops` does
+/// not carry them yet, in two ways:
+///
+/// - operations that edit a mesh in place through these kernels (face edits,
+///   poke, patch and connect operations) clear and count the values of the
+///   elements they delete, but their new elements start empty and uncounted;
+/// - operations that return a fresh mesh (Booleans, stretch, sections, and
+///   reflecting transforms) drop caller-defined layers and their rules
+///   entirely, without a count.
 pub fn set_attribute<T: LayerValue, E: AttributeElement, S: ChangeSink>(
     session: &mut EditSession<'_, S>,
     key: AttrKey<T>,

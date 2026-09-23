@@ -344,6 +344,47 @@ impl ValueWords {
     }
 }
 
+/// How topology edits carry a caller-defined layer's values onto the elements
+/// they create or rebuild.
+///
+/// Built-in layers ([`attr::RESERVED`](crate::attr::RESERVED)) keep their own
+/// rules, chosen per edit through [`PropagatePolicy`](crate::PropagatePolicy).
+/// Every other layer follows the rule declared with
+/// [`Mesh::set_layer_propagation`](crate::Mesh::set_layer_propagation).
+/// Deleted elements always lose their values, whatever the rule, so a
+/// recycled slot never inherits a stale one.
+///
+/// Half-edge layers are treated as corner data: a half-edge's value belongs
+/// to the corner at its destination vertex within its face. Edge-keyed
+/// layers stored on one canonical half-edge per undirected edge, like
+/// [`attr::EDGE_SEAM`](crate::attr::EDGE_SEAM), are outside this contract;
+/// kernels may move or drop such values without counting them.
+#[derive(Copy, Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub enum Propagation {
+    /// No rule declared. Edits clear the values they cannot carry and count
+    /// them in [`ChangeSet::unpropagated_attribute_values`](crate::ChangeSet::unpropagated_attribute_values).
+    ///
+    /// Under every rule, an element that fuses two sources (a face merged by
+    /// [`op::dissolve_edges`](crate::op::dissolve_edges)) carries a value only
+    /// when both agree, compared by value (so a NaN never agrees); a
+    /// disagreement is cleared and counted.
+    #[default]
+    Unspecified,
+    /// New and rebuilt elements get no value (a sparse gap, or the dense
+    /// default). Intentional, so never counted.
+    Clear,
+    /// New and rebuilt elements copy the value of their source element, for
+    /// example the corner at the same vertex of the original face.
+    Copy,
+    /// Like [`Self::Copy`], but where an edit places an element between two
+    /// sources (the vertex and corners inserted by
+    /// [`op::split_edge`](crate::op::split_edge)) the value is their blend.
+    /// Float layers only. When only one blend source has a value, that value
+    /// is carried, whichever side it is on; with neither, the element copies
+    /// its source.
+    Interpolate,
+}
+
 /// Internal concrete storage variants used by [`Attributes`].
 #[doc(hidden)]
 #[derive(Clone, Debug)]
@@ -448,6 +489,7 @@ struct Entry {
     domain: Domain,
     name: &'static str,
     layer: Layer,
+    propagation: Propagation,
 }
 
 /// Attribute storage for all mesh domains.
@@ -477,6 +519,11 @@ pub enum AttrError {
     /// `(domain, name)` is a built-in layer listed in
     /// [`attr::RESERVED`](crate::attr::RESERVED), which owns its registration.
     Reserved,
+    /// No layer is registered under `(domain, name)`.
+    NotDefined,
+    /// [`Propagation::Interpolate`] was requested for a `u32` or `bool`
+    /// layer, whose values cannot be blended.
+    NotInterpolable,
 }
 
 impl fmt::Display for AttrError {
@@ -485,6 +532,8 @@ impl fmt::Display for AttrError {
             Self::TypeMismatch => "attribute layer exists with different type",
             Self::AlreadyExists => "attribute layer already exists",
             Self::Reserved => "attribute layer is reserved",
+            Self::NotDefined => "attribute layer is not defined",
+            Self::NotInterpolable => "attribute layer values cannot be interpolated",
         };
         f.write_str(text)
     }
@@ -563,6 +612,7 @@ impl Attributes {
         }
         let len = self.domain_capacity(key.domain());
         self.dense.push(Entry {
+            propagation: Propagation::Unspecified,
             domain: key.domain(),
             name: key.name(),
             layer: T::dense_new(len, default),
@@ -585,6 +635,7 @@ impl Attributes {
             return Err(AttrError::TypeMismatch);
         }
         self.sparse.push(Entry {
+            propagation: Propagation::Unspecified,
             domain: key.domain(),
             name: key.name(),
             layer: T::sparse_new(),
@@ -628,6 +679,44 @@ impl Attributes {
     pub fn sparse_mut<T: LayerValue>(&mut self, key: AttrKey<T>) -> Option<&mut SparseLayer<T>> {
         let entry = self.find_sparse_entry_mut(key.domain(), key.name())?;
         T::sparse_mut(&mut entry.layer)
+    }
+
+    /// Returns the propagation rule of the caller-defined layer registered
+    /// under `(domain, name)`.
+    ///
+    /// Returns `None` for built-in keys ([`attr::RESERVED`](crate::attr::RESERVED)),
+    /// whose rules come from [`PropagatePolicy`](crate::PropagatePolicy), and
+    /// for unregistered layers.
+    #[must_use]
+    pub fn propagation(&self, domain: Domain, name: &str) -> Option<Propagation> {
+        if crate::attr::is_reserved(domain, name) {
+            return None;
+        }
+        self.find_dense_entry(domain, name)
+            .or_else(|| self.find_sparse_entry(domain, name))
+            .map(|entry| entry.propagation)
+    }
+
+    /// Sets the propagation rule of a registered layer.
+    pub(crate) fn set_propagation(
+        &mut self,
+        domain: Domain,
+        name: &str,
+        propagation: Propagation,
+    ) -> Result<(), AttrError> {
+        let entry = self
+            .dense
+            .iter_mut()
+            .chain(self.sparse.iter_mut())
+            .find(|entry| entry.domain == domain && entry.name == name)
+            .ok_or(AttrError::NotDefined)?;
+        if propagation == Propagation::Interpolate
+            && matches!(entry.layer.kind(), LayerKind::U32 | LayerKind::Bool)
+        {
+            return Err(AttrError::NotInterpolable);
+        }
+        entry.propagation = propagation;
+        Ok(())
     }
 
     /// Returns the value kind of the layer registered under `(domain, name)`.
@@ -755,6 +844,7 @@ impl Attributes {
         for entry in &self.dense {
             let map = domain_map(entry.domain, vertex_map, face_map, half_edge_map);
             compacted.dense.push(Entry {
+                propagation: entry.propagation,
                 domain: entry.domain,
                 name: entry.name,
                 layer: compact_dense_layer(
@@ -768,6 +858,7 @@ impl Attributes {
         for entry in &self.sparse {
             let map = domain_map(entry.domain, vertex_map, face_map, half_edge_map);
             compacted.sparse.push(Entry {
+                propagation: entry.propagation,
                 domain: entry.domain,
                 name: entry.name,
                 layer: compact_sparse_layer(&entry.layer, map),
@@ -857,6 +948,9 @@ fn compact_sparse_values<T: Clone>(layer: &SparseLayer<T>, map: &[Option<Id>]) -
     }
     compacted
 }
+
+mod propagate;
+pub(crate) use propagate::CallerValues;
 
 #[cfg(test)]
 mod tests {

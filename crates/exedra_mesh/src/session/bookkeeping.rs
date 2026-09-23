@@ -40,6 +40,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
     /// Topology-edit kernels should call this when a vertex is removed.
     pub(crate) fn record_deleted_vertex(&mut self, vertex: VertexId) {
         self.sink.record_deleted_vertex(vertex);
+        self.clear_caller_values(crate::attributes::Domain::Vertex, vertex.as_id());
     }
 
     /// Records a deleted half-edge in this edit scope.
@@ -47,6 +48,7 @@ impl<S: ChangeSink> EditSession<'_, S> {
     /// Topology-edit kernels should call this when a half-edge is removed.
     pub(crate) fn record_deleted_half_edge(&mut self, half_edge: HalfEdgeId) {
         self.sink.record_deleted_half_edge(half_edge);
+        self.clear_caller_values(crate::attributes::Domain::HalfEdge, half_edge.as_id());
     }
 
     /// Records a deleted face in this edit scope.
@@ -54,6 +56,50 @@ impl<S: ChangeSink> EditSession<'_, S> {
     /// Topology-edit kernels should call this when a face is removed.
     pub(crate) fn record_deleted_face(&mut self, face: FaceId) {
         self.sink.record_deleted_face(face);
+        self.clear_caller_values(crate::attributes::Domain::Face, face.as_id());
+    }
+
+    /// Clears a deleted element's caller-defined values, so a recycled slot
+    /// never inherits them, and reports how many carried information.
+    fn clear_caller_values(&mut self, domain: crate::attributes::Domain, id: Id) {
+        let cleared = self.mesh.attrs.clear_caller_values(domain, id);
+        if cleared > 0 {
+            self.sink.record_cleared_attribute_values(cleared);
+        }
+    }
+
+    /// Carries caller-defined layers of `domain` onto `target` from `source`,
+    /// or from `blend` under [`Propagation::Interpolate`](crate::attributes::Propagation::Interpolate),
+    /// and reports what an unspecified rule could not carry.
+    pub(crate) fn propagate_caller_layers(
+        &mut self,
+        domain: crate::attributes::Domain,
+        target: Id,
+        source: Id,
+        blend: Option<[(Id, f32); 2]>,
+    ) {
+        let carry = self
+            .mesh
+            .attrs
+            .propagate_caller(domain, target, source, blend);
+        if carry.unpropagated > 0 {
+            self.sink
+                .record_unpropagated_attribute_values(carry.unpropagated);
+        }
+    }
+
+    /// Restores captured caller-defined values onto the replacing element.
+    pub(crate) fn restore_caller_layers(
+        &mut self,
+        domain: crate::attributes::Domain,
+        target: Id,
+        captured: &crate::attributes::CallerValues,
+    ) {
+        let carry = self.mesh.attrs.restore_caller(domain, target, captured);
+        if carry.unpropagated > 0 {
+            self.sink
+                .record_unpropagated_attribute_values(carry.unpropagated);
+        }
     }
 
     /// Finishes this eager edit scope.

@@ -94,6 +94,10 @@ pub fn split_edge<S: ChangeSink>(
     let old_normal_t = session.corner_normal_override(twin);
     let normal_a_fh = corner_normal_override_for_face_to_vertex(session.mesh(), h_face, from);
     let normal_b_ft = corner_normal_override_for_face_to_vertex(session.mesh(), t_face, to);
+    // Corners at the far endpoints, which caller-defined corner layers blend
+    // with for the corners at the inserted vertex.
+    let corner_from_h = session.mesh().prev(half_edge);
+    let corner_to_t = session.mesh().prev(twin);
 
     let child_h = HalfEdgeId::from(session.mesh_mut().half_edges.insert(HalfEdge {
         to,
@@ -194,6 +198,21 @@ pub fn split_edge<S: ChangeSink>(
         );
     }
 
+    propagate_split_edge_caller_layers(
+        session,
+        SplitEdgeCallerSources {
+            from,
+            to,
+            new_vertex,
+            half_edge,
+            twin,
+            child_h,
+            child_t,
+            corner_from_h,
+            corner_to_t,
+        },
+    );
+
     if h_face != FaceId::OUTSIDE {
         if let Some(face) = session.mesh_mut().faces.get_mut(h_face.as_id()) {
             face.degree = face.degree.saturating_add(1);
@@ -209,4 +228,56 @@ pub fn split_edge<S: ChangeSink>(
 
     session.invalidate_outgoing_index();
     Ok(new_vertex)
+}
+
+/// Elements a split touches, for caller-defined layer propagation.
+struct SplitEdgeCallerSources {
+    from: VertexId,
+    to: VertexId,
+    new_vertex: VertexId,
+    half_edge: HalfEdgeId,
+    twin: HalfEdgeId,
+    child_h: HalfEdgeId,
+    child_t: HalfEdgeId,
+    corner_from_h: Option<HalfEdgeId>,
+    corner_to_t: Option<HalfEdgeId>,
+}
+
+/// Carries caller-defined layers across a split.
+///
+/// The inserted vertex blends the endpoints. Each child half-edge keeps the
+/// corner its parent had (at the far endpoint), and each parent's corner,
+/// now at the inserted vertex, blends the corners at both ends of its side
+/// of the edge.
+fn propagate_split_edge_caller_layers<S: ChangeSink>(
+    session: &mut EditSession<'_, S>,
+    sources: SplitEdgeCallerSources,
+) {
+    use crate::attributes::Domain;
+    let SplitEdgeCallerSources {
+        from,
+        to,
+        new_vertex,
+        half_edge,
+        twin,
+        child_h,
+        child_t,
+        corner_from_h,
+        corner_to_t,
+    } = sources;
+    session.propagate_caller_layers(
+        Domain::Vertex,
+        new_vertex.as_id(),
+        from.as_id(),
+        Some([(from.as_id(), 0.5), (to.as_id(), 0.5)]),
+    );
+    session.propagate_caller_layers(Domain::HalfEdge, child_h.as_id(), half_edge.as_id(), None);
+    session.propagate_caller_layers(Domain::HalfEdge, child_t.as_id(), twin.as_id(), None);
+    for (parent, child, far) in [
+        (half_edge, child_h, corner_from_h),
+        (twin, child_t, corner_to_t),
+    ] {
+        let blend = far.map(|far| [(far.as_id(), 0.5), (child.as_id(), 0.5)]);
+        session.propagate_caller_layers(Domain::HalfEdge, parent.as_id(), child.as_id(), blend);
+    }
 }
