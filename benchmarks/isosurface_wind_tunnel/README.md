@@ -50,6 +50,19 @@ shasum -a 256 \
 # Run both commands again; all four hashes must be unchanged.
 ```
 
+## Skeletal fork
+
+```sh
+cargo run --release -p isosurface_wind_tunnel -- --fork
+```
+
+This scenario extracts a 1.2 m box around a round-cone fork with 36
+scattered capsule twigs, 39 children in one `SmoothUnionN`, at depths 5 to 7.
+Each depth runs twice, once evaluating every child and once with distance
+culling. The runs must produce the same extraction signature, and each
+reports faces, child evaluations and culls, child interval queries and
+culls, and the best of three wall-clock times.
+
 ## License
 
 Apache-2.0 OR MIT

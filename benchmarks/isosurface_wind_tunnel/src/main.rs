@@ -9,6 +9,7 @@
 )]
 
 mod fixture;
+mod fork;
 mod measure;
 mod quality;
 mod report;
@@ -85,6 +86,13 @@ struct AdaptiveRun {
 }
 
 fn main() {
+    if std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--fork")
+    {
+        fork::run_all();
+        return;
+    }
     let (profile, write_artifacts) = parse_args();
     let depth = profile.depth();
     let fixture = fixture::h1(depth);
@@ -221,7 +229,9 @@ fn parse_args() -> (Profile, bool) {
             "--gate" => set_profile(&mut profile, Profile::Gate),
             "--write-artifacts" => write_artifacts = true,
             "--help" | "-h" => {
-                println!("Usage: isosurface_wind_tunnel (--quick|--gate) [--write-artifacts]");
+                println!(
+                    "Usage: isosurface_wind_tunnel (--quick|--gate) [--write-artifacts] | --fork"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unknown argument: {argument}"),

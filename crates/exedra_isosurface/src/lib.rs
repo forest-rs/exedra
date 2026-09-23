@@ -11,6 +11,7 @@
 //! - Hermite bridge types in [`hermite`],
 //! - analytic reference fields and CSG combinators in [`analytic`],
 //! - analytic 2D reference profiles in [`analytic2d`],
+//! - capsules, round cones and an N-ary smooth union in [`skeletal`],
 //! - lifting operators in [`lift`],
 //! - reusable transform wrappers in [`transform`],
 //! - opt-in semi-analytic primitive projection in [`semi_analytic`],
@@ -65,6 +66,7 @@ pub mod dual_contour;
 pub mod hermite;
 pub mod lift;
 pub mod semi_analytic;
+pub mod skeletal;
 pub mod transform;
 
 pub use exedra_qef::QefParams;
@@ -87,6 +89,9 @@ pub use lift::{Extrude, Revolve};
 pub use semi_analytic::{
     AnalyticBox, AnalyticCylinder, AnalyticPrimitive, SemiAnalyticFeature, SemiAnalyticField,
     SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
+};
+pub use skeletal::{
+    BoundedField, CapsuleField, DistanceBound, RoundConeField, SmoothUnionN, SmoothUnionStats,
 };
 pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
 
