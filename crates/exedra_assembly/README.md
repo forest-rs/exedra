@@ -78,9 +78,9 @@ record with one binding table; placement `i` is addressed as
 `PlacementPath` `parent/key#i`, so keys may contain neither `/` nor `#`.
 
 Consumers of `RenderList` must handle both `items` and `batches`. glTF export
-refuses assemblies with placement sets (`GltfError::UnsupportedPlacementSets`)
-until it writes them with `EXT_mesh_gpu_instancing`. Interchange carries
-sets as a `placement_sets` list.
+writes sets as addressed placement nodes, or as `EXT_mesh_gpu_instancing`
+batches (see `exedra_gltf` ADR-0006). Interchange carries sets as a
+`placement_sets` list.
 See [ADR-0003](docs/adr-0003-placement-scale.md).
 
 ## Levels of detail

@@ -51,6 +51,6 @@ large, and slow for engines that must rediscover the repetition. The
 
 - Repeated props and vegetation export as one draw-friendly node per mesh
   and parent, with per-instance identity preserved in extras.
-- Assembly placement sets and LOD chains (proposed separately) will export
-  through this same path once they land: a placement set is already a batch.
+- Assembly placement sets and LOD chains export through this same path;
+  see ADR-0006.
 - Exports with instancing enabled require viewer support for the extension.
