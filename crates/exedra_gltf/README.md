@@ -183,6 +183,21 @@ geometry without tangents is exported and counted in
 MikkTSpace tangents themselves, which may not match the baker. Compile with
 tangents to pin them.
 
+## GPU instancing
+
+By default every logical instance becomes its own node with a matrix. With
+`GltfExportOptions::with_instancing(GltfInstancing::GpuInstancing)`, leaf
+instances of one part that share a parent and a material resolution become
+one node per body carrying `EXT_mesh_gpu_instancing` `TRANSLATION`,
+`ROTATION` and `SCALE` accessors, in instance order. The node's
+`extras.instances` table keeps each instance's path and metadata, so identity
+stays inspectable, and `GlbDocument::instancing_components` reads the
+transforms back. Groups of one, instances with children, and mirrored or
+sheared placements keep their own node; the last two are counted in
+`GltfStats`. Transforms are stored as `FLOAT` accessors, so translations lose
+precision beyond `f32`. The extension is listed as required whenever it is
+used, because no fallback node describes the batched instances.
+
 ## Material extensions
 
 Material `extensions` may use this allowlist, each validated field by field

@@ -234,7 +234,32 @@ impl GlbDocument {
         let index = self
             .primitives()
             .find_map(|primitive| primitive.get("attributes")?.get(semantic)?.as_u64())?;
-        let accessor = self.array("accessors")?.get(usize::try_from(index).ok()?)?;
+        self.accessor_components(usize::try_from(index).ok()?)
+    }
+
+    /// Components of the `EXT_mesh_gpu_instancing` attribute `semantic`
+    /// (`TRANSLATION`, `ROTATION` or `SCALE`) on the first node named `name`,
+    /// read from the BIN chunk as `f32`.
+    ///
+    /// Returns `None` when the node, extension, attribute or its accessor is
+    /// absent or malformed.
+    #[must_use]
+    pub fn instancing_components(&self, name: &str, semantic: &str) -> Option<Vec<f32>> {
+        let node = self
+            .array("nodes")?
+            .iter()
+            .find(|node| node.get("name").and_then(Value::as_str) == Some(name))?;
+        let index = node
+            .get("extensions")?
+            .get("EXT_mesh_gpu_instancing")?
+            .get("attributes")?
+            .get(semantic)?
+            .as_u64()?;
+        self.accessor_components(usize::try_from(index).ok()?)
+    }
+
+    fn accessor_components(&self, index: usize) -> Option<Vec<f32>> {
+        let accessor = self.array("accessors")?.get(index)?;
         let count = usize::try_from(accessor.get("count")?.as_u64()?).ok()?;
         let components = match accessor.get("type")?.as_str()? {
             "SCALAR" => 1,

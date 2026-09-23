@@ -23,6 +23,8 @@
 //! - materials may use an allowlist of `KHR_materials_*` extensions and
 //!   `KHR_texture_transform`, validated like core fields and listed in
 //!   `extensionsUsed`;
+//! - opt-in [`GltfInstancing::GpuInstancing`] folds repeated leaf placements
+//!   of one part into `EXT_mesh_gpu_instancing` nodes;
 //! - exact empty parts keep their identity without illegal zero-count meshes.
 //!   Geometry-free scenes omit buffers and the optional GLB BIN chunk;
 //! - mismatched compiled sources and error-level partial geometry are refused.
@@ -64,6 +66,9 @@ mod attributes;
 #[cfg(test)]
 mod extension_tests;
 mod inspect;
+mod instancing;
+#[cfg(test)]
+mod instancing_tests;
 mod materials;
 #[cfg(test)]
 mod slot_tests;
@@ -86,7 +91,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use exedra_assembly::{
-    Assembly, CompilationMismatch, CompiledBody, CompiledParts, Instance, InstanceId,
+    Assembly, CompilationMismatch, CompiledBody, CompiledParts, Instance, InstanceId, PartDef,
     PartFingerprint, PartId, ResolvedRegion,
 };
 use exedra_constructive::{
@@ -150,6 +155,40 @@ pub struct GltfStats {
     /// consumers then derive MikkTSpace tangents themselves, which may not
     /// match the baker.
     pub normal_maps_without_tangents: u64,
+    /// Nodes written with `EXT_mesh_gpu_instancing`: one per body of each
+    /// batch (see [`GltfInstancing::GpuInstancing`]).
+    pub instanced_nodes: u64,
+    /// Logical instances folded into instanced nodes instead of getting a
+    /// node of their own.
+    pub batched_instances: u64,
+    /// Instances kept as their own node because their placement is a
+    /// reflection, counted only when another instance with the same parent,
+    /// part and material resolution means they would otherwise have batched.
+    pub unbatched_mirrored_instances: u64,
+    /// Instances kept as their own node because their placement is sheared or
+    /// degenerate and has no TRS decomposition, counted like
+    /// [`Self::unbatched_mirrored_instances`].
+    pub unbatched_sheared_instances: u64,
+}
+
+/// How repeated placements of a part are written.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GltfInstancing {
+    /// One node per logical instance, each with its own matrix.
+    #[default]
+    Nodes,
+    /// Leaf instances of one part, with the same material resolution and the
+    /// same parent, become one node per body carrying
+    /// `EXT_mesh_gpu_instancing` `TRANSLATION`, `ROTATION` and `SCALE`
+    /// accessors, in instance order. Their identities move to the node's
+    /// `extras.instances` table. Groups of one keep their node, as do
+    /// instances with children and mirrored or sheared placements (counted
+    /// in [`GltfStats`]). A batched part gets one node per non-empty body;
+    /// unlike unbatched multi-body instances, empty bodies get no node. The
+    /// extension is then listed as required: nothing else describes the
+    /// batched instances.
+    GpuInstancing,
 }
 
 /// Coordinate-system handling for a glTF export.
@@ -191,6 +230,8 @@ pub struct GltfExportOptions<'a> {
     /// and samples untransformed coordinates. Require it when a wrong tiling
     /// is worse than refusing to load.
     pub require_texture_transform: bool,
+    /// How repeated placements are written; see [`GltfInstancing`].
+    pub instancing: GltfInstancing,
 }
 
 impl<'a> GltfExportOptions<'a> {
@@ -202,6 +243,7 @@ impl<'a> GltfExportOptions<'a> {
             coordinates: GltfCoordinates::ZUpToYUp,
             attributes: &[],
             require_texture_transform: false,
+            instancing: GltfInstancing::Nodes,
         }
     }
 
@@ -216,6 +258,13 @@ impl<'a> GltfExportOptions<'a> {
     #[must_use]
     pub const fn with_required_texture_transform(mut self, required: bool) -> Self {
         self.require_texture_transform = required;
+        self
+    }
+
+    /// Sets [`Self::instancing`].
+    #[must_use]
+    pub const fn with_instancing(mut self, instancing: GltfInstancing) -> Self {
+        self.instancing = instancing;
         self
     }
 }
@@ -619,45 +668,55 @@ fn build_export(
             });
         }
     }
-    let mut buffer = Vec::new();
-    let mut buffer_views = Vec::new();
-    let mut accessors = Vec::new();
-    let mut meshes = Vec::new();
-    let mut materials = Vec::new();
-    let mut material_index = HashMap::new();
-    // Content sharing is independent of local PartId assignment. Different
-    // material resolutions reuse the same immutable vertex and index buffers.
-    let mut mesh_index: HashMap<(PartFingerprint, usize, Vec<Option<String>>), usize> =
-        HashMap::new();
-    let mut geometry_index: HashMap<(PartFingerprint, usize), GeometryAccessors> = HashMap::new();
+    let mut out = Emitter {
+        attributes: options.attributes,
+        resolver,
+        buffer: Vec::new(),
+        buffer_views: Vec::new(),
+        accessors: Vec::new(),
+        meshes: Vec::new(),
+        materials: Vec::new(),
+        material_index: HashMap::new(),
+        mesh_index: HashMap::new(),
+        geometry_index: HashMap::new(),
+        stats: GltfStats::default(),
+    };
+    let plan = instancing::plan(assembly, compiled, options.instancing, &mut out.stats);
+    // Batched instances get no node; the others keep their order.
+    let mut node_of = vec![None; plan.batched.len()];
+    let mut next = 0;
+    for (index, batched) in plan.batched.iter().enumerate() {
+        if !batched {
+            node_of[index] = Some(next);
+            next += 1;
+        }
+    }
     let mut nodes: Vec<Value> = assembly
         .instances_with_ids()
-        .map(|(id, instance)| instance_node(assembly, id, instance))
+        .filter(|(id, _)| node_of[id.0 as usize].is_some())
+        .map(|(id, instance)| instance_node(assembly, id, instance, &node_of))
         .collect();
-    let mut stats = GltfStats::default();
 
     for (id, instance) in assembly.instances_with_ids() {
-        let Some(part) = instance.part() else {
+        let (Some(logical), Some(part)) = (node_of[id.0 as usize], instance.part()) else {
             continue;
         };
         let def = assembly.part(part).expect("validated instance part");
         let entry = compiled.part(part).expect("matching compilation");
         for (body_index, body) in entry.bodies.iter().enumerate() {
             let node_index = if entry.bodies.len() == 1 {
-                id.0 as usize
+                logical
             } else {
                 let child = nodes.len();
                 let name = format!(
                     "{} [body {body_index}]",
-                    nodes[id.0 as usize]["name"]
-                        .as_str()
-                        .expect("logical node name")
+                    nodes[logical]["name"].as_str().expect("logical node name")
                 );
                 nodes.push(json!({
                     "name": name,
                     "extras": { "partKey": def.key(), "body": body_index }
                 }));
-                append_child(&mut nodes[id.0 as usize], child);
+                append_child(&mut nodes[logical], child);
                 child
             };
             nodes[node_index]["extras"]["body"] = json!(body_index);
@@ -666,63 +725,82 @@ fn build_export(
             if body.tri.indices.is_empty() {
                 continue;
             }
-            let regions: Vec<ResolvedRegion> = body
-                .regions
-                .iter()
-                .map(|range| ResolvedRegion {
-                    region: range.region,
-                    start: range.start,
-                    count: range.count,
-                    material: range
-                        .material_slot
-                        .or_else(|| def.region_slot(range.region))
-                        .and_then(|slot| assembly.resolved_material(id, slot))
-                        .map(str::to_owned),
-                })
-                .collect();
-            let resolution = regions.iter().map(|r| r.material.clone()).collect();
-            let key = (entry.fingerprint, body_index, resolution);
-            let mesh = if let Some(&index) = mesh_index.get(&key) {
-                index
-            } else {
-                let geometry = match geometry_index.entry((entry.fingerprint, body_index)) {
-                    std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
-                    std::collections::hash_map::Entry::Vacant(entry) => entry
-                        .insert(emit_geometry(
-                            body,
-                            options.attributes,
-                            Site {
-                                part: part.0,
-                                body: body_index,
-                            },
-                            &mut buffer,
-                            &mut buffer_views,
-                            &mut accessors,
-                            &mut stats,
-                        )?)
-                        .clone(),
-                };
-                let mesh = emit_mesh(
-                    &geometry,
-                    &regions,
-                    body,
-                    part,
-                    body_index,
-                    &mut accessors,
-                    &mut materials,
-                    &mut material_index,
-                    &mut stats,
-                    resolver,
-                )?;
-                let index = meshes.len();
-                meshes.push(mesh);
-                mesh_index.insert(key, index);
-                stats.meshes += 1;
-                index
-            };
+            let mesh = out.mesh(
+                assembly,
+                (id, part, def),
+                entry.fingerprint,
+                body_index,
+                body,
+            )?;
             nodes[node_index]["mesh"] = json!(mesh);
         }
     }
+
+    let mut batch_roots = Vec::new();
+    for batch in &plan.batches {
+        let def = assembly.part(batch.part).expect("validated instance part");
+        let entry = compiled.part(batch.part).expect("matching compilation");
+        let transforms = out.instance_transforms(&batch.members);
+        let table: Vec<Value> = batch
+            .members
+            .iter()
+            .map(|(id, _)| {
+                let instance = assembly.instance(*id).expect("batched instance");
+                let mut identity = identity_extras(assembly, *id, instance);
+                // Every member shares the batch node's part.
+                identity.remove("partKey");
+                Value::Object(identity)
+            })
+            .collect();
+        let (first, _) = batch.members[0];
+        for (body_index, body) in entry.bodies.iter().enumerate() {
+            if body.tri.indices.is_empty() {
+                continue;
+            }
+            let mesh = out.mesh(
+                assembly,
+                (first, batch.part, def),
+                entry.fingerprint,
+                body_index,
+                body,
+            )?;
+            let mut name = format!("{} [{} instances]", def.key(), batch.members.len());
+            if entry.bodies.len() > 1 {
+                let _ = write!(name, " [body {body_index}]");
+            }
+            let index = nodes.len();
+            nodes.push(json!({
+                "name": name,
+                "mesh": mesh,
+                "extensions": {
+                    instancing::EXTENSION: { "attributes": transforms.clone() }
+                },
+                "extras": {
+                    "partKey": def.key(),
+                    "body": body_index,
+                    "instances": table.clone(),
+                },
+            }));
+            match batch.parent {
+                Some(parent) => append_child(
+                    &mut nodes[node_of[parent.0 as usize].expect("parents keep their node")],
+                    index,
+                ),
+                None => batch_roots.push(index),
+            }
+            out.stats.instanced_nodes += 1;
+        }
+        out.stats.batched_instances += batch.members.len() as u64;
+    }
+    let Emitter {
+        mut buffer,
+        mut buffer_views,
+        accessors,
+        meshes,
+        mut materials,
+        mut stats,
+        ..
+    } = out;
     stats.nodes = nodes.len() as u64;
 
     let textures = match resolver {
@@ -737,7 +815,12 @@ fn build_export(
     };
 
     stats.buffer_bytes = buffer.len() as u64;
-    let instance_roots: Vec<usize> = assembly.roots().iter().map(|id| id.0 as usize).collect();
+    let instance_roots: Vec<usize> = assembly
+        .roots()
+        .iter()
+        .filter_map(|id| node_of[id.0 as usize])
+        .chain(batch_roots)
+        .collect();
     let scene_nodes = match options.coordinates {
         GltfCoordinates::Preserve => instance_roots,
         GltfCoordinates::ZUpToYUp => {
@@ -771,13 +854,17 @@ fn build_export(
             }
         }
     }
+    if !plan.batches.is_empty() {
+        used.push(instancing::EXTENSION);
+    }
     used.sort_unstable();
     if !used.is_empty() {
         let required: Vec<&str> = used
             .iter()
             .copied()
             .filter(|name| {
-                *name == materials::TEXTURE_TRANSFORM && options.require_texture_transform
+                *name == instancing::EXTENSION
+                    || (*name == materials::TEXTURE_TRANSFORM && options.require_texture_transform)
             })
             .collect();
         document.insert("extensionsUsed".into(), json!(used));
@@ -814,7 +901,8 @@ fn build_export(
     })
 }
 
-fn instance_node(assembly: &Assembly, id: InstanceId, instance: &Instance) -> Value {
+/// Identity carried by a logical instance: its metadata, stable path and part key.
+fn identity_extras(assembly: &Assembly, id: InstanceId, instance: &Instance) -> Map<String, Value> {
     let path = assembly
         .path_of(id)
         .expect("validated instance path")
@@ -836,20 +924,147 @@ fn instance_node(assembly: &Assembly, id: InstanceId, instance: &Instance) -> Va
     } else {
         extras.remove("partKey");
     }
-    let mut node = json!({ "name": path, "extras": extras });
+    extras
+}
+
+fn instance_node(
+    assembly: &Assembly,
+    id: InstanceId,
+    instance: &Instance,
+    node_of: &[Option<usize>],
+) -> Value {
+    let extras = identity_extras(assembly, id, instance);
+    let name = extras["instancePath"].clone();
+    let mut node = json!({ "name": name, "extras": extras });
     if *instance.placement() != Placement3::IDENTITY {
         node["matrix"] = json!(matrix_column_major(&instance.placement().rows));
     }
-    if !instance.children().is_empty() {
-        node["children"] = json!(
-            instance
-                .children()
-                .iter()
-                .map(|id| id.0)
-                .collect::<Vec<_>>()
-        );
+    let children: Vec<usize> = instance
+        .children()
+        .iter()
+        .filter_map(|id| node_of[id.0 as usize])
+        .collect();
+    if !children.is_empty() {
+        node["children"] = json!(children);
     }
     node
+}
+
+/// Regions of one body with the material each resolves to for `id`.
+pub(crate) fn resolved_regions(
+    assembly: &Assembly,
+    def: &PartDef,
+    id: InstanceId,
+    body: &CompiledBody,
+) -> Vec<ResolvedRegion> {
+    body.regions
+        .iter()
+        .map(|range| ResolvedRegion {
+            region: range.region,
+            start: range.start,
+            count: range.count,
+            material: range
+                .material_slot
+                .or_else(|| def.region_slot(range.region))
+                .and_then(|slot| assembly.resolved_material(id, slot))
+                .map(str::to_owned),
+        })
+        .collect()
+}
+
+/// Growing export state shared by instance and batch nodes.
+struct Emitter<'a> {
+    attributes: &'a [GltfAttribute],
+    resolver: Option<&'a dyn MaterialResolver>,
+    buffer: Vec<u8>,
+    buffer_views: Vec<Value>,
+    accessors: Vec<Value>,
+    meshes: Vec<Value>,
+    materials: Vec<Value>,
+    material_index: HashMap<String, usize>,
+    // Content sharing is independent of local PartId assignment. Different
+    // material resolutions reuse the same immutable vertex and index buffers.
+    mesh_index: HashMap<(PartFingerprint, usize, Vec<Option<String>>), usize>,
+    geometry_index: HashMap<(PartFingerprint, usize), GeometryAccessors>,
+    stats: GltfStats,
+}
+
+impl Emitter<'_> {
+    /// Returns the mesh for one body as `id` resolves its materials,
+    /// emitting geometry and primitives on first use.
+    fn mesh(
+        &mut self,
+        assembly: &Assembly,
+        (id, part, def): (InstanceId, PartId, &PartDef),
+        fingerprint: PartFingerprint,
+        body_index: usize,
+        body: &CompiledBody,
+    ) -> Result<usize, GltfError> {
+        let regions = resolved_regions(assembly, def, id, body);
+        let resolution = regions.iter().map(|r| r.material.clone()).collect();
+        let key = (fingerprint, body_index, resolution);
+        if let Some(&index) = self.mesh_index.get(&key) {
+            return Ok(index);
+        }
+        let geometry = match self.geometry_index.entry((fingerprint, body_index)) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry
+                .insert(emit_geometry(
+                    body,
+                    self.attributes,
+                    Site {
+                        part: part.0,
+                        body: body_index,
+                    },
+                    &mut self.buffer,
+                    &mut self.buffer_views,
+                    &mut self.accessors,
+                    &mut self.stats,
+                )?)
+                .clone(),
+        };
+        let mesh = emit_mesh(
+            &geometry,
+            &regions,
+            body,
+            part,
+            body_index,
+            &mut self.accessors,
+            &mut self.materials,
+            &mut self.material_index,
+            &mut self.stats,
+            self.resolver,
+        )?;
+        let index = self.meshes.len();
+        self.meshes.push(mesh);
+        self.mesh_index.insert(key, index);
+        self.stats.meshes += 1;
+        Ok(index)
+    }
+
+    /// Writes one batch's `TRANSLATION`, `ROTATION` and `SCALE` accessors
+    /// and returns the extension's `attributes` object.
+    fn instance_transforms(&mut self, members: &[(InstanceId, instancing::Trs)]) -> Value {
+        let count = members.len();
+        let translation: Vec<[f32; 3]> = members.iter().map(|(_, t)| t.translation).collect();
+        let rotation: Vec<[f32; 4]> = members.iter().map(|(_, t)| t.rotation).collect();
+        let scale: Vec<[f32; 3]> = members.iter().map(|(_, t)| t.scale).collect();
+        let mut push = |bytes: Vec<u8>, kind: &str| {
+            let view = push_view(&mut self.buffer, &mut self.buffer_views, &bytes);
+            self.accessors.push(json!({
+                "bufferView": view,
+                "componentType": 5126,
+                "count": count,
+                "type": kind,
+            }));
+            self.accessors.len() - 1
+        };
+        json!({
+            "TRANSLATION": push(vec3_bytes(&translation), "VEC3"),
+            "ROTATION": push(vec4_bytes(&rotation), "VEC4"),
+            "SCALE": push(vec3_bytes(&scale), "VEC3"),
+        })
+    }
 }
 
 fn append_child(node: &mut Value, child: usize) {
