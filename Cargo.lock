@@ -369,6 +369,7 @@ version = "0.1.0"
 dependencies = [
  "exedra_assembly",
  "exedra_constructive",
+ "exedra_math",
  "exedra_mesh",
  "serde_json",
 ]

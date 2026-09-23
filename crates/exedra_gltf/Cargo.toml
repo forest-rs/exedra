@@ -16,5 +16,6 @@ workspace = true
 [dependencies]
 exedra_assembly = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
+exedra_math = { features = ["std"], workspace = true }
 exedra_mesh = { features = ["libm", "std"], workspace = true }
 serde_json.workspace = true
