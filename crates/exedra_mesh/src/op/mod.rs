@@ -373,4 +373,26 @@ mod tests {
         assert!(mesh.validate_fast().is_empty());
         assert!(mesh.validate_deep().is_empty());
     }
+
+    #[test]
+    fn split_face_copies_region_onto_a_face_that_extends_the_arena() {
+        let mut mesh = quad_mesh();
+        let face = mesh.faces().next().expect("quad face");
+        let corners = mesh.face_loop(face).collect::<vec::Vec<_>>();
+        let mut session = mesh.edit();
+        op::set_face_region(&mut session, face, 5).expect("region");
+        let new_face = op::split_face(
+            &mut session,
+            corners[0],
+            corners[2],
+            &PropagatePolicy::default(),
+        )
+        .expect("split");
+        let _: () = session.finish();
+        let region = mesh
+            .attrs()
+            .dense(crate::attr::FACE_REGION)
+            .expect("region layer");
+        assert_eq!(region.get(new_face.as_id()), Some(&5));
+    }
 }
