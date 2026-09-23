@@ -60,8 +60,8 @@ is emitted directly in node `extras`; the exporter-reserved `instancePath`,
 The primary export functions now take `Assembly` and `CompiledParts` directly;
 remove the `RenderList` argument at existing call sites. Export walks authored
 parent/local placements without flattening or remeasuring world-space vertices.
-Use `flatten` separately when exact measured bounds or renderer drawables are
-needed. To export a selected subtree set, build a selected assembly with
+Use `flatten` separately when placed bounds or renderer drawables are
+needed (`flatten_with` with `BoundsPolicy::Exact` for exact measured bounds). To export a selected subtree set, build a selected assembly with
 `append_selected`; a render-list filter is not an assembly selection.
 
 One logical node carries each instance's `instancePath` and opaque metadata.

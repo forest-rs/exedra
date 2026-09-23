@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use alloc::{format, vec};
-use hashbrown::HashSet;
 
 use super::*;
 use crate::compose;
@@ -15,6 +14,7 @@ use crate::compose;
 pub struct AppendMap {
     parts: Vec<Option<PartId>>,
     instances: Vec<Option<InstanceId>>,
+    placement_sets: Vec<Option<PlacementSetId>>,
 }
 
 impl AppendMap {
@@ -29,6 +29,16 @@ impl AppendMap {
     pub fn instance(&self, source: InstanceId) -> Option<InstanceId> {
         self.instances.get(source.0 as usize).copied().flatten()
     }
+
+    /// Destination handle for a copied source placement set, or `None` if
+    /// omitted or unknown.
+    #[must_use]
+    pub fn placement_set(&self, source: PlacementSetId) -> Option<PlacementSetId> {
+        self.placement_sets
+            .get(source.0 as usize)
+            .copied()
+            .flatten()
+    }
 }
 
 impl Assembly {
@@ -41,10 +51,12 @@ impl Assembly {
     ///
     /// Source root placements are relative to the destination parent. Source
     /// frames retain their identity and do not require an artificial part.
-    /// Part keys and source root-instance keys become `"{prefix}-{source_key}"`;
-    /// descendant keys and local placements retain their source values. The
-    /// supplied placement is composed onto source roots only. The prefix must
-    /// be nonempty and contain no `/`. Returned handles associate source records
+    /// Part keys and the keys of source root instances and root placement sets
+    /// become `"{prefix}-{source_key}"`; descendant keys and local placements
+    /// retain their source values. The supplied placement is composed onto
+    /// source roots and onto every placement of root placement sets only.
+    /// Placement sets follow their parent instance; root placement sets are
+    /// always copied. The prefix must be nonempty and contain no `/` or `#`. Returned handles associate source records
     /// with their copies without relying on insertion order or derived names.
     ///
     /// # Errors
@@ -81,9 +93,7 @@ impl Assembly {
         placement: Placement3,
         mut include: impl FnMut(InstanceId, &Instance) -> bool,
     ) -> Result<AppendMap, AssemblyError> {
-        if prefix.is_empty() || prefix.contains('/') {
-            return Err(AssemblyError::InvalidKey(prefix.to_string()));
-        }
+        validate_key(prefix)?;
         if !finite_placement(&placement) {
             return Err(AssemblyError::NonFinitePlacement);
         }
@@ -105,14 +115,27 @@ impl Assembly {
                 }
             }
         }
+        let set_selected: Vec<bool> = source
+            .placement_sets
+            .iter()
+            .map(|set| set.parent.is_none_or(|p| selected[p.0 as usize]))
+            .collect();
+        for (set, keep) in source.placement_sets.iter().zip(&set_selected) {
+            if *keep {
+                used[set.part.0 as usize] = true;
+            }
+        }
         let part_count = used.iter().filter(|v| **v).count();
         let instance_count = selected.iter().filter(|v| **v).count();
+        let set_count = set_selected.iter().filter(|v| **v).count();
         check_capacity(self.parts.len(), part_count)?;
         check_capacity(self.instances.len(), instance_count)?;
+        check_capacity(self.placement_sets.len(), set_count)?;
 
         let mut map = AppendMap {
             parts: vec![None; source.parts.len()],
             instances: vec![None; source.instances.len()],
+            placement_sets: vec![None; source.placement_sets.len()],
         };
         let mut parts = Vec::with_capacity(part_count);
         for (i, def) in source.parts.iter().enumerate() {
@@ -131,13 +154,7 @@ impl Assembly {
         }
         let mut instances: Vec<Instance> = Vec::with_capacity(instance_count);
         let mut roots = Vec::new();
-        let siblings = parent.map_or(self.roots.as_slice(), |id| {
-            self.instances[id.0 as usize].children.as_slice()
-        });
-        let root_keys: HashSet<&str> = siblings
-            .iter()
-            .map(|root| self.instances[root.0 as usize].key.as_str())
-            .collect();
+        let taken = |key: &str| self.find_sibling(parent, key).is_some();
         for (i, instance) in source.instances.iter().enumerate() {
             if !selected[i] {
                 continue;
@@ -152,13 +169,14 @@ impl Assembly {
                 .parent
                 .map(|p| map.instance(p).expect("selected ancestor was copied first"));
             copied.children.clear();
+            copied.placement_sets.clear();
             if let Some(parent) = copied.parent {
                 let parent = &mut instances[parent.0 as usize - self.instances.len()];
                 parent.children.push(id);
             } else {
                 copied.parent = parent;
                 copied.key = format!("{prefix}-{}", instance.key);
-                if root_keys.contains(copied.key.as_str()) {
+                if taken(&copied.key) {
                     return Err(AssemblyError::DuplicateChildKey {
                         parent,
                         key: copied.key,
@@ -173,7 +191,46 @@ impl Assembly {
             map.instances[i] = Some(id);
             instances.push(copied);
         }
-        drop(root_keys);
+
+        let mut sets: Vec<PlacementSet> = Vec::with_capacity(set_count);
+        let mut root_sets = Vec::new();
+        for (i, set) in source.placement_sets.iter().enumerate() {
+            if !set_selected[i] {
+                continue;
+            }
+            let id = PlacementSetId(crate::len_u32(self.placement_sets.len() + sets.len()));
+            let mut copied = set.clone();
+            copied.part = map.part(set.part).expect("selected set uses a copied part");
+            if let Some(source_parent) = set.parent {
+                let parent = map
+                    .instance(source_parent)
+                    .expect("selected set parent was copied");
+                copied.parent = Some(parent);
+                instances[parent.0 as usize - self.instances.len()]
+                    .placement_sets
+                    .push(id);
+            } else {
+                copied.parent = parent;
+                copied.key = format!("{prefix}-{}", set.key);
+                // Source root instances and root sets share one key namespace,
+                // so the common prefix keeps them distinct from each other.
+                if taken(&copied.key) {
+                    return Err(AssemblyError::DuplicateChildKey {
+                        parent,
+                        key: copied.key,
+                    });
+                }
+                for local in &mut copied.placements {
+                    *local = compose(&placement, local);
+                    if !finite_placement(local) {
+                        return Err(AssemblyError::NonFinitePlacement);
+                    }
+                }
+                root_sets.push(id);
+            }
+            map.placement_sets[i] = Some(id);
+            sets.push(copied);
+        }
 
         // All fallible validation has finished. Stage only the incoming data;
         // appending does not clone an already large destination for rollback.
@@ -182,18 +239,30 @@ impl Assembly {
             self.part_lookup.insert(part.key.clone(), id);
             self.parts.push(part);
         }
+        let first_instance = self.instances.len();
+        let first_set = self.placement_sets.len();
         self.instances.extend(instances);
+        self.placement_sets.extend(sets);
         match parent {
-            Some(parent) => self.instances[parent.0 as usize].children.extend(roots),
-            None => self.roots.extend(roots),
+            Some(parent) => {
+                let parent = &mut self.instances[parent.0 as usize];
+                parent.children.extend(roots);
+                parent.placement_sets.extend(root_sets);
+            }
+            None => {
+                self.roots.extend(roots);
+                self.root_placement_sets.extend(root_sets);
+            }
+        }
+        for index in first_instance..self.instances.len() {
+            self.index_sibling(Sibling::Instance(InstanceId(crate::len_u32(index))));
+        }
+        for index in first_set..self.placement_sets.len() {
+            self.index_sibling(Sibling::Set(PlacementSetId(crate::len_u32(index))));
         }
         self.content_generation += u64::from(crate::len_u32(part_count));
         Ok(map)
     }
-}
-
-fn finite_placement(placement: &Placement3) -> bool {
-    placement.rows.iter().flatten().all(|v| v.is_finite())
 }
 
 fn check_capacity(existing: usize, added: usize) -> Result<(), AssemblyError> {

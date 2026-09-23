@@ -645,7 +645,7 @@ fn validate_key_fragment(
     value: &str,
     empty_allowed: bool,
 ) -> Result<(), PatternError> {
-    if (!empty_allowed && value.is_empty()) || value.contains('/') {
+    if (!empty_allowed && value.is_empty()) || value.contains(['/', '#']) {
         Err(PatternError::InvalidKeyFragment {
             fragment,
             value: value.to_string(),
@@ -1352,6 +1352,24 @@ mod tests {
             PatternError::InvalidKeyFragment {
                 fragment: "member suffix",
                 value: "bad/suffix".into(),
+            },
+        );
+
+        // `#` separates a placement-set path from its index, so fragments
+        // reserve it like `/`.
+        let placement_separator = NamedAssemblyPattern {
+            parent: None,
+            key_prefix: "tree#",
+            ordinal_width: 2,
+            members: &members,
+        };
+        assert_atomic_error(
+            &mut assembly,
+            &placement_separator,
+            &valid_occurrence,
+            PatternError::InvalidKeyFragment {
+                fragment: "prefix",
+                value: "tree#".into(),
             },
         );
 

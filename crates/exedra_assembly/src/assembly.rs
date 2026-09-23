@@ -19,7 +19,12 @@ use exedra_constructive::ir::{Placement3, Recipe};
 use hashbrown::HashMap;
 
 mod append;
+mod placement_set;
+mod siblings;
 pub use append::AppendMap;
+pub use placement_set::{PlacementPath, PlacementSet, PlacementSetId};
+
+use siblings::{Records, Sibling, SiblingIndex};
 
 #[cfg(test)]
 mod frame_tests;
@@ -146,6 +151,7 @@ pub struct Instance {
     /// Opaque metadata pairs in insertion order (last write per key wins).
     metadata: Vec<(String, String)>,
     children: Vec<InstanceId>,
+    placement_sets: Vec<PlacementSetId>,
 }
 
 impl Instance {
@@ -199,6 +205,12 @@ impl Instance {
     pub fn children(&self) -> &[InstanceId] {
         &self.children
     }
+
+    /// Placement sets under this instance, in insertion order.
+    #[must_use]
+    pub fn placement_sets(&self) -> &[PlacementSetId] {
+        &self.placement_sets
+    }
 }
 
 /// The stable identity of an instance: its key path from the root.
@@ -210,8 +222,9 @@ impl Instance {
 /// re-evaluations of their specifications; in exchange, consumers may
 /// treat equal paths as "the same logical part" for diffing, selection
 /// persistence, and incremental updates, regardless of sibling order or
-/// geometry changes. Keys never contain `/`, so the `Display` form
-/// (`root/child/leaf`) is unambiguous.
+/// geometry changes. Keys never contain `/` or `#`, so the `Display` form
+/// (`root/child/leaf`) is unambiguous, and a placement in a set is addressed as
+/// [`PlacementPath`] `root/set#index`.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstancePath(pub Vec<String>);
 
@@ -258,7 +271,7 @@ pub enum AssemblyError {
         /// The offending key.
         key: String,
     },
-    /// Keys must be non-empty and must not contain `/`.
+    /// Keys must be non-empty and must not contain `/` or `#`.
     InvalidKey(String),
     /// The part does not declare a slot with this name.
     UnknownSlot {
@@ -275,6 +288,19 @@ pub enum AssemblyError {
     NoPart(InstanceId),
     /// Appending would exceed the representable part or instance handles.
     CapacityExceeded,
+    /// The placement-set handle does not refer to an existing set.
+    UnknownPlacementSet(PlacementSetId),
+    /// Per-placement data must have one entry per placement.
+    PlacementDataLength {
+        /// The set's placement count.
+        expected: usize,
+        /// The supplied entry count.
+        found: usize,
+    },
+    /// A per-placement tint contains non-finite values.
+    NonFiniteTint,
+    /// A placement set must place its part at least once.
+    EmptyPlacementSet,
 }
 
 impl core::fmt::Display for AssemblyError {
@@ -287,7 +313,7 @@ impl core::fmt::Display for AssemblyError {
                 write!(f, "parent {parent:?} already has a child keyed {key:?}")
             }
             Self::InvalidKey(key) => {
-                write!(f, "key {key:?} is empty or contains the path separator")
+                write!(f, "key {key:?} is empty or contains `/` or `#`")
             }
             Self::UnknownSlot { part, slot } => {
                 write!(f, "part {part:?} declares no slot named {slot:?}")
@@ -296,6 +322,15 @@ impl core::fmt::Display for AssemblyError {
             Self::NonFinitePlacement => write!(f, "placement contains non-finite values"),
             Self::NoPart(instance) => write!(f, "frame {instance:?} has no material slots"),
             Self::CapacityExceeded => write!(f, "assembly handle capacity exceeded"),
+            Self::UnknownPlacementSet(id) => write!(f, "unknown placement set {id:?}"),
+            Self::PlacementDataLength { expected, found } => {
+                write!(
+                    f,
+                    "expected {expected} per-placement entries, found {found}"
+                )
+            }
+            Self::NonFiniteTint => write!(f, "placement tint contains non-finite values"),
+            Self::EmptyPlacementSet => write!(f, "placement set has no placements"),
         }
     }
 }
@@ -312,6 +347,10 @@ pub struct Assembly {
     part_lookup: HashMap<String, PartId>,
     instances: Vec<Instance>,
     roots: Vec<InstanceId>,
+    placement_sets: Vec<PlacementSet>,
+    root_placement_sets: Vec<PlacementSetId>,
+    /// `(parent, key)` lookup over instances and placement sets.
+    siblings: SiblingIndex,
     /// Monotonic content generation: bumped by every part-content change
     /// (not by binding or metadata edits).
     content_generation: u64,
@@ -554,35 +593,21 @@ impl Assembly {
         part: Option<PartId>,
         placement: Placement3,
     ) -> Result<InstanceId, AssemblyError> {
-        if key.is_empty() || key.contains('/') {
-            return Err(AssemblyError::InvalidKey(key.to_string()));
-        }
+        validate_key(key)?;
         if let Some(part) = part
             && self.parts.get(part.0 as usize).is_none()
         {
             return Err(AssemblyError::UnknownPart(part));
         }
-        if !placement
-            .rows
-            .iter()
-            .all(|r| r.iter().all(|v| v.is_finite()))
-        {
+        if !finite_placement(&placement) {
             return Err(AssemblyError::NonFinitePlacement);
         }
-        let siblings = match parent {
-            Some(p) => {
-                &self
-                    .instances
-                    .get(p.0 as usize)
-                    .ok_or(AssemblyError::UnknownInstance(p))?
-                    .children
-            }
-            None => &self.roots,
-        };
-        if siblings
-            .iter()
-            .any(|&c| self.instances[c.0 as usize].key == key)
+        if let Some(p) = parent
+            && self.instances.get(p.0 as usize).is_none()
         {
+            return Err(AssemblyError::UnknownInstance(p));
+        }
+        if self.find_sibling(parent, key).is_some() {
             return Err(AssemblyError::DuplicateChildKey {
                 parent,
                 key: key.to_string(),
@@ -597,12 +622,35 @@ impl Assembly {
             bindings: Vec::new(),
             metadata: Vec::new(),
             children: Vec::new(),
+            placement_sets: Vec::new(),
         });
         match parent {
             Some(p) => self.instances[p.0 as usize].children.push(id),
             None => self.roots.push(id),
         }
+        self.index_sibling(Sibling::Instance(id));
         Ok(id)
+    }
+
+    /// The instance or placement set keyed `key` under `parent`.
+    fn find_sibling(&self, parent: Option<InstanceId>, key: &str) -> Option<Sibling> {
+        self.siblings.find(self.records(), parent, key)
+    }
+
+    /// Indexes a sibling whose record is already stored.
+    fn index_sibling(&mut self, sibling: Sibling) {
+        let records = Records {
+            instances: &self.instances,
+            sets: &self.placement_sets,
+        };
+        self.siblings.insert(records, sibling);
+    }
+
+    fn records(&self) -> Records<'_> {
+        Records {
+            instances: &self.instances,
+            sets: &self.placement_sets,
+        }
     }
 
     /// Binds (or rebinds) a slot of an instance to an opaque material key.
@@ -710,19 +758,14 @@ impl Assembly {
     /// Resolves an identity path back to an instance handle.
     #[must_use]
     pub fn resolve_path(&self, path: &InstancePath) -> Option<InstanceId> {
-        let mut segments = path.0.iter();
-        let first = segments.next()?;
-        let mut current = *self
-            .roots
-            .iter()
-            .find(|&&r| self.instances[r.0 as usize].key == *first)?;
-        for segment in segments {
-            current = *self.instances[current.0 as usize]
-                .children
-                .iter()
-                .find(|&&c| self.instances[c.0 as usize].key == *segment)?;
+        let mut current = None;
+        for segment in &path.0 {
+            match self.find_sibling(current, segment)? {
+                Sibling::Instance(id) => current = Some(id),
+                Sibling::Set(_) => return None,
+            }
         }
-        Some(current)
+        current
     }
 
     /// The material key a slot of an instance resolves to: the instance
@@ -735,6 +778,20 @@ impl Assembly {
         }
         self.parts[inst.part?.0 as usize].default_material(slot)
     }
+}
+
+/// Keys are non-empty and contain neither the path separator `/` nor the
+/// placement separator `#`.
+fn validate_key(key: &str) -> Result<(), AssemblyError> {
+    if key.is_empty() || key.contains(['/', '#']) {
+        Err(AssemblyError::InvalidKey(key.to_string()))
+    } else {
+        Ok(())
+    }
+}
+
+fn finite_placement(placement: &Placement3) -> bool {
+    placement.rows.iter().flatten().all(|v| v.is_finite())
 }
 
 #[cfg(test)]

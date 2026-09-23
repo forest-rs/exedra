@@ -54,7 +54,9 @@ deterministic, and cache-friendly.
   once-per-part and part-local; `RenderList` accounting includes instance
   multiplicity and is world-space. Placed bounds are derived from transformed
   emitted positions, not transformed local AABB corners, so they stay exact
-  under rotation and general affine placement.
+  under rotation and general affine placement. (Superseded for the default
+  policy by ADR-0003: `flatten` now transforms part-local boxes and keeps
+  exact per-vertex bounds behind `BoundsPolicy::Exact`.)
 
 It owns none of:
 

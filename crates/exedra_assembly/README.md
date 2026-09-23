@@ -3,7 +3,7 @@
 Structure head for the Exedra geometry stack: part definitions (constructive
 recipes or baked meshes), instance trees with stable string-key identity,
 material slot binding, content-addressed part compilation, and a flat
-`RenderList` seam for drawables with exact placed bounds. Compiled parts expose
+`RenderList` seam for drawables with placed world bounds. Compiled parts expose
 once-per-part, part-local geometry accounting; render lists expose placed,
 world-space accounting with instance multiplicity.
 
@@ -58,6 +58,30 @@ assert_eq!(render_list.triangle_count(), 24);
   results. `CompiledPart` accounting is once per part in part-local space.
 - `flatten` resolves placements and bindings into a `RenderList`.
   `RenderList` accounting includes instance multiplicity in world space.
+- `Assembly::add_placement_set` places one part many times under one parent
+  as arrays (placements plus optional per-placement seeds and tints), for
+  scatters such as forests. `flatten` emits each set as `RenderBatch`es.
+
+## Placement scale
+
+`flatten` computes world bounds by `BoundsPolicy`. The default,
+`TransformedBox`, transforms each body's part-local box: one pass over a
+compiled body's vertices per flatten, then O(1) per placed body. It is exact
+under translation, axis permutation and axis-aligned scale, and never smaller
+than the placed geometry under rotation or shear. `flatten_with` and
+`BoundsPolicy::Exact` restore exact per-vertex bounds at O(vertices) per
+placed body.
+
+Sibling keys are indexed, so adding an instance or set is O(1) rather than
+linear in its siblings, and `resolve_path` is O(depth). A placement set is one
+record with one binding table; placement `i` is addressed as
+`PlacementPath` `parent/key#i`, so keys may contain neither `/` nor `#`.
+
+Consumers of `RenderList` must handle both `items` and `batches`. glTF export
+refuses assemblies with placement sets (`GltfError::UnsupportedPlacementSets`)
+until it writes them with `EXT_mesh_gpu_instancing`. Interchange carries
+sets as a `placement_sets` list.
+See [ADR-0003](docs/adr-0003-placement-scale.md).
 
 The crate accepts both recipe-backed and baked-mesh parts. It owns their
 placement and identity, not their geometry algorithms or rendering.
@@ -131,7 +155,8 @@ source content. It accepts pose, metadata and material edits. The snapshot's
 `policy_fingerprint()` identifies its evaluation/extraction settings. Content
 checking includes hashing baked mesh attributes, so use it at export or snapshot
 boundaries; reading parent/local placements directly requires no geometry walk.
-`flatten` remains the explicit way to measure exact placed bounds.
+`flatten_with` and `BoundsPolicy::Exact` remain the explicit way to measure
+exact placed bounds.
 
 `mark_part_changed(id)` refers to the **last successful compilation's** local
 handle assignment. It evicts that content/policy entry, including shared aliases;

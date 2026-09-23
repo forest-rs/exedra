@@ -17,6 +17,10 @@
 //! positions plus canonical face loops. Instances serialize as a flat
 //! parent-indexed list in insertion order, so rebuild is a single forward
 //! pass and parents always precede children.
+//!
+//! Placement sets follow the instances, each naming its parent instance by
+//! index. Keys are validated as the [`Assembly`] API validates them, so a key
+//! containing `/` or `#` does not load.
 
 #![cfg(feature = "serde")]
 
@@ -45,6 +49,8 @@ pub struct AssemblyDto {
     pub parts: Vec<PartDto>,
     /// Instances in insertion order; parents precede children.
     pub instances: Vec<InstanceDto>,
+    /// Placement sets in insertion order.
+    pub placement_sets: Vec<PlacementSetDto>,
 }
 
 /// One part record.
@@ -111,7 +117,7 @@ pub struct InstanceDto {
     /// Index of the parent instance, or `None` for roots. Must be smaller
     /// than this record's own index.
     pub parent: Option<u32>,
-    /// The sibling-unique instance key.
+    /// The sibling-unique instance key. It may not contain `/` or `#`.
     pub key: String,
     /// Index into `parts`, or `None` for a geometry-free frame.
     /// The field must be present in the document; only explicit `null` means a frame.
@@ -121,6 +127,31 @@ pub struct InstanceDto {
     /// Placement rows (3x4 row-major).
     pub placement: [[f64; 4]; 3],
     /// Slot-to-material bindings.
+    #[serde(default)]
+    pub bindings: Vec<SlotMaterialDto>,
+    /// Opaque metadata pairs.
+    #[serde(default)]
+    pub metadata: Vec<MetadataDto>,
+}
+
+/// One placement-set record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlacementSetDto {
+    /// Index of the parent instance, or `None` for a root-level set.
+    pub parent: Option<u32>,
+    /// The sibling-unique set key.
+    pub key: String,
+    /// Index into `parts`.
+    pub part: u32,
+    /// Placement rows (3x4 row-major), one per placement.
+    pub placements: Vec<[[f64; 4]; 3]>,
+    /// Per-placement seeds, if assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeds: Option<Vec<u64>>,
+    /// Per-placement linear RGBA tints, if assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tints: Option<Vec<[f32; 4]>>,
+    /// Slot-to-material bindings shared by every placement.
     #[serde(default)]
     pub bindings: Vec<SlotMaterialDto>,
     /// Opaque metadata pairs.
@@ -149,7 +180,8 @@ pub enum AssemblyInterchangeError {
     InvalidMesh,
     /// An instance referenced a part index out of range.
     DanglingPart(u32),
-    /// An instance referenced a parent at or after its own index.
+    /// An instance referenced a parent at or after its own index, or a
+    /// placement set referenced a missing instance.
     DanglingParent(u32),
     /// Assembly validation failed on rebuild.
     Assembly(AssemblyError),
@@ -253,11 +285,43 @@ pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
             }
         })
         .collect();
+    let placement_sets: Vec<PlacementSetDto> = assembly
+        .placement_sets()
+        .iter()
+        .map(|set| {
+            let def = assembly.part(set.part()).expect("validated set part");
+            PlacementSetDto {
+                parent: set.parent().map(|p| p.0),
+                key: String::from(set.key()),
+                part: set.part().0,
+                placements: set.placements().iter().map(|p| p.rows).collect(),
+                seeds: set.seeds().map(<[u64]>::to_vec),
+                tints: set.tints().map(<[[f32; 4]]>::to_vec),
+                bindings: set
+                    .bindings()
+                    .iter()
+                    .map(|(slot, material)| SlotMaterialDto {
+                        slot: def.slots()[slot.0 as usize].clone(),
+                        material: material.clone(),
+                    })
+                    .collect(),
+                metadata: set
+                    .metadata()
+                    .iter()
+                    .map(|(key, value)| MetadataDto {
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
     AssemblyDto {
         format: String::from(FORMAT),
         version: VERSION,
         parts,
         instances,
+        placement_sets,
     }
 }
 
@@ -323,6 +387,35 @@ pub fn from_dto(dto: &AssemblyDto) -> Result<Assembly, AssemblyInterchangeError>
         }
         for meta in &inst.metadata {
             assembly.set_metadata(id, &meta.key, &meta.value)?;
+        }
+    }
+    for set in &dto.placement_sets {
+        if set.part as usize >= dto.parts.len() {
+            return Err(AssemblyInterchangeError::DanglingPart(set.part));
+        }
+        let parent = match set.parent {
+            Some(p) if p as usize >= dto.instances.len() => {
+                return Err(AssemblyInterchangeError::DanglingParent(p));
+            }
+            other => other.map(InstanceId),
+        };
+        let placements = set
+            .placements
+            .iter()
+            .map(|rows| exedra_constructive::ir::Placement3 { rows: *rows })
+            .collect();
+        let id = assembly.add_placement_set(parent, &set.key, PartId(set.part), placements)?;
+        if let Some(seeds) = &set.seeds {
+            assembly.set_placement_seeds(id, seeds.clone())?;
+        }
+        if let Some(tints) = &set.tints {
+            assembly.set_placement_tints(id, tints.clone())?;
+        }
+        for binding in &set.bindings {
+            assembly.bind_placement_material(id, &binding.slot, &binding.material)?;
+        }
+        for meta in &set.metadata {
+            assembly.set_placement_set_metadata(id, &meta.key, &meta.value)?;
         }
     }
     Ok(assembly)
@@ -580,5 +673,41 @@ mod tests {
         std::fs::write(dir.join("assembly_v1.frozen.json"), json).expect("write corpus");
         std::fs::write(dir.join("assembly_v1.frozen.fingerprint"), fingerprint)
             .expect("write fingerprint");
+    }
+
+    #[test]
+    fn placement_sets_round_trip() {
+        let mut asm = corpus_assembly();
+        let panel = asm.part_by_key("panel").unwrap();
+        let parent = asm.roots()[0];
+        let set = asm
+            .add_placement_set(
+                Some(parent),
+                "scatter",
+                panel,
+                (0..3)
+                    .map(|i| Placement3::translate(f64::from(i), 2.0, 0.0))
+                    .collect(),
+            )
+            .unwrap();
+        asm.set_placement_seeds(set, alloc::vec![5, 6, 7]).unwrap();
+        asm.set_placement_tints(set, alloc::vec![[0.5, 0.25, 1.0, 1.0]; 3])
+            .unwrap();
+        asm.bind_placement_material(set, "front", "walnut").unwrap();
+        asm.set_placement_set_metadata(set, "species", "quercus")
+            .unwrap();
+        asm.add_placement_set(None, "loose", panel, alloc::vec![Placement3::IDENTITY])
+            .unwrap();
+
+        let dto = to_dto(&asm);
+        assert_eq!(dto.placement_sets.len(), 2);
+        assert!(round_trips(&asm));
+
+        let mut dangling = dto;
+        dangling.placement_sets[0].parent = Some(999);
+        assert!(matches!(
+            from_dto(&dangling),
+            Err(AssemblyInterchangeError::DanglingParent(999))
+        ));
     }
 }
