@@ -28,7 +28,7 @@ Most callers should use the crate root re-exports:
   extraction and normal behavior.
 - `ExtractAttribute`, `AttributeStream`, `AttributeBuffer`, `AttributeValue`,
   `AttributeKind`, and `StreamValue` for extra render-vertex streams carried
-  from attribute layers.
+  from attribute layers, and `TangentUv` for MikkTSpace tangent generation.
 - `UvSource`, `BoxPlane`, `DEFAULT_BOX_NORMAL_EPSILON`, `dominant_box_plane`,
   `project_box_position`, and `project_corner_box` for the extraction UV
   policy and the box projection shared with the `uv.box` operator.

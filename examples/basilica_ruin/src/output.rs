@@ -356,6 +356,14 @@ fn counter_delta(before: CompileCounters, after: CompileCounters) -> CompileCoun
             .missing_attribute_layers
             .checked_sub(before.missing_attribute_layers)
             .expect("compiler counters are monotonic"),
+        tangent_fallbacks: after
+            .tangent_fallbacks
+            .checked_sub(before.tangent_fallbacks)
+            .expect("compiler counters are monotonic"),
+        missing_tangent_uv_sets: after
+            .missing_tangent_uv_sets
+            .checked_sub(before.missing_tangent_uv_sets)
+            .expect("compiler counters are monotonic"),
     }
 }
 

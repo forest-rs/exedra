@@ -131,8 +131,9 @@ impl AttributeElement for crate::HalfEdgeId {
 
 /// Typed attribute key scoped by domain and name.
 ///
-/// Keys are `Copy` for every value type: they hold only the domain and name.
-#[derive(Debug, Eq, PartialEq, Hash)]
+/// Keys are `Copy`, `Eq`, and `Hash` for every value type: they hold only the
+/// domain and name.
+#[derive(Debug)]
 pub struct AttrKey<T> {
     domain: Domain,
     name: &'static str,
@@ -146,6 +147,21 @@ impl<T> Clone for AttrKey<T> {
 }
 
 impl<T> Copy for AttrKey<T> {}
+
+impl<T> PartialEq for AttrKey<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.domain == other.domain && self.name == other.name
+    }
+}
+
+impl<T> Eq for AttrKey<T> {}
+
+impl<T> core::hash::Hash for AttrKey<T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.domain.hash(state);
+        self.name.hash(state);
+    }
+}
 
 impl<T> AttrKey<T> {
     /// Creates a new typed key.

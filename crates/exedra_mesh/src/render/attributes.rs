@@ -267,6 +267,20 @@ impl AttributeBuffer {
         self.len() == 0
     }
 
+    /// Returns the values at `sources`, in order.
+    pub(super) fn gather(&self, sources: &[u32]) -> Self {
+        fn pick<T: Copy>(values: &[T], sources: &[u32]) -> Vec<T> {
+            sources.iter().map(|&s| values[s as usize]).collect()
+        }
+        match self {
+            Self::F32(v) => Self::F32(pick(v, sources)),
+            Self::Vec2(v) => Self::Vec2(pick(v, sources)),
+            Self::Vec3(v) => Self::Vec3(pick(v, sources)),
+            Self::Vec4(v) => Self::Vec4(pick(v, sources)),
+            Self::U32(v) => Self::U32(pick(v, sources)),
+        }
+    }
+
     /// Appends one value decoded from its component bit patterns.
     fn push_bits(&mut self, bits: &[u32]) {
         let f = |i: usize| f32::from_bits(bits[i]);

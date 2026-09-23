@@ -28,6 +28,15 @@
 //! fallbacks, missing layers, and attribute-driven splits. Write
 //! caller-defined layers with `op::set_attribute` inside an edit scope.
 //!
+//! # Tangents
+//!
+//! [`ExtractParams::tangents`](crate::ExtractParams::tangents) generates
+//! MikkTSpace-compatible tangents into
+//! [`TriMesh::tangents`](crate::TriMesh::tangents) from the primary UV set or
+//! a carried UV stream. Tangent differences split render vertices, and
+//! corners without usable UV gradients receive a counted perpendicular
+//! fallback.
+//!
 //! # Source Policies
 //!
 //! A corner's UV and normal are whatever the extraction policies resolve for
