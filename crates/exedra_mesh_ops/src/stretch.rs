@@ -561,7 +561,7 @@ impl OutputMesh {
                 .zip(&self.face_uvs)
                 .zip(&self.face_normal_overrides)
             {
-                for ((edge, uv), normal) in edges.iter().zip(uvs).zip(normals) {
+                for ((edge, uv), normal) in vertex_corners(edges).zip(uvs).zip(normals) {
                     if let Some(uv) = uv {
                         exedra_mesh::op::set_corner_uv(&mut edit, *edge, *uv)
                             .map_err(|_| StretchError::BuildFailed)?;
@@ -597,6 +597,19 @@ impl OutputMesh {
             stats: StretchStats::default(),
         })
     }
+}
+
+/// The corners of a built face in polygon vertex order. Builder half-edge `k`
+/// runs from vertex `k` to vertex `k + 1`, and a corner belongs to its
+/// half-edge's destination, so vertex `k`'s corner is half-edge `k - 1`.
+fn vertex_corners(
+    edges: &[exedra_mesh::HalfEdgeId],
+) -> impl Iterator<Item = &exedra_mesh::HalfEdgeId> {
+    edges
+        .iter()
+        .cycle()
+        .skip(edges.len().saturating_sub(1))
+        .take(edges.len())
 }
 
 fn ordered_edge(a: u32, b: u32) -> (u32, u32) {

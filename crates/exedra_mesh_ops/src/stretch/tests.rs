@@ -144,3 +144,58 @@ fn raw_stretch_rejects_invalid_inputs_and_translation_overflow_without_mutation(
         assert_eq!(from, StretchVertexSource::Original(vertex));
     }
 }
+
+/// A cube whose corner UVs encode their destination vertex position (y, z)
+/// for faces on the unmoved side.
+fn uv_cube() -> Mesh {
+    let mut mesh = cube();
+    let corners: Vec<_> = mesh.faces().flat_map(|f| mesh.face_loop(f)).collect();
+    let mut edit = mesh.edit();
+    for corner in corners {
+        let vertex = edit.mesh().to_vertex(corner).unwrap();
+        let p = *edit.mesh().vertex_position(vertex).unwrap();
+        exedra_mesh::op::set_corner_uv(&mut edit, corner, [p[1] + 10.0 * p[0], p[2]]).unwrap();
+    }
+    let _: () = edit.finish();
+    mesh
+}
+
+#[test]
+fn rebuilt_corner_uvs_stay_at_their_own_vertex() {
+    let source = uv_cube();
+    let result = stretch_mesh(
+        &source,
+        &Plane3 {
+            normal: [1.0, 0.0, 0.0],
+            distance: 1.0,
+        },
+        2.0,
+        &Placement3::IDENTITY,
+        &StretchPolicy::default(),
+    )
+    .unwrap();
+    assert!(result.topology_rebuilt);
+    let mesh = &result.mesh;
+    let uvs = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV).unwrap();
+    let mut checked = 0;
+    for face in mesh.faces() {
+        for corner in mesh.face_loop(face) {
+            let vertex = mesh.to_vertex(corner).unwrap();
+            let p = *mesh.vertex_position(vertex).unwrap();
+            // Unmoved original vertices keep their authored UV exactly.
+            if matches!(
+                result.vertex_sources[&vertex],
+                StretchVertexSource::Original(_)
+            ) && p[0] < 1.0
+            {
+                assert_eq!(
+                    uvs.get(corner.as_id()),
+                    Some(&[p[1] + 10.0 * p[0], p[2]]),
+                    "corner at {p:?}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 0);
+}
