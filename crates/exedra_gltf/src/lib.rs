@@ -16,6 +16,8 @@
 //! - [`export_glb_with_materials`] and [`export_gltf_with_materials`] resolve
 //!   opaque material keys through caller-provided glTF data. The other entry
 //!   points produce deterministic preview colors derived from those keys;
+//! - compiled tangents export as `TANGENT`; other extracted streams export
+//!   through explicit [`GltfAttribute`] mappings in [`GltfExportOptions`];
 //! - exact empty parts keep their identity without illegal zero-count meshes.
 //!   Geometry-free scenes omit buffers and the optional GLB BIN chunk;
 //! - mismatched compiled sources and error-level partial geometry are refused.
@@ -51,6 +53,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#[cfg(test)]
+mod attribute_tests;
+mod attributes;
 mod inspect;
 mod materials;
 #[cfg(test)]
@@ -66,6 +71,7 @@ mod texture_tests;
 #[cfg(test)]
 mod hierarchy_tests;
 
+pub use attributes::{GltfAttribute, GltfSemantic, IntegerEncoding};
 pub use inspect::GlbDocument;
 pub use materials::{MaterialResolver, Texture};
 
@@ -81,6 +87,8 @@ use exedra_constructive::{
     ir::Placement3,
 };
 use serde_json::{Map, Value, json};
+
+use attributes::Site;
 
 /// A finished export.
 #[derive(Clone, Debug)]
@@ -120,6 +128,16 @@ pub struct GltfStats {
     pub image_bytes: u64,
     /// Total bytes in the embedded buffer.
     pub buffer_bytes: u64,
+    /// Accessors emitted for `TANGENT` and mapped attribute streams.
+    pub attribute_accessors: u64,
+    /// Bytes of `TANGENT` and mapped attribute data (part of `buffer_bytes`).
+    pub attribute_bytes: u64,
+    /// Extracted streams, per exported geometry, that no
+    /// [`GltfExportOptions::attributes`] mapping names. They are not exported.
+    pub unmapped_attribute_streams: u64,
+    /// Mappings, per exported geometry, whose stream that geometry does not
+    /// carry. The attribute is omitted from its primitives.
+    pub missing_attribute_streams: u64,
 }
 
 /// Coordinate-system handling for a glTF export.
@@ -137,21 +155,41 @@ pub enum GltfCoordinates {
 }
 
 /// Options controlling glTF export.
+///
+/// Options borrow their attribute mappings, so one value can be reused
+/// across exports.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
-pub struct GltfExportOptions {
+pub struct GltfExportOptions<'a> {
     /// Coordinate-system handling for the exported scene.
     pub coordinates: GltfCoordinates,
+    /// Extracted vertex streams to export as primitive attributes, in this
+    /// accessor order.
+    ///
+    /// `POSITION`, `NORMAL`, and `TEXCOORD_0` are always written, and
+    /// `TANGENT` is written for every body with
+    /// [`TriMesh::tangents`](exedra_mesh::TriMesh::tangents). Streams without
+    /// a mapping are not exported; see
+    /// [`GltfStats::unmapped_attribute_streams`].
+    pub attributes: &'a [GltfAttribute],
 }
 
-impl GltfExportOptions {
+impl<'a> GltfExportOptions<'a> {
     /// Options that present an Exedra Z-up scene in glTF's conventional
     /// Y-up frame.
     #[must_use]
     pub const fn z_up_to_y_up() -> Self {
         Self {
             coordinates: GltfCoordinates::ZUpToYUp,
+            attributes: &[],
         }
+    }
+
+    /// Replaces [`Self::attributes`] with `mappings`.
+    #[must_use]
+    pub const fn with_attributes(mut self, mappings: &'a [GltfAttribute]) -> Self {
+        self.attributes = mappings;
+        self
     }
 }
 
@@ -210,6 +248,57 @@ pub enum GltfError {
         /// Complete evaluation evidence, retained independently of the snapshot.
         report: Box<GeometryReport>,
     },
+    /// An attribute mapping is not valid glTF: `TEXCOORD_0` (the primary UV
+    /// set), a custom name without a leading `_`, a repeated semantic, or an
+    /// indexed set whose lower sets are not mapped (`TEXCOORD` sets must be
+    /// `1..=k`, `COLOR` sets `0..=k`).
+    InvalidAttributeMapping {
+        /// The mapped stream.
+        stream: &'static str,
+        /// The rejected semantic.
+        semantic: String,
+        /// Why the mapping was rejected.
+        reason: &'static str,
+    },
+    /// A body lacks the stream of an indexed set while a higher set of the
+    /// same semantic is present, so exporting it would leave a gap glTF
+    /// forbids. A missing highest set is skipped and counted instead.
+    AttributeSetGap {
+        /// The missing stream.
+        stream: &'static str,
+        /// The semantic it maps to.
+        semantic: String,
+        /// Assembly-local part.
+        part: u32,
+        /// Body within the part.
+        body: usize,
+    },
+    /// A mapped stream's value type does not fit its semantic, for example a
+    /// `u32` stream mapped to `COLOR_0`.
+    AttributeTypeMismatch {
+        /// The mapped stream.
+        stream: &'static str,
+        /// The target semantic.
+        semantic: String,
+        /// Assembly-local part.
+        part: u32,
+        /// Body within the part.
+        body: usize,
+    },
+    /// A `u32` stream holds a value its [`IntegerEncoding`] cannot represent
+    /// exactly.
+    UnrepresentableAttribute {
+        /// The mapped stream.
+        stream: &'static str,
+        /// The target semantic.
+        semantic: String,
+        /// Assembly-local part.
+        part: u32,
+        /// Body within the part.
+        body: usize,
+        /// The first value out of range.
+        value: u32,
+    },
     /// The finished GLB would exceed its unsigned 32-bit container length.
     GlbTooLarge,
     /// A GLB container header or chunk layout is invalid.
@@ -251,6 +340,39 @@ impl std::fmt::Display for GltfError {
             Self::IncompleteGeometry { part, .. } => write!(
                 f,
                 "compiled part {part} has error-level geometry diagnostics"
+            ),
+            Self::InvalidAttributeMapping {
+                stream,
+                semantic,
+                reason,
+            } => write!(f, "stream {stream:?} cannot map to {semantic}: {reason}"),
+            Self::AttributeSetGap {
+                stream,
+                semantic,
+                part,
+                body,
+            } => write!(
+                f,
+                "part {part}, body {body} lacks stream {stream:?} for {semantic} below a higher set"
+            ),
+            Self::AttributeTypeMismatch {
+                stream,
+                semantic,
+                part,
+                body,
+            } => write!(
+                f,
+                "stream {stream:?} in part {part}, body {body} has the wrong type for {semantic}"
+            ),
+            Self::UnrepresentableAttribute {
+                stream,
+                semantic,
+                part,
+                body,
+                value,
+            } => write!(
+                f,
+                "stream {stream:?} in part {part}, body {body} holds {value}, which {semantic} cannot represent exactly"
             ),
             Self::GlbTooLarge => f.write_str("GLB output exceeds the 32-bit container limit"),
             Self::InvalidGlb { reason } => write!(f, "invalid GLB container: {reason}"),
@@ -296,7 +418,7 @@ pub fn export_gltf(assembly: &Assembly, compiled: &CompiledParts) -> Result<Gltf
 pub fn export_gltf_with_options(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    options: GltfExportOptions,
+    options: GltfExportOptions<'_>,
 ) -> Result<GltfExport, GltfError> {
     finish_gltf(build_export(assembly, compiled, options, None)?)
 }
@@ -319,7 +441,7 @@ pub fn export_gltf_with_materials(
     assembly: &Assembly,
     compiled: &CompiledParts,
     materials: &dyn MaterialResolver,
-    options: GltfExportOptions,
+    options: GltfExportOptions<'_>,
 ) -> Result<GltfExport, GltfError> {
     finish_gltf(build_export(assembly, compiled, options, Some(materials))?)
 }
@@ -368,7 +490,7 @@ pub fn export_glb(assembly: &Assembly, compiled: &CompiledParts) -> Result<GlbEx
 pub fn export_glb_with_options(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    options: GltfExportOptions,
+    options: GltfExportOptions<'_>,
 ) -> Result<GlbExport, GltfError> {
     finish_glb(build_export(assembly, compiled, options, None)?)
 }
@@ -387,7 +509,7 @@ pub fn export_glb_with_materials(
     assembly: &Assembly,
     compiled: &CompiledParts,
     materials: &dyn MaterialResolver,
-    options: GltfExportOptions,
+    options: GltfExportOptions<'_>,
 ) -> Result<GlbExport, GltfError> {
     finish_glb(build_export(assembly, compiled, options, Some(materials))?)
 }
@@ -408,12 +530,13 @@ struct BuiltExport {
 fn build_export(
     assembly: &Assembly,
     compiled: &CompiledParts,
-    options: GltfExportOptions,
+    options: GltfExportOptions<'_>,
     resolver: Option<&dyn MaterialResolver>,
 ) -> Result<BuiltExport, GltfError> {
     compiled
         .validate_for(assembly)
         .map_err(GltfError::CompilationMismatch)?;
+    attributes::validate_mappings(options.attributes)?;
     for index in 0..assembly.parts().len() {
         let part = PartId(u32::try_from(index).expect("validated part count"));
         if let Some(report) = compiled.report(part)
@@ -491,13 +614,25 @@ fn build_export(
             let mesh = if let Some(&index) = mesh_index.get(&key) {
                 index
             } else {
-                let geometry = *geometry_index
-                    .entry((entry.fingerprint, body_index))
-                    .or_insert_with(|| {
-                        emit_geometry(body, &mut buffer, &mut buffer_views, &mut accessors)
-                    });
+                let geometry = match geometry_index.entry((entry.fingerprint, body_index)) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+                    std::collections::hash_map::Entry::Vacant(entry) => entry
+                        .insert(emit_geometry(
+                            body,
+                            options.attributes,
+                            Site {
+                                part: part.0,
+                                body: body_index,
+                            },
+                            &mut buffer,
+                            &mut buffer_views,
+                            &mut accessors,
+                            &mut stats,
+                        )?)
+                        .clone(),
+                };
                 let mesh = emit_mesh(
-                    geometry,
+                    &geometry,
                     &regions,
                     body,
                     part,
@@ -679,21 +814,26 @@ fn pack_glb(mut document: Map<String, Value>, mut buffer: Vec<u8>) -> Result<Vec
     Ok(glb)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct GeometryAccessors {
     positions: usize,
     normals: usize,
     uvs: usize,
+    /// `TANGENT` and mapped streams, in accessor order.
+    extra: Vec<(String, usize)>,
     indices_view: usize,
 }
 
 /// Emits a compiled body's geometry once, independently of material binding.
 fn emit_geometry(
     body: &CompiledBody,
+    mappings: &[GltfAttribute],
+    site: Site,
     buffer: &mut Vec<u8>,
     buffer_views: &mut Vec<Value>,
     accessors: &mut Vec<Value>,
-) -> GeometryAccessors {
+    stats: &mut GltfStats,
+) -> Result<GeometryAccessors, GltfError> {
     let tri = &body.tri;
     let vertex_count = tri.positions.len();
 
@@ -727,23 +867,60 @@ fn emit_geometry(
         "type": "VEC2",
     }));
 
+    let mut extra = Vec::new();
+    let mut push_extra = |semantic: String, bytes: &[u8], mut accessor: Value, stride| {
+        let view = push_view(buffer, buffer_views, bytes);
+        if let Some(stride) = stride {
+            buffer_views[view]["byteStride"] = json!(stride);
+        }
+        accessor["bufferView"] = json!(view);
+        extra.push((semantic, accessors.len()));
+        accessors.push(accessor);
+        stats.attribute_accessors += 1;
+        stats.attribute_bytes += bytes.len() as u64;
+    };
+    if !tri.tangents.is_empty() {
+        push_extra(
+            "TANGENT".to_owned(),
+            &vec4_bytes(&tri.tangents),
+            json!({ "componentType": 5126, "count": vertex_count, "type": "VEC4" }),
+            None,
+        );
+    }
+    let (encoded, missing) = attributes::encode(tri, mappings, site)?;
+    stats.missing_attribute_streams += missing;
+    stats.unmapped_attribute_streams += tri
+        .attributes
+        .iter()
+        .filter(|stream| !mappings.iter().any(|m| m.selects(stream)))
+        .count() as u64;
+    for stream in encoded {
+        push_extra(
+            stream.semantic,
+            &stream.bytes,
+            stream.accessor,
+            stream.byte_stride,
+        );
+    }
+
     let mut index_bytes = Vec::with_capacity(tri.indices.len() * 4);
     for &i in &tri.indices {
         index_bytes.extend_from_slice(&i.to_le_bytes());
     }
     let indices_view = push_view(buffer, buffer_views, &index_bytes);
 
-    GeometryAccessors {
+    Ok(GeometryAccessors {
         positions: positions_accessor,
         normals: normals_accessor,
         uvs: uvs_accessor,
+        extra,
         indices_view,
-    }
+    })
 }
 
 /// Emits the primitive wrapper for one material resolution of shared geometry.
 fn emit_mesh(
-    geometry: GeometryAccessors,
+    geometry: &GeometryAccessors,
     regions: &[ResolvedRegion],
     body: &CompiledBody,
     part: PartId,
@@ -765,14 +942,15 @@ fn emit_mesh(
             "type": "SCALAR",
         }));
         let mut primitive = Map::new();
-        primitive.insert(
-            "attributes".into(),
-            json!({
-                "POSITION": geometry.positions,
-                "NORMAL": geometry.normals,
-                "TEXCOORD_0": geometry.uvs,
-            }),
-        );
+        let mut attributes = json!({
+            "POSITION": geometry.positions,
+            "NORMAL": geometry.normals,
+            "TEXCOORD_0": geometry.uvs,
+        });
+        for (semantic, accessor) in &geometry.extra {
+            attributes[semantic.as_str()] = json!(accessor);
+        }
+        primitive.insert("attributes".into(), attributes);
         primitive.insert("indices".into(), json!(indices_accessor));
         primitive.insert("extras".into(), json!({ "faceRegion": region.region }));
         if let Some(material) = &region.material {
@@ -851,6 +1029,14 @@ fn vec3_bytes(values: &[[f32; 3]]) -> Vec<u8> {
         for c in v {
             out.extend_from_slice(&c.to_le_bytes());
         }
+    }
+    out
+}
+
+fn vec4_bytes(values: &[[f32; 4]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * 16);
+    for c in values.as_flattened() {
+        out.extend_from_slice(&c.to_le_bytes());
     }
     out
 }
