@@ -108,6 +108,17 @@ Migration: existing curved paths add a zero `section_origin`, `PathClosure::Open
 and `PathJoin::Smooth`; schema 38 invalidates old fingerprints. See
 [closed curved sweep semantics](docs/adr-0022-closed-curved-sweeps.md).
 
+`NodeKind::Sweep::section` scales and twists the section along the path with a
+`SectionLaw`: piecewise-linear `scale` and `twist` laws over normalized arc
+length, applied about the section datum. Branches and tapered mouldings use
+`SectionLaw::taper(start, end)`; `SectionLaw::IDENTITY` keeps the section
+constant and every existing fingerprint unchanged. Laws are evaluated at the
+path's stations and add none, so author enough stations for a twist. Closed
+paths need laws that agree at both ends, and a controlled sweep refuses a band
+the law collapses. Charts keep U on the unscaled profile perimeter. Text and
+interchange write shaped sweeps as a distinct `shaped` operation that older
+readers refuse. See [sweep section laws](docs/adr-0024-sweep-section-laws.md).
+
 `SourceMap::sweep_sampling(face)` preserves source sampling policies and curved
 path spans through Boolean cuts. These are original construction records,
 not validity checks on the Boolean result. See [closed sweep semantics and

@@ -297,6 +297,7 @@ fn recipe(cut: bool) -> Recipe {
     let mut root = b
         .with_source(source)
         .add(NodeKind::Sweep {
+            section: SectionLaw::IDENTITY,
             profile: p,
             path: Path3::Curves {
                 start: [0.0; 3],
@@ -701,6 +702,7 @@ fn legacy_curve_opcode_keeps_open_smooth_semantics() {
     let p = builder.add_profile(profile());
     let root = builder
         .add(NodeKind::Sweep {
+            section: SectionLaw::IDENTITY,
             profile: p,
             path: Path3::Curves {
                 start: [0.0; 3],

@@ -22,6 +22,7 @@ fn boolean_descendants_retain_shared_original_curve_sampling() {
     let rail = builder
         .with_source(source)
         .add(NodeKind::Sweep {
+            section: SectionLaw::IDENTITY,
             profile: p,
             path: Path3::Curves {
                 section_origin: [0.0; 2],
@@ -243,6 +244,7 @@ fn source_correspondence_serialization_and_cache_replay_are_preserved() {
     let p = b.add_profile(profile());
     let root = b
         .add(NodeKind::Sweep {
+            section: SectionLaw::IDENTITY,
             profile: p,
             path: Path3::Curves {
                 section_origin: [0.0; 2],
@@ -433,6 +435,7 @@ fn instances_preserve_source_sampling_without_claiming_placed_checks() {
         let profile = builder.add_profile(profile());
         let source = builder
             .add(NodeKind::Sweep {
+                section: SectionLaw::IDENTITY,
                 profile,
                 path: Path3::Curves {
                     section_origin: [0.0; 2],

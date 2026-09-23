@@ -24,8 +24,9 @@ use kurbo::Point;
 use crate::chart::{ChartTransform, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
-    PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
+    CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
+    PathClosure, PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder,
+    RecipeError, SectionLaw,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -359,8 +360,16 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
         NodeKind::Sweep {
             profile,
             path,
+            section,
             caps,
         } => {
+            if !section.is_identity() {
+                line.push_str("shaped scale ");
+                put_law(line, &section.scale);
+                line.push_str(" twist ");
+                put_law(line, &section.twist);
+                line.push(' ');
+            }
             if let Path3::Curves {
                 start,
                 segments,
@@ -677,6 +686,41 @@ impl<'a> Lines<'a> {
             .ok_or(TextError::Malformed { line: usize::MAX })
     }
 }
+
+fn put_law(out: &mut String, law: &Law) {
+    match law {
+        Law::Constant(value) => {
+            let _ = write!(out, "constant {}", hex(*value));
+        }
+        Law::Linear(keys) => {
+            let _ = write!(out, "linear {}", keys.len());
+            for [t, value] in keys {
+                let _ = write!(out, " {} {}", hex(*t), hex(*value));
+            }
+        }
+    }
+}
+
+fn parse_law(tokens: &mut core::str::SplitWhitespace<'_>, line: usize) -> Result<Law, TextError> {
+    match tokens.next() {
+        Some("constant") => Ok(Law::Constant(next_f64(tokens, line)?)),
+        Some("linear") => {
+            let count = next_u32(tokens, line)? as usize;
+            if count > MAX_LAW_KEYS {
+                return Err(TextError::Malformed { line });
+            }
+            let mut keys = Vec::with_capacity(count);
+            for _ in 0..count {
+                keys.push([next_f64(tokens, line)?, next_f64(tokens, line)?]);
+            }
+            Ok(Law::Linear(keys))
+        }
+        _ => Err(TextError::Malformed { line }),
+    }
+}
+
+/// Upper bound on section-law keys read from text, before allocation.
+const MAX_LAW_KEYS: usize = 1 << 16;
 
 fn parse_f64(token: &str, line: usize) -> Result<f64, TextError> {
     u64::from_str_radix(token, 16)
@@ -1049,6 +1093,20 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
         expect(&mut tokens, "operation", line)?;
         kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
     }
+    let mut section = SectionLaw::IDENTITY;
+    if kind_name == "shaped" {
+        expect(&mut tokens, "scale", line)?;
+        section.scale = parse_law(&mut tokens, line)?;
+        expect(&mut tokens, "twist", line)?;
+        section.twist = parse_law(&mut tokens, line)?;
+        kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+        if !matches!(
+            kind_name,
+            "sweep" | "mitered_sweep" | "mitered_path_sweep" | "curved_sweep" | "curved_path_sweep"
+        ) {
+            return Err(TextError::Malformed { line });
+        }
+    }
     let kind = match kind_name {
         "on_workplane" => {
             use crate::workplane::{SurfaceSelector, WorkplaneAttachment};
@@ -1274,6 +1332,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             }
             NodeKind::Sweep {
                 profile,
+                section: core::mem::take(&mut section),
                 path: Path3::Curves {
                     start,
                     segments,
@@ -1333,6 +1392,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             }
             NodeKind::Sweep {
                 profile,
+                section: core::mem::take(&mut section),
                 path: match orientation {
                     None => Path3::Polyline {
                         points,
@@ -1634,6 +1694,7 @@ pub(crate) mod tests_support {
             .expect("valid");
         let sweep = b
             .add(NodeKind::Sweep {
+                section: SectionLaw::IDENTITY,
                 profile: rounded,
                 path: Path3::Polyline {
                     points: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [1.0, 0.0, 3.0]],

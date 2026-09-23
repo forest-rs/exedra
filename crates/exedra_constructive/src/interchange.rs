@@ -36,9 +36,9 @@ use serde::{Deserialize, Serialize};
 use crate::chart::{ChartError, ChartTransform, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, LoftPolicy, LoftSection, NodeId, NodeKind, Path3, PathClosure,
-    PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder, RecipeError,
-    SlotId, SourceId,
+    CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
+    PathClosure, PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder,
+    RecipeError, SectionLaw, SlotId, SourceId,
 };
 use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag};
 
@@ -337,6 +337,23 @@ pub enum EdgeBoundariesDto {
     Operands(Vec<[OperandRegionDto; 2]>),
 }
 
+/// A section law: a constant, or piecewise-linear `[t, value]` keys over
+/// normalized arc length.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LawDto {
+    /// The same value everywhere.
+    Constant {
+        /// The value.
+        value: f64,
+    },
+    /// Linear interpolation of keys, `t` strictly increasing from 0 to 1.
+    Linear {
+        /// `[t, value]` keys.
+        keys: Vec<[f64; 2]>,
+    },
+}
+
 /// Explicit controlled-path connectivity, independent of endpoint coordinates.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -535,6 +552,16 @@ pub enum NodeKindDto {
         joins: PathJoinDto,
         /// Cap mode; closed paths require none.
         caps: String,
+    },
+    /// A sweep whose section scales and twists along its path. A distinct
+    /// operation, so older readers refuse it rather than ignore the law.
+    ShapedSweep {
+        /// Section scale law.
+        scale: LawDto,
+        /// Section twist law, in radians.
+        twist: LawDto,
+        /// The wrapped constant-section sweep operation.
+        sweep: Box<Self>,
     },
     /// Single-sided planar face.
     PlanarFace {
@@ -917,6 +944,22 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
         NodeKind::Sweep {
             profile,
             path,
+            section,
+            caps,
+        } if !section.is_identity() => NodeKindDto::ShapedSweep {
+            scale: law_dto(&section.scale),
+            twist: law_dto(&section.twist),
+            sweep: Box::new(kind_dto(&NodeKind::Sweep {
+                profile: *profile,
+                path: path.clone(),
+                section: SectionLaw::IDENTITY,
+                caps: *caps,
+            })),
+        },
+        NodeKind::Sweep {
+            profile,
+            path,
+            section: _,
             caps,
         } => match path {
             Path3::Polyline { points, frame } => {
@@ -1263,6 +1306,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             caps,
         } => NodeKind::Sweep {
             profile: ProfileId(*profile),
+            section: SectionLaw::IDENTITY,
             path: Path3::Polyline {
                 points: points.clone(),
                 frame: FramePolicy::RotationMinimizing,
@@ -1277,6 +1321,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             caps,
         } => NodeKind::Sweep {
             profile: ProfileId(*profile),
+            section: SectionLaw::IDENTITY,
             path: Path3::MiteredPolyline {
                 points: points.clone(),
                 section_x: *section_x,
@@ -1296,6 +1341,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             caps,
         } => NodeKind::Sweep {
             profile: ProfileId(*profile),
+            section: SectionLaw::IDENTITY,
             path: Path3::MiteredPolyline {
                 points: points.clone(),
                 section_x: *section_x,
@@ -1318,6 +1364,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             caps,
         } => NodeKind::Sweep {
             profile: ProfileId(*profile),
+            section: SectionLaw::IDENTITY,
             path: Path3::Curves {
                 start: *start,
                 segments: segments.iter().map(path_segment_value).collect(),
@@ -1339,6 +1386,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             caps,
         } => NodeKind::Sweep {
             profile: ProfileId(*profile),
+            section: SectionLaw::IDENTITY,
             path: Path3::Curves {
                 start: *start,
                 segments: segments.iter().map(path_segment_value).collect(),
@@ -1357,6 +1405,37 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             },
             caps: caps_value(caps)?,
         },
+        NodeKindDto::ShapedSweep {
+            scale,
+            twist,
+            sweep,
+        } => {
+            if matches!(**sweep, NodeKindDto::ShapedSweep { .. }) {
+                return Err(InterchangeError::UnknownValue {
+                    field: "shaped_sweep.sweep",
+                });
+            }
+            let NodeKind::Sweep {
+                profile,
+                path,
+                caps,
+                ..
+            } = kind_value(sweep)?
+            else {
+                return Err(InterchangeError::UnknownValue {
+                    field: "shaped_sweep.sweep",
+                });
+            };
+            NodeKind::Sweep {
+                profile,
+                path,
+                section: SectionLaw {
+                    scale: law_value(scale),
+                    twist: law_value(twist),
+                },
+                caps,
+            }
+        }
         NodeKindDto::PlanarFace { profile, placement } => NodeKind::PlanarFace {
             profile: ProfileId(*profile),
             placement: placement_value(*placement),
@@ -1510,6 +1589,20 @@ pub enum PathSegmentDto {
         /// Endpoint.
         to: [f64; 3],
     },
+}
+
+fn law_dto(law: &Law) -> LawDto {
+    match law {
+        Law::Constant(value) => LawDto::Constant { value: *value },
+        Law::Linear(keys) => LawDto::Linear { keys: keys.clone() },
+    }
+}
+
+fn law_value(law: &LawDto) -> Law {
+    match law {
+        LawDto::Constant { value } => Law::Constant(*value),
+        LawDto::Linear { keys } => Law::Linear(keys.clone()),
+    }
 }
 
 fn path_segment_dto(segment: &crate::path::PathSegment3) -> PathSegmentDto {

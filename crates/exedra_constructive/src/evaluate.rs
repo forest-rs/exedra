@@ -32,7 +32,7 @@ use crate::tessellate::{
     EvalPolicy, Feature, TessellateError, TessellatedBody, tessellate_extrude,
     tessellate_extrude_with_chart, tessellate_loft, tessellate_loft_with_chart,
     tessellate_planar_face, tessellate_primitive, tessellate_revolve,
-    tessellate_revolve_with_chart, tessellate_sweep, tessellate_sweep_with_chart,
+    tessellate_revolve_with_chart,
 };
 
 /// How faithfully a node's output represents its constructive intent.
@@ -656,69 +656,24 @@ impl EvalCx<'_> {
             NodeKind::Sweep {
                 profile,
                 path,
+                section,
                 caps,
             } => {
                 let path = path.clone();
+                let section = section.clone();
                 let caps = *caps;
                 let profile = *profile;
                 let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
-                    if let Some(chart) = chart {
-                        return tessellate_sweep_with_chart(
-                            cx.recipe.profile(profile).expect("validated profile id"),
-                            world,
-                            &path,
-                            caps,
-                            chart,
-                            cx.policy,
-                        )
-                        .map_err(|error| EvalError::new(node_id, error));
-                    }
-                    match &path {
-                        crate::ir::Path3::Polyline { points, .. } => tessellate_sweep(
-                            cx.recipe.profile(profile).expect("validated profile id"),
-                            world,
-                            points,
-                            caps,
-                            cx.policy,
-                        ),
-                        crate::ir::Path3::MiteredPolyline {
-                            points,
-                            section_x,
-                            section_origin,
-                            closure,
-                            miter_limit,
-                        } => crate::tessellate::tessellate_mitered_sweep(
-                            cx.recipe.profile(profile).expect("validated profile id"),
-                            world,
-                            points,
-                            *section_x,
-                            *section_origin,
-                            *closure,
-                            *miter_limit,
-                            caps,
-                            cx.policy,
-                        ),
-                        crate::ir::Path3::Curves {
-                            start,
-                            segments,
-                            section_x,
-                            section_origin,
-                            closure,
-                            joins,
-                        } => crate::tessellate::tessellate_curved_sweep(
-                            cx.recipe.profile(profile).expect("validated profile id"),
-                            world,
-                            *start,
-                            segments,
-                            *section_x,
-                            *section_origin,
-                            *closure,
-                            *joins,
-                            caps,
-                            cx.policy,
-                        ),
-                    }
+                    crate::tessellate::tessellate_path_sweep(
+                        cx.recipe.profile(profile).expect("validated profile id"),
+                        world,
+                        &path,
+                        &section,
+                        caps,
+                        chart,
+                        cx.policy,
+                    )
                     .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);

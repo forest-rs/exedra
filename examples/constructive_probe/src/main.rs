@@ -420,6 +420,7 @@ fn bent_pipe_sweep() -> Probe {
     let ring = b.add_profile(builders::ring(20.0, 14.0).expect("ring"));
     let root = b
         .add(NodeKind::Sweep {
+            section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile: ring,
             path: Path3::Polyline {
                 points: vec![

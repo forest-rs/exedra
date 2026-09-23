@@ -57,6 +57,7 @@ fn surround(size: f64, circle: bool) -> Recipe {
     let root = builder
         .with_source(source)
         .add(NodeKind::Sweep {
+            section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile,
             path: Path3::Curves {
                 start,

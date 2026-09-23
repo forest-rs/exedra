@@ -312,6 +312,7 @@ fn retained_surround(datum: [f64; 2], cuts: bool, reflect: bool) -> Recipe {
         .with_source(source)
         .with_material(material)
         .add(NodeKind::Sweep {
+            section: SectionLaw::IDENTITY,
             profile,
             path: Path3::MiteredPolyline {
                 points: rectangle(),
