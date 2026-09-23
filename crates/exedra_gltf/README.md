@@ -100,8 +100,8 @@ let export = exedra_gltf::export_glb_with_materials(
 )?;
 ```
 
-The current export subset supports core material factors, base-color textures,
-alpha, and sidedness. Names and `extras` are preserved. Missing IDs, invalid fields, and
+The current export subset supports core material factors, base-color,
+metallic-roughness, normal and occlusion textures, alpha, and sidedness. Names and `extras` are preserved. Missing IDs, invalid fields, and
 unsupported texture fields/extensions are typed errors; unassigned regions remain
 unassigned. Material-only edits reuse `compiled`, and differing instance
 finishes share geometry buffers.
@@ -155,16 +155,35 @@ Apache-2.0 OR MIT
 
 `MaterialResolver::resolve_texture` supplies encoded PNG/JPEG bytes and an
 optional core glTF sampler for caller-local texture indices referenced by
-`pbrMetallicRoughness.baseColorTexture`. The exporter remaps those indices,
-embeds only used images, and shares identical image bytes and sampler objects.
-Texture coordinates use `TEXCOORD_0`; other sets, normal textures, and extensions
-remain explicit errors. The exporter checks image signatures, not full image
+`pbrMetallicRoughness.baseColorTexture`,
+`pbrMetallicRoughness.metallicRoughnessTexture`, `normalTexture` (with
+`scale`) and `occlusionTexture` (with `strength`). The exporter remaps those
+indices, embeds only used images, and shares identical image bytes and sampler
+objects. Other texture fields (such as `emissiveTexture`) and extensions remain
+explicit errors. The exporter checks image signatures, not full image
 decodability; callers are responsible for supplying valid encoded images.
+
+Each image's encoding and channels are fixed by glTF and are the resolver's
+contract, since the exporter checks only signatures: base color is sRGB (alpha
+in A); metallic-roughness is linear with roughness in G and metalness in B;
+occlusion is linear in R, so one ORM image can pack all three; normal maps are
+linear tangent-space XYZ with +Y up (the OpenGL convention).
+
+A texture's `texCoord` (default 0) selects its UV set. Set 0 is `TEXCOORD_0`;
+set `n >= 1` must be exported through a `TEXCOORD_n` attribute mapping, or the
+export fails with `GltfError::MissingTextureCoordinateSet`. That check is for
+the exported attribute only: corners a carried stream fills with its missing
+value are not checked for authored coverage. Integer fields such as `index`
+and `texCoord` must be JSON integers; `1.0` is refused. A normal map on
+geometry without tangents is exported and counted in
+`GltfStats::normal_maps_without_tangents`: glTF consumers then derive
+MikkTSpace tangents themselves, which may not match the baker. Compile with
+tangents to pin them.
 
 Existing untextured resolver closures need no changes. Implement the optional
 method on a resolver type to supply textures; resource indices belong to that
-resolver, never to the assembly or a previous export. Textured regions require
-finite authored UVs at every emitted triangle corner. A default zero supplied
+resolver, never to the assembly or a previous export. Regions whose material
+samples `TEXCOORD_0` require finite UVs at every emitted triangle corner. A default zero supplied
 by render extraction does not count as an authored coordinate.
 
 For example, a resolver can expose one caller-owned image:
