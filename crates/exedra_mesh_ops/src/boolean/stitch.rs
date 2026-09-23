@@ -49,7 +49,10 @@
 //! shell-local vertex per operand, yielding two valid closed shells. A shared
 //! edge would put four boundary faces on one edge, so it is refused as
 //! [`BooleanError::NonManifoldContact`] instead of leaking a mesh-builder
-//! invariant error.
+//! invariant error. That holds for every operation and whether the contact
+//! is an edge of both operands or an edge of one lying in the other's face
+//! (for example a difference that cuts one region into two pieces touching
+//! along a line).
 //!
 //! Suspect patches are typed poison: the operation fails with
 //! [`BooleanError::SuspectPatches`] rather than emitting geometry that
@@ -202,8 +205,10 @@ impl core::error::Error for BooleanError {}
 /// [`BooleanError::SuspectPatches`] when the pipeline could not soundly
 /// represent or decide every region (deferred splits, exhausted rays,
 /// coplanar overlap, stored-position seam collapse, invalid output surface);
-/// [`BooleanError::NonManifoldContact`] when otherwise-manifold operands meet
-/// only along an edge that would have four incident result faces;
+/// [`BooleanError::NonManifoldContact`] when the result would touch itself
+/// only along an edge, with four incident result faces there (the operands
+/// may overlap in volume; it is the result's contact that cannot be
+/// represented);
 /// [`BooleanError::InvariantViolation`] when any stage diagnosed an
 /// internal invariant violation (always a pipeline bug, never an input
 /// problem — the result is withheld rather than returned wrong);
@@ -887,10 +892,18 @@ fn simple_cycles(mut walk: Vec<u32>) -> Vec<Vec<u32>> {
 /// narrow edge-contact case only when all of the following source facts agree:
 ///
 /// - the failing builder edge is one intersection-graph edge;
-/// - that graph edge is a real pre-existing mesh edge on both operands;
-/// - exactly two selected faces from each operand use it; and
+/// - that graph edge lies on a real pre-existing mesh edge of at least one
+///   operand (both operands for two solids sharing an edge; one operand when
+///   its edge lies in the interior of the other's face);
+/// - exactly two selected faces from each operand use it, so both sides of
+///   the contact survive in each operand and the result is two regions
+///   touching along the edge; and
 /// - it does not bound a positive-area coplanar contact already handled by
 ///   the contact-selection table.
+///
+/// The operation does not matter: a union of solids sharing an edge and a
+/// difference that cuts one region into two pieces touching along an edge
+/// both put four selected faces on one edge.
 ///
 /// Anything else remains [`BooleanError::Build`] via [`StitchError::Build`].
 #[expect(
@@ -916,9 +929,6 @@ fn classify_stitch_build_error(
     };
     let output_edge = [a.min(b), a.max(b)];
     let proven_contact = 'contact: {
-        if op != BooleanOp::Union {
-            break 'contact false;
-        }
         let Some(graph_edge) = graph.edges.iter().find(|edge| {
             let [p, q] = edge.vertices.map(|index| index as usize);
             seam_builder_indices
@@ -934,10 +944,9 @@ fn classify_stitch_build_error(
         let Some((start, end)) = graph.vertices.get(p).zip(graph.vertices.get(q)) else {
             break 'contact false;
         };
-        if !anchors_are_one_mesh_edge(source_mesh_a, start.anchor_a, end.anchor_a)
-            || !anchors_are_one_mesh_edge(source_mesh_b, start.anchor_b, end.anchor_b)
-            || contact_bounds_graph_edge(contacts, start, end)
-        {
+        let on_edge_a = anchors_are_one_mesh_edge(source_mesh_a, start.anchor_a, end.anchor_a);
+        let on_edge_b = anchors_are_one_mesh_edge(source_mesh_b, start.anchor_b, end.anchor_b);
+        if !(on_edge_a || on_edge_b) || contact_bounds_graph_edge(contacts, start, end) {
             break 'contact false;
         }
 
@@ -1893,9 +1902,11 @@ mod tests {
 
     #[test]
     fn shared_edge_non_union_ops_keep_their_regularized_volumes() {
-        // Edge-only contact has no common volume: Intersection is empty and
-        // Difference leaves A intact. Only Union needs the non-manifold
-        // refusal because only it would retain all four incident faces.
+        // Edge-only contact between otherwise disjoint solids has no common
+        // volume: Intersection is empty and Difference leaves A intact, so
+        // neither result touches itself along the edge. Union would retain
+        // all four incident faces there and is refused; a result edge contact
+        // is refused for any operation that produces one.
         let mesh_a = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let mesh_b = box_mesh([1.0, 1.0, 0.0], [2.0, 2.0, 1.0]);
 

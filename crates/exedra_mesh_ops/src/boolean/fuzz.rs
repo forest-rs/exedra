@@ -98,6 +98,11 @@ const SECTIONS: [&[[f64; 2]]; 4] = [
 /// A quarter of the corpus snaps to a coarse grid so operand pairs hit
 /// touching/coplanar configurations (which must fail typed, not panic).
 fn random_solid(rng: &mut Rng) -> Mesh {
+    random_solid_snapped(rng, None)
+}
+
+/// [`random_solid`] with the grid snap forced on or off (`None` draws it).
+fn random_solid_snapped(rng: &mut Rng, force_snap: Option<bool>) -> Mesh {
     let section = SECTIONS[rng.range(SECTIONS.len())];
     let [c, s] = ROTATIONS[rng.range(ROTATIONS.len())];
     let scale_x = rng.unit(0.4, 1.6);
@@ -108,7 +113,8 @@ fn random_solid(rng: &mut Rng) -> Mesh {
         rng.unit(-1.0, 1.0),
         rng.unit(-1.0, 1.0),
     ];
-    let snap = rng.range(4) == 0;
+    let drawn = rng.range(4) == 0;
+    let snap = force_snap.unwrap_or(drawn);
     let grid = |v: f64| if snap { (v * 4.0).round() / 4.0 } else { v };
 
     let n = section.len();
@@ -361,4 +367,122 @@ fn split_op_fuzz_keeps_meshes_deeply_valid() {
         total_rejected > 0,
         "corpus never exercised typed rejections"
     );
+}
+
+/// A prism from explicit bottom-then-top vertices, faced like
+/// [`random_solid`]: bottom reversed, top, then side quads.
+fn prism(vertices: &[[f32; 3]]) -> Mesh {
+    let count = u32::try_from(vertices.len() / 2).expect("small prism");
+    let mut builder = MeshBuilder::new();
+    for &p in vertices {
+        builder.push_vertex(p);
+    }
+    let bottom: Vec<u32> = (0..count).rev().collect();
+    builder.add_face(&bottom).expect("bottom cap");
+    let top: Vec<u32> = (count..2 * count).collect();
+    builder.add_face(&top).expect("top cap");
+    for i in 0..count {
+        let j = (i + 1) % count;
+        builder
+            .add_face(&[i, j, count + j, count + i])
+            .expect("side wall");
+    }
+    builder.build().expect("valid prism").mesh
+}
+
+#[test]
+fn edge_in_face_contact_is_refused_for_every_operation() {
+    let a = prism(&[
+        [0.25, 2.0, 0.5],
+        [-1.5, 0.25, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.25, 2.0, 1.25],
+        [-1.5, 0.25, 1.25],
+        [0.5, -0.5, 1.25],
+    ]);
+    let b = prism(&[
+        [0.75, 1.25, -0.25],
+        [-0.75, 1.0, -0.25],
+        [-1.0, -0.5, -0.25],
+        [0.5, -0.25, -0.25],
+        [0.75, 1.25, 1.5],
+        [-0.75, 1.0, 1.5],
+        [-1.0, -0.5, 1.5],
+        [0.5, -0.25, 1.5],
+    ]);
+    for triangulation in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+        for op in [
+            BooleanOp::Union,
+            BooleanOp::Intersection,
+            BooleanOp::Difference,
+        ] {
+            let mut scratch = BooleanScratch::new();
+            let mut diagnostics = BooleanDiagnostics::default();
+            let result = boolean_mesh(&a, &b, op, triangulation, &mut scratch, &mut diagnostics);
+            if op == BooleanOp::Difference {
+                // B's vertical edge lies in A's side face, so A - B is two
+                // regions touching along that segment: a zero-area edge
+                // contact the half-edge model cannot represent.
+                assert_eq!(
+                    result.err(),
+                    Some(BooleanError::NonManifoldContact),
+                    "{triangulation:?}"
+                );
+                assert!(
+                    diagnostics.count_of(super::BooleanFailureKind::NonManifoldContact) > 0,
+                    "{triangulation:?}: contact refusal left no diagnostic"
+                );
+                continue;
+            }
+            let output =
+                result.unwrap_or_else(|error| panic!("{triangulation:?} {op:?}: {error:?}"));
+            let errors = output.mesh.validate_deep();
+            assert!(errors.is_empty(), "{triangulation:?} {op:?}: {errors:?}");
+            assert!(
+                signed_volume(&output.mesh) >= -1e-4,
+                "{triangulation:?} {op:?}"
+            );
+        }
+    }
+}
+
+/// Every pair snapped to the quarter grid, so touching, edge-in-face and
+/// coplanar contacts are common: each operation must succeed with valid
+/// output or fail typed, never with an internal build or invariant error.
+#[test]
+fn grid_snapped_prism_pairs_never_fail_internally() {
+    let mut rng = Rng(0x05EE_D0F9_121D);
+    let mut outcomes = [0_u64; 3];
+    for pair in 0..240 {
+        let mesh_a = random_solid_snapped(&mut rng, Some(true));
+        let mesh_b = random_solid_snapped(&mut rng, Some(true));
+        for triangulation in [FaceTriangulation::Fan, FaceTriangulation::Robust] {
+            for op in [
+                BooleanOp::Union,
+                BooleanOp::Intersection,
+                BooleanOp::Difference,
+            ] {
+                let mut scratch = BooleanScratch::new();
+                let mut diagnostics = BooleanDiagnostics::default();
+                match boolean_mesh(
+                    &mesh_a,
+                    &mesh_b,
+                    op,
+                    triangulation,
+                    &mut scratch,
+                    &mut diagnostics,
+                ) {
+                    Ok(output) => {
+                        outcomes[0] += 1;
+                        let errors = output.mesh.validate_deep();
+                        assert!(errors.is_empty(), "pair {pair} {op:?}: {errors:?}");
+                    }
+                    Err(BooleanError::NonManifoldContact) => outcomes[1] += 1,
+                    Err(BooleanError::SuspectPatches { .. }) => outcomes[2] += 1,
+                    Err(error) => panic!("pair {pair} {triangulation:?} {op:?}: {error:?}"),
+                }
+            }
+        }
+    }
+    assert!(outcomes[0] > 0, "corpus produced no successful booleans");
 }
