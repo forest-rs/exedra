@@ -13,8 +13,9 @@
 //! same functions; the arrays choose the precision.
 //!
 //! [`Placement3`] and [`Plane3`] provide shared affine and plane representations
-//! for geometry crates, independent of recipes and meshes. [`keyed`] provides
-//! the stable keyed randomness procedural generators share.
+//! for geometry crates, independent of recipes and meshes. [`Quat`] represents
+//! rotations for interpolation and composition, and [`keyed`] provides the
+//! stable keyed randomness procedural generators share.
 //!
 //! Design rules:
 //!
@@ -31,10 +32,13 @@
 //!
 //! # Features
 //!
-//! - `std` (default): `sqrt` through the standard library.
-//! - `libm`: `sqrt` through the `libm` crate for `no_std` builds. When both are
-//!   enabled `std` supplies square root; the results are identical either way.
-//!   Rotation constructors always prefer libm when enabled.
+//! - `std` (default): `sqrt`, `sin_cos` and `acos` through the standard
+//!   library.
+//! - `libm`: the same functions through the `libm` crate for `no_std` builds.
+//!   When both are enabled `std` supplies square root, which is correctly
+//!   rounded either way; trigonometry (rotation constructors, quaternion
+//!   axis–angle and slerp) always prefers libm when enabled, because only
+//!   libm's pure-Rust results are the same on every platform.
 //!
 //! # Example
 //!
@@ -56,8 +60,11 @@
 mod frame;
 mod geometry;
 pub mod keyed;
+mod quat;
+mod trig;
 pub use frame::FrameError;
 pub use geometry::{Placement3, Plane3, intersect_plane_edge};
+pub use quat::Quat;
 
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_math requires either the `std` or `libm` feature");
@@ -105,10 +112,23 @@ pub trait Real:
     /// Correctly rounded square root.
     #[must_use]
     fn sqrt(self) -> Self;
+
+    /// Sine and cosine of an angle in radians.
+    ///
+    /// Not correctly rounded: uses libm when that feature is enabled,
+    /// otherwise the standard library, like the rotation constructors.
+    #[must_use]
+    fn sin_cos(self) -> (Self, Self);
+
+    /// Arc cosine in radians, in `[0, π]`; NaN outside `[-1, 1]`.
+    ///
+    /// Uses the same backend as [`Real::sin_cos`].
+    #[must_use]
+    fn acos(self) -> Self;
 }
 
 macro_rules! impl_real {
-    ($t:ty, $sqrt:path) => {
+    ($t:ty, $sqrt:path, $sincos:path, $acos:path) => {
         impl Real for $t {
             const ZERO: Self = 0.0;
             const ONE: Self = 1.0;
@@ -128,6 +148,16 @@ macro_rules! impl_real {
             #[inline]
             fn sqrt(self) -> Self {
                 $sqrt(self)
+            }
+
+            #[inline]
+            fn sin_cos(self) -> (Self, Self) {
+                $sincos(self)
+            }
+
+            #[inline]
+            fn acos(self) -> Self {
+                $acos(self)
             }
         }
     };
@@ -161,8 +191,8 @@ mod backend {
     }
 }
 
-impl_real!(f32, backend::sqrt_f32);
-impl_real!(f64, backend::sqrt_f64);
+impl_real!(f32, backend::sqrt_f32, trig::sincosf, trig::acosf);
+impl_real!(f64, backend::sqrt_f64, trig::sincos, trig::acos);
 
 /// Componentwise sum `a + b`.
 #[inline]

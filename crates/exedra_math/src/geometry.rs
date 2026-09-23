@@ -6,6 +6,8 @@
 //! Rotation constructors prefer libm whenever that feature is enabled. The
 //! constructive domain enables it explicitly for stable recipe evaluation.
 
+use crate::trig;
+
 /// A rigid-or-affine placement as a 3x4 row-major matrix (rotation/scale
 /// columns plus translation).
 ///
@@ -234,28 +236,6 @@ impl Plane3 {
         ];
         let distance = self.distance / length;
         distance.is_finite().then_some((normal, distance))
-    }
-}
-
-#[cfg(feature = "libm")]
-mod trig {
-    pub(super) use libm::{cos, sin, sincos};
-}
-
-#[cfg(all(feature = "std", not(feature = "libm")))]
-mod trig {
-    extern crate std;
-
-    pub(super) fn sin(value: f64) -> f64 {
-        value.sin()
-    }
-
-    pub(super) fn cos(value: f64) -> f64 {
-        value.cos()
-    }
-
-    pub(super) fn sincos(value: f64) -> (f64, f64) {
-        value.sin_cos()
     }
 }
 

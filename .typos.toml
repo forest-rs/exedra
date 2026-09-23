@@ -21,6 +21,8 @@ blo = "blo"
 # Match Inside a Word - Case Insensitive
 [default.extend-words]
 metalness = "metalness"
+# Shepperd's method for rotation-matrix to quaternion conversion.
+shepperd = "shepperd"
 
 [files]
 # Include .github, .cargo, etc.
