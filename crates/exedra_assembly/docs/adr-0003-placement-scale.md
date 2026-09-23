@@ -50,9 +50,9 @@ was also a heap node with its own key string, binding table and metadata.
    tints are the set's own storage, so a renderer consuming only the
    `RenderList` has per-placement appearance data without copies. `RenderList` accounting (`triangle_count`, `bounds`,
    `placed_body_count`) includes batches. Consumers must handle both lists.
-5. **Consumers that cannot represent sets refuse them.** glTF export returns
-   `GltfError::UnsupportedPlacementSets` instead of dropping placements; its
-   natural representation, `EXT_mesh_gpu_instancing`, is separate work.
+5. **Consumers that cannot represent sets refuse them.** None drop
+   placements silently. glTF export writes sets as addressed nodes or
+   `EXT_mesh_gpu_instancing` batches (`exedra_gltf` ADR-0006).
    The `exedra-assembly` interchange format carries sets as a
    `placement_sets` list after the instances.
 6. **Identity covers sets.** `assembly_fingerprint` appends set records only

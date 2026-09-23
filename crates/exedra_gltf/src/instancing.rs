@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
-use exedra_assembly::{Assembly, CompiledParts, InstanceId, PartId};
+use exedra_assembly::{Assembly, CompiledParts, InstanceId, Occurrence, PartId};
 use exedra_constructive::ir::Placement3;
 use exedra_math::Quat;
 
-use crate::{GltfInstancing, GltfStats, resolved_regions};
+use crate::{GltfInstancing, GltfLods, GltfStats, resolved_regions};
 
 /// The glTF extension name.
 pub(crate) const EXTENSION: &str = "EXT_mesh_gpu_instancing";
@@ -113,8 +113,9 @@ pub(crate) struct Plan {
     pub(crate) batches: Vec<Batch>,
 }
 
-/// Groups batchable instances. Candidates are leaf instances with geometry,
-/// grouped by parent, part and material resolution. Groups of one keep their
+/// Groups batchable instances. Candidates are leaf instances with geometry
+/// and no placement sets, grouped by parent, part and material resolution
+/// (of every level written, under [`GltfLods::MsftLod`]). Groups of one keep their
 /// node. A candidate whose placement is mirrored or sheared keeps its node,
 /// and is counted when its group has another member, so it would otherwise
 /// have been batched.
@@ -122,6 +123,7 @@ pub(crate) fn plan(
     assembly: &Assembly,
     compiled: &CompiledParts,
     mode: GltfInstancing,
+    lods: GltfLods,
     stats: &mut GltfStats,
 ) -> Plan {
     let count = assembly.instances_with_ids().len();
@@ -140,20 +142,31 @@ pub(crate) fn plan(
             continue;
         };
         let entry = compiled.part(part).expect("matching compilation");
-        if !instance.children().is_empty() || entry.bodies.iter().all(|b| b.tri.indices.is_empty())
+        if !instance.children().is_empty()
+            || !instance.placement_sets().is_empty()
+            || entry.bodies.iter().all(|b| b.tri.indices.is_empty())
         {
             continue;
         }
         let trs = decompose(instance.placement());
         let def = assembly.part(part).expect("validated instance part");
-        let resolution = entry
-            .bodies
+        let chain = def.lods();
+        let levels: Vec<PartId> = if lods == GltfLods::MsftLod && chain.len() >= 2 {
+            chain.iter().map(|level| level.part).collect()
+        } else {
+            vec![part]
+        };
+        let resolution = levels
             .iter()
-            .map(|body| {
-                resolved_regions(assembly, def, id, body)
-                    .into_iter()
-                    .map(|region| region.material)
-                    .collect()
+            .flat_map(|&level| {
+                let level_def = assembly.part(level).expect("validated level part");
+                let level_entry = compiled.part(level).expect("matching compilation");
+                level_entry.bodies.iter().map(move |body| {
+                    resolved_regions(assembly, (Occurrence::Instance(id), level), level_def, body)
+                        .into_iter()
+                        .map(|region| region.material)
+                        .collect()
+                })
             })
             .collect();
         let key = (instance.parent().map(|p| p.0), part.0, resolution);

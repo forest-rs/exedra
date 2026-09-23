@@ -127,6 +127,27 @@ impl GlbDocument {
             .as_object()
     }
 
+    /// Names of the lower-level nodes listed by `MSFT_lod` on the first node
+    /// named `name`, in level order, or `None` when that node has no
+    /// `MSFT_lod` extension.
+    #[must_use]
+    pub fn lod_node_names(&self, name: &str) -> Option<Vec<&str>> {
+        let nodes = self.array("nodes")?;
+        let node = nodes
+            .iter()
+            .find(|node| node.get("name").and_then(Value::as_str) == Some(name))?;
+        node.get("extensions")?
+            .get("MSFT_lod")?
+            .get("ids")?
+            .as_array()?
+            .iter()
+            .map(|id| {
+                let index = usize::try_from(id.as_u64()?).ok()?;
+                nodes.get(index)?.get("name")?.as_str()
+            })
+            .collect()
+    }
+
     /// Material names in document order, omitting unnamed materials.
     #[must_use]
     pub fn material_names(&self) -> Vec<&str> {

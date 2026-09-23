@@ -198,6 +198,30 @@ sheared placements keep their own node; the last two are counted in
 precision beyond `f32`. The extension is listed as required whenever it is
 used, because no fallback node describes the batched instances.
 
+## Placement sets
+
+Placement sets always export. By default, each placement becomes a node
+named `set-path#index` with its matrix, and its seed (a decimal string) and
+tint in `extras`. Under `GpuInstancing`, a set becomes one batch in
+placement order, identified by `extras.setPath` and
+`extras.placementCount`. Seeds are written as `_SEED` (`VEC4` of
+`UNSIGNED_SHORT`, four 16-bit words, least significant first) and tints as
+`_TINT` (`VEC4` of `FLOAT`). Mirrored or sheared placements keep their own
+`set-path#index` node and are listed out of the batch by
+`extras.placementIndices`.
+
+## Levels of detail
+
+`GltfExportOptions::with_lods(GltfLods::MsftLod)` writes part level-of-detail
+chains as `MSFT_lod`. Each chained occurrence's geometry moves to an
+identity child `… [lod 0]`, which lists `… [lod k]` nodes in
+`MSFT_lod.ids`. It records each level's minimum screen coverage in
+`extras.MSFT_screencoverage` and crossfade bands in
+`extras.exedraLodCrossfade`. Instanced chains group their per-body nodes, and
+every level reuses the same instance transforms.
+`GlbDocument::lod_node_names` reads chains back. The extension is used, not
+required, so viewers without it draw level 0. See ADR-0006.
+
 ## Material extensions
 
 Material `extensions` may use this allowlist, each validated field by field

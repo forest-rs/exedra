@@ -53,6 +53,10 @@ Renderers opt in to level selection explicitly. `RenderList::triangle_count`
 counts every emitted level, so it measures the base level by default and the
 whole chain under `AllLevels`.
 
-glTF export still writes only the base level, which is a valid asset without
-level-of-detail support. Writing chains as `MSFT_lod` with
-`MSFT_screencoverage` is follow-up work.
+`Assembly::resolved_level_material`, taking an `Occurrence` (instance or
+placement set), is the single material rule for lower levels, used by
+`flatten` and by consumers that walk the hierarchy themselves.
+
+glTF export writes only the base level by default, which is a valid asset
+without level-of-detail support. With `GltfLods::MsftLod`, it writes chains
+as `MSFT_lod` with `MSFT_screencoverage` (`exedra_gltf` ADR-0006).

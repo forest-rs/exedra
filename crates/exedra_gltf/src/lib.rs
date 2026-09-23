@@ -24,7 +24,11 @@
 //!   `KHR_texture_transform`, validated like core fields and listed in
 //!   `extensionsUsed`;
 //! - opt-in [`GltfInstancing::GpuInstancing`] folds repeated leaf placements
-//!   of one part into `EXT_mesh_gpu_instancing` nodes;
+//!   of one part, and the placements of each placement set, into
+//!   `EXT_mesh_gpu_instancing` nodes; otherwise every set placement becomes
+//!   its own node, addressed `set-path#index`;
+//! - opt-in [`GltfLods::MsftLod`] writes part level-of-detail chains with
+//!   `MSFT_lod` and `MSFT_screencoverage`;
 //! - exact empty parts keep their identity without illegal zero-count meshes.
 //!   Geometry-free scenes omit buffers and the optional GLB BIN chunk;
 //! - mismatched compiled sources and error-level partial geometry are refused.
@@ -71,6 +75,8 @@ mod instancing;
 mod instancing_tests;
 mod materials;
 #[cfg(test)]
+mod set_lod_tests;
+#[cfg(test)]
 mod slot_tests;
 mod textures;
 
@@ -91,8 +97,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use exedra_assembly::{
-    Assembly, CompilationMismatch, CompiledBody, CompiledParts, Instance, InstanceId, PartDef,
-    PartFingerprint, PartId, ResolvedRegion,
+    Assembly, CompilationMismatch, CompiledBody, CompiledParts, Instance, InstanceId, Occurrence,
+    PartDef, PartFingerprint, PartId, PlacementSetId, ResolvedRegion,
 };
 use exedra_constructive::{
     evaluate::{GeometryReport, Severity},
@@ -169,13 +175,54 @@ pub struct GltfStats {
     /// degenerate and has no TRS decomposition, counted like
     /// [`Self::unbatched_mirrored_instances`].
     pub unbatched_sheared_instances: u64,
+    /// Placement-set placements folded into instanced nodes.
+    pub batched_placements: u64,
+    /// Placement-set placements written as their own node: every placement
+    /// under [`GltfInstancing::Nodes`], and mirrored or sheared placements
+    /// under [`GltfInstancing::GpuInstancing`].
+    pub placement_nodes: u64,
+    /// Placements kept as their own node under
+    /// [`GltfInstancing::GpuInstancing`] because they are reflections.
+    pub unbatched_mirrored_placements: u64,
+    /// Placements kept as their own node under
+    /// [`GltfInstancing::GpuInstancing`] because they are sheared or
+    /// degenerate.
+    pub unbatched_sheared_placements: u64,
+    /// Lower-level nodes written for `MSFT_lod` chains (see
+    /// [`GltfLods::MsftLod`]). They are reachable only through `MSFT_lod`.
+    pub lod_nodes: u64,
+}
+
+/// How part level-of-detail chains are written.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GltfLods {
+    /// Only level 0, the placed part itself. Lower levels are not written.
+    #[default]
+    BaseLevel,
+    /// Every level, through `MSFT_lod`. The geometry of an occurrence whose
+    /// part has a chain of at least two levels moves to a child node named
+    /// `… [lod 0]` with an identity transform. That node lists the lower
+    /// levels in `extensions.MSFT_lod.ids`, and their `min_coverage` values,
+    /// one per level, in `extras.MSFT_screencoverage` (crossfade bands in
+    /// `extras.exedraLodCrossfade`). Lower-level nodes, named `… [lod k]`,
+    /// also have identity transforms and are referenced only by those ids,
+    /// so the layout holds whether a viewer replaces the node or swaps its
+    /// meshes. Instanced occurrences group their per-body nodes under such a
+    /// node, and every level reuses the same instance transforms. The
+    /// extension is listed as used, not required: viewers without it draw
+    /// level 0.
+    MsftLod,
 }
 
 /// How repeated placements of a part are written.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum GltfInstancing {
-    /// One node per logical instance, each with its own matrix.
+    /// One node per logical instance, each with its own matrix, and one
+    /// node per placement-set placement, named and addressed
+    /// `set-path#index`, carrying its seed (as a decimal string, exact for
+    /// all `u64`) and tint in `extras`.
     #[default]
     Nodes,
     /// Leaf instances of one part, with the same material resolution and the
@@ -183,11 +230,22 @@ pub enum GltfInstancing {
     /// `EXT_mesh_gpu_instancing` `TRANSLATION`, `ROTATION` and `SCALE`
     /// accessors, in instance order. Their identities move to the node's
     /// `extras.instances` table. Groups of one keep their node, as do
-    /// instances with children and mirrored or sheared placements (counted
-    /// in [`GltfStats`]). A batched part gets one node per non-empty body;
-    /// unlike unbatched multi-body instances, empty bodies get no node. The
-    /// extension is then listed as required: nothing else describes the
-    /// batched instances.
+    /// instances with children or placement sets and mirrored or sheared
+    /// placements (counted in [`GltfStats`]).
+    ///
+    /// Every placement set becomes one such batch, in placement order, even
+    /// with a single placement. Its identity is `extras.setPath` plus
+    /// `extras.placementCount`, and `extras.placementIndices` when mirrored
+    /// or sheared placements were left out; those keep their own
+    /// `set-path#index` node as under [`Self::Nodes`]. Set seeds and tints
+    /// become the custom instance attributes `_SEED` (`VEC4` of
+    /// `UNSIGNED_SHORT`, the seed's four 16-bit words, least significant
+    /// first, so `u64` seeds stay exact) and `_TINT` (`VEC4` of `FLOAT`,
+    /// linear RGBA).
+    ///
+    /// A batched part gets one node per non-empty body; unlike unbatched
+    /// multi-body instances, empty bodies get no node. The extension is then
+    /// listed as required: nothing else describes the batched instances.
     GpuInstancing,
 }
 
@@ -232,6 +290,8 @@ pub struct GltfExportOptions<'a> {
     pub require_texture_transform: bool,
     /// How repeated placements are written; see [`GltfInstancing`].
     pub instancing: GltfInstancing,
+    /// How part level-of-detail chains are written; see [`GltfLods`].
+    pub lods: GltfLods,
 }
 
 impl<'a> GltfExportOptions<'a> {
@@ -244,6 +304,7 @@ impl<'a> GltfExportOptions<'a> {
             attributes: &[],
             require_texture_transform: false,
             instancing: GltfInstancing::Nodes,
+            lods: GltfLods::BaseLevel,
         }
     }
 
@@ -265,6 +326,13 @@ impl<'a> GltfExportOptions<'a> {
     #[must_use]
     pub const fn with_instancing(mut self, instancing: GltfInstancing) -> Self {
         self.instancing = instancing;
+        self
+    }
+
+    /// Sets [`Self::lods`].
+    #[must_use]
+    pub const fn with_lods(mut self, lods: GltfLods) -> Self {
+        self.lods = lods;
         self
     }
 }
@@ -334,13 +402,6 @@ pub enum GltfError {
     },
     /// The supplied compilation does not match the assembly's current part sources.
     CompilationMismatch(CompilationMismatch),
-    /// The assembly contains placement sets, which this exporter does not
-    /// write yet. Export refuses them rather than dropping placements; the
-    /// natural glTF form is `EXT_mesh_gpu_instancing`.
-    UnsupportedPlacementSets {
-        /// Number of placement sets in the assembly.
-        sets: usize,
-    },
     /// A compiled part retains error-level diagnostics from a partial evaluation.
     IncompleteGeometry {
         /// Assembly-local part with the error-level report.
@@ -448,10 +509,6 @@ impl std::fmt::Display for GltfError {
                 write!(f, "material {key:?} requests unsupported field {field:?}")
             }
             Self::CompilationMismatch(error) => error.fmt(f),
-            Self::UnsupportedPlacementSets { sets } => write!(
-                f,
-                "assembly has {sets} placement set(s), which glTF export does not support yet"
-            ),
             Self::IncompleteGeometry { part, .. } => write!(
                 f,
                 "compiled part {part} has error-level geometry diagnostics"
@@ -652,11 +709,6 @@ fn build_export(
         .validate_for(assembly)
         .map_err(GltfError::CompilationMismatch)?;
     attributes::validate_mappings(options.attributes)?;
-    if !assembly.placement_sets().is_empty() {
-        return Err(GltfError::UnsupportedPlacementSets {
-            sets: assembly.placement_sets().len(),
-        });
-    }
     for index in 0..assembly.parts().len() {
         let part = PartId(u32::try_from(index).expect("validated part count"));
         if let Some(report) = compiled.report(part)
@@ -681,7 +733,14 @@ fn build_export(
         geometry_index: HashMap::new(),
         stats: GltfStats::default(),
     };
-    let plan = instancing::plan(assembly, compiled, options.instancing, &mut out.stats);
+    let lods = options.lods == GltfLods::MsftLod;
+    let plan = instancing::plan(
+        assembly,
+        compiled,
+        options.instancing,
+        options.lods,
+        &mut out.stats,
+    );
     // Batched instances get no node; the others keep their order.
     let mut node_of = vec![None; plan.batched.len()];
     let mut next = 0;
@@ -697,50 +756,25 @@ fn build_export(
         .map(|(id, instance)| instance_node(assembly, id, instance, &node_of))
         .collect();
 
+    let mut lod_used = false;
     for (id, instance) in assembly.instances_with_ids() {
         let (Some(logical), Some(part)) = (node_of[id.0 as usize], instance.part()) else {
             continue;
         };
-        let def = assembly.part(part).expect("validated instance part");
-        let entry = compiled.part(part).expect("matching compilation");
-        for (body_index, body) in entry.bodies.iter().enumerate() {
-            let node_index = if entry.bodies.len() == 1 {
-                logical
-            } else {
-                let child = nodes.len();
-                let name = format!(
-                    "{} [body {body_index}]",
-                    nodes[logical]["name"].as_str().expect("logical node name")
-                );
-                nodes.push(json!({
-                    "name": name,
-                    "extras": { "partKey": def.key(), "body": body_index }
-                }));
-                append_child(&mut nodes[logical], child);
-                child
-            };
-            nodes[node_index]["extras"]["body"] = json!(body_index);
-            // Empty geometry retains its logical node without illegal zero-count
-            // mesh/accessor records. A geometry-free frame has no partKey at all.
-            if body.tri.indices.is_empty() {
-                continue;
-            }
-            let mesh = out.mesh(
-                assembly,
-                (id, part, def),
-                entry.fingerprint,
-                body_index,
-                body,
-            )?;
-            nodes[node_index]["mesh"] = json!(mesh);
-        }
+        lod_used |= out.attach_occurrence(
+            &mut nodes,
+            (assembly, compiled),
+            (Occurrence::Instance(id), part),
+            logical,
+            lods,
+        )?;
     }
 
     let mut batch_roots = Vec::new();
     for batch in &plan.batches {
         let def = assembly.part(batch.part).expect("validated instance part");
-        let entry = compiled.part(batch.part).expect("matching compilation");
-        let transforms = out.instance_transforms(&batch.members);
+        let trs: Vec<instancing::Trs> = batch.members.iter().map(|(_, trs)| *trs).collect();
+        let transforms = out.instance_transforms(&trs, None, None);
         let table: Vec<Value> = batch
             .members
             .iter()
@@ -753,34 +787,18 @@ fn build_export(
             })
             .collect();
         let (first, _) = batch.members[0];
-        for (body_index, body) in entry.bodies.iter().enumerate() {
-            if body.tri.indices.is_empty() {
-                continue;
-            }
-            let mesh = out.mesh(
-                assembly,
-                (first, batch.part, def),
-                entry.fingerprint,
-                body_index,
-                body,
-            )?;
-            let mut name = format!("{} [{} instances]", def.key(), batch.members.len());
-            if entry.bodies.len() > 1 {
-                let _ = write!(name, " [body {body_index}]");
-            }
-            let index = nodes.len();
-            nodes.push(json!({
-                "name": name,
-                "mesh": mesh,
-                "extensions": {
-                    instancing::EXTENSION: { "attributes": transforms.clone() }
-                },
-                "extras": {
-                    "partKey": def.key(),
-                    "body": body_index,
-                    "instances": table.clone(),
-                },
-            }));
+        let mut extras = Map::new();
+        extras.insert("instances".into(), Value::Array(table));
+        let name = format!("{} [{} instances]", def.key(), batch.members.len());
+        let (top, used) = out.instanced_occurrence(
+            &mut nodes,
+            (assembly, compiled),
+            (Occurrence::Instance(first), batch.part),
+            (&transforms, &name, extras),
+            lods,
+        )?;
+        lod_used |= used;
+        for index in top {
             match batch.parent {
                 Some(parent) => append_child(
                     &mut nodes[node_of[parent.0 as usize].expect("parents keep their node")],
@@ -788,9 +806,30 @@ fn build_export(
                 ),
                 None => batch_roots.push(index),
             }
-            out.stats.instanced_nodes += 1;
         }
         out.stats.batched_instances += batch.members.len() as u64;
+    }
+
+    let mut set_roots = Vec::new();
+    for (index, set) in assembly.placement_sets().iter().enumerate() {
+        let id = PlacementSetId(u32::try_from(index).expect("placement set count"));
+        let (top, used) = out.placement_set(
+            &mut nodes,
+            (assembly, compiled),
+            id,
+            options.instancing,
+            lods,
+        )?;
+        lod_used |= used;
+        for node in top {
+            match set.parent() {
+                Some(parent) => append_child(
+                    &mut nodes[node_of[parent.0 as usize].expect("set parents keep their node")],
+                    node,
+                ),
+                None => set_roots.push(node),
+            }
+        }
     }
     let Emitter {
         mut buffer,
@@ -819,6 +858,7 @@ fn build_export(
         .roots()
         .iter()
         .filter_map(|id| node_of[id.0 as usize])
+        .chain(set_roots)
         .chain(batch_roots)
         .collect();
     let scene_nodes = match options.coordinates {
@@ -854,8 +894,11 @@ fn build_export(
             }
         }
     }
-    if !plan.batches.is_empty() {
+    if stats.instanced_nodes > 0 {
         used.push(instancing::EXTENSION);
+    }
+    if lod_used {
+        used.push(LOD_EXTENSION);
     }
     used.sort_unstable();
     if !used.is_empty() {
@@ -950,11 +993,12 @@ fn instance_node(
     node
 }
 
-/// Regions of one body with the material each resolves to for `id`.
+/// Regions of one body of `level` (the occurrence's part or a lower level of
+/// its chain) with the material each resolves to for `occurrence`.
 pub(crate) fn resolved_regions(
     assembly: &Assembly,
+    (occurrence, level): (Occurrence, PartId),
     def: &PartDef,
-    id: InstanceId,
     body: &CompiledBody,
 ) -> Vec<ResolvedRegion> {
     body.regions
@@ -966,7 +1010,7 @@ pub(crate) fn resolved_regions(
             material: range
                 .material_slot
                 .or_else(|| def.region_slot(range.region))
-                .and_then(|slot| assembly.resolved_material(id, slot))
+                .and_then(|slot| assembly.resolved_level_material(occurrence, level, slot))
                 .map(str::to_owned),
         })
         .collect()
@@ -990,17 +1034,17 @@ struct Emitter<'a> {
 }
 
 impl Emitter<'_> {
-    /// Returns the mesh for one body as `id` resolves its materials,
-    /// emitting geometry and primitives on first use.
+    /// Returns the mesh for one body of `part` as `occurrence` resolves its
+    /// materials, emitting geometry and primitives on first use.
     fn mesh(
         &mut self,
         assembly: &Assembly,
-        (id, part, def): (InstanceId, PartId, &PartDef),
+        (occurrence, part, def): (Occurrence, PartId, &PartDef),
         fingerprint: PartFingerprint,
         body_index: usize,
         body: &CompiledBody,
     ) -> Result<usize, GltfError> {
-        let regions = resolved_regions(assembly, def, id, body);
+        let regions = resolved_regions(assembly, (occurrence, part), def, body);
         let resolution = regions.iter().map(|r| r.material.clone()).collect();
         let key = (fingerprint, body_index, resolution);
         if let Some(&index) = self.mesh_index.get(&key) {
@@ -1044,27 +1088,373 @@ impl Emitter<'_> {
 
     /// Writes one batch's `TRANSLATION`, `ROTATION` and `SCALE` accessors
     /// and returns the extension's `attributes` object.
-    fn instance_transforms(&mut self, members: &[(InstanceId, instancing::Trs)]) -> Value {
-        let count = members.len();
-        let translation: Vec<[f32; 3]> = members.iter().map(|(_, t)| t.translation).collect();
-        let rotation: Vec<[f32; 4]> = members.iter().map(|(_, t)| t.rotation).collect();
-        let scale: Vec<[f32; 3]> = members.iter().map(|(_, t)| t.scale).collect();
-        let mut push = |bytes: Vec<u8>, kind: &str| {
+    /// Writes `EXT_mesh_gpu_instancing` attribute accessors for `trs`, with
+    /// optional `_SEED` and `_TINT` custom attributes of the same count.
+    fn instance_transforms(
+        &mut self,
+        trs: &[instancing::Trs],
+        seeds: Option<&[u64]>,
+        tints: Option<&[[f32; 4]]>,
+    ) -> Value {
+        let count = trs.len();
+        let translation: Vec<[f32; 3]> = trs.iter().map(|t| t.translation).collect();
+        let rotation: Vec<[f32; 4]> = trs.iter().map(|t| t.rotation).collect();
+        let scale: Vec<[f32; 3]> = trs.iter().map(|t| t.scale).collect();
+        let mut push = |bytes: Vec<u8>, component: u32, kind: &str| {
             let view = push_view(&mut self.buffer, &mut self.buffer_views, &bytes);
             self.accessors.push(json!({
                 "bufferView": view,
-                "componentType": 5126,
+                "componentType": component,
                 "count": count,
                 "type": kind,
             }));
             self.accessors.len() - 1
         };
-        json!({
-            "TRANSLATION": push(vec3_bytes(&translation), "VEC3"),
-            "ROTATION": push(vec4_bytes(&rotation), "VEC4"),
-            "SCALE": push(vec3_bytes(&scale), "VEC3"),
-        })
+        let mut attributes = json!({
+            "TRANSLATION": push(vec3_bytes(&translation), 5126, "VEC3"),
+            "ROTATION": push(vec4_bytes(&rotation), 5126, "VEC4"),
+            "SCALE": push(vec3_bytes(&scale), 5126, "VEC3"),
+        });
+        if let Some(seeds) = seeds {
+            let bytes: Vec<u8> = seeds.iter().flat_map(|seed| seed.to_le_bytes()).collect();
+            attributes["_SEED"] = json!(push(bytes, 5123, "VEC4"));
+        }
+        if let Some(tints) = tints {
+            attributes["_TINT"] = json!(push(vec4_bytes(tints), 5126, "VEC4"));
+        }
+        attributes
     }
+
+    /// Attaches the bodies of `level` to `node` as `occurrence` resolves its
+    /// materials: a one-body part puts its mesh on `node`, a multi-body part
+    /// gets one child per body named `name [body i]`.
+    fn attach_bodies(
+        &mut self,
+        nodes: &mut Vec<Value>,
+        (assembly, compiled): (&Assembly, &CompiledParts),
+        (occurrence, level): (Occurrence, PartId),
+        node: usize,
+        name: &str,
+    ) -> Result<(), GltfError> {
+        let def = assembly.part(level).expect("validated part");
+        let entry = compiled.part(level).expect("matching compilation");
+        for (body_index, body) in entry.bodies.iter().enumerate() {
+            let target = if entry.bodies.len() == 1 {
+                node
+            } else {
+                let child = nodes.len();
+                nodes.push(json!({
+                    "name": format!("{name} [body {body_index}]"),
+                    "extras": { "partKey": def.key(), "body": body_index }
+                }));
+                append_child(&mut nodes[node], child);
+                child
+            };
+            nodes[target]["extras"]["body"] = json!(body_index);
+            // Empty geometry retains its logical node without illegal zero-count
+            // mesh/accessor records. A geometry-free frame has no partKey at all.
+            if body.tri.indices.is_empty() {
+                continue;
+            }
+            let mesh = self.mesh(
+                assembly,
+                (occurrence, level, def),
+                entry.fingerprint,
+                body_index,
+                body,
+            )?;
+            nodes[target]["mesh"] = json!(mesh);
+        }
+        Ok(())
+    }
+
+    /// Attaches the geometry of one occurrence of `part` to its logical node.
+    /// Under [`GltfLods::MsftLod`], a part with a chain of at least two
+    /// levels gets a `[lod 0]` child carrying `MSFT_lod`; returns whether it
+    /// did.
+    fn attach_occurrence(
+        &mut self,
+        nodes: &mut Vec<Value>,
+        sources: (&Assembly, &CompiledParts),
+        (occurrence, part): (Occurrence, PartId),
+        logical: usize,
+        lods: bool,
+    ) -> Result<bool, GltfError> {
+        let (assembly, _) = sources;
+        let name = nodes[logical]["name"]
+            .as_str()
+            .expect("logical node name")
+            .to_owned();
+        let def = assembly.part(part).expect("validated part");
+        let chain = def.lods();
+        if !lods || chain.len() < 2 {
+            self.attach_bodies(nodes, sources, (occurrence, part), logical, &name)?;
+            return Ok(false);
+        }
+        let geometry = nodes.len();
+        let base = format!("{name} [lod 0]");
+        let mut extras = Map::new();
+        extras.insert("partKey".into(), json!(def.key()));
+        extras.insert("lodLevel".into(), json!(0));
+        lod_extras(&mut extras, chain);
+        nodes.push(json!({ "name": base, "extras": extras }));
+        append_child(&mut nodes[logical], geometry);
+        self.attach_bodies(nodes, sources, (occurrence, part), geometry, &base)?;
+        let mut ids = Vec::new();
+        for (level_index, level) in chain.iter().enumerate().skip(1) {
+            let level_def = assembly.part(level.part).expect("validated level part");
+            let level_name = format!("{name} [lod {level_index}]");
+            let index = nodes.len();
+            nodes.push(json!({
+                "name": level_name,
+                "extras": { "partKey": level_def.key(), "lodLevel": level_index },
+            }));
+            self.attach_bodies(nodes, sources, (occurrence, level.part), index, &level_name)?;
+            ids.push(index);
+            self.stats.lod_nodes += 1;
+        }
+        nodes[geometry]["extensions"] = json!({ LOD_EXTENSION: { "ids": ids } });
+        Ok(true)
+    }
+
+    /// One instanced node per non-empty body of `level`, not yet attached.
+    fn instanced_bodies(
+        &mut self,
+        nodes: &mut Vec<Value>,
+        (assembly, compiled): (&Assembly, &CompiledParts),
+        (occurrence, level): (Occurrence, PartId),
+        (transforms, name, extras): (&Value, &str, &Map<String, Value>),
+    ) -> Result<Vec<usize>, GltfError> {
+        let def = assembly.part(level).expect("validated part");
+        let entry = compiled.part(level).expect("matching compilation");
+        let mut created = Vec::new();
+        for (body_index, body) in entry.bodies.iter().enumerate() {
+            if body.tri.indices.is_empty() {
+                continue;
+            }
+            let mesh = self.mesh(
+                assembly,
+                (occurrence, level, def),
+                entry.fingerprint,
+                body_index,
+                body,
+            )?;
+            let mut body_name = name.to_owned();
+            if entry.bodies.len() > 1 {
+                let _ = write!(body_name, " [body {body_index}]");
+            }
+            let mut body_extras = Map::new();
+            body_extras.insert("partKey".into(), json!(def.key()));
+            body_extras.insert("body".into(), json!(body_index));
+            body_extras.extend(extras.iter().map(|(k, v)| (k.clone(), v.clone())));
+            let index = nodes.len();
+            nodes.push(json!({
+                "name": body_name,
+                "mesh": mesh,
+                "extensions": {
+                    instancing::EXTENSION: { "attributes": transforms.clone() }
+                },
+                "extras": body_extras,
+            }));
+            created.push(index);
+            self.stats.instanced_nodes += 1;
+        }
+        Ok(created)
+    }
+
+    /// The instanced nodes of one batch (instances or a placement set), not
+    /// yet attached. Without an `MSFT_lod` chain these are one node per
+    /// non-empty body carrying `extras`; with one they are grouped under a
+    /// single node that carries `extras` and `MSFT_lod`, whose lower levels
+    /// reuse `transforms`. Returns the top nodes and whether `MSFT_lod` was
+    /// written.
+    fn instanced_occurrence(
+        &mut self,
+        nodes: &mut Vec<Value>,
+        sources: (&Assembly, &CompiledParts),
+        (occurrence, part): (Occurrence, PartId),
+        (transforms, name, extras): (&Value, &str, Map<String, Value>),
+        lods: bool,
+    ) -> Result<(Vec<usize>, bool), GltfError> {
+        let (assembly, _) = sources;
+        let def = assembly.part(part).expect("validated part");
+        let chain = def.lods();
+        if !lods || chain.len() < 2 {
+            let top = self.instanced_bodies(
+                nodes,
+                sources,
+                (occurrence, part),
+                (transforms, name, &extras),
+            )?;
+            return Ok((top, false));
+        }
+        let group = nodes.len();
+        let mut group_extras = extras;
+        group_extras.insert("partKey".into(), json!(def.key()));
+        group_extras.insert("lodLevel".into(), json!(0));
+        lod_extras(&mut group_extras, chain);
+        nodes.push(json!({ "name": name, "extras": group_extras }));
+        let level_extras = |level: usize| {
+            let mut extras = Map::new();
+            extras.insert("lodLevel".into(), json!(level));
+            extras
+        };
+        let children = self.instanced_bodies(
+            nodes,
+            sources,
+            (occurrence, part),
+            (transforms, &format!("{name} [lod 0]"), &level_extras(0)),
+        )?;
+        for child in children {
+            append_child(&mut nodes[group], child);
+        }
+        let mut ids = Vec::new();
+        for (level_index, level) in chain.iter().enumerate().skip(1) {
+            let level_def = assembly.part(level.part).expect("validated level part");
+            let level_name = format!("{name} [lod {level_index}]");
+            let index = nodes.len();
+            nodes.push(json!({
+                "name": level_name,
+                "extras": { "partKey": level_def.key(), "lodLevel": level_index },
+            }));
+            let children = self.instanced_bodies(
+                nodes,
+                sources,
+                (occurrence, level.part),
+                (transforms, &level_name, &level_extras(level_index)),
+            )?;
+            for child in children {
+                append_child(&mut nodes[index], child);
+            }
+            ids.push(index);
+            self.stats.lod_nodes += 1;
+        }
+        nodes[group]["extensions"] = json!({ LOD_EXTENSION: { "ids": ids } });
+        Ok((vec![group], true))
+    }
+
+    /// The nodes of one placement set, not yet attached: under
+    /// [`GltfInstancing::GpuInstancing`] one batch of every decomposable
+    /// placement plus a node per mirrored or sheared placement; otherwise a
+    /// node per placement. Returns the top nodes and whether `MSFT_lod` was
+    /// written.
+    fn placement_set(
+        &mut self,
+        nodes: &mut Vec<Value>,
+        sources: (&Assembly, &CompiledParts),
+        id: PlacementSetId,
+        mode: GltfInstancing,
+        lods: bool,
+    ) -> Result<(Vec<usize>, bool), GltfError> {
+        let (assembly, compiled) = sources;
+        let set = assembly.placement_set(id).expect("placement set id");
+        let part = set.part();
+        let def = assembly.part(part).expect("validated set part");
+        let path = assembly
+            .placement_set_path(id)
+            .expect("placement set path")
+            .to_string();
+        let occurrence = Occurrence::PlacementSet(id);
+        let has_geometry = compiled
+            .part(part)
+            .expect("matching compilation")
+            .bodies
+            .iter()
+            .any(|body| !body.tri.indices.is_empty());
+        let mut members: Vec<(usize, instancing::Trs)> = Vec::new();
+        let mut singles: Vec<usize> = Vec::new();
+        for (index, placement) in set.placements().iter().enumerate() {
+            if mode != GltfInstancing::GpuInstancing || !has_geometry {
+                singles.push(index);
+                continue;
+            }
+            match instancing::decompose(placement) {
+                Ok(trs) => members.push((index, trs)),
+                Err(instancing::Unbatchable::Mirrored) => {
+                    self.stats.unbatched_mirrored_placements += 1;
+                    singles.push(index);
+                }
+                Err(instancing::Unbatchable::Sheared) => {
+                    self.stats.unbatched_sheared_placements += 1;
+                    singles.push(index);
+                }
+            }
+        }
+        let metadata: Map<String, Value> = set
+            .metadata()
+            .iter()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect();
+        let mut top = Vec::new();
+        let mut lod_used = false;
+        if !members.is_empty() {
+            let trs: Vec<instancing::Trs> = members.iter().map(|(_, trs)| *trs).collect();
+            let seeds: Option<Vec<u64>> = set
+                .seeds()
+                .map(|seeds| members.iter().map(|(i, _)| seeds[*i]).collect());
+            let tints: Option<Vec<[f32; 4]>> = set
+                .tints()
+                .map(|tints| members.iter().map(|(i, _)| tints[*i]).collect());
+            let transforms = self.instance_transforms(&trs, seeds.as_deref(), tints.as_deref());
+            let mut extras = metadata.clone();
+            extras.insert("setPath".into(), json!(path));
+            extras.insert("placementCount".into(), json!(members.len()));
+            if members.len() != set.len() {
+                let indices: Vec<usize> = members.iter().map(|(i, _)| *i).collect();
+                extras.insert("placementIndices".into(), json!(indices));
+            }
+            let name = format!("{path} [{} placements]", members.len());
+            let (nodes_top, used) = self.instanced_occurrence(
+                nodes,
+                sources,
+                (occurrence, part),
+                (&transforms, &name, extras),
+                lods,
+            )?;
+            top.extend(nodes_top);
+            lod_used |= used;
+            self.stats.batched_placements += members.len() as u64;
+        }
+        for index in singles {
+            let placement_path = format!("{path}#{index}");
+            let mut extras = metadata.clone();
+            extras.insert("instancePath".into(), json!(placement_path));
+            extras.insert("partKey".into(), json!(def.key()));
+            if let Some(seeds) = set.seeds() {
+                extras.insert("seed".into(), json!(seeds[index].to_string()));
+            }
+            if let Some(tints) = set.tints() {
+                extras.insert("tint".into(), json!(tints[index]));
+            }
+            let mut node = json!({ "name": placement_path, "extras": extras });
+            let placement = set.placements()[index];
+            if placement != Placement3::IDENTITY {
+                node["matrix"] = json!(matrix_column_major(&placement.rows));
+            }
+            let logical = nodes.len();
+            nodes.push(node);
+            lod_used |=
+                self.attach_occurrence(nodes, sources, (occurrence, part), logical, lods)?;
+            top.push(logical);
+            self.stats.placement_nodes += 1;
+        }
+        Ok((top, lod_used))
+    }
+}
+
+/// The `MSFT_lod` node extension name.
+const LOD_EXTENSION: &str = "MSFT_lod";
+
+/// Adds a chain's `MSFT_screencoverage` thresholds, one per level, and the
+/// crossfade bands that `MSFT_lod` has no field for.
+fn lod_extras(extras: &mut Map<String, Value>, chain: &[exedra_assembly::LodLevel]) {
+    // Thresholds are authored as `f32`; write their shortest decimal form
+    // (`0.05`, not the widened `0.05000000074505806`).
+    let decimal = |value: f32| value.to_string().parse::<f64>().expect("finite f32");
+    let coverage: Vec<f64> = chain.iter().map(|l| decimal(l.min_coverage)).collect();
+    let crossfade: Vec<f64> = chain.iter().map(|l| decimal(l.crossfade)).collect();
+    extras.insert("MSFT_screencoverage".into(), json!(coverage));
+    extras.insert("exedraLodCrossfade".into(), json!(crossfade));
 }
 
 fn append_child(node: &mut Value, child: usize) {
@@ -1587,22 +1977,6 @@ mod tests {
         assert_eq!(text_json["materials"], json["materials"]);
         assert_eq!(text_json["meshes"], json["meshes"]);
         assert_eq!(text.stats, export.stats);
-    }
-
-    #[test]
-    fn placement_sets_are_refused_rather_than_dropped() {
-        let (mut assembly, _) = example();
-        let part = assembly.part_by_key("panel").unwrap();
-        assembly
-            .add_placement_set(None, "scatter", part, vec![Placement3::IDENTITY; 3])
-            .unwrap();
-        let compiled = PartCompiler::new()
-            .compile_parts(&assembly, &CompilePolicy::default())
-            .unwrap();
-        assert!(matches!(
-            export_glb(&assembly, &compiled),
-            Err(GltfError::UnsupportedPlacementSets { sets: 1 })
-        ));
     }
 
     #[test]
