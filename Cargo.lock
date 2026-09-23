@@ -33,6 +33,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "assembly_wind_tunnel"
+version = "0.0.0"
+dependencies = [
+ "exedra_assembly",
+ "exedra_constructive",
+ "exedra_mesh",
+ "exedra_primitives",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

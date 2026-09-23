@@ -968,7 +968,8 @@ fn baked_geometry_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
 }
 
 /// Structural fingerprint of an assembly: recipe contents, baked geometry,
-/// slot tables and mappings, placements, bindings, and metadata.
+/// slot tables and mappings, placements, bindings, metadata, and placement
+/// sets (their placements, seeds, tints, bindings and metadata).
 ///
 /// Baked attributes are absent from the v1 JSON interchange and are excluded
 /// here. Rendering caches must use [`CompiledPart::fingerprint`] together with
@@ -1034,6 +1035,51 @@ pub fn assembly_fingerprint(assembly: &Assembly) -> u128 {
         for (key, value) in inst.metadata() {
             push_str(&mut bytes, key);
             push_str(&mut bytes, value);
+        }
+    }
+    // Placement sets extend the encoding only when present, so assemblies
+    // without sets keep their fingerprints.
+    if !assembly.placement_sets().is_empty() {
+        bytes.extend_from_slice(b"placement-sets");
+        bytes.extend_from_slice(&crate::len_u32(assembly.placement_sets().len()).to_le_bytes());
+        for set in assembly.placement_sets() {
+            bytes.extend_from_slice(&set.parent().map_or(u32::MAX, |p| p.0).to_le_bytes());
+            push_str(&mut bytes, set.key());
+            bytes.extend_from_slice(&set.part().0.to_le_bytes());
+            bytes.extend_from_slice(&crate::len_u32(set.len()).to_le_bytes());
+            for placement in set.placements() {
+                for v in placement.rows.iter().flatten() {
+                    bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+                }
+            }
+            match set.seeds() {
+                Some(seeds) => {
+                    bytes.push(1);
+                    for seed in seeds {
+                        bytes.extend_from_slice(&seed.to_le_bytes());
+                    }
+                }
+                None => bytes.push(0),
+            }
+            match set.tints() {
+                Some(tints) => {
+                    bytes.push(1);
+                    for v in tints.iter().flatten() {
+                        bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+                    }
+                }
+                None => bytes.push(0),
+            }
+            bytes.extend_from_slice(&crate::len_u32(set.bindings().len()).to_le_bytes());
+            for (slot, material) in set.bindings() {
+                bytes.extend_from_slice(&slot.0.to_le_bytes());
+                push_str(&mut bytes, material);
+            }
+            bytes.extend_from_slice(&crate::len_u32(set.metadata().len()).to_le_bytes());
+            for (key, value) in set.metadata() {
+                push_str(&mut bytes, key);
+                push_str(&mut bytes, value);
+            }
         }
     }
     fnv128(&bytes)

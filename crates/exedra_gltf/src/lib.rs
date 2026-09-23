@@ -264,6 +264,13 @@ pub enum GltfError {
     },
     /// The supplied compilation does not match the assembly's current part sources.
     CompilationMismatch(CompilationMismatch),
+    /// The assembly contains placement sets, which this exporter does not
+    /// write yet. Export refuses them rather than dropping placements; the
+    /// natural glTF form is `EXT_mesh_gpu_instancing`.
+    UnsupportedPlacementSets {
+        /// Number of placement sets in the assembly.
+        sets: usize,
+    },
     /// A compiled part retains error-level diagnostics from a partial evaluation.
     IncompleteGeometry {
         /// Assembly-local part with the error-level report.
@@ -371,6 +378,10 @@ impl std::fmt::Display for GltfError {
                 write!(f, "material {key:?} requests unsupported field {field:?}")
             }
             Self::CompilationMismatch(error) => error.fmt(f),
+            Self::UnsupportedPlacementSets { sets } => write!(
+                f,
+                "assembly has {sets} placement set(s), which glTF export does not support yet"
+            ),
             Self::IncompleteGeometry { part, .. } => write!(
                 f,
                 "compiled part {part} has error-level geometry diagnostics"
@@ -571,6 +582,11 @@ fn build_export(
         .validate_for(assembly)
         .map_err(GltfError::CompilationMismatch)?;
     attributes::validate_mappings(options.attributes)?;
+    if !assembly.placement_sets().is_empty() {
+        return Err(GltfError::UnsupportedPlacementSets {
+            sets: assembly.placement_sets().len(),
+        });
+    }
     for index in 0..assembly.parts().len() {
         let part = PartId(u32::try_from(index).expect("validated part count"));
         if let Some(report) = compiled.report(part)
@@ -1308,6 +1324,22 @@ mod tests {
         assert_eq!(text_json["materials"], json["materials"]);
         assert_eq!(text_json["meshes"], json["meshes"]);
         assert_eq!(text.stats, export.stats);
+    }
+
+    #[test]
+    fn placement_sets_are_refused_rather_than_dropped() {
+        let (mut assembly, _) = example();
+        let part = assembly.part_by_key("panel").unwrap();
+        assembly
+            .add_placement_set(None, "scatter", part, vec![Placement3::IDENTITY; 3])
+            .unwrap();
+        let compiled = PartCompiler::new()
+            .compile_parts(&assembly, &CompilePolicy::default())
+            .unwrap();
+        assert!(matches!(
+            export_glb(&assembly, &compiled),
+            Err(GltfError::UnsupportedPlacementSets { sets: 1 })
+        ));
     }
 
     #[test]

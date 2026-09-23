@@ -28,7 +28,8 @@
 //!
 //! Register each distinct part once, place it any number of times, compile
 //! part-local geometry, then read the retained instance tree or flatten it for
-//! drawables with exact placed bounds:
+//! drawables with placed bounds (conservative boxes by default, exact on
+//! request through [`BoundsPolicy`]):
 //!
 //! ```
 //! use exedra_assembly::{Assembly, CompilePolicy, PartCompiler, flatten};
@@ -76,7 +77,7 @@ pub mod pattern;
 
 pub use assembly::{
     AppendMap, Assembly, AssemblyError, Instance, InstanceId, InstancePath, PartDef, PartId,
-    PartSource, SlotIndex,
+    PartSource, PlacementPath, PlacementSet, PlacementSetId, SlotIndex,
 };
 pub use compile::assembly_fingerprint;
 pub use compile::{
@@ -86,7 +87,10 @@ pub use compile::{
     SnapshotWorkplane, StaleSelection, VolumeError,
 };
 pub use exedra_mesh::NormalsSource;
-pub use flatten::{RenderItem, RenderList, ResolvedRegion, compose, flatten};
+pub use flatten::{
+    BoundsPolicy, FlattenOptions, RenderBatch, RenderItem, RenderList, ResolvedRegion, compose,
+    flatten, flatten_with,
+};
 
 /// Narrows a validated count to `u32`.
 ///

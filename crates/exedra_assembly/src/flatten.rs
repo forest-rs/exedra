@@ -9,18 +9,27 @@
 //! through the binding chain (instance binding wins
 //! over part default). The result is a flat, deterministic list that
 //! renderers and exporters consume; it carries no geometry of its own —
-//! items reference compiled bodies in the [`CompiledParts`] set. Each item
-//! also records exact world-space bounds derived from the emitted positions,
-//! so placed geometry budgets do not need to reconstruct the render seam.
+//! items reference compiled bodies in the [`CompiledParts`] set.
+//!
+//! Instances become [`RenderItem`]s. [`PlacementSet`](crate::PlacementSet)s
+//! become [`RenderBatch`]es: one per compiled body, carrying every world
+//! placement and resolving materials once, so a scatter of thousands of
+//! placements costs arrays rather than per-placement items. Consumers must
+//! handle both lists.
+//!
+//! Every placed body records world-space bounds chosen by [`BoundsPolicy`]:
+//! by default the part-local box transformed by the placement, which costs
+//! O(bodies) per placement instead of O(vertices).
 
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use exedra_constructive::evaluate::Aabb3;
 use exedra_constructive::ir::Placement3;
 
-use crate::assembly::{Assembly, InstanceId, InstancePath, PartId};
-use crate::compile::CompiledParts;
+use crate::assembly::{Assembly, InstanceId, InstancePath, PartId, PlacementSetId, SlotIndex};
+use crate::compile::{CompiledBody, CompiledParts};
 
 /// One index range of a rendered body with its resolved material key.
 /// Several ranges may share a region ID when their authored slots differ.
@@ -49,37 +58,125 @@ pub struct RenderItem {
     pub part: PartId,
     /// Index into the compiled part's body list.
     pub body: u32,
-    /// Axis-aligned bounds of this body's emitted positions after `world`.
-    ///
-    /// [`flatten`] transforms every emitted position rather than transforming
-    /// the part-local AABB, so rotations and general affine placements do not
-    /// make this an overestimate. An empty body has no bounds.
+    /// World-space bounds of this body under the flatten's [`BoundsPolicy`].
+    /// An empty body has no bounds.
     pub world_bounds: Option<Aabb3>,
     /// Index ranges with resolved material keys, in compiled region/slot order
     /// and covering the whole index buffer. Region IDs need not be unique.
     pub regions: Vec<ResolvedRegion>,
 }
 
+/// One compiled body of a placement set, placed at every set placement.
+#[derive(Clone, Debug)]
+pub struct RenderBatch {
+    /// Stable identity of the set; placement `i` is `path#i`.
+    pub path: InstancePath,
+    /// The owning set handle (valid for the source assembly only).
+    pub set: PlacementSetId,
+    /// The part whose compiled entry holds this body's buffers.
+    pub part: PartId,
+    /// Index into the compiled part's body list.
+    pub body: u32,
+    /// World placements, one per set placement, in set order. Shared by
+    /// every body (and level) the set emits.
+    pub world: Arc<[Placement3]>,
+    /// Per-placement seeds, parallel to [`Self::world`], if the set has them.
+    /// Shared with the source set; no per-batch copy.
+    pub seeds: Option<Arc<[u64]>>,
+    /// Per-placement linear RGBA tints, parallel to [`Self::world`], if the
+    /// set has them. Shared with the source set; no per-batch copy.
+    pub tints: Option<Arc<[[f32; 4]]>>,
+    /// World-space bounds per placement under the flatten's [`BoundsPolicy`];
+    /// empty when the body has no geometry.
+    pub world_bounds: Vec<Aabb3>,
+    /// Index ranges with resolved material keys, shared by every placement.
+    pub regions: Vec<ResolvedRegion>,
+}
+
+impl RenderBatch {
+    /// Number of placed occurrences.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.world.len()
+    }
+
+    /// True when the batch places nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.world.is_empty()
+    }
+}
+
+/// How [`flatten_with`] computes world-space bounds.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum BoundsPolicy {
+    /// Transform the body's part-local bounds as a box: the tightest box
+    /// around the transformed corners. Costs O(1) per placed body after one
+    /// O(vertices) pass per compiled body. Exact under translation, axis
+    /// permutation and axis-aligned scale; under other rotations or shear it
+    /// can exceed the exact bounds of the placed geometry, never undercut it.
+    #[default]
+    TransformedBox,
+    /// Transform every emitted position: exact bounds at O(vertices) per
+    /// placed body.
+    Exact,
+}
+
+/// Options for [`flatten_with`].
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct FlattenOptions {
+    /// How world-space bounds are computed.
+    pub bounds: BoundsPolicy,
+}
+
+impl FlattenOptions {
+    /// These options with the given bounds policy.
+    #[must_use]
+    pub fn with_bounds(mut self, bounds: BoundsPolicy) -> Self {
+        self.bounds = bounds;
+        self
+    }
+}
+
 /// A flat, deterministic list of drawables.
 #[derive(Clone, Debug, Default)]
 pub struct RenderList {
-    /// Items in depth-first insertion order.
+    /// Instance drawables in depth-first insertion order.
     pub items: Vec<RenderItem>,
+    /// Placement-set drawables: root-level sets first, then the sets of each
+    /// instance in depth-first insertion order; bodies in body order.
+    pub batches: Vec<RenderBatch>,
 }
 
 impl RenderList {
-    /// Total placed triangle count, including every instance occurrence.
+    /// Total placed triangle count, including every instance occurrence and
+    /// every placement of every set.
     ///
     /// Unlike [`crate::CompiledPart::triangle_count`], this count follows the
     /// flattened drawables: placing one compiled part twice counts its
     /// triangles twice.
     #[must_use]
     pub fn triangle_count(&self) -> u64 {
-        self.items
+        let triangles = |regions: &[ResolvedRegion]| {
+            regions
+                .iter()
+                .map(|region| u64::from(region.count) / 3)
+                .sum::<u64>()
+        };
+        let items: u64 = self.items.iter().map(|item| triangles(&item.regions)).sum();
+        let batches: u64 = self
+            .batches
             .iter()
-            .flat_map(|item| &item.regions)
-            .map(|region| u64::from(region.count) / 3)
-            .sum()
+            .map(|batch| triangles(&batch.regions) * batch.len() as u64)
+            .sum();
+        items + batches
+    }
+
+    /// Number of placed bodies: items plus every batch placement.
+    #[must_use]
+    pub fn placed_body_count(&self) -> u64 {
+        self.items.len() as u64 + self.batches.iter().map(|b| b.len() as u64).sum::<u64>()
     }
 
     /// Axis-aligned union of all placed geometry in world space.
@@ -93,6 +190,11 @@ impl RenderList {
         for item in &self.items {
             if let Some(item_bounds) = item.world_bounds {
                 bounds.union(&item_bounds);
+            }
+        }
+        for batch in &self.batches {
+            for placement_bounds in &batch.world_bounds {
+                bounds.union(placement_bounds);
             }
         }
         (!bounds.is_empty()).then_some(bounds)
@@ -115,15 +217,37 @@ pub fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
     Placement3 { rows }
 }
 
-/// Flattens `assembly` against its compiled parts.
+/// Flattens `assembly` against its compiled parts with default options:
+/// [`BoundsPolicy::TransformedBox`] bounds.
 ///
-/// Instances whose part has no compiled entry are skipped (this only
-/// happens when `compiled` came from a different assembly state); with a
-/// matching [`CompiledParts`] every instance contributes one item per
-/// compiled body.
+/// See [`flatten_with`].
 #[must_use]
 pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
-    let mut items = Vec::new();
+    flatten_with(assembly, compiled, &FlattenOptions::default())
+}
+
+/// Flattens `assembly` against its compiled parts.
+///
+/// Instances and sets whose part has no compiled entry are skipped (this
+/// only happens when `compiled` came from a different assembly state); with
+/// a matching [`CompiledParts`] every instance contributes one item per
+/// compiled body, and every placement set one batch per compiled body.
+#[must_use]
+pub fn flatten_with(
+    assembly: &Assembly,
+    compiled: &CompiledParts,
+    options: &FlattenOptions,
+) -> RenderList {
+    let mut flattener = Flattener {
+        assembly,
+        compiled,
+        policy: options.bounds,
+        local_bounds: Vec::new(),
+        list: RenderList::default(),
+    };
+    for &set in assembly.root_placement_sets() {
+        flattener.emit_set(set, &Placement3::IDENTITY);
+    }
     // Explicit stack, children pushed in reverse so they pop in insertion
     // order: depth-first preorder.
     let mut stack: Vec<(InstanceId, Placement3)> = Vec::new();
@@ -136,38 +260,9 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
         let Some(inst) = assembly.instance(id) else {
             continue;
         };
-        if let Some(part) = inst.part()
-            && let (Some(def), Some(entry)) = (assembly.part(part), compiled.part(part))
-        {
-            let path = assembly
-                .path_of(id)
-                .unwrap_or_else(|| InstancePath(Vec::new()));
-            for (body_index, body) in entry.bodies.iter().enumerate() {
-                let world_bounds = placed_bounds(&body.tri.positions, &world);
-                let regions = body
-                    .regions
-                    .iter()
-                    .map(|range| ResolvedRegion {
-                        region: range.region,
-                        start: range.start,
-                        count: range.count,
-                        material: range
-                            .material_slot
-                            .or_else(|| def.region_slot(range.region))
-                            .and_then(|slot| assembly.resolved_material(id, slot))
-                            .map(ToString::to_string),
-                    })
-                    .collect();
-                items.push(RenderItem {
-                    path: path.clone(),
-                    instance: id,
-                    world,
-                    part,
-                    body: crate::len_u32(body_index),
-                    world_bounds,
-                    regions,
-                });
-            }
+        flattener.emit_instance(id, &world);
+        for &set in inst.placement_sets() {
+            flattener.emit_set(set, &world);
         }
         for &child in inst.children().iter().rev() {
             if let Some(c) = assembly.instance(child) {
@@ -175,10 +270,166 @@ pub fn flatten(assembly: &Assembly, compiled: &CompiledParts) -> RenderList {
             }
         }
     }
-    RenderList { items }
+    flattener.list
 }
 
-fn placed_bounds(positions: &[[f32; 3]], world: &Placement3) -> Option<Aabb3> {
+struct Flattener<'a> {
+    assembly: &'a Assembly,
+    compiled: &'a CompiledParts,
+    policy: BoundsPolicy,
+    /// Part-local body bounds, computed once per part on first use.
+    local_bounds: Vec<Option<Vec<Option<Aabb3>>>>,
+    list: RenderList,
+}
+
+impl Flattener<'_> {
+    fn emit_instance(&mut self, id: InstanceId, world: &Placement3) {
+        let assembly = self.assembly;
+        let Some(part) = assembly.instance(id).and_then(|inst| inst.part()) else {
+            return;
+        };
+        let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
+            return;
+        };
+        let path = assembly
+            .path_of(id)
+            .unwrap_or_else(|| InstancePath(Vec::new()));
+        for (body_index, body) in entry.bodies.iter().enumerate() {
+            let world_bounds = self.placed_bounds(part, body_index, body, world);
+            let regions = resolve_regions(
+                body,
+                |region| def.region_slot(region),
+                |slot| assembly.resolved_material(id, slot),
+            );
+            self.list.items.push(RenderItem {
+                path: path.clone(),
+                instance: id,
+                world: *world,
+                part,
+                body: crate::len_u32(body_index),
+                world_bounds,
+                regions,
+            });
+        }
+    }
+
+    fn emit_set(&mut self, id: PlacementSetId, parent_world: &Placement3) {
+        let assembly = self.assembly;
+        let Some(set) = assembly.placement_set(id) else {
+            return;
+        };
+        let part = set.part();
+        let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
+            return;
+        };
+        let path = assembly
+            .placement_set_path(id)
+            .unwrap_or_else(|| InstancePath(Vec::new()));
+        let world: Arc<[Placement3]> = set
+            .placements()
+            .iter()
+            .map(|local| compose(parent_world, local))
+            .collect();
+        for (body_index, body) in entry.bodies.iter().enumerate() {
+            let world_bounds = world
+                .iter()
+                .filter_map(|placement| self.placed_bounds(part, body_index, body, placement))
+                .collect();
+            let regions = resolve_regions(
+                body,
+                |region| def.region_slot(region),
+                |slot| assembly.resolved_placement_material(id, slot),
+            );
+            self.list.batches.push(RenderBatch {
+                path: path.clone(),
+                set: id,
+                part,
+                body: crate::len_u32(body_index),
+                world: Arc::clone(&world),
+                seeds: set.seeds.clone(),
+                tints: set.tints.clone(),
+                world_bounds,
+                regions,
+            });
+        }
+    }
+
+    fn placed_bounds(
+        &mut self,
+        part: PartId,
+        body_index: usize,
+        body: &CompiledBody,
+        world: &Placement3,
+    ) -> Option<Aabb3> {
+        match self.policy {
+            BoundsPolicy::Exact => exact_bounds(&body.tri.positions, world),
+            BoundsPolicy::TransformedBox => {
+                let slot = part.0 as usize;
+                if self.local_bounds.len() <= slot {
+                    self.local_bounds.resize(slot + 1, None);
+                }
+                let bodies = self.local_bounds[slot].get_or_insert_with(|| {
+                    self.compiled
+                        .part(part)
+                        .map(|entry| entry.bodies.iter().map(CompiledBody::bounds).collect())
+                        .unwrap_or_default()
+                });
+                bodies
+                    .get(body_index)
+                    .copied()
+                    .flatten()
+                    .map(|local| transformed_box(&local, world))
+            }
+        }
+    }
+}
+
+fn resolve_regions<'a>(
+    body: &CompiledBody,
+    region_slot: impl Fn(u32) -> Option<SlotIndex>,
+    material: impl Fn(SlotIndex) -> Option<&'a str>,
+) -> Vec<ResolvedRegion> {
+    body.regions
+        .iter()
+        .map(|range| ResolvedRegion {
+            region: range.region,
+            start: range.start,
+            count: range.count,
+            material: range
+                .material_slot
+                .or_else(|| region_slot(range.region))
+                .and_then(&material)
+                .map(ToString::to_string),
+        })
+        .collect()
+}
+
+/// The tightest box around `local`'s corners after `world`.
+///
+/// Per output axis, each linear term contributes its smaller and larger
+/// product with the local extent; translation-only placements therefore
+/// reproduce the exact per-vertex bounds bit for bit.
+fn transformed_box(local: &Aabb3, world: &Placement3) -> Aabb3 {
+    let mut out = Aabb3 {
+        min: [0.0; 3],
+        max: [0.0; 3],
+    };
+    for (axis, row) in world.rows.iter().enumerate() {
+        let mut lo = 0.0;
+        let mut hi = 0.0;
+        for ((m, min), max) in row.iter().zip(local.min).zip(local.max) {
+            let a = m * min;
+            let b = m * max;
+            lo += a.min(b);
+            hi += a.max(b);
+        }
+        out.min[axis] = lo + row[3];
+        out.max[axis] = hi + row[3];
+    }
+    out
+}
+
+fn exact_bounds(positions: &[[f32; 3]], world: &Placement3) -> Option<Aabb3> {
     let mut positions = positions.iter();
     let first = transform_position(*positions.next()?, world);
     let mut bounds = Aabb3 {
@@ -299,14 +550,131 @@ mod tests {
     }
 
     #[test]
-    fn placed_bounds_transform_emitted_positions_not_local_aabb_corners() {
+    fn placement_sets_flatten_to_batches_under_their_parent() {
+        let mut asm = Assembly::new();
+        let part = asm.add_recipe_part("panel", slotted_recipe()).unwrap();
+        asm.set_default_slot(part, "body").unwrap();
+        asm.set_part_material(part, "body", "mdf").unwrap();
+        let frame = asm
+            .add_frame(None, "forest", Placement3::translate(0.0, 100.0, 0.0))
+            .unwrap();
+        let placements: Vec<Placement3> = (0..4)
+            .map(|i| Placement3::translate(f64::from(i) * 50.0, 0.0, 0.0))
+            .collect();
+        let set = asm
+            .add_placement_set(Some(frame), "panels", part, placements)
+            .unwrap();
+        asm.bind_placement_material(set, "body", "oak").unwrap();
+        asm.add_instance(None, "single", part, Placement3::IDENTITY)
+            .unwrap();
+        let compiled = PartCompiler::new()
+            .compile_parts(&asm, &CompilePolicy::default())
+            .unwrap();
+        let list = flatten(&asm, &compiled);
+
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.batches.len(), 1);
+        let batch = &list.batches[0];
+        assert_eq!(
+            batch.path,
+            InstancePath::from_segments(&["forest", "panels"])
+        );
+        assert_eq!(batch.len(), 4);
+        approx(batch.world[3].rows[0][3], 150.0);
+        approx(batch.world[3].rows[1][3], 100.0);
+        assert!(
+            batch
+                .regions
+                .iter()
+                .filter(|r| r.region == 2)
+                .all(|r| r.material.as_deref() == Some("oak"))
+        );
+        let per_body = compiled.part(part).unwrap().triangle_count();
+        assert_eq!(list.triangle_count(), 5 * per_body);
+        assert_eq!(list.placed_body_count(), 5);
+        let bounds = list.bounds().unwrap();
+        assert_eq!(bounds.max[0], 190.0);
+        assert_eq!(bounds.max[1], 120.0);
+    }
+
+    #[test]
+    fn transformed_box_bounds_are_exact_under_translation_and_contain_rotations() {
+        let positions = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let local = Aabb3 {
+            min: [0.0, 0.0, 0.0],
+            max: [2.0, 1.0, 0.0],
+        };
+        let shifted = Placement3::translate(3.0, -2.0, 5.0);
+        assert_eq!(
+            transformed_box(&local, &shifted),
+            exact_bounds(&positions, &shifted).unwrap()
+        );
+        let rotated =
+            Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_4, 3.0, -2.0, 5.0);
+        let loose = transformed_box(&local, &rotated);
+        let exact = exact_bounds(&positions, &rotated).unwrap();
+        for axis in 0..3 {
+            assert!(loose.min[axis] <= exact.min[axis]);
+            assert!(loose.max[axis] >= exact.max[axis]);
+        }
+        // The rotated triangle occupies only part of its box: the box policy
+        // is looser than exact on y.
+        assert!(loose.max[1] > exact.max[1] + 0.5);
+
+        // Mirrors, axis permutations and non-uniform axis-aligned scale stay
+        // exact.
+        let mirrored = Placement3 {
+            rows: [
+                [0.0, -3.0, 0.0, 1.0],
+                [2.5, 0.0, 0.0, -4.0],
+                [0.0, 0.0, -0.5, 2.0],
+            ],
+        };
+        assert_eq!(
+            transformed_box(&local, &mirrored),
+            exact_bounds(&positions, &mirrored).unwrap()
+        );
+    }
+
+    #[test]
+    fn bounds_policy_selects_exact_or_box_bounds() {
+        let mut asm = Assembly::new();
+        let part = asm.add_recipe_part("panel", slotted_recipe()).unwrap();
+        asm.add_instance(
+            None,
+            "turned",
+            part,
+            Placement3::rotate_z_then_translate(0.3, 0.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let compiled = PartCompiler::new()
+            .compile_parts(&asm, &CompilePolicy::default())
+            .unwrap();
+        let boxed = flatten(&asm, &compiled).bounds().unwrap();
+        let exact = flatten_with(
+            &asm,
+            &compiled,
+            &FlattenOptions::default().with_bounds(BoundsPolicy::Exact),
+        )
+        .bounds()
+        .unwrap();
+        // An extruded rectangle is its own box: both policies agree up to
+        // rounding.
+        for axis in 0..3 {
+            assert!((boxed.min[axis] - exact.min[axis]).abs() < 1e-9);
+            assert!((boxed.max[axis] - exact.max[axis]).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn exact_bounds_transform_emitted_positions_not_local_aabb_corners() {
         // A rotated non-box triangle occupies only part of its transformed
         // local AABB. Computing from emitted vertices keeps the public bound
         // exact instead of returning that larger box.
         let positions = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let world =
             Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_4, 3.0, -2.0, 5.0);
-        let bounds = placed_bounds(&positions, &world).expect("three emitted positions");
+        let bounds = exact_bounds(&positions, &world).expect("three emitted positions");
         let q = core::f64::consts::FRAC_1_SQRT_2;
 
         approx(bounds.min[0], 3.0 - q);
