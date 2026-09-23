@@ -17,8 +17,20 @@ are refused. Boundary-preserving cap triangulation keeps collinear samples so
 side walls and caps share exactly the same boundary.
 
 Original face-boundary samples omitted by robust triangulation are restored
-only when exactly collinear in 3D. Projection-only collinearity on a nonplanar
-face is refused rather than choosing a different surface. Section separation,
+only when collinear in 3D: exactly, or within f32 storage rounding (four f32
+epsilons of the largest coordinate magnitude). Stored coordinates of an
+exactly collinear point sit up to a few ulps off the line, so far from the
+origin exact predicates alone refused faces that were planar before storage;
+the allowance moves the surface by at most that much. Projection-only
+collinearity on a genuinely nonplanar face is still refused rather than
+choosing a different surface, and so is a reinsertion that would flip a split
+triangle's orientation.
+
+The distance tolerance is absolute. Stored cut vertices sit up to half an f32
+ulp of their coordinates off the plane, so a body far from the origin needs a
+tolerance that covers its coordinate magnitude; the default of `1e-6` suits
+coordinates up to about 16. A tolerance storage cannot meet is refused as a
+numeric limit, never silently widened. Section separation,
 winding, and nesting are checked again after f32 realization, within the same
 pair-work budget; rounding must not merge distinct boundaries.
 

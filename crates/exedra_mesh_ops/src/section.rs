@@ -10,6 +10,8 @@
 //! f32-realized loops must preserve separation, winding and nesting.
 
 mod emit;
+#[cfg(test)]
+mod far_tests;
 mod prepare;
 mod triangulate;
 use emit::{cap_triangles, emit};
@@ -27,6 +29,12 @@ use exedra_mesh::{FaceId, Mesh, VertexId};
 pub struct SectionPolicy {
     /// Body-space distance: vertices this close to the plane are ambiguous.
     /// Emitted cut vertices must also remain within this distance after f32 storage.
+    ///
+    /// The tolerance is absolute. Storage places a cut vertex up to half an f32
+    /// ulp of its coordinates off the plane, so bodies far from the origin need
+    /// a tolerance covering their coordinate magnitude (the default suits
+    /// coordinates up to about 16); otherwise the cut is refused as
+    /// [`SectionError::NumericLimit`].
     pub distance_tolerance: f64,
     /// Maximum input triangles, before clipping.
     pub max_triangles: u32,
