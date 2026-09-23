@@ -13,7 +13,10 @@ Current scope:
   narrowing point,
 - finiteness, unit-length, and orthogonal-frame predicates with explicit
   tolerances,
-- affine `Placement3` matrices and `Plane3` with checked normalization.
+- affine `Placement3` matrices and `Plane3` with checked normalization,
+- `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,
+  `tag`, `Key`), a frozen cross-repository contract
+  ([ADR-0001](docs/adr-0001-keyed-hash-contract.md)).
 
 `Placement3::try_from_orthonormal_axes(x, y, z, origin, tolerance)` checks a
 finite right-handed frame without changing authored values. `FrameError`
@@ -41,6 +44,9 @@ let direction = normalize([3.0_f64, 0.0, 4.0]).expect("non-degenerate vector");
 assert!((direction[0] - 0.6).abs() < 1.0e-12);
 assert!((direction[2] - 0.8).abs() < 1.0e-12);
 ```
+
+The keyed hash uses only integer operations and exact conversions, so its bits
+never depend on the backend.
 
 The default `std` feature supplies square root. For a `no_std` build, disable
 defaults and enable `libm`.
