@@ -250,6 +250,24 @@ pub struct ChangeSet {
     pub deleted_half_edges: Vec<HalfEdgeId>,
     /// Deleted faces in deterministic ID order.
     pub deleted_faces: Vec<FaceId>,
+    /// Values of caller-defined layers that edits cleared instead of carrying
+    /// onto created or rebuilt elements: layers whose rule is
+    /// [`Propagation::Unspecified`](crate::attributes::Propagation::Unspecified)
+    /// (declare one with
+    /// [`Mesh::set_layer_propagation`](crate::Mesh::set_layer_propagation)),
+    /// and fused elements whose sources disagreed, such as two faces merged
+    /// by [`op::dissolve_edges`](crate::op::dissolve_edges).
+    pub unpropagated_attribute_values: u64,
+    /// Values of caller-defined layers on deleted slots. Deletion always
+    /// clears, so recycled slots never inherit stale values.
+    ///
+    /// This is a gross count: it includes values a kernel carried onto a
+    /// replacement element before deleting their slot, such as the corners
+    /// [`op::dissolve_edges`](crate::op::dissolve_edges) restores onto the
+    /// merged face. It is not a loss measure;
+    /// [`Self::unpropagated_attribute_values`] counts what an edit failed to
+    /// carry.
+    pub cleared_attribute_values: u64,
 }
 
 /// Sink for optional edit-scope change recording.
@@ -290,6 +308,12 @@ pub trait ChangeSink {
     /// Records one deleted face.
     fn record_deleted_face(&mut self, _face: FaceId) {}
 
+    /// Records caller-defined layer values an edit could not carry.
+    fn record_unpropagated_attribute_values(&mut self, _count: u64) {}
+
+    /// Records caller-defined layer values cleared with deleted elements.
+    fn record_cleared_attribute_values(&mut self, _count: u64) {}
+
     /// Finalizes the sink and returns its output.
     fn finish(self) -> Self::Output;
 }
@@ -314,6 +338,8 @@ pub struct ChangeSetBuilder {
     deleted_vertices: Vec<VertexId>,
     deleted_half_edges: Vec<HalfEdgeId>,
     deleted_faces: Vec<FaceId>,
+    unpropagated_attribute_values: u64,
+    cleared_attribute_values: u64,
 }
 
 impl ChangeSetBuilder {
@@ -366,6 +392,15 @@ impl ChangeSink for ChangeSetBuilder {
         self.dirty.mark_face(face);
     }
 
+    fn record_unpropagated_attribute_values(&mut self, count: u64) {
+        self.unpropagated_attribute_values =
+            self.unpropagated_attribute_values.saturating_add(count);
+    }
+
+    fn record_cleared_attribute_values(&mut self, count: u64) {
+        self.cleared_attribute_values = self.cleared_attribute_values.saturating_add(count);
+    }
+
     fn finish(mut self) -> Self::Output {
         sort_dedup(&mut self.created_vertices);
         sort_dedup(&mut self.created_half_edges);
@@ -382,6 +417,8 @@ impl ChangeSink for ChangeSetBuilder {
             deleted_vertices: self.deleted_vertices,
             deleted_half_edges: self.deleted_half_edges,
             deleted_faces: self.deleted_faces,
+            unpropagated_attribute_values: self.unpropagated_attribute_values,
+            cleared_attribute_values: self.cleared_attribute_values,
         }
     }
 }

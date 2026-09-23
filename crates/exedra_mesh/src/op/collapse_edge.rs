@@ -5,6 +5,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::attributes::Domain;
 use crate::session::find_outgoing_half_edge_linear_scan;
 use crate::session::propagation::capture_edge_tags;
 use crate::{ChangeSink, EditSession, FaceId, HalfEdgeId, Mesh, VertexId, attr};
@@ -433,6 +434,20 @@ pub fn collapse_edge<S: ChangeSink>(
             .get_mut(outside.as_id())
             .expect("live outside half-edge")
             .next = next;
+    }
+
+    // Caller-defined corner layers transfer like UVs: where a shrinking
+    // face's corner at the survivor dies, the corner now pointing there
+    // continues it. Done before the dying corners' values are cleared.
+    for shrink in &shrinks {
+        if let Some((previous, _)) = shrink.uv_transfer {
+            session.propagate_caller_layers(
+                Domain::HalfEdge,
+                previous.as_id(),
+                shrink.on_edge.as_id(),
+                None,
+            );
+        }
     }
 
     // Remove the dropped faces, the dying half-edges, and the vertex.

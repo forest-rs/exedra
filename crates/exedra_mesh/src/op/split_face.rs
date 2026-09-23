@@ -177,6 +177,25 @@ pub fn split_face<S: ChangeSink>(
         let _ = region_layer.set(new_face.as_id(), region);
     }
 
+    // Caller-defined layers: the new face continues the source face, and each
+    // diagonal corner continues the source corner at its vertex.
+    {
+        use crate::attributes::Domain;
+        session.propagate_caller_layers(Domain::Face, new_face.as_id(), face.as_id(), None);
+        session.propagate_caller_layers(
+            Domain::HalfEdge,
+            diagonal_a_b.as_id(),
+            corner_b.as_id(),
+            None,
+        );
+        session.propagate_caller_layers(
+            Domain::HalfEdge,
+            diagonal_b_a.as_id(),
+            corner_a.as_id(),
+            None,
+        );
+    }
+
     if session.mesh().attrs().sparse(attr::CORNER_UV).is_some() {
         let uv_a = session.corner_uv(corner_a);
         let uv_b = session.corner_uv(corner_b);

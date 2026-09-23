@@ -9,6 +9,10 @@ use crate::{ChangeSink, EditSession, FaceId, HalfEdge, HalfEdgeId, VertexId};
 use super::AddFaceError;
 
 /// Adds one interior face from an ordered loop of live vertices.
+///
+/// Where the loop reuses an existing boundary (OUTSIDE-face) half-edge, that
+/// half-edge becomes the new face's corner and keeps any caller-defined
+/// values written on it; newly created half-edges and the face start empty.
 pub fn add_face<S: ChangeSink>(
     session: &mut EditSession<'_, S>,
     loop_vertices: &[VertexId],

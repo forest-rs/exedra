@@ -3,6 +3,7 @@
 
 use core::fmt;
 
+use crate::attributes::Domain;
 use crate::{ChangeSink, EditSession, FaceId, HalfEdgeId, attr};
 
 /// Structured edge-flip error from [`crate::op::flip_edge()`].
@@ -262,6 +263,11 @@ pub fn flip_edge<S: ChangeSink>(
     } else if let Some(layer) = session.mesh_mut().attrs_mut().sparse_mut(attr::CORNER_UV) {
         let _ = layer.remove(twin.as_id());
     }
+
+    // Caller-defined corner layers follow the same rule as UVs: each
+    // re-aimed diagonal corner continues the source corner at its new vertex.
+    session.propagate_caller_layers(Domain::HalfEdge, half_edge.as_id(), t_next.as_id(), None);
+    session.propagate_caller_layers(Domain::HalfEdge, twin.as_id(), h_next.as_id(), None);
 
     // Authored corner-normal overrides clear on every affected corner.
     for corner in [half_edge, twin, h_next, h_prev, t_next, t_prev] {

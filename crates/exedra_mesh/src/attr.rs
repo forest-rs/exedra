@@ -30,15 +30,17 @@ pub const CORNER_UV: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.
 ///
 /// Like [`CORNER_UV`], each corner belongs to the half-edge's destination
 /// vertex within its face. Render extraction emits it only when carried by an
-/// [`crate::ExtractAttribute`]. Edit kernels do not yet propagate this layer;
-/// author it after topology edits.
+/// [`crate::ExtractAttribute`]. Topology edits carry it by the rule declared
+/// with [`crate::Mesh::set_layer_propagation`] (see
+/// [`crate::attributes::Propagation`]).
 pub const CORNER_UV1: AttrKey<[f32; 2]> = AttrKey::new(Domain::HalfEdge, "corner.uv1");
 
 /// Optional corner color as linear, straight-alpha RGBA.
 ///
 /// Render extraction emits it only when carried by an
-/// [`crate::ExtractAttribute`]. Edit kernels do not yet propagate this layer;
-/// author it after topology edits.
+/// [`crate::ExtractAttribute`]. Topology edits carry it by the rule declared
+/// with [`crate::Mesh::set_layer_propagation`] (see
+/// [`crate::attributes::Propagation`]).
 pub const CORNER_COLOR: AttrKey<[f32; 4]> = AttrKey::new(Domain::HalfEdge, "corner.color");
 
 /// Optional authored corner normal overrides.

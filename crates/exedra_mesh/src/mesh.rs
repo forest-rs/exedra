@@ -18,7 +18,7 @@ use exedra_triangulate::{PolygonInput, TriParams, triangulate};
 
 use crate::{
     Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Id, Vertex, VertexId, attr,
-    attributes::{AttrError, AttrKey, Attributes, Domain, LayerValue},
+    attributes::{AttrError, AttrKey, Attributes, Domain, LayerValue, Propagation},
 };
 
 /// Parameters for [`Mesh::from_indexed_triangles`].
@@ -949,6 +949,43 @@ impl Mesh {
         self.attrs.define_sparse(key)?;
         self.advance_revision();
         Ok(())
+    }
+
+    /// Declares how topology edits carry the values of the layer named by
+    /// `key` onto the elements they create or rebuild.
+    ///
+    /// Layers start as [`Propagation::Unspecified`]: edits clear what they
+    /// cannot carry and count it in
+    /// [`ChangeSet::unpropagated_attribute_values`](crate::ChangeSet::unpropagated_attribute_values).
+    /// The rule describes the data, not one edit, so it is declared once per
+    /// layer rather than per [`PropagatePolicy`](crate::PropagatePolicy).
+    /// Changing it writes no value and does not advance the revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrError::Reserved`] for built-in keys, whose propagation
+    /// [`PropagatePolicy`](crate::PropagatePolicy) selects,
+    /// [`AttrError::NotDefined`] when no layer is registered under the key,
+    /// [`AttrError::TypeMismatch`] when one is registered with another value
+    /// type, and [`AttrError::NotInterpolable`] for
+    /// [`Propagation::Interpolate`] on a `u32` or `bool` layer.
+    pub fn set_layer_propagation<T: LayerValue>(
+        &mut self,
+        key: AttrKey<T>,
+        propagation: Propagation,
+    ) -> Result<(), AttrError> {
+        if attr::is_reserved(key.domain(), key.name()) {
+            return Err(AttrError::Reserved);
+        }
+        if self.attrs.dense(key).is_none() && self.attrs.sparse(key).is_none() {
+            return Err(if self.attrs.layer(key.domain(), key.name()).is_some() {
+                AttrError::TypeMismatch
+            } else {
+                AttrError::NotDefined
+            });
+        }
+        self.attrs
+            .set_propagation(key.domain(), key.name(), propagation)
     }
 
     fn advance_revision(&mut self) {

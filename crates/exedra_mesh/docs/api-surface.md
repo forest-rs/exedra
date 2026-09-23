@@ -34,7 +34,8 @@ Most callers should use the crate root re-exports:
   policy and the box projection shared with the `uv.box` operator.
 - `NumericPolicy` for explicit numeric tolerances.
 - `attr` for built-in attribute keys.
-- `attributes` for typed custom attribute storage.
+- `attributes` for typed custom attribute storage, including `Propagation`
+  rules declared with `Mesh::set_layer_propagation`.
 - `op` for public topology and attribute mutation functions.
 
 The crate root is the preferred import path. Public modules remain available so

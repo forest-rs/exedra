@@ -216,9 +216,10 @@ domain and name, since one name in two domains names two layers;
 
 **Out of scope.**
 
-- Edit kernels and mesh operations propagate only the built-in layers;
-  caller-defined layers are not yet carried through splits, collapses, face
-  edits or Booleans.
+- Propagation through topology edits: ADR-0012 adds declared per-layer
+  rules for the `exedra_mesh` kernels. Mesh operations that rebuild
+  geometry (face edits, rounding, Booleans) do not carry caller-defined
+  layers yet.
 - Constructive recipes refuse imported meshes carrying caller-defined layers,
   so carried streams are end to end only for baked assembly parts. On recipe
   parts they resolve to the missing value and are counted.

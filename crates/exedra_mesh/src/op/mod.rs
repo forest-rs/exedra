@@ -96,6 +96,8 @@ pub use split_edge::split_edge;
 pub use split_face::split_face;
 
 #[cfg(test)]
+mod propagation_tests;
+#[cfg(test)]
 mod torture;
 
 #[cfg(test)]
