@@ -14,6 +14,9 @@ Current scope:
 - finiteness, unit-length, and orthogonal-frame predicates with explicit
   tolerances,
 - affine `Placement3` matrices and `Plane3` with checked normalization,
+- `Quat` rotation quaternions (Hamilton, `x, y, z, w`), with composition,
+  vector rotation, rotation-matrix and rigid-`Placement3` conversions, and
+  shortest-arc slerp,
 - `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,
   `tag`, `Key`), a frozen cross-repository contract
   ([ADR-0001](docs/adr-0001-keyed-hash-contract.md)).
@@ -45,8 +48,10 @@ assert!((direction[0] - 0.6).abs() < 1.0e-12);
 assert!((direction[2] - 0.8).abs() < 1.0e-12);
 ```
 
-The keyed hash uses only integer operations and exact conversions, so its bits
-never depend on the backend.
+Quaternion axis–angle construction and slerp use trigonometry, which, like the
+rotation constructors, prefers libm when enabled. The keyed hash uses only
+integer operations, exact conversions and single IEEE operations in a fixed
+order, so its bits never depend on the backend.
 
 The default `std` feature supplies square root. For a `no_std` build, disable
 defaults and enable `libm`.
