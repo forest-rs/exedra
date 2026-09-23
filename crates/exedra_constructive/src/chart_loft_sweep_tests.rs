@@ -311,6 +311,7 @@ fn retained(chart: SurfaceChart, smooth: bool) -> Recipe {
         }
     } else {
         NodeKind::Sweep {
+            section: crate::ir::SectionLaw::IDENTITY,
             profile,
             path: arc_path(false),
             caps: CapMode::Both,

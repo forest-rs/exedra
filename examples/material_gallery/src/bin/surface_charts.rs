@@ -171,6 +171,7 @@ fn curved_rail() -> Recipe {
             caps: ChartTransform::IDENTITY,
         })
         .add(NodeKind::Sweep {
+            section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile,
             path: Path3::Curves {
                 start: [0.0, 0.0, 0.6],

@@ -153,6 +153,9 @@ pub enum FramePolicy {
 /// Shared authored connectivity and join policies for controlled paths.
 pub use crate::path::{PathClosure, PathJoin};
 
+/// Section scale and twist along a sweep path.
+pub use crate::section_law::{Law, SectionLaw, SectionLawError};
+
 /// A 3D sweep path.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -382,6 +385,9 @@ pub enum NodeKind {
         profile: ProfileId,
         /// The path to sweep along.
         path: Path3,
+        /// Section scale and twist along the path;
+        /// [`SectionLaw::IDENTITY`] keeps the section constant.
+        section: SectionLaw,
         /// Which end caps to close.
         caps: CapMode,
     },
@@ -992,6 +998,14 @@ impl RecipeBuilder {
             selection.canonicalize();
         }
         self.validate_kind(&kind)?;
+        // An identity-shaped law is stored as the canonical identity: every
+        // encoding writes it as a constant sweep, so a round trip compares
+        // equal to the recipe that was built.
+        if let NodeKind::Sweep { section, .. } = &mut kind
+            && section.is_identity()
+        {
+            *section = SectionLaw::IDENTITY;
+        }
         // Pending bindings must reference interned entries: hostile ids are
         // typed errors here, never a downstream index panic. Taken even on
         // error so a rejected binding does not leak onto the next node.
@@ -1217,9 +1231,30 @@ impl RecipeBuilder {
             NodeKind::Sweep {
                 profile,
                 path,
+                section,
                 caps,
             } => {
                 self.check_profile(*profile)?;
+                section
+                    .validate()
+                    .map_err(|_| RecipeError::InvalidParameter {
+                        what: "sweep section law",
+                    })?;
+                let closed = matches!(
+                    path,
+                    Path3::MiteredPolyline {
+                        closure: PathClosure::ClosedPlanar { .. },
+                        ..
+                    } | Path3::Curves {
+                        closure: PathClosure::ClosedPlanar { .. },
+                        ..
+                    }
+                );
+                if closed && section.validate_closed().is_err() {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "closed sweep section law seam",
+                    });
+                }
                 if let Path3::Curves {
                     start,
                     segments,
@@ -1942,9 +1977,13 @@ fn node_canon_bytes(
         NodeKind::Sweep {
             profile,
             path,
+            section,
             caps,
         } => {
-            out.push(3);
+            // A shaped sweep takes its own kind tag, so constant-section
+            // sweeps keep their established fingerprints.
+            let shaped = !section.is_identity();
+            out.push(if shaped { 18 } else { 3 });
             put_u128(out, profile_hashes[profile.0 as usize]);
             match path {
                 Path3::Polyline { points, frame } => {
@@ -2059,6 +2098,9 @@ fn node_canon_bytes(
                 }
             }
             put_caps(out, *caps);
+            if shaped {
+                section.encode(out);
+            }
         }
         NodeKind::PlanarFace { profile, placement } => {
             out.push(4);

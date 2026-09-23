@@ -430,10 +430,12 @@ fn remap(
         NodeKind::Sweep {
             profile: id,
             path,
+            section,
             caps,
         } => NodeKind::Sweep {
             profile: profile(*id)?,
             path: path.clone(),
+            section: section.clone(),
             caps: *caps,
         },
         NodeKind::PlanarFace {

@@ -61,6 +61,7 @@ fn surround(profile: Profile2, concave: bool, cuts: bool) -> Recipe {
         .with_source(source)
         .with_material(finish)
         .add(NodeKind::Sweep {
+            section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile,
             path: Path3::MiteredPolyline {
                 points,

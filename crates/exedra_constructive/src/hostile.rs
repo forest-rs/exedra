@@ -148,6 +148,7 @@ fn hostile_kind(rng: &mut Rng, profiles: usize, nodes: usize) -> NodeKind {
             caps: CapMode::Both,
         },
         3 => NodeKind::Sweep {
+            section: crate::ir::SectionLaw::IDENTITY,
             profile,
             path: Path3::Polyline {
                 points: (0..rng.range(5))

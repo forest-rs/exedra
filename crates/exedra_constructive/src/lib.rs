@@ -104,6 +104,7 @@ pub mod path;
 pub mod profile;
 pub mod profile_section;
 pub mod section;
+pub mod section_law;
 pub mod source_map;
 mod stretch;
 pub mod tessellate;

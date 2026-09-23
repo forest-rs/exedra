@@ -28,7 +28,8 @@ use crate::discretize::{
     DiscretizedProfile, circular_edge_count, discretize_profile,
 };
 use crate::ir::{
-    CapMode, LoftPolicy, Path3, PathClosure, PathJoin, Placement3, PrimitiveSpec, SlotId,
+    CapMode, LoftPolicy, Path3, PathClosure, PathJoin, Placement3, PrimitiveSpec, SectionLaw,
+    SectionLawError, SlotId,
 };
 use crate::len_u32;
 use crate::profile::Profile2;
@@ -395,6 +396,9 @@ pub enum TessellateError {
     InvalidSweepPath,
     /// Section-X is nonfinite, zero, or within 1e-12 of parallel to the tangent.
     InvalidSweepOrientation,
+    /// A sweep's [`SectionLaw`] is malformed, or does not close on a closed
+    /// path.
+    InvalidSectionLaw(SectionLawError),
     /// The declared closed-path plane normal is nonfinite or zero.
     InvalidSweepPlane,
     /// A station lies outside the f64 rounding allowance of the declared plane.
@@ -517,6 +521,7 @@ impl core::fmt::Display for TessellateError {
                 f,
                 "sweep path needs finite distinct points and usable segment lengths"
             ),
+            Self::InvalidSectionLaw(error) => error.fmt(f),
             Self::InvalidSweepOrientation => write!(
                 f,
                 "sweep section-X must have a usable component perpendicular to the first segment"
@@ -2870,6 +2875,51 @@ fn check_sweep_vertex_budget(
     Ok(())
 }
 
+/// Scales and twists each frame's section axes by `section` at the frame's
+/// normalized arc length (cumulative chord length between frame origins).
+///
+/// Call before the section datum is applied, so the section scales and turns
+/// about the point placed on the path. The axes stay in their section (or
+/// miter-cut) plane: the placement is linear in them, so scaling and rotating
+/// the axes scales and rotates every placed section point.
+fn apply_section_law(
+    frames: &mut [SweepFrame],
+    section: &SectionLaw,
+    closed: bool,
+) -> Result<(), TessellateError> {
+    section
+        .validate()
+        .map_err(TessellateError::InvalidSectionLaw)?;
+    if closed {
+        section
+            .validate_closed()
+            .map_err(TessellateError::InvalidSectionLaw)?;
+    }
+    if section.is_identity() {
+        return Ok(());
+    }
+    let mut distances = Vec::with_capacity(frames.len());
+    distances.push(0.0);
+    for pair in frames.windows(2) {
+        let last = *distances.last().expect("seeded");
+        distances.push(last + norm(sub(pair[1].0, pair[0].0)));
+    }
+    let total = *distances.last().expect("seeded");
+    if !(total > 0.0 && total.is_finite()) {
+        return Err(TessellateError::InvalidSweepPath);
+    }
+    for (frame, distance) in frames.iter_mut().zip(distances) {
+        let t = distance / total;
+        let s = section.scale.eval(t);
+        let angle = section.twist.eval(t);
+        let (sin, cos) = (libm::sin(angle), libm::cos(angle));
+        let (u, v) = (frame.1, frame.2);
+        frame.1 = scale(add(scale(u, cos), scale(v, sin)), s);
+        frame.2 = scale(sub(scale(v, cos), scale(u, sin)), s);
+    }
+    Ok(())
+}
+
 fn sweep_point(frame: &SweepFrame, point: [f64; 2]) -> [f64; 3] {
     add(
         add(frame.0, scale(frame.1, point[0])),
@@ -2974,6 +3024,7 @@ pub fn tessellate_mitered_sweep(
         section_origin,
         closure,
         miter_limit,
+        &SectionLaw::IDENTITY,
         caps,
         policy,
         None,
@@ -2988,6 +3039,7 @@ fn mitered_sweep_impl(
     section_origin: [f64; 2],
     closure: PathClosure,
     miter_limit: f64,
+    section: &SectionLaw,
     caps: CapMode,
     policy: &EvalPolicy,
     chart: Option<SurfaceChart>,
@@ -3018,6 +3070,7 @@ fn mitered_sweep_impl(
             closed_sweep::frames(path, section_x, normal, miter_limit)?
         }
     };
+    apply_section_law(&mut frames, section, closed)?;
     if section_origin != [0.0; 2] {
         for frame in &mut frames {
             frame.0 = sub(
@@ -3134,6 +3187,7 @@ pub fn tessellate_curved_sweep(
         section_origin,
         closure,
         joins,
+        &SectionLaw::IDENTITY,
         caps,
         policy,
         None,
@@ -3149,6 +3203,7 @@ fn curved_sweep_impl(
     section_origin: [f64; 2],
     closure: PathClosure,
     joins: PathJoin,
+    section: &SectionLaw,
     caps: CapMode,
     policy: &EvalPolicy,
     chart: Option<SurfaceChart>,
@@ -3163,6 +3218,7 @@ fn curved_sweep_impl(
     let sampled = crate::path::discretize_path(start, segments, closure, joins, &policy.sweep_path)
         .map_err(TessellateError::Path)?;
     let mut frames = curved_sweep::frames(&sampled, section_x)?;
+    apply_section_law(&mut frames, section, closed)?;
     if section_origin != [0.0; 2] {
         for frame in &mut frames {
             frame.0 = sub(
@@ -3223,20 +3279,30 @@ pub fn tessellate_sweep(
     caps: CapMode,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
-    sweep_impl(profile, placement, path, caps, policy, None)
+    sweep_impl(
+        profile,
+        placement,
+        path,
+        &SectionLaw::IDENTITY,
+        caps,
+        policy,
+        None,
+    )
 }
 
 fn sweep_impl(
     profile: &Profile2,
     placement: &Placement3,
     path: &[[f64; 3]],
+    section: &SectionLaw,
     caps: CapMode,
     policy: &EvalPolicy,
     chart: Option<SurfaceChart>,
 ) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
     let d = discretize_profile(profile, &policy.discretize)?;
-    let frames = sweep_frames(path, policy)?;
+    let mut frames = sweep_frames(path, policy)?;
+    apply_section_law(&mut frames, section, false)?;
     tessellate_sweep_rings(
         profile, placement, path, caps, policy, &d, &frames, None, None, false, chart,
     )
@@ -3260,16 +3326,56 @@ pub fn tessellate_sweep_with_chart(
     chart: SurfaceChart,
     policy: &EvalPolicy,
 ) -> Result<TessellatedBody, TessellateError> {
-    chart.validate()?;
-    if !matches!(chart, SurfaceChart::Sweep { .. }) {
-        return Err(ChartError::WrongOperation.into());
+    tessellate_path_sweep(
+        profile,
+        placement,
+        path,
+        &SectionLaw::IDENTITY,
+        caps,
+        Some(chart),
+        policy,
+    )
+}
+
+/// Tessellates any retained path form under a [`SectionLaw`], optionally
+/// with a [`SurfaceChart::Sweep`].
+///
+/// The law scales and twists each section about its datum at the section's
+/// normalized arc length along the sampled path, before placement; see
+/// [`SectionLaw`]. Framing, joins, sampling, caps and geometry checks are the
+/// same as the corresponding constant-section sweep, and the identity law
+/// reproduces it exactly. Controlled (mitered and analytic) sweeps check every
+/// realized band, so a law that folds the wall is refused rather than
+/// emitted. A chart's U coordinate measures the unscaled profile perimeter,
+/// so texture stays continuous along a tapered sweep while its density
+/// follows the section size; V remains centerline distance.
+///
+/// # Errors
+///
+/// Returns [`TessellateError::InvalidSectionLaw`] for a malformed law or one
+/// that does not close on a closed path, and otherwise the selected sweep's
+/// typed failures.
+pub fn tessellate_path_sweep(
+    profile: &Profile2,
+    placement: &Placement3,
+    path: &Path3,
+    section: &SectionLaw,
+    caps: CapMode,
+    chart: Option<SurfaceChart>,
+    policy: &EvalPolicy,
+) -> Result<TessellatedBody, TessellateError> {
+    if let Some(chart) = chart {
+        chart.validate()?;
+        if !matches!(chart, SurfaceChart::Sweep { .. }) {
+            return Err(ChartError::WrongOperation.into());
+        }
     }
     match path {
         Path3::Polyline { points, .. } => {
             if points.len() < 2 {
                 return Err(TessellateError::InvalidSweepPath);
             }
-            sweep_impl(profile, placement, points, caps, policy, Some(chart))
+            sweep_impl(profile, placement, points, section, caps, policy, chart)
         }
         Path3::MiteredPolyline {
             points,
@@ -3285,9 +3391,10 @@ pub fn tessellate_sweep_with_chart(
             *section_origin,
             *closure,
             *miter_limit,
+            section,
             caps,
             policy,
-            Some(chart),
+            chart,
         ),
         Path3::Curves {
             start,
@@ -3305,9 +3412,10 @@ pub fn tessellate_sweep_with_chart(
             *section_origin,
             *closure,
             *joins,
+            section,
             caps,
             policy,
-            Some(chart),
+            chart,
         ),
     }
 }
@@ -6047,3 +6155,7 @@ mod smooth_loft_tests;
 #[cfg(test)]
 #[path = "closed_curved_sweep_tests.rs"]
 mod closed_curved_sweep_tests;
+
+#[cfg(test)]
+#[path = "shaped_sweep_tests.rs"]
+mod shaped_sweep_tests;

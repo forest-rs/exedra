@@ -37,6 +37,7 @@ fn recipe(w: f64, h: f64, bar: f64, distinct: bool, stage: u8) -> Recipe {
     ] {
         let child = b
             .add(NodeKind::Sweep {
+                section: crate::ir::SectionLaw::IDENTITY,
                 profile: p,
                 path: Path3::Polyline {
                     points,
