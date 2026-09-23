@@ -7,7 +7,7 @@
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::{
     builders,
-    chart::{ChartTransform, SurfaceChart},
+    chart::{ChartTransform, LoftStations, SurfaceChart},
     ir::{
         CapMode, LoftPolicy, LoftSection, NodeKind, Path3, PathClosure, PathJoin, Placement3,
         Recipe, RecipeBuilder,
@@ -148,6 +148,7 @@ fn draped_strip() -> Recipe {
             // Authored undeformed length: 2 m per uniformly parameterized band.
             // The chart deliberately stretches as this strip drapes.
             rest_length: 6.0,
+            stations: LoftStations::SectionIndex,
             wall: ChartTransform::IDENTITY,
             caps: ChartTransform::IDENTITY,
         })

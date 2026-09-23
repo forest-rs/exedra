@@ -2267,9 +2267,15 @@ fn node_canon_bytes(
                 SurfaceChart::Loft {
                     reference_section,
                     rest_length,
+                    stations,
                     ..
                 } => {
-                    out.push(3);
+                    // Distance-placed stations take their own tag, so
+                    // index-placed charts keep their fingerprints.
+                    out.push(match stations {
+                        crate::chart::LoftStations::SectionIndex => 3,
+                        crate::chart::LoftStations::DatumDistance => 5,
+                    });
                     out.extend_from_slice(&reference_section.to_le_bytes());
                     put_f64(out, rest_length);
                 }

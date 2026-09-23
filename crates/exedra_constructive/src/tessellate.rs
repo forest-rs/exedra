@@ -2271,6 +2271,44 @@ pub fn tessellate_loft_with_chart(
     loft_impl(sections, interpolation, caps, policy, Some(chart))
 }
 
+/// Normalized longitudinal parameter of each authored loft section.
+fn loft_station_params(
+    sections: &[(Placement3, &Profile2)],
+    stations: crate::chart::LoftStations,
+) -> Result<Vec<f64>, TessellateError> {
+    let bands = sections.len() - 1;
+    Ok(match stations {
+        crate::chart::LoftStations::SectionIndex => (0..sections.len())
+            .map(|i| f64::from(len_u32(i)) / f64::from(len_u32(bands)))
+            .collect(),
+        crate::chart::LoftStations::DatumDistance => {
+            let datums: Vec<[f64; 3]> = sections
+                .iter()
+                .map(|(placement, _)| apply_placement(placement, [0.0; 3]))
+                .collect();
+            let mut cumulative = Vec::with_capacity(sections.len());
+            cumulative.push(0.0);
+            for (band, pair) in datums.windows(2).enumerate() {
+                let length = norm(sub(pair[1], pair[0]));
+                // Placements are validated finite upstream, so a non-finite
+                // length is unreachable; only a zero length is expected here.
+                if !(length > 0.0 && length.is_finite()) {
+                    return Err(ChartError::CoincidentLoftDatums {
+                        band: len_u32(band),
+                    }
+                    .into());
+                }
+                cumulative.push(cumulative[band] + length);
+            }
+            let total = cumulative[bands];
+            // Pin the last section exactly at 1 so V reaches `rest_length`.
+            let mut params: Vec<f64> = cumulative.iter().map(|d| d / total).collect();
+            params[bands] = 1.0;
+            params
+        }
+    })
+}
+
 fn loft_impl(
     sections: &[(Placement3, &Profile2)],
     interpolation: LoftPolicy,
@@ -2381,6 +2419,7 @@ fn loft_impl(
         let SurfaceChart::Loft {
             reference_section,
             rest_length,
+            stations,
             ..
         } = chart
         else {
@@ -2391,19 +2430,25 @@ fn loft_impl(
             &discretized[reference_section as usize],
             policy.discretize,
         )?;
+        let section_params = loft_station_params(sections, stations)?;
         let bands = f64::from(len_u32(sections.len() - 1));
-        let distances =
-            if let Some(sampling) = &loft_sampling {
-                core::iter::once(0.0)
-                    .chain(sampling.spans.iter().map(|span| {
+        let distances = if let Some(sampling) = &loft_sampling {
+            core::iter::once(0.0)
+                .chain(sampling.spans.iter().map(|span| match stations {
+                    // The historical expression, kept for bit-identical charts.
+                    crate::chart::LoftStations::SectionIndex => {
                         rest_length * ((f64::from(span.band) + span.parameter[1]) / bands)
-                    }))
-                    .collect()
-            } else {
-                (0..sections.len())
-                    .map(|i| rest_length * (f64::from(len_u32(i)) / bands))
-                    .collect()
-            };
+                    }
+                    _ => {
+                        let band = usize::from(span.band);
+                        let [start, end] = [section_params[band], section_params[band + 1]];
+                        rest_length * (start + (end - start) * span.parameter[1])
+                    }
+                }))
+                .collect()
+        } else {
+            section_params.iter().map(|p| rest_length * p).collect()
+        };
         chart.set_stations(distances)?;
         builder.chart = Some(chart);
     }

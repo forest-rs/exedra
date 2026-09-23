@@ -88,3 +88,33 @@ Existing None/Extrude/Revolve canonical bytes and geometry stay unchanged, so
 schema 40 remains valid; regression fingerprints are taken from the pre-extension
 revision. No dependency, geometry algorithm, material or placement convention
 changes are involved.
+
+## Amendment: loft stations by datum distance
+
+A loft chart's V advanced uniformly per authored section, so sections placed at
+uneven spacing (a tapering branch lofted from hand-placed rings, a moulding with
+closely spaced detail sections) stretched the texture wherever spacing varied.
+`SurfaceChart::Loft` gains `stations: LoftStations`:
+
+- `SectionIndex` (the default) keeps the uniform placement and its exact
+  arithmetic, so existing charts, fingerprints and UVs are bit-identical.
+- `DatumDistance` places section `i` at the cumulative chord length between
+  consecutive section datums (each profile origin after its placement), divided
+  by the total, times `rest_length`. Smooth intermediate samples interpolate
+  between their bounding sections' stations. The last section sits exactly at
+  `rest_length`.
+
+Distances are measured on the placements the loft receives, which include the
+occurrence placement. Rigid and uniformly scaled placements keep the normalized
+stations (up to rounding); nonuniform placements change them. Coincident
+consecutive datums give a zero-length band and fail with
+`ChartError::CoincidentLoftDatums`, rather than a degenerate chart.
+
+Datum chord length, not ring centroid or arc length of a sampled rail, keeps the
+measure explicit and independent of profile discretization and smooth-loft
+sampling. A distance-placed chart takes its own fingerprint tag. Text writes
+`stations datum_distance` after the loft's rest length, and interchange uses a
+distinct `loft_distance` metric; both are emitted only for `DatumDistance`, so
+older readers refuse it rather than silently place sections uniformly. Sweeps
+already measure centerline distance and are unchanged, including under section
+laws (ADR-0024).

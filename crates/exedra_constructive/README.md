@@ -47,9 +47,12 @@ Call `RecipeBuilder::with_surface_chart` before an ordinary `Extrude`, `Revolve`
 `Loft` or `Sweep` node. `SurfaceChart::Extrude` maps walls by sampled profile distance and extrusion
 height. `SurfaceChart::Revolve` maps them by angle times an explicit reference
 radius and sampled profile distance. `SurfaceChart::Loft` uses the sampled
-perimeter of an explicitly selected `reference_section`, with `rest_length`
-distributed over the existing uniform section parameter. Uneven station spacing
-and changes of section deliberately stretch this authored rest chart.
+perimeter of an explicitly selected `reference_section`. Its `stations` place
+the authored sections along `rest_length`: `LoftStations::SectionIndex`
+distributes it uniformly per section (uneven section spacing then stretches the
+chart), and `LoftStations::DatumDistance` in proportion to the chord length
+between section datums. Changes of section deliberately stretch this authored
+rest chart either way.
 `SurfaceChart::Sweep` uses sampled profile and pre-placement centerline distances;
 inner and outer rails intentionally stretch at bends. Caps use each cap's own
 source profile plane. Each
