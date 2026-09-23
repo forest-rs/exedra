@@ -88,6 +88,16 @@ impl<S: ChangeSink> EditSession<'_, S> {
         }
     }
 
+    /// Writes captured caller-defined values onto `target` as they are.
+    pub(crate) fn restore_caller_layers_verbatim(
+        &mut self,
+        domain: crate::attributes::Domain,
+        target: Id,
+        captured: &crate::attributes::CallerValues,
+    ) {
+        self.mesh.attrs.restore_verbatim(domain, target, captured);
+    }
+
     /// Restores captured caller-defined values onto the replacing element.
     pub(crate) fn restore_caller_layers(
         &mut self,

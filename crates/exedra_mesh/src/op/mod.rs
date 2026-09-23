@@ -84,7 +84,7 @@ pub use delete_vertices::delete_vertices;
 pub use dissolve_edges::{dissolve_edges, validate_dissolve_edge_selection};
 pub use dissolve_vertices::{dissolve_vertices, validate_dissolve_vertex_selection};
 pub use flip_edge::{FlipEdgeError, flip_edge};
-pub use set_attribute::{SetAttributeError, clear_attribute, set_attribute};
+pub use set_attribute::{SetAttributeError, clear_attribute, restore_attributes, set_attribute};
 pub use set_corner_normal_override::{SetCornerNormalOverrideError, set_corner_normal_override};
 pub use set_corner_uv::{SetCornerUvError, set_corner_uv};
 pub use set_edge_seam::{SetEdgeSeamError, set_edge_seam};

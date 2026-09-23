@@ -85,4 +85,38 @@ after a deletion could inherit a deleted element's caller-defined value.
     stretch, sections, and reflecting transforms) copy only built-in layers.
     Caller-defined layers and their rules vanish from the result with no
     counter; extraction reports them only as missing layers, and only if
-    asked for.
+    asked for. The API below lets them carry layers.
+
+## Amendment: capture and restore for operations
+
+Operations outside the kernels need the same rules. `exedra_mesh` exposes
+them without exposing its storage:
+
+- `Mesh::capture_attributes(&[(element, weight)])` captures every
+  caller-defined value of the element's domain from weighted sources,
+  combined per rule. Only sources with a finite positive weight take part
+  (all of them when none has one), so a sample exactly at one source
+  selects it alone, whatever zero-weight neighbours it lists. `Copy` takes
+  the heaviest source (the first among equals), `Interpolate` averages the
+  sources holding a value with renormalized weights, `Unspecified` keeps the
+  value `Copy` would take (or else the first held one) so restoring counts
+  it, and `Clear` captures nothing.
+- `op::restore_attributes(session, target, &captured)` writes a capture onto
+  a live target of the same domain under the target layer's rule, marks it
+  dirty, and counts what `Unspecified` loses in the `ChangeSet`. The count
+  is per restore, that is per target write, like the gross clear count: one
+  lost source value restored onto several targets (a Boolean's split faces,
+  an extrusion's walls) counts once per target. It says that something was
+  lost and where, not how many distinct source values. Only the layers the
+  capture covers are written; a target layer the source never had is left
+  unchanged, so restores from two sources (a Boolean's operands) compose.
+- `Mesh::adopt_attribute_layers(&source)` registers every caller-defined
+  layer of another mesh (storage, type, default and rule) on a freshly built
+  one, so a capture from the source can be restored there. A conflicting
+  registration adopts nothing and fails with `AttrError::TypeMismatch`
+  (storage, type or default) or `AttrError::RuleMismatch` (rule): values
+  captured under one rule are never written under another.
+- `Mesh::capture_attributes_verbatim(element)` captures values for a
+  rebuild that relabels elements without changing their meaning (re-winding
+  a reflected mesh). Restoring it writes every value as is, whatever the rule,
+  and counts nothing.
