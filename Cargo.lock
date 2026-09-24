@@ -423,6 +423,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_mesh_build_bench"
+version = "0.0.0"
+dependencies = [
+ "exedra_mesh",
+]
+
+[[package]]
 name = "exedra_mesh_ops"
 version = "0.1.0"
 dependencies = [
