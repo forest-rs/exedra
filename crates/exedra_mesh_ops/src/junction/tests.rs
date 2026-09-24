@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use exedra_mesh::{ExtractParams, FaceId, HalfEdgeId, Mesh, MeshBuilder, attr, op};
 
 use super::*;
+use alloc::format;
 
 /// One open tube: `count` vertices per ring, `length` long, starting `start`
 /// from the origin along `direction`.
@@ -16,6 +17,9 @@ struct Tube {
     start: f64,
     radius: f64,
     count: usize,
+    /// Offset of the outer ring's center, so the tube leans and its wall
+    /// meets the inner ring off its axis.
+    lean: [f64; 3],
 }
 
 const LENGTH: f64 = 1.0;
@@ -42,12 +46,12 @@ fn tubes(specs: &[Tube]) -> (Mesh, Vec<HalfEdgeId>) {
     for tube in specs {
         let d = unit(tube.direction);
         let (e1, e2) = frame(d);
-        let ring = |distance: f64, builder: &mut MeshBuilder| {
+        let ring = |distance: f64, offset: [f64; 3], builder: &mut MeshBuilder| {
             (0..tube.count)
                 .map(|k| {
                     let angle = TAU * k as f64 / tube.count as f64;
                     let p = add(
-                        scale(d, distance),
+                        add(scale(d, distance), offset),
                         add(
                             scale(e1, tube.radius * libm::cos(angle)),
                             scale(e2, tube.radius * libm::sin(angle)),
@@ -57,8 +61,8 @@ fn tubes(specs: &[Tube]) -> (Mesh, Vec<HalfEdgeId>) {
                 })
                 .collect::<Vec<_>>()
         };
-        let inner = ring(tube.start, &mut builder);
-        let outer = ring(tube.start + LENGTH, &mut builder);
+        let inner = ring(tube.start, [0.0; 3], &mut builder);
+        let outer = ring(tube.start + LENGTH, tube.lean, &mut builder);
         for k in 0..tube.count {
             let k1 = (k + 1) % tube.count;
             builder
@@ -91,6 +95,7 @@ fn tube(direction: [f64; 3], count: usize) -> Tube {
         start: 0.6,
         radius: 0.2,
         count,
+        lean: [0.0; 3],
     }
 }
 
@@ -98,13 +103,28 @@ fn params(seeds: Vec<HalfEdgeId>) -> JunctionParams {
     JunctionParams {
         center: [0.0; 3],
         rings: seeds,
-        chart: None,
+        continue_uvs: false,
+        smoothing: None,
         region: None,
+    }
+}
+
+fn smoothed(seeds: Vec<HalfEdgeId>) -> JunctionParams {
+    JunctionParams {
+        smoothing: Some(JunctionSmoothing::default()),
+        ..params(seeds)
     }
 }
 
 /// Adds the junction, caps the tubes' outer ends, and checks the solid.
 fn close_and_check(specs: &[Tube]) -> (Mesh, JunctionOutput) {
+    close_and_check_with(specs, params)
+}
+
+fn close_and_check_with(
+    specs: &[Tube],
+    params: impl Fn(Vec<HalfEdgeId>) -> JunctionParams,
+) -> (Mesh, JunctionOutput) {
     let (mut mesh, seeds) = tubes(specs);
     let mut edit = mesh.edit();
     let output = add_junction(&mut edit, &params(seeds)).expect("junction");
@@ -159,7 +179,7 @@ fn y_junction_closes_a_three_tube_fork() {
     let (_, output) = close_and_check(&specs);
     assert_eq!(output.arm_edges, vec![[0, 1], [0, 2], [1, 2]]);
     assert_eq!(output.stats.crotches, 2);
-    assert_eq!(output.center_vertices.len(), 2);
+    assert_eq!(output.skin_vertices.len(), 2);
     assert!(!output.stats.virtual_arm);
     assert!(output.stats.bridge_quads >= output.stats.bridge_triangles);
 }
@@ -287,85 +307,156 @@ fn planning_is_deterministic() {
     assert_eq!(ta, tb);
 }
 
+/// Writes a cylindrical chart on every tube face: `U` turns `turns` times
+/// around each tube (jumping across one seam edge), `V` runs along it.
+/// Angles are measured about `axis` when given, else about each tube's own
+/// direction.
+fn chart_tubes(mesh: &mut Mesh, specs: &[Tube], turns: f32, axis: Option<[f64; 3]>) {
+    let faces = mesh.faces().collect::<Vec<_>>();
+    let tube_of = specs
+        .iter()
+        .flat_map(|spec| core::iter::repeat_n(spec, spec.count))
+        .collect::<Vec<_>>();
+    let mut edit = mesh.edit();
+    for (face, spec) in faces.into_iter().zip(tube_of) {
+        let corners = edit.mesh().face_loop(face).collect::<Vec<_>>();
+        let points = corners
+            .iter()
+            .map(|&c| {
+                let v = edit.mesh().to_vertex(c).expect("vertex");
+                *edit.mesh().vertex_position(v).expect("position")
+            })
+            .collect::<Vec<_>>();
+        let (e1, e2) = frame(axis.unwrap_or_else(|| unit(spec.direction)));
+        let angles = points
+            .iter()
+            .map(|p| {
+                let p = p.map(f64::from);
+                let a = atan2(dot(p, e2), dot(p, e1));
+                if a < 0.0 { a + TAU } else { a }
+            })
+            .collect::<Vec<_>>();
+        let wraps = angles.iter().copied().fold(f64::MIN, f64::max)
+            - angles.iter().copied().fold(f64::MAX, f64::min)
+            > PI;
+        for ((corner, angle), p) in corners.into_iter().zip(angles).zip(&points) {
+            let angle = if wraps && angle < PI {
+                angle + TAU
+            } else {
+                angle
+            };
+            let along = norm(p.map(f64::from));
+            let uv = [angle / TAU * f64::from(turns), along];
+            op::set_corner_uv(&mut edit, corner, narrow_uv(uv)).expect("tube uv");
+        }
+    }
+    let _: () = edit.finish();
+}
+
+/// Checks that each skin corner on a ring edge holds exactly the UV the tube
+/// face across that edge holds at the same vertex. With `period`, a ring
+/// edge may instead be off by whole multiples of it in U, as a coarse bridge
+/// face that a seam cut crosses is.
+fn assert_uvs_continue_tubes(mesh: &Mesh, output: &JunctionOutput, period: Option<f32>) {
+    let layer = mesh.attrs().sparse(attr::CORNER_UV).expect("uv layer");
+    let mut checked = 0;
+    for &face in &output.faces {
+        for edge in mesh.face_loop(face) {
+            let twin = mesh.twin(edge).expect("twin");
+            if output.faces.contains(&mesh.face(twin).expect("face")) {
+                continue;
+            }
+            // Ring edge a -> b in the skin; the tube's twin runs b -> a.
+            let skin_prev = mesh.prev(edge).expect("prev");
+            let tube_prev = mesh.prev(twin).expect("prev");
+            let skin_b = layer.get(edge.into()).expect("skin uv");
+            let skin_a = layer.get(skin_prev.into()).expect("skin uv");
+            let tube_a = layer.get(twin.into()).expect("tube uv");
+            let tube_b = layer.get(tube_prev.into()).expect("tube uv");
+            let offset = skin_a[0] - tube_a[0];
+            let whole = period.map_or(0.0, |period| libm::roundf(offset / period) * period);
+            if whole == 0.0 {
+                assert_eq!((skin_a, skin_b), (tube_a, tube_b), "ring edge {edge:?}");
+            } else {
+                for (skin, tube) in [(skin_a, tube_a), (skin_b, tube_b)] {
+                    assert!(
+                        (skin[0] - whole - tube[0]).abs() < 1e-4 && skin[1] == tube[1],
+                        "ring edge {edge:?}: {skin:?} vs {tube:?}"
+                    );
+                }
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+    for &face in &output.faces {
+        for corner in mesh.face_loop(face) {
+            let uv = layer.get(corner.into()).expect("skin uv");
+            assert!(uv.iter().all(|c| c.is_finite()));
+        }
+    }
+}
+
 #[test]
-fn chart_continues_the_parent_ring() {
+fn uvs_continue_every_tube_across_the_rings() {
     let specs = [
         tube([0.0, 0.0, -1.0], 12),
-        tube(fork(-35.0), 12),
+        tube(fork(-35.0), 10),
         tube(fork(35.0), 12),
     ];
+    for (smoothing, period) in [
+        (None, Some(3.0)),
+        (Some(JunctionSmoothing::default()), None),
+    ] {
+        let (mut mesh, seeds) = tubes(&specs);
+        chart_tubes(&mut mesh, &specs, 3.0, None);
+        let mut edit = mesh.edit();
+        let output = add_junction(
+            &mut edit,
+            &JunctionParams {
+                continue_uvs: true,
+                smoothing,
+                region: Some(7),
+                ..params(seeds)
+            },
+        )
+        .expect("junction");
+        let _: () = edit.finish();
+        assert_uvs_continue_tubes(&mesh, &output, period);
+        let regions = mesh.attrs().dense(attr::FACE_REGION).expect("regions");
+        for &face in &output.faces {
+            assert_eq!(regions.get(face.into()), Some(&7));
+        }
+    }
+}
+
+#[test]
+fn balanced_tube_seams_leave_no_jump_inside_a_straight_joint() {
+    // Two coaxial tubes whose charts continue each other: the skin's U must
+    // stay within one face's reach of the tubes' values, with no vortex.
+    let specs = [tube([0.0, 0.0, -1.0], 12), tube([0.0, 0.0, 1.0], 12)];
     let (mut mesh, seeds) = tubes(&specs);
-    let parent_loop = mesh.boundary_loop(seeds[0]).expect("parent loop");
-    let parent_first = mesh.from_vertex(parent_loop[0]).expect("first");
-    let chart = JunctionChart {
-        parent: 0,
-        u_origin: 0.25,
-        u_per_turn: 3.0,
-        v_origin: 5.0,
-        v_per_unit: 2.0,
-    };
+    chart_tubes(&mut mesh, &specs, 1.0, Some([0.0, 0.0, 1.0]));
     let mut edit = mesh.edit();
     let output = add_junction(
         &mut edit,
         &JunctionParams {
-            chart: Some(chart),
-            region: Some(7),
-            ..params(seeds)
+            continue_uvs: true,
+            ..smoothed(seeds)
         },
     )
     .expect("junction");
     let _: () = edit.finish();
-
-    let uv_layer = mesh.attrs().sparse(attr::CORNER_UV).expect("uv layer");
-    let regions = mesh.attrs().dense(attr::FACE_REGION).expect("regions");
-    for (k, &edge) in parent_loop.iter().enumerate() {
-        let vertex = mesh.from_vertex(edge).expect("vertex");
-        let expected_u = 0.25 + 3.0 * k as f64 / 12.0;
-        for &face in &output.faces {
-            for corner in mesh.face_loop(face) {
-                if mesh.to_vertex(corner) != Some(vertex) {
-                    continue;
-                }
-                let uv = uv_layer.get(corner.into()).expect("corner uv");
-                assert!(
-                    (f64::from(uv[1]) - 5.0).abs() < 1e-5,
-                    "V at the parent ring"
-                );
-                // U at the parent ring follows its boundary order; the one
-                // face crossing the seam may carry the next turn.
-                let u = f64::from(uv[0]);
-                let turns = (u - expected_u) / 3.0;
-                assert!(
-                    (turns - libm::round(turns)).abs() < 1e-5,
-                    "U {u} at vertex {k}"
-                );
-                if vertex == parent_first {
-                    assert!(libm::round(turns) >= 0.0);
-                }
-            }
-        }
-    }
-    let parent_vertices = parent_loop
-        .iter()
-        .map(|&e| mesh.from_vertex(e).expect("vertex"))
-        .collect::<Vec<_>>();
+    assert_uvs_continue_tubes(&mesh, &output, None);
+    let layer = mesh.attrs().sparse(attr::CORNER_UV).expect("uv layer");
     for &face in &output.faces {
-        assert_eq!(regions.get(face.into()), Some(&7));
-        // The cylindrical chart wraps near the parent axis, so continuity is
-        // checked where the chart continues the parent tube.
-        if !mesh
-            .face_loop(face)
-            .any(|c| parent_vertices.contains(&mesh.to_vertex(c).expect("vertex")))
-        {
-            continue;
-        }
         let us = mesh
             .face_loop(face)
-            .map(|c| f64::from(uv_layer.get(c.into()).expect("uv")[0]))
+            .map(|c| layer.get(c.into()).expect("uv")[0])
             .collect::<Vec<_>>();
-        let spread = us.iter().copied().fold(f64::MIN, f64::max)
-            - us.iter().copied().fold(f64::MAX, f64::min);
-        assert!(spread < 1.5, "U stays continuous within a face");
+        let spread = us.iter().copied().fold(f32::MIN, f32::max)
+            - us.iter().copied().fold(f32::MAX, f32::min);
+        assert!(spread < 0.25, "U spread {spread} in one face");
     }
 }
 
@@ -429,19 +520,37 @@ fn refusals_are_typed_and_leave_the_mesh_unchanged() {
         add_junction(&mut edit, &params(vec![seeds[0], seeds[0]])),
         Err(JunctionError::SharedVertex { ring: 1, other: 0 })
     );
-    let bad_chart = JunctionParams {
-        chart: Some(JunctionChart {
-            parent: 2,
-            u_origin: 0.0,
-            u_per_turn: 1.0,
-            v_origin: 0.0,
-            v_per_unit: 1.0,
+    // Tubes without UVs cannot be continued.
+    let continue_uvs = JunctionParams {
+        continue_uvs: true,
+        ..params(seeds.clone())
+    };
+    assert_eq!(
+        add_junction(&mut edit, &continue_uvs),
+        Err(JunctionError::MissingTubeUvs { ring: 0 })
+    );
+    // Tangents must leave each ring toward the junction.
+    let outward = JunctionParams {
+        smoothing: Some(JunctionSmoothing {
+            tangents: Some(vec![vec![[0.0, 0.0, 1.0]; 8], vec![[0.0, 0.0, 1.0]; 8]]),
+            ..JunctionSmoothing::default()
+        }),
+        ..params(seeds.clone())
+    };
+    assert_eq!(
+        add_junction(&mut edit, &outward),
+        Err(JunctionError::InvalidSmoothing { ring: Some(1) })
+    );
+    let missing = JunctionParams {
+        smoothing: Some(JunctionSmoothing {
+            tangents: Some(vec![vec![[0.0, 0.0, 1.0]; 8]]),
+            ..JunctionSmoothing::default()
         }),
         ..params(seeds)
     };
     assert_eq!(
-        add_junction(&mut edit, &bad_chart),
-        Err(JunctionError::InvalidChart)
+        add_junction(&mut edit, &missing),
+        Err(JunctionError::InvalidSmoothing { ring: None })
     );
     let _: () = edit.finish();
 }
@@ -472,10 +581,10 @@ fn plans_work_without_a_mesh() {
             ring(fork(40.0), 8),
         ],
         [0.0; 3],
-        None,
+        &JunctionOptions::default(),
     )
     .expect("plan");
-    assert_eq!(plan.centers.len(), 2);
+    assert_eq!(plan.skin_vertices.len(), 2);
     assert!(plan.faces.iter().all(|face| face.uvs.is_none()));
     // Every ring edge is used exactly once, in boundary order.
     for ring in 0..3 {
@@ -523,7 +632,7 @@ fn planned_faces_never_repeat_a_vertex() {
             ring(fork(35.0), 12),
         ],
         [0.0; 3],
-        None,
+        &JunctionOptions::default(),
     )
     .expect("plan");
     for face in &plan.faces {
@@ -642,6 +751,13 @@ impl Rng {
 /// Adds the junction when it is accepted, caps the outer ends, and returns
 /// the closed mesh.
 fn try_close(specs: &[Tube]) -> Result<Mesh, JunctionError> {
+    try_close_with(specs, params)
+}
+
+fn try_close_with(
+    specs: &[Tube],
+    params: impl Fn(Vec<HalfEdgeId>) -> JunctionParams,
+) -> Result<Mesh, JunctionError> {
     let (mut mesh, seeds) = tubes(specs);
     let mut edit = mesh.edit();
     add_junction(&mut edit, &params(seeds))?;
@@ -705,9 +821,46 @@ fn random_specs(trial: u64) -> Vec<Tube> {
                 start,
                 radius: start * rng.range(0.03, 0.6),
                 count: 5 + (rng.next() % 14) as usize,
+                lean: [0.0; 3],
             }
         })
         .collect()
+}
+
+/// Fuzz trial `trial` with leaning tubes: each outer ring is offset
+/// sideways by up to half the tube length, so the walls meet the rings off
+/// their axes and smoothing follows measured tangents.
+fn random_bent_specs(trial: u64) -> Vec<Tube> {
+    let mut rng = Rng(0x5EED_0000 + trial);
+    let arms = 2 + (rng.next() % 5) as usize;
+    (0..arms)
+        .map(|_| {
+            let start = rng.range(0.3, 1.2);
+            let direction = rng.direction();
+            let (e1, e2) = frame(unit(direction));
+            let (lean, turn) = (rng.range(0.0, 0.5) * LENGTH, rng.range(0.0, TAU));
+            Tube {
+                direction,
+                start,
+                radius: start * rng.range(0.03, 0.6),
+                count: 5 + (rng.next() % 14) as usize,
+                lean: add(
+                    scale(e1, lean * libm::cos(turn)),
+                    scale(e2, lean * libm::sin(turn)),
+                ),
+            }
+        })
+        .collect()
+}
+
+fn smoothed_rows(rows: u32) -> impl Fn(Vec<HalfEdgeId>) -> JunctionParams {
+    move |seeds| JunctionParams {
+        smoothing: Some(JunctionSmoothing {
+            rows: NonZeroU32::new(rows).expect("nonzero"),
+            tangents: None,
+        }),
+        ..params(seeds)
+    }
 }
 
 #[test]
@@ -1023,7 +1176,7 @@ fn t_junction_runs_face_their_neighbours() {
         ring([1.0, 0.0, 0.0], 12),
         ring([0.0, 0.0, 1.0], 12),
     ];
-    let plan = plan_junction(&rings, [0.0; 3], None).expect("plan");
+    let plan = plan_junction(&rings, [0.0; 3], &JunctionOptions::default()).expect("plan");
     for face in &plan.faces {
         let JunctionFaceOrigin::Bridge { rings: pair } = face.origin else {
             continue;
@@ -1039,6 +1192,385 @@ fn t_junction_runs_face_their_neighbours() {
                 // Toward the opposite arm: underneath.
                 [0, 1] => assert!(z <= 1e-9, "vertex {index} at z {z}"),
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Angles between the normals of each skin face and the tube face across
+/// one of its ring edges, sorted.
+fn ring_creases(mesh: &Mesh, output: &JunctionOutput) -> Vec<f64> {
+    let normal = |face: FaceId| {
+        let points = mesh
+            .face_loop(face)
+            .map(|c| {
+                let v = mesh.to_vertex(c).expect("vertex");
+                mesh.vertex_position(v).expect("position").map(f64::from)
+            })
+            .collect::<Vec<_>>();
+        let mut n = [0.0; 3];
+        for (k, p) in points.iter().enumerate() {
+            n = add(n, cross(*p, points[(k + 1) % points.len()]));
+        }
+        unit(n)
+    };
+    let mut creases = Vec::new();
+    for &face in &output.faces {
+        for edge in mesh.face_loop(face) {
+            let other = mesh.face(mesh.twin(edge).expect("twin")).expect("face");
+            if !output.faces.contains(&other) {
+                creases.push(angle_between(normal(face), normal(other)).to_degrees());
+            }
+        }
+    }
+    creases.sort_by(f64::total_cmp);
+    creases
+}
+
+#[test]
+fn smoothing_leaves_each_ring_along_its_tube_wall() {
+    let specs = [
+        tube([0.0, 0.0, -1.0], 16),
+        tube(fork(-32.0), 12),
+        tube(fork(38.0), 12),
+    ];
+    let (coarse_mesh, coarse) = close_and_check(&specs);
+    let (smooth_mesh, smooth) = close_and_check_with(&specs, smoothed);
+    let before = ring_creases(&coarse_mesh, &coarse);
+    let after = ring_creases(&smooth_mesh, &smooth);
+    let median = |c: &[f64]| c[c.len() / 2];
+    let high = |c: &[f64]| c[c.len() * 9 / 10];
+    // The coarse skin creases along every ring; smoothing halves the
+    // typical crease. The largest remain at tight crotches, where a few rows
+    // must turn between close collars, and are of the order of the tubes'
+    // own facet angle (30 degrees for twelve sides).
+    assert!(
+        median(&after) < 0.6 * median(&before),
+        "median crease {:.1} -> {:.1} degrees",
+        median(&before),
+        median(&after)
+    );
+    assert!(
+        high(&after) < 0.7 * high(&before),
+        "90th percentile crease {:.1} -> {:.1} degrees",
+        high(&before),
+        high(&after)
+    );
+    assert!(smooth.faces.len() > coarse.faces.len());
+    assert_eq!(smooth.stats, coarse.stats, "stats describe the coarse skin");
+}
+
+#[test]
+fn smoothed_plans_keep_ring_edges_and_add_rows() {
+    let ring = |direction: [f64; 3], count: usize| {
+        let d = unit(direction);
+        let (e1, e2) = frame(d);
+        (0..count)
+            .map(|k| {
+                let angle = -TAU * k as f64 / count as f64;
+                add(
+                    scale(d, 0.6),
+                    add(
+                        scale(e1, 0.2 * libm::cos(angle)),
+                        scale(e2, 0.2 * libm::sin(angle)),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let rings = [
+        ring([0.0, 0.0, -1.0], 12),
+        ring(fork(-35.0), 10),
+        ring(fork(35.0), 12),
+    ];
+    let coarse = plan_junction(&rings, [0.0; 3], &JunctionOptions::default()).expect("plan");
+    for rows in [1, 2, 5] {
+        let plan = plan_junction(
+            &rings,
+            [0.0; 3],
+            &JunctionOptions {
+                smoothing: Some(JunctionSmoothing {
+                    rows: NonZeroU32::new(rows).expect("nonzero"),
+                    tangents: None,
+                }),
+                ..JunctionOptions::default()
+            },
+        )
+        .expect("smoothed plan");
+        if rows == 1 {
+            assert_eq!(plan.faces.len(), coarse.faces.len());
+        } else {
+            assert!(plan.faces.len() > coarse.faces.len() * (rows as usize - 1));
+        }
+        // Crotch centers stay first and move only by fairing.
+        assert!(plan.skin_vertices.len() >= coarse.skin_vertices.len());
+        for (ring, points) in rings.iter().enumerate() {
+            for index in 0..points.len() {
+                let from = JunctionVertex::Ring { ring, index };
+                let to = JunctionVertex::Ring {
+                    ring,
+                    index: (index + 1) % points.len(),
+                };
+                let uses = plan
+                    .faces
+                    .iter()
+                    .filter(|face| {
+                        let n = face.vertices.len();
+                        (0..n).any(|k| face.vertices[k] == from && face.vertices[(k + 1) % n] == to)
+                    })
+                    .count();
+                assert_eq!(uses, 1, "rows {rows}: ring {ring} edge {index}");
+            }
+        }
+    }
+}
+
+/// Checks a closed junction solid: closed, manifold, genus zero, outward,
+/// and free of self-intersections and twisted quads.
+fn assert_clean_solid(mesh: &Mesh, label: &str) {
+    assert!(
+        mesh.boundary_loops().expect("loops").is_empty(),
+        "{label} closed"
+    );
+    assert!(mesh.validate_deep().is_empty(), "{label} valid");
+    let v = mesh.vertices().count();
+    let f = mesh.faces().count();
+    let e = mesh.half_edges().count() / 2;
+    assert_eq!(v + f, e + 2, "{label} genus zero");
+    assert!(signed_volume(mesh) > 0.0, "{label} outward");
+    let hits = self_intersections(mesh);
+    assert!(
+        hits.is_empty(),
+        "{label}: {} intersecting pairs",
+        hits.len()
+    );
+    assert!(twisted_quads(mesh).is_empty(), "{label} twisted");
+}
+
+#[test]
+fn accepted_random_smoothed_junctions_are_clean_solids() {
+    // Straight and leaning tubes, with every row count from one to six.
+    // A junction the coarse skin accepts is either smoothed cleanly or
+    // refused with a smoothed-skin variant; nothing else may change.
+    let mut accepted = 0;
+    let trials = 120;
+    for (label, specs) in [
+        ("straight", random_specs as fn(u64) -> Vec<Tube>),
+        ("bent", random_bent_specs),
+    ] {
+        for trial in 0..trials {
+            let specs = specs(trial);
+            let rows = 1 + (trial % 6) as u32;
+            let coarse = try_close(&specs);
+            match try_close_with(&specs, smoothed_rows(rows)) {
+                Ok(mesh) => {
+                    assert!(coarse.is_ok(), "{label} trial {trial}: smoothing only adds");
+                    accepted += 1;
+                    assert_clean_solid(&mesh, &format!("{label} trial {trial} rows {rows}"));
+                }
+                Err(
+                    JunctionError::SmoothedSkinTwisted { .. }
+                    | JunctionError::SmoothedSkinSelfIntersects { .. },
+                ) => assert!(coarse.is_ok()),
+                Err(error) => assert_eq!(
+                    coarse.err(),
+                    Some(error),
+                    "{label} trial {trial}: smoothing refuses only smoothed skins"
+                ),
+            }
+        }
+    }
+    assert!(accepted >= trials / 4, "only {accepted} accepted");
+}
+
+#[test]
+fn leaning_tubes_close_cleanly_without_smoothing() {
+    let mut accepted = 0;
+    let trials = 200;
+    for trial in 0..trials {
+        let Ok(mesh) = try_close(&random_bent_specs(trial)) else {
+            continue;
+        };
+        accepted += 1;
+        assert_clean_solid(&mesh, &format!("bent trial {trial}"));
+    }
+    assert!(
+        accepted >= trials / 8,
+        "only {accepted} of {trials} accepted"
+    );
+}
+
+/// Rings of a Y fork for plan-only smoothing tests, and tangents pointing
+/// radially inward across each ring (with a little slope toward the
+/// junction), which the fairing follows into the crotch.
+/// Per-ring points or directions.
+type RingVectors = Vec<Vec<[f64; 3]>>;
+
+fn inward_tangent_fork(half_angle: f64) -> (RingVectors, RingVectors) {
+    let ring = |direction: [f64; 3], radius: f64| {
+        let d = unit(direction);
+        let (e1, e2) = frame(d);
+        (0..12)
+            .map(|k| {
+                let angle = -TAU * f64::from(k) / 12.0;
+                add(
+                    scale(d, 0.6),
+                    add(
+                        scale(e1, radius * libm::cos(angle)),
+                        scale(e2, radius * libm::sin(angle)),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let rings = vec![
+        ring([0.0, 0.0, -1.0], 0.2),
+        ring(fork(-half_angle), 0.15),
+        ring(fork(half_angle), 0.15),
+    ];
+    let tangents = rings
+        .iter()
+        .map(|points| {
+            let centroid = points
+                .iter()
+                .fold([0.0; 3], |sum, p| add(sum, *p))
+                .map(|c| c / points.len() as f64);
+            let toward_junction = unit(scale(centroid, -1.0));
+            points
+                .iter()
+                .map(|p| unit(add(unit(sub(centroid, *p)), scale(toward_junction, 0.1))))
+                .collect()
+        })
+        .collect();
+    (rings, tangents)
+}
+
+fn plan_smoothed(
+    rings: &[Vec<[f64; 3]>],
+    tangents: RingVectors,
+    rows: u32,
+) -> Result<JunctionPlan, JunctionError> {
+    plan_junction(
+        rings,
+        [0.0; 3],
+        &JunctionOptions {
+            smoothing: Some(JunctionSmoothing {
+                rows: NonZeroU32::new(rows).expect("nonzero"),
+                tangents: Some(tangents),
+            }),
+            ..JunctionOptions::default()
+        },
+    )
+}
+
+#[test]
+fn smoothed_skins_that_fold_are_refused() {
+    // Tangents aimed across the rings pull the rows into the crotch: with a
+    // wide fork and two rows, rows from both branches cross.
+    let (rings, tangents) = inward_tangent_fork(45.0);
+    assert!(plan_junction(&rings, [0.0; 3], &JunctionOptions::default()).is_ok());
+    assert!(matches!(
+        plan_smoothed(&rings, tangents, 2),
+        Err(JunctionError::SmoothedSkinSelfIntersects { .. })
+    ));
+    // With a narrow fork and eight rows, the crotch rows fold inside a quad.
+    let (rings, tangents) = inward_tangent_fork(20.0);
+    assert!(matches!(
+        plan_smoothed(&rings, tangents, 8),
+        Err(JunctionError::SmoothedSkinTwisted { .. })
+    ));
+
+    // Measured tube tangents fold one fuzz junction at two rows; the refusal
+    // leaves the mesh unchanged, and the coarse skin still closes it.
+    let specs = random_specs(189);
+    let (mut mesh, seeds) = tubes(&specs);
+    let faces_before = mesh.faces().count();
+    let mut edit = mesh.edit();
+    assert!(matches!(
+        add_junction(&mut edit, &smoothed_rows(2)(seeds)),
+        Err(JunctionError::SmoothedSkinTwisted { .. })
+    ));
+    let _: () = edit.finish();
+    assert_eq!(mesh.faces().count(), faces_before);
+    assert!(try_close(&specs).is_ok());
+}
+
+#[test]
+fn caller_layers_follow_the_harmonic_ring_weights() {
+    use exedra_mesh::attributes::{AttrKey, Domain, Propagation};
+
+    const HEAT: AttrKey<f32> = AttrKey::new(Domain::Vertex, "vertex.heat");
+    const SHADE: AttrKey<f32> = AttrKey::new(Domain::HalfEdge, "corner.shade");
+    let specs = [
+        tube([0.0, 0.0, -1.0], 12),
+        tube(fork(-35.0), 10),
+        tube(fork(35.0), 12),
+    ];
+    // Builder vertices are laid out tube by tube, two rings each.
+    let tube_of = |vertex: VertexId| {
+        let mut index = vertex.index() as usize;
+        specs
+            .iter()
+            .position(|spec| {
+                let inside = index < 2 * spec.count;
+                index = index.saturating_sub(2 * spec.count);
+                inside
+            })
+            .expect("a tube vertex") as f32
+    };
+    for smoothing in [None, Some(JunctionSmoothing::default())] {
+        let (mut mesh, seeds) = tubes(&specs);
+        mesh.define_sparse_layer(HEAT).expect("heat");
+        mesh.define_sparse_layer(SHADE).expect("shade");
+        mesh.set_layer_propagation(HEAT, Propagation::Interpolate)
+            .expect("heat rule");
+        mesh.set_layer_propagation(SHADE, Propagation::Interpolate)
+            .expect("shade rule");
+        let vertices = mesh.vertices().collect::<Vec<_>>();
+        let faces = mesh.faces().collect::<Vec<_>>();
+        let corners = faces
+            .iter()
+            .flat_map(|&face| mesh.face_loop(face))
+            .collect::<Vec<_>>();
+        let mut edit = mesh.edit();
+        // Each tube carries its own constants (heat 1, 2 and 5, so an even
+        // blend of all three is not one of them), every blend stays within
+        // the tubes' range, and a ring corner keeps its tube's value.
+        for &vertex in &vertices {
+            let tube = tube_of(vertex);
+            op::set_attribute(&mut edit, HEAT, vertex, 1.0 + tube * tube).expect("heat");
+        }
+        for &corner in &corners {
+            let vertex = edit.mesh().to_vertex(corner).expect("vertex");
+            op::set_attribute(&mut edit, SHADE, corner, 10.0 + tube_of(vertex)).expect("shade");
+        }
+        let output = add_junction(
+            &mut edit,
+            &JunctionParams {
+                smoothing,
+                ..params(seeds)
+            },
+        )
+        .expect("junction");
+        let _: () = edit.finish();
+
+        let heat = mesh.attrs().sparse(HEAT).expect("heat");
+        let shade = mesh.attrs().sparse(SHADE).expect("shade");
+        let mut blended = false;
+        for &vertex in &output.skin_vertices {
+            let value = *heat.get(vertex.as_id()).expect("skin vertex heat");
+            assert!((1.0..=5.0).contains(&value), "heat {value}");
+            blended |= ![1.0, 2.0, 5.0].contains(&value);
+        }
+        assert!(blended, "some skin vertex blends the tubes");
+        for &face in &output.faces {
+            for corner in mesh.face_loop(face) {
+                let value = *shade.get(corner.as_id()).expect("skin corner shade");
+                assert!((10.0..=12.0).contains(&value), "shade {value}");
+                let vertex = mesh.to_vertex(corner).expect("vertex");
+                if !output.skin_vertices.contains(&vertex) {
+                    assert_eq!(value, 10.0 + tube_of(vertex), "ring corner");
+                }
             }
         }
     }

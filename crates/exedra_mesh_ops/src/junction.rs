@@ -62,13 +62,22 @@
 //! the faces and center vertices added before it; see
 //! [`JunctionError::AddFace`].
 //!
-//! The skin is quad-dominant and piecewise flat. It does not smooth the
-//! crotch into a saddle; callers wanting a softer blend subdivide or relax the
-//! result.
+//! The coarse skin is quad-dominant and piecewise flat. Opt-in smoothing
+//! ([`JunctionSmoothing`]) refines it into rows between the rings and fairs
+//! every new vertex with a discrete thin-plate energy whose boundary includes
+//! each tube's wall direction, so the skin leaves every ring along its tube
+//! and blends into a smooth saddle at each crotch. The smoothed skin passes
+//! the same exact checks as the coarse one.
+//!
+//! Texture coordinates are optional: given the UVs each tube face holds along
+//! its ring ([`JunctionOptions::ring_uvs`]), the skin continues every tube's
+//! own chart, continuous across each skin/tube boundary; see
+//! [`JunctionOptions::ring_uvs`] for where the tubes' seams continue.
 
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+use core::num::NonZeroU32;
 
 use hashbrown::HashSet;
 
@@ -186,10 +195,33 @@ pub enum JunctionError {
         /// Neighbour its run fails to face.
         neighbour: usize,
     },
-    /// The chart names no ring, has non-finite parameters, or the parent
-    /// ring's first vertex lies on the parent axis, so the angle origin is
-    /// undefined.
-    InvalidChart,
+    /// Ring UVs do not list one finite pair per ring edge of every ring.
+    InvalidRingUvs {
+        /// Offending ring, or `None` when the ring count is wrong.
+        ring: Option<usize>,
+    },
+    /// [`add_junction`] was asked to continue the tubes' UVs, but a tube face
+    /// along the ring has no corner UVs.
+    MissingTubeUvs {
+        /// Ring index.
+        ring: usize,
+    },
+    /// Smoothing tangents do not list one finite direction per ring vertex
+    /// that points from the ring toward the junction side of its plane.
+    InvalidSmoothing {
+        /// Offending ring, or `None` when the ring count is wrong.
+        ring: Option<usize>,
+    },
+    /// Fairing the smoothed skin produced non-finite positions.
+    SmoothingDiverged,
+    /// Smoothing met a coarse skin face whose shape it cannot refine without
+    /// leaving T-vertices. The coarse construction produces only bridge
+    /// quads, bridge triangles and crotch quads, so this is an internal
+    /// invariant failure rather than an input condition.
+    UnrefinableFace {
+        /// The coarse face, indexing the unsmoothed plan's faces.
+        face: usize,
+    },
     /// A crotch center could not be placed: the crotch has no outward
     /// direction.
     CenterDegenerate {
@@ -208,6 +240,21 @@ pub enum JunctionError {
     /// on how a consumer triangulates the skin.
     SkinSelfIntersects {
         /// The two faces, indexing [`JunctionPlan::faces`].
+        faces: [usize; 2],
+    },
+    /// A smoothed skin quad is twisted, as [`JunctionError::SkinTwisted`]
+    /// for the coarse skin. The coarse skin passed its checks, so the
+    /// junction plans without smoothing.
+    SmoothedSkinTwisted {
+        /// The face, indexing [`JunctionPlan::faces`] of the smoothed plan.
+        face: usize,
+    },
+    /// Two smoothed skin faces intersect, as
+    /// [`JunctionError::SkinSelfIntersects`] for the coarse skin. The coarse
+    /// skin passed its checks, so the junction plans without smoothing.
+    SmoothedSkinSelfIntersects {
+        /// The two faces, indexing [`JunctionPlan::faces`] of the smoothed
+        /// plan.
         faces: [usize; 2],
     },
     /// A planned skin face intersects a tube face around one of the rings,
@@ -273,7 +320,33 @@ impl fmt::Display for JunctionError {
             Self::RunMisaligned { ring, neighbour } => {
                 write!(f, "junction ring {ring} has no run facing ring {neighbour}")
             }
-            Self::InvalidChart => f.write_str("junction chart is invalid"),
+            Self::InvalidRingUvs { ring: Some(ring) } => {
+                write!(f, "junction ring {ring} has invalid ring UVs")
+            }
+            Self::InvalidRingUvs { ring: None } => {
+                f.write_str("junction ring UVs do not match the rings")
+            }
+            Self::MissingTubeUvs { ring } => {
+                write!(f, "junction ring {ring} has tube faces without UVs")
+            }
+            Self::InvalidSmoothing { ring: Some(ring) } => {
+                write!(f, "junction ring {ring} has invalid smoothing tangents")
+            }
+            Self::InvalidSmoothing { ring: None } => {
+                f.write_str("junction smoothing tangents do not match the rings")
+            }
+            Self::SmoothingDiverged => f.write_str("junction smoothing diverged"),
+            Self::UnrefinableFace { face } => {
+                write!(f, "junction skin face {face} cannot be refined")
+            }
+            Self::SmoothedSkinTwisted { face } => {
+                write!(f, "smoothed junction skin face {face} is twisted")
+            }
+            Self::SmoothedSkinSelfIntersects { faces } => write!(
+                f,
+                "smoothed junction skin faces {} and {} intersect",
+                faces[0], faces[1]
+            ),
             Self::CenterDegenerate { crotch } => {
                 write!(f, "junction crotch {crotch} has no placeable center")
             }
@@ -295,46 +368,74 @@ impl fmt::Display for JunctionError {
 
 impl core::error::Error for JunctionError {}
 
-/// Cylindrical texture chart for the junction skin, continuing a parent
-/// tube's chart.
+/// Optional planning stages for [`plan_junction`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JunctionOptions {
+    /// Tube UVs to continue across the skin: per ring and per ring edge
+    /// `k -> k + 1` (boundary order), the UVs at vertex `k` and vertex
+    /// `k + 1` as the tube face across that edge holds them.
+    ///
+    /// Every skin corner on a ring edge receives exactly those UVs, so the
+    /// texture is continuous across each skin/tube boundary whatever chart
+    /// the tubes use. New vertices take the discrete harmonic extension of
+    /// the ring values. A tube's chart usually jumps across one ring edge
+    /// (its U seam); inside the skin that jump continues along a cut, a
+    /// shortest path of faces from the seam edge to one sink face: the face
+    /// farthest from ring 0 (typically the parent, so the sink falls between
+    /// the branches), ties broken by distance from every ring. The texture jumps across one side of each
+    /// cut by the tube's own seam jump, which is invisible when the jump is
+    /// a whole number of texture repeats. The sink face absorbs whatever the
+    /// tubes' jumps fail to cancel (for example a trunk and two branches that
+    /// each wrap once), so its texture is compressed. Without smoothing, a
+    /// cut through a bridge face that spans both rings also leaves that
+    /// face's far ring edge off by the jump; smoothing leaves no face on two
+    /// rings.
+    pub ring_uvs: Option<Vec<Vec<[[f64; 2]; 2]>>>,
+    /// Refines and fairs the skin when set.
+    pub smoothing: Option<JunctionSmoothing>,
+}
+
+/// Opt-in skin smoothing.
 ///
-/// The chart measures around and along the parent ring's axis, oriented from
-/// the parent ring toward the junction:
+/// The coarse skin is refined into `rows` rows between the rings: every
+/// non-ring edge is split into `rows` segments (ring edges are never split,
+/// as the tube faces own them), bridge faces become stacks of quads, and
+/// crotch quads become rows that shorten toward the crotch center. Every new
+/// vertex, crotch centers included, is then placed by minimizing a discrete
+/// thin-plate energy: the sum of squared umbrella Laplacians over the new
+/// vertices and the ring vertices. A ring vertex's umbrella includes a ghost
+/// neighbour inside its tube along the wall tangent, so the minimum leaves
+/// each ring in the direction of its tube wall: the skin is tangent-continuous
+/// with the tubes in the discrete sense, and curvature-minimizing inside.
 ///
-/// - `V = v_origin + v_per_unit · d`, where `d` is the signed distance from
-///   the parent ring's centroid along that axis;
-/// - `U = u_origin + u_per_turn · θ / 2π`, where `θ ∈ [0, 2π)` is the angle
-///   around the axis from the parent ring's first vertex, increasing along
-///   the parent ring's boundary order.
-///
-/// The parent ring's first vertex is its vertex 0 in [`plan_junction`]. In
-/// [`add_junction`] it is the from-vertex of the ring's OUTSIDE boundary
-/// half-edge named by the seed: the seed itself when it is the OUTSIDE
-/// half-edge, otherwise its twin. A parent tube whose chart puts its seam at
-/// that vertex continues without a jump.
-///
-/// So the parent ring's own vertices receive `V = v_origin` (for a planar
-/// ring) and `U` at their angle. This matches a parent tube charted with the
-/// same cylindrical rule at its end. The skin's U seam lies on the half-plane
-/// through the parent's first vertex; faces crossing it keep U continuous, so
-/// the seam falls on their edges with the next faces. Child rings meet the
-/// skin at explicit seams: their own charts are not continued.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct JunctionChart {
-    /// Ring whose axis and first vertex define the chart.
-    pub parent: usize,
-    /// `U` at the parent ring's first vertex.
-    pub u_origin: f64,
-    /// `U` change over one full turn.
-    pub u_per_turn: f64,
-    /// `V` at the parent ring's plane.
-    pub v_origin: f64,
-    /// `V` change per unit distance toward the junction.
-    pub v_per_unit: f64,
+/// The smoothed skin is checked exactly like the coarse one; a smoothed skin
+/// that folds or crosses itself is refused as
+/// [`JunctionError::SmoothedSkinTwisted`] or
+/// [`JunctionError::SmoothedSkinSelfIntersects`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct JunctionSmoothing {
+    /// Segments per bridge rung and crotch spoke. One keeps the coarse faces
+    /// and only fairs the crotch centers.
+    pub rows: NonZeroU32,
+    /// Per ring and ring vertex, the direction in which the tube wall runs
+    /// into the vertex, continuing toward the skin. Each must point to the
+    /// junction side of its ring's plane. `None` uses each ring's inward
+    /// axis, as for a straight tube; [`add_junction`] measures the tube walls
+    /// instead.
+    pub tangents: Option<Vec<Vec<[f64; 3]>>>,
+}
+
+impl Default for JunctionSmoothing {
+    fn default() -> Self {
+        Self {
+            rows: NonZeroU32::new(4).expect("nonzero"),
+            tangents: None,
+        }
+    }
 }
 
 /// One vertex of a planned skin face.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub enum JunctionVertex {
     /// Vertex `index` of ring `ring`, in the ring's boundary order.
     Ring {
@@ -343,8 +444,9 @@ pub enum JunctionVertex {
         /// Vertex index within the ring.
         index: usize,
     },
-    /// New crotch center vertex, indexing [`JunctionPlan::centers`].
-    Center(usize),
+    /// New skin vertex, indexing [`JunctionPlan::skin_vertices`]: a crotch
+    /// center, or a vertex added by smoothing.
+    Skin(usize),
 }
 
 /// Which part of the skin a face belongs to.
@@ -369,15 +471,14 @@ pub enum JunctionFaceOrigin {
 pub struct JunctionFace {
     /// Vertices in outward counter-clockwise order.
     pub vertices: Vec<JunctionVertex>,
-    /// Corner texture coordinates, parallel to `vertices`, when a chart was
-    /// requested.
+    /// Corner texture coordinates, parallel to `vertices`, when ring UVs
+    /// were given.
     pub uvs: Option<Vec<[f64; 2]>>,
-    /// Skin part the face belongs to; every face's chart is the junction
-    /// chart.
+    /// Coarse skin part the face belongs to (or was refined from).
     pub origin: JunctionFaceOrigin,
 }
 
-/// Counts describing a planned skin.
+/// Counts describing the coarse skin, before any smoothing.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct JunctionStats {
     /// Arm graph edges, one bridge each.
@@ -398,10 +499,12 @@ pub struct JunctionStats {
 /// A planned junction skin, independent of any mesh.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JunctionPlan {
-    /// Positions of new crotch center vertices.
-    pub centers: Vec<[f64; 3]>,
+    /// Positions of new skin vertices: crotch centers first, then vertices
+    /// added by smoothing.
+    pub skin_vertices: Vec<[f64; 3]>,
     /// Skin faces in deterministic order: bridges by ascending ring pair,
-    /// then crotches.
+    /// then crotches; with smoothing, each coarse face's refinement in its
+    /// place.
     pub faces: Vec<JunctionFace>,
     /// Arm graph edges as ascending ring pairs.
     pub arm_edges: Vec<[usize; 2]>,
@@ -437,7 +540,8 @@ const AZIMUTH_CONDITION: f64 = 0.087;
 ///
 /// Each ring lists its vertices in boundary order: the direction of the open
 /// tube's boundary half-edges, clockwise when viewed from outside along the
-/// arm. `center` is the branch node the arms radiate from.
+/// arm. `center` is the branch node the arms radiate from. `options` adds
+/// corner UVs and smoothing.
 ///
 /// # Errors
 ///
@@ -446,7 +550,7 @@ const AZIMUTH_CONDITION: f64 = 0.087;
 pub fn plan_junction(
     rings: &[Vec<[f64; 3]>],
     center: [f64; 3],
-    chart: Option<&JunctionChart>,
+    options: &JunctionOptions,
 ) -> Result<JunctionPlan, JunctionError> {
     if rings.len() < 2 {
         return Err(JunctionError::TooFewRings);
@@ -457,20 +561,6 @@ pub fn plan_junction(
     if !center.iter().all(|c| c.is_finite()) {
         return Err(JunctionError::NonFinite { ring: None });
     }
-    if let Some(chart) = chart
-        && (chart.parent >= rings.len()
-            || ![
-                chart.u_origin,
-                chart.u_per_turn,
-                chart.v_origin,
-                chart.v_per_unit,
-            ]
-            .iter()
-            .all(|v| v.is_finite()))
-    {
-        return Err(JunctionError::InvalidChart);
-    }
-
     let arms = rings
         .iter()
         .enumerate()
@@ -488,13 +578,32 @@ pub fn plan_junction(
         }
     }
 
-    let mut builder = SkinBuilder::new(rings, &arms, center, chart)?;
+    if let Some(ring_uvs) = &options.ring_uvs {
+        chart::check(ring_uvs, rings)?;
+    }
+    let tangents = match options.smoothing.as_ref().map(|s| s.tangents.as_ref()) {
+        None => None,
+        Some(None) => Some(smooth::axial_tangents(
+            rings,
+            &arms.iter().map(|arm| arm.axis).collect::<Vec<_>>(),
+        )),
+        Some(Some(tangents)) => Some(smooth::checked_tangents(
+            tangents,
+            rings,
+            &arms.iter().map(|arm| arm.axis).collect::<Vec<_>>(),
+        )?),
+    };
+    let finish = |builder: SkinBuilder<'_>, edges: Vec<[usize; 2]>, virtual_arm: bool| {
+        builder.finish(rings, edges, virtual_arm, options, tangents.as_deref())
+    };
+
+    let mut builder = SkinBuilder::new(rings, center);
     if arms.len() == 2 {
         let all = |ring: usize| (0..rings[ring].len()).collect::<Vec<_>>();
         check_convex(&arms, rings, 0, 1, &all(1))?;
         check_convex(&arms, rings, 1, 0, &all(0))?;
         builder.closed_strip(&arms);
-        return builder.finish(rings, vec![[0, 1]], false);
+        return finish(builder, vec![[0, 1]], false);
     }
 
     let directions = arms.iter().map(|arm| arm.direction).collect::<Vec<_>>();
@@ -530,7 +639,7 @@ pub fn plan_junction(
     for (crotch, face) in faces.iter().enumerate() {
         builder.crotch(crotch, face, &runs)?;
     }
-    builder.finish(rings, edges, virtual_arm)
+    finish(builder, edges, virtual_arm)
 }
 
 /// Refuses a bridge whose great-circle arc between arms `i` and `j` passes
@@ -603,8 +712,14 @@ pub struct JunctionParams {
     /// One boundary half-edge per ring, either the OUTSIDE half-edge or its
     /// interior twin; each names its whole boundary loop.
     pub rings: Vec<HalfEdgeId>,
-    /// Optional chart for the skin's corner UVs.
-    pub chart: Option<JunctionChart>,
+    /// Continue the tubes' corner UVs across the skin: each ring's UVs are
+    /// read from the tube faces across its ring edges and passed as
+    /// [`JunctionOptions::ring_uvs`].
+    pub continue_uvs: bool,
+    /// Optional smoothing. When its tangents are `None`, each ring vertex's
+    /// tangent is measured from the tube: the mean direction from its
+    /// neighbours off the ring into the vertex.
+    pub smoothing: Option<JunctionSmoothing>,
     /// Optional `FACE_REGION` for the skin faces.
     pub region: Option<u32>,
 }
@@ -616,8 +731,8 @@ pub struct JunctionOutput {
     pub faces: Vec<FaceId>,
     /// Skin part of each created face.
     pub origins: Vec<JunctionFaceOrigin>,
-    /// Created crotch center vertices.
-    pub center_vertices: Vec<VertexId>,
+    /// Created skin vertices, parallel to [`JunctionPlan::skin_vertices`].
+    pub skin_vertices: Vec<VertexId>,
     /// Arm graph edges as ascending ring pairs.
     pub arm_edges: Vec<[usize; 2]>,
     /// Counts.
@@ -629,15 +744,25 @@ pub struct JunctionOutput {
 /// Each ring is read in boundary-loop order from its seed half-edge. The skin
 /// is planned with [`plan_junction`] and added with [`op::add_face`], so it
 /// claims the rings' OUTSIDE half-edges and the result is closed where the
-/// rings were open. Corner UVs are written when `params.chart` is set, and
-/// `FACE_REGION` when `params.region` is.
+/// rings were open. Corner UVs are written when `params.continue_uvs` is set,
+/// and `FACE_REGION` when `params.region` is.
+///
+/// Caller-defined layers follow their own
+/// [`Propagation`](exedra_mesh::attributes::Propagation) rules: each new skin
+/// vertex takes the ring vertices' values, and each of its corners the tube
+/// corners at those ring vertices, weighted by the harmonic weights that also
+/// extend the UVs. A skin corner at a ring vertex takes the tube corner at
+/// that vertex across the ring edge its face shares with the tube (or across
+/// the ring edge leaving the vertex). Skin faces have no source face, so
+/// face layers start empty. Edge tags are stored per edge: ring edges keep
+/// the tubes' tags and new skin edges start clear.
 ///
 /// # Errors
 ///
 /// Every refusal except [`JunctionError::AddFace`] happens before the mesh is
 /// changed. Faces follow [`JunctionPlan::attach_order`], so the kernel accepts
 /// them when the rings are open tube ends as planned; should it refuse one
-/// anyway, the crotch center vertices and the faces added before it remain.
+/// anyway, the skin vertices and the faces added before it remain.
 pub fn add_junction<S: ChangeSink>(
     edit: &mut EditSession<'_, S>,
     params: &JunctionParams,
@@ -653,13 +778,14 @@ pub fn add_junction<S: ChangeSink>(
     let mesh = edit.mesh();
     let mut ring_vertices: Vec<Vec<VertexId>> = Vec::with_capacity(params.rings.len());
     let mut ring_points = Vec::with_capacity(params.rings.len());
+    let mut ring_edges = Vec::with_capacity(params.rings.len());
     for (ring, &seed) in params.rings.iter().enumerate() {
         let loop_edges = mesh
             .boundary_loop(seed)
             .map_err(|error| JunctionError::Boundary { ring, error })?;
         let mut vertices = Vec::with_capacity(loop_edges.len());
         let mut points = Vec::with_capacity(loop_edges.len());
-        for edge in loop_edges {
+        for &edge in &loop_edges {
             let vertex = mesh
                 .from_vertex(edge)
                 .ok_or(JunctionError::DegenerateRing { ring })?;
@@ -679,16 +805,44 @@ pub fn add_junction<S: ChangeSink>(
         }
         ring_vertices.push(vertices);
         ring_points.push(points);
+        ring_edges.push(loop_edges);
     }
 
-    let plan = plan_junction(&ring_points, params.center, params.chart.as_ref())?;
+    let ring_uvs = if params.continue_uvs {
+        Some(tube_ring_uvs(mesh, &ring_edges)?)
+    } else {
+        None
+    };
+    let smoothing = params
+        .smoothing
+        .as_ref()
+        .map(|smoothing| JunctionSmoothing {
+            rows: smoothing.rows,
+            tangents: smoothing
+                .tangents
+                .clone()
+                .or_else(|| Some(tube_tangents(mesh, &ring_vertices, &ring_points))),
+        });
+    let options = JunctionOptions {
+        ring_uvs,
+        smoothing,
+    };
+    let plan = plan_junction(&ring_points, params.center, &options)?;
     check_tube_walls(mesh, &plan, &ring_vertices)?;
+    let layers = crate::layers::has_caller_layers(mesh)
+        .then(|| SkinLayers::capture(mesh, &plan, &ring_vertices, &ring_edges));
 
-    let center_vertices = plan
-        .centers
+    let skin_vertices = plan
+        .skin_vertices
         .iter()
-        .map(|center| op::add_vertex(edit, narrow(*center)))
+        .map(|position| op::add_vertex(edit, narrow(*position)))
         .collect::<Vec<_>>();
+    if let Some(layers) = &layers {
+        for (&vertex, captured) in skin_vertices.iter().zip(&layers.vertices) {
+            let restored = op::restore_attributes(edit, vertex, captured);
+            debug_assert!(restored.is_ok(), "the vertex was just added");
+        }
+    }
     let loops = plan
         .faces
         .iter()
@@ -697,7 +851,7 @@ pub fn add_junction<S: ChangeSink>(
                 .iter()
                 .map(|vertex| match *vertex {
                     JunctionVertex::Ring { ring, index } => ring_vertices[ring][index],
-                    JunctionVertex::Center(center) => center_vertices[center],
+                    JunctionVertex::Skin(index) => skin_vertices[index],
                 })
                 .collect::<Vec<_>>()
         })
@@ -714,6 +868,21 @@ pub fn add_junction<S: ChangeSink>(
         if let Some(region) = params.region {
             let set = op::set_face_region(edit, id, region);
             debug_assert!(set.is_ok(), "the face was just added");
+        }
+        if let Some(layers) = &layers {
+            let corners: Vec<CornerId> = edit.mesh().face_loop(id).collect();
+            for corner in corners {
+                let Some(slot) = edit
+                    .mesh()
+                    .to_vertex(corner)
+                    .and_then(|vertex| loop_vertices.iter().position(|v| *v == vertex))
+                else {
+                    continue;
+                };
+                let captured = layers.corner(&face.vertices, slot);
+                let restored = op::restore_attributes(edit, corner, captured);
+                debug_assert!(restored.is_ok(), "the corner belongs to a face just added");
+            }
         }
         if let Some(uvs) = &face.uvs {
             let corners: Vec<CornerId> = edit.mesh().face_loop(id).collect();
@@ -734,10 +903,214 @@ pub fn add_junction<S: ChangeSink>(
     Ok(JunctionOutput {
         faces,
         origins,
-        center_vertices,
+        skin_vertices,
         arm_edges: plan.arm_edges,
         stats: plan.stats,
     })
+}
+
+/// Caller-defined values for the skin, captured from the tubes before any
+/// edit.
+///
+/// New skin vertices take the ring vertices' values, and their corners the
+/// tube corners at those ring vertices, weighted by the harmonic weights
+/// that also extend the UVs ([`chart::ring_weights`]). Each layer's own
+/// `Propagation` rule decides what a weighted capture means (`Interpolate`
+/// blends, `Copy` takes the heaviest). A skin corner at a ring vertex takes
+/// the tube corner at that vertex across the ring edge the skin face shares
+/// with the tube, or across the ring edge leaving the vertex when the face
+/// has none. Skin faces have no source face, so face layers start empty.
+struct SkinLayers {
+    vertices: Vec<exedra_mesh::attributes::CapturedAttributes>,
+    skin_corners: Vec<exedra_mesh::attributes::CapturedAttributes>,
+    /// Per ring and ring edge `k -> k + 1`: the tube corners at `k` and at
+    /// `k + 1` across that edge.
+    ring_corners: Vec<Vec<[exedra_mesh::attributes::CapturedAttributes; 2]>>,
+}
+
+impl SkinLayers {
+    fn capture(
+        mesh: &exedra_mesh::Mesh,
+        plan: &JunctionPlan,
+        ring_vertices: &[Vec<VertexId>],
+        ring_edges: &[Vec<HalfEdgeId>],
+    ) -> Self {
+        let lens = ring_vertices.iter().map(Vec::len).collect::<Vec<_>>();
+        let weights = chart::ring_weights(&lens, plan.skin_vertices.len(), &plan.faces);
+        // The tube corner at ring vertex k across edge k -> k + 1 is the
+        // twin of the OUTSIDE half-edge leaving k; the corner at k + 1 is the
+        // half-edge before it in the tube face.
+        let tube_corner = |ring: usize, index: usize| mesh.twin(ring_edges[ring][index]);
+        let vertices = weights
+            .iter()
+            .map(|list| {
+                let sources = list
+                    .iter()
+                    .map(|&((ring, index), w)| (ring_vertices[ring][index], narrow_weight(w)))
+                    .collect::<Vec<_>>();
+                mesh.capture_attributes(&sources)
+            })
+            .collect();
+        let skin_corners = weights
+            .iter()
+            .map(|list| {
+                let sources = list
+                    .iter()
+                    .filter_map(|&((ring, index), w)| {
+                        Some((tube_corner(ring, index)?, narrow_weight(w)))
+                    })
+                    .collect::<Vec<_>>();
+                mesh.capture_attributes(&sources)
+            })
+            .collect();
+        let ring_corners = ring_edges
+            .iter()
+            .enumerate()
+            .map(|(ring, edges)| {
+                (0..edges.len())
+                    .map(|index| {
+                        let at = tube_corner(ring, index);
+                        let next = at.and_then(|corner| mesh.prev(corner));
+                        [at, next].map(|corner| {
+                            mesh.capture_attributes(corner.map(|c| (c, 1.0)).as_slice())
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        Self {
+            vertices,
+            skin_corners,
+            ring_corners,
+        }
+    }
+
+    /// The capture for the corner at `face[slot]`.
+    fn corner(
+        &self,
+        face: &[JunctionVertex],
+        slot: usize,
+    ) -> &exedra_mesh::attributes::CapturedAttributes {
+        let n = face.len();
+        match face[slot] {
+            JunctionVertex::Skin(index) => &self.skin_corners[index],
+            JunctionVertex::Ring { ring, index } => {
+                let len = self.ring_corners[ring].len();
+                let same_ring = |vertex: JunctionVertex, want: usize| {
+                    vertex == JunctionVertex::Ring { ring, index: want }
+                };
+                if same_ring(face[(slot + 1) % n], (index + 1) % len) {
+                    // The face runs along ring edge index -> index + 1.
+                    &self.ring_corners[ring][index][0]
+                } else if same_ring(face[(slot + n - 1) % n], (index + len - 1) % len) {
+                    // The face runs along ring edge index - 1 -> index.
+                    &self.ring_corners[ring][(index + len - 1) % len][1]
+                } else {
+                    &self.ring_corners[ring][index][0]
+                }
+            }
+        }
+    }
+}
+
+fn narrow_weight(weight: f64) -> f32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "attribute capture weights are f32"
+    )]
+    let weight = weight as f32;
+    weight
+}
+
+/// Reads each ring edge's UVs from the tube face across it.
+///
+/// A ring's OUTSIDE half-edge `k -> k + 1` has the tube's half-edge
+/// `k + 1 -> k` as its twin; that half-edge is the corner at `k`, and the
+/// one before it in the tube face is the corner at `k + 1`.
+fn tube_ring_uvs(
+    mesh: &exedra_mesh::Mesh,
+    ring_edges: &[Vec<HalfEdgeId>],
+) -> Result<Vec<Vec<[[f64; 2]; 2]>>, JunctionError> {
+    let layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
+    ring_edges
+        .iter()
+        .enumerate()
+        .map(|(ring, edges)| {
+            edges
+                .iter()
+                .map(|&edge| {
+                    let uv = |corner: Option<HalfEdgeId>| {
+                        corner
+                            .and_then(|corner| layer?.get(corner.into()).copied())
+                            .map(|uv| uv.map(f64::from))
+                            .ok_or(JunctionError::MissingTubeUvs { ring })
+                    };
+                    let tube = mesh.twin(edge);
+                    Ok([uv(tube)?, uv(tube.and_then(|t| mesh.prev(t)))?])
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Measures each ring vertex's tube wall tangent: the mean unit direction
+/// from its neighbours off the ring into the vertex.
+///
+/// A vertex with no such neighbour, or whose mean does not point to the
+/// junction side of the ring's plane, keeps the ring's inward axis.
+fn tube_tangents(
+    mesh: &exedra_mesh::Mesh,
+    ring_vertices: &[Vec<VertexId>],
+    ring_points: &[Vec<[f64; 3]>],
+) -> Vec<Vec<[f64; 3]>> {
+    let limit = mesh.half_edges().count();
+    ring_vertices
+        .iter()
+        .zip(ring_points)
+        .map(|(vertices, points)| {
+            let inward = inward_axis(points);
+            vertices
+                .iter()
+                .zip(points)
+                .map(|(&vertex, &point)| {
+                    let mut sum = [0.0; 3];
+                    if let Some(first) = mesh.vertex_out(vertex) {
+                        let mut edge = first;
+                        for _ in 0..limit {
+                            if let Some(other) = mesh.to_vertex(edge)
+                                && !vertices.contains(&other)
+                                && let Some(p) = mesh.vertex_position(other)
+                                && let Some(d) = normalize(sub(point, p.map(f64::from)))
+                            {
+                                sum = add(sum, d);
+                            }
+                            match mesh.twin(edge).and_then(|twin| mesh.next(twin)) {
+                                Some(next) if next != first => edge = next,
+                                _ => break,
+                            }
+                        }
+                    }
+                    normalize(sum)
+                        .filter(|t| dot(*t, inward) > 0.0)
+                        .unwrap_or(inward)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// A ring's unit axis toward the junction: Newell's normal follows the
+/// boundary order, which winds clockwise seen from outside, so it points back
+/// toward the junction. Zero for a degenerate ring, which planning refuses.
+fn inward_axis(points: &[[f64; 3]]) -> [f64; 3] {
+    let mut newell = [0.0; 3];
+    for (k, p) in points.iter().enumerate() {
+        let q = points[(k + 1) % points.len()];
+        newell[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        newell[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        newell[2] += (p[0] - q[0]) * (p[1] + q[1]);
+    }
+    normalize(newell).unwrap_or([0.0; 3])
 }
 
 /// Orders faces so each one joins the existing faces around every one of its
@@ -831,16 +1204,8 @@ impl Arm {
             .iter()
             .fold([0.0; 3], |sum, p| add(sum, *p))
             .map(|c| c / len);
-        // Newell's normal follows the boundary order, which winds clockwise
-        // seen from outside, so it points back toward the junction.
-        let mut newell = [0.0; 3];
-        for (k, p) in points.iter().enumerate() {
-            let q = points[(k + 1) % points.len()];
-            newell[0] += (p[1] - q[1]) * (p[2] + q[2]);
-            newell[1] += (p[2] - q[2]) * (p[0] + q[0]);
-            newell[2] += (p[0] - q[0]) * (p[1] + q[1]);
-        }
-        let axis = normalize(scale(newell, -1.0)).ok_or(JunctionError::DegenerateRing { ring })?;
+        let axis = normalize(scale(inward_axis(points), -1.0))
+            .ok_or(JunctionError::DegenerateRing { ring })?;
         let offset = sub(centroid, center);
         let height = dot(offset, axis);
         if height <= 0.0 {
@@ -1022,102 +1387,37 @@ fn run(runs: &[Vec<(usize, Vec<usize>)>], arm: usize, neighbour: usize) -> &[usi
 /// radius by which the crotch center is raised along the crotch direction.
 const CROTCH_DOME: f64 = 0.25;
 
-/// Builds skin faces and optional chart coordinates.
+/// Builds the coarse skin faces.
 struct SkinBuilder<'a> {
     rings: &'a [Vec<[f64; 3]>],
     center: [f64; 3],
-    chart: Option<ChartFrame>,
-    centers: Vec<[f64; 3]>,
+    skin_vertices: Vec<[f64; 3]>,
     faces: Vec<JunctionFace>,
     stats: JunctionStats,
 }
 
-#[derive(Copy, Clone, Debug)]
-struct ChartFrame {
-    chart: JunctionChart,
-    origin: [f64; 3],
-    axis: [f64; 3],
-    reference: [f64; 3],
-    side: [f64; 3],
-}
-
 impl<'a> SkinBuilder<'a> {
-    fn new(
-        rings: &'a [Vec<[f64; 3]>],
-        arms: &'a [Arm],
-        center: [f64; 3],
-        chart: Option<&JunctionChart>,
-    ) -> Result<Self, JunctionError> {
-        let chart = chart
-            .map(|chart| {
-                let parent = &arms[chart.parent];
-                // Toward the junction: the parent ring's inward axis.
-                let axis = scale(parent.axis, -1.0);
-                let first = sub(rings[chart.parent][0], parent.centroid);
-                let reference = normalize(sub(first, scale(axis, dot(first, axis))))
-                    .ok_or(JunctionError::InvalidChart)?;
-                // Counter-clockwise about `axis` follows the boundary order.
-                let side = cross(axis, reference);
-                Ok(ChartFrame {
-                    chart: *chart,
-                    origin: parent.centroid,
-                    axis,
-                    reference,
-                    side,
-                })
-            })
-            .transpose()?;
-        Ok(Self {
+    fn new(rings: &'a [Vec<[f64; 3]>], center: [f64; 3]) -> Self {
+        Self {
             rings,
             center,
-            chart,
-            centers: Vec::new(),
+            skin_vertices: Vec::new(),
             faces: Vec::new(),
             stats: JunctionStats::default(),
-        })
+        }
     }
 
     fn position(&self, vertex: JunctionVertex) -> [f64; 3] {
         match vertex {
             JunctionVertex::Ring { ring, index } => self.rings[ring][index],
-            JunctionVertex::Center(center) => self.centers[center],
+            JunctionVertex::Skin(index) => self.skin_vertices[index],
         }
     }
 
     fn push(&mut self, vertices: Vec<JunctionVertex>, origin: JunctionFaceOrigin) {
-        let uvs = self.chart.map(|frame| {
-            let mut angles = vertices
-                .iter()
-                .map(|v| {
-                    let r = sub(self.position(*v), frame.origin);
-                    wrap_positive(atan2(dot(r, frame.side), dot(r, frame.reference)))
-                })
-                .collect::<Vec<_>>();
-            let low = angles.iter().copied().fold(f64::INFINITY, f64::min);
-            let high = angles.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            if high - low > PI {
-                for angle in &mut angles {
-                    if *angle < PI {
-                        *angle += TAU;
-                    }
-                }
-            }
-            vertices
-                .iter()
-                .zip(angles)
-                .map(|(v, angle)| {
-                    let r = sub(self.position(*v), frame.origin);
-                    let chart = frame.chart;
-                    [
-                        chart.u_origin + chart.u_per_turn * angle / TAU,
-                        chart.v_origin + chart.v_per_unit * dot(r, frame.axis),
-                    ]
-                })
-                .collect()
-        });
         self.faces.push(JunctionFace {
             vertices,
-            uvs,
+            uvs: None,
             origin,
         });
     }
@@ -1191,45 +1491,18 @@ impl<'a> SkinBuilder<'a> {
     }
 
     /// Strip between polyline `a` (boundary order) and polyline `b` (reverse
-    /// boundary order), starting at the pair `(a[0], b[0])`.
-    ///
-    /// The longer side advances every step and the shorter one advances on
-    /// evenly spread steps, so the strip has `min` quads and `|p - q|`
-    /// triangles.
+    /// boundary order), starting at the pair `(a[0], b[0])`; see
+    /// [`strip_faces`].
     fn strip(&mut self, a: &[JunctionVertex], b: &[JunctionVertex], rings: [usize; 2]) {
-        let p = a.len() - 1;
-        let q = b.len() - 1;
-        let long = p.max(q);
-        let short = p.min(q);
         let origin = JunctionFaceOrigin::Bridge { rings };
-        let (mut s, mut t) = (0, 0);
-        for step in 0..long {
-            let short_advances = (step + 1) * short / long > step * short / long;
-            let (advance_a, advance_b) = if p >= q {
-                (true, short_advances)
+        for (face, quad) in strip_faces(a, b) {
+            if quad {
+                self.stats.bridge_quads += 1;
             } else {
-                (short_advances, true)
-            };
-            match (advance_a, advance_b) {
-                (true, true) => {
-                    self.push(vec![a[s], a[s + 1], b[t + 1], b[t]], origin.clone());
-                    self.stats.bridge_quads += 1;
-                    s += 1;
-                    t += 1;
-                }
-                (true, false) => {
-                    self.push(vec![a[s], a[s + 1], b[t]], origin.clone());
-                    self.stats.bridge_triangles += 1;
-                    s += 1;
-                }
-                (false, _) => {
-                    self.push(vec![a[s], b[t + 1], b[t]], origin.clone());
-                    self.stats.bridge_triangles += 1;
-                    t += 1;
-                }
+                self.stats.bridge_triangles += 1;
             }
+            self.push(face, origin.clone());
         }
-        debug_assert_eq!((s, t), (p, q), "the strip reaches both ends");
     }
 
     /// Bridge between arm `i`'s run facing `j` and arm `j`'s run facing `i`.
@@ -1295,12 +1568,12 @@ impl<'a> SkinBuilder<'a> {
         // crotch spikes out or folds inward.
         let height = dot(sub(mean, self.center), direction);
         let dome = CROTCH_DOME * (distance - height).max(0.0);
-        let center_index = self.centers.len();
+        let center_index = self.skin_vertices.len();
         // Stored at the mesh's f32 precision, so the exact checks see the
         // position the mesh will hold.
-        self.centers
+        self.skin_vertices
             .push(narrow(add(mean, scale(direction, dome))).map(f64::from));
-        let center = JunctionVertex::Center(center_index);
+        let center = JunctionVertex::Skin(center_index);
         let origin = JunctionFaceOrigin::Crotch {
             crotch,
             rings: face.to_vec(),
@@ -1319,59 +1592,43 @@ impl<'a> SkinBuilder<'a> {
         Ok(())
     }
 
-    /// Refuses a quad whose two triangles fold against each other along both
-    /// diagonals: its rungs cross, which no face-to-face test sees.
-    fn check_twists(&self) -> Result<(), JunctionError> {
-        for (index, face) in self.faces.iter().enumerate() {
-            let [a, b, c, d] = match face.vertices.as_slice() {
-                &[a, b, c, d] => [a, b, c, d].map(|v| self.position(v)),
-                _ => continue,
-            };
-            let normal = |p: [f64; 3], q: [f64; 3], r: [f64; 3]| cross(sub(q, p), sub(r, p));
-            let agree = |x: [f64; 3], y: [f64; 3]| dot(x, y) >= 0.0;
-            let along_ac = agree(normal(a, b, c), normal(a, c, d));
-            let along_bd = agree(normal(a, b, d), normal(b, c, d));
-            if !along_ac && !along_bd {
-                return Err(JunctionError::SkinTwisted { face: index });
-            }
-        }
-        Ok(())
-    }
-
-    /// Refuses a skin whose faces cross each other.
-    ///
-    /// Geometric preconditions catch the configurations known to fold; this
-    /// exact test is the backstop for the rest, such as very coarse rings far
-    /// from circular. Quads are split along both diagonals, so either
-    /// triangulation a consumer picks is covered. Its scope is the skin
-    /// alone: [`add_junction`] tests against the tube walls separately.
-    fn check_self_intersection(&self) -> Result<(), JunctionError> {
-        let triangles = skin_triangles(&self.faces, |id| self.position(id));
-        let bounds = triangles.iter().map(bounds_of).collect::<Vec<_>>();
-        for f in 0..triangles.len() {
-            for g in f + 1..triangles.len() {
-                if bounds_overlap(bounds[f], bounds[g])
-                    && any_intersect(&triangles[f], &triangles[g])
-                {
-                    return Err(JunctionError::SkinSelfIntersects { faces: [f, g] });
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn finish(
         self,
         rings: &[Vec<[f64; 3]>],
         arm_edges: Vec<[usize; 2]>,
         virtual_arm: bool,
+        options: &JunctionOptions,
+        tangents: Option<&[Vec<[f64; 3]>]>,
     ) -> Result<JunctionPlan, JunctionError> {
-        self.check_twists()?;
-        self.check_self_intersection()?;
-        let attach_order = attach_order(rings, &self.faces)?;
+        let position = |vertices: &[[f64; 3]], vertex: JunctionVertex| match vertex {
+            JunctionVertex::Ring { ring, index } => rings[ring][index],
+            JunctionVertex::Skin(index) => vertices[index],
+        };
+        let coarse = |v| position(&self.skin_vertices, v);
+        check_twists(&self.faces, coarse).map_err(|face| JunctionError::SkinTwisted { face })?;
+        check_self_intersection(&self.faces, coarse)
+            .map_err(|faces| JunctionError::SkinSelfIntersects { faces })?;
+
+        let (skin_vertices, mut faces) = match (&options.smoothing, tangents) {
+            (Some(smoothing), Some(tangents)) => {
+                let smoothed =
+                    smooth::smooth(rings, &self.skin_vertices, &self.faces, tangents, smoothing)?;
+                let fine = |v| position(&smoothed.skin_vertices, v);
+                check_twists(&smoothed.faces, fine)
+                    .map_err(|face| JunctionError::SmoothedSkinTwisted { face })?;
+                check_self_intersection(&smoothed.faces, fine)
+                    .map_err(|faces| JunctionError::SmoothedSkinSelfIntersects { faces })?;
+                (smoothed.skin_vertices, smoothed.faces)
+            }
+            _ => (self.skin_vertices, self.faces),
+        };
+        if let Some(ring_uvs) = &options.ring_uvs {
+            chart::assign(rings, skin_vertices.len(), &mut faces, ring_uvs);
+        }
+        let attach_order = attach_order(rings, &faces)?;
         Ok(JunctionPlan {
-            centers: self.centers,
-            faces: self.faces,
+            skin_vertices,
+            faces,
             arm_edges,
             attach_order,
             stats: JunctionStats {
@@ -1380,6 +1637,93 @@ impl<'a> SkinBuilder<'a> {
             },
         })
     }
+}
+
+/// Faces of a strip between polylines `a` and `b` that run side by side, `a`
+/// in the faces' orientation and `b` against it, starting at the pair
+/// `(a[0], b[0])`. Each face comes with whether it is a quad.
+///
+/// The longer side advances every step and the shorter one advances on
+/// evenly spread steps, so the strip has `min` quads and `|p - q|`
+/// triangles for `p` and `q` segments. A side of one vertex is an apex: the
+/// strip is then a fan of triangles.
+fn strip_faces(a: &[JunctionVertex], b: &[JunctionVertex]) -> Vec<(Vec<JunctionVertex>, bool)> {
+    let p = a.len() - 1;
+    let q = b.len() - 1;
+    let long = p.max(q);
+    let short = p.min(q);
+    let (mut s, mut t) = (0, 0);
+    let mut faces = Vec::with_capacity(long);
+    for step in 0..long {
+        let short_advances = (step + 1) * short / long > step * short / long;
+        let (advance_a, advance_b) = if p >= q {
+            (true, short_advances)
+        } else {
+            (short_advances, true)
+        };
+        match (advance_a, advance_b) {
+            (true, true) => {
+                faces.push((vec![a[s], a[s + 1], b[t + 1], b[t]], true));
+                s += 1;
+                t += 1;
+            }
+            (true, false) => {
+                faces.push((vec![a[s], a[s + 1], b[t]], false));
+                s += 1;
+            }
+            (false, _) => {
+                faces.push((vec![a[s], b[t + 1], b[t]], false));
+                t += 1;
+            }
+        }
+    }
+    debug_assert_eq!((s, t), (p, q), "the strip reaches both ends");
+    faces
+}
+
+/// Finds a quad whose two triangles fold against each other along both
+/// diagonals: its rungs cross, which no face-to-face test sees.
+fn check_twists(
+    faces: &[JunctionFace],
+    position: impl Fn(JunctionVertex) -> [f64; 3],
+) -> Result<(), usize> {
+    for (index, face) in faces.iter().enumerate() {
+        let [a, b, c, d] = match face.vertices.as_slice() {
+            &[a, b, c, d] => [a, b, c, d].map(&position),
+            _ => continue,
+        };
+        let normal = |p: [f64; 3], q: [f64; 3], r: [f64; 3]| cross(sub(q, p), sub(r, p));
+        let agree = |x: [f64; 3], y: [f64; 3]| dot(x, y) >= 0.0;
+        let along_ac = agree(normal(a, b, c), normal(a, c, d));
+        let along_bd = agree(normal(a, b, d), normal(b, c, d));
+        if !along_ac && !along_bd {
+            return Err(index);
+        }
+    }
+    Ok(())
+}
+
+/// Finds two skin faces that cross each other.
+///
+/// Geometric preconditions catch the configurations known to fold; this
+/// exact test is the backstop for the rest, such as very coarse rings far
+/// from circular. Quads are split along both diagonals, so either
+/// triangulation a consumer picks is covered. Its scope is the skin alone:
+/// [`add_junction`] tests against the tube walls separately.
+fn check_self_intersection(
+    faces: &[JunctionFace],
+    position: impl Fn(JunctionVertex) -> [f64; 3],
+) -> Result<(), [usize; 2]> {
+    let triangles = skin_triangles(faces, position);
+    let bounds = triangles.iter().map(bounds_of).collect::<Vec<_>>();
+    for f in 0..triangles.len() {
+        for g in f + 1..triangles.len() {
+            if bounds_overlap(bounds[f], bounds[g]) && any_intersect(&triangles[f], &triangles[g]) {
+                return Err([f, g]);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The shortest rotation taking one unit vector onto another.
@@ -1898,7 +2242,7 @@ fn any_intersect<V: Copy + Eq>(a: &FaceTriangles<V>, b: &FaceTriangles<V>) -> bo
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SkinOrMesh {
     Mesh(VertexId),
-    Center(usize),
+    Skin(usize),
 }
 
 /// Refuses a planned skin that crosses a tube face around one of its rings.
@@ -1913,13 +2257,13 @@ fn check_tube_walls(
 ) -> Result<(), JunctionError> {
     let identity = |vertex: JunctionVertex| match vertex {
         JunctionVertex::Ring { ring, index } => SkinOrMesh::Mesh(ring_vertices[ring][index]),
-        JunctionVertex::Center(center) => SkinOrMesh::Center(center),
+        JunctionVertex::Skin(index) => SkinOrMesh::Skin(index),
     };
     let skin_position = |vertex: SkinOrMesh| match vertex {
         SkinOrMesh::Mesh(id) => mesh
             .vertex_position(id)
             .map_or([f64::NAN; 3], |p| p.map(f64::from)),
-        SkinOrMesh::Center(center) => plan.centers[center],
+        SkinOrMesh::Skin(index) => plan.skin_vertices[index],
     };
     let skin = plan
         .faces
@@ -2048,6 +2392,8 @@ fn wrap_positive(angle: f64) -> f64 {
     if wrapped >= TAU { 0.0 } else { wrapped }
 }
 
+mod chart;
 mod intersect;
+mod smooth;
 #[cfg(test)]
 mod tests;
