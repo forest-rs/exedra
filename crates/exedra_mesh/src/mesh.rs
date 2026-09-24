@@ -15,6 +15,7 @@ use core::fmt;
 use core::num::NonZeroU32;
 
 use exedra_triangulate::{PolygonInput, TriParams, triangulate};
+use hashbrown::HashMap;
 
 use crate::{
     Arena, CornerId, Face, FaceId, HalfEdge, HalfEdgeId, Id, Vertex, VertexId, attr,
@@ -1937,8 +1938,10 @@ impl Mesh {
     /// - [`BuildError::BoundaryStitchFailed`] when boundary loop linking is
     ///   ambiguous or incomplete.
     ///
-    /// Boundary stitching currently performs linear candidate scans per boundary
-    /// half-edge, so stitching cost is quadratic in boundary edge count.
+    /// Boundary stitching indexes open edges by start vertex and welding
+    /// buckets positions on a uniform grid, so construction stays near-linear
+    /// in input size even when every edge is open (for example foliage made
+    /// of many disconnected cards).
     pub fn from_indexed_triangles(
         positions: &[[f32; 3]],
         indices: &[[u32; 3]],
@@ -2085,27 +2088,7 @@ impl Mesh {
             boundary_ids.push(boundary);
         }
 
-        for boundary in &boundary_ids {
-            let (_, to) = get_endpoint(&endpoints, *boundary);
-            let candidates = boundary_ids
-                .iter()
-                .copied()
-                .filter(|candidate| {
-                    let (start, _) = get_endpoint(&endpoints, *candidate);
-                    start == to
-                })
-                .collect::<Vec<_>>();
-            if candidates.len() != 1 {
-                return Err(BuildError::BoundaryStitchFailed {
-                    vertex: to,
-                    candidates: candidates.len(),
-                });
-            }
-            mesh.half_edges
-                .get_mut(boundary.as_id())
-                .expect("boundary edge live")
-                .next = candidates[0];
-        }
+        stitch_boundary_loops(&mut mesh, &boundary_ids, &endpoints, vertex_ids.len())?;
 
         for (id, _) in mesh.half_edges.iter() {
             let half_edge = HalfEdgeId::from(id);
@@ -2615,27 +2598,7 @@ impl MeshBuilder {
             boundary_ids.push(boundary);
         }
 
-        for boundary in &boundary_ids {
-            let (_, to) = get_endpoint(&endpoints, *boundary);
-            let candidates = boundary_ids
-                .iter()
-                .copied()
-                .filter(|candidate| {
-                    let (start, _) = get_endpoint(&endpoints, *candidate);
-                    start == to
-                })
-                .collect::<Vec<_>>();
-            if candidates.len() != 1 {
-                return Err(BuildError::BoundaryStitchFailed {
-                    vertex: to,
-                    candidates: candidates.len(),
-                });
-            }
-            mesh.half_edges
-                .get_mut(boundary.as_id())
-                .expect("boundary edge live")
-                .next = candidates[0];
-        }
+        stitch_boundary_loops(&mut mesh, &boundary_ids, &endpoints, vertex_ids.len())?;
 
         for (id, _) in mesh.half_edges.iter() {
             let half_edge = HalfEdgeId::from(id);
@@ -2793,27 +2756,127 @@ fn remap_index(index: u32, remap: &[u32], triangle: usize) -> Result<u32, BuildE
         .ok_or(BuildError::IndexOutOfBounds { triangle, index })
 }
 
+/// Welds positions within `tolerance` to the earliest earlier canonical
+/// position.
+///
+/// Canonical positions are bucketed on a uniform grid whose cells are at
+/// least twice the tolerance, so every match lies in one of the 27 cells
+/// around a query. Among those candidates the lowest canonical index that
+/// passes the exact distance predicate wins, which is the same answer as a
+/// linear scan in canonical order.
 fn weld_positions(positions: &[[f32; 3]], tolerance: Option<f32>) -> (Vec<[f32; 3]>, Vec<u32>) {
+    let (canonical, remap, _) = weld_positions_counted(positions, tolerance);
+    (canonical, remap)
+}
+
+/// Cell coordinates below this many cells in magnitude index the grid;
+/// larger coordinates are keyed by their bits.
+///
+/// Two distinct `f32` values at or beyond `2^26` cells differ by at least
+/// one unit in the last place, over `2^26 / 2^24 = 4` cells (at least eight
+/// tolerances, or far above the zero-tolerance underflow scale), and so do a
+/// value below the bound and one at or beyond it. Such a coordinate
+/// therefore matches only its own bit pattern, whatever the other positions'
+/// magnitudes, and far outliers never collapse the grid into one cell.
+const WELD_GRID_LIMIT: f64 = (1_u32 << 26) as f64;
+
+/// [`weld_positions`], also returning how many canonical candidates the grid
+/// visited, so tests can bound the work without timing it.
+fn weld_positions_counted(
+    positions: &[[f32; 3]],
+    tolerance: Option<f32>,
+) -> (Vec<[f32; 3]>, Vec<u32>, usize) {
     let Some(tol) = tolerance else {
         let mut remap = Vec::with_capacity(positions.len());
         for index in 0..positions.len() {
             remap.push(index_to_u32(index));
         }
-        return (positions.to_vec(), remap);
+        return (positions.to_vec(), remap, 0);
     };
 
+    let tol_sq = tol * tol;
+    let within = |a: &[f32; 3], b: &[f32; 3]| {
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        let dz = a[2] - b[2];
+        dx * dx + dy * dy + dz * dz <= tol_sq
+    };
     let mut canonical = Vec::<[f32; 3]>::new();
     let mut remap = Vec::<u32>::with_capacity(positions.len());
-    let tol_sq = tol * tol;
+    let mut visits = 0_usize;
+
+    if !tol_sq.is_finite() {
+        // The squared tolerance overflowed, so any two finite positions
+        // match; no grid can bound that, and the scan stops at index zero
+        // for finite inputs anyway.
+        for position in positions {
+            if let Some(index) = canonical.iter().position(|c| within(position, c)) {
+                visits += index + 1;
+                remap.push(index_to_u32(index));
+            } else {
+                visits += canonical.len();
+                remap.push(index_to_u32(canonical.len()));
+                canonical.push(*position);
+            }
+        }
+        return (canonical, remap, visits);
+    }
+
+    // Cells are at least twice the tolerance, so matches (including f32
+    // rounding in the predicate) span at most one cell per axis, and at
+    // least 1e-20, above the squared-distance underflow scale that lets a
+    // zero tolerance match distinct subnormal-close positions.
+    let cell = (2.0 * f64::from(tol)).max(1.0e-20);
+    let limit = cell * WELD_GRID_LIMIT;
+    // Per axis: a grid cell when the coordinate is within the limit, else a
+    // key derived from its bits outside the grid range (NaN and infinities
+    // included; they never pass the predicate). Truncation is monotone and
+    // every preimage is at least one cell wide, so positions within one cell
+    // size land in the same or adjacent cells. Distinct outliers may share a
+    // key; that only adds candidates.
+    let key = |position: &[f32; 3]| {
+        position.map(|axis| {
+            let value = f64::from(axis);
+            if value.abs() < limit {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "the quotient is below 2^26 in magnitude"
+                )]
+                let cell_index = (value / cell) as i32;
+                (cell_index, true)
+            } else {
+                let bits = i32::try_from(axis.to_bits() & 0x3fff_ffff).expect("30 bits fit");
+                (0x0800_0000 + bits, false)
+            }
+        })
+    };
+
+    // Intrusive per-cell lists: `heads` maps a cell to its newest canonical
+    // index and `links` chains older entries.
+    let mut heads = HashMap::<[i32; 3], u32>::new();
+    let mut links = Vec::<u32>::new();
     for position in positions {
-        let mut found = None;
-        for (idx, candidate) in canonical.iter().enumerate() {
-            let dx = position[0] - candidate[0];
-            let dy = position[1] - candidate[1];
-            let dz = position[2] - candidate[2];
-            if dx * dx + dy * dy + dz * dz <= tol_sq {
-                found = Some(index_to_u32(idx));
-                break;
+        let keys = key(position);
+        let span = |axis: usize| {
+            let (k, grid) = keys[axis];
+            if grid { k - 1..=k + 1 } else { k..=k }
+        };
+        let mut found: Option<u32> = None;
+        for x in span(0) {
+            for y in span(1) {
+                for z in span(2) {
+                    let mut cursor = heads.get(&[x, y, z]).copied();
+                    while let Some(index) = cursor {
+                        visits += 1;
+                        if found.is_none_or(|best| index < best)
+                            && within(position, &canonical[index as usize])
+                        {
+                            found = Some(index);
+                        }
+                        let link = links[index as usize];
+                        cursor = (link != u32::MAX).then_some(link);
+                    }
+                }
             }
         }
         if let Some(index) = found {
@@ -2821,10 +2884,52 @@ fn weld_positions(positions: &[[f32; 3]], tolerance: Option<f32>) -> (Vec<[f32; 
         } else {
             let index = index_to_u32(canonical.len());
             canonical.push(*position);
+            let cell_key = keys.map(|(k, _)| k);
+            links.push(heads.insert(cell_key, index).unwrap_or(u32::MAX));
             remap.push(index);
         }
     }
-    (canonical, remap)
+    (canonical, remap, visits)
+}
+
+/// Links every OUTSIDE half-edge to the unique OUTSIDE half-edge leaving its
+/// destination vertex.
+///
+/// Open edges are indexed by start vertex once, so stitching is linear in the
+/// boundary edge count. Errors report the first boundary half-edge (in
+/// `boundary_ids` order) whose destination has zero or several open
+/// continuations.
+fn stitch_boundary_loops(
+    mesh: &mut Mesh,
+    boundary_ids: &[HalfEdgeId],
+    endpoints: &[(u32, u32)],
+    vertex_count: usize,
+) -> Result<(), BuildError> {
+    // Per start vertex: open outgoing boundary edge count and the first one.
+    let mut outgoing = vec![(0_usize, HalfEdgeId::INVALID); vertex_count];
+    for &boundary in boundary_ids {
+        let (start, _) = get_endpoint(endpoints, boundary);
+        let slot = &mut outgoing[start as usize];
+        if slot.0 == 0 {
+            slot.1 = boundary;
+        }
+        slot.0 += 1;
+    }
+    for &boundary in boundary_ids {
+        let (_, to) = get_endpoint(endpoints, boundary);
+        let (candidates, next) = outgoing[to as usize];
+        if candidates != 1 {
+            return Err(BuildError::BoundaryStitchFailed {
+                vertex: to,
+                candidates,
+            });
+        }
+        mesh.half_edges
+            .get_mut(boundary.as_id())
+            .expect("boundary edge live")
+            .next = next;
+    }
+    Ok(())
 }
 
 fn set_endpoint(endpoints: &mut Vec<(u32, u32)>, hid: HalfEdgeId, from: u32, to: u32) {
@@ -4761,5 +4866,304 @@ mod tests {
                 },
             }
         );
+    }
+
+    /// Order-sensitive FNV-1a digest of every topology record and position.
+    ///
+    /// Pins exact construction output (ids, `next`/`twin` links, vertex
+    /// `out` choices) so indexing changes cannot silently reorder topology.
+    fn topology_digest(mesh: &Mesh) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut feed = |value: u32| {
+            for byte in value.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for (id, vertex) in mesh.vertices.iter() {
+            feed(id.index());
+            feed(vertex.out.index());
+            for axis in mesh
+                .vertex_position(VertexId::from(id))
+                .expect("live vertex")
+            {
+                feed(axis.to_bits());
+            }
+        }
+        for (id, face) in mesh.faces.iter() {
+            feed(id.index());
+            feed(face.edge.index());
+            feed(face.degree);
+        }
+        for (id, half_edge) in mesh.half_edges.iter() {
+            feed(id.index());
+            feed(half_edge.to.index());
+            feed(half_edge.face.index());
+            feed(half_edge.next.index());
+            feed(half_edge.twin.index());
+        }
+        hash
+    }
+
+    /// `side` x `side` quad grid with the centre `hole` x `hole` block removed,
+    /// plus `leaves` disconnected quads, all as builder-local polygons.
+    fn perforated_grid_polygons(side: u32, hole: u32, leaves: u32) -> MeshBuilder {
+        let mut builder = MeshBuilder::new();
+        for y in 0..=side {
+            for x in 0..=side {
+                builder.push_vertex([x as f32, y as f32, (x * y % 3) as f32 * 0.1]);
+            }
+        }
+        let lo = (side - hole) / 2;
+        let hi = lo + hole;
+        for y in 0..side {
+            for x in 0..side {
+                if (lo..hi).contains(&x) && (lo..hi).contains(&y) {
+                    continue;
+                }
+                let v = |dx: u32, dy: u32| (y + dy) * (side + 1) + x + dx;
+                builder
+                    .add_face(&[v(0, 0), v(1, 0), v(1, 1), v(0, 1)])
+                    .expect("grid quad is valid");
+            }
+        }
+        for leaf in 0..leaves {
+            let origin = [leaf as f32 * 2.0, -3.0, 0.5];
+            let base = builder.push_vertex(origin);
+            builder.push_vertex([origin[0] + 1.0, origin[1], origin[2]]);
+            builder.push_vertex([origin[0] + 1.0, origin[1] + 1.0, origin[2] + 0.2]);
+            builder.push_vertex([origin[0], origin[1] + 1.0, origin[2]]);
+            // Leaves alternate between a quad and a pentagon to exercise
+            // mixed face degrees.
+            if leaf % 2 == 0 {
+                builder
+                    .add_face(&[base, base + 1, base + 2, base + 3])
+                    .expect("leaf quad is valid");
+            } else {
+                let tip = builder.push_vertex([origin[0] + 0.5, origin[1] + 1.5, origin[2]]);
+                builder
+                    .add_face(&[base, base + 1, base + 2, tip, base + 3])
+                    .expect("leaf pentagon is valid");
+            }
+        }
+        builder
+    }
+
+    fn perforated_grid_triangles(builder: &MeshBuilder) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+        let mut triangles = Vec::new();
+        for face in &builder.faces {
+            for corner in 1..face.len() - 1 {
+                triangles.push([face[0], face[corner], face[corner + 1]]);
+            }
+        }
+        (builder.vertices.clone(), triangles)
+    }
+
+    #[test]
+    fn construction_topology_is_pinned_on_open_fixtures() {
+        let builder = perforated_grid_polygons(9, 3, 7);
+        let built = builder.build().expect("perforated grid builds").mesh;
+        assert!(built.validate_deep().is_empty());
+
+        let (positions, triangles) = perforated_grid_triangles(&builder);
+        let indexed = Mesh::from_indexed_triangles(&positions, &triangles, &BuildParams::default())
+            .expect("perforated triangles build");
+        assert!(indexed.validate_deep().is_empty());
+
+        // Unshare every corner (with sub-tolerance jitter) so the weld path
+        // must reconstruct the same connectivity.
+        let mut soup_positions = Vec::new();
+        let mut soup_triangles = Vec::new();
+        for (index, triangle) in triangles.iter().enumerate() {
+            let base = u32::try_from(soup_positions.len()).expect("fixture fits u32");
+            for corner in triangle {
+                let mut position = positions[*corner as usize];
+                position[0] += (index % 5) as f32 * 1.0e-6;
+                soup_positions.push(position);
+            }
+            soup_triangles.push([base, base + 1, base + 2]);
+        }
+        let welded = Mesh::from_indexed_triangles(
+            &soup_positions,
+            &soup_triangles,
+            &BuildParams {
+                weld_tolerance: Some(1.0e-4),
+            },
+        )
+        .expect("welded soup builds");
+        assert!(welded.validate_deep().is_empty());
+
+        let digests = [
+            topology_digest(&built),
+            topology_digest(&indexed),
+            topology_digest(&welded),
+        ];
+        // Digests recorded from the original linear-scan stitcher and
+        // first-match weld; any change here changes construction output.
+        assert_eq!(
+            digests,
+            [
+                0xffca_85d3_f8d2_a115,
+                0x661b_d35e_63a3_f395,
+                0xb7e0_881c_84e5_3ddc,
+            ]
+        );
+    }
+
+    #[test]
+    fn construction_reports_first_ambiguous_boundary_vertex() {
+        // A clean perforated grid followed by two leaves pinched at one
+        // vertex: the stitch error must name the pinch, reported from the
+        // lowest boundary half-edge that reaches it.
+        let mut builder = perforated_grid_polygons(5, 1, 2);
+        let pinch = builder.push_vertex([0.0, -8.0, 0.0]);
+        let a = builder.push_vertex([1.0, -8.0, 0.0]);
+        let b = builder.push_vertex([1.0, -7.0, 0.0]);
+        let c = builder.push_vertex([-1.0, -8.0, 0.0]);
+        let d = builder.push_vertex([-1.0, -9.0, 0.0]);
+        builder.add_face(&[pinch, a, b]).expect("valid triangle");
+        builder.add_face(&[pinch, c, d]).expect("valid triangle");
+        assert_eq!(
+            builder.build().map(|_| ()),
+            Err(BuildError::BoundaryStitchFailed {
+                vertex: pinch,
+                candidates: 2,
+            })
+        );
+
+        let (positions, triangles) = perforated_grid_triangles(&builder);
+        assert_eq!(
+            Mesh::from_indexed_triangles(&positions, &triangles, &BuildParams::default())
+                .map(|_| ()),
+            Err(BuildError::BoundaryStitchFailed {
+                vertex: pinch,
+                candidates: 2,
+            })
+        );
+    }
+
+    /// Original first-match linear weld, kept as the oracle for the grid.
+    fn weld_positions_linear(positions: &[[f32; 3]], tol: f32) -> (Vec<[f32; 3]>, Vec<u32>) {
+        let tol_sq = tol * tol;
+        let mut canonical = Vec::<[f32; 3]>::new();
+        let mut remap = Vec::new();
+        for position in positions {
+            let found = canonical.iter().position(|candidate| {
+                let dx = position[0] - candidate[0];
+                let dy = position[1] - candidate[1];
+                let dz = position[2] - candidate[2];
+                dx * dx + dy * dy + dz * dz <= tol_sq
+            });
+            if let Some(index) = found {
+                remap.push(u32::try_from(index).expect("fits"));
+            } else {
+                remap.push(u32::try_from(canonical.len()).expect("fits"));
+                canonical.push(*position);
+            }
+        }
+        (canonical, remap)
+    }
+
+    #[test]
+    fn a_far_outlier_does_not_collapse_the_weld_grid() {
+        // A dense lattice plus one far vertex: the grid must still visit a
+        // bounded number of candidates per query.
+        let mut positions = Vec::new();
+        for x in 0..20 {
+            for y in 0..20 {
+                for z in 0..20 {
+                    positions.push([x as f32 * 0.01, y as f32 * 0.01, z as f32 * 0.01]);
+                }
+            }
+        }
+        positions.push([1.0e30, 0.0, 0.0]);
+        positions.push([1.0e30, 0.0, 0.0]);
+        for tol in [0.0, 1.0e-6, 0.004] {
+            let (canonical, remap, visits) = super::weld_positions_counted(&positions, Some(tol));
+            assert_eq!(canonical.len(), positions.len() - 1, "tolerance {tol}");
+            assert_eq!(remap[positions.len() - 1], remap[positions.len() - 2]);
+            // At most one lattice point per cell here, so each query visits
+            // at most its 27 neighbouring cells; a collapsed grid would visit
+            // every earlier point (tens of millions).
+            assert!(
+                visits <= 27 * positions.len(),
+                "tolerance {tol}: {visits} candidate visits"
+            );
+            let (linear_canonical, linear_remap) = weld_positions_linear(&positions, tol);
+            assert_eq!(remap, linear_remap);
+            assert_eq!(canonical.len(), linear_canonical.len());
+        }
+    }
+
+    #[test]
+    fn grid_weld_matches_linear_first_match_weld() {
+        let mut state = 0x2545_f491_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        let specials = [
+            0.0,
+            -0.0,
+            f32::MIN_POSITIVE,
+            1.0e-40,
+            -1.0e-40,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1.0e30,
+            -3.5,
+            3.0e38,
+            -1.0e20,
+            16_777_216.0,
+            16_777_218.0,
+        ];
+        for tol in [0.0, 1.0e-30, 1.0e-6, 0.05, 0.3, 1.0, 1.0e20, 1.0e25] {
+            let mut positions = Vec::new();
+            for _ in 0..600 {
+                let mut position = [0.0_f32; 3];
+                for axis in &mut position {
+                    let bits = next();
+                    *axis = match bits % 8 {
+                        0 => specials[(bits >> 8) as usize % specials.len()],
+                        // Coarse lattice values sit exactly on cell and
+                        // tolerance boundaries.
+                        1..=3 => ((bits >> 8) % 7) as f32 * 0.05 - 0.15,
+                        // Values straddling the grid limit, where keys
+                        // switch from cells to bits.
+                        4 => {
+                            let limit = (2.0_f32 * tol).max(1.0e-20) * 67_108_864.0;
+                            let ulps = ((bits >> 8) % 9) as f32 - 4.0;
+                            limit * (1.0 + ulps * f32::EPSILON)
+                        }
+                        _ => ((bits >> 8) % 4096) as f32 / 4096.0 - 0.5,
+                    };
+                }
+                positions.push(position);
+                // Re-emit a nearby copy to force matches.
+                if next() % 3 == 0 {
+                    let jitter = tol * 0.5 * ((next() % 3) as f32 - 1.0);
+                    positions.push(position.map(|axis| axis + jitter));
+                }
+            }
+            let (grid_canonical, grid_remap) = super::weld_positions(&positions, Some(tol));
+            let (linear_canonical, linear_remap) = weld_positions_linear(&positions, tol);
+            assert_eq!(grid_remap, linear_remap, "tolerance {tol}");
+            assert_eq!(
+                grid_canonical
+                    .iter()
+                    .flatten()
+                    .map(|a| a.to_bits())
+                    .collect::<Vec<_>>(),
+                linear_canonical
+                    .iter()
+                    .flatten()
+                    .map(|a| a.to_bits())
+                    .collect::<Vec<_>>(),
+                "tolerance {tol}"
+            );
+        }
     }
 }
