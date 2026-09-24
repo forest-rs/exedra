@@ -92,19 +92,104 @@ only needs ring positions, their boundary order, and the node.
    kernel refusal while adding faces is not expected for an accepted plan;
    should one happen, the crotch center vertices and faces added before it
    remain, as the crate's eager operations do not roll back.
-6. **One documented chart.** An optional `JunctionChart` continues a parent
-   tube's cylindrical chart across the skin: `U` by angle around the parent
-   axis from its first vertex, `V` by distance along it. Faces crossing the
-   angle seam keep `U` continuous; child rings meet the skin at explicit
-   seams. The parent's first vertex is its ring's vertex 0 for
-   `plan_junction`, and the from-vertex of the seed's OUTSIDE half-edge for
-   `add_junction`. Every skin face reports whether it belongs to a bridge or a crotch.
+6. **Charts continue the tubes' own UVs.** `JunctionOptions::ring_uvs`
+   gives, per ring edge, the UVs the tube face across it holds at both ends
+   (`add_junction` reads them from the mesh with `continue_uvs`). Skin
+   corners on ring edges receive exactly those values, so the texture is
+   continuous across every skin/tube boundary whatever chart the tubes use.
+   New vertices take the discrete harmonic extension of the ring values.
+   - A tube's chart usually jumps across one ring edge (its U seam). The
+     jump continues inside the skin along a cut: a breadth-first path of
+     faces to one sink face, chosen farthest from ring 0 (typically the
+     parent, which puts the sink between the branches), then farthest from
+     every ring. Cut edges carry the jump in the harmonic equations, so the
+     extension is smooth across them; faces on the cut are lifted onto one
+     side. The texture jumps across one side of each cut by the tube's own
+     seam jump, invisible when that jump is a whole number of repeats.
+   - The sink face absorbs whatever the tubes' jumps fail to cancel. A trunk
+     and branches that each wrap once cannot be charted without such a
+     point: going around the trunk's collar is homologous to going around
+     all the branches' collars, so the periods must balance or the chart
+     must be singular somewhere. The texture swirls around the sink.
+   - Without smoothing, a bridge face can span both rings, and a cut through
+     it leaves its far ring edge off by the jump. Smoothing leaves no face on
+     two rings.
+   - V is whatever the tubes give; charts whose V is arc length through the
+     junction (branches starting where the parent ends plus the gap) blend
+     without compression.
+   This replaces a single cylindrical chart around a parent axis, which left
+   explicit seams at every child ring and distorted near the parent axis.
+7. **Smoothing is opt-in refinement plus thin-plate fairing.**
+   `JunctionSmoothing { rows, tangents }` splits every non-ring edge into
+   `rows` segments. Ring edges are never split: the tube faces own them.
+   Bridge quads become stacks of quads, bridge triangles stacks ending in a
+   triangle, and crotch quads rows that shorten toward the crotch center.
+   Every new vertex, crotch centers included, is placed by minimizing the sum
+   of squared umbrella Laplacians over new and ring vertices, solved with
+   conjugate gradients. A ring vertex's umbrella includes a ghost neighbour
+   inside its tube, against the wall tangent at the vertex's mean skin edge
+   length, so the minimum leaves each ring along the tube wall: tangent
+   continuity in the discrete sense, not an exact G1 patch.
+   - Tangents default to each ring's inward axis for plans; `add_junction`
+     measures the tube walls (mean direction from off-ring neighbours).
+   - Weighting the ring terms more heavily was tried and rejected: it trades
+     the ring crease for folds at tight crotches (more `SmoothedSkinTwisted`
+     refusals and larger creases).
+   - A Catmull-Clark style subdivision was rejected because it splits ring
+     edges (a T-junction with the tubes) and only approximates the ring
+     positions.
+   - The coarse skin must pass every check first. The smoothed skin is then
+     checked again with the same exact backstops and refused as
+     `SmoothedSkinTwisted` or `SmoothedSkinSelfIntersects`, so a caller can
+     fall back to the coarse skin; `add_junction` tests the smoothed skin
+     against the tube walls. Both refusals are real backstops, reached by
+     tests: a fuzz junction folds a quad at two rows with measured tube
+     tangents, and caller tangents aimed across the rings pull rows from two
+     branches through each other (`SmoothedSkinSelfIntersects`) or fold a
+     crotch quad (`SmoothedSkinTwisted`). The seeded fuzz covers smoothed
+     junctions on straight and leaning tubes at one to six rows; a junction
+     the coarse skin accepts is either smoothed cleanly or refused with a
+     smoothed-skin variant.
+   - Measured refusal rate: of 400 straight fuzz configurations, 100 plan
+     coarse; smoothing refuses one of them at two rows (`SmoothedSkinTwisted`)
+     and none at one or three to six rows. Of 400 leaning configurations, 86
+     plan coarse and smoothing refuses none at one to six rows. No smoothed
+     skin crossed a tube wall.
+   - A coarse face of an unexpected shape is refused as `UnrefinableFace`
+     rather than refined with T-vertices; the coarse construction produces
+     only bridge quads, bridge triangles and crotch quads.
+   - Measured on a Y fork with twelve-sided branches, the median crease
+     between a skin face and the tube face across a ring edge falls from
+     16 to 8.5 degrees and the largest from 54 to 33, the largest at the
+     tight crotch between the branches.
+   - Plan statistics describe the coarse skin; new vertices are all
+     `JunctionVertex::Skin`, crotch centers first.
+   - The fairing energy is a least-squares system (ring umbrellas add rows),
+     solved with conjugate gradients on its normal equations. The harmonic
+     UV and layer systems are symmetric positive definite as given and use
+     plain conjugate gradients, which keeps their conditioning.
+8. **Caller layers follow the harmonic ring weights.** `add_junction`
+   gives each new skin vertex the ring vertices' caller-defined values, and
+   each of its corners the tube corners at those ring vertices, weighted by
+   the discrete harmonic function over the skin that is one at the ring
+   vertex (the same extension that carries UVs; uniform umbrella weights keep
+   every weight non-negative). Each layer's own `Propagation` rule decides
+   what a weighted capture means, as ADR-0003 sets for every operation. A
+   skin corner at a ring vertex takes the tube corner across the ring edge
+   the face shares with the tube, or across the ring edge leaving the vertex.
+   Skin faces have no source face, so caller face layers start empty, as
+   section caps do. `add_junction` takes no `PropagatePolicy`: edge tags are
+   stored per edge, so ring edges keep the tubes' tags and new skin edges
+   start clear; UVs and regions have their own parameters.
 
 ## Consequences
 
 - `plan_junction` works on positions alone, so a constructive node can plan
   from sweep rings before any mesh exists.
-- The skin is piecewise flat and quad-dominant. It does not smooth the crotch
-  into a saddle; callers wanting a softer blend subdivide or relax the result.
-- The cylindrical chart distorts near the parent axis, for example across a
-  saddle between two children that passes over it.
+- Without smoothing the skin is piecewise flat and quad-dominant; with it,
+  the skin is a faired saddle with `rows` rows between rings, several times
+  more faces, and rare extra refusals (one in 1116 smoothing runs over the
+  fuzz configurations the coarse skin accepts, rows one to six).
+- UVs are continuous across every ring for any tube chart; the remaining
+  seams continue the tubes' own seams, and one sink face per junction
+  swirls when the tubes' U periods do not balance.

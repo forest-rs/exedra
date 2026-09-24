@@ -3,17 +3,23 @@
 
 //! Tube junctions for visual review.
 //!
-//! Run `cargo run -p constructive_probe --bin junctions -- target/junctions`.
+//! Run `cargo run -p constructive_probe --bin junctions -- target/junctions`,
+//! adding `--coarse` for the unsmoothed skin.
 //! Each configuration joins open tubes with `exedra_mesh_ops::junction`, caps
 //! the outer ends, checks the result is a valid closed shell, and writes an
 //! OBJ whose `tube` and `junction` groups separate the input tubes from the
-//! skin. `tools/render_junctions.py` renders them with Blender.
+//! skin. Tubes carry a bark-like cylindrical chart (tube 0 is the trunk, the
+//! others branches growing away from the junction) that the skin continues.
+//! `tools/render_junctions.py` renders them with Blender.
 
 use std::f64::consts::TAU;
 use std::fmt::Write as _;
 
 use exedra_mesh::{FaceId, HalfEdgeId, Mesh, MeshBuilder, attr, op};
-use exedra_mesh_ops::junction::{JunctionParams, add_junction};
+use exedra_mesh_ops::junction::{JunctionParams, JunctionSmoothing, add_junction};
+
+/// Texture repeats around every tube.
+const U_PER_TURN: f64 = 2.0;
 
 /// One open tube: `count` vertices per ring, starting `start` from the
 /// junction along `direction`.
@@ -58,7 +64,12 @@ fn spherical(azimuth_degrees: f64, polar_degrees: f64) -> [f64; 3] {
 fn tubes(specs: &[Tube]) -> (Mesh, Vec<HalfEdgeId>) {
     let mut builder = MeshBuilder::new();
     let mut inner_rings = Vec::new();
-    for tube in specs {
+    // Square texels on the trunk; V is arc length from the trunk's outer
+    // end, continuing into each branch past the junction gap.
+    let v_per_unit = U_PER_TURN / (TAU * specs[0].radius);
+    let trunk_inner = specs[0].start;
+    let mut tube_uvs = Vec::new();
+    for (index, tube) in specs.iter().enumerate() {
         let d = normalize(tube.direction);
         let helper = if d[2].abs() < 0.9 {
             [0.0, 0.0, 1.0]
@@ -83,15 +94,45 @@ fn tubes(specs: &[Tube]) -> (Mesh, Vec<HalfEdgeId>) {
         };
         let inner = ring(tube.start);
         let outer = ring(tube.start + tube.length);
+        // The trunk grows toward the junction, branches away from it; U turns
+        // counter-clockwise about the growth direction.
+        let trunk = index == 0;
+        let (v_inner, v_outer) = if trunk {
+            (tube.length * v_per_unit, 0.0)
+        } else {
+            let start = tube.length + trunk_inner + tube.start;
+            (start * v_per_unit, (start + tube.length) * v_per_unit)
+        };
+        let u = |k: usize| {
+            let turn = k as f64 / tube.count as f64;
+            U_PER_TURN * if trunk { 1.0 - turn } else { turn }
+        };
         for k in 0..tube.count {
             let k1 = (k + 1) % tube.count;
             builder
                 .add_face(&[inner[k], inner[k1], outer[k1], outer[k]])
                 .expect("tube face");
+            tube_uvs.push([
+                [u(k), v_inner],
+                [u(k + 1), v_inner],
+                [u(k + 1), v_outer],
+                [u(k), v_outer],
+            ]);
         }
         inner_rings.push((inner[1], inner[0]));
     }
-    let mesh = builder.build().expect("tubes build").mesh;
+    let built = builder.build().expect("tubes build");
+    let mut mesh = built.mesh;
+    let mut edit = mesh.edit();
+    for (corners, uvs) in built.face_edge_ids.iter().zip(&tube_uvs) {
+        // Corner `k` of the loop is the half-edge arriving at vertex `k`.
+        for (k, uv) in uvs.iter().enumerate() {
+            #[expect(clippy::cast_possible_truncation, reason = "UVs are f32")]
+            let uv = uv.map(|c| c as f32);
+            op::set_corner_uv(&mut edit, corners[(k + 3) % 4], uv).expect("tube uv");
+        }
+    }
+    let _: () = edit.finish();
     let seeds = inner_rings
         .iter()
         .map(|&(a, b)| {
@@ -107,7 +148,7 @@ fn tubes(specs: &[Tube]) -> (Mesh, Vec<HalfEdgeId>) {
     (mesh, seeds)
 }
 
-fn build(specs: &[Tube]) -> Result<Mesh, Box<dyn std::error::Error>> {
+fn build(specs: &[Tube], smooth: bool) -> Result<Mesh, Box<dyn std::error::Error>> {
     let (mut mesh, seeds) = tubes(specs);
     let mut edit = mesh.edit();
     let output = add_junction(
@@ -115,7 +156,8 @@ fn build(specs: &[Tube]) -> Result<Mesh, Box<dyn std::error::Error>> {
         &JunctionParams {
             center: [0.0; 3],
             rings: seeds,
-            chart: None,
+            continue_uvs: true,
+            smoothing: smooth.then(JunctionSmoothing::default),
             region: Some(1),
         },
     )?;
@@ -133,7 +175,7 @@ fn build(specs: &[Tube]) -> Result<Mesh, Box<dyn std::error::Error>> {
     assert!(mesh.boundary_loops()?.is_empty(), "closed shell");
     assert!(mesh.validate_deep().is_empty(), "valid topology");
     println!(
-        "  {} skin faces ({} bridge quads, {} bridge triangles, {} crotch quads), \
+        "  {} skin faces (coarse: {} bridge quads, {} bridge triangles, {} crotch quads), \
          {} crotches, virtual arm: {}",
         output.faces.len(),
         output.stats.bridge_quads,
@@ -153,6 +195,8 @@ fn write_obj(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> {
         let _ = writeln!(text, "v {} {} {}", p[0], p[1], p[2]);
         index.insert(vertex, k + 1);
     }
+    let uvs = mesh.attrs().sparse(attr::CORNER_UV);
+    let mut uv_count = 0;
     let regions = mesh.attrs().dense(attr::FACE_REGION).expect("regions");
     for (group, region) in [("tube", 0), ("junction", 1)] {
         let _ = writeln!(text, "g {group}");
@@ -160,21 +204,33 @@ fn write_obj(mesh: &Mesh, path: &std::path::Path) -> std::io::Result<()> {
             if regions.get(face.into()) != Some(&region) {
                 continue;
             }
-            text.push('f');
+            let mut corners = String::new();
             for corner in mesh.face_loop(face) {
                 let vertex = mesh.to_vertex(corner).expect("vertex");
-                let _ = write!(text, " {}", index[&vertex]);
+                match uvs.and_then(|layer| layer.get(corner.into())) {
+                    Some(uv) => {
+                        let _ = writeln!(text, "vt {} {}", uv[0], uv[1]);
+                        uv_count += 1;
+                        let _ = write!(corners, " {}/{uv_count}", index[&vertex]);
+                    }
+                    None => {
+                        let _ = write!(corners, " {}", index[&vertex]);
+                    }
+                }
             }
-            text.push('\n');
+            let _ = writeln!(text, "f{corners}");
         }
     }
     std::fs::write(path, text)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let smooth = !args.iter().any(|arg| arg == "--coarse");
     let out = std::path::PathBuf::from(
-        std::env::args()
-            .nth(1)
+        args.iter()
+            .find(|arg| !arg.starts_with("--"))
+            .cloned()
             .unwrap_or_else(|| "target/junctions".into()),
     );
     std::fs::create_dir_all(&out)?;
@@ -217,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     for (name, specs) in &cases {
         println!("{name}:");
-        let mesh = build(specs)?;
+        let mesh = build(specs, smooth)?;
         write_obj(&mesh, &out.join(format!("{name}.obj")))?;
     }
     println!("wrote {}", out.display());
