@@ -40,6 +40,10 @@ cutter material slots. It checks geometry and ordered face-to-slot signatures,
 requires both materials to survive, and reports evaluation time and face counts
 per slot.
 
+**CT-7** measures a 256-station polyline sweep with a small rectangular
+section. It isolates the ordinary sweep path while frame and guide storage
+changes, reporting best and average time per sweep.
+
 ```sh
 cargo run --release -p constructive_wind_tunnel -- --quick
 cargo run --release -p constructive_wind_tunnel -- --ct1-stress
@@ -53,6 +57,7 @@ cargo run --release -p constructive_wind_tunnel -- --corners-sample
 cargo run --release -p constructive_wind_tunnel -- --materials
 cargo run --release -p constructive_wind_tunnel -- --materials --ct1-stress
 cargo run --release -p constructive_wind_tunnel -- --materials-sample
+cargo run --release -p constructive_wind_tunnel -- --sweep
 ```
 
 `--gallery-sample` repeats the unchanged CT-3 workload long enough for an
