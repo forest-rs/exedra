@@ -186,6 +186,28 @@ fn twist_turns_sections_about_the_tangent() {
 }
 
 #[test]
+fn base_twist_law_facets_nonplanar_sweep_walls() {
+    let profile = builders::rect_centered(2.0, 1.0).unwrap();
+    let section = SectionLaw::new(
+        Law::Constant(1.0),
+        Law::Linear(vec![[0.0, 0.0], [1.0, core::f64::consts::FRAC_PI_4]]),
+    );
+    for path in [straight_curve(PathClosure::Open), straight_polyline()] {
+        let body = sweep(&profile, &path, &section);
+        assert_clean(&body);
+        let wall_sizes: Vec<_> = body
+            .mesh
+            .faces()
+            .zip(body.source_map.face_features())
+            .filter(|(_, feature)| matches!(feature, Feature::SweepWall { .. }))
+            .map(|(face, _)| body.mesh.face_loop(face).count())
+            .collect();
+        assert!(!wall_sizes.is_empty());
+        assert!(wall_sizes.iter().all(|&size| size == 3), "{wall_sizes:?}");
+    }
+}
+
+#[test]
 fn laws_scale_about_the_section_datum() {
     let rect = builders::rect_from_corner(2.0, 1.0).unwrap();
     let Path3::Curves {
@@ -449,6 +471,9 @@ fn charts_measure_the_unscaled_section() {
             .map(|corner| layer.get(corner.as_id()).unwrap().map(f32::to_bits))
             .collect();
         uvs.sort_unstable();
+        // Shaped walls may split a quad into two planar faces, duplicating
+        // its diagonal corners without changing the chart coordinates.
+        uvs.dedup();
         uvs
     };
     assert_eq!(
