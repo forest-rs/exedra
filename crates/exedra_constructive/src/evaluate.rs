@@ -3828,6 +3828,32 @@ mod nary_intersection_regression {
         (builder.finish(root).expect("valid recipe"), root)
     }
 
+    #[test]
+    fn shared_edge_refusal_retains_the_boolean_fold() {
+        let (recipe, root) = box_csg(
+            CsgOp::Union,
+            &[
+                ([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+                ([1.0, 1.0, 0.0], [2.0, 2.0, 1.0]),
+            ],
+        );
+        let result = evaluate(&recipe, &EvalPolicy::default()).expect("bounded CSG refusal");
+        assert!(result.bodies.is_empty());
+        let [failure] = result.report.csg_failures.as_slice() else {
+            panic!(
+                "expected one typed CSG failure: {:?}",
+                result.report.csg_failures
+            );
+        };
+        assert_eq!(failure.node, root);
+        assert_eq!(failure.stage, CsgFailureStage::Operation);
+        assert_eq!(failure.operation, BooleanOp::Union);
+        assert_eq!(failure.left_operands, [0]);
+        assert_eq!(failure.right_operands, [1]);
+        assert_eq!(failure.source_operand, None);
+        assert_eq!(failure.error, BooleanError::NonManifoldContact);
+    }
+
     fn add_pairwise_only_prisms(builder: &mut RecipeBuilder) -> [NodeId; 3] {
         use crate::profile::{Loop2, Profile2, Seg2};
 
