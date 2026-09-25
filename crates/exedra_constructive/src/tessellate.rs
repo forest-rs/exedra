@@ -3176,6 +3176,7 @@ fn mitered_sweep_impl(
         }),
         None,
         closed,
+        section.turns != 0,
         chart,
     )
 }
@@ -3331,6 +3332,7 @@ fn curved_sweep_impl(
         }),
         Some(sampled.sampling),
         closed,
+        section.turns != 0,
         chart,
     )
 }
@@ -3381,7 +3383,7 @@ fn sweep_impl(
     let mut frames = sweep_frames(path, policy)?;
     apply_section_law(&mut frames, section, false)?;
     tessellate_sweep_rings(
-        profile, placement, path, caps, policy, &d, &frames, None, None, false, chart,
+        profile, placement, path, caps, policy, &d, &frames, None, None, false, false, chart,
     )
 }
 
@@ -3508,6 +3510,7 @@ fn tessellate_sweep_rings(
     sweep_checks: Option<SweepChecks>,
     path_sampling: Option<crate::path::PathSampling>,
     closed: bool,
+    triangulate_walls: bool,
     chart: Option<SurfaceChart>,
 ) -> Result<TessellatedBody, TessellateError> {
     let flip = det3(placement) < 0.0;
@@ -3611,25 +3614,53 @@ fn tessellate_sweep_rings(
                     .chart
                     .as_ref()
                     .map(|chart| chart.wall_quad(ring_index, i as usize, band));
-                builder.add_chart_face(
-                    &[
-                        below + base + i,
-                        below + base + j,
-                        above + base + j,
-                        above + base + i,
-                    ],
-                    &FaceBuildAttrs {
-                        region: Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg),
-                        edge_seams: None,
-                        edge_sharpness: Some(&sharp),
-                    },
-                    uv.as_ref().map(|uv| uv.as_slice()),
-                )?;
-                face_origins.push(Feature::SweepWall {
+                let corners = [
+                    below + base + i,
+                    below + base + j,
+                    above + base + j,
+                    above + base + i,
+                ];
+                let region = Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg);
+                let feature = Feature::SweepWall {
                     band: band_u16,
                     loop_index,
                     seg,
-                });
+                };
+                if triangulate_walls {
+                    // A twisted wall quad is generally not planar. A Boolean
+                    // may split it into a polygon whose best-fit projection
+                    // crosses itself, so establish planar triangles before
+                    // the Boolean sees this surface.
+                    for (indices, edge_sharpness) in [
+                        ([0, 1, 2], [sharp[0], sharp[1], 0.0]),
+                        ([0, 2, 3], [0.0, sharp[2], sharp[3]]),
+                    ] {
+                        builder.add_chart_face(
+                            &indices.map(|index| corners[index]),
+                            &FaceBuildAttrs {
+                                region,
+                                edge_seams: None,
+                                edge_sharpness: Some(&edge_sharpness),
+                            },
+                            uv.as_ref()
+                                .map(|quad| indices.map(|index| quad[index]))
+                                .as_ref()
+                                .map(|triangle| triangle.as_slice()),
+                        )?;
+                        face_origins.push(feature);
+                    }
+                } else {
+                    builder.add_chart_face(
+                        &corners,
+                        &FaceBuildAttrs {
+                            region,
+                            edge_seams: None,
+                            edge_sharpness: Some(&sharp),
+                        },
+                        uv.as_ref().map(|uv| uv.as_slice()),
+                    )?;
+                    face_origins.push(feature);
+                }
             }
         }
     }
