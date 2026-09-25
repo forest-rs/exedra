@@ -271,6 +271,10 @@ fn boolean_pipeline_fuzz_never_panics_and_honors_its_contract() {
                                 "pair {pair} {op:?}: suspect failure left no diagnostics"
                             );
                         }
+                        BooleanError::OutputSurface(witness) => {
+                            assert!(witness.corners >= 3, "pair {pair} {op:?}");
+                            assert!(witness.source.is_some(), "pair {pair} {op:?}");
+                        }
                         BooleanError::NonManifoldContact => {
                             assert!(
                                 first_diagnostics
@@ -478,7 +482,9 @@ fn grid_snapped_prism_pairs_never_fail_internally() {
                         assert!(errors.is_empty(), "pair {pair} {op:?}: {errors:?}");
                     }
                     Err(BooleanError::NonManifoldContact) => outcomes[1] += 1,
-                    Err(BooleanError::SuspectPatches { .. }) => outcomes[2] += 1,
+                    Err(BooleanError::SuspectPatches { .. } | BooleanError::OutputSurface(_)) => {
+                        outcomes[2] += 1;
+                    }
                     Err(error) => panic!("pair {pair} {triangulation:?} {op:?}: {error:?}"),
                 }
             }
