@@ -110,10 +110,9 @@ impl Law {
 /// stations (path points, or sampled stations of an analytic path), divided
 /// by the total. `scale` must stay positive; `twist` is in radians about the
 /// path tangent. On a closed path both laws must agree exactly at `t = 0`
-/// and `t = 1`: the first and last stations share one seam ring, so the laws
-/// must give that ring a single section. Agreement is exact rather than
-/// within a tolerance, and twist is compared as an angle, not modulo a full
-/// turn, because a turn would also carry the chart's U seam around.
+/// and `t = 1`: the first and last stations share one seam ring. `turns`
+/// adds an integral number of complete revolutions while retaining that
+/// exact seam. The base twist law still has to agree exactly at both ends.
 ///
 /// Laws are evaluated only at those stations and add none: sections between
 /// stations interpolate linearly along each band. Author enough stations for
@@ -126,19 +125,34 @@ pub struct SectionLaw {
     pub scale: Law,
     /// Section rotation about the path tangent, in radians.
     pub twist: Law,
+    /// Complete right-handed revolutions along the path, in addition to `twist`.
+    /// Negative values reverse the winding direction.
+    pub turns: i32,
 }
 
 impl SectionLaw {
     /// A law from its `scale` and `twist` components.
     #[must_use]
     pub fn new(scale: Law, twist: Law) -> Self {
-        Self { scale, twist }
+        Self {
+            scale,
+            twist,
+            turns: 0,
+        }
+    }
+
+    /// Adds signed complete revolutions along the path.
+    #[must_use]
+    pub const fn with_turns(mut self, turns: i32) -> Self {
+        self.turns = turns;
+        self
     }
 
     /// A constant section: scale 1, no twist.
     pub const IDENTITY: Self = Self {
         scale: Law::Constant(1.0),
         twist: Law::Constant(0.0),
+        turns: 0,
     };
 
     /// A linear taper of the section scale from `start` to `end`.
@@ -147,6 +161,7 @@ impl SectionLaw {
         Self {
             scale: Law::Linear(alloc::vec![[0.0, start], [1.0, end]]),
             twist: Law::Constant(0.0),
+            turns: 0,
         }
     }
 
@@ -154,7 +169,7 @@ impl SectionLaw {
     #[must_use]
     pub fn is_identity(&self) -> bool {
         let constant = |law: &Law, value: f64| law.values().all(|v| v == value);
-        constant(&self.scale, 1.0) && constant(&self.twist, 0.0)
+        self.turns == 0 && constant(&self.scale, 1.0) && constant(&self.twist, 0.0)
     }
 
     /// Checks key structure, finiteness and positive scale.
@@ -185,6 +200,10 @@ impl SectionLaw {
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         self.scale.encode(out);
         self.twist.encode(out);
+        if self.turns != 0 {
+            out.push(2);
+            out.extend_from_slice(&self.turns.to_le_bytes());
+        }
     }
 }
 
@@ -245,6 +264,7 @@ mod tests {
         let law = |scale| SectionLaw {
             scale,
             twist: Law::Constant(0.0),
+            turns: 0,
         };
         assert_eq!(SectionLaw::IDENTITY.validate(), Ok(()));
         assert_eq!(SectionLaw::taper(1.0, 0.25).validate(), Ok(()));
@@ -284,6 +304,7 @@ mod tests {
         let pulse = SectionLaw {
             scale: Law::Linear(alloc::vec![[0.0, 1.0], [0.5, 2.0], [1.0, 1.0]]),
             twist: Law::Constant(0.3),
+            turns: 0,
         };
         assert_eq!(pulse.validate_closed(), Ok(()));
     }

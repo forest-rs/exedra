@@ -122,6 +122,13 @@ the law collapses. Charts keep U on the unscaled profile perimeter. Text and
 interchange write shaped sweeps as a distinct `shaped` operation that older
 readers refuse. See [sweep section laws](docs/adr-0024-sweep-section-laws.md).
 
+Use `SectionLaw::IDENTITY.with_turns(4)` for four complete section revolutions
+around a closed path. The base twist law must still agree at both ends; the
+integral turn count preserves winding while the closing station reuses the
+first frame exactly. Supply enough path stations to keep each band below a
+quarter turn. Nonzero turns use `turned_sweep` in JSON and an explicit `turns`
+clause in text. Rust callers using `SectionLaw` literals add `turns: 0`.
+
 `SourceMap::sweep_sampling(face)` preserves source sampling policies and curved
 path spans through Boolean cuts. These are original construction records,
 not validity checks on the Boolean result. See [closed sweep semantics and

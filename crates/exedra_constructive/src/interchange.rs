@@ -602,6 +602,18 @@ pub enum NodeKindDto {
         /// The wrapped constant-section sweep operation.
         sweep: Box<Self>,
     },
+    /// A shaped sweep with an explicit integral section winding. A distinct
+    /// operation prevents older readers from silently dropping the turns.
+    TurnedSweep {
+        /// Section scale law.
+        scale: LawDto,
+        /// Base section twist law, in radians.
+        twist: LawDto,
+        /// Signed complete revolutions along the path.
+        turns: i32,
+        /// The wrapped constant-section sweep operation.
+        sweep: Box<Self>,
+    },
     /// Single-sided planar face.
     PlanarFace {
         /// Profile index.
@@ -979,6 +991,22 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
                 Vec::new()
             },
             caps: caps_name(*caps),
+        },
+        NodeKind::Sweep {
+            profile,
+            path,
+            section,
+            caps,
+        } if section.turns != 0 => NodeKindDto::TurnedSweep {
+            scale: law_dto(&section.scale),
+            twist: law_dto(&section.twist),
+            turns: section.turns,
+            sweep: Box::new(kind_dto(&NodeKind::Sweep {
+                profile: *profile,
+                path: path.clone(),
+                section: SectionLaw::IDENTITY,
+                caps: *caps,
+            })),
         },
         NodeKind::Sweep {
             profile,
@@ -1448,11 +1476,28 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             scale,
             twist,
             sweep,
+        }
+        | NodeKindDto::TurnedSweep {
+            scale,
+            twist,
+            sweep,
+            turns: _,
         } => {
-            if matches!(**sweep, NodeKindDto::ShapedSweep { .. }) {
+            let field = if matches!(dto, NodeKindDto::TurnedSweep { .. }) {
+                "turned_sweep.sweep"
+            } else {
+                "shaped_sweep.sweep"
+            };
+            if matches!(dto, NodeKindDto::TurnedSweep { turns: 0, .. }) {
                 return Err(InterchangeError::UnknownValue {
-                    field: "shaped_sweep.sweep",
+                    field: "turned_sweep.turns",
                 });
+            }
+            if matches!(
+                **sweep,
+                NodeKindDto::ShapedSweep { .. } | NodeKindDto::TurnedSweep { .. }
+            ) {
+                return Err(InterchangeError::UnknownValue { field });
             }
             let NodeKind::Sweep {
                 profile,
@@ -1461,9 +1506,7 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
                 ..
             } = kind_value(sweep)?
             else {
-                return Err(InterchangeError::UnknownValue {
-                    field: "shaped_sweep.sweep",
-                });
+                return Err(InterchangeError::UnknownValue { field });
             };
             NodeKind::Sweep {
                 profile,
@@ -1471,6 +1514,10 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
                 section: SectionLaw {
                     scale: law_value(scale),
                     twist: law_value(twist),
+                    turns: match dto {
+                        NodeKindDto::TurnedSweep { turns, .. } => *turns,
+                        _ => 0,
+                    },
                 },
                 caps,
             }
