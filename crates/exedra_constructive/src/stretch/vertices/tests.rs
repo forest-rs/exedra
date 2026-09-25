@@ -365,7 +365,7 @@ fn transforms_and_instances_share_local_selection_and_deformation_cache() {
     for result in [&pure, &cold, &warm] {
         assert!(result.report.clean_at(Severity::Error));
         assert_eq!(result.bodies.len(), 4);
-        for (pair, xf) in result.bodies.chunks_exact(2).zip(placements) {
+        for (pair, xf) in result.bodies.as_chunks::<2>().0.iter().zip(placements) {
             let expected = exedra_mesh_ops::transform::transform(&source, &xf).unwrap();
             for placed in pair {
                 assert_eq!(
@@ -464,7 +464,7 @@ fn multi_body_output_keeps_child_materials_across_placed_cached_occurrences() {
         let result = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache).unwrap();
         assert!(result.report.clean_at(Severity::Error));
         assert_eq!(result.bodies.len(), 4);
-        for (pair, x) in result.bodies.chunks_exact(2).zip([0.1, 5.1]) {
+        for (pair, x) in result.bodies.as_chunks::<2>().0.iter().zip([0.1, 5.1]) {
             for (body, slot) in pair.iter().zip(slots) {
                 assert_eq!(body.material, Some(slot));
                 assert!((mesh_bounds(&body.body.mesh).max[0] - (3.0 + x)).abs() < 1e-6);
