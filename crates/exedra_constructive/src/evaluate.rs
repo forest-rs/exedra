@@ -9,9 +9,11 @@
 //! including what could *not* be evaluated — lands in the report as typed
 //! fidelity and diagnostics rather than silent approximation.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use exedra_mesh::{FaceId, FaceTriangulation, Mesh};
@@ -81,6 +83,38 @@ pub struct Diagnostic {
     /// emitted. Owning the string keeps a detached [`GeometryReport`]
     /// self-describing without retaining its [`Recipe`].
     pub source: Option<String>,
+}
+
+/// The exact Boolean fold that withheld a CSG node's geometry.
+///
+/// Operand indices refer to the CSG node's authored operand list. For a
+/// difference, a union of multiple cutters may fail before subtraction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CsgFailure {
+    /// CSG node whose result was withheld.
+    pub node: NodeId,
+    /// Whether the failure happened while assembling one operand's bodies or
+    /// while applying the authored CSG operation.
+    pub stage: CsgFailureStage,
+    /// Operation being evaluated when the refusal occurred.
+    pub operation: BooleanOp,
+    /// Authored operands represented by the left intermediate mesh.
+    pub left_operands: Vec<u16>,
+    /// Authored operands represented by the right intermediate mesh.
+    pub right_operands: Vec<u16>,
+    /// Authored operand that produced the invalid output face, if known.
+    pub source_operand: Option<u16>,
+    /// Typed kernel error, including any output-face witness.
+    pub error: BooleanError,
+}
+
+/// The CSG evaluation step in which a Boolean refused geometry.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CsgFailureStage {
+    /// Folding multiple bodies emitted by one authored operand.
+    OperandAssembly,
+    /// Applying the authored CSG operation to its operands.
+    Operation,
 }
 
 /// Simple axis-aligned bounds in construction space.
@@ -211,6 +245,8 @@ pub struct GeometryReport {
     pub fidelity: Vec<(NodeId, Fidelity)>,
     /// Structured diagnostics, in emission order.
     pub diagnostics: Vec<Diagnostic>,
+    /// Failed CSG folds with operand identities and typed kernel errors.
+    pub csg_failures: Vec<CsgFailure>,
     /// Envelope bounds recorded for envelope-only nodes.
     pub envelopes: Vec<(NodeId, Aabb3)>,
     /// Policy-defined curve usage: which nodes used which curve policies.
@@ -357,6 +393,7 @@ fn evaluate_inner(
             attachments: Vec::new(),
             fidelity: Vec::new(),
             diagnostics: Vec::new(),
+            csg_failures: Vec::new(),
             envelopes: Vec::new(),
             policy_curves: Vec::new(),
             refinements: Vec::new(),
@@ -415,6 +452,7 @@ const CSG_TRIANGULATION: FaceTriangulation = FaceTriangulation::Robust;
 /// back to the public CSG operand index.
 struct CsgMesh {
     mesh: Mesh,
+    operands: Vec<u16>,
     face_operands: HashMap<FaceId, u16>,
     surface_origins: BTreeMap<FaceId, SurfaceAncestry>,
     face_materials: BTreeMap<FaceId, SlotId>,
@@ -424,6 +462,7 @@ impl CsgMesh {
     fn operand(mesh: Mesh, index: usize) -> Self {
         let operand = u16::try_from(index).expect("IR validation bounds CSG operand counts");
         Self {
+            operands: vec![operand],
             face_operands: mesh.faces().map(|face| (face, operand)).collect(),
             surface_origins: BTreeMap::new(),
             face_materials: BTreeMap::new(),
@@ -437,7 +476,7 @@ impl CsgMesh {
         op: BooleanOp,
         scratch: &mut BooleanScratch,
         diagnostics: &mut BooleanDiagnostics,
-    ) -> Result<Self, BooleanError> {
+    ) -> Result<Self, Box<CsgCombineFailure>> {
         let output = boolean_mesh(
             &self.mesh,
             &other.mesh,
@@ -445,7 +484,27 @@ impl CsgMesh {
             CSG_TRIANGULATION,
             scratch,
             diagnostics,
-        )?;
+        )
+        .map_err(|error| {
+            Box::new(CsgCombineFailure {
+                operation: op,
+                left_operands: self.operands.clone(),
+                right_operands: other.operands.clone(),
+                source_operand: match &error {
+                    BooleanError::OutputSurface(witness) => {
+                        witness.source.and_then(|(side, face)| {
+                            match side {
+                                MeshSide::A => self.face_operands.get(&face),
+                                MeshSide::B => other.face_operands.get(&face),
+                            }
+                            .copied()
+                        })
+                    }
+                    _ => None,
+                },
+                error,
+            })
+        })?;
         let mut face_operands = HashMap::with_capacity(output.mesh.faces().count());
         let mut surface_origins = BTreeMap::new();
         let mut face_materials = BTreeMap::new();
@@ -468,11 +527,25 @@ impl CsgMesh {
         }
         Ok(Self {
             mesh: output.mesh,
+            operands: {
+                let mut operands = self.operands;
+                operands.extend(other.operands);
+                operands
+            },
             face_operands,
             surface_origins,
             face_materials,
         })
     }
+}
+
+#[derive(Debug)]
+struct CsgCombineFailure {
+    operation: BooleanOp,
+    left_operands: Vec<u16>,
+    right_operands: Vec<u16>,
+    source_operand: Option<u16>,
+    error: BooleanError,
 }
 
 /// One consumed CSG operand subtree.
@@ -532,10 +605,7 @@ impl EvalCx<'_> {
                     )
                     .map(|result| result.body)
                     .map_err(|error| {
-                        EvalError::new(
-                            node_id,
-                            TessellateError::ExtrudeToPlane(alloc::boxed::Box::new(error)),
-                        )
+                        EvalError::new(node_id, TessellateError::ExtrudeToPlane(Box::new(error)))
                     })
                 })?;
                 let body = self.place_body(node_id, body, world)?;
@@ -1473,9 +1543,13 @@ impl EvalCx<'_> {
         let mut mesh = meshes.next();
         for next in meshes {
             let Some(folded) = mesh else { break };
-            mesh = folded
-                .combine(next, BooleanOp::Union, scratch, diagnostics)
-                .ok();
+            mesh = match folded.combine(next, BooleanOp::Union, scratch, diagnostics) {
+                Ok(merged) => Some(merged),
+                Err(failure) => {
+                    self.record_csg_failure(node_id, CsgFailureStage::OperandAssembly, *failure);
+                    None
+                }
+            };
         }
         Ok(CsgOperand {
             mesh,
@@ -1563,7 +1637,7 @@ impl EvalCx<'_> {
             };
             let mut iter = meshes.into_iter();
             let first = iter.next().expect("IR validation requires >= 2 operands");
-            let output = match op {
+            let output: Result<CsgMesh, Box<CsgCombineFailure>> = match op {
                 CsgOp::Difference => {
                     // Difference is A minus the union of every subtrahend.
                     // A cutter with no positive-volume bounds overlap cannot
@@ -1595,17 +1669,19 @@ impl EvalCx<'_> {
                                     &mut diagnostics,
                                 )
                             })
-                            .ok()
                     } else {
-                        Some(first)
+                        Ok(first)
                     }
                 }
-                CsgOp::Union | CsgOp::Intersection => iter
-                    .try_fold(first, |folded, next| {
-                        folded.combine(next, boolean_op, &mut scratch, &mut diagnostics)
-                    })
-                    .ok(),
+                CsgOp::Union | CsgOp::Intersection => iter.try_fold(first, |folded, next| {
+                    folded.combine(next, boolean_op, &mut scratch, &mut diagnostics)
+                }),
             };
+            let output = output
+                .map_err(|failure| {
+                    self.record_csg_failure(node_id, CsgFailureStage::Operation, *failure);
+                })
+                .ok();
             output.map(|output| {
                 let mesh = output.mesh;
                 // Operand attribution composes through every intermediate;
@@ -1715,6 +1791,36 @@ impl EvalCx<'_> {
                 Ok(bounds)
             }
         }
+    }
+
+    fn record_csg_failure(
+        &mut self,
+        node: NodeId,
+        stage: CsgFailureStage,
+        failure: CsgCombineFailure,
+    ) {
+        self.push_diagnostic(
+            node,
+            Severity::Error,
+            "eval.csg.boolean_refused",
+            alloc::format!(
+                "{stage:?}: {:?} of operands {:?} and {:?} failed (source operand {:?}): {}",
+                failure.operation,
+                failure.left_operands,
+                failure.right_operands,
+                failure.source_operand,
+                failure.error
+            ),
+        );
+        self.report.csg_failures.push(CsgFailure {
+            node,
+            stage,
+            operation: failure.operation,
+            left_operands: failure.left_operands,
+            right_operands: failure.right_operands,
+            source_operand: failure.source_operand,
+            error: failure.error,
+        });
     }
 
     fn push_diagnostic(
