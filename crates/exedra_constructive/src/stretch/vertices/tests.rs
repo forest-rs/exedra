@@ -492,21 +492,42 @@ fn local_refusal_envelope_is_reported_in_world_coordinates() {
             steps: vec![step(0.5, -1.0)],
         })
         .unwrap();
-    let root = builder
-        .add(NodeKind::Transform {
+    let outer = builder
+        .add(NodeKind::StretchVertices {
             child: stretch,
+            steps: vec![step(0.5, 1.0)],
+        })
+        .unwrap();
+    let placed = builder
+        .add(NodeKind::Transform {
+            child: outer,
             xf: Placement3::translate(10.0, 20.0, 30.0),
         })
         .unwrap();
-    let result = evaluate(&builder.finish(root).unwrap(), &EvalPolicy::default()).unwrap();
-    assert!(result.bodies.is_empty());
-    let bounds = result
-        .report
-        .envelopes
-        .iter()
-        .find(|(node, _)| *node == stretch)
-        .unwrap()
-        .1;
-    assert_eq!(bounds.min, [10.0, 20.0, 30.0]);
-    assert_eq!(bounds.max, [11.0, 21.0, 30.0]);
+    let root = builder
+        .add(NodeKind::Group {
+            // A prior occurrence's envelope must not be transformed again.
+            children: vec![stretch, placed],
+        })
+        .unwrap();
+    let recipe = builder.finish(root).unwrap();
+    let policy = EvalPolicy::default();
+    let mut cache = EvalCache::new();
+    for result in [
+        evaluate(&recipe, &policy).unwrap(),
+        evaluate_with_cache(&recipe, &policy, &mut cache).unwrap(),
+        evaluate_with_cache(&recipe, &policy, &mut cache).unwrap(),
+    ] {
+        assert!(result.bodies.is_empty());
+        let envelopes = &result.report.envelopes;
+        assert_eq!(envelopes.len(), 3);
+        assert_eq!(envelopes[0].0, stretch);
+        assert_eq!(envelopes[0].1.min, [0.0, 0.0, 0.0]);
+        assert_eq!(envelopes[0].1.max, [1.0, 1.0, 0.0]);
+        for ((node, bounds), expected) in envelopes[1..].iter().zip([stretch, outer]) {
+            assert_eq!(*node, expected);
+            assert_eq!(bounds.min, [10.0, 20.0, 30.0]);
+            assert_eq!(bounds.max, [11.0, 21.0, 30.0]);
+        }
+    }
 }

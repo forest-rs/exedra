@@ -148,7 +148,8 @@ while body sampling, refinement and sweep-validation evidence is cleared.
 The evaluator revisits children on cache hits to retain their reports and
 occurrence materials. Single-body local results are cached by node content and
 policy, independently of ancestor placement; multi-body results are evaluated
-in child order. Refusal envelopes are placed in world coordinates.
+in child order. Refusal envelopes, including those recorded by locally evaluated
+children, are placed in world coordinates without modifying earlier occurrences.
 `vertex_stretch_passes` counts completed mesh passes in the current run and
 is zero for a warm hit or an all-zero bypass.
 

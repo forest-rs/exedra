@@ -1095,8 +1095,14 @@ impl EvalCx<'_> {
         let errors_before = self.error_count();
         // Revisit the child even on a cache hit to retain its report. Ancestor
         // material defaults belong to this occurrence, not the cached body.
+        let envelopes_before = self.report.envelopes.len();
         let child_result = self.walk(child, &Placement3::IDENTITY, true, None);
         let collected = core::mem::replace(&mut self.bodies, taken);
+        // Child diagnostics share the local evaluation frame. Place only the
+        // newly recorded envelopes, leaving earlier occurrences untouched.
+        for (_, bounds) in &mut self.report.envelopes[envelopes_before..] {
+            *bounds = placed_bounds(*bounds, world);
+        }
         let bounds = placed_bounds(child_result?, world);
         if self.error_count() != errors_before || collected.is_empty() {
             return Ok(self.record_stretch_refusal(
