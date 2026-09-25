@@ -484,11 +484,15 @@ pub enum NodeKind {
     ///
     /// Steps classify the same input positions in this node's local frame and
     /// accumulate their signed movements before output positions are stored.
-    /// On-plane vertices remain stationary. Nested nodes still act sequentially.
+    /// Exact plane-equation signs leave on-plane vertices stationary. Deformation
+    /// precedes ancestor placement; nested nodes still act sequentially.
     /// Open triangle meshes are supported; active operations refuse polygon
     /// faces and collapsed triangles. All-zero steps leave the child unchanged.
-    /// UVs and topology survive; deformed faces lose authored normal overrides
-    /// so extraction can derive normals using existing smoothing boundaries.
+    /// UVs and topology survive; faces with nonrigid stored movement lose normal
+    /// overrides. Unchanged faces retain overrides even beside changed neighbors;
+    /// full derived-normal extraction is available for consistent smoothing.
+    /// Connectivity is part of this discrete operation's meaning: remeshing
+    /// before displacement can change its result.
     StretchVertices {
         /// The child whose evaluated triangle meshes are displaced.
         child: NodeId,
@@ -2265,6 +2269,8 @@ fn node_canon_bytes(
         }
         NodeKind::StretchVertices { child: c, steps } => {
             out.push(18);
+            // Local evaluation and exact plane ownership revision.
+            out.push(1);
             child(out, *c);
             put_u32(out, len_u32(steps.len()));
             for step in steps {

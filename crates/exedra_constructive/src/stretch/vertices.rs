@@ -10,13 +10,12 @@ use exedra_mesh_ops::stretch::{VertexStretchError, stretch_vertices};
 pub(crate) fn stretch_body_vertices(
     source: &TessellatedBody,
     steps: &[VertexStretchStep],
-    world: &Placement3,
 ) -> Result<TessellatedBody, VertexStretchError> {
     source
         .source_map
         .check(&source.mesh)
         .map_err(|_| VertexStretchError::InvalidMesh)?;
-    let mesh = stretch_vertices(&source.mesh, steps, world)?;
+    let mesh = stretch_vertices(&source.mesh, steps, &Placement3::IDENTITY)?;
     Ok(TessellatedBody {
         source_map: source.source_map.repinned(&mesh),
         mesh,

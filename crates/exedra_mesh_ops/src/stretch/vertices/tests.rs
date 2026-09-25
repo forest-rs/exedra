@@ -251,3 +251,134 @@ fn tiny_nonzero_triangles_survive_but_float_storage_collapse_is_refused() {
         Err(VertexStretchError::DegenerateTriangle(_))
     ));
 }
+
+#[test]
+fn oblique_authored_boundary_and_nearest_stored_neighbors_are_classified_exactly() {
+    let plane = Plane3 {
+        normal: [1.0; 3],
+        distance: 3.0,
+    };
+    for x in [1.0_f32.next_down(), 1.0, 1.0_f32.next_up()] {
+        let source = triangle([[x, 1.0, 1.0], [2.0, 1.0, 0.0], [0.0, 2.0, 1.0]]);
+        let result = stretch_vertices(
+            &source,
+            &[VertexStretchStep { plane, length: 1.0 }],
+            &Placement3::IDENTITY,
+        )
+        .unwrap();
+        let original = points(&source);
+        let moved = points(&result);
+        assert_eq!(&moved[1..], &original[1..]);
+        if x > 1.0 {
+            assert!(moved[0][0] > 1.5);
+        } else {
+            assert_eq!(moved, original);
+        }
+    }
+}
+
+fn author_normals(mesh: &mut Mesh) {
+    let derived = mesh.derive_corner_normals(&NormalParams::default());
+    let corners = mesh
+        .faces()
+        .flat_map(|f| mesh.face_loop(f))
+        .collect::<Vec<_>>();
+    let mut edit = mesh.edit();
+    for corner in corners {
+        op::set_corner_normal_override(&mut edit, corner, derived.get(corner)).unwrap();
+    }
+    let _: () = edit.finish();
+}
+
+#[test]
+fn normals_follow_stored_geometry_instead_of_requested_displacement() {
+    let mut source = triangle([[0.0, 0.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    author_normals(&mut source);
+    let unchanged = stretch_vertices(&source, &[step(1.0, 1e-8)], &Placement3::IDENTITY).unwrap();
+    assert_eq!(points(&source), points(&unchanged));
+    assert_eq!(
+        exedra_testkit::dump_attributes(&source),
+        exedra_testkit::dump_attributes(&unchanged)
+    );
+    let rigid = stretch_vertices(&source, &[step(-1.0, 0.5)], &Placement3::IDENTITY).unwrap();
+    for face in source.faces() {
+        for corner in source.face_loop(face) {
+            assert_eq!(
+                source
+                    .attrs()
+                    .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                    .unwrap()
+                    .get(corner.into()),
+                rigid
+                    .attrs()
+                    .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                    .unwrap()
+                    .get(corner.into())
+            );
+        }
+    }
+    let mut source = triangle([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    author_normals(&mut source);
+    // At 2^100 even f64(new)-f64(old) loses the difference between movements.
+    for length in [16777216.0, f64::from_bits((1023 + 100) << 52)] {
+        let result =
+            stretch_vertices(&source, &[step(-1.0, length)], &Placement3::IDENTITY).unwrap();
+        for face in result.faces() {
+            for corner in result.face_loop(face) {
+                assert!(
+                    result
+                        .attrs()
+                        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                        .unwrap()
+                        .get(corner.into())
+                        .is_none()
+                );
+            }
+        }
+        let (rendered, _) = result.to_trimesh(&ExtractParams {
+            normals: NormalsSource::CustomOrDerived,
+            ..Default::default()
+        });
+        assert!(rendered.normals.iter().all(|n| *n == [1.0, 0.0, 0.0]));
+    }
+}
+
+#[test]
+fn face_local_overrides_do_not_infer_a_shared_authored_smoothing_policy() {
+    let mut source = Mesh::from_indexed_triangles(
+        &[
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [2.0, 0.0, 1.0],
+        ],
+        &[[0, 1, 2], [1, 0, 3]],
+        &BuildParams::default(),
+    )
+    .unwrap();
+    // Connected smooth faces, with no sharp edge or UV seam at their boundary.
+    author_normals(&mut source);
+    let result = stretch_vertices(&source, &[step(0.5, 1.0)], &Placement3::IDENTITY).unwrap();
+    let at_origin = |mesh: &Mesh, normals| {
+        let (rendered, _) = mesh.to_trimesh(&ExtractParams {
+            normals,
+            ..Default::default()
+        });
+        rendered
+            .positions
+            .iter()
+            .zip(&rendered.normals)
+            .filter_map(|(p, n)| (*p == [0.0; 3]).then_some(*n))
+            .collect::<Vec<_>>()
+    };
+    let original = at_origin(&source, NormalsSource::CustomOrDerived);
+    assert!(original.iter().all(|n| *n == original[0]));
+    let mixed = at_origin(&result, NormalsSource::CustomOrDerived);
+    assert!(mixed.contains(&original[0]));
+    assert!(mixed.iter().any(|n| *n != original[0]));
+    // A caller choosing full derivation gets one consistent smooth neighborhood.
+    let derived = at_origin(&result, NormalsSource::Derived);
+    assert!(!derived.is_empty());
+    assert!(derived.iter().all(|n| *n == derived[0]));
+    assert_ne!(derived[0], original[0]);
+}

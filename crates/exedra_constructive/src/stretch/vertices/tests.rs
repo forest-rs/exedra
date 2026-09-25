@@ -293,8 +293,7 @@ fn body_adapter_retains_face_ownership_and_rejects_stale_correspondence() {
     let face = body.mesh.faces().next().unwrap();
     body.face_materials.insert(face, crate::ir::SlotId(7));
     body.refinement = Some(exedra_triangulate::RefineStats::default());
-    let deformed =
-        super::stretch_body_vertices(&body, &[step(1.0, 1.0)], &Placement3::IDENTITY).unwrap();
+    let deformed = super::stretch_body_vertices(&body, &[step(1.0, 1.0)]).unwrap();
     assert!(deformed.refinement.is_none());
     assert_eq!(deformed.face_materials, body.face_materials);
     assert_eq!(deformed.source_map.dump(), body.source_map.dump());
@@ -308,7 +307,206 @@ fn body_adapter_retains_face_ownership_and_rejects_stale_correspondence() {
     exedra_mesh::op::set_vertex_position(&mut edit, vertex, [0.0, 0.0, 2.0]).unwrap();
     let _: () = edit.finish();
     assert_eq!(
-        super::stretch_body_vertices(&body, &[step(1.0, 1.0)], &Placement3::IDENTITY).unwrap_err(),
+        super::stretch_body_vertices(&body, &[step(1.0, 1.0)]).unwrap_err(),
         exedra_mesh_ops::stretch::VertexStretchError::InvalidMesh
     );
+}
+
+#[test]
+fn transforms_and_instances_share_local_selection_and_deformation_cache() {
+    let source = Mesh::from_indexed_triangles(
+        &[[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]],
+        &[[0, 1, 2]],
+        &BuildParams::default(),
+    )
+    .unwrap();
+    let mut builder = RecipeBuilder::new();
+    let child = import(&mut builder, source.clone());
+    let stretch = builder
+        .add(NodeKind::StretchVertices {
+            child,
+            steps: vec![step(1.0, 1.0)],
+        })
+        .unwrap();
+    let placements = [
+        Placement3::translate(0.1, 0.0, 0.0),
+        Placement3::from_axes(
+            [-2.0, 0.0, 0.0],
+            [0.25, 3.0, 0.0],
+            [0.0, 0.5, 4.0],
+            [0.1, 0.2, 0.3],
+        ),
+    ];
+    let mut children = Vec::new();
+    for xf in placements {
+        children.push(
+            builder
+                .add(NodeKind::Transform { child: stretch, xf })
+                .unwrap(),
+        );
+        children.push(
+            builder
+                .add(NodeKind::Instance {
+                    of: stretch,
+                    placement: xf,
+                })
+                .unwrap(),
+        );
+    }
+    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let recipe = builder.finish(root).unwrap();
+    let policy = EvalPolicy::default();
+    let mut cache = EvalCache::new();
+    let pure = evaluate(&recipe, &policy).unwrap();
+    let cold = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+    let warm = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+    assert_eq!(cold.report.counters.vertex_stretch_passes, 1);
+    assert_eq!(warm.report.counters.vertex_stretch_passes, 0);
+    for result in [&pure, &cold, &warm] {
+        assert!(result.report.clean_at(Severity::Error));
+        assert_eq!(result.bodies.len(), 4);
+        for (pair, xf) in result.bodies.chunks_exact(2).zip(placements) {
+            let expected = exedra_mesh_ops::transform::transform(&source, &xf).unwrap();
+            for placed in pair {
+                assert_eq!(
+                    exedra_testkit::dump_mesh_topology(&placed.body.mesh),
+                    exedra_testkit::dump_mesh_topology(&expected)
+                );
+                placed.body.source_map.check(&placed.body.mesh).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn nonparallel_steps_share_input_while_nested_nodes_observe_prior_results() {
+    let source = Mesh::from_indexed_triangles(
+        &[[0.5, 0.0, 0.0], [0.5, 0.0, 1.0], [0.5, 1.0, 0.0]],
+        &[[0, 1, 2]],
+        &BuildParams::default(),
+    )
+    .unwrap();
+    let first = step(0.0, 1.0);
+    let second = VertexStretchStep {
+        plane: Plane3 {
+            normal: [1.0, 1.0, 0.0],
+            distance: 1.0,
+        },
+        length: 1.0,
+    };
+    let simultaneous = recipe(source.clone(), vec![first, second]);
+    let mut builder = RecipeBuilder::new();
+    let child = import(&mut builder, source);
+    let child = builder
+        .add(NodeKind::StretchVertices {
+            child,
+            steps: vec![first],
+        })
+        .unwrap();
+    let root = builder
+        .add(NodeKind::StretchVertices {
+            child,
+            steps: vec![second],
+        })
+        .unwrap();
+    let nested = builder.finish(root).unwrap();
+    let policy = EvalPolicy::default();
+    for (recipe, expected_y) in [(&simultaneous, 0.0), (&nested, 1.0_f32 / 2.0_f32.sqrt())] {
+        let mut cache = EvalCache::new();
+        for _ in 0..2 {
+            let result = evaluate_with_cache(recipe, &policy, &mut cache).unwrap();
+            assert_eq!(result.bodies.len(), 1);
+            let mesh = &result.bodies[0].body.mesh;
+            let p = mesh
+                .vertex_position(mesh.vertices().next().unwrap())
+                .unwrap();
+            assert!((p[1] - expected_y).abs() < 1e-6);
+            assert!(p[0] >= 1.5);
+            assert!(result.report.clean_at(Severity::Error));
+        }
+    }
+}
+
+#[test]
+fn multi_body_output_keeps_child_materials_across_placed_cached_occurrences() {
+    let mut builder = RecipeBuilder::new();
+    let slots = [
+        builder.material_slot("first"),
+        builder.material_slot("second"),
+    ];
+    let mut children = Vec::new();
+    for slot in slots {
+        builder.with_material(slot);
+        children.push(import(&mut builder, triangle()));
+    }
+    let child = builder.add(NodeKind::Group { children }).unwrap();
+    let stretch = builder
+        .add(NodeKind::StretchVertices {
+            child,
+            steps: vec![step(1.0, 1.0)],
+        })
+        .unwrap();
+    let mut children = Vec::new();
+    for x in [0.1, 5.1] {
+        children.push(
+            builder
+                .add(NodeKind::Transform {
+                    child: stretch,
+                    xf: Placement3::translate(x, 0.0, 0.0),
+                })
+                .unwrap(),
+        );
+    }
+    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let recipe = builder.finish(root).unwrap();
+    let mut cache = EvalCache::new();
+    for _ in 0..2 {
+        let result = evaluate_with_cache(&recipe, &EvalPolicy::default(), &mut cache).unwrap();
+        assert!(result.report.clean_at(Severity::Error));
+        assert_eq!(result.bodies.len(), 4);
+        for (pair, x) in result.bodies.chunks_exact(2).zip([0.1, 5.1]) {
+            for (body, slot) in pair.iter().zip(slots) {
+                assert_eq!(body.material, Some(slot));
+                assert!((mesh_bounds(&body.body.mesh).max[0] - (3.0 + x)).abs() < 1e-6);
+                body.body.source_map.check(&body.body.mesh).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn local_refusal_envelope_is_reported_in_world_coordinates() {
+    let mut builder = RecipeBuilder::new();
+    let child = import(
+        &mut builder,
+        Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &BuildParams::default(),
+        )
+        .unwrap(),
+    );
+    let stretch = builder
+        .add(NodeKind::StretchVertices {
+            child,
+            steps: vec![step(0.5, -1.0)],
+        })
+        .unwrap();
+    let root = builder
+        .add(NodeKind::Transform {
+            child: stretch,
+            xf: Placement3::translate(10.0, 20.0, 30.0),
+        })
+        .unwrap();
+    let result = evaluate(&builder.finish(root).unwrap(), &EvalPolicy::default()).unwrap();
+    assert!(result.bodies.is_empty());
+    let bounds = result
+        .report
+        .envelopes
+        .iter()
+        .find(|(node, _)| *node == stretch)
+        .unwrap()
+        .1;
+    assert_eq!(bounds.min, [10.0, 20.0, 30.0]);
+    assert_eq!(bounds.max, [11.0, 21.0, 30.0]);
 }

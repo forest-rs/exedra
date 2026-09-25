@@ -84,6 +84,11 @@ sum their exact binary64 values in fixed positive and negative limb arrays.
 `IncirclePath::Dyadic` without global counters. Ear clipping does not pay for
 the new predicate.
 
+`predicates::plane_side` evaluates the exact sign of an authored plane equation
+without normalizing its coefficients. A conservative floating-point filter uses
+the shared dyadic accumulator when uncertain, including overflow and underflow.
+It accepts all finite f64 exponents and returns `None` for non-finite input.
+
 ## Constrained-Delaunay legalization
 
 Set `TriParams::strategy` to `TriStrategy::ConstrainedDelaunay` to legalize

@@ -219,15 +219,6 @@ struct WorldStretch {
 
 impl WorldStretch {
     fn new(plane: &Plane3, length: f64, world: &Placement3) -> Result<Self, StretchError> {
-        Self::prepare(plane, length, world, true)
-    }
-
-    fn prepare(
-        plane: &Plane3,
-        length: f64,
-        world: &Placement3,
-        cut: bool,
-    ) -> Result<Self, StretchError> {
         let (local_normal, local_distance) =
             plane.normalized().ok_or(StretchError::InvalidInput)?;
         let linear = [
@@ -258,7 +249,7 @@ impl WorldStretch {
             + raw_normal[2] * translation[2];
         let normal = raw_normal.map(|component| component / normal_length);
         let distance = raw_distance / normal_length;
-        let far_distance = (cut && length < 0.0).then(|| {
+        let far_distance = (length < 0.0).then(|| {
             let removed = -length;
             let raw_far_distance = local_distance
                 + removed

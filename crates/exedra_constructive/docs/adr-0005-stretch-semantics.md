@@ -104,11 +104,22 @@ and reports `eval.stretch.uv_unmapped` rather than inventing coordinates.
 operation explicitly. Each `VertexStretchStep` contains a plane and signed
 length along its normalized local normal. All steps classify the same input
 positions; positive-side displacements accumulate in supplied order in f64
-and narrow once to stored f32 positions. On-plane vertices stay stationary.
-Negative lengths move selected vertices backward without removing a slab.
-Nested displacement nodes still compose sequentially. Ancestor transforms
-transport selection planes by the inverse transpose and displacement by the
-forward linear map, including nonuniform scale, shear and reflection.
+and narrow once to stored f32 positions. Selection uses the exact sign of the
+unnormalized authored plane equation, with a filtered predicate and exact dyadic
+fallback. Normalization supplies the displacement direction only. On-plane
+vertices stay stationary. Negative lengths move selected vertices backward
+without removing a slab. Nested displacement nodes still compose sequentially.
+
+Constructive evaluation deforms in node-local coordinates before applying
+ancestor placement, so equivalent Transform and Instance placement cannot
+change selection through world-coordinate rounding. The direct mesh API can
+transport selection planes by inverse transpose and displacement by the forward
+linear map. Its signs are exact for the f64 transported coefficients and supplied
+mesh coordinates; it cannot recover coordinates lost to earlier rounding.
+
+This is an operation on a particular mesh. Adding vertices or changing
+triangulation before deformation can change the result even when the original
+surface is identical. It does not define a representation-independent resize.
 
 The mesh operation lives in `exedra_mesh_ops::stretch::stretch_vertices`.
 Constructive evaluation supplies the evaluated child meshes and preserves
@@ -122,26 +133,33 @@ Any child or body refusal prevents output of the entire displacement node.
 All-zero steps evaluate the child unchanged, including polygon faces.
 
 UVs, regions, sharpness and other attributes retain their original IDs and
-values. Faces whose corners receive different displacements lose authored
+values. Faces whose corners receive different stored movements lose authored
 normal overrides so extraction with `CustomOrDerived` uses the resulting
-geometry. Rigid faces retain their overrides. Derivation respects existing
-connectivity and smoothing boundaries; it cannot reconstruct authored
-smoothing across disconnected seams. UV density is not adjusted. Source maps
+geometry. Exact two-term differences of stored coordinates determine rigidity;
+requested displacement and rounded f64 differences are insufficient. A movement
+that rounds away retains normals. Rigid faces retain their overrides, including
+faces beside a changed neighbor. This face-local policy can leave different
+normals across an otherwise smooth boundary; callers can choose `Derived`
+extraction for consistent geometric smoothing. Authored smoothing across
+disconnected seams is not reconstructed. UV density is not adjusted. Source maps
 are re-pinned to the resulting revision; source chart metrics remain ancestry,
 while body sampling, refinement and sweep-validation evidence is cleared.
 
 The evaluator revisits children on cache hits to retain their reports and
-occurrence materials. Single-body results are cached by node content, world
-placement and policy; multi-body results are evaluated in child order.
+occurrence materials. Single-body local results are cached by node content and
+policy, independently of ancestor placement; multi-body results are evaluated
+in child order. Refusal envelopes are placed in world coordinates.
 `vertex_stretch_passes` counts completed mesh passes in the current run and
 is zero for a warm hit or an all-zero bypass.
 
 This additive variant uses canonical tag 18 and the text and JSON kind
 `stretch_vertices`. Its child and complete ordered step list participate in
-fingerprints. Existing canonical encodings and evaluated recipes are
-unchanged, so schema 40 remains valid. Callers matching `NodeKind` handle
-the new variant; older text readers reject its opcode. There is no automatic
-selection by child body kind and no compatibility wrapper.
+fingerprints. The node encoding includes displacement revision 1 for local
+evaluation and exact boundary ownership. Existing non-displacement encodings
+and evaluated recipes are unchanged, so schema 40 remains valid. Callers
+matching `NodeKind` handle the new variant; older text readers reject its
+opcode. There is no automatic selection by child body kind and no compatibility
+wrapper.
 
 ## Consequences
 
