@@ -399,6 +399,14 @@ pub enum TessellateError {
     /// A sweep's [`SectionLaw`] is malformed, or does not close on a closed
     /// path.
     InvalidSectionLaw(SectionLawError),
+    /// A complete-turn law changes too far within one sampled path band to
+    /// retain its authored winding.
+    SweepTwistUndersampled {
+        /// Path band whose section rotation exceeds the sampling limit.
+        band: usize,
+        /// Absolute section rotation across this band, in radians.
+        radians: f64,
+    },
     /// The declared closed-path plane normal is nonfinite or zero.
     InvalidSweepPlane,
     /// A station lies outside the f64 rounding allowance of the declared plane.
@@ -522,6 +530,10 @@ impl core::fmt::Display for TessellateError {
                 "sweep path needs finite distinct points and usable segment lengths"
             ),
             Self::InvalidSectionLaw(error) => error.fmt(f),
+            Self::SweepTwistUndersampled { band, radians } => write!(
+                f,
+                "sweep band {band} twists by {radians} radians; add stations to keep each band below a quarter turn"
+            ),
             Self::InvalidSweepOrientation => write!(
                 f,
                 "sweep section-X must have a usable component perpendicular to the first segment"
@@ -2953,14 +2965,34 @@ fn apply_section_law(
     if !(total > 0.0 && total.is_finite()) {
         return Err(TessellateError::InvalidSweepPath);
     }
+    if section.turns != 0 {
+        let angle_at = |distance: f64| {
+            let t = distance / total;
+            section.twist.eval(t) + f64::from(section.turns) * core::f64::consts::TAU * t
+        };
+        for (band, pair) in distances.windows(2).enumerate() {
+            let start = angle_at(pair[0]);
+            let end = angle_at(pair[1]);
+            if !start.is_finite() || !end.is_finite() {
+                return Err(TessellateError::NonFiniteGeometry);
+            }
+            let radians = (end - start).abs();
+            if radians >= core::f64::consts::FRAC_PI_2 {
+                return Err(TessellateError::SweepTwistUndersampled { band, radians });
+            }
+        }
+    }
     for (frame, distance) in frames.iter_mut().zip(distances) {
         let t = distance / total;
         let s = section.scale.eval(t);
-        let angle = section.twist.eval(t);
+        let angle = section.twist.eval(t) + f64::from(section.turns) * core::f64::consts::TAU * t;
         let (sin, cos) = (libm::sin(angle), libm::cos(angle));
         let (u, v) = (frame.1, frame.2);
         frame.1 = scale(add(scale(u, cos), scale(v, sin)), s);
         frame.2 = scale(sub(scale(v, cos), scale(u, sin)), s);
+    }
+    if closed && section.turns != 0 {
+        frames[frames.len() - 1] = frames[0];
     }
     Ok(())
 }
