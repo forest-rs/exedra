@@ -2741,16 +2741,308 @@ fn loft_has_volumetric_span(
 /// One sweep frame: `(origin, u, v, t)` with `u x v = t` (right-handed).
 type SweepFrame = ([f64; 3], [f64; 3], [f64; 3], [f64; 3]);
 
+/// A sampled section frame on a sweep guide, before body placement.
+///
+/// Section axes include the authored scale and twist law. At mitered corners
+/// they describe the cut plane and need not be orthonormal. `path_fraction`
+/// measures cumulative sampled centerline chord length, matching the section
+/// law's parameterization; a closed guide excludes its duplicate end station.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SweepSectionFrame {
+    /// Origin of profile coordinates `(0, 0)` after the section datum offset.
+    pub origin: [f64; 3],
+    /// Axis for the profile's local X coordinate.
+    pub section_x: [f64; 3],
+    /// Axis for the profile's local Y coordinate.
+    pub section_y: [f64; 3],
+    /// Path tangent or miter-plane normal at this station.
+    pub tangent: [f64; 3],
+    /// Normalized sampled centerline distance from the first station.
+    pub path_fraction: f64,
+}
+
+/// Which guide axis becomes the normal of a placed tool or sketch.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SweepFrameNormal {
+    /// Profile local X.
+    SectionX,
+    /// Profile local Y.
+    SectionY,
+    /// Path tangent or miter-plane normal.
+    Tangent,
+}
+
+impl SweepSectionFrame {
+    /// Orients a tool with local +Z along `normal`.
+    ///
+    /// `normal_offset` moves its origin along the unit normal; `roll` rotates
+    /// its local X/Y axes about that normal. The other guide axes choose a
+    /// deterministic zero-roll direction. Authored section scale and miter
+    /// stretch do not scale the tool.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-finite inputs or a degenerate frame.
+    pub fn normal_placement(
+        self,
+        normal: SweepFrameNormal,
+        normal_offset: f64,
+        roll: f64,
+    ) -> Result<Placement3, TessellateError> {
+        if !normal_offset.is_finite() || !roll.is_finite() {
+            return Err(TessellateError::NonFiniteGeometry);
+        }
+        let (z, x) = match normal {
+            SweepFrameNormal::SectionX => (self.section_x, self.section_y),
+            SweepFrameNormal::SectionY => (self.section_y, self.tangent),
+            SweepFrameNormal::Tangent => (self.tangent, self.section_x),
+        };
+        let z = unit_vector(z).ok_or(TessellateError::InvalidSweepOrientation)?;
+        let x = unit_vector(sub(x, scale(z, dot(x, z))))
+            .ok_or(TessellateError::InvalidSweepOrientation)?;
+        let y = cross(z, x);
+        let (sin, cos) = (libm::sin(roll), libm::cos(roll));
+        let placement = Placement3::from_axes(
+            add(scale(x, cos), scale(y, sin)),
+            sub(scale(y, cos), scale(x, sin)),
+            z,
+            add(self.origin, scale(z, normal_offset)),
+        );
+        if !placement.is_finite() {
+            return Err(TessellateError::NonFiniteGeometry);
+        }
+        Ok(placement)
+    }
+}
+
+/// Why evenly spaced positions could not be selected from a closed guide.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SweepGuideSelectionError {
+    /// The guide has distinct endpoints.
+    OpenPath,
+    /// Count is zero, or there are fewer distinct sampled stations than needed.
+    InsufficientStations,
+    /// `phase` is not finite or is outside `[0, 1)`.
+    InvalidPhase,
+}
+
+impl core::fmt::Display for SweepGuideSelectionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OpenPath => f.write_str("regular closed stations require a closed path"),
+            Self::InsufficientStations => {
+                f.write_str("guide has too few distinct stations for this count")
+            }
+            Self::InvalidPhase => f.write_str("station phase must be finite and in [0, 1)"),
+        }
+    }
+}
+
+impl core::error::Error for SweepGuideSelectionError {}
+
+/// One-dimensional frame guide shared by a sweep and its downstream tools.
+///
+/// Building the guide samples the path and applies the section law, but does
+/// not discretize a profile, build wall faces, or run a Boolean. Its stations
+/// are the exact frames the matching sweep tessellation consumes under the
+/// same path, section law, and evaluation policy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SweepGuide {
+    frames: Vec<SweepFrame>,
+    fractions: Vec<f64>,
+    path_points: Vec<[f64; 3]>,
+    path_sampling: Option<crate::path::PathSampling>,
+    closed: bool,
+}
+
+impl SweepGuide {
+    fn new(
+        mut frames: Vec<SweepFrame>,
+        path_points: Vec<[f64; 3]>,
+        path_sampling: Option<crate::path::PathSampling>,
+        closed: bool,
+        section_origin: [f64; 2],
+        section: &SectionLaw,
+    ) -> Result<Self, TessellateError> {
+        apply_section_law(&mut frames, section, closed)?;
+        let mut fractions = Vec::with_capacity(frames.len());
+        fractions.push(0.0);
+        for pair in frames.windows(2) {
+            let previous = *fractions.last().expect("seeded guide");
+            fractions.push(previous + norm(sub(pair[1].0, pair[0].0)));
+        }
+        let total = *fractions.last().expect("guide has stations");
+        if !(total > 0.0 && total.is_finite()) {
+            return Err(TessellateError::InvalidSweepPath);
+        }
+        for fraction in &mut fractions {
+            *fraction /= total;
+        }
+        if section_origin != [0.0; 2] {
+            for frame in &mut frames {
+                frame.0 = sub(
+                    frame.0,
+                    add(
+                        scale(frame.1, section_origin[0]),
+                        scale(frame.2, section_origin[1]),
+                    ),
+                );
+            }
+        }
+        Ok(Self {
+            frames,
+            fractions,
+            path_points,
+            path_sampling,
+            closed,
+        })
+    }
+
+    /// Whether the path shares its first and final section ring.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Number of distinct section stations, excluding the repeated closure.
+    #[must_use]
+    pub fn station_count(&self) -> usize {
+        self.frames.len() - usize::from(self.closed)
+    }
+
+    /// One exact sampled frame; the closing duplicate is not addressable.
+    #[must_use]
+    pub fn station(&self, index: usize) -> Option<SweepSectionFrame> {
+        if index >= self.station_count() {
+            return None;
+        }
+        let (origin, section_x, section_y, tangent) = self.frames[index];
+        Some(SweepSectionFrame {
+            origin,
+            section_x,
+            section_y,
+            tangent,
+            path_fraction: self.fractions[index],
+        })
+    }
+
+    /// Original analytic-path sampling evidence, if this guide uses curves.
+    #[must_use]
+    pub fn path_sampling(&self) -> Option<&crate::path::PathSampling> {
+        self.path_sampling.as_ref()
+    }
+
+    /// Picks the nearest actual guide station to each of `count` equal cyclic
+    /// divisions, offset by `phase` divisions.
+    ///
+    /// The returned positions remain on the sweep's sampled rings. Their
+    /// `path_fraction` values expose any deviation from the requested equal
+    /// spacing; this method does not invent interpolated frames. Increase
+    /// path sampling density when that deviation matters.
+    ///
+    /// # Errors
+    ///
+    /// Refuses open paths, invalid phase/count, or duplicate selections from
+    /// insufficient or uneven sampling.
+    pub fn closed_stations(
+        &self,
+        count: usize,
+        phase: f64,
+    ) -> Result<Vec<SweepSectionFrame>, SweepGuideSelectionError> {
+        if !self.closed {
+            return Err(SweepGuideSelectionError::OpenPath);
+        }
+        if !phase.is_finite() || !(0.0..1.0).contains(&phase) {
+            return Err(SweepGuideSelectionError::InvalidPhase);
+        }
+        if count == 0 || count > self.station_count() {
+            return Err(SweepGuideSelectionError::InsufficientStations);
+        }
+        let mut selected = Vec::with_capacity(count);
+        let mut selected_indices = alloc::vec![false; self.station_count()];
+        for index in 0..count {
+            let target = (index as f64 + phase) / count as f64;
+            let upper = self
+                .fractions
+                .partition_point(|fraction| *fraction < target);
+            let lower = upper.saturating_sub(1);
+            let upper = upper.min(self.fractions.len() - 1);
+            let chosen = if target - self.fractions[lower] <= self.fractions[upper] - target {
+                lower
+            } else {
+                upper
+            } % self.station_count();
+            if selected_indices[chosen] {
+                return Err(SweepGuideSelectionError::InsufficientStations);
+            }
+            selected.push(self.station(chosen).expect("selected live station"));
+            selected_indices[chosen] = true;
+        }
+        Ok(selected)
+    }
+}
+
+/// Samples a sweep's one-dimensional section guide without building a mesh.
+///
+/// The same frame construction is used by [`tessellate_path_sweep`]. The
+/// returned guide includes the path policy's stations and the section law's
+/// scale and twist, so tools can be placed relative to the authored sweep
+/// without reimplementing its frame transport. Section frames are in path
+/// local coordinates, before the sweep node's `Placement3` (if any).
+///
+/// # Errors
+///
+/// Refuses invalid paths, section laws, orientation, closure, or sampling
+/// policy under the same rules as the matching sweep.
+pub fn sample_sweep_frames(
+    path: &Path3,
+    section: &SectionLaw,
+    policy: &crate::path::PathDiscretizePolicy,
+) -> Result<SweepGuide, TessellateError> {
+    match path {
+        Path3::Polyline { points, .. } => polyline_guide(points, section),
+        Path3::MiteredPolyline {
+            points,
+            section_x,
+            section_origin,
+            closure,
+            miter_limit,
+        } => mitered_guide(
+            points,
+            *section_x,
+            *section_origin,
+            *closure,
+            *miter_limit,
+            section,
+            policy,
+        ),
+        Path3::Curves {
+            start,
+            segments,
+            section_x,
+            section_origin,
+            closure,
+            joins,
+        } => curved_guide(
+            *start,
+            segments,
+            *section_x,
+            *section_origin,
+            *closure,
+            *joins,
+            section,
+            policy,
+        ),
+    }
+}
+
 /// Per-ring frames along a polyline: miter tangents plus a
 /// rotation-minimizing normal transported by the double-reflection method
 /// (pure arithmetic and square roots — deterministic).
 ///
 /// Right-handedness means a straight +Z path reproduces the extrude
 /// orientation exactly.
-fn sweep_frames(
-    points: &[[f64; 3]],
-    policy: &EvalPolicy,
-) -> Result<Vec<SweepFrame>, TessellateError> {
+fn sweep_frames(points: &[[f64; 3]]) -> Result<Vec<SweepFrame>, TessellateError> {
     let n = points.len();
     let mut dirs: Vec<[f64; 3]> = Vec::with_capacity(n - 1);
     for w in points.windows(2) {
@@ -2808,7 +3100,6 @@ fn sweep_frames(
         let v_i = cross(tangents[i], u_i);
         frames.push((points[i], u_i, v_i, tangents[i]));
     }
-    let _ = policy;
     Ok(frames)
 }
 
@@ -2997,6 +3288,93 @@ fn apply_section_law(
     Ok(())
 }
 
+fn polyline_guide(
+    points: &[[f64; 3]],
+    section: &SectionLaw,
+) -> Result<SweepGuide, TessellateError> {
+    if points.len() < 2 || points.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(TessellateError::InvalidSweepPath);
+    }
+    for pair in points.windows(2) {
+        sweep_direction(pair[0], pair[1])?;
+    }
+    let frames = sweep_frames(points)?;
+    SweepGuide::new(frames, points.to_vec(), None, false, [0.0; 2], section)
+}
+
+fn mitered_guide(
+    points: &[[f64; 3]],
+    section_x: [f64; 3],
+    section_origin: [f64; 2],
+    closure: PathClosure,
+    miter_limit: f64,
+    section: &SectionLaw,
+    policy: &crate::path::PathDiscretizePolicy,
+) -> Result<SweepGuide, TessellateError> {
+    policy.validate().map_err(TessellateError::Path)?;
+    if section_origin.iter().any(|value| !value.is_finite()) {
+        return Err(TessellateError::InvalidSectionOrigin);
+    }
+    let closed = matches!(closure, PathClosure::ClosedPlanar { .. });
+    let bands = points.len().saturating_sub(usize::from(!closed));
+    if bands > policy.max_path_edges as usize {
+        return Err(TessellateError::Path(
+            crate::path::PathDiscretizeError::PathBudgetExceeded {
+                maximum: policy.max_path_edges,
+            },
+        ));
+    }
+    validate_mitered_path(points, section_x, miter_limit)?;
+    let frames = match closure {
+        PathClosure::Open => mitered_frames(points, section_x, miter_limit)?,
+        PathClosure::ClosedPlanar { normal } => {
+            closed_sweep::frames(points, section_x, normal, miter_limit)?
+        }
+    };
+    SweepGuide::new(
+        frames,
+        points.to_vec(),
+        None,
+        closed,
+        section_origin,
+        section,
+    )
+}
+
+fn curved_guide(
+    start: [f64; 3],
+    segments: &[crate::path::PathSegment3],
+    section_x: [f64; 3],
+    section_origin: [f64; 2],
+    closure: PathClosure,
+    joins: PathJoin,
+    section: &SectionLaw,
+    policy: &crate::path::PathDiscretizePolicy,
+) -> Result<SweepGuide, TessellateError> {
+    if section_origin.iter().any(|value| !value.is_finite()) {
+        return Err(TessellateError::InvalidSectionOrigin);
+    }
+    let sampled = crate::path::discretize_path(start, segments, closure, joins, policy)
+        .map_err(TessellateError::Path)?;
+    let frames = curved_sweep::frames(&sampled, section_x)?;
+    let closed = matches!(closure, PathClosure::ClosedPlanar { .. });
+    let ring_count = frames.len() - usize::from(closed);
+    let points = sampled
+        .stations
+        .iter()
+        .take(ring_count)
+        .map(|station| station.point)
+        .collect();
+    SweepGuide::new(
+        frames,
+        points,
+        Some(sampled.sampling),
+        closed,
+        section_origin,
+        section,
+    )
+}
+
 fn sweep_point(frame: &SweepFrame, point: [f64; 2]) -> [f64; 3] {
     add(
         add(frame.0, scale(frame.1, point[0])),
@@ -3121,57 +3499,32 @@ fn mitered_sweep_impl(
     policy: &EvalPolicy,
     chart: Option<SurfaceChart>,
 ) -> Result<TessellatedBody, TessellateError> {
-    policy
-        .sweep_path
-        .validate()
-        .map_err(TessellateError::Path)?;
     let closed = matches!(closure, PathClosure::ClosedPlanar { .. });
     if closed && caps != CapMode::None {
         return Err(TessellateError::ClosedSweepCaps);
     }
-    if section_origin.iter().any(|v| !v.is_finite()) {
-        return Err(TessellateError::InvalidSectionOrigin);
-    }
-    let bands = path.len().saturating_sub(usize::from(!closed));
-    if bands > policy.sweep_path.max_path_edges as usize {
-        return Err(TessellateError::Path(
-            crate::path::PathDiscretizeError::PathBudgetExceeded {
-                maximum: policy.sweep_path.max_path_edges,
-            },
-        ));
-    }
-    validate_mitered_path(path, section_x, miter_limit)?;
-    let mut frames = match closure {
-        PathClosure::Open => mitered_frames(path, section_x, miter_limit)?,
-        PathClosure::ClosedPlanar { normal } => {
-            closed_sweep::frames(path, section_x, normal, miter_limit)?
-        }
-    };
-    apply_section_law(&mut frames, section, closed)?;
-    if section_origin != [0.0; 2] {
-        for frame in &mut frames {
-            frame.0 = sub(
-                frame.0,
-                add(
-                    scale(frame.1, section_origin[0]),
-                    scale(frame.2, section_origin[1]),
-                ),
-            );
-        }
-    }
+    let guide = mitered_guide(
+        path,
+        section_x,
+        section_origin,
+        closure,
+        miter_limit,
+        section,
+        &policy.sweep_path,
+    )?;
     let d = discretize_profile(profile, &policy.discretize)?;
     check_sweep_vertex_budget(path.len(), d.points_len(), policy)?;
-    check_sweep_spans(&frames, &d, placement, path)?;
+    check_sweep_spans(&guide.frames, &d, placement, &guide.path_points)?;
     tessellate_sweep_rings(
         profile,
         placement,
-        path,
+        &guide.path_points,
         caps,
         policy,
         &d,
-        &frames,
+        &guide.frames,
         Some(SweepChecks {
-            bands,
+            bands: guide.frames.len() - 1,
             section_vertices: d.points_len(),
         }),
         None,
@@ -3290,47 +3643,38 @@ fn curved_sweep_impl(
     if closed && caps != CapMode::None {
         return Err(TessellateError::ClosedSweepCaps);
     }
-    if section_origin.iter().any(|v| !v.is_finite()) {
-        return Err(TessellateError::InvalidSectionOrigin);
-    }
-    let sampled = crate::path::discretize_path(start, segments, closure, joins, &policy.sweep_path)
-        .map_err(TessellateError::Path)?;
-    let mut frames = curved_sweep::frames(&sampled, section_x)?;
-    apply_section_law(&mut frames, section, closed)?;
-    if section_origin != [0.0; 2] {
-        for frame in &mut frames {
-            frame.0 = sub(
-                frame.0,
-                add(
-                    scale(frame.1, section_origin[0]),
-                    scale(frame.2, section_origin[1]),
-                ),
-            );
-        }
-    }
+    let guide = curved_guide(
+        start,
+        segments,
+        section_x,
+        section_origin,
+        closure,
+        joins,
+        section,
+        &policy.sweep_path,
+    )?;
     let d = discretize_profile(profile, &policy.discretize)?;
-    let rings = frames.len() - usize::from(closed);
+    let rings = guide.station_count();
     check_sweep_vertex_budget(rings, d.points_len(), policy)?;
-    let points: Vec<_> = sampled
-        .stations
-        .iter()
-        .take(rings)
-        .map(|s| s.point)
-        .collect();
-    check_sweep_spans(&frames, &d, placement, &points)?;
+    check_sweep_spans(&guide.frames, &d, placement, &guide.path_points)?;
     tessellate_sweep_rings(
         profile,
         placement,
-        &points,
+        &guide.path_points,
         caps,
         policy,
         &d,
-        &frames,
+        &guide.frames,
         Some(SweepChecks {
-            bands: sampled.sampling.spans.len(),
+            bands: guide
+                .path_sampling
+                .as_ref()
+                .expect("curved guide has path sampling")
+                .spans
+                .len(),
             section_vertices: d.points_len(),
         }),
-        Some(sampled.sampling),
+        guide.path_sampling,
         closed,
         !section.is_identity(),
         chart,
@@ -3380,16 +3724,15 @@ fn sweep_impl(
 ) -> Result<TessellatedBody, TessellateError> {
     debug_assert!(path.len() >= 2, "IR validation requires >= 2 path points");
     let d = discretize_profile(profile, &policy.discretize)?;
-    let mut frames = sweep_frames(path, policy)?;
-    apply_section_law(&mut frames, section, false)?;
+    let guide = polyline_guide(path, section)?;
     tessellate_sweep_rings(
         profile,
         placement,
-        path,
+        &guide.path_points,
         caps,
         policy,
         &d,
-        &frames,
+        &guide.frames,
         None,
         None,
         false,
