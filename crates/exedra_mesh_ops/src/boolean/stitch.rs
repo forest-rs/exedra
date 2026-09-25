@@ -146,6 +146,9 @@ pub enum BooleanError {
         /// Conservative count of unresolved regions.
         count: u64,
     },
+    /// The assembled surface contains a face that cannot represent a valid
+    /// solid. The witness identifies the output face and its stored geometry.
+    OutputSurface(BooleanOutputFaceWitness),
     /// The operands meet along a zero-area edge whose selected volumetric
     /// boundary would be non-manifold. Both inputs may be valid manifold
     /// meshes; it is their contact that cannot be represented by this
@@ -167,12 +170,51 @@ pub enum BooleanError {
     },
 }
 
+/// Evidence for an invalid face in the assembled Boolean output.
+///
+/// Face IDs refer to the withheld output mesh, so they are useful for
+/// correlating diagnostics from one run, not persistent model identities.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BooleanOutputFaceWitness {
+    /// Face that failed validation in the temporary output mesh.
+    pub face: FaceId,
+    /// Why this face cannot be accepted.
+    pub issue: BooleanOutputFaceIssue,
+    /// Number of corners in the face loop.
+    pub corners: usize,
+    /// Bounds of the stored face vertices.
+    pub bounds: super::Aabb,
+    /// First 16 corners in face-loop order at stored mesh precision.
+    pub corner_sample: Vec<[f32; 3]>,
+    /// Original input face whose selected patch produced this output face.
+    pub source: Option<(MeshSide, FaceId)>,
+}
+
+/// Failure observed while validating an assembled Boolean face.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BooleanOutputFaceIssue {
+    /// The face has an edge on the outside boundary.
+    OpenBoundary,
+    /// Robust triangulation failed or returned no triangles.
+    Triangulation,
+    /// A triangle has zero area at stored mesh precision.
+    ZeroAreaTriangle,
+}
+
 impl core::fmt::Display for BooleanError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::SuspectPatches { count } => {
                 write!(f, "{count} unresolved regions; boolean result withheld")
             }
+            Self::OutputSurface(witness) => write!(
+                f,
+                "invalid assembled face {} ({:?}, {} corners, bounds {:?}); boolean result withheld",
+                witness.face.index(),
+                witness.issue,
+                witness.corners,
+                witness.bounds
+            ),
             Self::NonManifoldContact => {
                 f.write_str("operand edge contact would produce a non-manifold result")
             }
@@ -212,6 +254,8 @@ impl core::error::Error for BooleanError {}
 /// [`BooleanError::InvariantViolation`] when any stage diagnosed an
 /// internal invariant violation (always a pipeline bug, never an input
 /// problem — the result is withheld rather than returned wrong);
+/// [`BooleanError::OutputSurface`] when stored output geometry cannot form a
+/// closed, nondegenerate solid;
 /// [`BooleanError::Build`] when output assembly violates an invariant.
 pub fn boolean_mesh(
     mesh_a: &Mesh,
@@ -309,7 +353,16 @@ pub fn boolean_mesh(
         &mut stats,
     ) {
         Ok((mut mesh, face_provenance, vertex_provenance)) => {
-            check_output_surface(&mesh, diagnostics)?;
+            check_output_surface(&mesh, diagnostics).map_err(|error| match error {
+                BooleanError::OutputSurface(mut witness) => {
+                    witness.source = face_provenance
+                        .iter()
+                        .find(|(face, _, _)| *face == witness.face)
+                        .map(|(_, side, source)| (*side, *source));
+                    BooleanError::OutputSurface(witness)
+                }
+                other => other,
+            })?;
             let carried = super::attributes::carry(
                 &mut mesh,
                 mesh_a,
@@ -362,19 +415,26 @@ fn check_output_surface(
             .face_loop(face)
             .any(|edge| mesh.twin(edge).and_then(|twin| mesh.face(twin)) == Some(FaceId::OUTSIDE));
         let fallback = mesh.face_triangles_into(face, FaceTriangulation::Robust, &mut triangles);
-        let degenerate = fallback
-            || triangles.is_empty()
-            || triangles.iter().any(|triangle| {
-                let [a, b, c] = triangle.map(|corner| {
-                    promote(
-                        *mesh
-                            .vertex_position(mesh.to_vertex(corner).expect("built corner"))
-                            .expect("built vertex"),
-                    )
-                });
-                cross(sub(b, a), sub(c, a)) == [0.0; 3]
+        let zero_area = triangles.iter().any(|triangle| {
+            let [a, b, c] = triangle.map(|corner| {
+                promote(
+                    *mesh
+                        .vertex_position(mesh.to_vertex(corner).expect("built corner"))
+                        .expect("built vertex"),
+                )
             });
-        if open || degenerate {
+            cross(sub(b, a), sub(c, a)) == [0.0; 3]
+        });
+        let issue = if open {
+            Some(BooleanOutputFaceIssue::OpenBoundary)
+        } else if fallback || triangles.is_empty() {
+            Some(BooleanOutputFaceIssue::Triangulation)
+        } else if zero_area {
+            Some(BooleanOutputFaceIssue::ZeroAreaTriangle)
+        } else {
+            None
+        };
+        if let Some(issue) = issue {
             diagnostics.push(BooleanDiagnostic {
                 kind: BooleanFailureKind::NumericalInstability,
                 a: None,
@@ -385,10 +445,40 @@ fn check_output_surface(
                     "assembled Boolean face has no nondegenerate robust triangulation"
                 },
             });
-            return Err(BooleanError::SuspectPatches { count: 1 });
+            return Err(BooleanError::OutputSurface(output_face_witness(
+                mesh, face, issue,
+            )));
         }
     }
     Ok(())
+}
+
+fn output_face_witness(
+    mesh: &Mesh,
+    face: FaceId,
+    issue: BooleanOutputFaceIssue,
+) -> BooleanOutputFaceWitness {
+    let mut bounds = super::Aabb::EMPTY;
+    let mut corners = 0;
+    let mut corner_sample = Vec::new();
+    for edge in mesh.face_loop(face) {
+        let position = *mesh
+            .vertex_position(mesh.to_vertex(edge).expect("built corner"))
+            .expect("built vertex");
+        bounds.include_point(position);
+        corners += 1;
+        if corner_sample.len() < 16 {
+            corner_sample.push(position);
+        }
+    }
+    BooleanOutputFaceWitness {
+        face,
+        issue,
+        corners,
+        bounds,
+        corner_sample,
+        source: None,
+    }
 }
 
 /// Counts unresolved regions conservatively without double-counting the same
@@ -1214,10 +1304,16 @@ mod tests {
             open.push_vertex(point);
         }
         open.add_face(&[0, 1, 2]).unwrap();
-        assert!(matches!(
-            check_output_surface(&open.build().unwrap().mesh, &mut diagnostics),
-            Err(BooleanError::SuspectPatches { .. })
-        ));
+        let Err(BooleanError::OutputSurface(witness)) =
+            check_output_surface(&open.build().unwrap().mesh, &mut diagnostics)
+        else {
+            panic!("open face must carry an output witness");
+        };
+        assert_eq!(witness.issue, BooleanOutputFaceIssue::OpenBoundary);
+        assert_eq!(witness.corners, 3);
+        assert_eq!(witness.corner_sample.len(), 3);
+        assert_eq!(witness.bounds.min, [0.0, 0.0, 0.0]);
+        assert_eq!(witness.bounds.max, [1.0, 1.0, 0.0]);
         assert_eq!(
             diagnostics.entries().last().unwrap().detail,
             "assembled Boolean surface has an open boundary"
@@ -1231,10 +1327,17 @@ mod tests {
         }
         // Connectivity validation alone accepts this closed, flattened cube.
         assert!(flat.validate_deep().is_empty());
+        let Err(BooleanError::OutputSurface(witness)) =
+            check_output_surface(&flat, &mut diagnostics)
+        else {
+            panic!("collapsed face must carry an output witness");
+        };
         assert!(matches!(
-            check_output_surface(&flat, &mut diagnostics),
-            Err(BooleanError::SuspectPatches { .. })
+            witness.issue,
+            BooleanOutputFaceIssue::Triangulation | BooleanOutputFaceIssue::ZeroAreaTriangle
         ));
+        assert_eq!(witness.corners, 4);
+        assert_eq!(witness.corner_sample.len(), 4);
         assert_eq!(
             diagnostics.entries().last().unwrap().detail,
             "assembled Boolean face has no nondegenerate robust triangulation"

@@ -132,6 +132,14 @@ Shaped sweep walls use two planar triangles per section edge and path band;
 their internal diagonal is smooth. This gives downstream Booleans a definite
 piecewise planar surface when a cut crosses a twisted wall.
 
+`Path3::xy_circle` authors the common closed XY rail. For tools placed along a
+sweep, `sample_sweep_frames(path, section, &policy.sweep_path)` computes the
+same one-dimensional guide used by sweep evaluation without building a surface.
+`SweepGuide::closed_stations` selects actual sampled frames nearest equal cyclic
+divisions and reports their realized `path_fraction`; `normal_placement` turns a
+section axis into a tool placement without reimplementing the sweep's twist.
+The `twisted_dogbone_ring` example uses these calls for its 21 cutters.
+
 `SourceMap::sweep_sampling(face)` preserves source sampling policies and curved
 path spans through Boolean cuts. These are original construction records,
 not validity checks on the Boolean result. See [closed sweep semantics and
@@ -142,6 +150,15 @@ forward-motion refusals also retain both section labels, profile ids, authored
 placements, and cubic control geometry with source segment/tag correspondence.
 Errors remain inspectable after dropping the recipe. The witness explains the
 existing sufficient check; it does not prove a surface self-intersection.
+
+CSG refusals also expose `GeometryReport::csg_failures`. Each entry names the
+failed node, the Boolean operation, the authored operand indices on each side
+of that fold, and the typed kernel error. An invalid assembled surface carries
+`BooleanError::OutputSurface` with the temporary face ID, issue, stored bounds,
+a bounded face-corner sample, and its source operand face. These IDs are local
+to one evaluation; use `source_operand` to locate the authored CSG input.
+Callers matching `BooleanError` should handle the new variant, and callers
+constructing `GeometryReport` literals should initialize `csg_failures`.
 
 Retained loft sections now use `LoftSection::new(placement, profile)` in place
 of tuples. Add `.with_source(builder.source_ref("vessel/shoulder"))` to name a

@@ -212,6 +212,36 @@ pub enum Path3 {
 }
 
 impl Path3 {
+    /// A counterclockwise circle of `radius` about the origin in the XY plane.
+    ///
+    /// The sweep starts at `(radius, 0, 0)`, travels with +Y tangent, and
+    /// seeds section X along +Z. The path closes at one shared station and
+    /// requires [`CapMode::None`] when used in a sweep.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::path::PathDiscretizeError::InvalidPath`] unless
+    /// `radius` is finite and positive.
+    pub fn xy_circle(radius: f64) -> Result<Self, crate::path::PathDiscretizeError> {
+        if !radius.is_finite() || radius <= 0.0 {
+            return Err(crate::path::PathDiscretizeError::InvalidPath);
+        }
+        Ok(Self::Curves {
+            start: [radius, 0.0, 0.0],
+            segments: alloc::vec![crate::path::PathSegment3::Arc {
+                axis_origin: [0.0; 3],
+                axis: [0.0, 0.0, 1.0],
+                sweep: core::f64::consts::TAU,
+            }],
+            section_x: [0.0, 0.0, 1.0],
+            section_origin: [0.0; 2],
+            closure: PathClosure::ClosedPlanar {
+                normal: [0.0, 0.0, 1.0],
+            },
+            joins: PathJoin::Smooth,
+        })
+    }
+
     /// Authored polyline points before placement, or `None` for analytic curves.
     ///
     /// Migration: replaces `points()` in schema 28 because an analytic path
