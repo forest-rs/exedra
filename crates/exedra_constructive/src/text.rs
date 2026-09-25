@@ -372,6 +372,9 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 put_law(line, &section.scale);
                 line.push_str(" twist ");
                 put_law(line, &section.twist);
+                if section.turns != 0 {
+                    let _ = write!(line, " turns {}", section.turns);
+                }
                 line.push(' ');
             }
             if let Path3::Curves {
@@ -738,6 +741,14 @@ fn parse_usize(token: &str, line: usize) -> Result<usize, TextError> {
 
 fn parse_u32(token: &str, line: usize) -> Result<u32, TextError> {
     token.parse().map_err(|_| TextError::Malformed { line })
+}
+
+fn next_i32(tokens: &mut core::str::SplitWhitespace<'_>, line: usize) -> Result<i32, TextError> {
+    tokens
+        .next()
+        .ok_or(TextError::Malformed { line })?
+        .parse()
+        .map_err(|_| TextError::Malformed { line })
 }
 
 fn parse_placement(
@@ -1111,6 +1122,10 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
         expect(&mut tokens, "twist", line)?;
         section.twist = parse_law(&mut tokens, line)?;
         kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+        if kind_name == "turns" {
+            section.turns = next_i32(&mut tokens, line)?;
+            kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
+        }
         if !matches!(
             kind_name,
             "sweep" | "mitered_sweep" | "mitered_path_sweep" | "curved_sweep" | "curved_path_sweep"
