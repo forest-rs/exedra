@@ -3176,7 +3176,7 @@ fn mitered_sweep_impl(
         }),
         None,
         closed,
-        section.turns != 0,
+        !section.is_identity(),
         chart,
     )
 }
@@ -3332,7 +3332,7 @@ fn curved_sweep_impl(
         }),
         Some(sampled.sampling),
         closed,
-        section.turns != 0,
+        !section.is_identity(),
         chart,
     )
 }
@@ -3383,7 +3383,18 @@ fn sweep_impl(
     let mut frames = sweep_frames(path, policy)?;
     apply_section_law(&mut frames, section, false)?;
     tessellate_sweep_rings(
-        profile, placement, path, caps, policy, &d, &frames, None, None, false, false, chart,
+        profile,
+        placement,
+        path,
+        caps,
+        policy,
+        &d,
+        &frames,
+        None,
+        None,
+        false,
+        !section.is_identity(),
+        chart,
     )
 }
 
@@ -3627,7 +3638,7 @@ fn tessellate_sweep_rings(
                     seg,
                 };
                 if triangulate_walls {
-                    // A twisted wall quad is generally not planar. A Boolean
+                    // Section variation can make a wall quad nonplanar. A Boolean
                     // may split it into a polygon whose best-fit projection
                     // crosses itself, so establish planar triangles before
                     // the Boolean sees this surface.

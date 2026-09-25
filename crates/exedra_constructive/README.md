@@ -128,7 +128,7 @@ integral turn count preserves winding while the closing station reuses the
 first frame exactly. Supply enough path stations to keep each band below a
 quarter turn. Nonzero turns use `turned_sweep` in JSON and an explicit `turns`
 clause in text. Rust callers using `SectionLaw` literals add `turns: 0`.
-Turned sweep walls use two planar triangles per section edge and path band;
+Shaped sweep walls use two planar triangles per section edge and path band;
 their internal diagonal is smooth. This gives downstream Booleans a definite
 piecewise planar surface when a cut crosses a twisted wall.
 
