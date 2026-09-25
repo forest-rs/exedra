@@ -44,7 +44,10 @@ pub use narrow::{
 };
 pub use preview::{IntersectionPreview, preview_intersections};
 pub use split::{MeshSide, MeshSplitOutcome, SplitStats, split_mesh_along_graph};
-pub use stitch::{BooleanError, BooleanOp, BooleanOutput, BooleanStats, boolean_mesh};
+pub use stitch::{
+    BooleanError, BooleanOp, BooleanOutput, BooleanOutputFaceIssue, BooleanOutputFaceWitness,
+    BooleanStats, boolean_mesh,
+};
 
 const LEAF_TRIANGLE_COUNT: usize = 4;
 

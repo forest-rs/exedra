@@ -143,6 +143,15 @@ placements, and cubic control geometry with source segment/tag correspondence.
 Errors remain inspectable after dropping the recipe. The witness explains the
 existing sufficient check; it does not prove a surface self-intersection.
 
+CSG refusals also expose `GeometryReport::csg_failures`. Each entry names the
+failed node, the Boolean operation, the authored operand indices on each side
+of that fold, and the typed kernel error. An invalid assembled surface carries
+`BooleanError::OutputSurface` with the temporary face ID, issue, stored bounds,
+a bounded face-corner sample, and its source operand face. These IDs are local
+to one evaluation; use `source_operand` to locate the authored CSG input.
+Callers matching `BooleanError` should handle the new variant, and callers
+constructing `GeometryReport` literals should initialize `csg_failures`.
+
 Retained loft sections now use `LoftSection::new(placement, profile)` in place
 of tuples. Add `.with_source(builder.source_ref("vessel/shoulder"))` to name a
 section independently of its reusable profile. JSON and text round trips retain
