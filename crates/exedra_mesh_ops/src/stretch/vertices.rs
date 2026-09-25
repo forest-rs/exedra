@@ -7,15 +7,15 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use exedra_math::{Placement3, Plane3};
 use exedra_mesh::{FaceId, Mesh};
-use exedra_triangulate::predicates::{Orientation, orient2d};
+use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, plane_side};
 
-use super::{StretchError, WorldStretch};
+use super::inverse3;
 
 /// One displacement selected by an oriented plane in operation-local space.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct VertexStretchStep {
     /// Vertices strictly in the positive half-space receive this step.
-    /// The plane is normalized before use; on-plane vertices do not move.
+    /// Selection uses the authored equation; on-plane vertices do not move.
     pub plane: Plane3,
     /// Signed displacement along the normalized local plane normal.
     pub length: f64,
@@ -61,15 +61,24 @@ impl core::error::Error for VertexStretchError {}
 ///
 /// Each step classifies the original positions; displacements accumulate in
 /// supplied order in f64 and narrow once to f32. `placement` maps the steps'
-/// local frame into mesh coordinates. Planes use inverse-transpose transport,
-/// while displacement uses the forward linear map, including reflections.
+/// local frame into mesh coordinates. Selection uses an exact sign predicate
+/// on the unnormalized plane coefficients; normalization affects displacement
+/// only. Nonidentity placement transports the plane in f64 by inverse transpose
+/// and the displacement by the forward linear map, including reflections.
+/// The sign is exact for those transported coefficient bits and the supplied
+/// mesh positions; it cannot recover coordinates lost to earlier rounding.
+/// Evaluate locally before placement when original boundary ownership matters.
 /// Negative lengths move vertices backward; they do not remove a slab.
 ///
 /// Open meshes are accepted. Topology, IDs, UVs, regions and other attributes
 /// remain unchanged, except authored corner normals on faces receiving unequal
-/// displacements are cleared for subsequent derivation. Rigidly translated
-/// faces retain their overrides. Smoothing follows existing connectivity and
-/// sharpness; authored smoothing across disconnected seams is not reconstructed.
+/// *stored* movements are cleared for subsequent derivation. Unchanged and
+/// rigidly translated faces retain their overrides. Movements are compared as
+/// exact differences of stored positions, including wide exponent spans.
+/// This face-local policy does not infer authored smoothing neighborhoods; a
+/// retained override can differ from a derived normal on its changed neighbor.
+/// Choose full derived-normal extraction for consistent geometric smoothing.
+/// Authored smoothing across disconnected seams is not reconstructed.
 ///
 /// All-zero steps return an unchanged clone, including polygon faces. Active
 /// operations require triangles and reject zero-area output using exact
@@ -108,15 +117,7 @@ pub fn stretch_vertices(
     let steps = steps
         .iter()
         .filter(|step| step.length != 0.0)
-        .map(|step| {
-            WorldStretch::prepare(&step.plane, step.length, placement, false).map_err(|error| {
-                match error {
-                    StretchError::SingularTransform => VertexStretchError::SingularTransform,
-                    StretchError::InvalidInput => VertexStretchError::InvalidInput,
-                    _ => VertexStretchError::NumericLimit,
-                }
-            })
-        })
+        .map(|step| PreparedStep::new(step, placement))
         .collect::<Result<Vec<_>, _>>()?;
     let mut positions = BTreeMap::new();
     for vertex in source.vertices() {
@@ -126,11 +127,9 @@ pub fn stretch_vertices(
             .map(f64::from);
         let mut displacement = [0.0; 3];
         for step in &steps {
-            let side = step.signed(original);
-            if !side.is_finite() {
-                return Err(VertexStretchError::NumericLimit);
-            }
-            if side > 0.0 {
+            let side = plane_side(step.plane.normal, step.plane.distance, original)
+                .ok_or(VertexStretchError::NumericLimit)?;
+            if side == Orientation3d::Above {
                 for (sum, delta) in displacement.iter_mut().zip(step.displacement) {
                     *sum += delta;
                 }
@@ -144,7 +143,9 @@ pub fn stretch_vertices(
         if displacement.iter().any(|x| !x.is_finite()) || moved.iter().any(|x| !x.is_finite()) {
             return Err(VertexStretchError::NumericLimit);
         }
-        positions.insert(vertex, (moved, displacement));
+        let stored_movement =
+            core::array::from_fn::<_, 3, _>(|i| exact_difference(f64::from(moved[i]), original[i]));
+        positions.insert(vertex, (moved, stored_movement));
     }
     let mut clear_normals = Vec::new();
     for face in source.faces() {
@@ -179,6 +180,54 @@ pub fn stretch_vertices(
     }
     let _: () = edit.finish();
     Ok(mesh)
+}
+
+// A sum and its residual distinguish actual f32 movements even when their
+// exponent span exceeds f64's significand. Finite f32 differences cannot
+// overflow or underflow f64 intermediates.
+fn exact_difference(a: f64, b: f64) -> (f64, f64) {
+    let sum = a - b;
+    let bv = sum - a;
+    let av = sum - bv;
+    (sum, (a - av) + (-b - bv))
+}
+
+struct PreparedStep {
+    plane: Plane3,
+    displacement: [f64; 3],
+}
+impl PreparedStep {
+    fn new(step: &VertexStretchStep, placement: &Placement3) -> Result<Self, VertexStretchError> {
+        let (unit, _) = step
+            .plane
+            .normalized()
+            .ok_or(VertexStretchError::InvalidInput)?;
+        let linear = placement.rows.map(|r| [r[0], r[1], r[2]]);
+        let inverse = inverse3(linear).ok_or(VertexStretchError::SingularTransform)?;
+        // Do not normalize the selection equation. At identity the exact
+        // predicate sees the original coefficients, including oblique planes.
+        let normal = core::array::from_fn(|i| {
+            inverse[0][i] * step.plane.normal[0]
+                + inverse[1][i] * step.plane.normal[1]
+                + inverse[2][i] * step.plane.normal[2]
+        });
+        let distance = step.plane.distance
+            + normal[0] * placement.rows[0][3]
+            + normal[1] * placement.rows[1][3]
+            + normal[2] * placement.rows[2][3];
+        let local = unit.map(|v| v * step.length);
+        let displacement = linear.map(|r| r[0] * local[0] + r[1] * local[1] + r[2] * local[2]);
+        if !distance.is_finite()
+            || normal.iter().chain(&displacement).any(|v| !v.is_finite())
+            || normal.iter().all(|v| *v == 0.0)
+        {
+            return Err(VertexStretchError::NumericLimit);
+        }
+        Ok(Self {
+            plane: Plane3 { normal, distance },
+            displacement,
+        })
+    }
 }
 
 #[cfg(test)]

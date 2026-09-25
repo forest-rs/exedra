@@ -35,8 +35,9 @@ determinism is an invariant, not a preference. A shared facility must sit
 - budgeted Delaunay refinement with generated vertices ([`refine`] →
   [`RefinedTriangulation`]), kept behind its own entry point so
   [`triangulate`] never invents points;
-- exact-sign planar predicates (`orient2d` and `incircle`) used by current and
-  future strategies;
+- exact-sign geometric predicates (`orient2d`, `orient3d`, `incircle`, and
+  `plane_side`), with plane-equation classification sharing the existing dyadic
+  accumulator rather than normalizing coefficients or adding a tolerance;
 - a typed failure taxonomy ([`TriError`]) distinguishing invalid-input
   classes from internal invariant violations — the triangulator never panics
   and never returns garbage triangles.

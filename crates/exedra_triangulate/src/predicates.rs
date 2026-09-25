@@ -19,6 +19,8 @@
 //! path proved one query without introducing global mutable counters.
 
 mod incircle;
+mod plane;
+pub use plane::plane_side;
 
 pub use incircle::{InCircle, IncircleEvaluation, IncirclePath, incircle, incircle_evaluated};
 
@@ -378,16 +380,25 @@ fn sign_of_dyadic_product_sum(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<O
     {
         return None;
     }
-    let mut positive = [0_u64; DYADIC_LIMBS];
-    let mut negative = [0_u64; DYADIC_LIMBS];
-    for (left, right) in [
+    dyadic_product_sum(&[
         (a[0], b[1]),
         (a[0], -c[1]),
         (-c[0], b[1]),
         (-a[1], b[0]),
         (a[1], c[0]),
         (c[1], b[0]),
-    ] {
+    ])
+}
+
+// At most six finite products fit the accumulator's documented carry budget.
+fn dyadic_product_sum(terms: &[(f64, f64)]) -> Option<Orientation> {
+    debug_assert!(
+        terms.len() <= 6,
+        "dyadic accumulator carry budget is six products"
+    );
+    let mut positive = [0_u64; DYADIC_LIMBS];
+    let mut negative = [0_u64; DYADIC_LIMBS];
+    for &(left, right) in terms {
         let (Some(left), Some(right)) = (decode_dyadic(left), decode_dyadic(right)) else {
             continue;
         };

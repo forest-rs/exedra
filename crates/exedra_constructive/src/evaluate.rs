@@ -538,7 +538,7 @@ impl EvalCx<'_> {
                         )
                     })
                 })?;
-                let body = self.place_plane_body(node_id, body, world)?;
+                let body = self.place_body(node_id, body, world)?;
                 let fidelity = self.body_fidelity(node_id, &[profile]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
@@ -851,20 +851,7 @@ impl EvalCx<'_> {
         let child_result = self.walk(child, &Placement3::IDENTITY, true, None);
         let collected = core::mem::replace(&mut self.bodies, taken);
         let local_bounds = child_result?;
-        let mut bounds = Aabb3::EMPTY;
-        if !local_bounds.is_empty() {
-            for x in [local_bounds.min[0], local_bounds.max[0]] {
-                for y in [local_bounds.min[1], local_bounds.max[1]] {
-                    for z in [local_bounds.min[2], local_bounds.max[2]] {
-                        bounds.include(
-                            world
-                                .rows
-                                .map(|row| row[0] * x + row[1] * y + row[2] * z + row[3]),
-                        );
-                    }
-                }
-            }
-        }
+        let bounds = placed_bounds(local_bounds, world);
         if self.error_count() != errors_before || collected.len() != 1 {
             return Ok(self.record_edge_finish_refusal(
                 node_id,
@@ -1001,7 +988,7 @@ impl EvalCx<'_> {
         self.walk(child, &combined, emit, material)
     }
 
-    fn place_plane_body(
+    fn place_body(
         &self,
         node: NodeId,
         body: Rc<TessellatedBody>,
@@ -1075,7 +1062,7 @@ impl EvalCx<'_> {
                 {
                     cache.insert(key, Rc::clone(&body));
                 }
-                let body = self.place_plane_body(node, body, world)?;
+                let body = self.place_body(node, body, world)?;
                 let fidelity = self.body_fidelity(node, &[]);
                 bounds.union(&self.finish_body(
                     node,
@@ -1108,9 +1095,9 @@ impl EvalCx<'_> {
         let errors_before = self.error_count();
         // Revisit the child even on a cache hit to retain its report. Ancestor
         // material defaults belong to this occurrence, not the cached body.
-        let child_result = self.walk(child, world, true, None);
+        let child_result = self.walk(child, &Placement3::IDENTITY, true, None);
         let collected = core::mem::replace(&mut self.bodies, taken);
-        let bounds = child_result?;
+        let bounds = placed_bounds(child_result?, world);
         if self.error_count() != errors_before || collected.is_empty() {
             return Ok(self.record_stretch_refusal(
                 node_id,
@@ -1120,7 +1107,7 @@ impl EvalCx<'_> {
             ));
         }
         let key = (collected.len() == 1)
-            .then(|| self.cache_key(node_id, world))
+            .then(|| self.cache_key(node_id, &Placement3::IDENTITY))
             .flatten();
         let cached = self.lookup_cached_body(key.as_ref());
         let mut stretched = Vec::with_capacity(collected.len());
@@ -1128,7 +1115,7 @@ impl EvalCx<'_> {
             stretched.push((body, collected[0].material));
         } else {
             for placed in collected {
-                match crate::stretch::stretch_body_vertices(&placed.body, steps, world) {
+                match crate::stretch::stretch_body_vertices(&placed.body, steps) {
                     Ok(body) => {
                         self.report.counters.vertex_stretch_passes += 1;
                         stretched.push((Rc::new(body), placed.material));
@@ -1151,7 +1138,15 @@ impl EvalCx<'_> {
             }
         }
         let mut result_bounds = Aabb3::EMPTY;
-        for (body, child_material) in stretched {
+        // Placement can itself refuse; prepare every body before emitting any.
+        let placed = stretched
+            .into_iter()
+            .map(|(body, material)| {
+                self.place_body(node_id, body, world)
+                    .map(|body| (body, material))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (body, child_material) in placed {
             let fidelity = self.body_fidelity(node_id, &[]);
             result_bounds.union(&self.finish_body(
                 node_id,
@@ -1971,6 +1966,25 @@ fn reflection_placement(plane: &crate::ir::Plane3) -> Placement3 {
         row[3] = 2.0 * d * u[i];
     }
     Placement3 { rows }
+}
+
+// Transform a local refusal envelope without materializing a body.
+fn placed_bounds(local: Aabb3, world: &Placement3) -> Aabb3 {
+    let mut bounds = Aabb3::EMPTY;
+    if !local.is_empty() {
+        for x in [local.min[0], local.max[0]] {
+            for y in [local.min[1], local.max[1]] {
+                for z in [local.min[2], local.max[2]] {
+                    bounds.include(
+                        world
+                            .rows
+                            .map(|row| row[0] * x + row[1] * y + row[2] * z + row[3]),
+                    );
+                }
+            }
+        }
+    }
+    bounds
 }
 
 /// World-space bounds of a mesh (f32 positions promoted).
