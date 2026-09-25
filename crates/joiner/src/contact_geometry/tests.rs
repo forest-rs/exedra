@@ -332,7 +332,7 @@ fn pathological_clipping_stops_with_an_explicit_error() {
 fn inward_facing_surfaces_do_not_witness_bearing() {
     let mut fixture = fixture(true, SupportShape::Full);
     for body in &mut fixture.carrier.bodies {
-        for triangle in body.tri.indices.chunks_exact_mut(3) {
+        for triangle in body.tri.indices.as_chunks_mut::<3>().0.iter_mut() {
             triangle.swap(1, 2);
         }
     }

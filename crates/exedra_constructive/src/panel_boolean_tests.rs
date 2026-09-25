@@ -199,7 +199,7 @@ fn coplanar_panel_differences_are_exact() {
                         );
                     }
                     let mut volume = 0.0;
-                    for indices in tri.indices.chunks_exact(3) {
+                    for indices in tri.indices.as_chunks::<3>().0.iter() {
                         let p = indices
                             .iter()
                             .map(|&i| tri.positions[i as usize].map(f64::from))
@@ -283,7 +283,7 @@ fn shaped_fronts_survive_panel_cuts() {
                     );
                 }
                 let mut volume = 0.0;
-                for indices in tri.indices.chunks_exact(3) {
+                for indices in tri.indices.as_chunks::<3>().0.iter() {
                     let [a, b, c] = [indices[0], indices[1], indices[2]]
                         .map(|i| tri.positions[i as usize].map(f64::from));
                     assert_ne!(

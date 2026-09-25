@@ -18,7 +18,9 @@ fn triangles(part: &CompiledPart) -> impl Iterator<Item = [[f64; 3]; 3]> + '_ {
     part.bodies.iter().flat_map(|body| {
         body.tri
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0], t[1], t[2]].map(|i| body.tri.positions[i as usize].map(f64::from)))
     })
 }
@@ -150,7 +152,7 @@ fn ridge_contacts_close_the_exported_roof_and_support_every_crown() -> Result<()
             let mut area = 0.0;
             let mut low = [f64::INFINITY; 2];
             let mut high = [f64::NEG_INFINITY; 2];
-            for indices in body.tri.indices.chunks_exact(3) {
+            for indices in body.tri.indices.as_chunks::<3>().0.iter() {
                 let t = [indices[0], indices[1], indices[2]]
                     .map(|i| body.tri.positions[i as usize].map(f64::from));
                 if t.iter().any(|p| (p[2] - ridge::FOOT_TOP).abs() > 1.0e-6) {

@@ -186,7 +186,7 @@ mod tests {
         let measured = signed_volume(&mesh).unwrap();
         assert_eq!(measured.value, 4.0);
         assert_eq!(measured.triangles_examined, 4);
-        for triangle in mesh.indices.chunks_exact_mut(3) {
+        for triangle in mesh.indices.as_chunks_mut::<3>().0.iter_mut() {
             triangle.swap(1, 2);
         }
         assert_eq!(signed_volume(&mesh).unwrap().value, -4.0);
@@ -201,7 +201,7 @@ mod tests {
         let cavity = tetrahedron();
         mesh.positions
             .extend(cavity.positions.iter().map(|p| p.map(|v| v * 0.25 + 0.25)));
-        for triangle in cavity.indices.chunks_exact(3) {
+        for triangle in cavity.indices.as_chunks::<3>().0.iter() {
             mesh.indices
                 .extend([triangle[2] + 4, triangle[1] + 4, triangle[0] + 4]);
         }

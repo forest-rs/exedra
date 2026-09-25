@@ -432,7 +432,7 @@ fn export_obj(
             writeln!(out, "vn {:.6} {:.6} {:.6}", normal[0], normal[1], normal[2])
                 .expect("write String");
         }
-        for triangle in body.tri.indices.chunks_exact(3) {
+        for triangle in body.tri.indices.as_chunks::<3>().0.iter() {
             let a = vertex_base + triangle[0];
             let (b, c) = if reflected {
                 // Baking a negative-determinant transform into positions

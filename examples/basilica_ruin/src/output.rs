@@ -610,7 +610,7 @@ pub(crate) fn export_obj(compiled: &CompiledParts, list: &RenderList) -> String 
             let n = transform_vector(&item.world, normal);
             writeln!(out, "vn {:.6} {:.6} {:.6}", n[0], n[1], n[2]).expect("write to String");
         }
-        for triangle in body.tri.indices.chunks_exact(3) {
+        for triangle in body.tri.indices.as_chunks::<3>().0.iter() {
             let a = vertex_base + triangle[0];
             let b = vertex_base + triangle[1];
             let c = vertex_base + triangle[2];

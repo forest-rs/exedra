@@ -16,7 +16,7 @@ fn clay_samples(part: &CompiledPart) -> Vec<[f64; 3]> {
     let own = Solid::new(part, Placement3::IDENTITY);
     let mut samples = Vec::new();
     for body in &part.bodies {
-        for t in body.tri.indices.chunks_exact(3) {
+        for t in body.tri.indices.as_chunks::<3>().0.iter() {
             let [a, b, c] =
                 [t[0], t[1], t[2]].map(|i| body.tri.positions[i as usize].map(f64::from));
             let n = cross(sub(b, a), sub(c, a));

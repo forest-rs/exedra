@@ -145,7 +145,7 @@ mod tests {
                 face_triangulation: FaceTriangulation::Robust,
                 ..ExtractParams::default()
             });
-            for triangle in triangles.indices.chunks_exact(3) {
+            for triangle in triangles.indices.as_chunks::<3>().0.iter() {
                 let [a, b, c] = [triangle[0], triangle[1], triangle[2]]
                     .map(|i| triangles.uvs[i as usize].map(f64::from));
                 let twice_area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);

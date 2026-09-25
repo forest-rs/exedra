@@ -86,7 +86,7 @@ impl TriMesh {
                 return Err(TriMeshGeometryError::NonFinitePosition { vertex });
             }
         }
-        for (triangle, indices) in self.indices.chunks_exact(3).enumerate() {
+        for (triangle, indices) in self.indices.as_chunks::<3>().0.iter().enumerate() {
             let mut points = [[0.0; 3]; 3];
             for (corner, &vertex) in indices.iter().enumerate() {
                 points[corner] = self

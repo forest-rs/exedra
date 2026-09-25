@@ -156,7 +156,7 @@ fn parameter_extremes_produce_sound_geometry_and_shared_parts() -> Result<()> {
                 assert!(!part.bodies.is_empty(), "no silently omitted part");
                 for body in &part.bodies {
                     let mesh = &body.tri;
-                    for triangle in mesh.indices.chunks_exact(3) {
+                    for triangle in mesh.indices.as_chunks::<3>().0.iter() {
                         let [a, b, c] = [triangle[0], triangle[1], triangle[2]]
                             .map(|i| mesh.positions[i as usize].map(f64::from));
                         assert!(
@@ -248,7 +248,7 @@ pub(super) fn recipe_volume(recipe: Recipe) -> Result<f64> {
     let mut volume = 0.0;
     for part in compiled.parts() {
         for body in &part.bodies {
-            for t in body.tri.indices.chunks_exact(3) {
+            for t in body.tri.indices.as_chunks::<3>().0.iter() {
                 let [a, b, c] =
                     [t[0], t[1], t[2]].map(|i| body.tri.positions[i as usize].map(f64::from));
                 volume += dot(a, cross(b, c)) / 6.0;

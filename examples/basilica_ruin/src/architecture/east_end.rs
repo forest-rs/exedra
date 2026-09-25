@@ -140,7 +140,9 @@ mod tests {
         let first_hit = body
             .tri
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter_map(|triangle| {
                 let vertices = [triangle[0], triangle[1], triangle[2]].map(|index| {
                     transform_point(
