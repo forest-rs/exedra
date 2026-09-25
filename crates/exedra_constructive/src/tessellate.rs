@@ -11,6 +11,7 @@
 //! The f64 construction domain narrows to f32 exactly once, here, at vertex
 //! emission (`as f32`, round-to-nearest-even).
 
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -2850,34 +2851,29 @@ impl core::error::Error for SweepGuideSelectionError {}
 pub struct SweepGuide {
     frames: Vec<SweepFrame>,
     fractions: Vec<f64>,
-    path_points: Vec<[f64; 3]>,
     path_sampling: Option<crate::path::PathSampling>,
     closed: bool,
 }
 
-impl SweepGuide {
+/// Frame data shared by tessellation and the explicit guide query. Ordinary
+/// sweeps borrow authored points and never build guide-only distance storage.
+struct SweepFrameData<'a> {
+    frames: Vec<SweepFrame>,
+    path_points: Cow<'a, [[f64; 3]]>,
+    path_sampling: Option<crate::path::PathSampling>,
+    closed: bool,
+}
+
+impl<'a> SweepFrameData<'a> {
     fn new(
         mut frames: Vec<SweepFrame>,
-        path_points: Vec<[f64; 3]>,
+        path_points: Cow<'a, [[f64; 3]]>,
         path_sampling: Option<crate::path::PathSampling>,
         closed: bool,
         section_origin: [f64; 2],
         section: &SectionLaw,
     ) -> Result<Self, TessellateError> {
         apply_section_law(&mut frames, section, closed)?;
-        let mut fractions = Vec::with_capacity(frames.len());
-        fractions.push(0.0);
-        for pair in frames.windows(2) {
-            let previous = *fractions.last().expect("seeded guide");
-            fractions.push(previous + norm(sub(pair[1].0, pair[0].0)));
-        }
-        let total = *fractions.last().expect("guide has stations");
-        if !(total > 0.0 && total.is_finite()) {
-            return Err(TessellateError::InvalidSweepPath);
-        }
-        for fraction in &mut fractions {
-            *fraction /= total;
-        }
         if section_origin != [0.0; 2] {
             for frame in &mut frames {
                 frame.0 = sub(
@@ -2891,13 +2887,55 @@ impl SweepGuide {
         }
         Ok(Self {
             frames,
-            fractions,
             path_points,
             path_sampling,
             closed,
         })
     }
 
+    fn into_guide(self) -> Result<SweepGuide, TessellateError> {
+        let mut fractions = Vec::with_capacity(self.frames.len());
+        fractions.push(0.0);
+        for pair in self.path_points.windows(2) {
+            let previous = *fractions.last().expect("seeded guide");
+            fractions.push(previous + norm(sub(pair[1], pair[0])));
+        }
+        if self.closed {
+            let previous = *fractions.last().expect("seeded guide");
+            fractions.push(
+                previous
+                    + norm(sub(
+                        self.path_points[0],
+                        *self.path_points.last().expect("closed guide has stations"),
+                    )),
+            );
+        }
+        debug_assert_eq!(
+            fractions.len(),
+            self.frames.len(),
+            "one distance per section frame, including closure"
+        );
+        let total = *fractions.last().expect("guide has stations");
+        if !(total > 0.0 && total.is_finite()) {
+            return Err(TessellateError::InvalidSweepPath);
+        }
+        for fraction in &mut fractions {
+            *fraction /= total;
+        }
+        Ok(SweepGuide {
+            frames: self.frames,
+            fractions,
+            path_sampling: self.path_sampling,
+            closed: self.closed,
+        })
+    }
+
+    fn station_count(&self) -> usize {
+        self.frames.len() - usize::from(self.closed)
+    }
+}
+
+impl SweepGuide {
     /// Whether the path shares its first and final section ring.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -2999,7 +3037,7 @@ pub fn sample_sweep_frames(
     section: &SectionLaw,
     policy: &crate::path::PathDiscretizePolicy,
 ) -> Result<SweepGuide, TessellateError> {
-    match path {
+    let frames = match path {
         Path3::Polyline { points, .. } => polyline_guide(points, section),
         Path3::MiteredPolyline {
             points,
@@ -3033,7 +3071,8 @@ pub fn sample_sweep_frames(
             section,
             policy,
         ),
-    }
+    }?;
+    frames.into_guide()
 }
 
 /// Per-ring frames along a polyline: miter tangents plus a
@@ -3288,10 +3327,10 @@ fn apply_section_law(
     Ok(())
 }
 
-fn polyline_guide(
-    points: &[[f64; 3]],
+fn polyline_guide<'a>(
+    points: &'a [[f64; 3]],
     section: &SectionLaw,
-) -> Result<SweepGuide, TessellateError> {
+) -> Result<SweepFrameData<'a>, TessellateError> {
     if points.len() < 2 || points.iter().flatten().any(|value| !value.is_finite()) {
         return Err(TessellateError::InvalidSweepPath);
     }
@@ -3299,18 +3338,25 @@ fn polyline_guide(
         sweep_direction(pair[0], pair[1])?;
     }
     let frames = sweep_frames(points)?;
-    SweepGuide::new(frames, points.to_vec(), None, false, [0.0; 2], section)
+    SweepFrameData::new(
+        frames,
+        Cow::Borrowed(points),
+        None,
+        false,
+        [0.0; 2],
+        section,
+    )
 }
 
-fn mitered_guide(
-    points: &[[f64; 3]],
+fn mitered_guide<'a>(
+    points: &'a [[f64; 3]],
     section_x: [f64; 3],
     section_origin: [f64; 2],
     closure: PathClosure,
     miter_limit: f64,
     section: &SectionLaw,
     policy: &crate::path::PathDiscretizePolicy,
-) -> Result<SweepGuide, TessellateError> {
+) -> Result<SweepFrameData<'a>, TessellateError> {
     policy.validate().map_err(TessellateError::Path)?;
     if section_origin.iter().any(|value| !value.is_finite()) {
         return Err(TessellateError::InvalidSectionOrigin);
@@ -3331,9 +3377,9 @@ fn mitered_guide(
             closed_sweep::frames(points, section_x, normal, miter_limit)?
         }
     };
-    SweepGuide::new(
+    SweepFrameData::new(
         frames,
-        points.to_vec(),
+        Cow::Borrowed(points),
         None,
         closed,
         section_origin,
@@ -3341,7 +3387,7 @@ fn mitered_guide(
     )
 }
 
-fn curved_guide(
+fn curved_guide<'a>(
     start: [f64; 3],
     segments: &[crate::path::PathSegment3],
     section_x: [f64; 3],
@@ -3350,7 +3396,7 @@ fn curved_guide(
     joins: PathJoin,
     section: &SectionLaw,
     policy: &crate::path::PathDiscretizePolicy,
-) -> Result<SweepGuide, TessellateError> {
+) -> Result<SweepFrameData<'a>, TessellateError> {
     if section_origin.iter().any(|value| !value.is_finite()) {
         return Err(TessellateError::InvalidSectionOrigin);
     }
@@ -3365,9 +3411,9 @@ fn curved_guide(
         .take(ring_count)
         .map(|station| station.point)
         .collect();
-    SweepGuide::new(
+    SweepFrameData::new(
         frames,
-        points,
+        Cow::Owned(points),
         Some(sampled.sampling),
         closed,
         section_origin,

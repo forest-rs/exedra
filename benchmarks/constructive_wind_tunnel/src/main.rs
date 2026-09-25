@@ -7,8 +7,9 @@
 //! bit-identical to a full rebuild), and CT-3 (the gallery's direct
 //! Boolean-plus-rounding card, timed by phase), and CT-4 (constructive
 //! stretch exact rewrites versus the general imported-mesh path), and CT-5
-//! (spherical corner triangle count, memory and rounding time), and CT-6
-//! (a through-drill with distinct body and cutter material slots).
+//! (spherical corner triangle count, memory and rounding time), CT-6
+//! (a through-drill with distinct body and cutter material slots), and CT-7
+//! (a long polyline sweep).
 //!
 //! Run the quick profile (the default):
 //! `cargo run --release -p constructive_wind_tunnel -- --quick`
@@ -24,6 +25,9 @@
 //!
 //! Isolate constructive stretch:
 //! `cargo run --release -p constructive_wind_tunnel -- --stretch`
+//!
+//! Isolate sweep framing and mesh construction:
+//! `cargo run --release -p constructive_wind_tunnel -- --sweep`
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -32,9 +36,10 @@ use exedra_constructive::builders;
 use exedra_constructive::cache::EvalCache;
 use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
 use exedra_constructive::ir::{
-    CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, CsgOp, FramePolicy, NodeKind, Path3, Placement3, Plane3, PrimitiveSpec, Recipe,
+    RecipeBuilder, SectionLaw,
 };
-use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
+use exedra_constructive::tessellate::{EvalPolicy, tessellate_path_sweep, tessellate_primitive};
 use exedra_mesh::{ExtractParams, FaceTriangulation, Mesh, MeshBuilder, NormalsSource};
 use exedra_mesh_ops::boolean::{
     BooleanDiagnostics, BooleanOp, BooleanScratch, BooleanStats, boolean_mesh,
@@ -46,6 +51,8 @@ fn main() {
     let config = Config::from_args(std::env::args().skip(1));
     if config.materials_only {
         run_ct6(config.profile);
+    } else if config.sweep_only {
+        run_ct7(config.profile);
     } else if config.corners_only {
         run_ct5(config.profile);
     } else if config.stretch_only {
@@ -59,6 +66,7 @@ fn main() {
         run_ct4(config.profile);
         run_ct5(config.profile);
         run_ct6(config.profile);
+        run_ct7(config.profile);
     }
 }
 
@@ -69,6 +77,7 @@ struct Config {
     stretch_only: bool,
     corners_only: bool,
     materials_only: bool,
+    sweep_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -152,6 +161,7 @@ impl Config {
             stretch_only: false,
             corners_only: false,
             materials_only: false,
+            sweep_only: false,
         };
         for arg in args {
             match arg.as_str() {
@@ -169,6 +179,7 @@ impl Config {
                 "--stretch" => config.stretch_only = true,
                 "--corners" => config.corners_only = true,
                 "--materials" => config.materials_only = true,
+                "--sweep" => config.sweep_only = true,
                 "--materials-sample" => {
                     config.profile = Profile::Sample;
                     config.materials_only = true;
@@ -198,7 +209,7 @@ impl Config {
 
 fn print_help() {
     eprintln!(
-        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners | --corners-sample | --materials | --materials-sample]"
+        "usage: constructive_wind_tunnel [--quick | --ct1-stress | --gallery | --gallery-stress | --gallery-sample | --stretch | --stretch-stress | --corners | --corners-sample | --materials | --materials-sample | --sweep]"
     );
 }
 
@@ -687,6 +698,55 @@ fn run_ct3(profile: Profile) {
         boolean_stats_a.segments,
         boolean_stats_a.seam_edges,
         round_stats_a.strip_faces,
+    );
+}
+
+/// CT-7: a long, small-section polyline sweep. This keeps frame construction
+/// visible next to mesh construction when changing sweep guide storage.
+fn run_ct7(profile: Profile) {
+    let section = builders::rect_centered(2.0, 1.0).expect("CT-7 profile is valid");
+    let path = Path3::Polyline {
+        points: (0..256)
+            .map(|station| [0.0, 0.0, f64::from(station)])
+            .collect(),
+        frame: FramePolicy::RotationMinimizing,
+    };
+    let law = SectionLaw::IDENTITY;
+    let placement = Placement3::IDENTITY;
+    let policy = EvalPolicy::default();
+    let build = || {
+        tessellate_path_sweep(
+            black_box(&section),
+            black_box(&placement),
+            black_box(&path),
+            black_box(&law),
+            CapMode::Both,
+            None,
+            black_box(&policy),
+        )
+        .expect("CT-7 sweep succeeds")
+    };
+    let body = build();
+    assert!(
+        body.mesh.validate_deep().is_empty(),
+        "CT-7 sweep mesh is valid"
+    );
+    let faces = body.mesh.faces().count();
+    let samples = match profile {
+        Profile::Quick => 16,
+        Profile::Stress | Profile::Sample => 64,
+    };
+    let sweeps_per_sample = 16;
+    let (best, average) = time_phase(samples, || {
+        for _ in 0..sweeps_per_sample {
+            black_box(build());
+        }
+    });
+    println!(
+        "scenario=CT-7 profile={} samples={samples} sweeps_per_sample={sweeps_per_sample} best_ns_per_sweep={} avg_ns_per_sweep={} faces={faces}",
+        profile.label(),
+        best.as_nanos() / sweeps_per_sample,
+        average.as_nanos() / sweeps_per_sample,
     );
 }
 

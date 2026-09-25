@@ -208,6 +208,146 @@ fn base_twist_law_facets_nonplanar_sweep_walls() {
 }
 
 #[test]
+fn sampled_guide_frames_match_closed_sweep_rings() {
+    let profile = builders::rect_centered(2.0, 1.0).unwrap();
+    let path = Path3::xy_circle(10.0).unwrap();
+    let section = SectionLaw::IDENTITY.with_turns(2);
+    let mut policy = EvalPolicy::default();
+    policy.sweep_path.max_tangent_angle = 0.025;
+    let guide = sample_sweep_frames(&path, &section, &policy.sweep_path).unwrap();
+    let body = tessellate_path_sweep(
+        &profile,
+        &Placement3::IDENTITY,
+        &path,
+        &section,
+        CapMode::None,
+        None,
+        &policy,
+    )
+    .unwrap();
+    let discretized = discretize_profile(&profile, &policy.discretize).unwrap();
+    let point = discretized.rings().next().unwrap().points[0];
+    let positions = positions(&body);
+    for index in [0, guide.station_count() / 2, guide.station_count() - 1] {
+        let frame = guide.station(index).unwrap();
+        let expected = narrow(add(
+            add(frame.origin, scale(frame.section_x, point[0])),
+            scale(frame.section_y, point[1]),
+        ))
+        .map(f64::from);
+        assert_eq!(positions[index * discretized.points_len()], expected);
+    }
+    let stations = guide.closed_stations(21, 0.5).unwrap();
+    assert_eq!(stations.len(), 21);
+    assert!(
+        stations
+            .windows(2)
+            .all(|pair| pair[0].path_fraction < pair[1].path_fraction)
+    );
+    assert_eq!(guide.station(guide.station_count()), None);
+}
+
+#[test]
+fn guide_fraction_uses_centerline_before_section_datum() {
+    let path = Path3::MiteredPolyline {
+        points: vec![[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 4.0, 0.0]],
+        section_x: [0.0, 0.0, 1.0],
+        section_origin: [1.0, 0.0],
+        closure: PathClosure::Open,
+        miter_limit: 2.0,
+    };
+    let guide = sample_sweep_frames(
+        &path,
+        &SectionLaw::IDENTITY,
+        &EvalPolicy::default().sweep_path,
+    )
+    .unwrap();
+    assert_eq!(guide.station(0).unwrap().path_fraction, 0.0);
+    assert!((guide.station(1).unwrap().path_fraction - 3.0 / 7.0).abs() < 1e-12);
+    assert_eq!(guide.station(2).unwrap().path_fraction, 1.0);
+    assert_ne!(guide.station(1).unwrap().origin, [3.0, 0.0, 0.0]);
+}
+
+#[test]
+fn guide_selection_and_tool_placement_validate_their_contracts() {
+    let open = sample_sweep_frames(
+        &straight_polyline(),
+        &SectionLaw::IDENTITY,
+        &EvalPolicy::default().sweep_path,
+    )
+    .unwrap();
+    assert_eq!(
+        open.closed_stations(2, 0.0),
+        Err(SweepGuideSelectionError::OpenPath)
+    );
+    let path = Path3::xy_circle(10.0).unwrap();
+    let section = SectionLaw::new(Law::Constant(2.0), Law::Constant(0.0)).with_turns(2);
+    let guide = sample_sweep_frames(&path, &section, &EvalPolicy::default().sweep_path).unwrap();
+    assert_eq!(
+        guide.closed_stations(0, 0.0),
+        Err(SweepGuideSelectionError::InsufficientStations)
+    );
+    assert_eq!(
+        guide.closed_stations(1, 1.0),
+        Err(SweepGuideSelectionError::InvalidPhase)
+    );
+    let uneven = Path3::MiteredPolyline {
+        points: vec![
+            [0.0, 0.0, 0.0],
+            [0.001, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        section_x: [0.0, 0.0, 1.0],
+        section_origin: [0.0; 2],
+        closure: PathClosure::ClosedPlanar {
+            normal: [0.0, 0.0, 1.0],
+        },
+        miter_limit: 2.0,
+    };
+    let sparse = sample_sweep_frames(
+        &uneven,
+        &SectionLaw::IDENTITY,
+        &EvalPolicy::default().sweep_path,
+    )
+    .unwrap();
+    assert_eq!(sparse.station_count(), 5);
+    assert_eq!(
+        sparse.closed_stations(5, 0.0),
+        Err(SweepGuideSelectionError::InsufficientStations)
+    );
+    let frame = guide.closed_stations(8, 0.25).unwrap()[0];
+    let placement = frame
+        .normal_placement(
+            SweepFrameNormal::SectionY,
+            -2.0,
+            core::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+    let x = placement.rows.map(|row| row[0]);
+    let y = placement.rows.map(|row| row[1]);
+    let z = placement.rows.map(|row| row[2]);
+    let origin = placement.rows.map(|row| row[3]);
+    let expected_z = scale(frame.section_y, 1.0 / norm(frame.section_y));
+    for axis in [0, 1, 2] {
+        assert!((z[axis] - expected_z[axis]).abs() < 1e-12);
+        assert!((origin[axis] - (frame.origin[axis] - 2.0 * z[axis])).abs() < 1e-12);
+    }
+    for axis in [x, y, z] {
+        assert!((norm(axis) - 1.0).abs() < 1e-12);
+    }
+    assert!(dot(x, y).abs() < 1e-12);
+    assert!(dot(x, z).abs() < 1e-12);
+    assert!(dot(y, z).abs() < 1e-12);
+    assert!(
+        frame
+            .normal_placement(SweepFrameNormal::SectionY, f64::NAN, 0.0)
+            .is_err()
+    );
+}
+
+#[test]
 fn laws_scale_about_the_section_datum() {
     let rect = builders::rect_from_corner(2.0, 1.0).unwrap();
     let Path3::Curves {
