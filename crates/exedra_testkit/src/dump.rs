@@ -181,7 +181,7 @@ pub fn mesh_to_obj(mesh: &Mesh) -> String {
         out.push_str(&format!("vn {} {} {}\n", normal[0], normal[1], normal[2]));
     }
 
-    for triangle in tri.indices.chunks_exact(3) {
+    for triangle in tri.indices.as_chunks::<3>().0.iter() {
         let a = triangle[0] + 1;
         let b = triangle[1] + 1;
         let c = triangle[2] + 1;

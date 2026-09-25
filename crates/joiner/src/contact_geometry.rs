@@ -182,7 +182,7 @@ fn uncovered_area(
         if !body.tri.indices.len().is_multiple_of(3) {
             return Err(ContactGeometryError::InvalidMesh);
         }
-        for indices in body.tri.indices.chunks_exact(3) {
+        for indices in body.tri.indices.as_chunks::<3>().0.iter() {
             let mut points = [[0.0; 3]; 3];
             for (point, index) in points.iter_mut().zip(indices) {
                 *point = body

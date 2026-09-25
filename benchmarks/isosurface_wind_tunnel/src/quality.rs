@@ -173,7 +173,9 @@ impl Bvh {
 pub(crate) fn triangles(mesh: &Mesh) -> Vec<Triangle> {
     let (mesh, _) = mesh.to_trimesh(&ExtractParams::default());
     mesh.indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .enumerate()
         .map(|(original_index, indices)| Triangle {
             points: core::array::from_fn(|corner| {

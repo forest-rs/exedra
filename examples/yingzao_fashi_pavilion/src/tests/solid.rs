@@ -37,7 +37,9 @@ impl Solid {
                     .collect();
                 body.tri
                     .indices
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|t| {
                         [
                             positions[t[0] as usize],

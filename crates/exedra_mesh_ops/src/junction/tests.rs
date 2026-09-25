@@ -156,7 +156,9 @@ fn close_and_check_with(
 fn signed_volume(mesh: &Mesh) -> f64 {
     let (tri, _) = mesh.to_trimesh(&ExtractParams::default());
     tri.indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| {
             let p = |i: u32| tri.positions[i as usize].map(f64::from);
             dot(p(t[0]), cross(p(t[1]), p(t[2]))) / 6.0

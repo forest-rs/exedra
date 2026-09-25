@@ -324,7 +324,7 @@ fn check_recess_material_geometry(document: &GlbDocument, mirrored: bool) {
         let name = document.json()["materials"][material]["name"]
             .as_str()
             .unwrap();
-        for triangle in read_indices(document, primitive).chunks_exact(3) {
+        for triangle in read_indices(document, primitive).as_chunks::<3>().0.iter() {
             let points: Vec<_> = triangle
                 .iter()
                 .map(|index| {
