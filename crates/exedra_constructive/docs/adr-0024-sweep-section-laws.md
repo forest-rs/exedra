@@ -36,13 +36,15 @@ realization checks, so the section's variation belongs on the sweep.
    `RecipeError::InvalidParameter { what: "sweep section law" }` at recipe
    construction and `TessellateError::InvalidSectionLaw` at tessellation. A
    closed path requires both laws to agree at `t = 0` and `t = 1`
-   (`SectionLawError::OpenSeam`); a closed twist must return to its starting
-   angle. Agreement is exact, not within a tolerance, and a whole extra turn
-   does not count as agreement: the first and last stations share one seam
-   ring, which needs a single section, and a turn would also carry the
-   chart's U seam around the path. Explicit agreement is preferred to a
-   tolerance that could close a seam the author did not intend. An
-   identity-shaped law (every value 1 for scale, 0 for twist) is stored as
+   (`SectionLawError::OpenSeam`); the base twist must return to its starting
+   angle. Agreement is exact, not within a tolerance. `SectionLaw::turns`
+   separately records signed complete revolutions. The final transformed
+   frame is copied from the first, so trigonometric rounding cannot leave a
+   seam gap, while intermediate stations retain the winding. This retains
+   the profile corner and chart U correspondence at the shared seam ring.
+   Consecutive stations must differ by less than a quarter turn when `turns`
+   is nonzero; undersampled paths fail rather than alias away the winding. An
+   identity-shaped law (every value 1 for scale, 0 for twist, zero turns) is stored as
    `SectionLaw::IDENTITY`, and law encodings write `-0.0` as `+0.0`, so
    equal laws round-trip and fingerprint identically. `SectionLaw` is
    `#[non_exhaustive]`; build it with `SectionLaw::new` or its presets so a
@@ -62,6 +64,10 @@ realization checks, so the section's variation belongs on the sweep.
    non-identity laws, so older readers refuse shaped sweeps rather than drop
    the law, and existing documents are unchanged. No evaluation schema bump
    is needed: unchanged recipes evaluate identically.
+   A nonzero `turns` count adds an encoding suffix only to that law, leaving
+   existing fingerprints intact. Text adds `turns <signed integer>` after the
+   base twist law. JSON uses `turned_sweep` with an explicit `turns` field so
+   older readers reject the new semantics instead of ignoring an extra field.
 
 ## Consequences
 
@@ -73,3 +79,6 @@ realization checks, so the section's variation belongs on the sweep.
   functions and `tessellate_sweep_with_chart` keep constant sections.
 - Per-axis scale, laws in absolute distance, and law-driven station
   refinement are possible later extensions of `SectionLaw`.
+- Migration for Rust callers constructing `SectionLaw` literals: add `turns: 0`
+  or use `SectionLaw::new(...).with_turns(n)`. Existing text and JSON remain
+  readable; nonzero turns use the new forms above.

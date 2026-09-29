@@ -399,6 +399,14 @@ pub enum TessellateError {
     /// A sweep's [`SectionLaw`] is malformed, or does not close on a closed
     /// path.
     InvalidSectionLaw(SectionLawError),
+    /// A complete-turn law changes too far within one sampled path band to
+    /// retain its authored winding.
+    SweepTwistUndersampled {
+        /// Path band whose section rotation exceeds the sampling limit.
+        band: usize,
+        /// Absolute section rotation across this band, in radians.
+        radians: f64,
+    },
     /// The declared closed-path plane normal is nonfinite or zero.
     InvalidSweepPlane,
     /// A station lies outside the f64 rounding allowance of the declared plane.
@@ -522,6 +530,10 @@ impl core::fmt::Display for TessellateError {
                 "sweep path needs finite distinct points and usable segment lengths"
             ),
             Self::InvalidSectionLaw(error) => error.fmt(f),
+            Self::SweepTwistUndersampled { band, radians } => write!(
+                f,
+                "sweep band {band} twists by {radians} radians; add stations to keep each band below a quarter turn"
+            ),
             Self::InvalidSweepOrientation => write!(
                 f,
                 "sweep section-X must have a usable component perpendicular to the first segment"
@@ -2953,14 +2965,34 @@ fn apply_section_law(
     if !(total > 0.0 && total.is_finite()) {
         return Err(TessellateError::InvalidSweepPath);
     }
+    if section.turns != 0 {
+        let angle_at = |distance: f64| {
+            let t = distance / total;
+            section.twist.eval(t) + f64::from(section.turns) * core::f64::consts::TAU * t
+        };
+        for (band, pair) in distances.windows(2).enumerate() {
+            let start = angle_at(pair[0]);
+            let end = angle_at(pair[1]);
+            if !start.is_finite() || !end.is_finite() {
+                return Err(TessellateError::NonFiniteGeometry);
+            }
+            let radians = (end - start).abs();
+            if radians >= core::f64::consts::FRAC_PI_2 {
+                return Err(TessellateError::SweepTwistUndersampled { band, radians });
+            }
+        }
+    }
     for (frame, distance) in frames.iter_mut().zip(distances) {
         let t = distance / total;
         let s = section.scale.eval(t);
-        let angle = section.twist.eval(t);
+        let angle = section.twist.eval(t) + f64::from(section.turns) * core::f64::consts::TAU * t;
         let (sin, cos) = (libm::sin(angle), libm::cos(angle));
         let (u, v) = (frame.1, frame.2);
         frame.1 = scale(add(scale(u, cos), scale(v, sin)), s);
         frame.2 = scale(sub(scale(v, cos), scale(u, sin)), s);
+    }
+    if closed && section.turns != 0 {
+        frames[frames.len() - 1] = frames[0];
     }
     Ok(())
 }
@@ -3144,6 +3176,7 @@ fn mitered_sweep_impl(
         }),
         None,
         closed,
+        !section.is_identity(),
         chart,
     )
 }
@@ -3299,6 +3332,7 @@ fn curved_sweep_impl(
         }),
         Some(sampled.sampling),
         closed,
+        !section.is_identity(),
         chart,
     )
 }
@@ -3349,7 +3383,18 @@ fn sweep_impl(
     let mut frames = sweep_frames(path, policy)?;
     apply_section_law(&mut frames, section, false)?;
     tessellate_sweep_rings(
-        profile, placement, path, caps, policy, &d, &frames, None, None, false, chart,
+        profile,
+        placement,
+        path,
+        caps,
+        policy,
+        &d,
+        &frames,
+        None,
+        None,
+        false,
+        !section.is_identity(),
+        chart,
     )
 }
 
@@ -3476,6 +3521,7 @@ fn tessellate_sweep_rings(
     sweep_checks: Option<SweepChecks>,
     path_sampling: Option<crate::path::PathSampling>,
     closed: bool,
+    triangulate_walls: bool,
     chart: Option<SurfaceChart>,
 ) -> Result<TessellatedBody, TessellateError> {
     let flip = det3(placement) < 0.0;
@@ -3579,25 +3625,53 @@ fn tessellate_sweep_rings(
                     .chart
                     .as_ref()
                     .map(|chart| chart.wall_quad(ring_index, i as usize, band));
-                builder.add_chart_face(
-                    &[
-                        below + base + i,
-                        below + base + j,
-                        above + base + j,
-                        above + base + i,
-                    ],
-                    &FaceBuildAttrs {
-                        region: Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg),
-                        edge_seams: None,
-                        edge_sharpness: Some(&sharp),
-                    },
-                    uv.as_ref().map(|uv| uv.as_slice()),
-                )?;
-                face_origins.push(Feature::SweepWall {
+                let corners = [
+                    below + base + i,
+                    below + base + j,
+                    above + base + j,
+                    above + base + i,
+                ];
+                let region = Some(REGION_WALL_BASE + seg_offsets[ring_index] + seg);
+                let feature = Feature::SweepWall {
                     band: band_u16,
                     loop_index,
                     seg,
-                });
+                };
+                if triangulate_walls {
+                    // Section variation can make a wall quad nonplanar. A Boolean
+                    // may split it into a polygon whose best-fit projection
+                    // crosses itself, so establish planar triangles before
+                    // the Boolean sees this surface.
+                    for (indices, edge_sharpness) in [
+                        ([0, 1, 2], [sharp[0], sharp[1], 0.0]),
+                        ([0, 2, 3], [0.0, sharp[2], sharp[3]]),
+                    ] {
+                        builder.add_chart_face(
+                            &indices.map(|index| corners[index]),
+                            &FaceBuildAttrs {
+                                region,
+                                edge_seams: None,
+                                edge_sharpness: Some(&edge_sharpness),
+                            },
+                            uv.as_ref()
+                                .map(|quad| indices.map(|index| quad[index]))
+                                .as_ref()
+                                .map(|triangle| triangle.as_slice()),
+                        )?;
+                        face_origins.push(feature);
+                    }
+                } else {
+                    builder.add_chart_face(
+                        &corners,
+                        &FaceBuildAttrs {
+                            region,
+                            edge_seams: None,
+                            edge_sharpness: Some(&sharp),
+                        },
+                        uv.as_ref().map(|uv| uv.as_slice()),
+                    )?;
+                    face_origins.push(feature);
+                }
             }
         }
     }
