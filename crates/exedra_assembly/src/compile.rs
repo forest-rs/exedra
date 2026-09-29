@@ -580,7 +580,7 @@ impl PartCompiler {
         let mut evaluated = Vec::new();
         for (index, def) in assembly.parts().iter().enumerate() {
             let id = PartId(crate::len_u32(index));
-            let content_fp = part_fingerprint(def.source());
+            let content_fp = def.source_fingerprint();
             let key = (content_fp, policy_fp);
             part_keys.push(key);
             if let Some(hit) = self.cache.get(&key)
@@ -645,7 +645,7 @@ impl PartCompiler {
     }
 }
 
-fn part_fingerprint(source: &PartSource) -> PartFingerprint {
+pub(crate) fn part_fingerprint(source: &PartSource) -> PartFingerprint {
     match source {
         PartSource::Recipe(recipe) => PartFingerprint(recipe.recipe_fingerprint().0),
         // Assemblies can be rebuilt with the same local ids and generation.

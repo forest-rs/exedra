@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use super::{CompiledParts, PartFingerprint, PolicyFingerprint, part_fingerprint};
+use super::{CompiledParts, PartFingerprint, PolicyFingerprint};
 use crate::{Assembly, PartId};
 
 /// Compiled geometry does not correspond to an assembly's current part records.
@@ -56,8 +56,9 @@ impl CompiledParts {
     /// require a matching compilation. The supplied snapshot determines the policy;
     /// callers can compare [`Self::policy_fingerprint`] with their intended policy.
     ///
-    /// This recomputes source content fingerprints, including baked mesh attributes.
-    /// It does not tessellate or measure placed bounds. Use it at snapshot/export
+    /// This compares content fingerprints retained when each source was installed
+    /// or replaced, including baked mesh attributes. It does not rescan geometry,
+    /// tessellate or measure placed bounds. Use it at snapshot/export
     /// boundaries; reading local poses directly needs no geometry validation walk.
     /// Geometry reports remain accessible through [`Self::report`], including reports
     /// for partial evaluations. Matching content alone does not certify completeness.
@@ -73,7 +74,7 @@ impl CompiledParts {
             });
         }
         for (index, (def, compiled)) in assembly.parts().iter().zip(&self.parts).enumerate() {
-            let expected = part_fingerprint(def.source());
+            let expected = def.source_fingerprint();
             if expected != compiled.fingerprint {
                 return Err(CompilationMismatch::PartContent {
                     part: PartId(crate::len_u32(index)),
@@ -111,6 +112,35 @@ mod tests {
                 .unwrap();
         }
         assembly
+    }
+
+    #[test]
+    fn replacing_source_updates_retained_identity_without_weakening_validation() {
+        let mut source = assembly(&[1.0]);
+        let mut compiler = PartCompiler::new();
+        let policy = CompilePolicy::default();
+        let before = compiler.compile_parts(&source, &policy).unwrap();
+        let saved = source.clone();
+        assert_eq!(before.validate_for(&saved), Ok(()));
+        let replacement = assembly(&[2.0]);
+        source
+            .replace_part_source(PartId(0), replacement.parts()[0].source().clone())
+            .unwrap();
+        assert!(matches!(
+            before.validate_for(&source),
+            Err(CompilationMismatch::PartContent {
+                part: PartId(0),
+                ..
+            })
+        ));
+        let after = compiler.compile_parts(&source, &policy).unwrap();
+        assert_eq!(after.validate_for(&source), Ok(()));
+        assert_eq!(before.validate_for(&saved), Ok(()));
+        // Reinstalling the same content retains identity, regardless of handle history.
+        source
+            .replace_part_source(PartId(0), saved.parts()[0].source().clone())
+            .unwrap();
+        assert_eq!(before.validate_for(&source), Ok(()));
     }
 
     #[test]

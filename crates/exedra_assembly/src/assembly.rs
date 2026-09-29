@@ -74,10 +74,15 @@ pub enum PartSource {
 /// without an authored slot can use [`PartDef::region_slot`] as fallback.
 /// Instances bind slots to opaque material keys; parts may carry default
 /// keys per slot.
+/// Source-content identity is computed when the source is installed or replaced
+/// and retained for compilation and snapshot validation.
 #[derive(Clone, Debug)]
 pub struct PartDef {
     key: String,
     source: PartSource,
+    // Source is immutable between explicit replacement calls. Keep its content
+    // identity with it so compilation and validation never rescan the mesh.
+    fingerprint: crate::compile::PartFingerprint,
     slots: Vec<String>,
     /// `(region, slot)` pairs sorted by region.
     region_slots: Vec<(u32, SlotIndex)>,
@@ -99,6 +104,10 @@ impl PartDef {
     #[must_use]
     pub fn source(&self) -> &PartSource {
         &self.source
+    }
+
+    pub(crate) fn source_fingerprint(&self) -> crate::compile::PartFingerprint {
+        self.fingerprint
     }
 
     /// Declared slot names, in slot-index order.
@@ -403,6 +412,7 @@ impl Assembly {
     }
 
     /// Registers a baked-mesh part with explicitly declared slots.
+    /// Computes its content fingerprint, including authored mesh attributes.
     ///
     /// # Errors
     ///
@@ -441,6 +451,7 @@ impl Assembly {
         let default_materials = alloc::vec![None; slots.len()];
         self.parts.push(PartDef {
             key: key.to_string(),
+            fingerprint: crate::compile::part_fingerprint(&source),
             source,
             slots,
             region_slots: Vec::new(),
@@ -460,6 +471,7 @@ impl Assembly {
     ///
     /// This is the content edit that invalidates compiled caches (the
     /// compile layer subscribes via its parts channel).
+    /// Computes the replacement source's content fingerprint before installing it.
     ///
     /// # Errors
     ///
@@ -477,6 +489,7 @@ impl Assembly {
             def.slots = recipe.slots().to_vec();
             def.default_materials.resize(def.slots.len(), None);
         }
+        def.fingerprint = crate::compile::part_fingerprint(&source);
         def.source = source;
         self.content_generation += 1;
         Ok(())

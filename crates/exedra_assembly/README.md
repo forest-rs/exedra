@@ -164,8 +164,9 @@ Replace explicit `Rc::clone`/`Rc::ptr_eq` calls with their `Arc` equivalents.
 `CompiledParts::validate_for(&assembly)` rejects mismatched part counts and
 source content. It accepts pose, metadata and material edits. The snapshot's
 `policy_fingerprint()` identifies its evaluation/extraction settings. Content
-checking includes hashing baked mesh attributes, so use it at export or snapshot
-boundaries; reading parent/local placements directly requires no geometry walk.
+identity includes baked mesh attributes and is computed when a source is
+registered or replaced. Compilation and validation reuse that retained identity;
+validation is linear in part count without another geometry walk.
 `flatten_with` and `BoundsPolicy::Exact` remain the explicit way to measure
 exact placed bounds.
 
