@@ -24,6 +24,7 @@ std = [
     "exedra_isosurface?/std",
     "exedra_edit?/std",
     "exedra_primitives?/std",
+    "exedra_scene?/std",
 ]
 libm = [
     "exedra_mesh/libm",
@@ -43,6 +44,7 @@ isosurface = ["dep:exedra_isosurface"]
 edit = ["dep:exedra_edit"]
 mesh_ops = ["dep:exedra_mesh_ops"]
 primitives = ["dep:exedra_primitives"]
+scene = ["dep:exedra_scene", "constructive"]
 serde = [
     "assembly",
     "exedra_assembly/serde",
@@ -60,6 +62,7 @@ exedra_isosurface = { optional = true, workspace = true }
 exedra_mesh.workspace = true
 exedra_mesh_ops = { optional = true, workspace = true }
 exedra_primitives = { optional = true, workspace = true }
+exedra_scene = { optional = true, workspace = true }
 
 [lints]
 workspace = true

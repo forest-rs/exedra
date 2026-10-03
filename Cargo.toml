@@ -27,6 +27,7 @@ members = [
     "crates/exedra_mesh_ops",
     "crates/exedra_primitives",
     "crates/exedra_qef",
+    "crates/exedra_scene",
     "crates/exedra_spatial",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
@@ -42,6 +43,7 @@ members = [
     "examples/constructive_gallery",
     "examples/constructive_probe",
     "examples/material_gallery",
+    "examples/native_scene",
     "examples/yingzao_fashi_pavilion",
 ]
 
@@ -121,6 +123,7 @@ exedra_mesh = { default-features = false, path = "crates/exedra_mesh", version =
 exedra_mesh_ops = { default-features = false, path = "crates/exedra_mesh_ops", version = "0.1.0" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives", version = "0.1.0" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef", version = "0.1.0" }
+exedra_scene = { default-features = false, path = "crates/exedra_scene", version = "0.1.0" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate", version = "0.1.0" }
@@ -136,6 +139,9 @@ joto_parse = "0.2.0"
 # Pinned exactly: kurbo flattening output feeds content hashes and goldens in
 # the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
+# Match Lightweald's native scene types; keep this dependency in the scene layer.
+layerstack = { default-features = false, git = "https://github.com/forest-rs/layerstack", rev = "dcf0c7e9354c19076d6c6994041d9ac791c0a957" }
+layerstack_schemas = { default-features = false, features = ["usd-geom", "usd-shade"], git = "https://github.com/forest-rs/layerstack", rev = "dcf0c7e9354c19076d6c6994041d9ac791c0a957" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
 setout = { default-features = false, path = "crates/setout" }

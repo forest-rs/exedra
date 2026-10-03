@@ -275,6 +275,7 @@ dependencies = [
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_primitives",
+ "exedra_scene",
 ]
 
 [[package]]
@@ -478,6 +479,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_scene"
+version = "0.1.0"
+dependencies = [
+ "exedra_constructive",
+ "exedra_mesh",
+ "layerstack",
+ "layerstack_schemas",
+]
+
+[[package]]
 name = "exedra_spatial"
 version = "0.1.0"
 
@@ -598,6 +609,15 @@ dependencies = [
  "hashbrown",
  "regex",
  "smallvec 2.0.0-alpha.13",
+]
+
+[[package]]
+name = "fearless_simd"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3772b63c40606beea8fe1f7b06a60de27ceb9bfc2d9dad3427368ca41dc7e62"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
@@ -757,6 +777,7 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+ "rustc-std-workspace-alloc",
 ]
 
 [[package]]
@@ -881,6 +902,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "layerstack"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=dcf0c7e9354c19076d6c6994041d9ac791c0a957#dcf0c7e9354c19076d6c6994041d9ac791c0a957"
+dependencies = [
+ "hashbrown",
+ "invalidation",
+ "libm",
+ "opinionated",
+ "unicode-ident",
+]
+
+[[package]]
+name = "layerstack_schemas"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=dcf0c7e9354c19076d6c6994041d9ac791c0a957#dcf0c7e9354c19076d6c6994041d9ac791c0a957"
+dependencies = [
+ "fearless_simd",
+ "layerstack",
+ "libm",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -979,6 +1022,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "native_scene"
+version = "0.0.0"
+dependencies = [
+ "exedra_constructive",
+ "exedra_scene",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1033,6 +1084,11 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "opinionated"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=dcf0c7e9354c19076d6c6994041d9ac791c0a957#dcf0c7e9354c19076d6c6994041d9ac791c0a957"
 
 [[package]]
 name = "ordered-float"
@@ -1188,6 +1244,12 @@ name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+
+[[package]]
+name = "rustc-std-workspace-alloc"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9d441c3b2ebf55cebf796bfdc265d67fa09db17b7bb6bd4be75c509e1e8fec3"
 
 [[package]]
 name = "rustversion"

@@ -17,6 +17,7 @@
 //! - [`primitives`] contains deterministic primitive mesh generators (opt-in).
 //! - [`analytic`] and [`isosurface`] contain alternative geometry heads (opt-in).
 //! - [`gltf`] contains assembly export (opt-in).
+//! - [`scene`] contains optional native `LayerStack` scene authoring and generation.
 //! - `serde` exposes constructive and assembly interchange modules.
 //!
 //! The root intentionally exposes only the primary anchors: [`Mesh`], and,
@@ -30,9 +31,11 @@
 //! applications; `libm` supports `no_std` applications. The default feature
 //! set is `std`, `assembly`, and `mesh_ops`; `assembly` also selects
 //! `constructive` because its public API admits [`Recipe`]. `edit`, `analytic`,
-//! `isosurface`, `primitives`, and `gltf` remain opt-in. Native domains expose
+//! `isosurface`, `primitives`, `scene`, and `gltf` remain opt-in. Native domains expose
 //! their own operations directly. The `gltf` feature selects `assembly` and
 //! `std`; `serde` selects `std` and exposes constructive and assembly interchange.
+//! `scene` selects `constructive`; standalone construction, assembly and export
+//! do not depend on `LayerStack`. See [`scene`] for the initial authored vocabulary.
 //!
 //! # Example
 //!
@@ -128,6 +131,13 @@ pub use exedra_primitives as primitives;
 /// This namespace requires the `gltf` feature, which also selects `std`.
 #[cfg(feature = "gltf")]
 pub use exedra_gltf as gltf;
+
+/// Native scene composition, typed construction, and explicit mesh regeneration.
+///
+/// `LayerStack` remains opt-in through `scene`. Direct construction and assembly
+/// continue to work independently of a scene implementation.
+#[cfg(feature = "scene")]
+pub use exedra_scene as scene;
 
 #[cfg(test)]
 mod feature_contract_tests {
