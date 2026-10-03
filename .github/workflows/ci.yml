@@ -25,6 +25,7 @@ env:
     -p exedra_isosurface
     -p exedra_primitives
     -p exedra_qef
+    -p exedra_scene
     -p exedra_spatial
     -p exedra_testkit
     -p exedra_triangulate
@@ -42,6 +43,7 @@ env:
     -p exedra_isosurface
     -p exedra_primitives
     -p exedra_qef
+    -p exedra_scene
     -p exedra_spatial
     -p exedra_testkit
     -p exedra_triangulate
@@ -218,6 +220,18 @@ jobs:
 
       - name: cargo check (opt-in command runner)
         run: cargo check -p exedra --locked --no-default-features --features std,edit
+
+      - name: cargo check (native scenes without std)
+        run: cargo check -p exedra --locked --no-default-features --features libm,scene --target x86_64-unknown-none
+
+      - name: enforce standalone construction dependencies
+        shell: bash
+        run: |
+          cargo tree -p exedra --locked --features gltf,serde --edges normal --prefix none > standalone-dependencies.txt
+          if grep -E '^(layerstack|layerstack_schemas|exedra_scene) ' standalone-dependencies.txt; then
+            echo "Standalone construction, assembly and export must not enable scene composition."
+            exit 1
+          fi
 
       - name: cargo check (all features)
         run: cargo check -p exedra --locked --all-features

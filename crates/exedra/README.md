@@ -24,7 +24,7 @@ exedra = "0.1"
 
 It enables `std`, `assembly`, and `mesh_ops`; `assembly` also enables
 `constructive` because assemblies publicly admit recipe-backed parts.
-`edit`, `analytic`, `isosurface`, `primitives`, `gltf`, and `serde` interchange are
+`edit`, `analytic`, `isosurface`, `primitives`, `scene`, `gltf`, and `serde` interchange are
 opt-in. `gltf` and `serde` also select `std`. For a `no_std` application,
 disable defaults and select `libm` plus the needed heads:
 
@@ -48,10 +48,31 @@ their own operations and conversions directly.
 - `exedra::analytic`: planar analytic topology and tessellation.
 - `exedra::isosurface`: implicit fields and surface extraction.
 - `exedra::gltf`: glTF and GLB export.
+- `exedra::scene`: optional native LayerStack composition, typed construction
+  and explicit mesh regeneration.
 
 The primitive, analytic, isosurface, and export namespaces are opt-in. Use the
 namespace that owns an operation instead of expecting the facade to add
 behavior between domains.
+
+## Native scenes
+
+Enable `scene` to author construction on a native LayerStack stage. It also
+enables `constructive`; the evaluator lowers composed parameters through the
+same recipe evaluator and publishes conventional polygon meshes. Transforms,
+references, appearance and source undo use native scene APIs.
+
+```toml
+[dependencies]
+exedra = { version = "0.1", features = ["scene"] }
+```
+
+This is additive: direct construction, `Assembly`, compilation, extraction,
+glTF and interchange callers keep their existing APIs and do not load
+LayerStack. Defaults are unchanged. See the
+[scene contract](../exedra_scene/) and
+[native scene example](../../examples/native_scene/) for the initial box and
+cylinder vocabulary, generated-layer ownership and current limits.
 
 ## Mixed geometry sources
 

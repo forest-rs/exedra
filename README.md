@@ -22,7 +22,7 @@ exedra = "0.1"
 
 Its default features provide the mesh kernel, constructive recipes,
 assemblies, and direct mesh operations. Primitive generation, analytic topology,
-implicit surfaces, command execution, glTF export, and interchange are opt-in features. Disable
+implicit surfaces, command execution, native scenes, glTF export, and interchange are opt-in features. Disable
 default features and select `libm` for a `no_std` application.
 
 Depend directly on a focused crate when you are implementing a lower-level
@@ -55,6 +55,9 @@ Construction and extraction crates:
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
   stable paths, material-slot binding, cached compilation, and deterministic
   flattening.
+- **[exedra_scene](crates/exedra_scene/)** - Optional native LayerStack scenes:
+  composed construction parameters, explicit evaluation and incremental polygon
+  publication, with native placement, references, material binding and undo.
 - **[exedra_triangulate](crates/exedra_triangulate/)** - Deterministic,
   dependency-free planar polygon triangulation and exact predicate seams.
 - **[exedra_primitives](crates/exedra_primitives/)** - Deterministic mesh
@@ -128,6 +131,15 @@ above these crates.
 Implicit and primitive crates stay outside the mesh kernel. They produce or
 adapt geometry through explicit mesh/field boundaries rather than introducing
 a scene graph into the core.
+
+The optional `scene` feature uses LayerStack as the authored scene. It lowers
+composed construction intent through the same constructive evaluator and
+publishes standard meshes into a dedicated generated layer. The initial box
+and cylinder vocabulary exercises that boundary without duplicating a scene
+tree. Direct construction, `Assembly`, extraction and export remain independently
+usable and retain their existing APIs and default dependencies. See the
+[native scene example](examples/native_scene/) and
+[scene contract](crates/exedra_scene/) for adoption and current limits.
 
 ## Example Flow
 
