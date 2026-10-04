@@ -22,10 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         caps: CapMode::Both,
     })?;
     let source = PartSource::Recipe(builder.finish(root)?);
-    let inputs = [PartInput {
-        key: "panel",
-        source: &source,
-    }];
+    let inputs = [PartInput::new("panel", &source)];
     let mut compiler = PartCompiler::with_capacity(32);
     let snapshot = compiler.compile_snapshot(&inputs, &CompilePolicy::default())?;
     let body = snapshot.body_by_source(PartId(0), "panel")?;

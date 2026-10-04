@@ -18,7 +18,7 @@
 //! use exedra_compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 //! use exedra_mesh::Mesh;
 //! let source = PartSource::Baked(Mesh::new());
-//! let inputs = [PartInput { key: "detail", source: &source }];
+//! let inputs = [PartInput::new("detail", &source)];
 //! let snapshot = PartCompiler::new().compile_snapshot(&inputs, &CompilePolicy::default())?;
 //! assert_eq!(snapshot.compiled().part(PartId(0)).unwrap().triangle_count(), 0);
 //! # Ok::<(), exedra_compile::CompileError>(())
@@ -57,14 +57,83 @@ pub enum PartSource {
     Baked(exedra_mesh::Mesh),
 }
 
+/// Immutable geometry source with content identity computed once on installation.
+/// Replace the whole value after edits; borrowing it never permits stale identity.
+#[derive(Clone, Debug)]
+pub struct PreparedSource {
+    source: PartSource,
+    fingerprint: PartFingerprint,
+}
+impl PreparedSource {
+    /// Installs recipe or baked geometry and captures its complete content identity.
+    #[must_use]
+    pub fn new(source: PartSource) -> Self {
+        let fingerprint = part_fingerprint(&source);
+        Self {
+            source,
+            fingerprint,
+        }
+    }
+    /// Immutable construction intent or topology.
+    #[must_use]
+    pub fn source(&self) -> &PartSource {
+        &self.source
+    }
+    /// Content identity retained without rescanning geometry.
+    #[must_use]
+    pub fn fingerprint(&self) -> PartFingerprint {
+        self.fingerprint
+    }
+    /// Releases ownership for editing; reinstall to capture the edited identity.
+    #[must_use]
+    pub fn into_source(self) -> PartSource {
+        self.source
+    }
+}
+
 /// Borrowed geometry and diagnostic context for one compilation input.
-/// The key appears in failures; geometry sharing uses content, independently of names.
+/// Captures content identity while the source is immutably borrowed. Keys do not
+/// participate in geometry sharing and have no imposed scene-path semantics.
 #[derive(Clone, Copy, Debug)]
 pub struct PartInput<'a> {
-    /// Caller-owned diagnostic name, with no imposed scene-path semantics.
-    pub key: &'a str,
-    /// Recipe or baked mesh; no ownership transfer or geometry cloning is required.
-    pub source: &'a PartSource,
+    key: &'a str,
+    source: &'a PartSource,
+    fingerprint: PartFingerprint,
+}
+impl<'a> PartInput<'a> {
+    /// Borrows geometry and computes its identity once for this input's lifetime.
+    #[must_use]
+    pub fn new(key: &'a str, source: &'a PartSource) -> Self {
+        Self {
+            key,
+            source,
+            fingerprint: part_fingerprint(source),
+        }
+    }
+    /// Borrows an installed source without rescanning its content.
+    #[must_use]
+    pub fn prepared(key: &'a str, source: &'a PreparedSource) -> Self {
+        Self {
+            key,
+            source: source.source(),
+            fingerprint: source.fingerprint(),
+        }
+    }
+    /// Caller-owned name used in compilation failures.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        self.key
+    }
+    /// Immutable recipe or baked mesh.
+    #[must_use]
+    pub fn source(&self) -> &PartSource {
+        self.source
+    }
+    /// Content identity captured while this source remains immutably borrowed.
+    #[must_use]
+    pub fn fingerprint(&self) -> PartFingerprint {
+        self.fingerprint
+    }
 }
 
 pub(crate) fn len_u32(n: usize) -> u32 {

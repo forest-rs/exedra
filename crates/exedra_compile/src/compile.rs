@@ -589,7 +589,7 @@ impl PartCompiler {
         let mut evaluated = Vec::new();
         for (index, def) in inputs.iter().enumerate() {
             let id = PartId(crate::len_u32(index));
-            let content_fp = part_fingerprint(def.source);
+            let content_fp = def.fingerprint();
             let key = (content_fp, policy_fp);
             part_keys.push(key);
             self.clock = self.clock.checked_add(1).expect("compiler clock overflow");
@@ -606,7 +606,7 @@ impl PartCompiler {
                 continue;
             }
             let (part, report, geometry) =
-                compile_source(id, def.key, def.source, policy, content_fp, retain)?;
+                compile_source(id, def.key(), def.source(), policy, content_fp, retain)?;
             let compiled = CachedCompilation {
                 used: self.clock,
                 evaluated: geometry.map(Arc::new),
@@ -961,4 +961,10 @@ fn fnv128(bytes: &[u8]) -> u128 {
         hash = hash.wrapping_mul(FNV128_PRIME);
     }
     hash
+}
+
+impl AsRef<Self> for CompiledParts {
+    fn as_ref(&self) -> &Self {
+        self
+    }
 }

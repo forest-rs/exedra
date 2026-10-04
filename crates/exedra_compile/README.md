@@ -11,7 +11,7 @@ sections, semantic surface inspection, attachments and clearance queries.
 `GeometrySnapshot` contains geometry only; callers retain placement separately.
 
 Inputs use snapshot-local `PartId` handles. `CompiledParts::validate_for` checks
-counts and source content without evaluating geometry. Content and policy hashes
+counts and captured source identity without evaluating or rescanning geometry. Content and policy hashes
 retain their existing encodings; moving ownership does not invalidate compiled
 content identities. Diagnostic keys are excluded from sharing.
 
@@ -36,6 +36,17 @@ Existing Assembly compilation is an adapter over this service. Standalone
 callers can use these records and snapshots directly without creating an
 `Assembly` or loading LayerStack. The crate is `no_std` with `alloc` and requires
 pointer-width atomics; the `std` feature forwards host support to dependencies.
+
+## Input identity migration
+
+Replace `PartInput { key, source }` literals with `PartInput::new(key, source)`.
+The constructor captures content identity once; its immutable borrow prevents
+source edits while the input exists. For repeated compilation, install a source
+in `PreparedSource::new(source)` and use `PartInput::prepared(key, &prepared)`.
+Prepared sources keep geometry and fingerprint together, so cache hits and
+validation do not scan baked attributes again. To edit, consume with
+`into_source`, then install a new prepared source. Assembly uses this same
+installation boundary for part registration and replacement.
 
 ## License
 

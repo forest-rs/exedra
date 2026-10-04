@@ -94,8 +94,8 @@ let recipe: Recipe = builder.finish(root)?;
 let body = PartSource::Recipe(recipe);
 let detail = PartSource::Baked(Mesh::new());
 let inputs = [
-    PartInput { key: "body", source: &body },
-    PartInput { key: "detail", source: &detail },
+    PartInput::new("body", &body),
+    PartInput::new("detail", &detail),
 ];
 let geometry = PartCompiler::new().compile_snapshot(&inputs, &CompilePolicy::default())?;
 assert_eq!(geometry.compiled().parts().len(), 2);

@@ -219,10 +219,7 @@ fn standalone_compilation_and_native_stages_share_the_same_geometry_service() {
     let standalone = fixture
         .compiler
         .compile_snapshot(
-            &[PartInput {
-                key: "standalone",
-                source: &recipe,
-            }],
+            &[PartInput::new("standalone", &recipe)],
             &CompilePolicy::default(),
         )
         .unwrap();

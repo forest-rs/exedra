@@ -30,14 +30,8 @@ fn panel(width: f64) -> PartSource {
 fn independent_inputs_share_compilation_and_keep_queries_after_eviction() {
     let source = panel(2.0);
     let inputs = [
-        PartInput {
-            key: "first",
-            source: &source,
-        },
-        PartInput {
-            key: "alias",
-            source: &source,
-        },
+        PartInput::new("first", &source),
+        PartInput::new("alias", &source),
     ];
     let mut compiler = PartCompiler::new();
     let snapshot = compiler
@@ -93,10 +87,7 @@ fn bounded_retention_and_render_only_upgrade_preserve_owned_results() {
     let second = panel(4.0);
     let policy = CompilePolicy::default();
     let mut compiler = PartCompiler::with_capacity(1);
-    let a = [PartInput {
-        key: "a",
-        source: &first,
-    }];
+    let a = [PartInput::new("a", &first)];
     let buffers = compiler.compile_parts(&a, &policy).unwrap();
     assert_eq!(compiler.retained_entries(), 0);
     let geometry = compiler.compile_snapshot(&a, &policy).unwrap();
@@ -109,13 +100,7 @@ fn bounded_retention_and_render_only_upgrade_preserve_owned_results() {
             .indices
     );
     compiler
-        .compile_snapshot(
-            &[PartInput {
-                key: "b",
-                source: &second,
-            }],
-            &policy,
-        )
+        .compile_snapshot(&[PartInput::new("b", &second)], &policy)
         .unwrap();
     assert_eq!(compiler.cached_entries(), 1);
     assert_eq!(compiler.counters().cache_evictions, 1);
@@ -149,10 +134,7 @@ fn baked_inputs_need_no_construction_or_scene_records() {
     let mut compiler = PartCompiler::new();
     let snapshot = compiler
         .compile_snapshot(
-            &[PartInput {
-                key: "import",
-                source: &source,
-            }],
+            &[PartInput::new("import", &source)],
             &CompilePolicy::default(),
         )
         .unwrap();
@@ -176,14 +158,8 @@ fn a_retained_part_does_not_keep_other_input_buffers_alive() {
     let snapshot = compiler
         .compile_snapshot(
             &[
-                PartInput {
-                    key: "first",
-                    source: &first,
-                },
-                PartInput {
-                    key: "second",
-                    source: &second,
-                },
+                PartInput::new("first", &first),
+                PartInput::new("second", &second),
             ],
             &CompilePolicy::default(),
         )
@@ -211,4 +187,33 @@ fn a_retained_part_does_not_keep_other_input_buffers_alive() {
         retained.report().is_some(),
         "the retained part must own its report independently"
     );
+}
+
+#[test]
+fn prepared_sources_bind_geometry_and_identity_across_reinstallation() {
+    let original = PreparedSource::new(PartSource::Baked(exedra_mesh::Mesh::new()));
+    let inputs = [PartInput::prepared("original", &original)];
+    assert_eq!(inputs[0].fingerprint(), part_fingerprint(original.source()));
+    let compiled = PartCompiler::new()
+        .compile_parts(&inputs, &CompilePolicy::default())
+        .unwrap();
+    compiled.validate_for(&inputs).unwrap();
+    let copied = original.clone();
+    compiled
+        .validate_for(&[PartInput::prepared("renamed", &copied)])
+        .unwrap();
+    let mut builder = RecipeBuilder::new();
+    let root = builder
+        .add(NodeKind::Primitive {
+            spec: exedra_constructive::ir::PrimitiveSpec::Box { size: [1.0; 3] },
+            placement: Placement3::IDENTITY,
+        })
+        .unwrap();
+    let replacement = PreparedSource::new(PartSource::Recipe(builder.finish(root).unwrap()));
+    assert!(matches!(
+        compiled.validate_for(&[PartInput::prepared("replacement", &replacement)]),
+        Err(CompilationMismatch::PartContent { .. })
+    ));
+    let restored = PreparedSource::new(original.into_source());
+    assert_eq!(restored.fingerprint(), copied.fingerprint());
 }

@@ -347,7 +347,7 @@ impl SceneEvaluator {
         }
         let compilation_inputs: Vec<_> = inputs
             .iter()
-            .map(|(_, key, source)| PartInput { key, source })
+            .map(|(_, key, source)| PartInput::new(key, source))
             .collect();
         let before = compiler.counters();
         let geometry = compiler

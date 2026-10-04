@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{CompiledParts, PartFingerprint, PolicyFingerprint, part_fingerprint};
+use crate::{CompiledParts, PartFingerprint, PolicyFingerprint};
 use crate::{PartId, PartInput};
 
 /// Compiled geometry does not correspond to an input list's current part records.
@@ -59,8 +59,8 @@ impl CompiledParts {
     /// require a matching compilation. The supplied snapshot determines the policy;
     /// callers can compare [`Self::policy_fingerprint`] with their intended policy.
     ///
-    /// This recomputes source content fingerprints, including baked mesh attributes.
-    /// It does not tessellate or measure placed bounds. Use it at snapshot/export
+    /// This compares identities captured by immutable inputs. It does not rescan
+    /// baked attributes, tessellate or measure placed bounds. Use it at snapshot/export
     /// boundaries; reading local poses directly needs no geometry validation walk.
     /// Geometry reports remain accessible through [`Self::report`], including reports
     /// for partial evaluations. Matching content alone does not certify completeness.
@@ -76,7 +76,7 @@ impl CompiledParts {
             });
         }
         for (index, (def, compiled)) in inputs.iter().zip(self.parts.iter()).enumerate() {
-            let expected = part_fingerprint(def.source);
+            let expected = def.fingerprint();
             if expected != compiled.fingerprint {
                 return Err(CompilationMismatch::PartContent {
                     part: PartId(crate::len_u32(index)),

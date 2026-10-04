@@ -16,7 +16,6 @@ pub use exedra_compile::{
     SnapshotBody, SnapshotSurfaceInventory, SnapshotWorkplane, StaleSelection, VolumeError,
     policy_fingerprint,
 };
-pub(crate) use exedra_compile::part_fingerprint;
 mod evaluated;
 #[cfg(test)]
 mod failure_tests;
@@ -29,10 +28,7 @@ fn inputs(assembly: &Assembly) -> Vec<PartInput<'_>> {
     assembly
         .parts()
         .iter()
-        .map(|part| PartInput {
-            key: part.key(),
-            source: part.source(),
-        })
+        .map(|part| PartInput::prepared(part.key(), part.prepared_source()))
         .collect()
 }
 
@@ -127,6 +123,12 @@ impl PartCompiler {
         };
         let render = Arc::new(crate::flatten(assembly, &compiled));
         Ok(EvaluationSnapshot::new(geometry, compiled, render))
+    }
+}
+
+impl AsRef<exedra_compile::CompiledParts> for CompiledParts {
+    fn as_ref(&self) -> &exedra_compile::CompiledParts {
+        self.geometry()
     }
 }
 
