@@ -19,6 +19,9 @@ Most callers should use the crate root re-exports:
 - `Mesh`, `MeshBuilder`, `MeshBuildResult`, `BuildParams`, and
   `FaceBuildAttrs` for construction and mesh ownership.
 - `Remap` for translating source IDs after explicit `Mesh::compact` calls.
+- `prepare_polygons`, `PrepareParams`, and `PreparedPolygons` for checked
+  polygon-soup preparation with explicit cleanup policy and source face/corner
+  offsets, before topology construction.
 - `VertexId`, `HalfEdgeId`, `CornerId`, `FaceId`, and `Id` for stable handles.
 - `EditSession`, `ChangeSet`, `ChangeSetBuilder`, `ChangeSink`,
   `DiscardChanges`, `DirtySet`, `DeletePolicy`, and `PropagatePolicy` for

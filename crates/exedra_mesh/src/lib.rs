@@ -114,6 +114,7 @@ pub mod mesh;
 mod normals;
 mod numeric;
 pub mod op;
+pub mod prepare;
 mod render;
 mod session;
 mod sorted_merge;
@@ -130,6 +131,10 @@ pub use mesh::{
 };
 pub use normals::{DerivedCornerNormals, NormalParams, NormalWeightMode, NormalsSource};
 pub use numeric::NumericPolicy;
+pub use prepare::{
+    CoincidentCornerPolicy, DegenerateFacePolicy, PrepareError, PrepareErrorKind, PrepareParams,
+    PreparedPolygons, PreparedTriangle, SourceCorner, WarpedFacePolicy, prepare_polygons,
+};
 pub use render::{
     AttributeBuffer, AttributeKind, AttributeStream, AttributeValue, ExtractAttribute, ExtractMode,
     ExtractParams, ExtractStats, StreamValue, TangentUv, TriMesh, TriMeshGeometryError,

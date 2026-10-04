@@ -108,8 +108,8 @@ fn stalled() -> TriError {
 /// Computes twice the signed area of `ring` over `points`, in ring order.
 ///
 /// Positive means counter-clockwise. Plain f64 accumulation in a fixed
-/// order: deterministic, and only sign-ambiguous for inputs that are
-/// degenerate to begin with.
+/// order: deterministic, but cancellation at extreme dynamic ranges can lose
+/// the area or its sign even for nondegenerate input.
 pub(crate) fn twice_signed_area(points: &[[f64; 2]], ring: &[u32]) -> f64 {
     let mut sum = 0.0;
     for (i, &a) in ring.iter().enumerate() {

@@ -2,6 +2,23 @@
 
 Structural half-edge mesh kernel.
 
+`prepare_polygons` checks indexed polygon soup before topology construction.
+It triangulates simple concave faces and returns original face/local corner
+offsets for remapping UVs, normals, and material subsets. Distinct collinear
+boundary corners survive. Defaults reject coincident consecutive corners,
+noncoplanar faces, and degenerate faces; callers can explicitly drop consecutive
+coincident corners, project warped faces, or drop degenerate faces, with each
+action reported. Index, finite-position, and consecutive-coincidence checks
+precede the degenerate policy; wholly collinear loops follow that policy before
+simplicity checks, including loops with backtracking or nonconsecutive
+coincidences. It never welds positions or falls back to a fan for invalid
+nondegenerate projections. A per-face corner limit bounds work: validation and
+boundary restoration are quadratic, and shared ear clipping is cubic in the
+worst case. Triangles use exact collinearity checks directly; larger polygons'
+floating-point Newell and winding sums may conservatively reject valid faces at
+extreme dynamic ranges despite exact-sign local predicates. This prepares
+geometry only; half-edge construction still enforces its topology constraints.
+
 Exedra Mesh is the production-capable, `#![no_std]` polygonal mesh core in this
 workspace. It owns topology, stable IDs, typed attributes, validation, edit
 sessions, explicit compaction, and deterministic render extraction. Higher-level
