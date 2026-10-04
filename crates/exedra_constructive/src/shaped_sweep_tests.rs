@@ -156,6 +156,7 @@ fn twist_turns_sections_about_the_tangent() {
     let twist = SectionLaw {
         scale: Law::Constant(1.0),
         twist: Law::Linear(vec![[0.0, 0.0], [1.0, core::f64::consts::FRAC_PI_2]]),
+        turns: 0,
     };
     // Laws are evaluated at the path's stations, so a turn needs enough of
     // them: eleven stations give nine degrees per band.
@@ -181,6 +182,28 @@ fn twist_turns_sections_about_the_tangent() {
                 .any(|p| (0..3).all(|i| (p[i] - expected[i]).abs() < 1e-5)),
             "{expected:?} in {end:?}"
         );
+    }
+}
+
+#[test]
+fn base_twist_law_facets_nonplanar_sweep_walls() {
+    let profile = builders::rect_centered(2.0, 1.0).unwrap();
+    let section = SectionLaw::new(
+        Law::Constant(1.0),
+        Law::Linear(vec![[0.0, 0.0], [1.0, core::f64::consts::FRAC_PI_4]]),
+    );
+    for path in [straight_curve(PathClosure::Open), straight_polyline()] {
+        let body = sweep(&profile, &path, &section);
+        assert_clean(&body);
+        let wall_sizes: Vec<_> = body
+            .mesh
+            .faces()
+            .zip(body.source_map.face_features())
+            .filter(|(_, feature)| matches!(feature, Feature::SweepWall { .. }))
+            .map(|(face, _)| body.mesh.face_loop(face).count())
+            .collect();
+        assert!(!wall_sizes.is_empty());
+        assert!(wall_sizes.iter().all(|&size| size == 3), "{wall_sizes:?}");
     }
 }
 
@@ -287,8 +310,137 @@ fn closed_sweeps_require_a_seamless_law() {
     let pulse = SectionLaw {
         scale: Law::Linear(vec![[0.0, 1.0], [0.5, 2.0], [1.0, 1.0]]),
         twist: Law::Constant(0.0),
+        turns: 0,
     };
     assert_clean(&run(&pulse).unwrap());
+}
+
+#[test]
+fn closed_sweep_retains_four_complete_turns() {
+    let profile = builders::rect_centered(1.0, 0.5).unwrap();
+    let points: Vec<_> = (0..128)
+        .map(|i| {
+            let angle = core::f64::consts::TAU * f64::from(i) / 128.0;
+            [10.0 * libm::cos(angle), 10.0 * libm::sin(angle), 0.0]
+        })
+        .collect();
+    let path = Path3::MiteredPolyline {
+        points,
+        section_x: [0.0, 0.0, 1.0],
+        section_origin: [0.0; 2],
+        closure: PathClosure::ClosedPlanar {
+            normal: [0.0, 0.0, 1.0],
+        },
+        miter_limit: 1.01,
+    };
+    let section = SectionLaw::IDENTITY.with_turns(4);
+    let body = tessellate_path_sweep(
+        &profile,
+        &Placement3::IDENTITY,
+        &path,
+        &section,
+        CapMode::None,
+        None,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    assert_clean(&body);
+    assert!(body.mesh.boundary_loops().unwrap().is_empty());
+    let points = positions(&body);
+    let ring_size = points.len() / 128;
+    assert!(points[0][2] * points[16 * ring_size][2] < 0.0);
+    assert!((points[0][2] - points[32 * ring_size][2]).abs() < 1e-5);
+
+    let curved = Path3::Curves {
+        start: [10.0, 0.0, 0.0],
+        segments: vec![PathSegment3::Arc {
+            axis_origin: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+            sweep: core::f64::consts::TAU,
+        }],
+        section_x: [0.0, 0.0, 1.0],
+        section_origin: [0.0; 2],
+        closure: PathClosure::ClosedPlanar {
+            normal: [0.0, 0.0, 1.0],
+        },
+        joins: PathJoin::Smooth,
+    };
+    let curved_body = tessellate_path_sweep(
+        &profile,
+        &Placement3::IDENTITY,
+        &curved,
+        &section,
+        CapMode::None,
+        None,
+        &EvalPolicy::default(),
+    )
+    .unwrap();
+    assert_clean(&curved_body);
+    assert!(curved_body.mesh.boundary_loops().unwrap().is_empty());
+
+    let mut builder = RecipeBuilder::new();
+    let profile = builder.add_profile(profile);
+    let root = builder
+        .add(NodeKind::Sweep {
+            profile,
+            path,
+            section,
+            caps: CapMode::None,
+        })
+        .unwrap();
+    let recipe = builder.finish(root).unwrap();
+    let text = crate::text::dump_recipe(&recipe);
+    assert!(text.contains("turns 4"));
+    assert_eq!(
+        crate::text::parse_recipe(&text)
+            .unwrap()
+            .recipe_fingerprint(),
+        recipe.recipe_fingerprint()
+    );
+    #[cfg(feature = "serde")]
+    {
+        let dto = crate::interchange::to_dto(&recipe);
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"op\":\"turned_sweep\""));
+        assert_eq!(
+            crate::interchange::from_dto(&dto)
+                .unwrap()
+                .recipe_fingerprint(),
+            recipe.recipe_fingerprint()
+        );
+    }
+}
+
+#[test]
+fn complete_turns_refuse_undersampled_paths() {
+    let profile = builders::rect_centered(1.0, 0.5).unwrap();
+    let path = Path3::MiteredPolyline {
+        points: (0..8)
+            .map(|i| {
+                let angle = core::f64::consts::TAU * f64::from(i) / 8.0;
+                [10.0 * libm::cos(angle), 10.0 * libm::sin(angle), 0.0]
+            })
+            .collect(),
+        section_x: [0.0, 0.0, 1.0],
+        section_origin: [0.0; 2],
+        closure: PathClosure::ClosedPlanar {
+            normal: [0.0, 0.0, 1.0],
+        },
+        miter_limit: 1.1,
+    };
+    let result = tessellate_path_sweep(
+        &profile,
+        &Placement3::IDENTITY,
+        &path,
+        &SectionLaw::IDENTITY.with_turns(4),
+        CapMode::None,
+        None,
+        &EvalPolicy::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(TessellateError::SweepTwistUndersampled { band: 0, .. })
+    ));
 }
 
 #[test]
@@ -319,6 +471,9 @@ fn charts_measure_the_unscaled_section() {
             .map(|corner| layer.get(corner.as_id()).unwrap().map(f32::to_bits))
             .collect();
         uvs.sort_unstable();
+        // Shaped walls may split a quad into two planar faces, duplicating
+        // its diagonal corners without changing the chart coordinates.
+        uvs.dedup();
         uvs
     };
     assert_eq!(
@@ -352,6 +507,7 @@ fn recipes_validate_fingerprint_and_round_trip_section_laws() {
     let twisted = build(SectionLaw {
         scale: Law::Linear(vec![[0.0, 1.0], [1.0, 0.25]]),
         twist: Law::Constant(0.5),
+        turns: 0,
     })
     .unwrap();
     let fingerprints = [&constant, &tapered, &twisted].map(|r| r.recipe_fingerprint());
@@ -390,6 +546,7 @@ fn laws_that_fold_a_controlled_wall_are_refused() {
     let half_turn = SectionLaw {
         scale: Law::Constant(1.0),
         twist: Law::Linear(vec![[0.0, 0.0], [1.0, core::f64::consts::PI]]),
+        turns: 0,
     };
     assert!(matches!(
         tessellate_path_sweep(
