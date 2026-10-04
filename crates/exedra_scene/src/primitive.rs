@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use exedra_compile::{PartSource, PreparedSource};
 use exedra_constructive::ir::{
     NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder, RecipeError,
 };
@@ -8,32 +9,43 @@ use layerstack::{
     EditTarget, LayerStore, PathId, PropertyDefinition, PropertyPath, PropertySpec, PropertyType,
     SchemaDefinition, SchemaRegistryBuilder, Specifier, TokenInterner, Transaction, Value,
 };
-use layerstack_schemas::{PrimView, Scene, Time, value};
+use layerstack_schemas::{
+    procedural::{ProceduralEvaluator, ProceduralInputs},
+    value,
+};
 
 use crate::{SceneError, SceneErrorKind};
 
-/// Typed box construction, minimum corner at the local origin, derived from `Xform`.
+/// Typed box construction, minimum corner at the local origin, derived from `GenerativeProcedural`.
 pub const BOX_SCHEMA: &str = "ExedraBox";
 /// Typed capped +Z cylinder construction, base center at the local origin.
 pub const CYLINDER_SCHEMA: &str = "ExedraCylinder";
 /// Box extents as a varying `double3`, all strictly positive.
-pub const SIZE: &str = "exedra:size";
+pub const SIZE: &str = "primvars:exedra:size";
 /// Cylinder radius as a varying `double`, strictly positive.
-pub const RADIUS: &str = "exedra:radius";
+pub const RADIUS: &str = "primvars:exedra:radius";
 /// Cylinder height as a varying `double`, strictly positive.
-pub const HEIGHT: &str = "exedra:height";
+pub const HEIGHT: &str = "primvars:exedra:height";
 /// Cylinder side count as a uniform `uint`, at least three.
-pub const SEGMENTS: &str = "exedra:segments";
+pub const SEGMENTS: &str = "primvars:exedra:segments";
 
 /// Registers Exedra's typed construction schemas into a caller-owned registry.
 ///
-/// Register the `OpenUSD` `UsdGeom` domain in the same builder so `Xform` exists.
+/// Register the `OpenUSD` `UsdGeom` and `UsdProc` domains in the same builder.
 /// All registry tokens must belong to the store used to compose the stage.
 /// Dimensions have no fallback: missing construction intent is a refusal.
 pub fn register_schemas(builder: &mut SchemaRegistryBuilder, tokens: &mut TokenInterner) {
-    let xform = tokens.intern("Xform");
+    let procedural = tokens.intern("GenerativeProcedural");
+    let system = tokens.intern("proceduralSystem");
+    let box_system = tokens.intern("exedra:box");
+    let cylinder_system = tokens.intern("exedra:cylinder");
     let box_schema = SchemaDefinition::typed(tokens.intern(BOX_SCHEMA))
-        .with_parent(xform)
+        .with_parent(procedural)
+        .with_override(
+            PropertyDefinition::attribute(system)
+                .with_type(PropertyType::new("token", false, Value::Token(box_system)))
+                .with_fallback(Value::Token(box_system)),
+        )
         .with_property(
             PropertyDefinition::attribute(tokens.intern(SIZE)).with_type(PropertyType::new(
                 "double3",
@@ -42,7 +54,16 @@ pub fn register_schemas(builder: &mut SchemaRegistryBuilder, tokens: &mut TokenI
             )),
         );
     let cylinder_schema = SchemaDefinition::typed(tokens.intern(CYLINDER_SCHEMA))
-        .with_parent(xform)
+        .with_parent(procedural)
+        .with_override(
+            PropertyDefinition::attribute(system)
+                .with_type(PropertyType::new(
+                    "token",
+                    false,
+                    Value::Token(cylinder_system),
+                ))
+                .with_fallback(Value::Token(cylinder_system)),
+        )
         .with_property(
             PropertyDefinition::attribute(tokens.intern(RADIUS)).with_type(PropertyType::new(
                 "double",
@@ -99,6 +120,18 @@ pub fn define_primitive(
         Specifier::Def,
         Some(store.tokens_mut().intern(schema)),
     );
+    let system = match spec {
+        PrimitiveSpec::Box { .. } => "exedra:box",
+        PrimitiveSpec::Cylinder { .. } => "exedra:cylinder",
+        _ => unreachable!("validated supported primitive"),
+    };
+    let system = store.tokens_mut().intern(system);
+    let system_name = store.tokens_mut().intern("proceduralSystem");
+    transaction.create_property(
+        target.property(PropertyPath::new(path, system_name)),
+        PropertySpec::typed_attribute(PropertyType::new("token", false, Value::Token(system)))
+            .with_default(Value::Token(system)),
+    );
     let mut property = |name: &str, type_name: &str, value: Value, uniform: bool| {
         let ty = PropertyType::new(type_name, false, value.clone());
         let mut spec = PropertySpec::typed_attribute(ty).with_default(value);
@@ -140,38 +173,58 @@ pub(crate) fn recipe(spec: PrimitiveSpec) -> Result<Recipe, RecipeError> {
     builder.finish(root)
 }
 
-pub(crate) fn read(scene: Scene<'_>, path: PathId, time: Time) -> Result<Recipe, SceneError> {
-    let view = PrimView::new(scene, path);
-    let error = |kind| SceneError::new(scene.store(), path, kind);
-    let double = |name| {
-        match time {
-            Time::Default => view.read_value(name, value::read_double),
-            Time::At {
-                code,
-                interpolation,
-            } => view.read_value_at(name, code, interpolation, value::read_double),
+/// One typed recipe system; lowering owns no compiler or stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lowering {
+    Box,
+    Cylinder,
+}
+
+impl ProceduralEvaluator for Lowering {
+    type Output = PreparedSource;
+    type Error = SceneErrorKind;
+
+    fn system(&self) -> &str {
+        match self {
+            Self::Box => "exedra:box",
+            Self::Cylinder => "exedra:cylinder",
         }
-        .ok_or_else(|| error(SceneErrorKind::Parameter(name)))
-    };
-    let spec = if scene.is_a(path, BOX_SCHEMA) {
-        let size = match time {
-            Time::Default => view.read_value(SIZE, value::read_double3),
-            Time::At {
-                code,
-                interpolation,
-            } => view.read_value_at(SIZE, code, interpolation, value::read_double3),
-        }
-        .ok_or_else(|| error(SceneErrorKind::Parameter(SIZE)))?;
-        PrimitiveSpec::Box { size }
-    } else {
-        let segments = view
-            .read_value(SEGMENTS, value::read_uint)
-            .ok_or_else(|| error(SceneErrorKind::Parameter(SEGMENTS)))?;
-        PrimitiveSpec::Cylinder {
-            radius: double(RADIUS)?,
-            height: double(HEIGHT)?,
-            segments,
-        }
-    };
-    recipe(spec).map_err(|e| error(SceneErrorKind::Recipe(e)))
+    }
+
+    fn evaluate(
+        &self,
+        inputs: &mut ProceduralInputs<'_>,
+    ) -> Result<PreparedSource, SceneErrorKind> {
+        let path = inputs.recipe();
+        let mut read = |name| {
+            inputs
+                .attribute(path, name)
+                .map_err(SceneErrorKind::Input)?
+                .ok_or(SceneErrorKind::Parameter(name))
+        };
+        let spec = match self {
+            Self::Box => {
+                let value = read(SIZE)?;
+                let size = value::read_double3(&value, inputs.tokens())
+                    .ok_or(SceneErrorKind::Parameter(SIZE))?;
+                PrimitiveSpec::Box { size }
+            }
+            Self::Cylinder => {
+                let radius = read(RADIUS)?;
+                let height = read(HEIGHT)?;
+                let segments = read(SEGMENTS)?;
+                PrimitiveSpec::Cylinder {
+                    radius: value::read_double(&radius, inputs.tokens())
+                        .ok_or(SceneErrorKind::Parameter(RADIUS))?,
+                    height: value::read_double(&height, inputs.tokens())
+                        .ok_or(SceneErrorKind::Parameter(HEIGHT))?,
+                    segments: value::read_uint(&segments, inputs.tokens())
+                        .ok_or(SceneErrorKind::Parameter(SEGMENTS))?,
+                }
+            }
+        };
+        recipe(spec)
+            .map(|r| PreparedSource::new(PartSource::Recipe(r)))
+            .map_err(SceneErrorKind::Recipe)
+    }
 }

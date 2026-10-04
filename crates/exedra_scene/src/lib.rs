@@ -11,11 +11,11 @@
 //! scene tree. The geometry crates have no dependency on this integration.
 //!
 //! The initial authored vocabulary is [`BOX_SCHEMA`] and [`CYLINDER_SCHEMA`],
-//! both derived from USD `Xform`. [`SceneEvaluator::sync`] explicitly samples
-//! their composed parameters and updates an exclusively owned local
-//! generated layer. Transforms and material bindings remain native stage data;
-//! changing them reuses local geometry. Returned snapshots retain recipes,
-//! topology, source maps, extraction buffers and reports through shared snapshots.
+//! both derived from USD `GenerativeProcedural`. [`SceneEvaluator::sync`] samples
+//! tracked composed parameters and publishes through a caller-selected edit
+//! target, preserving partner opinions. Transforms and material bindings remain
+//! native stage data; changing them reuses local geometry. Returned snapshots
+//! retain recipes, topology, source maps, extraction buffers and reports.
 //!
 //! This is an initial scene-authoring surface, not a complete recipe schema or
 //! asset importer. Direct callers continue using `Recipe`, `evaluate`, part
@@ -41,7 +41,7 @@ pub use exedra_compile as compile;
 /// Native layers, composition, paths, transactions and change reports.
 pub use layerstack as composition;
 pub use layerstack::{LiveStage, Stage};
-/// Standard geometry and shading schemas, views, edit handles and queries.
+/// Native geometry, procedural and shading schemas, views, edit handles and queries.
 pub use layerstack_schemas as schemas;
 pub use layerstack_schemas::{Scene, Time};
 

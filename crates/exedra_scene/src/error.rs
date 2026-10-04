@@ -4,7 +4,7 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
 use core::fmt;
 use exedra_constructive::{evaluate::GeometryReport, ir::RecipeError};
-use layerstack::{ChangeHistoryError, EditError, LayerStore, PathId};
+use layerstack::{EditError, LayerStore, PathId};
 
 /// A failed scene evaluation or publication, with owned source context.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,7 +19,7 @@ pub struct SceneError {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SceneErrorKind {
-    /// Compose the stage with `OpenUSD` geometry and Exedra primitive schemas.
+    /// Compose with `UsdGeom`, `UsdProc` and Exedra primitive schemas.
     MissingSchemas,
     /// Incomplete composition must be repaired before generating geometry.
     Composition {
@@ -38,20 +38,29 @@ pub enum SceneErrorKind {
     Compile(Box<exedra_compile::CompileError>),
     /// Evaluation refused publishable geometry; retains its complete report.
     Refused(Arc<GeometryReport>),
-    /// Generation requires an initially empty, exclusively owned local sublayer.
-    GeneratedLayer,
-    /// The generated layer was edited outside this evaluator.
-    GeneratedLayerEdited,
-    /// A reserved generated-child path already has authored content.
+    /// The supplied stage/store do not use this binding's original interners.
+    ForeignStore,
+    /// The publication layer is missing or its target cannot map an output.
+    PublicationTarget,
+    /// A tracked input has an incompatible kind or could not be decoded.
+    Input(layerstack_schemas::procedural::ProceduralInputError),
+    /// Authored dispatch does not match the typed primitive's evaluator.
+    ProceduralSystem {
+        /// System understood by this typed evaluator.
+        expected: String,
+        /// Composed system value, or absence.
+        actual: Option<String>,
+    },
+    /// Native polygon validation or publication preparation failed.
+    Mesh(layerstack_schemas::MeshPublicationError),
+    /// Consumed input evidence no longer justifies the prepared publication.
+    StaleInputs(String),
+    /// An initial publication site already has geometry opinions owned elsewhere.
     OutputCollision,
     /// Generated output cannot become another construction input.
     GeneratedInput,
-    /// Descendant authoring beneath native instances is not supported yet.
-    NativeInstance,
     /// Geometry contains nonfinite coordinates or exceeds USD index capacity.
     UnrepresentableGeometry,
-    /// The evaluator was used with a different live stage.
-    Stage(ChangeHistoryError),
     /// Native atomic publication rejected the transaction.
     Publish(EditError),
 }
@@ -67,7 +76,9 @@ impl SceneError {
 
 impl fmt::Display for SceneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: ", self.path)?;
+        if !self.path.is_empty() {
+            write!(f, "{}: ", self.path)?;
+        }
         match &self.kind {
             SceneErrorKind::MissingSchemas => f.write_str("missing scene schemas"),
             SceneErrorKind::Composition { errors } => write!(f, "{errors} composition errors"),
@@ -77,23 +88,23 @@ impl fmt::Display for SceneError {
             SceneErrorKind::Recipe(error) => error.fmt(f),
             SceneErrorKind::Compile(error) => error.fmt(f),
             SceneErrorKind::Refused(_) => f.write_str("constructive evaluation refused geometry"),
-            SceneErrorKind::GeneratedLayer => {
-                f.write_str("invalid generated-layer ownership, membership or time offset")
+            SceneErrorKind::ForeignStore => f.write_str("scene binding belongs to another store"),
+            SceneErrorKind::PublicationTarget => f.write_str("invalid publication edit target"),
+            SceneErrorKind::Input(error) => error.fmt(f),
+            SceneErrorKind::ProceduralSystem { expected, actual } => {
+                write!(f, "procedural system {actual:?}, expected {expected}")
             }
-            SceneErrorKind::GeneratedLayerEdited => {
-                f.write_str("generated layer changed outside its evaluator")
+            SceneErrorKind::Mesh(error) => error.fmt(f),
+            SceneErrorKind::StaleInputs(reason) => write!(f, "stale publication inputs: {reason}"),
+            SceneErrorKind::OutputCollision => {
+                f.write_str("publication site already has geometry opinions")
             }
-            SceneErrorKind::OutputCollision => f.write_str("generated child is already authored"),
             SceneErrorKind::GeneratedInput => {
                 f.write_str("generated output cannot be construction input")
-            }
-            SceneErrorKind::NativeInstance => {
-                f.write_str("native instance descendant generation unsupported")
             }
             SceneErrorKind::UnrepresentableGeometry => {
                 f.write_str("geometry exceeds finite USD representation")
             }
-            SceneErrorKind::Stage(error) => write!(f, "live stage changed: {error:?}"),
             SceneErrorKind::Publish(error) => error.fmt(f),
         }
     }

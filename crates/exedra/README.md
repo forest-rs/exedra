@@ -76,7 +76,7 @@ Neither selects Assembly or LayerStack. Existing Assembly export callers select
 `assembly,gltf`; Assembly interchange callers select `assembly,serde`. See the
 [scene contract](../exedra_scene/) and
 [native scene example](../../examples/native_scene/) for the initial box and
-cylinder vocabulary, generated-layer ownership and current limits.
+cylinder recipes, shared-stage publication and current limits.
 
 The [caller-owned export example](../../examples/caller_owned_export/) serializes
 a recipe, compiles it, resolves a hierarchy and materials, and exports GLB using

@@ -143,9 +143,9 @@ joto_parse = "0.2.0"
 # Pinned exactly: kurbo flattening output feeds content hashes and goldens in
 # the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
-# Match Lightweald's native scene types; keep this dependency in the scene layer.
-layerstack = { default-features = false, git = "https://github.com/forest-rs/layerstack", rev = "dcf0c7e9354c19076d6c6994041d9ac791c0a957" }
-layerstack_schemas = { default-features = false, features = ["usd-geom", "usd-shade"], git = "https://github.com/forest-rs/layerstack", rev = "dcf0c7e9354c19076d6c6994041d9ac791c0a957" }
+# Keep native scene dependencies aligned and confined to the scene layer.
+layerstack = { default-features = false, git = "https://github.com/forest-rs/layerstack", rev = "e76d0bceeefdd2fcdcca72a1c204bda49eb09e47" }
+layerstack_schemas = { default-features = false, features = ["usd-geom", "usd-proc", "usd-shade"], git = "https://github.com/forest-rs/layerstack", rev = "e76d0bceeefdd2fcdcca72a1c204bda49eb09e47" }
 libm = "0.2.15"
 serde = { features = ["derive"], version = "1.0.228" }
 setout = { default-features = false, path = "crates/setout" }

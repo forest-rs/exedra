@@ -138,13 +138,14 @@ a scene graph into the core.
 
 The optional `scene` feature uses LayerStack as the authored scene. It lowers
 composed construction intent through the shared geometry compiler and
-publishes standard meshes into a dedicated generated layer. The initial box
-and cylinder vocabulary exercises that boundary without duplicating a scene
-tree. Direct construction, `Assembly`, extraction and export remain independently
-usable. Assembly's compilation API remains an adapter over that service;
-enable the facade's `assembly` feature explicitly to retain structural workflows.
-`gltf` and `serde` still select it. Standalone compilation uses `compile`, which
-is now selected by default and needs no scene or assembly. See the
+publishes validated standard meshes through a caller-selected native edit target.
+The initial box and cylinder vocabulary exercises that boundary without
+duplicating a scene tree. Direct construction, `Assembly`, extraction and export
+remain independently usable. Assembly's compilation API remains an adapter over
+that service; enable the facade's `assembly` feature explicitly to retain
+structural workflows.
+`gltf` and `serde` do not select Assembly or LayerStack. Standalone compilation
+uses `compile`, which is now selected by default and needs no scene or assembly. See the
 [native scene example](examples/native_scene/) and
 [scene contract](crates/exedra_scene/) for adoption and current limits.
 

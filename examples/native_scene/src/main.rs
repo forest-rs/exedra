@@ -15,17 +15,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = SchemaRegistry::builder();
     schemas::register(
         &mut registry,
-        &[schemas::Domain::UsdGeom, schemas::Domain::UsdShade],
+        &[
+            schemas::Domain::UsdGeom,
+            schemas::Domain::UsdProc,
+            schemas::Domain::UsdShade,
+        ],
         &mut store.tokens,
     )?;
     register_schemas(&mut registry, &mut store.tokens);
     let registry = Arc::new(registry.build(&mut store.tokens));
-    let generated = LayerId(1);
-    let authored = LayerId(2);
-    store.insert_layer(Layer::new(generated));
-    let mut layer = Layer::new(authored);
-    layer.sublayers.push(SublayerEntry::new(generated));
-    store.insert_layer(layer);
+    let authored = LayerId(1);
+    store.insert_layer(Layer::new(authored));
     let mut live = LiveStage::compose(
         &mut store,
         authored,
@@ -37,6 +37,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = store.path("/World");
     let panel = store.path("/World/Panel");
     let target = EditTarget::for_layer(authored);
+    let mut world = Transaction::new();
+    world.create_prim(
+        target.prim(root),
+        Specifier::Def,
+        Some(store.tokens.intern("Xform")),
+    );
+    live.apply(&mut store, &world)?;
     let construction = define_primitive(
         &mut store,
         &target,
@@ -46,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     live.apply(&mut store, &construction)?;
-    let mut evaluator = SceneEvaluator::new(root, generated);
+    let mut evaluator = SceneEvaluator::new(&store, root, target.clone());
     let mut compiler = PartCompiler::with_capacity(128);
     let first = evaluator.sync(
         &mut live,
@@ -56,6 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &CompilePolicy::default(),
     )?;
     println!("Initial geometry: {:?}", first.stats);
+    let mut bounds =
+        schemas::bounds::BoundsCache::new(Time::Default, schemas::bounds::BoundsOptions::default());
+    let initial_bound = bounds
+        .world_bound(&schemas::Scene::new(live.stage(), &store), panel)
+        .expect("published construction has native bounds");
     let size = PropertyPath::new(panel, store.tokens.intern(exedra_scene::SIZE));
     let mut edit = Transaction::new();
     edit.set_default(target.property(size), Value::Vec3d([4.0, 0.2, 3.0]));
@@ -68,7 +80,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &CompilePolicy::default(),
     )?;
     println!("Dimension change: {:?}", second.stats);
-    live.apply(&mut store, &changed.inverse)?;
+    let scene = schemas::Scene::new(live.stage(), &store);
+    bounds.apply_changes(&scene, &changed.changes);
+    bounds.apply_changes(&scene, &second.changes);
+    assert_eq!(
+        bounds
+            .world_bound(&scene, panel)
+            .expect("regenerated construction has native bounds")
+            .aligned_range()
+            .max[0],
+        4.0,
+        "publication changes must invalidate retained bounds"
+    );
+    let undo = live.apply(&mut store, &changed.inverse)?;
     let restored = evaluator.sync(
         &mut live,
         &mut store,
@@ -76,6 +100,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Time::Default,
         &CompilePolicy::default(),
     )?;
+    let scene = schemas::Scene::new(live.stage(), &store);
+    bounds.apply_changes(&scene, &undo.changes);
+    bounds.apply_changes(&scene, &restored.changes);
+    assert_eq!(
+        bounds
+            .world_bound(&scene, panel)
+            .expect("undo restores native bounds"),
+        initial_bound,
+        "undo must restore the original procedural bounds"
+    );
     assert!(
         first.sources[0].shares_geometry(&restored.sources[0]),
         "undo should reuse original geometry"

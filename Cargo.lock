@@ -932,7 +932,7 @@ dependencies = [
 [[package]]
 name = "layerstack"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=dcf0c7e9354c19076d6c6994041d9ac791c0a957#dcf0c7e9354c19076d6c6994041d9ac791c0a957"
+source = "git+https://github.com/forest-rs/layerstack?rev=e76d0bceeefdd2fcdcca72a1c204bda49eb09e47#e76d0bceeefdd2fcdcca72a1c204bda49eb09e47"
 dependencies = [
  "hashbrown",
  "invalidation",
@@ -944,7 +944,7 @@ dependencies = [
 [[package]]
 name = "layerstack_schemas"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=dcf0c7e9354c19076d6c6994041d9ac791c0a957#dcf0c7e9354c19076d6c6994041d9ac791c0a957"
+source = "git+https://github.com/forest-rs/layerstack?rev=e76d0bceeefdd2fcdcca72a1c204bda49eb09e47#e76d0bceeefdd2fcdcca72a1c204bda49eb09e47"
 dependencies = [
  "fearless_simd",
  "layerstack",
@@ -1117,7 +1117,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "opinionated"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=dcf0c7e9354c19076d6c6994041d9ac791c0a957#dcf0c7e9354c19076d6c6994041d9ac791c0a957"
+source = "git+https://github.com/forest-rs/layerstack?rev=e76d0bceeefdd2fcdcca72a1c204bda49eb09e47#e76d0bceeefdd2fcdcca72a1c204bda49eb09e47"
 
 [[package]]
 name = "ordered-float"
