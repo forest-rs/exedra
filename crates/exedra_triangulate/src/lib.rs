@@ -168,6 +168,38 @@ pub fn triangulate(
     triangulate_with_stats(input, params).map(|evaluation| evaluation.triangulation)
 }
 
+/// Triangulates while retaining distinct collinear boundary samples.
+///
+/// Like [`triangulate`], output indices address the original input concatenation
+/// and no points are generated. Every distinct input boundary sample is retained
+/// by splitting the triangles adjacent to samples omitted during ear clipping.
+/// Consecutive coincident samples cannot form nonzero boundary edges and may
+/// still be omitted; callers that attach attributes to such samples must choose
+/// their cleanup policy before calling this function.
+///
+/// With [`TriStrategy::ConstrainedDelaunay`], the restored cover is legalized
+/// again so the selected strategy also applies to its restored diagonals.
+///
+/// # Errors
+///
+/// Returns the same input and geometry errors as [`triangulate`].
+pub fn triangulate_preserving_boundary(
+    input: &PolygonInput<'_>,
+    params: &TriParams,
+) -> Result<Triangulation, TriError> {
+    let mut cover = build_cover(input, params.strategy)?;
+    let original_count = cover.triangles.len();
+    restore_boundary_samples(input, &mut cover.triangles);
+    if cover.triangles.len() != original_count
+        && params.strategy == TriStrategy::ConstrainedDelaunay
+    {
+        legalize_edges(&cover.points, &mut cover.triangles);
+    }
+    Ok(Triangulation {
+        triangles: cover.triangles,
+    })
+}
+
 /// Triangulates one polygon and reports deterministic strategy work.
 ///
 /// This is the diagnostic form of [`triangulate`]. It produces the same
@@ -1040,6 +1072,84 @@ mod tests {
         let doubled: [[f64; 2]; 5] = [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         let result = assert_triangulation(&doubled, 2.0);
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn boundary_preserving_triangulation_restores_outer_and_hole_samples() {
+        // Both rings have collinear chains crossing their index-zero seam.
+        let outer = [[1.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]];
+        let hole = [[0.5, 1.0], [0.5, 1.5], [1.5, 1.5], [1.5, 0.5], [0.5, 0.5]];
+        let holes = [&hole[..]];
+        let input = PolygonInput {
+            outer: &outer,
+            holes: &holes,
+        };
+        let points: Vec<_> = outer.into_iter().chain(hole).collect();
+        for params in [TriParams::ear_clip(), TriParams::constrained_delaunay()] {
+            let result = triangulate_preserving_boundary(&input, &params).unwrap();
+            assert_eq!(
+                result,
+                triangulate_preserving_boundary(&input, &params).unwrap()
+            );
+            assert_eq!(result.len(), 10);
+            let mut area = 0.0;
+            let mut edges = BTreeMap::new();
+            for &triangle in &result.triangles {
+                let signed = tri_area2(&points, triangle);
+                assert!(signed > 0.0, "restored triangles have positive area");
+                area += signed;
+                for i in 0..3 {
+                    let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
+                    *edges.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+                }
+            }
+            assert_eq!(area, 6.0);
+            for base in [0, 5] {
+                for i in 0..5 {
+                    let (a, b) = (base + i, base + (i + 1) % 5);
+                    assert_eq!(
+                        edges[&(a.min(b), a.max(b))],
+                        1,
+                        "each original boundary segment survives"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn boundary_preservation_omits_only_consecutive_coincidences() {
+        let outer = [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+            [0.0, 0.0],
+        ];
+        let result = triangulate_preserving_boundary(
+            &PolygonInput {
+                outer: &outer,
+                holes: &[],
+            },
+            &TriParams::ear_clip(),
+        )
+        .unwrap();
+        assert_eq!(result.len(), 3);
+        let used: Vec<_> = result
+            .triangles
+            .iter()
+            .flatten()
+            .map(|&i| outer[i as usize])
+            .collect();
+        for p in outer {
+            assert!(used.contains(&p), "every distinct position is retained");
+        }
+        assert!(
+            result.triangles.iter().all(|&t| tri_area2(&outer, t) > 0.0),
+            "coincident samples create no zero-area triangles"
+        );
     }
 
     #[test]
