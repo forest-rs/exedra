@@ -3,7 +3,8 @@
 
 //! Explicit construction and regeneration on one caller-owned native stage.
 
-use exedra_constructive::{ir::PrimitiveSpec, tessellate::EvalPolicy};
+use exedra_compile::{CompilePolicy, PartCompiler};
+use exedra_constructive::ir::PrimitiveSpec;
 use exedra_scene::{
     SceneEvaluator, Time, composition::*, define_primitive, register_schemas, schemas,
 };
@@ -46,16 +47,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     live.apply(&mut store, &construction)?;
     let mut evaluator = SceneEvaluator::new(root, generated);
-    let first = evaluator.sync(&mut live, &mut store, Time::Default, &EvalPolicy::default())?;
+    let mut compiler = PartCompiler::with_capacity(128);
+    let first = evaluator.sync(
+        &mut live,
+        &mut store,
+        &mut compiler,
+        Time::Default,
+        &CompilePolicy::default(),
+    )?;
     println!("Initial geometry: {:?}", first.stats);
     let size = PropertyPath::new(panel, store.tokens.intern(exedra_scene::SIZE));
     let mut edit = Transaction::new();
     edit.set_default(target.property(size), Value::Vec3d([4.0, 0.2, 3.0]));
     let changed = live.apply(&mut store, &edit)?;
-    let second = evaluator.sync(&mut live, &mut store, Time::Default, &EvalPolicy::default())?;
+    let second = evaluator.sync(
+        &mut live,
+        &mut store,
+        &mut compiler,
+        Time::Default,
+        &CompilePolicy::default(),
+    )?;
     println!("Dimension change: {:?}", second.stats);
     live.apply(&mut store, &changed.inverse)?;
-    let restored = evaluator.sync(&mut live, &mut store, Time::Default, &EvalPolicy::default())?;
+    let restored = evaluator.sync(
+        &mut live,
+        &mut store,
+        &mut compiler,
+        Time::Default,
+        &CompilePolicy::default(),
+    )?;
     assert!(
         first.sources[0].shares_geometry(&restored.sources[0]),
         "undo should reuse original geometry"

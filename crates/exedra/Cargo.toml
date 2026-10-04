@@ -11,8 +11,8 @@ keywords = ["geometry", "modeling", "mesh", "no_std"]
 categories = ["graphics", "data-structures"]
 
 [features]
-# The common geometry surface: native backend, structure and direct mesh operations. `assembly` selects `constructive` because its public API admits recipes.
-default = ["std", "assembly", "mesh_ops"]
+# The common geometry surface: recipes, independent compilation and direct mesh operations. Structure is opt-in.
+default = ["std", "compile", "mesh_ops"]
 
 # Numeric backends. At least one must be selected.
 std = [
@@ -21,6 +21,7 @@ std = [
     "exedra_analytic?/std",
     "exedra_assembly?/std",
     "exedra_constructive?/std",
+    "exedra_compile?/std",
     "exedra_isosurface?/std",
     "exedra_edit?/std",
     "exedra_primitives?/std",
@@ -37,14 +38,15 @@ libm = [
 
 # Application-facing domain namespaces.
 analytic = ["dep:exedra_analytic"]
-assembly = ["dep:exedra_assembly", "constructive"]
+assembly = ["dep:exedra_assembly", "compile"]
 constructive = ["dep:exedra_constructive"]
+compile = ["dep:exedra_compile", "constructive"]
 gltf = ["dep:exedra_gltf", "assembly", "std"]
 isosurface = ["dep:exedra_isosurface"]
 edit = ["dep:exedra_edit"]
 mesh_ops = ["dep:exedra_mesh_ops"]
 primitives = ["dep:exedra_primitives"]
-scene = ["dep:exedra_scene", "constructive"]
+scene = ["dep:exedra_scene", "compile"]
 serde = [
     "assembly",
     "exedra_assembly/serde",
@@ -55,6 +57,7 @@ serde = [
 [dependencies]
 exedra_analytic = { optional = true, workspace = true }
 exedra_assembly = { optional = true, workspace = true }
+exedra_compile = { optional = true, workspace = true }
 exedra_constructive = { optional = true, workspace = true }
 exedra_edit = { optional = true, workspace = true }
 exedra_gltf = { optional = true, workspace = true }

@@ -4,7 +4,8 @@
 use super::*;
 use alloc::{sync::Arc, vec, vec::Vec};
 use composition::*;
-use exedra_constructive::{evaluate::evaluate, ir::PrimitiveSpec, tessellate::EvalPolicy};
+use exedra_compile::{CompilePolicy, PartCompiler};
+use exedra_constructive::{evaluate::evaluate, ir::PrimitiveSpec};
 use schemas::{XformCache, usd_geom, value};
 
 const GENERATED: LayerId = LayerId(1);
@@ -15,6 +16,7 @@ struct Fixture {
     store: InMemoryStore,
     live: LiveStage,
     root: PathId,
+    compiler: PartCompiler,
 }
 
 impl Fixture {
@@ -51,7 +53,12 @@ impl Fixture {
                 ..StageOptions::default()
             },
         );
-        Self { store, live, root }
+        Self {
+            store,
+            live,
+            root,
+            compiler: PartCompiler::with_capacity(128),
+        }
     }
 
     fn primitive(&mut self, name: &str, spec: PrimitiveSpec) -> PathId {
@@ -78,8 +85,9 @@ impl Fixture {
             .sync(
                 &mut self.live,
                 &mut self.store,
+                &mut self.compiler,
                 Time::Default,
-                &EvalPolicy::default(),
+                &CompilePolicy::default(),
             )
             .unwrap()
     }
@@ -110,15 +118,16 @@ fn published_polygons_match_direct_construction_and_keep_provenance() {
     assert_eq!(snapshot.sources.len(), 2);
     assert_eq!(snapshot.stats.geometry_evaluations, 2);
     for source in &snapshot.sources {
-        let direct = evaluate(source.recipe(), &EvalPolicy::default()).unwrap();
-        let body = &source.evaluation().bodies[0].body;
+        let direct = evaluate(source.recipe(), &CompilePolicy::default().evaluation).unwrap();
+        let retained = source.body(0).unwrap();
+        let body = retained.geometry();
         let points: Vec<_> = body
             .mesh
             .vertices()
             .map(|v| *body.mesh.vertex_position(v).unwrap())
             .collect();
         assert_eq!(fixture.generated_points(source.output), points);
-        assert_eq!(source.evaluation().report, direct.report);
+        assert_eq!(source.report(), &direct.report);
         assert_eq!(
             body.source_map.stats(),
             direct.bodies[0].body.source_map.stats()
@@ -197,6 +206,73 @@ fn identical_sources_share_geometry_and_unchanged_sync_does_not_write() {
         fixture.store.layer(GENERATED).unwrap().generation(),
         generation
     );
+}
+
+#[test]
+fn standalone_compilation_and_native_stages_share_the_same_geometry_service() {
+    use exedra_compile::{PartId, PartInput, PartSource, StaleSelection};
+    use exedra_constructive::workplane::SurfaceInventoryPolicy;
+    let mut fixture = Fixture::new();
+    fixture.box_at("/World/Box", [1.0; 3]);
+    let recipe =
+        PartSource::Recipe(primitive::recipe(PrimitiveSpec::Box { size: [1.0; 3] }).unwrap());
+    let standalone = fixture
+        .compiler
+        .compile_snapshot(
+            &[PartInput {
+                key: "standalone",
+                source: &recipe,
+            }],
+            &CompilePolicy::default(),
+        )
+        .unwrap();
+    let body = standalone.body_by_source(PartId(0), "primitive").unwrap();
+    let evidence = body
+        .inspect_surfaces(&SurfaceInventoryPolicy::default())
+        .unwrap();
+    let mut evaluator = SceneEvaluator::new(fixture.root, GENERATED);
+    let native = fixture.sync(&mut evaluator);
+    assert_eq!(native.stats.geometry_evaluations, 0);
+    assert_eq!(native.stats.polygon_encodings, 1);
+    assert!(
+        Arc::ptr_eq(
+            standalone.compiled().part(PartId(0)).unwrap(),
+            native.sources[0].compiled()
+        ),
+        "stage publication must reuse standalone extraction buffers"
+    );
+    let native_body = native.sources[0].body_by_source("primitive").unwrap();
+    assert!(
+        core::ptr::eq(body.geometry(), native_body.geometry()),
+        "stage and standalone queries must share evaluated topology"
+    );
+    assert_eq!(evidence.check(&native_body), Err(StaleSelection));
+    evaluator.clear_cache();
+    let encoded_again = fixture.sync(&mut evaluator);
+    assert_eq!(encoded_again.stats.geometry_evaluations, 0);
+    assert_eq!(encoded_again.stats.polygon_encodings, 1);
+    assert_eq!(encoded_again.stats.meshes_written, 0);
+
+    let mut other = Fixture::new();
+    other.box_at("/World/Box", [1.0; 3]);
+    let mut other_evaluator = SceneEvaluator::new(other.root, GENERATED);
+    let other_native = other_evaluator
+        .sync(
+            &mut other.live,
+            &mut other.store,
+            &mut fixture.compiler,
+            Time::Default,
+            &CompilePolicy::default(),
+        )
+        .unwrap();
+    assert_eq!(other_native.stats.geometry_evaluations, 0);
+    assert!(
+        native.sources[0].shares_geometry(&other_native.sources[0]),
+        "shared geometry must be independent of native stores and token handles"
+    );
+    fixture.compiler.clear_cache();
+    assert_eq!(evidence.check(&body), Ok(()));
+    assert_eq!(native.sources[0].compiled().triangle_count(), 12);
 }
 
 #[test]
@@ -344,8 +420,9 @@ fn generated_layer_cannot_also_occur_at_a_stronger_position() {
             .sync(
                 &mut fixture.live,
                 &mut fixture.store,
+                &mut fixture.compiler,
                 Time::Default,
-                &EvalPolicy::default()
+                &CompilePolicy::default()
             )
             .unwrap_err()
             .kind,
@@ -409,8 +486,9 @@ fn failed_publication_cannot_reuse_store_local_tokens_on_another_stage() {
             .sync(
                 &mut fixture.live,
                 &mut fixture.store,
+                &mut fixture.compiler,
                 Time::Default,
-                &EvalPolicy::default()
+                &CompilePolicy::default()
             )
             .unwrap_err()
             .kind,
@@ -428,8 +506,9 @@ fn failed_publication_cannot_reuse_store_local_tokens_on_another_stage() {
             .sync(
                 &mut other.live,
                 &mut other.store,
+                &mut other.compiler,
                 Time::Default,
-                &EvalPolicy::default()
+                &CompilePolicy::default()
             )
             .unwrap_err()
             .kind,
@@ -480,8 +559,9 @@ fn invalid_input_leaves_the_last_generated_snapshot_intact() {
         .sync(
             &mut fixture.live,
             &mut fixture.store,
+            &mut fixture.compiler,
             Time::Default,
-            &EvalPolicy::default(),
+            &CompilePolicy::default(),
         )
         .unwrap_err();
     assert_eq!(error.path, "/World/Box");
@@ -501,8 +581,9 @@ fn invalid_input_leaves_the_last_generated_snapshot_intact() {
                 .sync(
                     &mut fixture.live,
                     &mut fixture.store,
+                    &mut fixture.compiler,
                     Time::Default,
-                    &EvalPolicy::default()
+                    &CompilePolicy::default()
                 )
                 .unwrap_err()
                 .kind,
@@ -528,8 +609,9 @@ fn time_and_policy_participate_in_geometry_identity() {
         .sync(
             &mut fixture.live,
             &mut fixture.store,
+            &mut fixture.compiler,
             Time::at(1.0),
-            &EvalPolicy::default(),
+            &CompilePolicy::default(),
         )
         .unwrap();
     assert_eq!(sampled.stats.geometry_evaluations, 1);
@@ -545,12 +627,13 @@ fn time_and_policy_participate_in_geometry_identity() {
         first.sources[0].shares_geometry(&restored.sources[0]),
         "default-time construction is separate from numeric sampling"
     );
-    let mut policy = EvalPolicy::default();
-    policy.sharp_sin_threshold = 0.5;
+    let mut policy = CompilePolicy::default();
+    policy.evaluation.sharp_sin_threshold = 0.5;
     let changed = evaluator
         .sync(
             &mut fixture.live,
             &mut fixture.store,
+            &mut fixture.compiler,
             Time::Default,
             &policy,
         )
@@ -567,6 +650,7 @@ fn cache_eviction_and_release_preserve_held_snapshots() {
     let mut fixture = Fixture::new();
     fixture.box_at("/World/Left", [1.0; 3]);
     fixture.box_at("/World/Right", [2.0; 3]);
+    fixture.compiler = PartCompiler::with_capacity(1);
     let mut evaluator = SceneEvaluator::with_capacity(fixture.root, GENERATED, 1);
     let first = fixture.sync(&mut evaluator);
     assert_eq!(evaluator.cached_entries(), 1);
@@ -574,8 +658,10 @@ fn cache_eviction_and_release_preserve_held_snapshots() {
     assert_eq!(evaluator.cached_entries(), 0);
     assert_eq!(evaluator.cached_payload_bytes(), 0);
     assert_eq!(
-        first.sources[0].evaluation().bodies[0]
-            .body
+        first.sources[0]
+            .body(0)
+            .unwrap()
+            .geometry()
             .mesh
             .faces()
             .count(),
@@ -597,8 +683,9 @@ fn generated_layer_ownership_and_foreign_stage_are_checked() {
         .sync(
             &mut other.live,
             &mut other.store,
+            &mut other.compiler,
             Time::Default,
-            &EvalPolicy::default(),
+            &CompilePolicy::default(),
         )
         .unwrap_err();
     assert!(
@@ -615,8 +702,9 @@ fn generated_layer_ownership_and_foreign_stage_are_checked() {
                 .sync(
                     &mut fixture.live,
                     &mut fixture.store,
+                    &mut fixture.compiler,
                     Time::Default,
-                    &EvalPolicy::default()
+                    &CompilePolicy::default()
                 )
                 .unwrap_err()
                 .kind,
@@ -644,8 +732,9 @@ fn output_collisions_and_nonfinite_output_are_atomic_refusals() {
                 .sync(
                     &mut fixture.live,
                     &mut fixture.store,
+                    &mut fixture.compiler,
                     Time::Default,
-                    &EvalPolicy::default()
+                    &CompilePolicy::default()
                 )
                 .unwrap_err()
                 .kind,
@@ -665,8 +754,9 @@ fn output_collisions_and_nonfinite_output_are_atomic_refusals() {
             .sync(
                 &mut finite.live,
                 &mut finite.store,
+                &mut finite.compiler,
                 Time::Default,
-                &EvalPolicy::default()
+                &CompilePolicy::default()
             )
             .is_err(),
         "finite source dimensions cannot authorize nonfinite mesh data"
@@ -688,8 +778,9 @@ fn invalid_time_and_native_instances_refuse_without_generated_output() {
                 .sync(
                     &mut fixture.live,
                     &mut fixture.store,
+                    &mut fixture.compiler,
                     Time::at(f64::NAN),
-                    &EvalPolicy::default()
+                    &CompilePolicy::default()
                 )
                 .unwrap_err()
                 .kind,
@@ -711,8 +802,9 @@ fn invalid_time_and_native_instances_refuse_without_generated_output() {
                 .sync(
                     &mut fixture.live,
                     &mut fixture.store,
+                    &mut fixture.compiler,
                     Time::Default,
-                    &EvalPolicy::default()
+                    &CompilePolicy::default()
                 )
                 .unwrap_err()
                 .kind,

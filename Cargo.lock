@@ -268,6 +268,7 @@ version = "0.1.0"
 dependencies = [
  "exedra_analytic",
  "exedra_assembly",
+ "exedra_compile",
  "exedra_constructive",
  "exedra_edit",
  "exedra_gltf",
@@ -292,13 +293,23 @@ dependencies = [
 name = "exedra_assembly"
 version = "0.1.0"
 dependencies = [
+ "exedra_compile",
  "exedra_constructive",
  "exedra_mesh",
  "exedra_mesh_ops",
  "hashbrown",
- "invalidation",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "exedra_compile"
+version = "0.1.0"
+dependencies = [
+ "exedra_constructive",
+ "exedra_mesh",
+ "exedra_mesh_ops",
+ "hashbrown",
 ]
 
 [[package]]
@@ -482,6 +493,7 @@ dependencies = [
 name = "exedra_scene"
 version = "0.1.0"
 dependencies = [
+ "exedra_compile",
  "exedra_constructive",
  "exedra_mesh",
  "layerstack",
@@ -701,6 +713,13 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "geometry_queries"
+version = "0.0.0"
+dependencies = [
+ "exedra",
 ]
 
 [[package]]
@@ -1025,6 +1044,7 @@ dependencies = [
 name = "native_scene"
 version = "0.0.0"
 dependencies = [
+ "exedra_compile",
  "exedra_constructive",
  "exedra_scene",
 ]

@@ -41,12 +41,8 @@ pub enum Occurrence {
     PlacementSet(PlacementSetId),
 }
 
-/// Index of a registered part within an [`Assembly`].
-///
-/// Handles are only meaningful for the assembly that produced them; they
-/// are *not* identity across re-evaluations — part keys are.
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PartId(pub u32);
+/// Input-local part handle, owned by the independent compilation service.
+pub use exedra_compile::PartId;
 
 /// Index of an instance within an [`Assembly`].
 ///
@@ -55,18 +51,8 @@ pub struct PartId(pub u32);
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstanceId(pub u32);
 
-/// Index into a part's slot table.
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SlotIndex(pub u32);
-
-/// The geometry source of a part.
-#[derive(Clone, Debug)]
-pub enum PartSource {
-    /// A constructive recipe, tessellated on demand.
-    Recipe(Recipe),
-    /// A baked mesh, used as-is.
-    Baked(exedra_mesh::Mesh),
-}
+/// Geometry sources and unresolved material-slot indices.
+pub use exedra_compile::{PartSource, SlotIndex};
 
 /// A part definition: geometry source plus declared material slots.
 ///

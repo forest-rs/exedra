@@ -4,8 +4,9 @@
 //! Optional native scenes over independently usable Exedra construction.
 //!
 //! `LayerStack` owns authored scene structure, composition, overrides and undo.
-//! Exedra owns geometry intent, evaluation, source correspondence and reports.
-//! This crate lowers typed scene inputs through the ordinary recipe evaluator
+//! Exedra owns geometry intent; `exedra_compile` owns compilation, extraction,
+//! retained queries and cache lifetimes.
+//! This crate lowers typed scene inputs through a caller-owned shared compiler
 //! and publishes conventional polygon meshes without an `Assembly` or a second
 //! scene tree. The geometry crates have no dependency on this integration.
 //!
@@ -14,7 +15,7 @@
 //! their composed parameters and updates an exclusively owned, weakest local
 //! generated layer. Transforms and material bindings remain native stage data;
 //! changing them reuses local geometry. Returned snapshots retain recipes,
-//! topology, source maps and honest evaluation reports for geometric inspection.
+//! topology, source maps, extraction buffers and reports through shared snapshots.
 //!
 //! This is an initial scene-authoring surface, not a complete recipe schema or
 //! asset importer. Direct callers continue using `Recipe`, `evaluate`, part
@@ -33,6 +34,9 @@ pub use primitive::{
     BOX_SCHEMA, CYLINDER_SCHEMA, HEIGHT, RADIUS, SEGMENTS, SIZE, define_primitive, register_schemas,
 };
 pub use runtime::{GENERATED_CHILD, SceneEvaluator, SceneSnapshot, SourceGeometry, SyncStats};
+
+/// Scene-independent compiler, geometry inputs and retained query snapshots.
+pub use exedra_compile as compile;
 
 /// Native layers, composition, paths, transactions and change reports.
 pub use layerstack as composition;

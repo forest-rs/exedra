@@ -1,12 +1,14 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, string::String, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, string::String, sync::Arc, vec::Vec};
+use exedra_compile::{
+    BodyLookupError, CompileError, CompilePolicy, CompiledPart, PartCompiler, PartId, PartInput,
+    PartSnapshot, PartSource, SnapshotBody,
+};
 use exedra_constructive::{
-    cache::policy_fingerprint,
-    evaluate::{Evaluation, Severity, evaluate},
+    evaluate::{GeometryReport, Severity},
     ir::Recipe,
-    tessellate::EvalPolicy,
 };
 use layerstack::{
     ChangeCursor, ChangeHistoryError, EditTarget, LayerId, LayerOffset, LayerStack, LayerStore,
@@ -15,7 +17,7 @@ use layerstack::{
 use layerstack_schemas::{Scene, Time};
 
 use crate::{
-    BOX_SCHEMA, CYLINDER_SCHEMA, SceneError, SceneErrorKind, geometry::Geometry, primitive,
+    BOX_SCHEMA, CYLINDER_SCHEMA, SceneError, SceneErrorKind, geometry::Polygon, primitive,
 };
 
 /// Reserved output child below each supported construction prim.
@@ -29,7 +31,7 @@ type ContentKey = (u128, u64);
 
 #[derive(Debug)]
 struct Cached {
-    geometry: Rc<Geometry>,
+    encoding: Rc<Polygon>,
     used: u64,
 }
 
@@ -41,7 +43,7 @@ struct Published {
 
 /// One source's part-local evaluated geometry, independent of scene placement.
 ///
-/// Clones share immutable recipes, topology, source maps and reports. They
+/// Clones share immutable topology, source maps, buffers and reports. They
 /// survive regeneration, cache eviction and evaluator destruction. Array indices
 /// and mesh handles are snapshot-local; retain construction intent for selections.
 #[derive(Clone, Debug)]
@@ -52,30 +54,47 @@ pub struct SourceGeometry {
     pub source: String,
     /// Store-local conventional output mesh path.
     pub output: PathId,
-    geometry: Rc<Geometry>,
+    geometry: PartSnapshot,
+    recipe: Recipe,
 }
 
 impl SourceGeometry {
-    /// The ordinary immutable recipe lowered from composed construction inputs.
+    /// Ordinary immutable recipe lowered from composed construction inputs.
     #[must_use]
     pub fn recipe(&self) -> &Recipe {
-        &self.geometry.recipe
+        &self.recipe
     }
 
-    /// Geometry and complete constructive report from this content's evaluation.
-    ///
-    /// Reports describe the original evaluation on a cache hit. Use the sync
-    /// statistics to measure work in the current call. Geometry stays source-local;
-    /// query native transforms separately for placed measurements.
+    /// Shared extraction buffers from the scene-independent compiler.
     #[must_use]
-    pub fn evaluation(&self) -> &Evaluation {
-        &self.geometry.evaluation
+    pub fn compiled(&self) -> &Arc<CompiledPart> {
+        self.geometry.compiled()
     }
 
-    /// Whether another source shares exactly this immutable evaluated result.
+    /// Complete constructive report, including original measurements on cache hits.
+    #[must_use]
+    pub fn report(&self) -> &GeometryReport {
+        self.geometry.report().expect("scene sources are recipes")
+    }
+
+    /// Shared immutable body with the same query APIs as standalone compilation.
+    /// Indices and selection scopes belong to this synchronization's snapshot.
+    #[must_use]
+    pub fn body(&self, index: u32) -> Option<SnapshotBody> {
+        self.geometry.body(index)
+    }
+
+    /// Resolves a producing source label without retaining transient body indices.
+    /// # Errors
+    /// Reports missing or ambiguous source labels without choosing one.
+    pub fn body_by_source(&self, source: &str) -> Result<SnapshotBody, BodyLookupError> {
+        self.geometry.body_by_source(source)
+    }
+
+    /// Whether another source shares exactly the same immutable compiled geometry.
     #[must_use]
     pub fn shares_geometry(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.geometry, &other.geometry)
+        Arc::ptr_eq(self.compiled(), other.compiled())
     }
 }
 
@@ -84,10 +103,12 @@ impl SourceGeometry {
 pub struct SyncStats {
     /// Composed prims inspected for supported construction types.
     pub discovered_prims: usize,
-    /// Geometry evaluations and polygon encodings performed on cache misses.
+    /// Geometry compilations performed by the caller-owned shared service.
     pub geometry_evaluations: usize,
     /// Source occurrences that reused a cached geometry result.
     pub geometry_reused: usize,
+    /// Native polygon property encodings, independent of shared compilation work.
+    pub polygon_encodings: usize,
     /// Output mesh specs created or replaced.
     pub meshes_written: usize,
     /// Output mesh specs removed after their source disappeared.
@@ -107,7 +128,7 @@ pub struct SceneSnapshot {
 
 /// Explicit geometry evaluation and publication for one caller-owned live stage.
 ///
-/// Owns only the generated layer and content cache. Source authoring, transforms,
+/// Owns only generated publication and native property encoding retention. Source authoring, transforms,
 /// materials, composition and undo remain native `LayerStack` operations. No scene
 /// tree, scheduling, callbacks or renderer resources are retained.
 ///
@@ -115,9 +136,9 @@ pub struct SceneSnapshot {
 /// layer must start empty and be the weakest local sublayer, with identity time
 /// offset. Do not edit that layer externally; author overrides in stronger layers.
 /// Each sync scans the requested subtree, but geometry and output publication are
-/// content incremental. The cache is bounded by entry count; held snapshots may
-/// retain evicted entries. Current scene snapshots use single-threaded `Rc`,
-/// matching direct constructive evaluation.
+/// content incremental. The native encoding cache is bounded by entry count.
+/// Geometry retention and work belong to an explicitly supplied `PartCompiler`;
+/// it can also serve standalone callers or Assembly adapters.
 #[derive(Debug)]
 pub struct SceneEvaluator {
     root: PathId,
@@ -131,7 +152,7 @@ pub struct SceneEvaluator {
 }
 
 impl SceneEvaluator {
-    /// Creates an evaluator with room for 128 geometry content/policy pairs.
+    /// Creates an evaluator with room for 128 native property encodings.
     #[must_use]
     pub fn new(root: PathId, generated: LayerId) -> Self {
         Self::with_capacity(root, generated, 128)
@@ -152,7 +173,7 @@ impl SceneEvaluator {
         }
     }
 
-    /// Content/policy pairs retained in the evaluation cache.
+    /// Content/policy pairs retained in the native property encoding cache.
     #[must_use]
     pub fn cached_entries(&self) -> usize {
         self.cache.len()
@@ -166,19 +187,20 @@ impl SceneEvaluator {
     pub fn cached_payload_bytes(&self) -> usize {
         self.cache
             .values()
-            .map(|entry| entry.geometry.payload_bytes)
+            .map(|entry| entry.encoding.payload_bytes)
             .sum()
     }
 
-    /// Releases the content cache; existing snapshots and published geometry survive.
+    /// Releases native encodings; geometry compiler retention is caller-owned.
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
 
     /// Samples construction inputs and atomically updates changed generated meshes.
     ///
-    /// Uses the ordinary constructive evaluator and never bakes scene transforms
-    /// into its inputs. Geometry keys include the recipe and evaluation policy.
+    /// Calls the supplied shared compiler without baking scene transforms into
+    /// inputs. Geometry keys include source content and the full compilation policy.
+    /// The compiler can also serve standalone callers or other native stages.
     /// Stronger opinions survive regeneration; source edit inverses can be applied
     /// normally, followed by another sync to regenerate the corresponding output.
     /// Source-local geometry and reports remain available in the returned snapshot.
@@ -193,8 +215,9 @@ impl SceneEvaluator {
         &mut self,
         live: &mut LiveStage,
         store: &mut dyn LayerStore,
+        compiler: &mut PartCompiler,
         time: Time,
-        policy: &EvalPolicy,
+        policy: &CompilePolicy,
     ) -> Result<SceneSnapshot, SceneError> {
         let error = |kind| SceneError::new(store, self.root, kind);
         if let Time::At { code, .. } = time
@@ -316,42 +339,79 @@ impl SceneEvaluator {
                 ancestor = store.paths().parent(parent);
             }
             let recipe = primitive::read(scene, path, time)?;
-            inputs.push((path, store.paths().display(path, store.tokens()), recipe));
+            inputs.push((
+                path,
+                store.paths().display(path, store.tokens()),
+                PartSource::Recipe(recipe),
+            ));
         }
+        let compilation_inputs: Vec<_> = inputs
+            .iter()
+            .map(|(_, key, source)| PartInput { key, source })
+            .collect();
+        let before = compiler.counters();
+        let geometry = compiler
+            .compile_snapshot(&compilation_inputs, policy)
+            .map_err(|error| {
+                let part = match &error {
+                    CompileError::Evaluate { part, .. } | CompileError::NoGeometry { part, .. } => {
+                        *part
+                    }
+                    _ => PartId(0),
+                };
+                let path = inputs
+                    .get(part.0 as usize)
+                    .map_or(self.root, |input| input.0);
+                SceneError::new(store, path, SceneErrorKind::Compile(Box::new(error)))
+            })?;
+        let after = compiler.counters();
+        stats.geometry_evaluations = usize::try_from(after.parts_compiled - before.parts_compiled)
+            .expect("compilations bounded by input count");
+        stats.geometry_reused = usize::try_from(after.cache_hits - before.cache_hits)
+            .expect("hits bounded by input count");
         let target = EditTarget::for_layer(self.generated);
         let mut transaction = Transaction::new();
         let mut published = BTreeMap::new();
         let mut sources = Vec::new();
-        for (path, source, recipe) in inputs {
-            let key = (recipe.recipe_fingerprint().0, policy_fingerprint(policy));
+        for (index, (path, source, input)) in inputs.into_iter().enumerate() {
+            let part = PartId(u32::try_from(index).expect("compiler input count fits u32"));
+            let compiled = geometry
+                .compiled()
+                .part(part)
+                .expect("compiled scene input");
+            let report = geometry
+                .compiled()
+                .report(part)
+                .expect("scene inputs are recipes");
+            if !report.clean_at(Severity::Error) || compiled.bodies.len() != 1 {
+                return Err(SceneError::new(
+                    store,
+                    path,
+                    SceneErrorKind::Refused(Arc::new(report.clone())),
+                ));
+            }
+            let key = (
+                compiled.fingerprint.0,
+                geometry.compiled().policy_fingerprint().0,
+            );
             self.clock = self
                 .clock
                 .checked_add(1)
-                .expect("scene cache clock overflow");
-            let geometry = if let Some(cached) = self.cache.get_mut(&key) {
+                .expect("scene encoding cache clock overflow");
+            let encoding = if let Some(cached) = self.cache.get_mut(&key) {
                 cached.used = self.clock;
-                stats.geometry_reused += 1;
-                Rc::clone(&cached.geometry)
+                Rc::clone(&cached.encoding)
             } else {
-                let evaluation = evaluate(&recipe, policy).map_err(|e| {
-                    SceneError::new(store, path, SceneErrorKind::Evaluate(Box::new(e)))
-                })?;
-                if !evaluation.report.clean_at(Severity::Error) {
-                    return Err(SceneError::new(
-                        store,
-                        path,
-                        SceneErrorKind::Refused(Rc::new(evaluation.report)),
-                    ));
-                }
-                let geometry = Rc::new(
-                    Geometry::new(recipe, evaluation, store.tokens_mut())
+                let body = geometry.body(part, 0).expect("one retained scene body");
+                let encoding = Rc::new(
+                    Polygon::new(&body.geometry().mesh, policy, store.tokens_mut())
                         .map_err(|kind| SceneError::new(store, path, kind))?,
                 );
-                stats.geometry_evaluations += 1;
+                stats.polygon_encodings += 1;
                 self.cache.insert(
                     key,
                     Cached {
-                        geometry: Rc::clone(&geometry),
+                        encoding: Rc::clone(&encoding),
                         used: self.clock,
                     },
                 );
@@ -364,7 +424,7 @@ impl SceneEvaluator {
                         .0;
                     self.cache.remove(&victim);
                 }
-                geometry
+                encoding
             };
             let previous = self.published.get(&path);
             let output = previous.map_or_else(
@@ -397,7 +457,7 @@ impl SceneEvaluator {
                 }
                 let mesh_type = store.tokens_mut().intern("Mesh");
                 transaction.create_prim(target.prim(output), Specifier::Def, Some(mesh_type));
-                for (name, spec) in &geometry.properties {
+                for (name, spec) in &encoding.properties {
                     let name = store.tokens_mut().intern(name);
                     transaction.create_property(
                         target.property(PropertyPath::new(output, name)),
@@ -405,7 +465,7 @@ impl SceneEvaluator {
                     );
                 }
                 stats.meshes_written += 1;
-                stats.points_written += geometry.points;
+                stats.points_written += encoding.points;
             }
             published.insert(
                 path,
@@ -418,7 +478,11 @@ impl SceneEvaluator {
                 path,
                 source,
                 output,
-                geometry,
+                geometry: geometry.part(part).expect("retained scene input"),
+                recipe: match input {
+                    PartSource::Recipe(recipe) => recipe,
+                    PartSource::Baked(_) => unreachable!("scene schemas lower recipes"),
+                },
             });
         }
         for (path, previous) in &self.published {

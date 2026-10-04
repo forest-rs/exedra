@@ -11,6 +11,11 @@
 //! list. It compiles parts once per distinct content and shares the result
 //! across instances.
 //!
+//! Geometry compilation, caches, extraction and query snapshots are owned by
+//! `exedra_compile`. This crate adapts its part records to that service and adds
+//! captured placement and material binding. Standalone geometry callers can use
+//! the service directly without registering parts or creating an instance tree.
+//!
 //! It intentionally does not own: geometry math (that is [`exedra_mesh`] and
 //! [`exedra_constructive`]), parameter models, conditional logic, or
 //! pricing — those belong to the external runtimes that drive this crate —

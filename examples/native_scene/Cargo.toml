@@ -12,5 +12,6 @@ publish = false
 workspace = true
 
 [dependencies]
+exedra_compile = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_scene = { features = ["std"], workspace = true }

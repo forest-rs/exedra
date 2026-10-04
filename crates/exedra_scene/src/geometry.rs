@@ -1,54 +1,34 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
-use exedra_constructive::{evaluate::Evaluation, ir::Recipe};
-use exedra_mesh::{CornerId, Mesh, NormalParams, attr};
+use crate::SceneErrorKind;
+use alloc::{collections::BTreeMap, vec::Vec};
+use exedra_compile::CompilePolicy;
+use exedra_mesh::{CornerId, Mesh, NormalParams, NormalsSource, UvSource, attr};
 use layerstack::{PropertySpec, PropertyType, TokenInterner, Value};
 use layerstack_schemas::value;
 
-use crate::SceneErrorKind;
-
 #[derive(Debug)]
-pub(crate) struct Geometry {
-    pub(crate) recipe: Recipe,
-    pub(crate) evaluation: Evaluation,
+pub(crate) struct Polygon {
     pub(crate) properties: Vec<(&'static str, PropertySpec)>,
     pub(crate) payload_bytes: usize,
     pub(crate) points: usize,
 }
-
-impl Geometry {
+impl Polygon {
     pub(crate) fn new(
-        recipe: Recipe,
-        evaluation: Evaluation,
+        mesh: &Mesh,
+        policy: &CompilePolicy,
         tokens: &mut TokenInterner,
     ) -> Result<Self, SceneErrorKind> {
-        let [body] = evaluation.bodies.as_slice() else {
-            return Err(SceneErrorKind::Refused(Rc::new(evaluation.report.clone())));
-        };
-        let Encoded {
-            properties,
-            points,
-            payload_bytes,
-        } = polygon_properties(&body.body.mesh, tokens)?;
-        Ok(Self {
-            recipe,
-            evaluation,
-            properties,
-            points,
-            payload_bytes,
-        })
+        polygon_properties(mesh, policy, tokens)
     }
 }
 
-struct Encoded {
-    properties: Vec<(&'static str, PropertySpec)>,
-    points: usize,
-    payload_bytes: usize,
-}
-
-fn polygon_properties(mesh: &Mesh, tokens: &mut TokenInterner) -> Result<Encoded, SceneErrorKind> {
+fn polygon_properties(
+    mesh: &Mesh,
+    policy: &CompilePolicy,
+    tokens: &mut TokenInterner,
+) -> Result<Polygon, SceneErrorKind> {
     let error = SceneErrorKind::UnrepresentableGeometry;
     let mut positions = Vec::new();
     let mut lookup = BTreeMap::new();
@@ -78,19 +58,37 @@ fn polygon_properties(mesh: &Mesh, tokens: &mut TokenInterner) -> Result<Encoded
     let mut all_uvs = true;
     let mut regions = Vec::new();
     for face in mesh.faces() {
+        let (plane, _) =
+            exedra_mesh::dominant_box_plane(mesh, face, exedra_mesh::DEFAULT_BOX_NORMAL_EPSILON);
         let start = indices.len();
         for edge in mesh.face_loop(face) {
             let vertex = mesh.to_vertex(edge).expect("evaluated face edge");
             indices.push(lookup[&vertex]);
-            let normal = normal_overrides
-                .and_then(|layer| layer.get(edge.as_id()).copied())
-                .or_else(|| derived.get(CornerId::from(edge)))
-                .unwrap_or([0.0; 3]);
+            let authored = normal_overrides.and_then(|layer| layer.get(edge.as_id()).copied());
+            let normal = match policy.normals {
+                NormalsSource::Derived => derived.get(CornerId::from(edge)),
+                NormalsSource::CustomOnly => authored,
+                NormalsSource::CustomOrDerived => {
+                    authored.or_else(|| derived.get(CornerId::from(edge)))
+                }
+            }
+            .unwrap_or([0.0; 3]);
             if !normal.iter().all(|v| v.is_finite()) {
                 return Err(error);
             }
             normals.push(normal);
-            let uv = uv_layer.and_then(|layer| layer.get(edge.as_id()).copied());
+            let uv = uv_layer
+                .and_then(|layer| layer.get(edge.as_id()).copied())
+                .or_else(|| match policy.uvs {
+                    UvSource::CustomOnly => None,
+                    UvSource::CustomOrBoxProjected { scale } => exedra_mesh::project_corner_box(
+                        mesh,
+                        CornerId::from(edge),
+                        plane,
+                        scale,
+                        [0.0; 2],
+                    ),
+                });
             all_uvs &= uv.is_some();
             if let Some(uv) = uv {
                 if !uv.iter().all(|v| v.is_finite()) {
@@ -210,9 +208,96 @@ fn polygon_properties(mesh: &Mesh, tokens: &mut TokenInterner) -> Result<Encoded
             .with_metadata(interpolation, Value::Token(face_varying)),
         ));
     }
-    Ok(Encoded {
+    Ok(Polygon {
         properties,
         points,
         payload_bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use exedra_mesh::{ExtractParams, MeshBuilder, op};
+
+    #[test]
+    fn polygon_attributes_follow_shared_extraction_policy() {
+        let mut builder = MeshBuilder::new();
+        builder.push_vertex([0.0, 0.0, 0.0]);
+        builder.push_vertex([1.0, 0.0, 0.0]);
+        builder.push_vertex([0.0, 1.0, 0.0]);
+        builder.add_face(&[0, 1, 2]).unwrap();
+        let mut mesh = builder.build().unwrap().mesh;
+        let corner = mesh
+            .faces()
+            .flat_map(|face| mesh.face_loop(face))
+            .next()
+            .unwrap();
+        let mut edit = mesh.edit();
+        op::set_corner_normal_override(&mut edit, corner, Some([1.0, 0.0, 0.0])).unwrap();
+        op::set_corner_uv(&mut edit, corner, [7.0, 9.0]).unwrap();
+        let _: () = edit.finish();
+
+        for normals in [
+            NormalsSource::Derived,
+            NormalsSource::CustomOnly,
+            NormalsSource::CustomOrDerived,
+        ] {
+            let policy = CompilePolicy {
+                normals,
+                uvs: UvSource::CustomOrBoxProjected { scale: 2.0 },
+                ..CompilePolicy::default()
+            };
+            let mut tokens = TokenInterner::default();
+            let polygon = Polygon::new(&mesh, &policy, &mut tokens).unwrap();
+            let property = |name| {
+                polygon
+                    .properties
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .unwrap()
+                    .1
+                    .default
+                    .as_ref()
+                    .unwrap()
+            };
+            let points = value::read_float3_array(property("points"), &tokens).unwrap();
+            let indices = value::read_int_array(property("faceVertexIndices"), &tokens).unwrap();
+            let native_normals = value::read_float3_array(property("normals"), &tokens).unwrap();
+            let native_uvs = value::read_float2_array(property("primvars:st"), &tokens).unwrap();
+            let (tri, _) = mesh.to_trimesh(&ExtractParams {
+                normals: policy.normals,
+                uvs: policy.uvs,
+                ..ExtractParams::default()
+            });
+            for (corner, index) in indices.iter().enumerate() {
+                let position = points[usize::try_from(*index).unwrap()];
+                let vertex = tri
+                    .positions
+                    .iter()
+                    .position(|point| *point == position)
+                    .unwrap();
+                assert_eq!(native_normals[corner], tri.normals[vertex]);
+                assert_eq!(native_uvs[corner], tri.uvs[vertex]);
+            }
+            assert!(
+                native_uvs.contains(&[7.0, 9.0]),
+                "authored UVs survive projection"
+            );
+        }
+
+        let polygon = Polygon::new(
+            &mesh,
+            &CompilePolicy::default(),
+            &mut TokenInterner::default(),
+        )
+        .unwrap();
+        assert!(
+            !polygon
+                .properties
+                .iter()
+                .any(|(name, _)| *name == "primvars:st"),
+            "partial authored coverage must not publish a shortened corner stream"
+        );
+    }
 }

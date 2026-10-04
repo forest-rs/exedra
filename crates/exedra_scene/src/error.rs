@@ -1,12 +1,9 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use alloc::{boxed::Box, rc::Rc, string::String};
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::fmt;
-use exedra_constructive::{
-    evaluate::{EvalError, GeometryReport},
-    ir::RecipeError,
-};
+use exedra_constructive::{evaluate::GeometryReport, ir::RecipeError};
 use layerstack::{ChangeHistoryError, EditError, LayerStore, PathId};
 
 /// A failed scene evaluation or publication, with owned source context.
@@ -37,10 +34,10 @@ pub enum SceneErrorKind {
     UnsupportedPrimitive,
     /// The ordinary recipe builder rejected the composed parameters.
     Recipe(RecipeError),
-    /// The ordinary constructive evaluator failed.
-    Evaluate(Box<EvalError>),
+    /// The shared geometry compiler failed, retaining input and evaluation context.
+    Compile(Box<exedra_compile::CompileError>),
     /// Evaluation refused publishable geometry; retains its complete report.
-    Refused(Rc<GeometryReport>),
+    Refused(Arc<GeometryReport>),
     /// Generation requires an empty, exclusively owned, weakest local layer.
     GeneratedLayer,
     /// The generated layer was edited outside this evaluator.
@@ -78,7 +75,7 @@ impl fmt::Display for SceneError {
             SceneErrorKind::Parameter(name) => write!(f, "unreadable parameter {name}"),
             SceneErrorKind::UnsupportedPrimitive => f.write_str("unsupported scene primitive kind"),
             SceneErrorKind::Recipe(error) => error.fmt(f),
-            SceneErrorKind::Evaluate(error) => error.fmt(f),
+            SceneErrorKind::Compile(error) => error.fmt(f),
             SceneErrorKind::Refused(_) => f.write_str("constructive evaluation refused geometry"),
             SceneErrorKind::GeneratedLayer => {
                 f.write_str("invalid generated-layer ownership or strength")

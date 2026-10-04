@@ -2,10 +2,10 @@
 
 Optional native [LayerStack](https://github.com/forest-rs/layerstack) scenes
 over independently usable Exedra construction. LayerStack owns authored scene
-structure, composition, transforms, materials, references and undo. Exedra owns
-geometry intent, deterministic evaluation, source correspondence and reports.
-There is no second scene tree and no dependency from the geometry crates back
-to this integration.
+structure, composition, transforms, materials, references and undo.
+[`exedra_compile`](../exedra_compile/) owns geometry compilation, cache retention,
+extraction and query snapshots. This crate lowers native inputs and publishes
+native mesh properties. It has no geometry evaluator or separate geometry cache.
 
 ## Authoring and evaluation
 
@@ -27,15 +27,23 @@ Both types derive from `Xform`. Dimensions have no implicit fallback. Composed
 default values or explicitly requested native time samples lower to ordinary
 immutable recipes. Placement remains native scene data, separate from geometry.
 
-`SceneEvaluator::sync` evaluates that intent and publishes conventional polygon
-`Mesh` children named `__exedra_geometry`. A successful snapshot retains each
-source's recipe, evaluated mesh, source map and report for inspection. Native
-mesh properties include points, polygon counts and indices, extent, face-varying
-normals, face regions and complete corner UVs when present. Polygon subdivision
-is disabled explicitly. Geometry stays source-local; query native transforms
-for placed measurements and native bindings for appearance.
+Supply an explicit `exedra_compile::PartCompiler` and `CompilePolicy` to
+`SceneEvaluator::sync`. The same compiler can serve standalone geometry, Assembly
+adapters or multiple native stages. Geometry contains no native token or path
+handles. Each successful sync gets a fresh query scope while sharing immutable
+cached geometry. Standalone and native callers can retain the same topology,
+source maps, reports and extracted triangle buffers.
 
-Run the complete author/edit/evaluate/undo example from the workspace:
+Publication creates conventional polygon `Mesh` children named
+`__exedra_geometry`. Native properties include points, polygon counts and indices,
+extent, face-varying normals, face regions and complete corner UVs when present.
+Normal selection and UV projection use the shared compilation policy and mesh
+math. Carried attributes and tangents remain available in the shared extraction
+buffers; the initial native publisher does not author those extra streams.
+Subdivision is disabled explicitly. Query native transforms for placed
+measurements and native material bindings for appearance.
+
+Run the complete author/edit/compile/publish/undo example:
 
 ```sh
 cargo run -p native_scene
@@ -48,49 +56,59 @@ sublayer, with identity time offset. Keep that layer and evaluator paired with
 the same live stage and store. External generated-layer edits are refused.
 Author source intent and appearance overrides in stronger layers.
 
-Each explicit sync discovers supported inputs beneath the requested root. It
-shares geometry by recipe content and evaluation policy, writes only changed
-outputs and removes outputs whose sources disappeared. References reuse
-identical content; local dimension overrides specialize it. Native instanceable
-references currently refuse generation because descendant authoring requires
-a separate prototype-publication design. Reserved output paths with unrelated
-authored content and construction beneath generated children are refused.
+Each explicit sync discovers supported inputs beneath the requested root. The
+shared compiler reuses geometry by source content and compilation policy; native
+publication writes only changed outputs and removes obsolete output specs.
+References reuse identical content, and local dimension overrides specialize it.
+Native instanceable references currently refuse generation because descendant
+authoring requires a separate prototype-publication design. Reserved output paths
+with unrelated authored content and construction beneath generated children are
+refused.
 
-Preflight or geometry failures preserve the previous generated layer; useful
-cache entries may remain. Publication is one atomic native transaction. Undo
-source edits and sync again to restore their geometry. Generated changes are
-derived data and do not belong in the source undo stack.
-
-Stronger appearance opinions survive regeneration. Stronger indexed attributes
-or topology overrides remain the caller's responsibility when topology changes.
-This integration does not validate or repair those overrides.
+Preflight or geometry failures preserve the previous generated layer. Compilation
+and encoding caches may retain useful entries. Publication is one atomic native
+transaction. Undo source edits and sync again; derived generated changes do not
+belong in the source undo stack. Stronger appearance opinions survive regeneration.
+Stronger indexed attributes or topology overrides remain the caller's
+responsibility when topology changes.
 
 ## Work and lifetime
 
-Discovery currently scans the subtree on every sync. Geometry evaluation and
-publication are content incremental. `SyncStats` counts discovery, evaluations,
-reuse, mesh writes/removals and point writes. Constructive reports retain the
-original evaluation measurements on cache hits; they are not current-sync work.
+Discovery currently scans the subtree on every sync. Geometry compilation and
+publication are content incremental. `SyncStats` separates compilation/reuse,
+native polygon encoding, mesh writes/removals and point writes. Constructive
+reports retain original evaluation measurements on cache hits.
 
-The cache defaults to 128 content/policy pairs and supports an explicit entry
-budget. Numeric payload bytes are measurable, but exclude topology, reports,
-maps and allocation overhead. Snapshots share immutable geometry with `Rc` and
-may retain it after eviction or evaluator destruction. Native property buffers
-are shared with published specs. No scheduler or renderer resources are owned.
+The evaluator retains at most 128 native property encodings by default, with an
+explicit entry budget available. `cached_payload_bytes` measures their numeric
+buffers, excluding allocation overhead. `clear_cache` releases these encodings;
+it does not clear the caller's geometry compiler. Use that compiler's capacity,
+clear/eviction methods and counters to control geometry retention. Held geometry
+snapshots use `Arc` and survive cache eviction or compiler destruction. Native
+property buffers are shared with published specs. No scheduler or renderer
+resources are owned.
 
-## Adoption
+## Migration
 
-This is an additive scene-authoring experiment. Existing `Recipe`, `evaluate`,
-`Assembly`, part compilation, extraction and glTF export APIs remain unchanged
-and do not require LayerStack. Enable the facade's `scene` feature or depend on
-`exedra_scene` directly when a caller needs native scene composition.
+`sync` now accepts a caller-owned `PartCompiler` before the time argument and a
+`CompilePolicy` instead of `EvalPolicy`. Use `CompilePolicy::from(evaluation)` to
+retain evaluation settings. Native scenes no longer own a geometry cache.
 
-The two primitive schemas demonstrate the boundary; they are not a complete
-recipe vocabulary, arbitrary asset importer or replacement for every assembly
-workflow. Recipe operators and native-instance publication need further work.
-The crate supports `no_std` with `alloc`; its explicit `std` feature forwards
-host support to dependencies. Scene dependencies are pinned to the revision
-used by the current Lightweald integration so native types can be shared.
+Replace `SourceGeometry::evaluation()` access with `body(index)` or
+`body_by_source(label)` for retained topology and queries, `report()` for complete
+diagnostics, and `compiled()` for extraction buffers. `recipe()` still exposes
+lowered intent. Body handles use the same query and stale-selection contracts as
+standalone compilation. Refusal reports use `Arc`; hard compilation failures are
+`SceneErrorKind::Compile` and retain shared-service diagnostic context.
+
+Existing direct construction and Assembly compilation remain independent of
+LayerStack. Enable `scene` for native composition; enable `compile` for standalone
+compilation and queries, or `assembly` for structural workflows. The two primitive
+schemas demonstrate the boundary; broader recipe operators and native-instance
+publication remain future work.
+
+The crate supports `no_std` with `alloc`. Scene dependencies remain pinned to the
+revision used by the current Lightweald integration so native types can be shared.
 
 ## License
 
