@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
-use exedra_assembly::{Assembly, CompiledParts, InstanceId, Occurrence, PartId};
+use exedra_compile::{CompiledParts, PartId};
 use exedra_constructive::ir::Placement3;
 use exedra_math::Quat;
 
-use crate::{GltfInstancing, GltfLods, GltfStats, resolved_regions};
+use crate::{GltfInstancing, GltfLods, GltfScene, GltfStats};
 
 /// The glTF extension name.
 pub(crate) const EXTENSION: &str = "EXT_mesh_gpu_instancing";
@@ -43,6 +43,8 @@ pub(crate) enum Unbatchable {
     Mirrored,
     /// Non-perpendicular or degenerate axes: no TRS represents it.
     Sheared,
+    /// A finite transform cannot fit FLOAT instance accessors.
+    Unrepresentable,
 }
 
 /// Decomposes a placement into translation, rotation and positive scale.
@@ -52,7 +54,10 @@ pub(crate) fn decompose(placement: &Placement3) -> Result<Trs, Unbatchable> {
     let axes = [column(0), column(1), column(2)];
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let scale = axes.map(|axis| dot(axis, axis).sqrt());
-    if scale.iter().any(|s| !s.is_finite() || *s == 0.0) {
+    if scale.iter().any(|s| !s.is_finite()) {
+        return Err(Unbatchable::Unrepresentable);
+    }
+    if scale.contains(&0.0) {
         return Err(Unbatchable::Sheared);
     }
     for (i, j) in [(0, 1), (0, 2), (1, 2)] {
@@ -76,7 +81,7 @@ pub(crate) fn decompose(placement: &Placement3) -> Result<Trs, Unbatchable> {
         clippy::cast_possible_truncation,
         reason = "EXT_mesh_gpu_instancing stores transforms as FLOAT accessors"
     )]
-    Ok(Trs {
+    let trs = Trs {
         translation: [rows[0][3] as f32, rows[1][3] as f32, rows[2][3] as f32],
         rotation: [
             rotation.x as f32,
@@ -85,23 +90,33 @@ pub(crate) fn decompose(placement: &Placement3) -> Result<Trs, Unbatchable> {
             rotation.w as f32,
         ],
         scale: scale.map(|s| s as f32),
-    })
+    };
+    if trs
+        .translation
+        .iter()
+        .chain(&trs.rotation)
+        .chain(&trs.scale)
+        .any(|value| !value.is_finite())
+        || trs.scale.contains(&0.0)
+    {
+        return Err(Unbatchable::Unrepresentable);
+    }
+    Ok(trs)
 }
 
 /// Instances of one part and material resolution under one parent.
 #[derive(Debug)]
 pub(crate) struct Batch {
-    pub(crate) parent: Option<InstanceId>,
-    pub(crate) part: PartId,
+    pub(crate) parent: Option<usize>,
     /// Members in instance order.
-    pub(crate) members: Vec<(InstanceId, Trs)>,
+    pub(crate) members: Vec<(usize, Trs)>,
 }
 
 /// Instances grouped for batching, each with its decomposition result.
 type Candidates = (
-    Option<InstanceId>,
+    Option<usize>,
     PartId,
-    Vec<(InstanceId, Result<Trs, Unbatchable>)>,
+    Vec<(usize, Result<Trs, Unbatchable>)>,
 );
 
 /// The instancing decision for a whole export.
@@ -120,63 +135,68 @@ pub(crate) struct Plan {
 /// and is counted when its group has another member, so it would otherwise
 /// have been batched.
 pub(crate) fn plan(
-    assembly: &Assembly,
+    scene: &GltfScene,
     compiled: &CompiledParts,
     mode: GltfInstancing,
     lods: GltfLods,
     stats: &mut GltfStats,
 ) -> Plan {
-    let count = assembly.instances_with_ids().len();
     let mut plan = Plan {
-        batched: vec![false; count],
+        batched: vec![false; scene.nodes.len()],
         batches: Vec::new(),
     };
     if mode != GltfInstancing::GpuInstancing {
         return plan;
     }
-    type Key = (Option<u32>, u32, Vec<Vec<Option<String>>>);
+    let mut parents = vec![false; scene.nodes.len()];
+    for node in &scene.nodes {
+        if let Some(parent) = node.parent {
+            parents[parent] = true;
+        }
+    }
+    for set in &scene.placement_sets {
+        if let Some(parent) = set.parent {
+            parents[parent] = true;
+        }
+    }
+    type LevelKey = (PartId, u32, u32, Vec<Vec<Option<String>>>);
+    type Key = (Option<usize>, PartId, Vec<LevelKey>);
     let mut groups: HashMap<Key, usize> = HashMap::new();
     let mut candidates: Vec<Candidates> = Vec::new();
-    for (id, instance) in assembly.instances_with_ids() {
-        let Some(part) = instance.part() else {
+    for (id, node) in scene.nodes.iter().enumerate() {
+        let Some(geometry) = &node.geometry else {
             continue;
         };
-        let entry = compiled.part(part).expect("matching compilation");
-        if !instance.children().is_empty()
-            || !instance.placement_sets().is_empty()
-            || entry.bodies.iter().all(|b| b.tri.indices.is_empty())
-        {
+        let part = geometry.mesh.part;
+        let entry = compiled.part(part).expect("validated compiled input");
+        if parents[id] || entry.bodies.iter().all(|body| body.tri.indices.is_empty()) {
             continue;
         }
-        let trs = decompose(instance.placement());
-        let def = assembly.part(part).expect("validated instance part");
-        let chain = def.lods();
-        let levels: Vec<PartId> = if lods == GltfLods::MsftLod && chain.len() >= 2 {
-            chain.iter().map(|level| level.part).collect()
-        } else {
-            vec![part]
-        };
-        let resolution = levels
-            .iter()
-            .flat_map(|&level| {
-                let level_def = assembly.part(level).expect("validated level part");
-                let level_entry = compiled.part(level).expect("matching compilation");
-                level_entry.bodies.iter().map(move |body| {
-                    resolved_regions(assembly, (Occurrence::Instance(id), level), level_def, body)
-                        .into_iter()
-                        .map(|region| region.material)
-                        .collect()
+        let trs = decompose(&node.transform);
+        let resolution = if lods == GltfLods::MsftLod && geometry.lods.len() >= 2 {
+            geometry
+                .lods
+                .iter()
+                .map(|level| {
+                    (
+                        level.mesh.part,
+                        level.min_coverage.to_bits(),
+                        level.crossfade.to_bits(),
+                        level.mesh.materials.clone(),
+                    )
                 })
-            })
-            .collect();
-        let key = (instance.parent().map(|p| p.0), part.0, resolution);
+                .collect()
+        } else {
+            vec![(part, 0, 0, geometry.mesh.materials.clone())]
+        };
+        let key = (node.parent, part, resolution);
         let index = *groups.entry(key).or_insert_with(|| {
-            candidates.push((instance.parent(), part, Vec::new()));
+            candidates.push((node.parent, part, Vec::new()));
             candidates.len() - 1
         });
         candidates[index].2.push((id, trs));
     }
-    for (parent, part, group) in candidates {
+    for (parent, _part, group) in candidates {
         if group.len() < 2 {
             continue;
         }
@@ -186,19 +206,16 @@ pub(crate) fn plan(
                 Ok(trs) => members.push((id, trs)),
                 Err(Unbatchable::Mirrored) => stats.unbatched_mirrored_instances += 1,
                 Err(Unbatchable::Sheared) => stats.unbatched_sheared_instances += 1,
+                Err(Unbatchable::Unrepresentable) => stats.unbatched_unrepresentable_instances += 1,
             }
         }
         if members.len() < 2 {
             continue;
         }
         for (id, _) in &members {
-            plan.batched[id.0 as usize] = true;
+            plan.batched[*id] = true;
         }
-        plan.batches.push(Batch {
-            parent,
-            part,
-            members,
-        });
+        plan.batches.push(Batch { parent, members });
     }
     plan
 }

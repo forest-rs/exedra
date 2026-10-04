@@ -246,11 +246,28 @@ jobs:
       - name: enforce standalone construction dependencies
         shell: bash
         run: |
-          cargo tree -p exedra --locked --features gltf,serde --edges normal --prefix none > standalone-dependencies.txt
-          if grep -E '^(layerstack|layerstack_schemas|exedra_scene) ' standalone-dependencies.txt; then
-            echo "Standalone construction, assembly and export must not enable scene composition."
+          for features in gltf serde gltf,serde; do
+            cargo tree -p exedra --locked --no-default-features --features "$features" --edges normal --prefix none > standalone-dependencies.txt
+            if grep -E '^(exedra_assembly|exedra_scene|layerstack|layerstack_schemas) ' standalone-dependencies.txt; then
+              echo "Standalone export and recipe interchange must not enable authored structure."
+              exit 1
+            fi
+            cargo check -p exedra --locked --no-default-features --features "$features"
+            cargo test -p exedra --locked --no-default-features --features "$features" --doc
+          done
+          cargo tree -p exedra_gltf --locked --edges normal --prefix none > export-dependencies.txt
+          if grep -E '^(exedra_assembly|exedra_scene|layerstack|layerstack_schemas) ' export-dependencies.txt; then
+            echo "The exporter must depend only on independent geometry."
             exit 1
           fi
+          cargo tree -p exedra --locked --no-default-features --features assembly,gltf,serde --edges normal --prefix none > adapter-dependencies.txt
+          if grep -E '^(exedra_scene|layerstack|layerstack_schemas) ' adapter-dependencies.txt; then
+            echo "Optional Assembly adapters must remain independent of native scenes."
+            exit 1
+          fi
+
+      - name: run caller-owned export
+        run: cargo run -p caller_owned_export --locked
 
       - name: cargo check (all features)
         run: cargo check -p exedra --locked --all-features

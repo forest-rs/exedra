@@ -71,10 +71,17 @@ exedra = { version = "0.1", features = ["scene"] }
 Standalone compilation and extraction use `compile` without an Assembly or
 LayerStack. Existing Assembly compilation and export APIs still work; defaults
 now select `compile` instead of `assembly`. Enable `assembly` explicitly when
-using its root anchor or namespace. `gltf` and `serde` still select it. See the
+using its root anchor or namespace. `gltf` selects independent compilation; `serde` selects recipe interchange.
+Neither selects Assembly or LayerStack. Existing Assembly export callers select
+`assembly,gltf`; Assembly interchange callers select `assembly,serde`. See the
 [scene contract](../exedra_scene/) and
 [native scene example](../../examples/native_scene/) for the initial box and
 cylinder vocabulary, generated-layer ownership and current limits.
+
+The [caller-owned export example](../../examples/caller_owned_export/) serializes
+a recipe, compiles it, resolves a hierarchy and materials, and exports GLB using
+only `gltf,serde`. The exporter owns format records and encoding; callers own
+authored structure and appearance resolution.
 
 ## Mixed geometry sources
 

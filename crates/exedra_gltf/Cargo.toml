@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "glTF 2.0 export for Exedra assembly render lists"
+description = "glTF 2.0 export from compiled geometry and caller-owned structure"
 readme = "README.md"
 keywords = ["geometry", "gltf", "export"]
 categories = ["graphics"]
@@ -14,7 +14,7 @@ categories = ["graphics"]
 workspace = true
 
 [dependencies]
-exedra_assembly = { features = ["std"], workspace = true }
+exedra_compile = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
 exedra_math = { features = ["std"], workspace = true }
 exedra_mesh = { features = ["libm", "std"], workspace = true }

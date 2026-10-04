@@ -4,7 +4,7 @@
 //! Regression coverage for authored slots across the complete export pipeline.
 
 use super::*;
-use exedra_assembly::{CompilePolicy, PartCompiler, flatten};
+use crate::{CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 use std::sync::Arc;
 

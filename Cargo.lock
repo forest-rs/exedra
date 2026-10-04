@@ -117,6 +117,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "caller_owned_export"
+version = "0.0.0"
+dependencies = [
+ "exedra",
+ "serde_json",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -295,6 +303,7 @@ version = "0.1.0"
 dependencies = [
  "exedra_compile",
  "exedra_constructive",
+ "exedra_gltf",
  "exedra_mesh",
  "exedra_mesh_ops",
  "hashbrown",
@@ -389,7 +398,7 @@ dependencies = [
 name = "exedra_gltf"
 version = "0.1.0"
 dependencies = [
- "exedra_assembly",
+ "exedra_compile",
  "exedra_constructive",
  "exedra_math",
  "exedra_mesh",

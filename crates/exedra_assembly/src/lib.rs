@@ -110,3 +110,7 @@ pub(crate) fn len_u32(n: usize) -> u32 {
         n as u32
     }
 }
+
+/// Optional adapter from standalone assembly structure to glTF export records.
+#[cfg(feature = "gltf")]
+pub mod gltf;
