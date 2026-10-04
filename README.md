@@ -21,9 +21,10 @@ exedra = "0.1"
 ```
 
 Its default features provide the mesh kernel, constructive recipes,
-assemblies, and direct mesh operations. Primitive generation, analytic topology,
-implicit surfaces, command execution, native scenes, glTF export, and interchange are opt-in features. Disable
-default features and select `libm` for a `no_std` application.
+independent compilation and queries, and direct mesh operations. Assemblies,
+primitive generation, analytic topology, implicit surfaces, command execution,
+native scenes, glTF export, and interchange are opt-in features. Disable default
+features and select `libm` for a `no_std` application.
 
 Depend directly on a focused crate when you are implementing a lower-level
 algorithm or only need that domain. The public family includes the facade and
@@ -52,6 +53,9 @@ Construction and extraction crates:
 - **[exedra_constructive](crates/exedra_constructive/)** - Immutable,
   fingerprinted constructive recipes with deterministic tessellation,
   provenance, fidelity reporting, interchange, and evaluation caching.
+- **[exedra_compile](crates/exedra_compile/)** - Scene-independent compilation,
+  extraction, content caching and retained geometry queries over explicit recipe
+  or baked-mesh inputs. Assembly and native scenes use the same service.
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
   stable paths, material-slot binding, cached compilation, and deterministic
   flattening.
@@ -133,13 +137,19 @@ adapt geometry through explicit mesh/field boundaries rather than introducing
 a scene graph into the core.
 
 The optional `scene` feature uses LayerStack as the authored scene. It lowers
-composed construction intent through the same constructive evaluator and
+composed construction intent through the shared geometry compiler and
 publishes standard meshes into a dedicated generated layer. The initial box
 and cylinder vocabulary exercises that boundary without duplicating a scene
 tree. Direct construction, `Assembly`, extraction and export remain independently
-usable and retain their existing APIs and default dependencies. See the
+usable. Assembly's compilation API remains an adapter over that service;
+enable the facade's `assembly` feature explicitly to retain structural workflows.
+`gltf` and `serde` still select it. Standalone compilation uses `compile`, which
+is now selected by default and needs no scene or assembly. See the
 [native scene example](examples/native_scene/) and
 [scene contract](crates/exedra_scene/) for adoption and current limits.
+
+The [geometry query example](examples/geometry_queries/) constructs, compiles,
+inspects and retains geometry without either structural implementation.
 
 ## Example Flow
 
