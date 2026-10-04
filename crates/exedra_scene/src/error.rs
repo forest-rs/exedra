@@ -38,7 +38,7 @@ pub enum SceneErrorKind {
     Compile(Box<exedra_compile::CompileError>),
     /// Evaluation refused publishable geometry; retains its complete report.
     Refused(Arc<GeometryReport>),
-    /// Generation requires an empty, exclusively owned, weakest local layer.
+    /// Generation requires an initially empty, exclusively owned local sublayer.
     GeneratedLayer,
     /// The generated layer was edited outside this evaluator.
     GeneratedLayerEdited,
@@ -78,7 +78,7 @@ impl fmt::Display for SceneError {
             SceneErrorKind::Compile(error) => error.fmt(f),
             SceneErrorKind::Refused(_) => f.write_str("constructive evaluation refused geometry"),
             SceneErrorKind::GeneratedLayer => {
-                f.write_str("invalid generated-layer ownership or strength")
+                f.write_str("invalid generated-layer ownership, membership or time offset")
             }
             SceneErrorKind::GeneratedLayerEdited => {
                 f.write_str("generated layer changed outside its evaluator")

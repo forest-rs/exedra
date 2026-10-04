@@ -401,7 +401,7 @@ fn native_transform_and_material_edits_leave_local_geometry_and_output_untouched
 }
 
 #[test]
-fn generated_layer_cannot_also_occur_at_a_stronger_position() {
+fn generated_layer_cannot_occur_at_multiple_strengths() {
     let mut fixture = Fixture::new();
     fixture.box_at("/World/Box", [1.0; 3]);
     fixture
@@ -812,5 +812,81 @@ fn invalid_time_and_native_instances_refuse_without_generated_output() {
     assert!(
         fixture.store.layer(GENERATED).unwrap().prims.is_empty(),
         "failure must be atomic across all sources"
+    );
+}
+
+#[test]
+fn shared_stage_partners_keep_their_layers_and_strength_order() {
+    let mut fixture = Fixture::new();
+    fixture.box_at("/World/Box", [2.0; 3]);
+    let partner_id = LayerId(4);
+    let partner_path = fixture.store.path("/World/OtherPartner");
+    let mut partner = Layer::new(partner_id);
+    partner.insert_prim(
+        partner_path,
+        PrimSpec::def().with_type_name(fixture.store.tokens.intern("Xform")),
+    );
+    fixture.store.insert_layer(partner);
+    fixture.store.layer_mut(LOCAL).unwrap().sublayers = vec![
+        SublayerEntry::new(GENERATED),
+        SublayerEntry::new(partner_id),
+        SublayerEntry::new(BASE),
+    ];
+    let partner_before = fixture.store.layer(partner_id).unwrap().prims.clone();
+    let partner_generation = fixture.store.layer(partner_id).unwrap().generation();
+    fixture.live.notify_structural_change();
+    let mut evaluator = SceneEvaluator::new(fixture.root, GENERATED);
+    let first = fixture.sync(&mut evaluator);
+    assert_eq!(first.sources.len(), 1);
+    assert_eq!(first.stats.meshes_written, 1);
+    assert!(fixture.live.stage().has_prim(partner_path));
+    assert_eq!(
+        fixture.store.layer(partner_id).unwrap().prims,
+        partner_before
+    );
+    assert_eq!(
+        fixture.store.layer(partner_id).unwrap().generation(),
+        partner_generation
+    );
+    assert_eq!(
+        fixture.store.layer(LOCAL).unwrap().sublayers[0].layer,
+        GENERATED
+    );
+    let unchanged = fixture.sync(&mut evaluator);
+    assert_eq!(unchanged.stats.meshes_written, 0);
+}
+
+#[test]
+fn two_evaluators_publish_independent_layers_on_one_caller_owned_stage() {
+    let mut fixture = Fixture::new();
+    let left = fixture.box_at("/World/Left", [1.0; 3]);
+    let right = fixture.box_at("/World/Right", [1.0; 3]);
+    let other_generated = LayerId(4);
+    fixture.store.insert_layer(Layer::new(other_generated));
+    fixture.store.layer_mut(LOCAL).unwrap().sublayers = vec![
+        SublayerEntry::new(GENERATED),
+        SublayerEntry::new(other_generated),
+        SublayerEntry::new(BASE),
+    ];
+    fixture.live.notify_structural_change();
+    let mut left_evaluator = SceneEvaluator::new(left, GENERATED);
+    let mut right_evaluator = SceneEvaluator::new(right, other_generated);
+    let first = fixture.sync(&mut left_evaluator);
+    let left_generation = fixture.store.layer(GENERATED).unwrap().generation();
+    let second = fixture.sync(&mut right_evaluator);
+    assert_eq!(first.sources.len(), 1);
+    assert_eq!(second.sources.len(), 1);
+    assert_eq!(second.stats.geometry_evaluations, 0);
+    assert!(first.sources[0].shares_geometry(&second.sources[0]));
+    assert_eq!(
+        fixture.store.layer(GENERATED).unwrap().generation(),
+        left_generation
+    );
+    fixture.set(right, SIZE, Value::Vec3d([2.0; 3]));
+    assert_eq!(fixture.sync(&mut right_evaluator).stats.meshes_written, 1);
+    assert_eq!(fixture.sync(&mut left_evaluator).stats.meshes_written, 0);
+    assert_eq!(
+        fixture.store.layer(GENERATED).unwrap().generation(),
+        left_generation
     );
 }

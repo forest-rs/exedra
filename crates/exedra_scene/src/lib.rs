@@ -12,7 +12,7 @@
 //!
 //! The initial authored vocabulary is [`BOX_SCHEMA`] and [`CYLINDER_SCHEMA`],
 //! both derived from USD `Xform`. [`SceneEvaluator::sync`] explicitly samples
-//! their composed parameters and updates an exclusively owned, weakest local
+//! their composed parameters and updates an exclusively owned local
 //! generated layer. Transforms and material bindings remain native stage data;
 //! changing them reuses local geometry. Returned snapshots retain recipes,
 //! topology, source maps, extraction buffers and reports through shared snapshots.

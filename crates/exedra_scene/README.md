@@ -51,10 +51,16 @@ cargo run -p native_scene
 
 ## Generated-layer contract
 
-Supply an empty, exclusively owned generated layer as the weakest local
-sublayer, with identity time offset. Keep that layer and evaluator paired with
-the same live stage and store. External generated-layer edits are refused.
-Author source intent and appearance overrides in stronger layers.
+The caller owns the `LiveStage`, store, registry, source layers and layer order.
+Supply an initially empty, exclusively owned generated local sublayer, with an
+identity time offset. It must occur once and cannot be the root layer; it need
+not be the weakest layer. Keep that layer and evaluator paired with the same
+live stage and store. External generated-layer edits are refused.
+
+Partners can share the stage and geometry compiler, each publishing to its own
+generated layer and subtree. Exedra never installs a private stage or reorders
+the caller's layers. Place appearance overrides above the relevant generated
+layer when they should win composition.
 
 Each explicit sync discovers supported inputs beneath the requested root. The
 shared compiler reuses geometry by source content and compilation policy; native

@@ -133,7 +133,7 @@ pub struct SceneSnapshot {
 /// tree, scheduling, callbacks or renderer resources are retained.
 ///
 /// Bind to the same live stage/store for this evaluator's lifetime. Its generated
-/// layer must start empty and be the weakest local sublayer, with identity time
+/// layer must start empty and be a dedicated local sublayer, with identity time
 /// offset. Do not edit that layer externally; author overrides in stronger layers.
 /// Each sync scans the requested subtree, but geometry and output publication are
 /// content incremental. The native encoding cache is bounded by entry count.
@@ -295,15 +295,18 @@ impl SceneEvaluator {
             ));
         }
         let stack = LayerStack::gather(store, stage.root_layer().expect("composed stage has root"));
-        if stack.layers.last() != Some(&self.generated)
+        let generated_index = stack
+            .layers
+            .iter()
+            .position(|layer| *layer == self.generated);
+        if generated_index
+            .is_none_or(|index| index == 0 || stack.offsets[index] != LayerOffset::IDENTITY)
             || stack
                 .layers
                 .iter()
                 .filter(|layer| **layer == self.generated)
                 .count()
                 != 1
-            || stack.offsets.last() != Some(&LayerOffset::IDENTITY)
-            || stack.layers.len() < 2
         {
             return Err(SceneError::new(
                 store,
