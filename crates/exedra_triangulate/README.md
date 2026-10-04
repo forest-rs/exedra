@@ -18,6 +18,11 @@ knows nothing about meshes, curves, or tolerances — adapters live with their
 consumers (`exedra_mesh` render extraction, `exedra_analytic`, the constructive
 geometry head).
 
+`triangulate_preserving_boundary` additionally restores distinct collinear
+boundary samples, using original indices and creating no points. Consecutive
+coincident samples can still be omitted; attribute-aware callers choose their
+cleanup policy first.
+
 ```rust
 use exedra_triangulate::{PolygonInput, TriParams, triangulate};
 
