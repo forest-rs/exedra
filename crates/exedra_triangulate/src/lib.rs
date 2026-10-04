@@ -528,7 +528,7 @@ pub enum TriStrategy {
     ///
     /// Ambiguous ear choices resolve by lowest stable input index. Suitable
     /// for the small, well-conditioned loops produced by profile flattening;
-    /// O(n²) in the vertex count.
+    /// O(n³) in the worst case in the bridged ring's vertex count.
     #[default]
     EarClip,
     /// Ear clipping followed by exact constrained-Delaunay edge legalization.
