@@ -3301,18 +3301,16 @@ fn apply_section_law(
     if !(total > 0.0 && total.is_finite()) {
         return Err(TessellateError::InvalidSweepPath);
     }
+    // Base twist and winding stay separate angles: a large base twist would
+    // otherwise absorb the winding when the two are summed in `f64`.
+    let winding = f64::from(section.turns) * core::f64::consts::TAU;
     if section.turns != 0 {
-        let angle_at = |distance: f64| {
-            let t = distance / total;
-            section.twist.eval(t) + f64::from(section.turns) * core::f64::consts::TAU * t
-        };
         for (band, pair) in distances.windows(2).enumerate() {
-            let start = angle_at(pair[0]);
-            let end = angle_at(pair[1]);
-            if !start.is_finite() || !end.is_finite() {
+            let base = section.twist.eval(pair[1] / total) - section.twist.eval(pair[0] / total);
+            let radians = (base + winding * ((pair[1] - pair[0]) / total)).abs();
+            if !radians.is_finite() {
                 return Err(TessellateError::NonFiniteGeometry);
             }
-            let radians = (end - start).abs();
             if radians >= core::f64::consts::FRAC_PI_2 {
                 return Err(TessellateError::SweepTwistUndersampled { band, radians });
             }
@@ -3321,8 +3319,17 @@ fn apply_section_law(
     for (frame, distance) in frames.iter_mut().zip(distances) {
         let t = distance / total;
         let s = section.scale.eval(t);
-        let angle = section.twist.eval(t) + f64::from(section.turns) * core::f64::consts::TAU * t;
-        let (sin, cos) = (libm::sin(angle), libm::cos(angle));
+        let twist = section.twist.eval(t);
+        let (base_sin, base_cos) = (libm::sin(twist), libm::cos(twist));
+        let (sin, cos) = if section.turns == 0 {
+            (base_sin, base_cos)
+        } else {
+            let (turn_sin, turn_cos) = (libm::sin(winding * t), libm::cos(winding * t));
+            (
+                base_sin * turn_cos + base_cos * turn_sin,
+                base_cos * turn_cos - base_sin * turn_sin,
+            )
+        };
         let (u, v) = (frame.1, frame.2);
         frame.1 = scale(add(scale(u, cos), scale(v, sin)), s);
         frame.2 = scale(sub(scale(v, cos), scale(u, sin)), s);
