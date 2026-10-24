@@ -187,15 +187,31 @@ fn quality_benchmark(side: u32, repetitions: u32) -> Result<(), Box<dyn Error>> 
         },
     )?;
     let _: () = edit.finish();
-    for (name, scope) in [
-        ("whole", UvScope::WholeMesh),
+    for (name, scope, triangulation) in [
         (
-            "last_face",
+            "whole_fan",
+            UvScope::WholeMesh,
+            exedra_mesh::FaceTriangulation::Fan,
+        ),
+        (
+            "last_face_fan",
             UvScope::FaceSet(vec![mesh.faces().last().expect("grid face")]),
+            exedra_mesh::FaceTriangulation::Fan,
+        ),
+        (
+            "whole_robust",
+            UvScope::WholeMesh,
+            exedra_mesh::FaceTriangulation::Robust,
+        ),
+        (
+            "last_face_robust",
+            UvScope::FaceSet(vec![mesh.faces().last().expect("grid face")]),
+            exedra_mesh::FaceTriangulation::Robust,
         ),
     ] {
         let params = UvQualityParams {
             scope,
+            triangulation,
             texture_size: [1024; 2],
             ..UvQualityParams::default()
         };
@@ -211,7 +227,11 @@ fn quality_benchmark(side: u32, repetitions: u32) -> Result<(), Box<dyn Error>> 
             "quality reports must be deterministic"
         );
         let mut durations = Vec::new();
-        let batch = if name == "last_face" { 100 } else { 1 };
+        let batch = if name.starts_with("last_face") {
+            100
+        } else {
+            1
+        };
         for repetition in 0..repetitions + 1 {
             let start = Instant::now();
             for _ in 0..batch {
