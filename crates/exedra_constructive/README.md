@@ -70,6 +70,14 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+`RecipeBuilder::add_node` takes a complete `Node`: the operation plus its
+optional source, material, chart and issue bindings, assembled with
+`Node::new(kind).with_source(source)` and similar methods. A failed insertion
+leaves the builder unchanged. A spec compiler that emits a whole recipe at once
+can instead fill `RecipeParts` and freeze it with `Recipe::try_from_parts`.
+Table positions are ids and repeated names are refused; every node passes the
+same checks as `add_node`, and errors name the refused table and item.
+
 ## Construction UV charts
 
 Bind a chart with `Node::with_surface_chart` on an ordinary `Extrude`, `Revolve`,

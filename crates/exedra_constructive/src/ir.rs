@@ -813,6 +813,115 @@ impl Recipe {
         &self.ambiguous_sources
     }
 
+    /// Freezes complete recipe tables in one checked step.
+    ///
+    /// Every rule of incremental construction applies: imports and nodes pass
+    /// the same checks as [`RecipeBuilder::add_import`] and
+    /// [`RecipeBuilder::add_node`], in table order, so a node can only reference
+    /// earlier nodes. String tables keep their positions and must not repeat
+    /// an entry. Recipes built from the same tables either way have the same
+    /// identity.
+    ///
+    /// ```
+    /// use exedra_constructive::builders;
+    /// use exedra_constructive::ir::{
+    ///     CapMode, Node, NodeId, NodeKind, Placement3, ProfileId, Recipe, RecipeParts, SlotId,
+    ///     SourceId,
+    /// };
+    /// let recipe = Recipe::try_from_parts(RecipeParts {
+    ///     profiles: vec![builders::rect_centered(0.6, 0.4)?],
+    ///     sources: vec!["panel/body".into()],
+    ///     slots: vec!["finish".into()],
+    ///     policies: Vec::new(),
+    ///     imports: Vec::new(),
+    ///     nodes: vec![
+    ///         Node::new(NodeKind::Extrude {
+    ///             profile: ProfileId(0),
+    ///             placement: Placement3::IDENTITY,
+    ///             height: 0.02,
+    ///             caps: CapMode::Both,
+    ///         })
+    ///         .with_source(SourceId(0))
+    ///         .with_material(SlotId(0)),
+    ///     ],
+    ///     root: NodeId(0),
+    /// })?;
+    /// assert_eq!(recipe.source_of(NodeId(0)), Some("panel/body"));
+    /// # Ok::<(), Box<dyn core::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the first refused item with its table, position and
+    /// [`RecipeError`]. Counts are checked before any table is examined.
+    pub fn try_from_parts(parts: RecipeParts) -> Result<Self, RecipePartsError> {
+        let RecipeParts {
+            profiles,
+            sources,
+            slots,
+            policies,
+            imports,
+            nodes,
+            root,
+        } = parts;
+        let refuse = |table, index, error| RecipePartsError {
+            table,
+            index,
+            error,
+        };
+        let max = u32::MAX as usize;
+        for (table, count) in [
+            (RecipeTable::Profiles, profiles.len()),
+            (RecipeTable::Sources, sources.len()),
+            (RecipeTable::Slots, slots.len()),
+            (RecipeTable::Policies, policies.len()),
+            (RecipeTable::Imports, imports.len()),
+            (RecipeTable::Nodes, nodes.len()),
+        ] {
+            if count > max {
+                return Err(refuse(table, 0, RecipeError::TooManyEntries { count, max }));
+            }
+        }
+        for (table, entries) in [
+            (RecipeTable::Sources, &sources),
+            (RecipeTable::Slots, &slots),
+            (RecipeTable::Policies, &policies),
+        ] {
+            let mut seen = hashbrown::HashMap::with_capacity(entries.len());
+            for (index, entry) in entries.iter().enumerate() {
+                if let Some(first) = seen.insert(entry.as_str(), len_u32(index)) {
+                    let error = RecipeError::DuplicateEntry { first };
+                    return Err(refuse(table, index, error));
+                }
+            }
+        }
+        for (index, profile) in profiles.iter().enumerate() {
+            check_profile_policies(profile, policies.len())
+                .map_err(|error| refuse(RecipeTable::Profiles, index, error))?;
+        }
+        let mut builder = RecipeBuilder {
+            profiles,
+            nodes: Vec::with_capacity(nodes.len()),
+            sources,
+            slots,
+            policies,
+            imports: Vec::with_capacity(imports.len()),
+        };
+        for (index, mesh) in imports.into_iter().enumerate() {
+            builder
+                .add_import(mesh)
+                .map_err(|error| refuse(RecipeTable::Imports, index, error))?;
+        }
+        for (index, node) in nodes.into_iter().enumerate() {
+            builder
+                .add_node(node)
+                .map_err(|error| refuse(RecipeTable::Nodes, index, error))?;
+        }
+        builder
+            .finish(root)
+            .map_err(|error| refuse(RecipeTable::Root, 0, error))
+    }
+
     /// Returns a new recipe mirrored across `plane` in recipe coordinates.
     ///
     /// Composition is structural: the complete frozen recipe is cloned and
@@ -914,6 +1023,19 @@ pub enum RecipeError {
         /// The unsupported layer's stable name.
         name: &'static str,
     },
+    /// A [`RecipeParts`] string table repeats an earlier entry. Positions are
+    /// ids, so a repeated string would give one name two identities.
+    DuplicateEntry {
+        /// Position of the first occurrence.
+        first: u32,
+    },
+    /// A [`RecipeParts`] table has more entries than `u32` ids can address.
+    TooManyEntries {
+        /// How many were provided.
+        count: usize,
+        /// The most a table can hold.
+        max: usize,
+    },
 }
 
 impl core::fmt::Display for RecipeError {
@@ -943,11 +1065,97 @@ impl core::fmt::Display for RecipeError {
                     "import {import} carries unsupported attribute layer {name}"
                 )
             }
+            Self::DuplicateEntry { first } => {
+                write!(f, "table entry repeats the entry at position {first}")
+            }
+            Self::TooManyEntries { count, max } => {
+                write!(
+                    f,
+                    "table has {count} entries, at most {max} are addressable"
+                )
+            }
         }
     }
 }
 
 impl core::error::Error for RecipeError {}
+
+/// Complete recipe tables, frozen in one checked step by [`Recipe::try_from_parts`].
+///
+/// A spec compiler that emits a whole recipe at once can fill these tables
+/// directly instead of driving a [`RecipeBuilder`]. Table positions are the ids
+/// that nodes and profiles reference: `sources[i]` is `SourceId(i)`, `slots[i]`
+/// is `SlotId(i)`, and likewise for profiles, policies, imports and nodes.
+/// Nodes are listed children before parents.
+#[derive(Clone, Debug)]
+pub struct RecipeParts {
+    /// Validated profiles; segments reference `policies` by position.
+    pub profiles: Vec<Profile2>,
+    /// Opaque source and issue references, each listed once.
+    pub sources: Vec<String>,
+    /// Material-slot names, each listed once.
+    pub slots: Vec<String>,
+    /// Opaque curve-policy references, each listed once.
+    pub policies: Vec<String>,
+    /// Externally produced meshes for [`NodeKind::MeshImport`] leaves.
+    pub imports: Vec<exedra_mesh::Mesh>,
+    /// Complete nodes, children before parents.
+    pub nodes: Vec<Node>,
+    /// The node the recipe evaluates.
+    pub root: NodeId,
+}
+
+/// The [`RecipeParts`] table holding a refused item.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RecipeTable {
+    /// [`RecipeParts::profiles`].
+    Profiles,
+    /// [`RecipeParts::sources`].
+    Sources,
+    /// [`RecipeParts::slots`].
+    Slots,
+    /// [`RecipeParts::policies`].
+    Policies,
+    /// [`RecipeParts::imports`].
+    Imports,
+    /// [`RecipeParts::nodes`].
+    Nodes,
+    /// [`RecipeParts::root`].
+    Root,
+}
+
+/// A [`RecipeParts`] item refused by [`Recipe::try_from_parts`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecipePartsError {
+    /// Table holding the refused item.
+    pub table: RecipeTable,
+    /// Position of the item in its table; `0` for [`RecipeTable::Root`].
+    pub index: usize,
+    /// The validation failure, as incremental construction reports it.
+    pub error: RecipeError,
+}
+
+impl core::fmt::Display for RecipePartsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let table = match self.table {
+            RecipeTable::Profiles => "profiles",
+            RecipeTable::Sources => "sources",
+            RecipeTable::Slots => "slots",
+            RecipeTable::Policies => "policies",
+            RecipeTable::Imports => "imports",
+            RecipeTable::Nodes => "nodes",
+            RecipeTable::Root => return write!(f, "root: {}", self.error),
+        };
+        write!(f, "{table}[{}]: {}", self.index, self.error)
+    }
+}
+
+impl core::error::Error for RecipePartsError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 
 /// Append-only builder producing frozen [`Recipe`]s.
 #[derive(Debug, Default)]
@@ -1153,15 +1361,7 @@ impl RecipeBuilder {
             return Err(RecipeError::UnknownNode { node: root.0 });
         }
         for profile in &self.profiles {
-            for loop_ in core::iter::once(profile.outer()).chain(profile.holes().iter()) {
-                for seg in loop_.segs() {
-                    if let crate::profile::SegKind::PolicyTo { policy, .. } = &seg.kind
-                        && policy.0 as usize >= self.policies.len()
-                    {
-                        return Err(RecipeError::UnknownPolicy { policy: policy.0 });
-                    }
-                }
-            }
+            check_profile_policies(profile, self.policies.len())?;
         }
         let fingerprints =
             compute_fingerprints(&self.profiles, &self.nodes, &self.sources, &self.imports);
@@ -1693,6 +1893,20 @@ impl RecipeBuilder {
             }
         }
     }
+}
+
+/// Checks that every policy-defined segment references a registered policy.
+fn check_profile_policies(profile: &Profile2, policies: usize) -> Result<(), RecipeError> {
+    for loop_ in core::iter::once(profile.outer()).chain(profile.holes().iter()) {
+        for seg in loop_.segs() {
+            if let crate::profile::SegKind::PolicyTo { policy, .. } = &seg.kind
+                && policy.0 as usize >= policies
+            {
+                return Err(RecipeError::UnknownPolicy { policy: policy.0 });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn intern<T>(table: &mut Vec<String>, value: &str, wrap: impl Fn(u32) -> T) -> T {
@@ -2738,6 +2952,200 @@ mod tests {
         assert_eq!(
             retried.recipe_fingerprint(),
             build(false).recipe_fingerprint()
+        );
+    }
+
+    fn parts_of(recipe: &Recipe) -> RecipeParts {
+        RecipeParts {
+            profiles: recipe.profiles().to_vec(),
+            sources: recipe.sources().to_vec(),
+            slots: recipe.slots().to_vec(),
+            policies: recipe.policies().to_vec(),
+            imports: recipe.imports().to_vec(),
+            nodes: recipe.nodes().to_vec(),
+            root: recipe.root(),
+        }
+    }
+
+    fn unit_box() -> NodeKind {
+        NodeKind::Primitive {
+            spec: PrimitiveSpec::Box { size: [1.0; 3] },
+            placement: Placement3::IDENTITY,
+        }
+    }
+
+    #[test]
+    fn parts_freeze_to_the_incrementally_built_identity() {
+        use crate::chart::ChartTransform;
+        use crate::profile::{Loop2, Seg2, SegKind};
+        let mut b = RecipeBuilder::new();
+        let policy = b.curve_policy("test.transition@1");
+        let outer = Loop2::new(vec![
+            Seg2::line((1.0, 0.0)),
+            Seg2::policy((1.0, 1.0), policy, SegKind::Line),
+            Seg2::line((0.0, 1.0)),
+            Seg2::line((0.0, 0.0)),
+        ])
+        .unwrap();
+        let curved = b.add_profile(Profile2::simple(outer).unwrap());
+        let circle = b.add_profile(builders::circle(0.5).unwrap());
+        let issue = b.source_ref("test.issue");
+        let station = b.source_ref("test.station");
+        let slot = b.material_slot("finish");
+        let extrude = NodeKind::Extrude {
+            profile: curved,
+            placement: Placement3::IDENTITY,
+            height: 1.0,
+            caps: CapMode::Both,
+        };
+        let chart = SurfaceChart::Extrude {
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        };
+        let extrude = b
+            .add_node(
+                Node::new(extrude)
+                    .with_issue(issue)
+                    .with_material(slot)
+                    .with_surface_chart(chart),
+            )
+            .unwrap();
+        let loft = b
+            .add_node(NodeKind::Loft {
+                sections: vec![
+                    LoftSection::new(Placement3::IDENTITY, circle).with_source(station),
+                    LoftSection::new(Placement3::translate(0.0, 0.0, 1.0), circle),
+                ],
+                policy: LoftPolicy::Ruled,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let root = b
+            .add_node(NodeKind::Group {
+                children: vec![extrude, loft],
+            })
+            .unwrap();
+        for recipe in [
+            b.finish(root).unwrap(),
+            crate::text::tests_support::full_coverage_recipe(),
+        ] {
+            let frozen = Recipe::try_from_parts(parts_of(&recipe)).unwrap();
+            assert_eq!(frozen.recipe_fingerprint(), recipe.recipe_fingerprint());
+            assert_eq!(frozen.nodes(), recipe.nodes());
+            for id in (0..recipe.nodes().len()).map(|i| NodeId(len_u32(i))) {
+                assert_eq!(frozen.fingerprint(id), recipe.fingerprint(id));
+            }
+        }
+    }
+
+    #[test]
+    fn parts_keep_table_positions_and_refuse_repeated_names() {
+        let parts = |sources: &[&str], slots: &[&str]| RecipeParts {
+            profiles: Vec::new(),
+            sources: sources.iter().map(|s| String::from(*s)).collect(),
+            slots: slots.iter().map(|s| String::from(*s)).collect(),
+            policies: Vec::new(),
+            imports: Vec::new(),
+            nodes: vec![Node::new(unit_box()).with_source(SourceId(0))],
+            root: NodeId(0),
+        };
+        // Interning would have reordered nothing here, but it would have
+        // merged the repeat below and shifted every later id.
+        let recipe = Recipe::try_from_parts(parts(&["b", "a"], &[])).unwrap();
+        assert_eq!(recipe.source_of(NodeId(0)), Some("b"));
+        for (sources, slots, table) in [
+            (&["a", "b", "a"][..], &[][..], RecipeTable::Sources),
+            (&["a"][..], &["x", "y", "x"][..], RecipeTable::Slots),
+        ] {
+            assert_eq!(
+                Recipe::try_from_parts(parts(sources, slots)).unwrap_err(),
+                RecipePartsError {
+                    table,
+                    index: 2,
+                    error: RecipeError::DuplicateEntry { first: 0 },
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn parts_refusals_name_their_table_and_item() {
+        use crate::profile::{Loop2, Seg2, SegKind};
+        let valid = || RecipeParts {
+            profiles: vec![builders::circle(0.5).unwrap()],
+            sources: vec![String::from("panel")],
+            slots: Vec::new(),
+            policies: Vec::new(),
+            imports: Vec::new(),
+            nodes: vec![Node::new(unit_box())],
+            root: NodeId(0),
+        };
+        assert!(Recipe::try_from_parts(valid()).is_ok());
+        let refused = |edit: &dyn Fn(&mut RecipeParts)| {
+            let mut parts = valid();
+            edit(&mut parts);
+            let error = Recipe::try_from_parts(parts).unwrap_err();
+            (error.table, error.index, error.error)
+        };
+        let policy_profile = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((1.0, 0.0)),
+                Seg2::policy((1.0, 1.0), PolicyId(0), SegKind::Line),
+                Seg2::line((0.0, 0.0)),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            refused(&|p| p.profiles.push(policy_profile.clone())),
+            (
+                RecipeTable::Profiles,
+                1,
+                RecipeError::UnknownPolicy { policy: 0 }
+            )
+        );
+        assert_eq!(
+            refused(&|p| p.imports.push(exedra_mesh::Mesh::new())),
+            (
+                RecipeTable::Imports,
+                0,
+                RecipeError::InvalidImport { import: 0 }
+            )
+        );
+        // Children come first: a node cannot reference itself or a later node.
+        assert_eq!(
+            refused(&|p| p.nodes.push(Node::new(NodeKind::Group {
+                children: vec![NodeId(0), NodeId(1)],
+            }))),
+            (RecipeTable::Nodes, 1, RecipeError::UnknownNode { node: 1 })
+        );
+        // Nested references are checked, not only direct bindings.
+        assert_eq!(
+            refused(&|p| p.nodes.push(Node::new(NodeKind::Loft {
+                sections: vec![
+                    LoftSection::new(Placement3::IDENTITY, ProfileId(0)).with_source(SourceId(4)),
+                    LoftSection::new(Placement3::translate(0.0, 0.0, 1.0), ProfileId(0)),
+                ],
+                policy: LoftPolicy::Ruled,
+                caps: CapMode::Both,
+            }))),
+            (
+                RecipeTable::Nodes,
+                1,
+                RecipeError::UnknownSource { source: 4 }
+            )
+        );
+        assert_eq!(
+            refused(&|p| p.nodes[0].material = Some(SlotId(0))),
+            (RecipeTable::Nodes, 0, RecipeError::UnknownSlot { slot: 0 })
+        );
+        assert_eq!(
+            refused(&|p| p.root = NodeId(3)),
+            (RecipeTable::Root, 0, RecipeError::UnknownNode { node: 3 })
+        );
+        assert_eq!(
+            refused(&|p| p.nodes.clear()),
+            (RecipeTable::Root, 0, RecipeError::Empty)
         );
     }
 

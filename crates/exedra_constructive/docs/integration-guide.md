@@ -54,6 +54,12 @@ assert_eq!(result.bodies.len(), 1);
 # Ok::<(), alloc::boxed::Box<dyn core::error::Error>>(())
 ```
 
+A frontend that already holds complete tables can skip the builder: fill
+`RecipeParts` (profiles, sources, slots, policies, imports, nodes and root,
+where positions are ids) and call `Recipe::try_from_parts`. It applies the same
+checks in table order and reports a `RecipePartsError` naming the refused
+table, position and `RecipeError`.
+
 Everything validates at insertion with typed errors — hostile input never
 panics (fuzz-enforced). Wrong winding is an error with `Loop2::reversed`
 as the deliberate fix; orientation is never changed implicitly.
