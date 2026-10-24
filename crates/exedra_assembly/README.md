@@ -249,6 +249,13 @@ must iterate all ranges rather than treating a region ID as a unique range key.
 See the [structure-head scope](https://github.com/forest-rs/exedra/blob/main/crates/exedra_assembly/docs/adr-0001-structure-head-scope.md)
 and `exedra_constructive` for the geometry side of the boundary.
 
+For mesh inspections that must match compiled triangles, use
+`CompilePolicy::extraction_params()`. Compilation uses robust polygon
+triangulation; the kernel's default is a fan. The returned settings also expose
+normal selection, UV fallback, carried attributes and tangents. Stored-UV quality
+surveys do not synthesize missing-coordinate fallbacks. Migration: this method is
+additive and leaves compilation and policy fingerprints unchanged.
+
 ## License
 
 Apache-2.0 OR MIT
