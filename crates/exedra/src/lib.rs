@@ -17,8 +17,8 @@
 //! - `edit` contains opt-in command execution, preview and reports for editors.
 //! - `primitives` contains deterministic primitive mesh generators (opt-in).
 //! - `analytic` and `isosurface` contain alternative geometry heads (opt-in).
-//! - `gltf` contains assembly export (opt-in).
-//! - `serde` exposes constructive and assembly interchange modules.
+//! - `gltf` exports compiled geometry and caller-prepared structure (opt-in).
+//! - `serde` exposes recipe interchange and forwards to optional Assembly interchange.
 //!
 //! The root intentionally exposes only the primary anchors: [`Mesh`], and,
 //! when enabled, `Recipe` and `Assembly`. Use the corresponding namespace
@@ -33,16 +33,20 @@
 //! `constructive`. Assembly is an optional structural surface above the same
 //! geometry service, so `assembly` selects `compile`.
 //! `edit`, `analytic`, `isosurface`, `primitives`, and `gltf` remain opt-in.
-//! `gltf` selects `assembly` and `std`; `serde` selects `assembly` and `std`.
-//! Standalone construction, compilation and extraction do not depend on
-//! structural composition. Use `compile` for independent geometry inputs and
-//! snapshots.
+//! `gltf` selects `compile` and `std`; `serde` selects `constructive` and `std`.
+//! Neither selects `assembly`. Select `assembly,gltf` for the optional Assembly
+//! export adapter, or `assembly,serde` for Assembly interchange. Standalone
+//! construction, compilation, extraction and export do not depend on structural
+//! composition. Use `compile` for independent geometry inputs and snapshots.
 //!
 //! # Example
 //!
-//! Compile recipe geometry and a baked mesh without creating a scene tree:
+//! With `compile` enabled, compile recipe geometry and a baked mesh without
+//! creating a scene tree:
 //!
 //! ```
+//! # #[cfg(feature = "compile")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use exedra::{Mesh, Recipe};
 //! use exedra::compile::{CompilePolicy, PartCompiler, PartInput, PartSource};
 //! use exedra::constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
@@ -61,7 +65,10 @@
 //! ];
 //! let geometry = PartCompiler::new().compile_snapshot(&inputs, &CompilePolicy::default())?;
 //! assert_eq!(geometry.compiled().parts().len(), 2);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "compile"))]
+//! # fn main() {}
 //! ```
 //!
 //! See the crate [README](https://github.com/forest-rs/exedra/tree/main/crates/exedra)
@@ -136,7 +143,7 @@ pub use exedra_isosurface as isosurface;
 #[cfg(feature = "primitives")]
 pub use exedra_primitives as primitives;
 
-/// glTF and GLB export from assembly render lists.
+/// glTF and GLB export from compiled geometry and caller-prepared structure.
 ///
 /// This namespace requires the `gltf` feature, which also selects `std`.
 #[cfg(feature = "gltf")]

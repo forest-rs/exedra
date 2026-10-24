@@ -40,6 +40,7 @@ members = [
     "crates/setout_reconstruction",
     "examples/basilica_ruin",
     "examples/basilica_structure_lab",
+    "examples/caller_owned_export",
     "examples/constructive_gallery",
     "examples/constructive_probe",
     "examples/geometry_queries",

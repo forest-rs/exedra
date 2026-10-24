@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use exedra_assembly::{CompilePolicy, PartCompiler};
+use crate::{CompilePolicy, PartCompiler};
 use exedra_mesh::{BuildParams, Mesh};
 
 fn triangle() -> Mesh {

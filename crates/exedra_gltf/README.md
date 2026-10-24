@@ -1,41 +1,41 @@
 # `exedra_gltf`
 
-glTF 2.0 export retaining Exedra assembly hierarchy: logical instances become
-nodes with their parent/local placements, geometry-free frames remain nodes,
-and region/slot ranges become primitives with real material bindings. Instance
-paths and opaque occurrence metadata ride in `extras`. Single-file output uses either an embedded
-base64 buffer or a standard binary GLB container; both are deterministic
-byte-for-byte.
+glTF 2.0 export from independent compiled geometry and caller-owned structure.
+Supply one-shot `GltfScene` records or implement `GltfSource` in an adapter.
+Nodes carry parent/local placements, geometry references, resolved material keys
+and arbitrary JSON extras. Geometry-free frames remain nodes; multi-body geometry
+gets auxiliary children. Output is deterministic JSON or binary GLB.
 
 ```rust
-use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
-use exedra_constructive::ir::Placement3;
-use exedra_gltf::{GlbDocument, export_glb};
+use exedra_compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
+use exedra_gltf::{GltfScene, GltfNode, GltfMesh, GlbDocument, export_glb};
 use exedra_mesh::{BuildParams, Mesh};
 
 let mesh = Mesh::from_indexed_triangles(
     &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-    &[[0, 1, 2]],
-    &BuildParams::default(),
-)
-.expect("valid triangle");
-let mut assembly = Assembly::new();
-let part = assembly
-    .add_baked_part("triangle", mesh, &[])
-    .expect("unique part key");
-assembly
-    .add_instance(None, "placed", part, Placement3::IDENTITY)
-    .expect("unique root key");
-
-let compiled = PartCompiler::new()
-    .compile_parts(&assembly, &CompilePolicy::default())
-    .expect("part compiles");
-let export = export_glb(&assembly, &compiled).expect("GLB export");
-let document = GlbDocument::parse(&export.bytes).expect("exporter wrote valid GLB");
-
+    &[[0, 1, 2]], &BuildParams::default(),
+).expect("valid triangle");
+let source = PartSource::Baked(mesh);
+let compiled = PartCompiler::new().compile_parts(
+    &[PartInput::new("triangle", &source)], &CompilePolicy::default(),
+).expect("compiled geometry");
+let mut node = GltfNode::new("placed");
+node.geometry = Some(GltfMesh::new(PartId(0), "triangle", &compiled).unwrap().into());
+let scene = GltfScene { nodes: vec![node], ..GltfScene::default() };
+let export = export_glb(&scene, &compiled).expect("GLB export");
+let document = GlbDocument::parse(&export.bytes).expect("valid GLB");
 assert_eq!(document.node_names(), ["placed"]);
 assert_eq!(document.triangle_count(), 1);
 ```
+
+The exporter owns format encoding and validation. It has no part registry,
+authored hierarchy lifecycle, binding inheritance or scene composition. Parents
+can occur anywhere in the input list; invalid parents, cycles, stale geometry,
+nonfinite streams and mismatched material/placement arrays are refused before
+resource resolution. Material lists follow body and compiled range order; empty
+lists mean unassigned. Geometry fingerprints bind references to their compilation.
+`GltfPlacementSet` and `GltfLod` express explicit batches and occurrence LOD chains.
+See the [complete caller example](../../examples/caller_owned_export/).
 
 `export_gltf` preserves authored coordinates. Call
 `export_gltf_with_options` with `GltfExportOptions::z_up_to_y_up()` when a
@@ -51,38 +51,43 @@ data URI.
 Tests can parse that output with `GlbDocument::parse` and ask semantic
 questions through `node_names`, `node_extras`, `material_names`,
 `position_bounds`, and `triangle_count`. This avoids copying GLB byte-offset
-parsers or asserting against JSON whitespace and key order. Instance metadata
+parsers or asserting against JSON whitespace and key order. Caller metadata
 is emitted directly in node `extras`; exporter-reserved keys remain
-authoritative on collisions: `instancePath`, `partKey`, `body`, `instances`,
+authoritative on collisions where emitted: `name` in batch identity tables,
+`partKey`, `body`, `instances`,
 `seed`, `tint`, `setPath`, `placementCount`, `placementIndices`, `lodLevel`,
-`MSFT_screencoverage`, and `exedraLodCrossfade`. Sheared or degenerate
+`MSFT_screencoverage`, and `exedraLodCrossfade`. The Assembly adapter additionally reserves
+`instancePath` for its stable paths. Sheared or degenerate
 placements are written with their authored `matrix`, which glTF's validator
 reports as non-TRS; `GltfStats::non_trs_matrices` counts them.
 
-## Retained assembly export
+## Optional Assembly adapter
 
-The primary export functions now take `Assembly` and `CompiledParts` directly;
-remove the `RenderList` argument at existing call sites. Export walks authored
-parent/local placements without flattening or remeasuring world-space vertices.
-Use `flatten` separately when placed bounds or renderer drawables are
-needed (`flatten_with` with `BoundsPolicy::Exact` for exact measured bounds). To export a selected subtree set, build a selected assembly with
-`append_selected`; a render-list filter is not an assembly selection.
+Enable `exedra_assembly/gltf`, or facade features `assembly,gltf`, to keep existing
+`export_glb(&assembly, &compiled)` calls and their material/options variants.
+Assembly implements `GltfSource`; it resolves stable paths, material inheritance
+and part LODs into export records. The dependency points from optional Assembly
+integration to this exporter, never from the exporter to Assembly.
 
-One logical node carries each instance's `instancePath` and opaque metadata.
-For a single body, the mesh attaches to that node. Multiple bodies attach as
-auxiliary children with `partKey`/`body` metadata and no `instancePath`. Frame
-nodes have no `partKey`, keeping intentional frames distinct from exact-empty
-geometry. Coordinate conversion applies once above the assembly roots.
+The adapter preserves logical `instancePath` metadata, geometry-free frames,
+multi-body children and placement sets. It validates installed source identities
+without rescanning geometry. Use `append_selected` to prepare an Assembly subset;
+independent callers prepare their own selected nodes and referenced geometry.
+Export rejects error-level partial evaluations, retaining the complete
+`GeometryReport` in its error. Equal compiled content shares geometry buffers;
+different resolved materials can require separate glTF meshes.
 
-Export validates current part-source correspondence and rejects error-level
-partial evaluations. The export error carries the complete `GeometryReport`,
-also accessible through `CompiledParts::report`. Equal content across distinct
-part registrations shares geometry buffers; different material bindings can still require separate meshes.
+## Feature migration
+
+Facade `gltf` now selects `compile,std`; `serde` selects `constructive,std`.
+Neither enables Assembly. Add `assembly` explicitly to existing structural
+callers. Serialization of recipes and export of caller-owned structure require
+no Assembly.
 
 ## Main APIs
 
 For authored appearance, use `export_glb_with_materials` or
-`export_gltf_with_materials`. Assembly carries opaque material IDs. The caller
+`export_gltf_with_materials`. Export records carry resolved opaque material IDs. The caller
 maps each ID to glTF JSON through `MaterialResolver` (including a closure), using
 whatever material model it owns:
 
@@ -97,9 +102,14 @@ let resolve = |id: &str| match id {
     })),
     _ => None,
 };
-assembly.set_part_material(part, "finish", "paint.red")?;
+// Resolve the caller's chosen finish into every compiled range.
+mesh.materials = compiled.part(part).unwrap().bodies.iter().map(|body| {
+    vec![Some("paint.red".into()); body.regions.len()]
+}).collect();
+node.geometry = Some(mesh.into());
+let scene = GltfScene { nodes: vec![node], ..GltfScene::default() };
 let export = exedra_gltf::export_glb_with_materials(
-    &assembly, &compiled, &resolve,
+    &scene, &compiled, &resolve,
     exedra_gltf::GltfExportOptions::z_up_to_y_up(),
 )?;
 ```
@@ -194,12 +204,14 @@ By default every logical instance becomes its own node with a matrix. With
 instances of one part that share a parent and a material resolution become
 one node per body carrying `EXT_mesh_gpu_instancing` `TRANSLATION`,
 `ROTATION` and `SCALE` accessors, in instance order. The node's
-`extras.instances` table keeps each instance's path and metadata, so identity
+`extras.instances` table keeps each instance's name and metadata, so identity
 stays inspectable, and `GlbDocument::instancing_components` reads the
 transforms back. Groups of one, instances with children, and mirrored or
 sheared placements keep their own node; the last two are counted in
 `GltfStats`. Transforms are stored as `FLOAT` accessors, so translations lose
-precision beyond `f32`. The extension is listed as required whenever it is
+precision beyond `f32`; overflow or scale underflow retains matrix nodes and
+is counted in `unbatched_unrepresentable_instances` or
+`unbatched_unrepresentable_placements`. The extension is listed as required whenever it is
 used, because no fallback node describes the batched instances.
 
 ## Placement sets

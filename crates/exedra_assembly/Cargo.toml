@@ -17,12 +17,14 @@ workspace = true
 default = ["std"]
 # The JSON interchange surface for external frontends. Implies std, matching
 # the exedra-recipe-v1 policy: interchange is a host-side format.
+gltf = ["dep:exedra_gltf", "std"]
 serde = ["dep:serde", "exedra_constructive/serde", "std"]
 std = ["exedra_compile/std", "exedra_mesh/std", "exedra_mesh_ops/std", "exedra_constructive/std"]
 
 [dependencies]
 exedra_compile.workspace = true
 exedra_constructive.workspace = true
+exedra_gltf = { optional = true, workspace = true }
 exedra_mesh = { features = ["libm"], workspace = true }
 exedra_mesh_ops.workspace = true
 hashbrown.workspace = true

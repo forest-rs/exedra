@@ -22,11 +22,12 @@ the last successful input list compiled through that service, including direct
 calls. `EvaluationSnapshot::geometry` exposes its structure-free snapshot.
 
 Callers needing only compilation and queries can migrate to borrowed
-`PartInput { key, source }` records and `exedra_compile::PartCompiler`. Its
+`PartInput::new(key, source)` records and `exedra_compile::PartCompiler`. Its
 `GeometrySnapshot` contains buffers, reports and retained bodies, with no render
 list or placements. Keep occurrence transforms separately. The facade's defaults
 now select independent `compile`; enable `assembly` explicitly for structural
-workflows. `gltf` and `serde` still select it.
+workflows. Neither `gltf` nor `serde` selects it. Use `assembly,gltf` or
+`assembly,serde` when those optional structural adapters are needed.
 
 Assembly remains a standalone structure/export surface with part registration,
 placements and opaque material binding. It owns no evaluation or extraction
@@ -86,6 +87,20 @@ assert_eq!(render_list.triangle_count(), 24);
 - `Assembly::add_placement_set` places one part many times under one parent
   as arrays (placements plus optional per-placement seeds and tints), for
   scatters such as forests. `flatten` emits each set as `RenderBatch`es.
+
+## Optional export adapter
+
+The `gltf` feature implements `exedra_gltf::GltfSource` for `Assembly`. Existing
+`export_glb(&assembly, &compiled)` and material/options variants keep their call
+shape when that feature is enabled. Assembly resolves paths, binding inheritance
+and LODs into one-shot format records; the exporter depends only on independent
+compiled geometry. Direct dependencies select `exedra_assembly/gltf`; facade
+users select `assembly,gltf`. Recipe-only serialization selects `serde` without
+Assembly; structural serialization selects `assembly,serde`.
+
+Installed part sources use `exedra_compile::PreparedSource`; registration and
+replacement capture fingerprints once. Compilation and export validation compare
+retained identities without rescanning baked meshes.
 
 ## Placement scale
 

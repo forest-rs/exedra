@@ -40,14 +40,14 @@ analytic = ["dep:exedra_analytic"]
 assembly = ["dep:exedra_assembly", "compile"]
 constructive = ["dep:exedra_constructive"]
 compile = ["dep:exedra_compile", "constructive"]
-gltf = ["dep:exedra_gltf", "assembly", "std"]
+gltf = ["dep:exedra_gltf", "compile", "exedra_assembly?/gltf", "std"]
 isosurface = ["dep:exedra_isosurface"]
 edit = ["dep:exedra_edit"]
 mesh_ops = ["dep:exedra_mesh_ops"]
 primitives = ["dep:exedra_primitives"]
 serde = [
-    "assembly",
-    "exedra_assembly/serde",
+    "constructive",
+    "exedra_assembly?/serde",
     "exedra_constructive/serde",
     "std",
 ]

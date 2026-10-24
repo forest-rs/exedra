@@ -74,8 +74,9 @@ Construction and extraction crates:
 - **[exedra_isosurface](crates/exedra_isosurface/)** - Scalar-field seams,
   reference analytic fields, transforms, profile lifts, Hermite intersection
   data, and dual-contouring extraction.
-- **[exedra_gltf](crates/exedra_gltf/)** - Deterministic glTF export for named
-  render items, materials, instance metadata, and face-region provenance.
+- **[exedra_gltf](crates/exedra_gltf/)** - Deterministic glTF export of
+  compiled geometry with caller-owned hierarchy, materials, instance metadata,
+  and face-region provenance.
 - **[exedra_measurements](crates/exedra_measurements/)** - Exact positive
   lengths, signed offsets, angle magnitudes, and signed angular offsets.
 - **[exedra_fidget](crates/exedra_fidget/)** - Adapter from Fidget expression
@@ -137,9 +138,13 @@ a scene graph into the core.
 Geometry compilation follows the same rule. `exedra_compile` evaluates and
 extracts explicit recipe or baked-mesh inputs; `Assembly`'s compilation API is
 an adapter over that service. The facade selects `compile` by default; enable
-its `assembly` feature explicitly to retain structural workflows. `gltf` and
-`serde` still select it. The [geometry query example](examples/geometry_queries/)
-constructs, compiles, inspects and retains geometry without an `Assembly`.
+its `assembly` feature explicitly to retain structural workflows. Neither `gltf`
+nor `serde` selects it: export takes caller-owned records, and the optional
+Assembly adapters are selected with `assembly,gltf` or `assembly,serde`. The
+[geometry query example](examples/geometry_queries/) constructs, compiles,
+inspects and retains geometry without an `Assembly`; the
+[caller-owned export example](examples/caller_owned_export/) serializes a
+recipe and exports GLB from an application hierarchy.
 
 ## Example Flow
 

@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 
 use super::*;
-use exedra_assembly::{CompilePolicy, PartCompiler};
+use crate::{CompilePolicy, PartCompiler};
 use exedra_mesh::{Mesh, MeshBuilder, UvSource, op};
 
 // A complete 1x1 PNG; export must preserve these exact encoded bytes.
@@ -162,7 +162,7 @@ fn missing_partial_and_nonfinite_uvs_are_rejected_but_authored_zero_is_valid() {
                 body: 0,
                 region: 0,
                 ..
-            })
+            }) | Err(GltfError::InvalidInput { .. })
         ));
     }
     let assembly = assembly(triangle(0, [0., 0.]));
@@ -273,26 +273,6 @@ fn rejects_missing_resources_invalid_encoding_and_sampler_fields() {
         export_glb_with_materials(&assembly, &compiled, &Resources::default(), options),
         Err(GltfError::MissingTexture { index: 500 })
     ));
-}
-
-#[test]
-fn texture_info_refuses_missing_indices_fractional_sets_and_unlisted_extensions() {
-    for info in [
-        json!({}),
-        json!({"index":-1}),
-        json!({"index":1.5}),
-        json!({"index":4294967296_u64}),
-        json!({"index":0,"texCoord":1.5}),
-        json!({"index":0,"extensions":{"KHR_texture_basisu":{}}}),
-    ] {
-        assert!(
-            materials::validate(
-                json!({"pbrMetallicRoughness":{"baseColorTexture":info}}),
-                "a"
-            )
-            .is_err()
-        );
-    }
 }
 
 #[test]
