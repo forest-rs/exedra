@@ -89,6 +89,27 @@ pub struct CompilePolicy {
     pub tangents: Option<TangentUv>,
 }
 
+impl CompilePolicy {
+    /// Returns the mesh extraction settings used by part compilation.
+    ///
+    /// Use these settings when inspecting or extracting the same stored mesh:
+    /// compilation uses robust polygon triangulation rather than the kernel's
+    /// default fan. Attribute descriptors are cloned; no mesh is evaluated.
+    /// UV quality inspection of stored coordinates does not resolve the missing
+    /// coordinate fallback in `uvs`; account for that policy separately.
+    #[must_use]
+    pub fn extraction_params(&self) -> ExtractParams {
+        ExtractParams {
+            normals: self.normals,
+            uvs: self.uvs,
+            face_triangulation: FaceTriangulation::Robust,
+            attributes: self.attributes.clone(),
+            tangents: self.tangents,
+            ..ExtractParams::default()
+        }
+    }
+}
+
 impl From<EvalPolicy> for CompilePolicy {
     fn from(evaluation: EvalPolicy) -> Self {
         Self {
@@ -719,14 +740,7 @@ fn compile_body(
     material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
     policy: &CompilePolicy,
 ) -> CompiledBody {
-    let params = ExtractParams {
-        normals: policy.normals,
-        uvs: policy.uvs,
-        face_triangulation: FaceTriangulation::Robust,
-        attributes: policy.attributes.clone(),
-        tangents: policy.tangents,
-        ..ExtractParams::default()
-    };
+    let params = policy.extraction_params();
     let (tri, extraction) = mesh.to_trimesh(&params);
     // Per-triangle regions in extraction order: to_trimesh emits faces in
     // face-id order, so per-face triangle counts line up exactly.
@@ -1234,6 +1248,40 @@ mod tests {
             .unwrap();
         }
         asm
+    }
+
+    #[test]
+    fn public_extraction_settings_match_compiled_concave_mesh_buffers() {
+        let mesh = exedra_mesh::Mesh::from_polygons(
+            &[
+                [0.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 3.0, 0.0],
+                [0.0, 3.0, 0.0],
+            ],
+            &[&[0, 1, 2, 3, 4, 5]],
+        )
+        .unwrap();
+        let policy = CompilePolicy {
+            uvs: UvSource::CustomOrBoxProjected { scale: 2.0 },
+            ..CompilePolicy::default()
+        };
+        let (expected, _) = mesh.to_trimesh(&policy.extraction_params());
+        let mut assembly = Assembly::new();
+        let part = assembly.add_baked_part("concave", mesh, &[]).unwrap();
+        assembly
+            .add_instance(None, "concave", part, Placement3::IDENTITY)
+            .unwrap();
+        let compiled = PartCompiler::new()
+            .compile_parts(&assembly, &policy)
+            .unwrap();
+        let actual = &compiled.part(part).unwrap().bodies[0].tri;
+        assert_eq!(actual.positions, expected.positions);
+        assert_eq!(actual.normals, expected.normals);
+        assert_eq!(actual.uvs, expected.uvs);
+        assert_eq!(actual.indices, expected.indices);
     }
 
     #[test]
