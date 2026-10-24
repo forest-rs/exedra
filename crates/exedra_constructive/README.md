@@ -93,8 +93,11 @@ zero. Placements preserve these rest coordinates,
 including reflections. Profile distance uses sampled chords; the revolution's
 angular scale describes the reference radius and stretches elsewhere. Source maps
 expose this original metric via `chart_sampling(face)`. Compilation and GLB export
-preserve corner UVs. `RegionRange::has_uvs` reports actual coverage; Boolean mesh
-reconstruction currently drops UVs even when ancestry survives.
+preserve corner UVs. Boolean results sample each output face from its source
+operand's chart; cut walls therefore use the cutter's mapping. Map the stock
+and cutters before the Boolean when those surfaces need different coordinates.
+Incomplete source charts remain untextured. `RegionRange::has_uvs` reports actual
+coverage. Source ancestry survives, and warm evaluation reuses the mapped result.
 
 Charts are opt-in. Unsupported operations and invalid transforms fail explicitly;
 f32 realization refuses collapsed chart edges or changed triangle winding. The

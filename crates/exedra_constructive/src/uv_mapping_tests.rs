@@ -441,3 +441,133 @@ fn mapping_policies_roundtrip_and_participate_in_content_identity() {
         }
     }
 }
+
+fn charted_drill(height: f64) -> Recipe {
+    use crate::ir::{CapMode, CsgOp, PrimitiveSpec};
+    use crate::{
+        builders,
+        chart::{ChartTransform, SurfaceChart},
+    };
+    let mut builder = RecipeBuilder::new();
+    let profile = builder.add_profile(builders::rect_from_corner(3.0, 3.0).unwrap());
+    let body_source = builder.source_ref("stock");
+    let tool_source = builder.source_ref("drill");
+    let material = builder.material_slot("finish");
+    let stock = builder
+        .with_source(body_source)
+        .with_material(material)
+        .with_surface_chart(SurfaceChart::Extrude {
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        })
+        .add(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let placement = Placement3::translate(1.5, 1.5, -1.0);
+    let tool = builder
+        .with_source(tool_source)
+        .with_material(material)
+        .add(NodeKind::Primitive {
+            spec: PrimitiveSpec::Cylinder {
+                radius: 0.5,
+                height: 4.0,
+                segments: 32,
+            },
+            placement,
+        })
+        .unwrap();
+    let tool = builder
+        .map_uv(
+            tool,
+            UvMapping {
+                projection: UvProjection::Cylindrical(UvFrame::XY.placed(&placement).unwrap()),
+                transform: UvTransform::scale([core::f64::consts::PI, 1.0]).unwrap(),
+            },
+        )
+        .unwrap();
+    let root = builder
+        .add(NodeKind::Csg {
+            op: CsgOp::Difference,
+            operands: vec![stock, tool],
+        })
+        .unwrap();
+    builder.finish(root).unwrap()
+}
+
+#[test]
+fn generated_stock_and_tool_charts_survive_boolean_edits_and_warm_replay() {
+    use crate::tessellate::Feature;
+    use exedra_mesh_ops::uv::quality::{UvQualityParams, UvQualityScratch, inspect_uv_quality};
+    let mut cache = EvalCache::new();
+    let policy = EvalPolicy::default();
+    let mut scratch = UvQualityScratch::default();
+    for height in [0.75, 1.0, 1.5] {
+        let recipe = charted_drill(height);
+        let result = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+        assert!(result.report.clean_at(crate::evaluate::Severity::Error));
+        assert_eq!(result.bodies.len(), 1);
+        let body = &result.bodies[0].body;
+        body.source_map.check(&body.mesh).unwrap();
+        assert!(body.mesh.boundary_loops().unwrap().is_empty());
+        let mut stock = 0;
+        let mut tool = 0;
+        for face in body.mesh.faces() {
+            let origin = body.source_map.surface_origin(face).unwrap();
+            match origin.source.as_deref() {
+                Some("stock") => {
+                    stock += 1;
+                    assert!(body.source_map.chart_sampling(face).is_some());
+                    assert!(matches!(
+                        body.source_map.face_feature(face),
+                        Some(Feature::BooleanFace { operand: 0 })
+                    ));
+                }
+                Some("drill") => {
+                    tool += 1;
+                    assert!(matches!(
+                        body.source_map.face_feature(face),
+                        Some(Feature::BooleanFace { operand: 1 })
+                    ));
+                }
+                other => panic!("unexpected surface owner: {other:?}"),
+            }
+            for corner in body.mesh.face_loop(face) {
+                assert!(
+                    uv(&body.mesh, corner)
+                        .unwrap()
+                        .iter()
+                        .all(|v| v.is_finite())
+                );
+            }
+        }
+        assert!(stock > 0 && tool > 0);
+        let report = inspect_uv_quality(
+            &body.mesh,
+            &UvQualityParams {
+                triangulation: exedra_mesh::FaceTriangulation::Robust,
+                ..UvQualityParams::default()
+            },
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(report.refusals.missing_uv, 0);
+        assert_eq!(report.triangulation_fallback_faces, 0);
+        let warm = evaluate_with_cache(&recipe, &policy, &mut cache).unwrap();
+        assert_eq!(warm.report.counters.uv_mapping_passes, 0);
+        assert!(Rc::ptr_eq(body, &warm.bodies[0].body));
+        let warm_report = inspect_uv_quality(
+            &warm.bodies[0].body.mesh,
+            &UvQualityParams {
+                triangulation: exedra_mesh::FaceTriangulation::Robust,
+                ..UvQualityParams::default()
+            },
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(report, warm_report);
+    }
+}
