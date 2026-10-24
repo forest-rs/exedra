@@ -8,52 +8,26 @@ use std::path::PathBuf;
 
 use exedra_assembly::{Assembly, CompilePolicy, NormalsSource, PartCompiler, flatten};
 use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
-use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{
+    BoxUv, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder, UvMapping, UvProjection,
+    UvTransform,
+};
 use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
-use exedra_mesh::{Mesh, op::set_corner_uv};
+use exedra_mesh::Mesh;
 use serde_json::json;
 
 fn panel_mesh() -> Result<Mesh, Box<dyn Error>> {
-    let mut mesh = tessellate_primitive(
+    // A loader can supply this same untextured mesh; mapping belongs to the
+    // recipe below, independent of how geometry was obtained.
+    Ok(tessellate_primitive(
         PrimitiveSpec::Box {
             size: [0.45, 0.024, 0.7],
         },
         &Placement3::IDENTITY,
         &EvalPolicy::default(),
     )?
-    .mesh;
-    // A caller-authored box mapping: one repeat per 80 mm, grain along Z on
-    // the upright faces. UVs belong to each half-edge's destination vertex.
-    let mut values = Vec::new();
-    for face in mesh.faces() {
-        let corners: Vec<_> = mesh.face_loop(face).collect();
-        let positions: Vec<_> = corners
-            .iter()
-            .map(|&corner| {
-                *mesh
-                    .vertex_position(mesh.to_vertex(corner).expect("corner"))
-                    .expect("position")
-            })
-            .collect();
-        let fixed_axis = (0..3)
-            .find(|&axis| positions.iter().all(|p| p[axis] == positions[0][axis]))
-            .expect("box face");
-        for (corner, p) in corners.into_iter().zip(positions) {
-            let uv = match fixed_axis {
-                0 => [p[1], p[2]],
-                1 => [p[0], p[2]],
-                _ => [p[0], p[1]],
-            };
-            values.push((corner, uv.map(|v| v / 0.08)));
-        }
-    }
-    let mut edit = mesh.edit();
-    for (corner, uv) in values {
-        set_corner_uv(&mut edit, corner, uv)?;
-    }
-    let _: () = edit.finish();
-    Ok(mesh)
+    .mesh)
 }
 
 fn panel(policy: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
@@ -63,6 +37,19 @@ fn panel(policy: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
     let child = builder.with_material(surface).add(NodeKind::MeshImport {
         import,
         placement: Placement3::IDENTITY,
+    })?;
+    let child = builder.add(NodeKind::UvMap {
+        options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
+        child,
+        mapping: UvMapping {
+            projection: UvProjection::Box(BoxUv {
+                // Grain follows Z on upright faces, with signed opposite sides.
+                swap_axes: [true, false, false],
+                flip_v: [true, true, false],
+                ..BoxUv::default()
+            }),
+            transform: UvTransform::rotate_offset_scale(0.0, [0.0; 2], [1.0 / 0.08; 2])?,
+        },
     })?;
     let root = if let Some(policy) = policy {
         builder.add(NodeKind::EdgeFinish {

@@ -123,9 +123,30 @@ pub fn project_corner_box(
 /// to [`BoxPlane::PosZ`], and the second value reports that fallback.
 #[must_use]
 pub fn dominant_box_plane(mesh: &Mesh, face: FaceId, epsilon: f32) -> (BoxPlane, bool) {
-    let Some([nx, ny, nz]) = face_normal_sum_f64(mesh, face).and_then(normalize) else {
+    let Some(normal) = face_normal_sum_f64(mesh, face).and_then(normalize) else {
         return (BoxPlane::PosZ, true);
     };
+    select_box_plane(normal, epsilon)
+}
+
+/// Selects a signed box plane from a finite normal of any length.
+///
+/// Zero or nonfinite normals fall back to positive Z and report `true`.
+/// Equal dominant components prefer X, then Y, using `epsilon` on the unit
+/// normal. Callers must supply a finite, nonnegative epsilon.
+#[must_use]
+pub fn box_plane_from_normal(normal: [f64; 3], epsilon: f32) -> (BoxPlane, bool) {
+    let scale = normal.into_iter().map(f64::abs).fold(0.0_f64, f64::max);
+    if !normal.into_iter().all(f64::is_finite) || scale == 0.0 {
+        return (BoxPlane::PosZ, true);
+    }
+    let Some(normal) = normalize(normal.map(|v| v / scale)) else {
+        return (BoxPlane::PosZ, true);
+    };
+    select_box_plane(normal, epsilon)
+}
+
+fn select_box_plane([nx, ny, nz]: [f64; 3], epsilon: f32) -> (BoxPlane, bool) {
     let epsilon = f64::from(epsilon);
     let ax = nx.abs();
     let ay = ny.abs();
@@ -189,19 +210,24 @@ pub(crate) fn face_normal_sum(mesh: &Mesh, face: FaceId) -> Option<[f32; 3]> {
 /// length squared is not). Derived shading normals keep the `f32` path so
 /// their bytes are unchanged.
 fn face_normal_sum_f64(mesh: &Mesh, face: FaceId) -> Option<[f64; 3]> {
-    let corners = mesh.face_loop(face).collect::<Vec<_>>();
-    if corners.len() < 3 {
-        return None;
-    }
+    let mut corners = mesh.face_loop(face);
     let promote = |corner: CornerId| corner_position(mesh, corner).map(|p| p.map(f64::from));
-    let origin = promote(corners[0])?;
+    let origin = promote(corners.next()?)?;
+    let mut previous = sub(promote(corners.next()?)?, origin);
     let mut vector = [0.0_f64; 3];
-    for pair in corners[1..].windows(2) {
-        let current = sub(promote(pair[0])?, origin);
-        let next = sub(promote(pair[1])?, origin);
-        vector = add(vector, cross(current, next));
+    for corner in corners {
+        let next = sub(promote(corner)?, origin);
+        vector = add(vector, cross(previous, next));
+        previous = next;
     }
     Some(vector)
+}
+
+/// Unit geometric face normal from a signed fan sum in `f64`, without allocating.
+/// Returns `None` for missing positions, nonfinite geometry or zero area.
+#[must_use]
+pub fn geometric_face_normal(mesh: &Mesh, face: FaceId) -> Option<[f64; 3]> {
+    face_normal_sum_f64(mesh, face).and_then(normalize)
 }
 
 /// Position of the destination vertex of `corner`, when both are live.

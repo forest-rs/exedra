@@ -173,12 +173,28 @@ fn dump_loop(out: &mut String, source: &Loop2) {
 fn dump_import(out: &mut String, index: usize, mesh: &exedra_mesh::Mesh) {
     let vertices: Vec<exedra_mesh::VertexId> = mesh.vertices().collect();
     let faces: Vec<exedra_mesh::FaceId> = mesh.faces().collect();
-    let _ = writeln!(
-        out,
+    let mut header = alloc::format!(
         "  import {index} vertices {} faces {}",
         vertices.len(),
         faces.len()
     );
+    if let Some(rule) = mesh.attrs().propagation(
+        exedra_mesh::attr::CORNER_UV1.domain(),
+        exedra_mesh::attr::CORNER_UV1.name(),
+    ) {
+        let value = match rule {
+            exedra_mesh::attributes::Propagation::Unspecified => 0,
+            exedra_mesh::attributes::Propagation::Clear => 1,
+            exedra_mesh::attributes::Propagation::Copy => 2,
+            exedra_mesh::attributes::Propagation::Interpolate => 3,
+        };
+        let _ = write!(header, " uv1_rule {value}");
+    }
+    if let Some(layer) = mesh.attrs().dense(exedra_mesh::attr::CORNER_UV1) {
+        let [u, v] = *layer.default();
+        let _ = write!(header, " uv1_dense {:08X} {:08X}", u.to_bits(), v.to_bits());
+    }
+    let _ = writeln!(out, "{header}");
     for vertex in &vertices {
         if let Some(p) = mesh.vertex_position(*vertex) {
             let _ = writeln!(
@@ -195,8 +211,101 @@ fn dump_import(out: &mut String, index: usize, mesh: &exedra_mesh::Mesh) {
         for index in crate::ir::canonical_face_loop_pub(mesh, *face) {
             let _ = write!(line, " {index}");
         }
+        let corners = crate::ir::canonical_face_loop_half_edges(mesh, *face);
+        dump_corner_channel(
+            &mut line,
+            "uv",
+            corners
+                .iter()
+                .map(|&corner| {
+                    mesh.attrs()
+                        .sparse(exedra_mesh::attr::CORNER_UV)
+                        .and_then(|layer| layer.get(corner.into()))
+                        .copied()
+                })
+                .collect::<Vec<_>>(),
+        );
+        dump_corner_channel(
+            &mut line,
+            "uv1",
+            corners
+                .iter()
+                .map(|&corner| {
+                    exedra_mesh_ops::uv::corner_uv(mesh, crate::ir::UvSet::Secondary, corner)
+                })
+                .collect::<Vec<_>>(),
+        );
+        dump_corner_channel(
+            &mut line,
+            "normals",
+            corners
+                .iter()
+                .map(|&corner| {
+                    mesh.attrs()
+                        .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                        .and_then(|layer| layer.get(corner.into()))
+                        .copied()
+                })
+                .collect::<Vec<_>>(),
+        );
         let _ = writeln!(out, "{line}");
     }
+}
+
+fn dump_corner_channel<const N: usize>(
+    line: &mut String,
+    label: &str,
+    values: Vec<Option<[f32; N]>>,
+) {
+    if values.iter().all(Option::is_none) {
+        return;
+    }
+    let _ = write!(line, " {label}");
+    for value in values {
+        match value {
+            None => line.push_str(" -"),
+            Some(value) => {
+                for component in value {
+                    let _ = write!(line, " {:08X}", component.to_bits());
+                }
+            }
+        }
+    }
+}
+
+fn parse_corner_channel<const N: usize>(
+    text: Option<&str>,
+    count: usize,
+    line: usize,
+) -> Result<Vec<Option<[f32; N]>>, TextError> {
+    let Some(text) = text else {
+        return Ok(alloc::vec![None; count]);
+    };
+    let mut tokens = text.split_whitespace();
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        let first = tokens.next().ok_or(TextError::Malformed { line })?;
+        if first == "-" {
+            values.push(None);
+            continue;
+        }
+        let mut value = [0.0; N];
+        for (index, component) in value.iter_mut().enumerate() {
+            let token = if index == 0 {
+                first
+            } else {
+                tokens.next().ok_or(TextError::Malformed { line })?
+            };
+            *component = f32::from_bits(
+                u32::from_str_radix(token, 16).map_err(|_| TextError::Malformed { line })?,
+            );
+        }
+        values.push(Some(value));
+    }
+    if tokens.next().is_some() {
+        return Err(TextError::Malformed { line });
+    }
+    Ok(values)
 }
 
 fn dump_seg_kind(line: &mut String, kind: &SegKind) {
@@ -221,6 +330,77 @@ fn dump_seg_kind(line: &mut String, kind: &SegKind) {
 
 fn dump_kind(line: &mut String, kind: &NodeKind) {
     match kind {
+        NodeKind::UvMap {
+            child,
+            mapping,
+            options,
+        } => {
+            use crate::ir::UvProjection;
+            let _ = write!(
+                line,
+                "uv_map child {} options {} {} {} {} ",
+                child.0,
+                u8::from(options.source == crate::ir::UvSet::Secondary),
+                u8::from(options.target == crate::ir::UvSet::Secondary),
+                u8::from(options.seams == crate::ir::UvSeamPolicy::Continuous),
+                u8::from(options.poles == crate::ir::UvPolePolicy::FaceAverage)
+            );
+            match mapping.projection {
+                UvProjection::Face => line.push_str("face"),
+                UvProjection::Cylindrical(frame)
+                | UvProjection::Spherical(frame)
+                | UvProjection::Toroidal { frame, .. } => {
+                    line.push_str(match mapping.projection {
+                        UvProjection::Cylindrical(_) => "cylindrical",
+                        UvProjection::Spherical(_) => "spherical",
+                        _ => "toroidal",
+                    });
+                    for vector in [frame.origin, frame.u, frame.v] {
+                        put_vector3(line, vector);
+                    }
+                    if let UvProjection::Toroidal { major_radius, .. } = mapping.projection {
+                        let _ = write!(line, " {}", hex(major_radius));
+                    }
+                }
+                UvProjection::Perspective(projector) => {
+                    line.push_str("perspective");
+                    for vector in [projector.frame.origin, projector.frame.u, projector.frame.v] {
+                        put_vector3(line, vector);
+                    }
+                    for value in projector.focal.into_iter().chain([projector.near]) {
+                        let _ = write!(line, " {}", hex(value));
+                    }
+                }
+                UvProjection::Existing => line.push_str("existing"),
+                UvProjection::Planar(frame) => {
+                    line.push_str("planar");
+                    for vector in [frame.origin, frame.u, frame.v] {
+                        put_vector3(line, vector);
+                    }
+                }
+                UvProjection::Box(layout) => {
+                    line.push_str("box");
+                    for flag in layout
+                        .swap_axes
+                        .into_iter()
+                        .chain(layout.flip_u)
+                        .chain(layout.flip_v)
+                    {
+                        let _ = write!(line, " {}", u8::from(flag));
+                    }
+                }
+            }
+            line.push_str(" transform");
+            for value in mapping
+                .transform
+                .matrix
+                .into_iter()
+                .flatten()
+                .chain(mapping.transform.offset)
+            {
+                let _ = write!(line, " {}", hex(value));
+            }
+        }
         NodeKind::OnWorkplane {
             support,
             child,
@@ -868,6 +1048,35 @@ pub fn parse_recipe(text: &str) -> Result<Recipe, TextError> {
         let vertex_count = next_u32(&mut tokens, line)? as usize;
         expect(&mut tokens, "faces", line)?;
         let face_count = next_u32(&mut tokens, line)? as usize;
+        let mut uv1_rule = None;
+        let mut uv1_default = None;
+        while let Some(field) = tokens.next() {
+            match field {
+                "uv1_rule" if uv1_rule.is_none() => {
+                    uv1_rule = Some(match next_u32(&mut tokens, line)? {
+                        0 => exedra_mesh::attributes::Propagation::Unspecified,
+                        1 => exedra_mesh::attributes::Propagation::Clear,
+                        2 => exedra_mesh::attributes::Propagation::Copy,
+                        3 => exedra_mesh::attributes::Propagation::Interpolate,
+                        _ => return Err(TextError::Malformed { line }),
+                    });
+                }
+                "uv1_dense" if uv1_default.is_none() => {
+                    let mut default = [0.0; 2];
+                    for value in &mut default {
+                        *value = f32::from_bits(
+                            u32::from_str_radix(
+                                tokens.next().ok_or(TextError::Malformed { line })?,
+                                16,
+                            )
+                            .map_err(|_| TextError::Malformed { line })?,
+                        );
+                    }
+                    uv1_default = Some(default);
+                }
+                _ => return Err(TextError::Malformed { line }),
+            }
+        }
         let mut mesh_builder = exedra_mesh::MeshBuilder::new();
         for _ in 0..vertex_count {
             let (line, entry) = lines.next()?;
@@ -884,11 +1093,24 @@ pub fn parse_recipe(text: &str) -> Result<Recipe, TextError> {
             }
             mesh_builder.push_vertex(position);
         }
+        let mut loops = Vec::with_capacity(face_count);
+        let mut uvs = Vec::with_capacity(face_count);
+        let mut uvs1 = Vec::with_capacity(face_count);
+        let mut normals = Vec::with_capacity(face_count);
         for _ in 0..face_count {
             let (line, entry) = lines.next()?;
             let rest = entry
                 .strip_prefix("f ")
                 .ok_or(TextError::Malformed { line })?;
+            let (rest, normal_text) = rest
+                .split_once(" normals ")
+                .map_or((rest, None), |(rest, text)| (rest, Some(text)));
+            let (rest, uv1_text) = rest
+                .split_once(" uv1 ")
+                .map_or((rest, None), |(rest, text)| (rest, Some(text)));
+            let (rest, uv_text) = rest
+                .split_once(" uv ")
+                .map_or((rest, None), |(rest, text)| (rest, Some(text)));
             let indices = rest
                 .split_whitespace()
                 .map(|token| parse_u32(token, line))
@@ -896,11 +1118,26 @@ pub fn parse_recipe(text: &str) -> Result<Recipe, TextError> {
             mesh_builder
                 .add_face(&indices)
                 .map_err(|_| TextError::Malformed { line })?;
+            uvs.push(parse_corner_channel(uv_text, indices.len(), line)?);
+            uvs1.push(parse_corner_channel(uv1_text, indices.len(), line)?);
+            normals.push(parse_corner_channel(normal_text, indices.len(), line)?);
+            loops.push(indices);
         }
         let built = mesh_builder
             .build()
             .map_err(|_| TextError::Malformed { line })?;
-        builder.add_import(built.mesh).map_err(TextError::Recipe)?;
+        let mut mesh = built.mesh;
+        crate::import_mesh::restore_corner_channels(
+            &mut mesh,
+            &loops,
+            &uvs,
+            &uvs1,
+            &normals,
+            uv1_rule,
+            uv1_default,
+        )
+        .map_err(|_| TextError::Malformed { line })?;
+        builder.add_import(mesh).map_err(TextError::Recipe)?;
     }
 
     let (line, header) = lines.next()?;
@@ -1495,6 +1732,111 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 .map(|_| Ok(NodeId(next_u32(&mut tokens, line)?)))
                 .collect::<Result<Vec<_>, TextError>>()?;
             NodeKind::Csg { op, operands }
+        }
+        "uv_map" => {
+            use crate::ir::{BoxUv, UvFrame, UvMapping, UvProjection, UvTransform};
+            expect(&mut tokens, "child", line)?;
+            let child = NodeId(next_u32(&mut tokens, line)?);
+            let options = if tokens.clone().next() == Some("options") {
+                tokens.next();
+                let mut flags = [false; 4];
+                for flag in &mut flags {
+                    *flag = match next_u32(&mut tokens, line)? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(TextError::Malformed { line }),
+                    };
+                }
+                crate::ir::UvMappingOptions {
+                    source: if flags[0] {
+                        crate::ir::UvSet::Secondary
+                    } else {
+                        crate::ir::UvSet::Primary
+                    },
+                    target: if flags[1] {
+                        crate::ir::UvSet::Secondary
+                    } else {
+                        crate::ir::UvSet::Primary
+                    },
+                    seams: if flags[2] {
+                        crate::ir::UvSeamPolicy::Continuous
+                    } else {
+                        crate::ir::UvSeamPolicy::Preserve
+                    },
+                    poles: if flags[3] {
+                        crate::ir::UvPolePolicy::FaceAverage
+                    } else {
+                        crate::ir::UvPolePolicy::Refuse
+                    },
+                }
+            } else {
+                crate::ir::UvMappingOptions::default()
+            };
+            let mode = tokens.next().ok_or(TextError::Malformed { line })?;
+            let projection = match mode {
+                "face" => UvProjection::Face,
+                "cylindrical" | "spherical" | "toroidal" | "perspective" => {
+                    let frame = UvFrame {
+                        origin: parse_vector3(&mut tokens, line)?,
+                        u: parse_vector3(&mut tokens, line)?,
+                        v: parse_vector3(&mut tokens, line)?,
+                    };
+                    match mode {
+                        "cylindrical" => UvProjection::Cylindrical(frame),
+                        "spherical" => UvProjection::Spherical(frame),
+                        "toroidal" => UvProjection::Toroidal {
+                            frame,
+                            major_radius: next_f64(&mut tokens, line)?,
+                        },
+                        _ => UvProjection::Perspective(crate::ir::PerspectiveUv {
+                            frame,
+                            focal: [next_f64(&mut tokens, line)?, next_f64(&mut tokens, line)?],
+                            near: next_f64(&mut tokens, line)?,
+                        }),
+                    }
+                }
+                "existing" => UvProjection::Existing,
+                "planar" => UvProjection::Planar(UvFrame {
+                    origin: parse_vector3(&mut tokens, line)?,
+                    u: parse_vector3(&mut tokens, line)?,
+                    v: parse_vector3(&mut tokens, line)?,
+                }),
+                "box" => {
+                    let mut flags = [false; 9];
+                    for flag in &mut flags {
+                        *flag = match next_u32(&mut tokens, line)? {
+                            0 => false,
+                            1 => true,
+                            _ => return Err(TextError::Malformed { line }),
+                        };
+                    }
+                    UvProjection::Box(BoxUv {
+                        swap_axes: [flags[0], flags[1], flags[2]],
+                        flip_u: [flags[3], flags[4], flags[5]],
+                        flip_v: [flags[6], flags[7], flags[8]],
+                    })
+                }
+                _ => return Err(TextError::Malformed { line }),
+            };
+            expect(&mut tokens, "transform", line)?;
+            let mut coefficients = [0.0; 6];
+            for value in &mut coefficients {
+                *value = next_f64(&mut tokens, line)?;
+            }
+            NodeKind::UvMap {
+                options,
+                child,
+                mapping: UvMapping {
+                    projection,
+                    transform: UvTransform {
+                        matrix: [
+                            [coefficients[0], coefficients[1]],
+                            [coefficients[2], coefficients[3]],
+                        ],
+                        offset: [coefficients[4], coefficients[5]],
+                    },
+                },
+            }
         }
         "transform" => {
             expect(&mut tokens, "child", line)?;

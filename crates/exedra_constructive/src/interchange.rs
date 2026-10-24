@@ -158,6 +158,420 @@ pub struct MeshDto {
     pub positions: Vec<[f32; 3]>,
     /// Face loops as vertex indices.
     pub faces: Vec<Vec<u32>>,
+    /// Primary UVs in face-loop order, including sparse missing values.
+    /// Empty means no authored UVs. A nonempty array must cover every corner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corner_uvs: Vec<Vec<Option<[f32; 2]>>>,
+    /// Secondary UVs in face-loop order; empty means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corner_uvs1: Vec<Vec<Option<[f32; 2]>>>,
+    /// Dense secondary-channel default, when that channel uses dense storage.
+    /// Absent means sparse storage. Finite defaults are preserved on new corners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv1_default: Option<[f32; 2]>,
+    /// Secondary channel's declared propagation rule. Presence also preserves
+    /// an empty registered layer; absence with UV values means unspecified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv1_propagation: Option<UvPropagationDto>,
+    /// Authored normals in face-loop order; empty means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corner_normals: Vec<Vec<Option<[f32; 3]>>>,
+}
+
+impl MeshDto {
+    /// Captures positions, polygon loops, both built-in UV sets and authored normals.
+    /// Other mesh attributes are outside this geometry interchange payload.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a live vertex has no position or a face references a missing
+    /// vertex. Callers should supply a structurally valid mesh.
+    #[must_use]
+    pub fn from_mesh(mesh: &exedra_mesh::Mesh) -> Self {
+        let vertices: Vec<_> = mesh.vertices().collect();
+        let indices: alloc::collections::BTreeMap<_, _> = vertices
+            .iter()
+            .enumerate()
+            .map(|(index, &vertex)| {
+                (
+                    vertex,
+                    u32::try_from(index).expect("mesh vertex count fits u32"),
+                )
+            })
+            .collect();
+        let loops: Vec<_> = mesh
+            .faces()
+            .map(|face| crate::ir::canonical_face_loop_half_edges(mesh, face))
+            .collect();
+        let mut corner_uvs: Vec<Vec<_>> = loops
+            .iter()
+            .map(|corners| {
+                corners
+                    .iter()
+                    .map(|&corner| {
+                        mesh.attrs()
+                            .sparse(exedra_mesh::attr::CORNER_UV)
+                            .and_then(|layer| layer.get(corner.into()))
+                            .copied()
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut corner_uvs1: Vec<Vec<_>> = loops
+            .iter()
+            .map(|corners| {
+                corners
+                    .iter()
+                    .map(|&corner| {
+                        exedra_mesh_ops::uv::corner_uv(mesh, crate::ir::UvSet::Secondary, corner)
+                    })
+                    .collect()
+            })
+            .collect();
+        if corner_uvs1.iter().flatten().all(Option::is_none) {
+            corner_uvs1.clear();
+        }
+        let mut corner_normals: Vec<Vec<_>> = loops
+            .iter()
+            .map(|corners| {
+                corners
+                    .iter()
+                    .map(|&corner| {
+                        mesh.attrs()
+                            .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                            .and_then(|layer| layer.get(corner.into()))
+                            .copied()
+                    })
+                    .collect()
+            })
+            .collect();
+        if corner_uvs.iter().flatten().all(Option::is_none) {
+            corner_uvs.clear();
+        }
+        if corner_normals.iter().flatten().all(Option::is_none) {
+            corner_normals.clear();
+        }
+        Self {
+            positions: vertices
+                .iter()
+                .map(|&v| *mesh.vertex_position(v).expect("positioned mesh vertex"))
+                .collect(),
+            faces: loops
+                .iter()
+                .map(|corners| {
+                    corners
+                        .iter()
+                        .map(|&corner| {
+                            indices[&mesh.to_vertex(corner).expect("live corner vertex")]
+                        })
+                        .collect()
+                })
+                .collect(),
+            corner_uvs,
+            corner_uvs1,
+            uv1_default: mesh
+                .attrs()
+                .dense(exedra_mesh::attr::CORNER_UV1)
+                .map(|layer| *layer.default()),
+            uv1_propagation: mesh
+                .attrs()
+                .propagation(
+                    exedra_mesh::attr::CORNER_UV1.domain(),
+                    exedra_mesh::attr::CORNER_UV1.name(),
+                )
+                .map(Into::into),
+            corner_normals,
+        }
+    }
+
+    /// Rebuilds geometry and its optional corner channels, rejecting malformed
+    /// channel lengths or nonfinite values. Corner values follow destination
+    /// vertices even if the builder rotates a face's loop.
+    pub fn to_mesh(&self) -> Result<exedra_mesh::Mesh, InterchangeError> {
+        let loops: Vec<_> = self.faces.iter().map(Vec::as_slice).collect();
+        let mut mesh = exedra_mesh::Mesh::from_polygons(&self.positions, &loops)
+            .map_err(|_| InterchangeError::InvalidImport)?;
+        crate::import_mesh::restore_corner_channels(
+            &mut mesh,
+            &self.faces,
+            &self.corner_uvs,
+            &self.corner_uvs1,
+            &self.corner_normals,
+            self.uv1_propagation.map(Into::into),
+            self.uv1_default,
+        )
+        .map_err(|_| InterchangeError::InvalidImport)?;
+        Ok(mesh)
+    }
+}
+
+/// Propagation of secondary UVs through later topology edits.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UvPropagationDto {
+    /// No rule has been declared.
+    Unspecified,
+    /// Clear generated values intentionally.
+    Clear,
+    /// Copy a source corner's value.
+    Copy,
+    /// Interpolate between source values.
+    Interpolate,
+}
+impl From<exedra_mesh::attributes::Propagation> for UvPropagationDto {
+    fn from(rule: exedra_mesh::attributes::Propagation) -> Self {
+        use exedra_mesh::attributes::Propagation;
+        match rule {
+            Propagation::Unspecified => Self::Unspecified,
+            Propagation::Clear => Self::Clear,
+            Propagation::Copy => Self::Copy,
+            Propagation::Interpolate => Self::Interpolate,
+        }
+    }
+}
+impl From<UvPropagationDto> for exedra_mesh::attributes::Propagation {
+    fn from(rule: UvPropagationDto) -> Self {
+        match rule {
+            UvPropagationDto::Unspecified => Self::Unspecified,
+            UvPropagationDto::Clear => Self::Clear,
+            UvPropagationDto::Copy => Self::Copy,
+            UvPropagationDto::Interpolate => Self::Interpolate,
+        }
+    }
+}
+
+/// Orthonormal projection frame in mesh coordinates.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UvFrameDto {
+    /// Projection origin.
+    pub origin: [f64; 3],
+    /// Unit U direction.
+    pub u: [f64; 3],
+    /// Unit V direction.
+    pub v: [f64; 3],
+}
+impl From<crate::ir::UvFrame> for UvFrameDto {
+    fn from(frame: crate::ir::UvFrame) -> Self {
+        Self {
+            origin: frame.origin,
+            u: frame.u,
+            v: frame.v,
+        }
+    }
+}
+impl From<UvFrameDto> for crate::ir::UvFrame {
+    fn from(frame: UvFrameDto) -> Self {
+        Self {
+            origin: frame.origin,
+            u: frame.u,
+            v: frame.v,
+        }
+    }
+}
+/// Angular seam policy in the interchange format.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UvSeamPolicyDto {
+    /// Keep wrapped coordinates unchanged.
+    Preserve,
+    /// Lift across the largest face-local gap.
+    #[default]
+    Continuous,
+}
+/// Undefined-angle recovery policy in the interchange format.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UvPolePolicyDto {
+    /// Refuse undefined angles.
+    Refuse,
+    /// Recover from defined face neighbors.
+    #[default]
+    FaceAverage,
+}
+/// Channel selection and angular recovery, with explicit defaults.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UvMappingOptionsDto {
+    /// Source set, 0 or 1, for existing-coordinate projection.
+    pub source: u8,
+    /// Destination set, 0 or 1.
+    pub target: u8,
+    /// Angular seam handling.
+    pub seams: UvSeamPolicyDto,
+    /// Undefined-angle handling.
+    pub poles: UvPolePolicyDto,
+}
+impl From<crate::ir::UvMappingOptions> for UvMappingOptionsDto {
+    fn from(options: crate::ir::UvMappingOptions) -> Self {
+        use crate::ir::{UvPolePolicy, UvSeamPolicy, UvSet};
+        Self {
+            source: u8::from(options.source == UvSet::Secondary),
+            target: u8::from(options.target == UvSet::Secondary),
+            seams: match options.seams {
+                UvSeamPolicy::Preserve => UvSeamPolicyDto::Preserve,
+                UvSeamPolicy::Continuous => UvSeamPolicyDto::Continuous,
+            },
+            poles: match options.poles {
+                UvPolePolicy::Refuse => UvPolePolicyDto::Refuse,
+                UvPolePolicy::FaceAverage => UvPolePolicyDto::FaceAverage,
+            },
+        }
+    }
+}
+impl TryFrom<UvMappingOptionsDto> for crate::ir::UvMappingOptions {
+    type Error = InterchangeError;
+    fn try_from(options: UvMappingOptionsDto) -> Result<Self, Self::Error> {
+        use crate::ir::{UvPolePolicy, UvSeamPolicy, UvSet};
+        let set = |value, what| match value {
+            0 => Ok(UvSet::Primary),
+            1 => Ok(UvSet::Secondary),
+            _ => Err(InterchangeError::Recipe(RecipeError::InvalidParameter {
+                what,
+            })),
+        };
+        Ok(Self {
+            source: set(options.source, "UV source set")?,
+            target: set(options.target, "UV target set")?,
+            seams: match options.seams {
+                UvSeamPolicyDto::Preserve => UvSeamPolicy::Preserve,
+                UvSeamPolicyDto::Continuous => UvSeamPolicy::Continuous,
+            },
+            poles: match options.poles {
+                UvPolePolicyDto::Refuse => UvPolePolicy::Refuse,
+                UvPolePolicyDto::FaceAverage => UvPolePolicy::FaceAverage,
+            },
+        })
+    }
+}
+
+/// Coordinate source for primary corner UV mapping.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UvProjectionDto {
+    /// Each face's geometric normal defines its plane.
+    Face,
+    /// Angular U and axial-distance V.
+    Cylindrical {
+        /// Radial projection frame.
+        frame: UvFrameDto,
+    },
+    /// Longitude U and latitude V.
+    Spherical {
+        /// Radial projection frame.
+        frame: UvFrameDto,
+    },
+    /// Longitude around a ring and angle around its tube.
+    Toroidal {
+        /// Radial projection frame.
+        frame: UvFrameDto,
+        /// Positive radius to the tube centerline.
+        major_radius: f64,
+    },
+    /// Camera/projector image coordinates.
+    Perspective {
+        /// Projector frame; forward is U cross V.
+        frame: UvFrameDto,
+        /// Positive UV focal scales.
+        focal: [f64; 2],
+        /// Nonnegative near depth.
+        near: f64,
+    },
+
+    /// Require existing authored corner UVs.
+    Existing,
+    /// Freely oriented orthonormal projection plane.
+    Planar {
+        /// Origin in mesh units.
+        origin: [f64; 3],
+        /// Unit U axis.
+        u: [f64; 3],
+        /// Unit V axis.
+        v: [f64; 3],
+    },
+    /// Signed box projection, indexed by dominant normal X, Y, Z.
+    Box {
+        /// Exchange U/V on each pair of faces.
+        swap_axes: [bool; 3],
+        /// Negate U after exchanging axes.
+        flip_u: [bool; 3],
+        /// Negate V after exchanging axes.
+        flip_v: [bool; 3],
+    },
+}
+
+impl From<crate::ir::UvProjection> for UvProjectionDto {
+    fn from(projection: crate::ir::UvProjection) -> Self {
+        use crate::ir::UvProjection;
+        match projection {
+            UvProjection::Face => Self::Face,
+            UvProjection::Cylindrical(frame) => Self::Cylindrical {
+                frame: frame.into(),
+            },
+            UvProjection::Spherical(frame) => Self::Spherical {
+                frame: frame.into(),
+            },
+            UvProjection::Toroidal {
+                frame,
+                major_radius,
+            } => Self::Toroidal {
+                frame: frame.into(),
+                major_radius,
+            },
+            UvProjection::Perspective(projector) => Self::Perspective {
+                frame: projector.frame.into(),
+                focal: projector.focal,
+                near: projector.near,
+            },
+            UvProjection::Existing => Self::Existing,
+            UvProjection::Planar(frame) => Self::Planar {
+                origin: frame.origin,
+                u: frame.u,
+                v: frame.v,
+            },
+            UvProjection::Box(layout) => Self::Box {
+                swap_axes: layout.swap_axes,
+                flip_u: layout.flip_u,
+                flip_v: layout.flip_v,
+            },
+        }
+    }
+}
+impl From<UvProjectionDto> for crate::ir::UvProjection {
+    fn from(projection: UvProjectionDto) -> Self {
+        match projection {
+            UvProjectionDto::Face => Self::Face,
+            UvProjectionDto::Cylindrical { frame } => Self::Cylindrical(frame.into()),
+            UvProjectionDto::Spherical { frame } => Self::Spherical(frame.into()),
+            UvProjectionDto::Toroidal {
+                frame,
+                major_radius,
+            } => Self::Toroidal {
+                frame: frame.into(),
+                major_radius,
+            },
+            UvProjectionDto::Perspective { frame, focal, near } => {
+                Self::Perspective(crate::ir::PerspectiveUv {
+                    frame: frame.into(),
+                    focal,
+                    near,
+                })
+            }
+            UvProjectionDto::Existing => Self::Existing,
+            UvProjectionDto::Planar { origin, u, v } => {
+                Self::Planar(crate::ir::UvFrame { origin, u, v })
+            }
+            UvProjectionDto::Box {
+                swap_axes,
+                flip_u,
+                flip_v,
+            } => Self::Box(crate::ir::BoxUv {
+                swap_axes,
+                flip_u,
+                flip_v,
+            }),
+        }
+    }
 }
 
 /// Affine chart mapping; entries are repeats per recipe unit and texture phase.
@@ -432,6 +846,20 @@ pub enum PathJoinDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeKindDto {
+    /// Primary corner UV mapping in the child's local evaluation frame.
+    UvMap {
+        /// Channel selection and angular recovery policies.
+        #[serde(default)]
+        options: UvMappingOptionsDto,
+        /// Child node index.
+        child: u32,
+        /// Coordinate source.
+        projection: UvProjectionDto,
+        /// Row-major affine UV matrix.
+        matrix: [[f64; 2]; 2],
+        /// Translation after the matrix.
+        offset: [f64; 2],
+    },
     /// Charted generating operation. The distinct opcode prevents old readers
     /// from silently dropping authored coordinates. Wrappers cannot nest.
     Charted {
@@ -909,21 +1337,7 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
         sources: recipe.sources().to_vec(),
         slots: recipe.slots().to_vec(),
         policies: recipe.policies().to_vec(),
-        imports: recipe
-            .imports()
-            .iter()
-            .map(|mesh| MeshDto {
-                positions: mesh
-                    .vertices()
-                    .filter_map(|v| mesh.vertex_position(v))
-                    .copied()
-                    .collect(),
-                faces: mesh
-                    .faces()
-                    .map(|face| crate::ir::canonical_face_loop_pub(mesh, face))
-                    .collect(),
-            })
-            .collect(),
+        imports: recipe.imports().iter().map(MeshDto::from_mesh).collect(),
         profiles,
         nodes,
         root: recipe.root().0,
@@ -932,6 +1346,17 @@ pub fn to_dto(recipe: &Recipe) -> RecipeDto {
 
 fn kind_dto(kind: &NodeKind) -> NodeKindDto {
     match kind {
+        NodeKind::UvMap {
+            child,
+            mapping,
+            options,
+        } => NodeKindDto::UvMap {
+            options: (*options).into(),
+            child: child.0,
+            projection: mapping.projection.into(),
+            matrix: mapping.transform.matrix,
+            offset: mapping.transform.offset,
+        },
         NodeKind::OnWorkplane {
             support,
             child,
@@ -1245,20 +1670,8 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
         builder.curve_policy(policy);
     }
     for import in &dto.imports {
-        let mut mesh_builder = exedra_mesh::MeshBuilder::new();
-        for position in &import.positions {
-            mesh_builder.push_vertex(*position);
-        }
-        for face in &import.faces {
-            mesh_builder
-                .add_face(face)
-                .map_err(|_| InterchangeError::InvalidImport)?;
-        }
-        let built = mesh_builder
-            .build()
-            .map_err(|_| InterchangeError::InvalidImport)?;
         builder
-            .add_import(built.mesh)
+            .add_import(import.to_mesh()?)
             .map_err(InterchangeError::Recipe)?;
     }
     for profile in &dto.profiles {
@@ -1577,6 +1990,23 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
                 _ => return Err(InterchangeError::UnknownValue { field: "csg" }),
             },
             operands: operands.iter().map(|n| NodeId(*n)).collect(),
+        },
+        NodeKindDto::UvMap {
+            options,
+            child,
+            projection,
+            matrix,
+            offset,
+        } => NodeKind::UvMap {
+            options: (*options).try_into()?,
+            child: NodeId(*child),
+            mapping: crate::ir::UvMapping {
+                projection: (*projection).into(),
+                transform: crate::ir::UvTransform {
+                    matrix: *matrix,
+                    offset: *offset,
+                },
+            },
         },
         NodeKindDto::Transform { child, placement } => NodeKind::Transform {
             child: NodeId(*child),

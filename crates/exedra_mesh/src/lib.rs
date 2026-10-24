@@ -119,6 +119,7 @@ mod render;
 mod session;
 mod sorted_merge;
 mod topology;
+pub mod uv_mapping;
 mod uvs;
 
 pub use arena::Arena;
@@ -147,8 +148,8 @@ pub use session::{
 };
 pub use topology::{Face, HalfEdge, Vertex};
 pub use uvs::{
-    BoxPlane, DEFAULT_BOX_NORMAL_EPSILON, UvSource, dominant_box_plane, project_box_position,
-    project_corner_box,
+    BoxPlane, DEFAULT_BOX_NORMAL_EPSILON, UvSource, box_plane_from_normal, dominant_box_plane,
+    geometric_face_normal, project_box_position, project_corner_box,
 };
 
 #[cfg(test)]

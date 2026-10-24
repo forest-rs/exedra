@@ -3,6 +3,35 @@
 Constructive geometry head: an immutable, content-addressed recipe IR with
 deterministic tessellation into Exedra meshes.
 
+`NodeKind::UvMap { child, mapping, options }` authors either built-in corner UV
+channel on imported or constructed meshes, including complete groups.
+`RecipeBuilder::map_uv` supplies default channel and angular policies. Mapping
+uses the child's local evaluated coordinates before ancestor placement, so
+later transforms and instances carry the texture with the mesh.
+
+The shared kernel supports existing coordinates, planar, box, per-face,
+cylindrical, spherical, toroidal and perspective projections, plus affine
+transforms, pivoting, composition and bounds fitting. Options select the
+source/target UV channels, per-face seam lifting and pole recovery. Projection
+does not unwrap or pack islands. Perspective refuses points behind the near
+depth and does not test occlusion. Missing source coordinates are typed failures.
+
+Source correspondence, material assignments, topology and construction ancestry
+survive. Counters expose mapping passes, writes, unchanged values, seam lifts,
+pole repairs and normal fallbacks. Single-body results use the evaluation cache;
+complete groups reuse authoring scratch between bodies. Occurrence materials
+remain outside cached geometry. Imported primary/secondary coordinates and
+normal overrides survive text/JSON interchange, including sparse coverage and
+secondary storage defaults and propagation rules.
+
+Migration: exhaustive node matches must handle `UvMap`; constructing it requires
+`options` (use `UvMappingOptions::default()` for the primary channel and continuous
+angular mapping). Text and JSON `uv_map` encode all parameters; older payloads
+remain readable. `MeshDto` adds `corner_uvs`, `corner_uvs1`, `corner_normals`,
+`uv1_default` and `uv1_propagation`; Rust literals must supply empty vectors and
+`None` for the previous geometry-only payload. Its public `from_mesh`/`to_mesh`
+helpers preserve these channels. Readers unaware of the new operation reject it.
+
 This crate is the retained geometry domain: a *compiler target* for
 pre-mesh construction. It keeps recipe evaluation native until an explicit
 conversion produces a mesh.

@@ -65,6 +65,42 @@ external sampling profiler to attach; it is not a distinct benchmark case.
 `--corners-sample` does the same for CT-5.
 `--materials-sample` does the same for CT-6.
 
+## UV authoring
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin uv_mapping -- 128 15
+cargo run --release -p constructive_wind_tunnel --bin uv_mapping -- 256 15
+```
+
+The dedicated binary measures all eight projection modes, with fresh and
+retained authoring scratch. Planar, box, face, existing and perspective cases
+use an imported quad grid; angular cases use a closed toroidal grid with half
+as many faces. Mesh creation is outside timing. A warmup precedes the median
+of the requested repetitions, and alternating transforms require actual writes.
+Deep validation and bit-identical UV signatures across fresh/reused execution
+paths precede timing. A last-face selection checks that tiny updates remain
+proportional to the selection on a large authored mesh.
+
+Reports include corners per second and retained scratch capacity. Capacity
+excludes allocator overhead, mesh storage and returned face lists. Reusing
+scratch removes buffer growth after warmup; reports still own their face lists.
+The kernel merges sorted sparse writes in place. Linear mapping gathers small
+batches and separates checks from arithmetic to permit compiler vectorization;
+angular mapping reuses face-local sorting buffers.
+
+On the development Apple Silicon machine, release medians over 15 repetitions
+for 65,536 corners were 1.17 ms planar, 2.19 ms box and 1.87 ms existing-coordinate
+mapping, compared with the initial implementation's 3.49, 4.34 and 3.02 ms on
+the same workload. At 262,144 corners planar throughput remained about 56 million
+corners/second. A four-corner last-face update took 0.29–0.35 microseconds across
+those mesh sizes. These are local observations, not portable timing guarantees.
+
+For external allocation inspection, set `EXEDRA_UV_PROFILE=warm` (or `cold`)
+when running `target/release/uv_mapping`. The process pauses before and after
+three mappings for an OS profiler to attach. Stack-log flush allocations happen
+outside this batch under their own stack; exclude them from mapping counts.
+Capacity stability alone is not evidence of zero transient allocations.
+
 ## License
 
 Apache-2.0 OR MIT

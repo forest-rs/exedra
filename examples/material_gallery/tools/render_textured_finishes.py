@@ -98,11 +98,11 @@ def main():
             bpy.ops.object.delete(use_global=False)
             mat = material(kind)
             if view == "comparison":
-                for name, offset in [("door-sharp", 0), ("door-chamfer", 0.55), ("door-fillet", 1.1)]:
+                for name, offset in [("panel-sharp", 0), ("panel-chamfer", 0.55), ("panel-fillet", 1.1)]:
                     load_door(root, name, mat, offset)
                 center = Vector((0.775, 0.012, 0.35))
             else:
-                load_door(root, "door-fillet" if view == "fillet-close" else "door-chamfer", mat)
+                load_door(root, "panel-fillet" if view == "fillet-close" else "panel-chamfer", mat)
                 center = Vector((0.433, 0.008, 0.68))
             scene = setup(center, view != "comparison")
             scene.render.filepath = str(root / f"{kind}-{view}.png")

@@ -140,6 +140,8 @@ pub const EVAL_SCHEMA_VERSION: u32 = 40;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
+#[cfg(test)]
+mod uv_mapping_tests;
 
 #[cfg(test)]
 mod rounded_post_tests;
