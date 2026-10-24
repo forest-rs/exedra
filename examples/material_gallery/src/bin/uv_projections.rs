@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::ir::{
-    BoxUv, NodeKind, PerspectiveUv, Placement3, PrimitiveSpec, Recipe, RecipeBuilder, UvFrame,
-    UvMapping, UvMappingOptions, UvProjection, UvSet, UvTransform,
+    BoxUv, Node, NodeKind, PerspectiveUv, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    UvFrame, UvMapping, UvMappingOptions, UvProjection, UvSet, UvTransform,
 };
 use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
 use exedra_gltf::{
@@ -156,10 +156,13 @@ fn recipe(
     let mut builder = RecipeBuilder::new();
     let slot = builder.material_slot("surface");
     let import = builder.add_import(mesh)?;
-    let child = builder.with_material(slot).add(NodeKind::MeshImport {
-        import,
-        placement: Placement3::IDENTITY,
-    })?;
+    let child = builder.add_node(
+        Node::new(NodeKind::MeshImport {
+            import,
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(slot),
+    )?;
     let mut root = builder.map_uv(
         child,
         UvMapping {
@@ -174,7 +177,7 @@ fn recipe(
                 matrix: [[1.0, 0.35], [0.0, 1.0]],
                 offset: [0.0; 2],
             })?;
-        root = builder.add(NodeKind::UvMap {
+        root = builder.add_node(NodeKind::UvMap {
             child: root,
             mapping: UvMapping {
                 projection: UvProjection::Existing,

@@ -154,16 +154,16 @@ fn imported_and_generated_normals_survive_placement_and_partial_coverage_in_glb(
             let mut builder = RecipeBuilder::new();
             let import = builder.add_import(authored_quad(partial)).unwrap();
             let imported = builder
-                .add(NodeKind::MeshImport { import, placement })
+                .add_node(NodeKind::MeshImport { import, placement })
                 .unwrap();
             let generated = builder
-                .add(NodeKind::Primitive {
+                .add_node(NodeKind::Primitive {
                     spec: PrimitiveSpec::Box { size: [1.0; 3] },
                     placement: Placement3::translate(5.0, 0.0, 0.0),
                 })
                 .unwrap();
             let root = builder
-                .add(NodeKind::Group {
+                .add_node(NodeKind::Group {
                     children: vec![imported, generated],
                 })
                 .unwrap();

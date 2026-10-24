@@ -5,7 +5,7 @@ use super::*;
 
 use exedra_assembly::{CompilePolicy, PartCompiler};
 use exedra_constructive::builders::{circle, rect_from_corner};
-use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, CsgOp, Node, NodeKind, Placement3, Recipe, RecipeBuilder};
 
 use crate::{Anchor, Evidence, EvidenceClass, OrientedBox, Part, lower, measure_contact};
 
@@ -97,34 +97,38 @@ fn purlin(seat: bool) -> Recipe {
     let slot = builder.material_slot("surface");
     let profile = builder.add_profile(circle(0.1).unwrap());
     let cylinder = builder
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::from_axes(
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.1, 0.1],
-            ),
-            height: 1.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::from_axes(
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.1, 0.1],
+                ),
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .unwrap();
     if !seat {
         return builder.finish(cylinder).unwrap();
     }
     let cutter_profile = builder.add_profile(rect_from_corner(0.2, 0.4).unwrap());
     let cutter = builder
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile: cutter_profile,
-            placement: Placement3::translate(0.4, -0.1, -0.1),
-            height: 0.12,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: cutter_profile,
+                placement: Placement3::translate(0.4, -0.1, -0.1),
+                height: 0.12,
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![cylinder, cutter],
         })
@@ -147,29 +151,33 @@ fn beam(shape: SupportShape) -> Recipe {
         0.0
     };
     let block = builder
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::translate(0.0, offset, z),
-            height: 0.2,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::translate(0.0, offset, z),
+                height: 0.2,
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .unwrap();
     if !matches!(shape, SupportShape::Holed) {
         return builder.finish(block).unwrap();
     }
     let hole = builder.add_profile(circle(0.01).unwrap());
     let cutter = builder
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile: hole,
-            placement: Placement3::translate(0.1, 0.1, -0.1),
-            height: 0.4,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: hole,
+                placement: Placement3::translate(0.1, 0.1, -0.1),
+                height: 0.4,
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![block, cutter],
         })

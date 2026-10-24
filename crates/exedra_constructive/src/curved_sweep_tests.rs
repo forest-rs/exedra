@@ -6,7 +6,7 @@ use super::*;
 use crate::builders;
 use crate::cache::{EvalCache, policy_fingerprint};
 use crate::evaluate::{evaluate, evaluate_with_cache};
-use crate::ir::{CsgOp, NodeKind, Path3, RecipeBuilder};
+use crate::ir::{CsgOp, Node, NodeKind, Path3, RecipeBuilder};
 use crate::path::{PathDiscretizeError, PathSegment3};
 use alloc::vec;
 
@@ -20,27 +20,29 @@ fn boolean_descendants_retain_shared_original_curve_sampling() {
     let source = builder.source_ref("arc-rail");
     let p = builder.add_profile(profile());
     let rail = builder
-        .with_source(source)
-        .add(NodeKind::Sweep {
-            section: SectionLaw::IDENTITY,
-            profile: p,
-            path: Path3::Curves {
-                section_origin: [0.0; 2],
-                closure: PathClosure::Open,
-                joins: PathJoin::Smooth,
-                start: [0.0; 3],
-                segments: vec![PathSegment3::Arc {
-                    axis_origin: [4.0, 0.0, 0.0],
-                    axis: [0.0, 1.0, 0.0],
-                    sweep: core::f64::consts::FRAC_PI_2,
-                }],
-                section_x: [1.0, 0.0, 0.0],
-            },
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Sweep {
+                section: SectionLaw::IDENTITY,
+                profile: p,
+                path: Path3::Curves {
+                    section_origin: [0.0; 2],
+                    closure: PathClosure::Open,
+                    joins: PathJoin::Smooth,
+                    start: [0.0; 3],
+                    segments: vec![PathSegment3::Arc {
+                        axis_origin: [4.0, 0.0, 0.0],
+                        axis: [0.0, 1.0, 0.0],
+                        sweep: core::f64::consts::FRAC_PI_2,
+                    }],
+                    section_x: [1.0, 0.0, 0.0],
+                },
+                caps: CapMode::Both,
+            })
+            .with_source(source),
+        )
         .unwrap();
     let cut = builder
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box {
                 size: [20.0, 20.0, 0.2],
             },
@@ -48,7 +50,7 @@ fn boolean_descendants_retain_shared_original_curve_sampling() {
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![rail, cut],
         })
@@ -243,7 +245,7 @@ fn source_correspondence_serialization_and_cache_replay_are_preserved() {
     let mut b = RecipeBuilder::new();
     let p = b.add_profile(profile());
     let root = b
-        .add(NodeKind::Sweep {
+        .add_node(NodeKind::Sweep {
             section: SectionLaw::IDENTITY,
             profile: p,
             path: Path3::Curves {
@@ -434,7 +436,7 @@ fn instances_preserve_source_sampling_without_claiming_placed_checks() {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(profile());
         let source = builder
-            .add(NodeKind::Sweep {
+            .add_node(NodeKind::Sweep {
                 section: SectionLaw::IDENTITY,
                 profile,
                 path: Path3::Curves {
@@ -449,7 +451,7 @@ fn instances_preserve_source_sampling_without_claiming_placed_checks() {
             })
             .expect("source");
         let root = builder
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: source,
                 placement,
             })

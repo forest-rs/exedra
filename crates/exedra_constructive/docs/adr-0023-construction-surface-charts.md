@@ -5,7 +5,7 @@ Status: accepted
 ## Decision
 
 Opt-in `SurfaceChart` metadata belongs on the generating recipe node, next to
-its source and material bindings. `RecipeBuilder::with_surface_chart` validates
+its source and material bindings. `RecipeBuilder::add_node` validates
 that its metric matches an ordinary extrusion, revolution, loft or sweep. Other
 operations refuse the binding. Mesh corner UVs own the realized attribute; constructive
 owns its authored metric and source evidence. Render-only callers pay no chart

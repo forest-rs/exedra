@@ -6,7 +6,8 @@ use crate::builders;
 use crate::cache::EvalCache;
 use crate::evaluate::{Severity, evaluate, evaluate_with_cache};
 use crate::ir::{
-    CapMode, CsgOp, NodeId, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder, SlotId,
+    CapMode, CsgOp, Node, NodeId, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    SlotId,
 };
 use crate::tessellate::{EvalPolicy, tessellate_extrude, tessellate_primitive};
 use crate::text;
@@ -16,7 +17,7 @@ use exedra_mesh::FaceTriangulation;
 use exedra_mesh::op::{set_corner_uv, set_face_region};
 
 fn box_node(b: &mut RecipeBuilder, size: [f64; 3]) -> NodeId {
-    b.add(NodeKind::Primitive {
+    b.add_node(NodeKind::Primitive {
         spec: PrimitiveSpec::Box { size },
         placement: Placement3::IDENTITY,
     })
@@ -27,7 +28,7 @@ fn rail_recipe(selection: EdgeSelection, policy: RoundPolicy) -> Recipe {
     let mut b = RecipeBuilder::new();
     let child = box_node(&mut b, [0.09, 0.2, 2.0]);
     let root = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child,
             selection,
             policy,
@@ -137,7 +138,7 @@ fn equal_region_recess() -> Recipe {
     let mut b = RecipeBuilder::new();
     let panel = box_node(&mut b, [1.0, 1.0, 0.1]);
     let cutter = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box {
                 size: [0.8, 0.04, 0.8],
             },
@@ -151,7 +152,7 @@ fn equal_region_recess() -> Recipe {
         })
         .unwrap();
     let root = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![panel, cutter],
         })
@@ -163,7 +164,7 @@ fn two_pockets(segments: u32, grouped: bool, nested: bool) -> Recipe {
     let mut b = RecipeBuilder::new();
     let panel = box_node(&mut b, [4.0, 2.0, 1.0]);
     let outside = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box { size: [1.0; 3] },
             placement: Placement3::translate(10.0, 0.0, 0.0),
         })
@@ -171,7 +172,7 @@ fn two_pockets(segments: u32, grouped: bool, nested: bool) -> Recipe {
     let mut cutters = Vec::new();
     for x in [1.0, 3.0] {
         cutters.push(
-            b.add(NodeKind::Primitive {
+            b.add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Cylinder {
                     radius: 0.25,
                     height: 0.4,
@@ -183,21 +184,21 @@ fn two_pockets(segments: u32, grouped: bool, nested: bool) -> Recipe {
         );
     }
     if grouped {
-        cutters = vec![b.add(NodeKind::Group { children: cutters }).unwrap()];
+        cutters = vec![b.add_node(NodeKind::Group { children: cutters }).unwrap()];
     }
     // Operand 1 is excluded by the Boolean's bounds test. The live cutters
     // must retain declared indices 2 and 3, rather than being renumbered.
     let mut operands = vec![panel, outside];
     operands.extend(cutters);
     let mut root = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands,
         })
         .unwrap();
     if nested {
         root = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![root, outside],
             })
@@ -336,7 +337,7 @@ fn qualified_boundaries_survive_compaction_and_tessellation_changes() {
         // Boolean provenance. Both regions of each rim belong to operand 0.
         let mut b = RecipeBuilder::new();
         let cylinder = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Cylinder {
                     radius: 0.25,
                     height: 0.5,
@@ -346,13 +347,13 @@ fn qualified_boundaries_survive_compaction_and_tessellation_changes() {
             })
             .unwrap();
         let outside = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box { size: [1.0; 3] },
                 placement: Placement3::translate(10.0, 0.0, 0.0),
             })
             .unwrap();
         let root = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![cylinder, outside],
             })
@@ -605,34 +606,38 @@ fn finished_geometry_and_uvs_replay_from_cache_without_capturing_defaults() {
     let _: () = edit.finish();
     let import = b.add_import(mesh).unwrap();
     let child = b
-        .add(NodeKind::MeshImport {
+        .add_node(NodeKind::MeshImport {
             import,
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let finish = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child,
             selection: EdgeSelection::SharpEdges,
             policy: RoundPolicy::fillet(0.006),
         })
         .unwrap();
     let a = b
-        .with_material(red)
-        .add(NodeKind::Transform {
-            child: finish,
-            xf: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Transform {
+                child: finish,
+                xf: Placement3::IDENTITY,
+            })
+            .with_material(red),
+        )
         .unwrap();
     let c = b
-        .with_material(blue)
-        .add(NodeKind::Transform {
-            child: finish,
-            xf: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Transform {
+                child: finish,
+                xf: Placement3::IDENTITY,
+            })
+            .with_material(blue),
+        )
         .unwrap();
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![a, c],
         })
         .unwrap();
@@ -748,24 +753,26 @@ fn finishing_a_boolean_preserves_cut_slots_and_per_occurrence_defaults() {
     let blue = b.material_slot("blue");
     let block = box_node(&mut b, [1.0, 1.0, 1.0]);
     let cutter = b
-        .with_material(cut)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Cylinder {
-                radius: 0.15,
-                height: 0.4,
-                segments: 16,
-            },
-            placement: Placement3::translate(0.7, 0.7, 0.8),
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: 0.15,
+                    height: 0.4,
+                    segments: 16,
+                },
+                placement: Placement3::translate(0.7, 0.7, 0.8),
+            })
+            .with_material(cut),
+        )
         .unwrap();
     let difference = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![block, cutter],
         })
         .unwrap();
     let finish = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child: difference,
             selection: EdgeSelection::OperandBoundaries(vec![[
                 OperandRegion {
@@ -783,15 +790,17 @@ fn finishing_a_boolean_preserves_cut_slots_and_per_occurrence_defaults() {
     let mut children = Vec::new();
     for slot in [red, blue] {
         children.push(
-            b.with_material(slot)
-                .add(NodeKind::Transform {
+            b.add_node(
+                Node::new(NodeKind::Transform {
                     child: finish,
                     xf: Placement3::IDENTITY,
                 })
-                .unwrap(),
+                .with_material(slot),
+            )
+            .unwrap(),
         );
     }
-    let root = b.add(NodeKind::Group { children }).unwrap();
+    let root = b.add_node(NodeKind::Group { children }).unwrap();
     let recipe = b.finish(root).unwrap();
     let mut cache = EvalCache::new();
     for pass in 0..2 {
@@ -828,7 +837,7 @@ fn outer_reflection_and_scale_apply_after_local_finishing() {
     let mut b = RecipeBuilder::new();
     let child = box_node(&mut b, [0.09, 0.2, 2.0]);
     let finish = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child,
             selection: EdgeSelection::SharpEdges,
             policy: RoundPolicy::fillet(0.006),
@@ -841,9 +850,11 @@ fn outer_reflection_and_scale_apply_after_local_finishing() {
             [0.0, 0.0, 1.0, 3.0],
         ],
     };
-    let placed = b.add(NodeKind::Transform { child: finish, xf }).unwrap();
+    let placed = b
+        .add_node(NodeKind::Transform { child: finish, xf })
+        .unwrap();
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![finish, placed],
         })
         .unwrap();
@@ -1065,16 +1076,18 @@ fn concave_shoulder_finishing_preserves_face_ownership_and_uvs() {
     let slot = b.material_slot("timber");
     let profile = b.add_profile(builders::l_profile(0.2, 0.2, 0.1, 0.1).unwrap());
     let child = b
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 0.3,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 0.3,
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .unwrap();
     let root = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child,
             selection,
             policy,
@@ -1108,7 +1121,7 @@ fn recessed_panel_region_collisions_are_refused_as_ambiguous() {
     let mut b = RecipeBuilder::new();
     let panel = box_node(&mut b, [1.0, 1.0, 0.1]);
     let cutter = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box {
                 size: [0.8, 0.8, 0.04],
             },
@@ -1116,13 +1129,13 @@ fn recessed_panel_region_collisions_are_refused_as_ambiguous() {
         })
         .unwrap();
     let csg = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![panel, cutter],
         })
         .unwrap();
     let finish = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child: csg,
             selection: EdgeSelection::RegionBoundaries(vec![[1, 5]]),
             policy: RoundPolicy::fillet(0.005),
@@ -1220,19 +1233,19 @@ fn incomplete_children_remain_refused_when_nested_or_cached() {
     let mut b = RecipeBuilder::new();
     let child = box_node(&mut b, [0.09, 0.2, 2.0]);
     let bad = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child,
             selection: EdgeSelection::SharpEdges,
             policy: RoundPolicy::fillet(0.046),
         })
         .unwrap();
     let group = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![child, bad],
         })
         .unwrap();
     let root = b
-        .add(NodeKind::EdgeFinish {
+        .add_node(NodeKind::EdgeFinish {
             child: group,
             selection: EdgeSelection::SharpEdges,
             policy: RoundPolicy::fillet(0.006),

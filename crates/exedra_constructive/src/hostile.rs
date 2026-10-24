@@ -13,8 +13,8 @@ use alloc::vec::Vec;
 
 use crate::evaluate::evaluate;
 use crate::ir::{
-    CapMode, CsgOp, ImportId, LoftSection, NodeId, NodeKind, Path3, Placement3, Plane3, PolicyId,
-    PrimitiveSpec, ProfileId, RecipeBuilder, SlotId, SourceId,
+    CapMode, CsgOp, ImportId, LoftSection, Node, NodeId, NodeKind, Path3, Placement3, Plane3,
+    PolicyId, PrimitiveSpec, ProfileId, RecipeBuilder, SlotId, SourceId,
 };
 use crate::profile::{Loop2, Profile2, Seg2, SegKind};
 use crate::tessellate::EvalPolicy;
@@ -249,7 +249,7 @@ fn hostile_recipes_never_panic_and_evaluate_typed() {
             }
         }
         // One guaranteed-evaluable node keeps the success path exercised.
-        let _ = b.add(NodeKind::Extrude {
+        let _ = b.add_node(NodeKind::Extrude {
             profile: ProfileId(0),
             placement: Placement3::IDENTITY,
             height: 1.0,
@@ -260,21 +260,18 @@ fn hostile_recipes_never_panic_and_evaluate_typed() {
         let mut nodes: u32 = 1;
         for _ in 0..rng.range(8) {
             // Bindings alternate between valid interned ids and hostile
-            // garbage; add() must answer garbage with typed errors, never
-            // panic (a fuzz-caught panic lived exactly here).
-            match rng.range(3) {
-                0 => {
-                    b.with_source(SourceId(rng.hostile_u32()))
-                        .with_material(SlotId(rng.hostile_u32()));
-                }
-                1 => {
-                    b.with_source(valid_source).with_material(valid_slot);
-                }
-                _ => {}
+            // garbage; add_node() must answer garbage with typed errors,
+            // never panic (a fuzz-caught panic lived exactly here).
+            let binding = match rng.range(3) {
+                0 => Some((SourceId(rng.hostile_u32()), SlotId(rng.hostile_u32()))),
+                1 => Some((valid_source, valid_slot)),
+                _ => None,
+            };
+            let mut node = Node::new(hostile_kind(&mut rng, profiles, nodes as usize));
+            if let Some((source, slot)) = binding {
+                node = node.with_source(source).with_material(slot);
             }
-            if b.add(hostile_kind(&mut rng, profiles, nodes as usize))
-                .is_ok()
-            {
+            if b.add_node(node).is_ok() {
                 nodes += 1;
             }
         }
@@ -320,7 +317,7 @@ fn hostile_ids_never_panic_on_lookups() {
     let mut b = RecipeBuilder::new();
     let p = b.add_profile(crate::builders::rect_from_corner(1.0, 1.0).expect("rect"));
     let n = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: p,
             placement: Placement3::IDENTITY,
             height: 1.0,
@@ -345,7 +342,7 @@ fn extreme_finite_parameters_fail_typed_not_infinite() {
     let mut b = RecipeBuilder::new();
     let p = b.add_profile(crate::builders::rect_from_corner(1.0, 1.0).expect("rect"));
     let n = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: p,
             placement: Placement3::IDENTITY,
             height: 1e300,

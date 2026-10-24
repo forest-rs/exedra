@@ -270,20 +270,20 @@ fn partial_geometry() -> PartSource {
     let mut builder = RecipeBuilder::new();
     let boxes = [Placement3::IDENTITY, Placement3::translate(1.0, 1.0, 0.0)].map(|placement| {
         builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box { size: [1.0; 3] },
                 placement,
             })
             .unwrap()
     });
     let refused = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: boxes.into(),
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![boxes[0], refused],
         })
         .unwrap();

@@ -143,7 +143,9 @@ mod tests {
     use exedra_constructive::builders;
     use exedra_constructive::discretize::{DiscretizeError, DiscretizePolicy};
     use exedra_constructive::evaluate::{Aabb3, EvalError, evaluate};
-    use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
+    use exedra_constructive::ir::{
+        CapMode, Node, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder,
+    };
     use exedra_constructive::tessellate::EvalPolicy;
     use exedra_constructive::tessellate::TessellateError;
     use exedra_mesh::{ExtractAttribute, ExtractStats, TriMesh, UvSource};
@@ -152,7 +154,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(width, 20.0).unwrap());
         let node = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 10.0,
@@ -166,7 +168,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let first = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 10.0,
@@ -174,7 +176,7 @@ mod tests {
             })
             .unwrap();
         let second = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::translate(-5.0, 30.0, -2.0),
                 height: 10.0,
@@ -182,7 +184,7 @@ mod tests {
             })
             .unwrap();
         let root = builder
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: alloc::vec![first, second],
             })
             .unwrap();
@@ -193,13 +195,13 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let face = b
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
             .unwrap();
         let stretch = b
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: face,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -215,7 +217,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let solid = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 10.0,
@@ -223,13 +225,13 @@ mod tests {
             })
             .unwrap();
         let open_face = b
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::translate(0.0, 0.0, 20.0),
             })
             .unwrap();
         let refused = b
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: open_face,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -239,7 +241,7 @@ mod tests {
             })
             .unwrap();
         let root = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: alloc::vec![solid, refused],
             })
             .unwrap();
@@ -483,27 +485,29 @@ mod tests {
                 .enumerate()
                 .map(|(index, slot)| {
                     builder
-                        .with_material(slot)
-                        .add(NodeKind::Primitive {
-                            spec: PrimitiveSpec::Box { size: [1.0; 3] },
-                            placement: if index == 0 {
-                                Placement3::IDENTITY
-                            } else {
-                                Placement3::translate(1.0, 1.0, 0.0)
-                            },
-                        })
+                        .add_node(
+                            Node::new(NodeKind::Primitive {
+                                spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                                placement: if index == 0 {
+                                    Placement3::IDENTITY
+                                } else {
+                                    Placement3::translate(1.0, 1.0, 0.0)
+                                },
+                            })
+                            .with_material(slot),
+                        )
                         .unwrap()
                 })
                 .collect();
             let boolean = builder
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Union,
                     operands: boxes.to_vec(),
                 })
                 .unwrap();
             let root = if partial {
                 builder
-                    .add(NodeKind::Group {
+                    .add_node(NodeKind::Group {
                         children: alloc::vec![boxes[0], boolean],
                     })
                     .unwrap()
@@ -543,13 +547,15 @@ mod tests {
         let profile = builder.add_profile(builders::circle(1.0).expect("circle"));
         let source = builder.source_ref("circle/profile-extrusion");
         let node = builder
-            .with_source(source)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: 1.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: 1.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(source),
+            )
             .expect("extrude");
         let recipe = builder.finish(node).expect("recipe");
         let mut assembly = Assembly::new();

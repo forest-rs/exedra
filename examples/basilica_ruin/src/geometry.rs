@@ -3,7 +3,7 @@
 
 use exedra_constructive::builders;
 use exedra_constructive::ir::{
-    CapMode, LoftPolicy, LoftSection, NodeKind, Placement3, Recipe, RecipeBuilder,
+    CapMode, LoftPolicy, LoftSection, Node, NodeKind, Placement3, Recipe, RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
 use exedra_math::scale;
@@ -24,14 +24,16 @@ pub(super) fn extruded_profile_recipe(
     let surface = builder.material_slot("surface");
     let profile = builder.add_profile(profile);
     let node = builder
-        .with_source(source)
-        .with_material(surface)
-        .add(NodeKind::Extrude {
-            profile,
-            placement,
-            height,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement,
+                height,
+                caps: CapMode::Both,
+            })
+            .with_source(source)
+            .with_material(surface),
+        )
         .expect("constant extrusion is valid");
     builder.finish(node).expect("recipe has a valid root")
 }
@@ -71,13 +73,15 @@ pub(super) fn ruled_loft_recipe(
         .map(|(placement, profile)| LoftSection::new(placement, builder.add_profile(profile)))
         .collect();
     let node = builder
-        .with_source(source)
-        .with_material(surface)
-        .add(NodeKind::Loft {
-            sections,
-            policy: LoftPolicy::Ruled,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Loft {
+                sections,
+                policy: LoftPolicy::Ruled,
+                caps: CapMode::Both,
+            })
+            .with_source(source)
+            .with_material(surface),
+        )
         .expect("fixed-correspondence ruled loft is valid");
     builder.finish(node).expect("recipe has a valid root")
 }
@@ -101,13 +105,15 @@ pub(super) fn dome_recipe(radius: f64, height: f64) -> Recipe {
         })
         .collect();
     let node = builder
-        .with_source(source)
-        .with_material(surface)
-        .add(NodeKind::Loft {
-            sections,
-            policy: LoftPolicy::Ruled,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Loft {
+                sections,
+                policy: LoftPolicy::Ruled,
+                caps: CapMode::Both,
+            })
+            .with_source(source)
+            .with_material(surface),
+        )
         .expect("valid shallow dome loft");
     builder.finish(node).expect("recipe has a valid root")
 }
@@ -132,13 +138,15 @@ pub(super) fn apse_conch_recipe(radius: f64, height: f64) -> Recipe {
         })
         .collect();
     let node = builder
-        .with_source(source)
-        .with_material(surface)
-        .add(NodeKind::Loft {
-            sections,
-            policy: LoftPolicy::Ruled,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Loft {
+                sections,
+                policy: LoftPolicy::Ruled,
+                caps: CapMode::Both,
+            })
+            .with_source(source)
+            .with_material(surface),
+        )
         .expect("valid apsidal conch loft");
     builder.finish(node).expect("recipe has a valid root")
 }

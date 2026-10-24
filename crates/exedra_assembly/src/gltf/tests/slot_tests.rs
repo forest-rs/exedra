@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::{CompilePolicy, PartCompiler, flatten};
-use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+use exedra_constructive::ir::{Node, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 use std::sync::Arc;
 
 #[test]
@@ -15,15 +15,17 @@ fn authored_slots_survive_overlapping_body_regions() {
     let back = builder.material_slot("back");
     let children = [shell, back].map(|slot| {
         builder
-            .with_material(slot)
-            .add(NodeKind::Primitive {
-                spec: PrimitiveSpec::Box { size: [1.0; 3] },
-                placement: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::Primitive {
+                    spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                    placement: Placement3::IDENTITY,
+                })
+                .with_material(slot),
+            )
             .unwrap()
     });
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: children.to_vec(),
         })
         .unwrap();
@@ -120,7 +122,7 @@ fn inherited_slots_child_overrides_and_unassigned_siblings_reach_both_export_pat
         };
         let mut add_box = || {
             builder
-                .add(NodeKind::Primitive {
+                .add_node(NodeKind::Primitive {
                     spec: PrimitiveSpec::Box { size: [1.0; 3] },
                     placement: Placement3::IDENTITY,
                 })
@@ -130,27 +132,33 @@ fn inherited_slots_child_overrides_and_unassigned_siblings_reach_both_export_pat
         let second = add_box();
         let unassigned = add_box();
         let group = builder
-            .with_material(shell)
-            .add(NodeKind::Group {
-                children: vec![first],
-            })
+            .add_node(
+                Node::new(NodeKind::Group {
+                    children: vec![first],
+                })
+                .with_material(shell),
+            )
             .unwrap();
         let transform = builder
-            .with_material(back)
-            .add(NodeKind::Transform {
-                child: second,
-                xf: Placement3::translate(2.0, 0.0, 0.0),
-            })
+            .add_node(
+                Node::new(NodeKind::Transform {
+                    child: second,
+                    xf: Placement3::translate(2.0, 0.0, 0.0),
+                })
+                .with_material(back),
+            )
             .unwrap();
         // The group's shell assignment must not replace the nearer back assignment.
         let assigned = builder
-            .with_material(shell)
-            .add(NodeKind::Group {
-                children: vec![group, transform],
-            })
+            .add_node(
+                Node::new(NodeKind::Group {
+                    children: vec![group, transform],
+                })
+                .with_material(shell),
+            )
             .unwrap();
         let root = builder
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![assigned, unassigned],
             })
             .unwrap();
@@ -222,29 +230,33 @@ fn inherited_slots_child_overrides_and_unassigned_siblings_reach_both_export_pat
 
 #[test]
 fn recessed_boolean_exports_face_materials_and_reuses_geometry_when_rebound() {
-    use exedra_constructive::ir::{CsgOp, Plane3};
+    use exedra_constructive::ir::{CsgOp, Node, Plane3};
     for mirrored in [false, true] {
         let mut builder = RecipeBuilder::new();
         let front = builder.material_slot("front");
         let cutter = builder.material_slot("cutter");
         let shell = builder
-            .with_material(front)
-            .add(NodeKind::Primitive {
-                spec: PrimitiveSpec::Box {
-                    size: [4.0, 4.0, 2.0],
-                },
-                placement: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::Primitive {
+                    spec: PrimitiveSpec::Box {
+                        size: [4.0, 4.0, 2.0],
+                    },
+                    placement: Placement3::IDENTITY,
+                })
+                .with_material(front),
+            )
             .unwrap();
         let recess = builder
-            .with_material(cutter)
-            .add(NodeKind::Primitive {
-                spec: PrimitiveSpec::Box { size: [2.0; 3] },
-                placement: Placement3::translate(1.0, 1.0, 1.0),
-            })
+            .add_node(
+                Node::new(NodeKind::Primitive {
+                    spec: PrimitiveSpec::Box { size: [2.0; 3] },
+                    placement: Placement3::translate(1.0, 1.0, 1.0),
+                })
+                .with_material(cutter),
+            )
             .unwrap();
         let root = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![shell, recess],
             })

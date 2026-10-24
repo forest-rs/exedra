@@ -810,7 +810,7 @@ mod tests {
     use crate::assembly_fingerprint;
     use alloc::vec;
     use exedra_constructive::builders;
-    use exedra_constructive::ir::{CapMode, NodeKind, RecipeBuilder};
+    use exedra_constructive::ir::{CapMode, Node, NodeKind, RecipeBuilder};
 
     fn add_part(assembly: &mut Assembly, key: &str) -> PartId {
         let mut builder = RecipeBuilder::new();
@@ -818,13 +818,15 @@ mod tests {
         let profile =
             builder.add_profile(builders::rect_from_corner(1.0, 1.0).expect("valid rectangle"));
         let root = builder
-            .with_material(surface)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: 1.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: 1.0,
+                    caps: CapMode::Both,
+                })
+                .with_material(surface),
+            )
             .expect("valid extrusion");
         assembly
             .add_recipe_part(key, builder.finish(root).expect("valid recipe"))

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use exedra_assembly::{Assembly, CompilePolicy, CompiledParts, PartCompiler, RenderList, flatten};
 use exedra_constructive::builders;
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, Recipe, RecipeBuilder};
 use joiner::{
     Construction, OrientedBox, TransferKind, TransferTarget, instance_path, lower_selected,
 };
@@ -341,14 +341,16 @@ fn box_recipe(size: Vec3, source_name: &str) -> Recipe {
             .expect("validated positive structural box footprint"),
     );
     let node = builder
-        .with_source(source)
-        .with_material(surface)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: size[2],
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: size[2],
+                caps: CapMode::Both,
+            })
+            .with_source(source)
+            .with_material(surface),
+        )
         .expect("validated structural box");
     builder.finish(node).expect("box recipe has one root")
 }

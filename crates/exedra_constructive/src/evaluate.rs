@@ -2290,7 +2290,7 @@ mod tests {
     use crate::builders;
     use crate::discretize::{DiscretizeError, DiscretizePolicy};
     use crate::ir::LoftSection;
-    use crate::ir::{CapMode, CsgOp, Plane3, PrimitiveSpec, RecipeBuilder};
+    use crate::ir::{CapMode, CsgOp, Node, Plane3, PrimitiveSpec, RecipeBuilder};
     use alloc::vec;
 
     #[test]
@@ -2399,7 +2399,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let import = builder.add_import(mesh).expect("deep-valid import");
         let imported = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::IDENTITY,
             })
@@ -2418,7 +2418,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let e = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 3.0,
@@ -2426,7 +2426,7 @@ mod tests {
             })
             .expect("valid");
         let t = b
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: e,
                 xf: Placement3::translate(5.0, 0.0, 0.0),
             })
@@ -2485,7 +2485,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rectangle"));
         let face = builder
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
@@ -2524,7 +2524,7 @@ mod tests {
         let profile =
             builder.add_profile(builders::rect_from_corner(10.0, 1.0).expect("rectangle"));
         let face = builder
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
@@ -2578,13 +2578,13 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rectangle"));
         let face = builder
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
             .expect("planar face");
         let transformed = builder
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: face,
                 xf: Placement3::rotate_z_then_translate(
                     core::f64::consts::FRAC_PI_2,
@@ -2595,7 +2595,7 @@ mod tests {
             })
             .expect("transformed face");
         let mirrored = builder
-            .add(NodeKind::Mirror {
+            .add_node(NodeKind::Mirror {
                 child: transformed,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -2604,7 +2604,7 @@ mod tests {
             })
             .expect("mirrored face");
         let instance = builder
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: mirrored,
                 placement: Placement3::translate(10.0, 0.0, 0.0),
             })
@@ -2643,21 +2643,23 @@ mod tests {
         let source = builder.source_ref("o1.o2");
         let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rectangle"));
         let face = builder
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
             .expect("planar face");
         let stretch = builder
-            .with_source(source)
-            .add(NodeKind::Stretch {
-                child: face,
-                plane: Plane3 {
-                    normal: [1.0, 0.0, 0.0],
-                    distance: 1.0,
-                },
-                length: 1.0,
-            })
+            .add_node(
+                Node::new(NodeKind::Stretch {
+                    child: face,
+                    plane: Plane3 {
+                        normal: [1.0, 0.0, 0.0],
+                        distance: 1.0,
+                    },
+                    length: 1.0,
+                })
+                .with_source(source),
+            )
             .expect("stretch node");
         let recipe = builder.finish(stretch).expect("valid recipe");
 
@@ -2690,7 +2692,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(Profile2::simple(outer).expect("half-disc profile"));
         let revolve = builder
-            .add(NodeKind::Revolve {
+            .add_node(NodeKind::Revolve {
                 profile,
                 placement: Placement3::translate(5.0, 7.0, 11.0),
                 sweep: core::f64::consts::TAU,
@@ -2790,7 +2792,7 @@ mod tests {
             .add_import(attributed_imported_unit_box())
             .expect("deep-valid attributed import");
         let imported = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::from_axes(
                     [-2.0, 0.0, 0.0],
@@ -2889,7 +2891,7 @@ mod tests {
             .add_import(imported_unit_box())
             .expect("deep-valid import");
         let imported = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::from_axes(
                     [2.0, 0.0, 0.0],
@@ -2980,7 +2982,7 @@ mod tests {
             .add_import(imported_face_with_normal([0.0, 0.0, 1.0]))
             .expect("deep-valid import");
         let direct = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: quarter_turn,
             })
@@ -2995,13 +2997,13 @@ mod tests {
             .add_import(imported_face_with_normal([0.0, 0.0, 1.0]))
             .expect("deep-valid import");
         let definition = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::IDENTITY,
             })
             .expect("local import");
         let instance = builder
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: definition,
                 placement: quarter_turn,
             })
@@ -3021,7 +3023,7 @@ mod tests {
             .add_import(attributed_imported_unit_box())
             .expect("deep-valid attributed import");
         let imported = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::from_axes(
                     [2.0, 0.0, 0.0],
@@ -3063,7 +3065,7 @@ mod tests {
                 .add_import(imported_unit_box())
                 .expect("deep-valid import");
             let imported = builder
-                .add(NodeKind::MeshImport { import, placement })
+                .add_node(NodeKind::MeshImport { import, placement })
                 .expect("finite placement passes IR validation");
             let recipe = builder.finish(imported).expect("valid recipe");
             evaluate(&recipe, &EvalPolicy::default()).map(|_| ())
@@ -3074,13 +3076,13 @@ mod tests {
                 .add_import(imported_unit_box())
                 .expect("deep-valid import");
             let definition = builder
-                .add(NodeKind::MeshImport {
+                .add_node(NodeKind::MeshImport {
                     import,
                     placement: Placement3::IDENTITY,
                 })
                 .expect("local import");
             let instance = builder
-                .add(NodeKind::Instance {
+                .add_node(NodeKind::Instance {
                     of: definition,
                     placement,
                 })
@@ -3134,7 +3136,7 @@ mod tests {
             .expect("triangle"),
         );
         let loft = b
-            .add(NodeKind::Loft {
+            .add_node(NodeKind::Loft {
                 sections: vec![
                     LoftSection::new(Placement3::IDENTITY, big),
                     LoftSection::new(Placement3::translate(0.0, 0.0, 120.0), small),
@@ -3144,7 +3146,7 @@ mod tests {
             })
             .expect("valid loft");
         let slab = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [10.0, 10.0, 10.0],
                 },
@@ -3152,7 +3154,7 @@ mod tests {
             })
             .expect("valid box");
         let root = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![loft, slab],
             })
             .expect("valid group");
@@ -3232,7 +3234,7 @@ mod tests {
             let mut builder = RecipeBuilder::new();
             let import = builder.add_import(mesh).expect("deep-valid import");
             let imported = builder
-                .add(NodeKind::MeshImport {
+                .add_node(NodeKind::MeshImport {
                     import,
                     placement: Placement3::IDENTITY,
                 })
@@ -3309,7 +3311,7 @@ mod tests {
         // through to `eval.unimplemented` after successful recipe validation.
         let mut builder = RecipeBuilder::new();
         let primitive = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [2.0, 3.0, 4.0],
                 },
@@ -3340,7 +3342,7 @@ mod tests {
         // constructive evaluation.
         let mut builder = RecipeBuilder::new();
         let primitive = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Cylinder {
                     radius: 2.0,
                     height: 5.0,
@@ -3370,7 +3372,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::circle(1.0).expect("circle"));
         let node = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3420,7 +3422,7 @@ mod tests {
         // pipeline with valid closed topology and produce an exact body.
         let mut builder = RecipeBuilder::new();
         let host = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [4.0, 4.0, 4.0],
                 },
@@ -3428,7 +3430,7 @@ mod tests {
             })
             .expect("valid host primitive");
         let cutter = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [1.0, 1.0, 6.0],
                 },
@@ -3436,7 +3438,7 @@ mod tests {
             })
             .expect("valid cutter primitive");
         let difference = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![host, cutter],
             })
@@ -3462,7 +3464,7 @@ mod tests {
         // body without performing another tessellation.
         let mut builder = RecipeBuilder::new();
         let primitive = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Cylinder {
                     radius: 2.0,
                     height: 5.0,
@@ -3496,7 +3498,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let e1 = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3504,7 +3506,7 @@ mod tests {
             })
             .expect("valid");
         let e2 = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::translate(0.5, 0.5, 0.0),
                 height: 1.0,
@@ -3512,7 +3514,7 @@ mod tests {
             })
             .expect("valid");
         let csg = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![e1, e2],
             })
@@ -3538,19 +3540,19 @@ mod tests {
             .add_import(sphere.mesh)
             .expect("sphere import is deep-valid");
         let left = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::translate(-0.8, 0.0, 0.0),
             })
             .expect("left sphere import");
         let right = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::translate(0.8, 0.0, 0.0),
             })
             .expect("right sphere import");
         let intersection = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Intersection,
                 operands: vec![left, right],
             })
@@ -3574,7 +3576,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let e1 = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3582,7 +3584,7 @@ mod tests {
             })
             .expect("valid");
         let e2 = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::translate(3.0, 0.0, 0.0),
                 height: 2.0,
@@ -3590,7 +3592,7 @@ mod tests {
             })
             .expect("valid");
         let g = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![e1, e2],
             })
             .expect("valid");
@@ -3607,7 +3609,7 @@ mod tests {
             let mut b = RecipeBuilder::new();
             let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
             let e1 = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: p,
                     placement: Placement3::IDENTITY,
                     height: 1.0,
@@ -3615,7 +3617,7 @@ mod tests {
                 })
                 .expect("valid");
             let e2 = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: p,
                     placement: Placement3::translate(0.25, 0.25, 0.25),
                     height: 1.0,
@@ -3623,7 +3625,7 @@ mod tests {
                 })
                 .expect("valid");
             let csg = b
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Union,
                     operands: vec![e1, e2],
                 })
@@ -3652,13 +3654,15 @@ mod tests {
         let source = b.source_ref("test:rafter/body");
         let p = b.add_profile(builders::l_profile(1.0, 1.0, 0.5, 0.5).expect("L"));
         let body = b
-            .with_source(source)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 2.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 2.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(source),
+            )
             .expect("valid");
         let recipe = b.finish(body).expect("valid recipe");
         let original = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
@@ -3719,7 +3723,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let def = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3727,25 +3731,25 @@ mod tests {
             })
             .expect("valid");
         let i1 = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: def,
                 placement: Placement3::translate(3.0, 0.0, 0.0),
             })
             .expect("valid");
         let i2 = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: def,
                 placement: Placement3::translate(6.0, 0.0, 0.0),
             })
             .expect("valid");
         let i3 = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: def,
                 placement: Placement3::rotate_z_then_translate(0.5, 9.0, 0.0, 0.0),
             })
             .expect("valid");
         let g = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![i1, i2, i3],
             })
             .expect("valid");
@@ -3786,7 +3790,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::l_profile(2.0, 2.0, 1.0, 1.0).expect("L"));
         let def = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3794,7 +3798,7 @@ mod tests {
             })
             .expect("valid");
         let reflected = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: def,
                 placement: Placement3::from_axes(
                     [-1.0, 0.0, 0.0],
@@ -3805,13 +3809,13 @@ mod tests {
             })
             .expect("valid");
         let moved = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: def,
                 placement: Placement3::translate(0.0, 10.0, 0.0),
             })
             .expect("valid");
         let mirrored = b
-            .add(NodeKind::Mirror {
+            .add_node(NodeKind::Mirror {
                 child: moved,
                 plane: Plane3 {
                     normal: [0.0, 0.0, 1.0],
@@ -3820,7 +3824,7 @@ mod tests {
             })
             .expect("valid");
         let root = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![def, reflected, moved, mirrored],
             })
             .expect("valid");
@@ -3871,7 +3875,7 @@ mod tests {
         .expect("valid loop");
         let p = b.add_profile(Profile2::simple(outer).expect("valid profile"));
         let n = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3898,13 +3902,15 @@ mod tests {
         let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let issue = b.source_ref("spec.issue.nonclosing-profile");
         let n = b
-            .with_issue(issue)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 1.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 1.0,
+                    caps: CapMode::Both,
+                })
+                .with_issue(issue),
+            )
             .expect("valid");
         let recipe = b.finish(n).expect("valid recipe");
         let result = evaluate(&recipe, &EvalPolicy::default()).expect("evaluates");
@@ -3933,7 +3939,7 @@ mod tests {
         .expect("valid loop");
         let p = b.add_profile(Profile2::simple(outer).expect("valid profile"));
         let n = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -3953,7 +3959,7 @@ mod tests {
             .flat_map(|r| (0..4).map(move |c| [f64::from(c), f64::from(r), 0.0]))
             .collect();
         let grid = b
-            .add(NodeKind::GridSurface {
+            .add_node(NodeKind::GridSurface {
                 points,
                 rows: 3,
                 cols: 4,
@@ -3964,7 +3970,7 @@ mod tests {
             })
             .expect("valid");
         let moved = b
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: grid,
                 xf: Placement3::rotate_z_then_translate(0.7, 10.0, -2.0, 3.0),
             })
@@ -4006,12 +4012,14 @@ mod nary_intersection_regression {
     use exedra_primitives::{BoxParams, box_primitive};
 
     use super::*;
-    use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, RecipeBuilder};
+    use crate::ir::{
+        CapMode, CsgOp, Node, NodeKind, Placement3, Plane3, PrimitiveSpec, RecipeBuilder,
+    };
     use crate::tessellate::EvalPolicy;
 
     fn add_box(builder: &mut RecipeBuilder, min: [f64; 3], max: [f64; 3]) -> NodeId {
         builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: core::array::from_fn(|axis| max[axis] - min[axis]),
                 },
@@ -4027,7 +4035,7 @@ mod nary_intersection_regression {
             .map(|&(min, max)| add_box(&mut builder, min, max))
             .collect();
         let root = builder
-            .add(NodeKind::Csg { op, operands })
+            .add_node(NodeKind::Csg { op, operands })
             .expect("valid CSG");
         (builder.finish(root).expect("valid recipe"), root)
     }
@@ -4075,7 +4083,7 @@ mod nary_intersection_regression {
             .expect("triangle profile"),
         );
         let triangle = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: triangle,
                 placement: Placement3::translate(0.0, 0.0, 0.25),
                 height: 1.25,
@@ -4090,7 +4098,7 @@ mod nary_intersection_regression {
         let nodes = add_pairwise_only_prisms(&mut builder);
         let operands = operands.iter().map(|&index| nodes[index]).collect();
         let root = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Intersection,
                 operands,
             })
@@ -4272,14 +4280,14 @@ mod nary_intersection_regression {
         let mut builder = RecipeBuilder::new();
         let operands = add_pairwise_only_prisms(&mut builder);
         let empty = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Intersection,
                 operands: operands.to_vec(),
             })
             .expect("inner intersection");
         let enclosing = add_box(&mut builder, [-10.0; 3], [10.0; 3]);
         let root = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Intersection,
                 operands: vec![empty, enclosing],
             })
@@ -4313,13 +4321,13 @@ mod nary_intersection_regression {
                 let sheet =
                     builder.add_profile(crate::builders::rect_from_corner(1.0, 1.0).expect("rect"));
                 let face = builder
-                    .add(NodeKind::PlanarFace {
+                    .add_node(NodeKind::PlanarFace {
                         profile: sheet,
                         placement: Placement3::translate(1.0, 1.0, 3.0),
                     })
                     .expect("valid face");
                 let refused = builder
-                    .add(NodeKind::Stretch {
+                    .add_node(NodeKind::Stretch {
                         child: face,
                         plane: Plane3 {
                             normal: [1.0, 0.0, 0.0],
@@ -4331,10 +4339,10 @@ mod nary_intersection_regression {
                 children.push(refused);
             }
             let group = builder
-                .add(NodeKind::Group { children })
+                .add_node(NodeKind::Group { children })
                 .expect("valid group");
             let root = builder
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![a, group],
                 })
@@ -4404,29 +4412,35 @@ mod nary_intersection_regression {
             .add_import(box_primitive(&BoxParams::default()).mesh)
             .expect("deep-valid import");
         let imported = builder
-            .with_issue(issue)
-            .add(NodeKind::MeshImport {
-                import,
-                placement: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::MeshImport {
+                    import,
+                    placement: Placement3::IDENTITY,
+                })
+                .with_issue(issue),
+            )
             .expect("valid import node");
         let other = add_box(&mut builder, [0.5; 3], [2.0; 3]);
         let csg = builder
-            .with_issue(issue)
-            .add(NodeKind::Csg {
-                op: CsgOp::Union,
-                operands: vec![imported, other],
-            })
+            .add_node(
+                Node::new(NodeKind::Csg {
+                    op: CsgOp::Union,
+                    operands: vec![imported, other],
+                })
+                .with_issue(issue),
+            )
             .expect("valid union");
         let instance = builder
-            .with_issue(issue)
-            .add(NodeKind::Instance {
-                of: csg,
-                placement: Placement3::translate(5.0, 0.0, 0.0),
-            })
+            .add_node(
+                Node::new(NodeKind::Instance {
+                    of: csg,
+                    placement: Placement3::translate(5.0, 0.0, 0.0),
+                })
+                .with_issue(issue),
+            )
             .expect("valid instance");
         let root = builder
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![imported, instance],
             })
             .expect("valid group");
@@ -4483,14 +4497,14 @@ mod nary_intersection_regression {
             let mut builder = RecipeBuilder::new();
             let import = builder.add_import(mesh).expect("deep-valid import");
             let prism = builder
-                .add(NodeKind::MeshImport {
+                .add_node(NodeKind::MeshImport {
                     import,
                     placement: Placement3::IDENTITY,
                 })
                 .expect("valid import node");
             let cutter = add_box(&mut builder, cutter.0, cutter.1);
             let root = builder
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![prism, cutter],
                 })
@@ -4686,7 +4700,7 @@ mod nary_intersection_regression {
         let a = add_box(&mut builder, [0.0; 3], [2.0; 3]);
         let b = add_box(&mut builder, [1.0; 3], [3.0; 3]);
         let definition = builder
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Union,
                 operands: vec![a, b],
             })
@@ -4695,7 +4709,7 @@ mod nary_intersection_regression {
             .into_iter()
             .map(|x| {
                 builder
-                    .add(NodeKind::Instance {
+                    .add_node(NodeKind::Instance {
                         of: definition,
                         placement: Placement3::translate(x, 0.0, 0.0),
                     })
@@ -4703,7 +4717,7 @@ mod nary_intersection_regression {
             })
             .collect();
         let root = builder
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: instances,
             })
             .expect("valid group");
@@ -4904,7 +4918,7 @@ mod multi_cutter_regression {
         let profile =
             builder.add_profile(builders::rect_from_corner(size[0], size[1]).expect("valid box"));
         builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::translate(origin[0], origin[1], origin[2]),
                 height: size[2],
@@ -4930,7 +4944,7 @@ mod multi_cutter_regression {
                 operands.push(base);
                 operands.extend(cutters);
                 builder
-                    .add(NodeKind::Csg {
+                    .add_node(NodeKind::Csg {
                         op: CsgOp::Difference,
                         operands,
                     })
@@ -4938,7 +4952,7 @@ mod multi_cutter_regression {
             }
             DifferenceForm::Chained => cutters.into_iter().fold(base, |left, right| {
                 builder
-                    .add(NodeKind::Csg {
+                    .add_node(NodeKind::Csg {
                         op: CsgOp::Difference,
                         operands: vec![left, right],
                     })
@@ -5265,7 +5279,7 @@ mod drill_regression {
             let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).unwrap());
             let drill = b.add_profile(builders::circle(30.0).unwrap());
             let e1 = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: block,
                     placement: Placement3::IDENTITY,
                     height: 80.0,
@@ -5273,7 +5287,7 @@ mod drill_regression {
                 })
                 .unwrap();
             let e2 = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: drill,
                     placement: Placement3::translate(130.0, 50.0, -20.0),
                     height: 120.0,
@@ -5281,7 +5295,7 @@ mod drill_regression {
                 })
                 .unwrap();
             let csg = b
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![e1, e2],
                 })
@@ -5326,7 +5340,7 @@ mod drill_regression {
             let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).unwrap());
             let drill = b.add_profile(builders::circle(30.0).unwrap());
             let e1 = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: block,
                     placement: Placement3::IDENTITY,
                     height: 80.0,
@@ -5334,7 +5348,7 @@ mod drill_regression {
                 })
                 .unwrap();
             let e2 = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: drill,
                     placement: Placement3::translate(130.0, 50.0, -20.0),
                     height: 120.0,
@@ -5342,13 +5356,13 @@ mod drill_regression {
                 })
                 .unwrap();
             let csg = b
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![e1, e2],
                 })
                 .unwrap();
             let moved = b
-                .add(NodeKind::Transform {
+                .add_node(NodeKind::Transform {
                     child: csg,
                     xf: Placement3::rotate_z_then_translate(angle, 50.0, 0.0, 0.0),
                 })
@@ -5392,7 +5406,7 @@ mod cache_regression {
         let ring = b.add_profile(builders::ring(60.0, 30.0).unwrap());
         let drill = b.add_profile(builders::circle(drill_radius).unwrap());
         let slab = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: rect,
                 placement: Placement3::IDENTITY,
                 height: 80.0,
@@ -5400,7 +5414,7 @@ mod cache_regression {
             })
             .unwrap();
         let tube = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: ring,
                 placement: Placement3::translate(400.0, 0.0, 0.0),
                 height: 40.0,
@@ -5408,7 +5422,7 @@ mod cache_regression {
             })
             .unwrap();
         let bit = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: drill,
                 placement: Placement3::translate(130.0, 50.0, -20.0),
                 height: 120.0,
@@ -5416,31 +5430,31 @@ mod cache_regression {
             })
             .unwrap();
         let holed = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![slab, bit],
             })
             .unwrap();
         let moved = b
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: holed,
                 xf: Placement3::translate(0.0, 300.0, 0.0),
             })
             .unwrap();
         let near = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: tube,
                 placement: Placement3::translate(0.0, -300.0, 0.0),
             })
             .unwrap();
         let far = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: tube,
                 placement: Placement3::translate(0.0, -600.0, 0.0),
             })
             .unwrap();
         let root = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![slab, tube, moved, near, far],
             })
             .unwrap();
@@ -5522,7 +5536,7 @@ mod cache_regression {
             for (i, height) in heights.iter().enumerate() {
                 let p = b.add_profile(builders::rect_from_corner(100.0, 50.0).unwrap());
                 let n = b
-                    .add(NodeKind::Extrude {
+                    .add_node(NodeKind::Extrude {
                         profile: p,
                         placement: Placement3::translate(
                             f64::from(u32::try_from(i).unwrap()) * 200.0,
@@ -5535,7 +5549,7 @@ mod cache_regression {
                     .unwrap();
                 children.push(n);
             }
-            let root = b.add(NodeKind::Group { children }).unwrap();
+            let root = b.add_node(NodeKind::Group { children }).unwrap();
             b.finish(root).unwrap()
         }
 

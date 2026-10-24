@@ -6,7 +6,7 @@
 use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::{
     builders,
-    ir::{CapMode, NodeKind, Placement3, RecipeBuilder},
+    ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder},
     tessellate::REGION_CAP_END,
     workplane::{SurfaceInventoryPolicy, WorkplanePolicy, WorkplaneSelection},
 };
@@ -15,12 +15,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = RecipeBuilder::new();
     let profile = builder.add_profile(builders::rect_from_corner(2.0, 3.0)?);
     let label = builder.source_ref("panel");
-    let root = builder.with_source(label).add(NodeKind::Extrude {
-        profile,
-        placement: Placement3::IDENTITY,
-        height: 1.0,
-        caps: CapMode::Both,
-    })?;
+    let root = builder.add_node(
+        Node::new(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height: 1.0,
+            caps: CapMode::Both,
+        })
+        .with_source(label),
+    )?;
     let source = PartSource::Recipe(builder.finish(root)?);
     let inputs = [PartInput::new("panel", &source)];
     let mut compiler = PartCompiler::with_capacity(32);

@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::ir::Node;
 use crate::{
     builders,
     cache::{EvalCache, policy_fingerprint},
@@ -28,7 +29,7 @@ fn attached(
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
     let support = b
-        .add(NodeKind::ExtrudeToPlane {
+        .add_node(NodeKind::ExtrudeToPlane {
             profile,
             placement: Placement3::IDENTITY,
             plane: Plane3 {
@@ -40,23 +41,25 @@ fn attached(
     let peg = b.add_profile(builders::rect_from_corner(0.2, 0.2).unwrap());
     let source = b.source_ref("mount");
     let child = b
-        .with_source(source)
-        .add(NodeKind::Extrude {
-            profile: peg,
-            placement: Placement3::IDENTITY,
-            height: 0.3,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: peg,
+                placement: Placement3::IDENTITY,
+                height: 0.3,
+                caps: CapMode::Both,
+            })
+            .with_source(source),
+        )
         .unwrap();
     let attached = b
-        .add(NodeKind::OnWorkplane {
+        .add_node(NodeKind::OnWorkplane {
             support,
             child,
             attachment,
         })
         .unwrap();
     let root = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: attached,
             xf: parent,
         })
@@ -231,7 +234,7 @@ fn multiple_support_bodies_are_ambiguous() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
     let a = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,
             height: 1.0,
@@ -239,18 +242,18 @@ fn multiple_support_bodies_are_ambiguous() {
         })
         .unwrap();
     let second = b
-        .add(NodeKind::Instance {
+        .add_node(NodeKind::Instance {
             of: a,
             placement: Placement3::translate(2.0, 0.0, 0.0),
         })
         .unwrap();
     let support = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: alloc::vec![a, second],
         })
         .unwrap();
     let root = b
-        .add(NodeKind::OnWorkplane {
+        .add_node(NodeKind::OnWorkplane {
             support,
             child: a,
             attachment: intent(),
@@ -301,7 +304,7 @@ fn removed_terminal_cap_is_missing_even_when_a_new_cut_reuses_its_region() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(2.0, 2.0).unwrap());
     let child = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,
             height: 1.0,
@@ -309,7 +312,7 @@ fn removed_terminal_cap_is_missing_even_when_a_new_cut_reuses_its_region() {
         })
         .unwrap();
     let cut = b
-        .add(NodeKind::PlaneCut {
+        .add_node(NodeKind::PlaneCut {
             child,
             plane: Plane3 {
                 normal: [0.0, 0.0, 1.0],
@@ -353,7 +356,7 @@ fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
     let mut b = RecipeBuilder::new();
     let panel = b.add_profile(builders::rect_from_corner(2.0, 2.0).unwrap());
     let panel = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: panel,
             placement: Placement3::IDENTITY,
             height: 1.0,
@@ -362,7 +365,7 @@ fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
         .unwrap();
     let hole = b.add_profile(builders::rect_from_corner(0.5, 0.5).unwrap());
     let hole = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: hole,
             placement: Placement3::translate(0.75, 0.75, -0.5),
             height: 2.0,
@@ -370,7 +373,7 @@ fn boolean_surfaces_retain_cap_meaning_and_immediate_operand_regions() {
         })
         .unwrap();
     let root = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: alloc::vec![panel, hole],
         })
@@ -406,7 +409,7 @@ fn incomplete_support_cannot_attach_to_a_surviving_body_even_when_cached() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let solid = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,
             height: 1.0,
@@ -414,13 +417,13 @@ fn incomplete_support_cannot_attach_to_a_surviving_body_even_when_cached() {
         })
         .unwrap();
     let open = b
-        .add(NodeKind::PlanarFace {
+        .add_node(NodeKind::PlanarFace {
             profile,
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let refused = b
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child: open,
             plane: Plane3 {
                 normal: [1.0, 0.0, 0.0],
@@ -430,12 +433,12 @@ fn incomplete_support_cannot_attach_to_a_surviving_body_even_when_cached() {
         })
         .unwrap();
     let support = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: alloc::vec![solid, refused],
         })
         .unwrap();
     let root = b
-        .add(NodeKind::OnWorkplane {
+        .add_node(NodeKind::OnWorkplane {
             support,
             child: solid,
             attachment: intent(),

@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::ir::Node;
 use crate::{
     builders,
     cache::EvalCache,
@@ -25,23 +26,27 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
     let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
     let source = b.source_ref("panel");
     let panel = b
-        .with_source(source)
-        .add(NodeKind::ExtrudeToPlane {
-            profile,
-            placement: Placement3::IDENTITY,
-            plane: Plane3 {
-                normal: [-slope, 0.0, 1.0],
-                distance: 1.0,
-            },
-        })
+        .add_node(
+            Node::new(NodeKind::ExtrudeToPlane {
+                profile,
+                placement: Placement3::IDENTITY,
+                plane: Plane3 {
+                    normal: [-slope, 0.0, 1.0],
+                    distance: 1.0,
+                },
+            })
+            .with_source(source),
+        )
         .unwrap();
     if cut == 3 {
-        b.with_source(source)
-            .add(NodeKind::PlanarFace {
+        b.add_node(
+            Node::new(NodeKind::PlanarFace {
                 profile,
                 placement: Placement3::IDENTITY,
             })
-            .unwrap();
+            .with_source(source),
+        )
+        .unwrap();
     }
     let mut root = panel;
     for (width, height, x, y, z, depth) in match cut {
@@ -53,19 +58,19 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
         ],
     } {
         let hole = b.add_profile(builders::rect_from_corner(width, height).unwrap());
-        if duplicate {
-            b.with_source(source);
-        }
         let hole = b
-            .add(NodeKind::Extrude {
-                profile: hole,
-                placement: Placement3::translate(x, y, z),
-                height: depth,
-                caps: CapMode::Both,
+            .add_node(Node {
+                source: duplicate.then_some(source),
+                ..Node::new(NodeKind::Extrude {
+                    profile: hole,
+                    placement: Placement3::translate(x, y, z),
+                    height: depth,
+                    caps: CapMode::Both,
+                })
             })
             .unwrap();
         root = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: alloc::vec![root, hole],
             })
@@ -74,7 +79,7 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
     if attach {
         let profile = b.add_profile(builders::rect_from_corner(0.1, 0.1).unwrap());
         let child = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 0.1,
@@ -82,7 +87,7 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
             })
             .unwrap();
         root = b
-            .add(NodeKind::OnWorkplane {
+            .add_node(NodeKind::OnWorkplane {
                 support: root,
                 child,
                 attachment: attachment(),
@@ -91,7 +96,7 @@ fn panel(slope: f64, cut: u8, duplicate: bool, attach: bool, reflect: bool) -> R
     }
     if reflect {
         root = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: root,
                 placement: Placement3 {
                     rows: [
@@ -233,27 +238,31 @@ fn union_intersection_and_difference_keep_source_roles_separate() {
         let profile = b.add_profile(builders::rect_from_corner(4.0, 3.0).unwrap());
         let label = b.source_ref("panel");
         let panel = b
-            .with_source(label)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: 1.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: 1.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(label),
+            )
             .unwrap();
         let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
         let label = b.source_ref("tool");
         let tool = b
-            .with_source(label)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::translate(1.0, 1.0, 0.5),
-                height: 2.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::translate(1.0, 1.0, 0.5),
+                    height: 2.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(label),
+            )
             .unwrap();
         let root = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op,
                 operands: alloc::vec![panel, tool],
             })
@@ -296,7 +305,7 @@ fn qualified_selectors_round_trip_without_source_table_indices() {
             let mut b = RecipeBuilder::new();
             let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
             let support = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: p,
                     placement: Placement3::IDENTITY,
                     height: 1.0,
@@ -304,7 +313,7 @@ fn qualified_selectors_round_trip_without_source_table_indices() {
                 })
                 .unwrap();
             let root = b
-                .add(NodeKind::OnWorkplane {
+                .add_node(NodeKind::OnWorkplane {
                     support,
                     child: support,
                     attachment: WorkplaneAttachment {
@@ -351,14 +360,16 @@ fn naming_context_changes_recipe_identity_without_invalidating_subtree_geometry(
             height: 1.0,
             caps: CapMode::Both,
         };
-        let first = b.with_source(label).add(kind.clone()).unwrap();
+        let first = b
+            .add_node(Node::new(kind.clone()).with_source(label))
+            .unwrap();
         let second = if duplicate {
-            b.with_source(label).add(kind).unwrap()
+            b.add_node(Node::new(kind).with_source(label)).unwrap()
         } else {
             first
         };
         let root = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: alloc::vec![first, second],
             })
             .unwrap();

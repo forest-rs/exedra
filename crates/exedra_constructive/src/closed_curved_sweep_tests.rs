@@ -6,7 +6,7 @@ use super::*;
 use crate::builders;
 use crate::cache::EvalCache;
 use crate::evaluate::{Severity, evaluate_with_cache};
-use crate::ir::{CsgOp, NodeKind, Path3, Plane3, Recipe, RecipeBuilder};
+use crate::ir::{CsgOp, Node, NodeKind, Path3, Plane3, Recipe, RecipeBuilder};
 use crate::path::{PathDiscretizeError, PathSegment3};
 use crate::section::{SectionPolicy, section_body};
 use alloc::vec;
@@ -295,24 +295,26 @@ fn recipe(cut: bool) -> Recipe {
     let p = b.add_profile(profile());
     let source = b.source_ref("arched-surround");
     let mut root = b
-        .with_source(source)
-        .add(NodeKind::Sweep {
-            section: SectionLaw::IDENTITY,
-            profile: p,
-            path: Path3::Curves {
-                start: [0.0; 3],
-                segments: arch(),
-                section_x: [0.0, 1.0, 0.0],
-                section_origin: [0.0; 2],
-                closure: closure(),
-                joins: PathJoin::Miter { limit: 2.0 },
-            },
-            caps: CapMode::None,
-        })
+        .add_node(
+            Node::new(NodeKind::Sweep {
+                section: SectionLaw::IDENTITY,
+                profile: p,
+                path: Path3::Curves {
+                    start: [0.0; 3],
+                    segments: arch(),
+                    section_x: [0.0, 1.0, 0.0],
+                    section_origin: [0.0; 2],
+                    closure: closure(),
+                    joins: PathJoin::Miter { limit: 2.0 },
+                },
+                caps: CapMode::None,
+            })
+            .with_source(source),
+        )
         .unwrap();
     if cut {
         let cutter = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [2.0, 2.0, 2.0],
                 },
@@ -320,7 +322,7 @@ fn recipe(cut: bool) -> Recipe {
             })
             .unwrap();
         root = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![root, cutter],
             })
@@ -701,7 +703,7 @@ fn legacy_curve_opcode_keeps_open_smooth_semantics() {
     let mut builder = RecipeBuilder::new();
     let p = builder.add_profile(profile());
     let root = builder
-        .add(NodeKind::Sweep {
+        .add_node(NodeKind::Sweep {
             section: SectionLaw::IDENTITY,
             profile: p,
             path: Path3::Curves {

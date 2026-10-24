@@ -4,7 +4,7 @@
 use crate::cache::EvalCache;
 use crate::evaluate::{evaluate, evaluate_with_cache};
 use crate::ir::{
-    BoxUv, NodeKind, Placement3, Recipe, RecipeBuilder, UvFrame, UvMapping, UvProjection,
+    BoxUv, Node, NodeKind, Placement3, Recipe, RecipeBuilder, UvFrame, UvMapping, UvProjection,
     UvTransform,
 };
 use crate::tessellate::{EvalPolicy, TessellateError};
@@ -30,13 +30,13 @@ fn import_recipe(mesh: Mesh, mapping: UvMapping) -> Recipe {
     let mut builder = RecipeBuilder::new();
     let import = builder.add_import(mesh).unwrap();
     let child = builder
-        .add(NodeKind::MeshImport {
+        .add_node(NodeKind::MeshImport {
             import,
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::UvMap {
+        .add_node(NodeKind::UvMap {
             options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
             child,
             mapping,
@@ -52,28 +52,30 @@ fn mapping_is_local_preserves_provenance_and_keeps_shared_import_untouched() {
     let slot = builder.material_slot("finish");
     let source = builder.source_ref("loaded-panel");
     let child = builder
-        .with_material(slot)
-        .with_source(source)
-        .add(NodeKind::MeshImport {
-            import,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::MeshImport {
+                import,
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(slot)
+            .with_source(source),
+        )
         .unwrap();
     let mapped = builder
-        .add(NodeKind::UvMap {
+        .add_node(NodeKind::UvMap {
             options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
             child,
             mapping: mapping(UvProjection::Planar(UvFrame::XY)),
         })
         .unwrap();
     let moved = builder
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: mapped,
             xf: Placement3::translate(10.0, 20.0, 30.0),
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![child, mapped, moved],
         })
         .unwrap();
@@ -118,31 +120,31 @@ fn complete_groups_and_nested_existing_transforms_work() {
     let mut builder = RecipeBuilder::new();
     let import = builder.add_import(unit_box()).unwrap();
     let child = builder
-        .add(NodeKind::MeshImport {
+        .add_node(NodeKind::MeshImport {
             import,
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let second = builder
-        .add(NodeKind::Instance {
+        .add_node(NodeKind::Instance {
             of: child,
             placement: Placement3::translate(3.0, 0.0, 0.0),
         })
         .unwrap();
     let group = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![child, second],
         })
         .unwrap();
     let projected = builder
-        .add(NodeKind::UvMap {
+        .add_node(NodeKind::UvMap {
             options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
             child: group,
             mapping: mapping(UvProjection::Box(BoxUv::default())),
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::UvMap {
+        .add_node(NodeKind::UvMap {
             options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
             child: projected,
             mapping: UvMapping {
@@ -187,44 +189,50 @@ fn generated_geometry_keeps_occurrence_material_defaults_out_of_the_cache() {
     let a = builder.material_slot("a");
     let b = builder.material_slot("b");
     let child = builder
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box { size: [1.0; 3] },
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let mapped = builder
-        .add(NodeKind::UvMap {
+        .add_node(NodeKind::UvMap {
             options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
             child,
             mapping: mapping(UvProjection::Box(BoxUv::default())),
         })
         .unwrap();
     let first = builder
-        .with_material(a)
-        .add(NodeKind::Transform {
-            child: mapped,
-            xf: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Transform {
+                child: mapped,
+                xf: Placement3::IDENTITY,
+            })
+            .with_material(a),
+        )
         .unwrap();
     let second = builder
-        .with_material(b)
-        .add(NodeKind::Transform {
-            child: mapped,
-            xf: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Transform {
+                child: mapped,
+                xf: Placement3::IDENTITY,
+            })
+            .with_material(b),
+        )
         .unwrap();
     let reflected = builder
-        .with_material(b)
-        .add(NodeKind::Mirror {
-            child: mapped,
-            plane: Plane3 {
-                normal: [1.0, 0.0, 0.0],
-                distance: 0.0,
-            },
-        })
+        .add_node(
+            Node::new(NodeKind::Mirror {
+                child: mapped,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.0,
+                },
+            })
+            .with_material(b),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![first, second, reflected],
         })
         .unwrap();
@@ -413,13 +421,13 @@ fn mapping_policies_roundtrip_and_participate_in_content_identity() {
         let mut builder = RecipeBuilder::new();
         let imported = builder.add_import(quad_mesh()).unwrap();
         let child = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import: imported,
                 placement: Placement3::IDENTITY,
             })
             .unwrap();
         let root = builder
-            .add(NodeKind::UvMap {
+            .add_node(NodeKind::UvMap {
                 child,
                 mapping: mapping(UvProjection::Existing),
                 options,
@@ -454,31 +462,35 @@ fn charted_drill(height: f64) -> Recipe {
     let tool_source = builder.source_ref("drill");
     let material = builder.material_slot("finish");
     let stock = builder
-        .with_source(body_source)
-        .with_material(material)
-        .with_surface_chart(SurfaceChart::Extrude {
-            wall: ChartTransform::IDENTITY,
-            caps: ChartTransform::IDENTITY,
-        })
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height,
+                caps: CapMode::Both,
+            })
+            .with_source(body_source)
+            .with_material(material)
+            .with_surface_chart(SurfaceChart::Extrude {
+                wall: ChartTransform::IDENTITY,
+                caps: ChartTransform::IDENTITY,
+            }),
+        )
         .unwrap();
     let placement = Placement3::translate(1.5, 1.5, -1.0);
     let tool = builder
-        .with_source(tool_source)
-        .with_material(material)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Cylinder {
-                radius: 0.5,
-                height: 4.0,
-                segments: 32,
-            },
-            placement,
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: 0.5,
+                    height: 4.0,
+                    segments: 32,
+                },
+                placement,
+            })
+            .with_source(tool_source)
+            .with_material(material),
+        )
         .unwrap();
     let tool = builder
         .map_uv(
@@ -490,7 +502,7 @@ fn charted_drill(height: f64) -> Recipe {
         )
         .unwrap();
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![stock, tool],
         })

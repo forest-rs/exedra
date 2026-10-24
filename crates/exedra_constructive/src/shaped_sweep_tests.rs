@@ -521,7 +521,7 @@ fn closed_sweep_retains_four_complete_turns() {
     let mut builder = RecipeBuilder::new();
     let profile = builder.add_profile(profile);
     let root = builder
-        .add(NodeKind::Sweep {
+        .add_node(NodeKind::Sweep {
             profile,
             path,
             section,
@@ -679,7 +679,7 @@ fn recipes_validate_fingerprint_and_round_trip_section_laws() {
     let build = |section: SectionLaw| {
         let mut builder = RecipeBuilder::new();
         let p = builder.add_profile(builders::circle(1.0).unwrap());
-        let root = builder.add(NodeKind::Sweep {
+        let root = builder.add_node(NodeKind::Sweep {
             profile: p,
             path: straight_curve(PathClosure::Open),
             section,
@@ -772,7 +772,7 @@ fn constant_sweep_fingerprints_are_unchanged() {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::l_profile(0.3, 0.2, 0.1, 0.05).unwrap());
         let n = b
-            .add(NodeKind::Sweep {
+            .add_node(NodeKind::Sweep {
                 profile: p,
                 path,
                 section: SectionLaw::IDENTITY,
@@ -790,7 +790,7 @@ fn identity_shaped_laws_are_stored_as_the_identity() {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::circle(1.0).unwrap());
         let n = b
-            .add(NodeKind::Sweep {
+            .add_node(NodeKind::Sweep {
                 profile: p,
                 path: straight_polyline(),
                 section,

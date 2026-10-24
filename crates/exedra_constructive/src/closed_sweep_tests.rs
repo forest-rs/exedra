@@ -8,7 +8,7 @@ use super::*;
 use crate::builders;
 use crate::cache::EvalCache;
 use crate::evaluate::{Severity, evaluate, evaluate_with_cache};
-use crate::ir::{CsgOp, NodeKind, Path3, Plane3, Recipe, RecipeBuilder};
+use crate::ir::{CsgOp, Node, NodeKind, Path3, Plane3, Recipe, RecipeBuilder};
 use crate::profile::{Loop2, Seg2};
 use crate::section::{SectionPolicy, section_body};
 use alloc::vec;
@@ -309,39 +309,43 @@ fn retained_surround(datum: [f64; 2], cuts: bool, reflect: bool) -> Recipe {
     let source = builder.source_ref("surround");
     let material = builder.material_slot("molding");
     let mut root = builder
-        .with_source(source)
-        .with_material(material)
-        .add(NodeKind::Sweep {
-            section: SectionLaw::IDENTITY,
-            profile,
-            path: Path3::MiteredPolyline {
-                points: rectangle(),
-                section_x: [0.0, 1.0, 0.0],
-                section_origin: datum,
-                closure: PathClosure::ClosedPlanar {
-                    normal: [0.0, 0.0, 1.0],
+        .add_node(
+            Node::new(NodeKind::Sweep {
+                section: SectionLaw::IDENTITY,
+                profile,
+                path: Path3::MiteredPolyline {
+                    points: rectangle(),
+                    section_x: [0.0, 1.0, 0.0],
+                    section_origin: datum,
+                    closure: PathClosure::ClosedPlanar {
+                        normal: [0.0, 0.0, 1.0],
+                    },
+                    miter_limit: 4.0,
                 },
-                miter_limit: 4.0,
-            },
-            caps: CapMode::None,
-        })
+                caps: CapMode::None,
+            })
+            .with_source(source)
+            .with_material(material),
+        )
         .unwrap();
     if cuts {
         for x in [2.3, 6.3] {
             let source = builder.source_ref("cutter");
             let material = builder.material_slot("cut-face");
             let cut = builder
-                .with_source(source)
-                .with_material(material)
-                .add(NodeKind::Primitive {
-                    spec: PrimitiveSpec::Box {
-                        size: [0.7, 2.0, 2.0],
-                    },
-                    placement: Placement3::translate(x, -0.5, -0.5),
-                })
+                .add_node(
+                    Node::new(NodeKind::Primitive {
+                        spec: PrimitiveSpec::Box {
+                            size: [0.7, 2.0, 2.0],
+                        },
+                        placement: Placement3::translate(x, -0.5, -0.5),
+                    })
+                    .with_source(source)
+                    .with_material(material),
+                )
                 .unwrap();
             root = builder
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![root, cut],
                 })
@@ -350,7 +354,7 @@ fn retained_surround(datum: [f64; 2], cuts: bool, reflect: bool) -> Recipe {
     }
     if reflect {
         root = builder
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: root,
                 placement: Placement3 {
                     rows: [

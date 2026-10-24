@@ -13,14 +13,14 @@ mod tests {
     use super::exact_plan;
     use crate::evaluate::{Aabb3, Fidelity, Severity, evaluate, evaluate_with_cache, mesh_bounds};
     use crate::ir::{
-        CapMode, CsgOp, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
+        CapMode, CsgOp, Node, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe, RecipeBuilder,
     };
     use crate::tessellate::EvalPolicy;
 
     fn stretched_box(normal: [f64; 3], distance: f64, length: f64) -> Recipe {
         let mut builder = RecipeBuilder::new();
         let child = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [10.0, 4.0, 2.0],
                 },
@@ -28,7 +28,7 @@ mod tests {
             })
             .expect("box is valid");
         let stretch = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 { normal, distance },
                 length,
@@ -282,13 +282,13 @@ mod tests {
             .add_import(mesh)
             .expect("deep-valid mesh is a valid import");
         let child = builder
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::IDENTITY,
             })
             .expect("import node is valid");
         let stretch = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 { normal, distance },
                 length,
@@ -361,7 +361,7 @@ mod tests {
         // exact rewrite.
         let mut builder = RecipeBuilder::new();
         let child = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [10.0, 4.0, 2.0],
                 },
@@ -369,7 +369,7 @@ mod tests {
             })
             .expect("box is valid");
         let inner = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 {
                     normal: [0.0, 1.0, 0.0],
@@ -379,7 +379,7 @@ mod tests {
             })
             .expect("zero-length stretch is valid");
         let outer = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: inner,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -404,7 +404,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let issue = builder.source_ref("spec.issue.contradiction");
         let child = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [10.0, 4.0, 2.0],
                 },
@@ -415,31 +415,27 @@ mod tests {
             normal: [1.0, 0.0, 0.0],
             distance: 4.0,
         };
-        let standalone = builder
-            .with_issue(issue)
-            .add(NodeKind::Stretch {
+        let standalone = builder.add_node(Node::new(NodeKind::Stretch {
                 child,
                 plane,
                 length: 0.0,
-            })
+            }).with_issue(issue))
             .expect("zero-length stretch is valid");
-        let nested = builder
-            .with_issue(issue)
-            .add(NodeKind::Stretch {
+        let nested = builder.add_node(Node::new(NodeKind::Stretch {
                 child,
                 plane,
                 length: 0.0,
-            })
+            }).with_issue(issue))
             .expect("zero-length stretch is valid");
         let live = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: nested,
                 plane,
                 length: 3.0,
             })
             .expect("stretch is valid");
         let root = builder
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![standalone, live],
             })
             .expect("group is valid");
@@ -488,7 +484,7 @@ mod tests {
             let mut builder = RecipeBuilder::new();
             let profile = builder.add_profile(crate::builders::rect_from_corner(10.0, 4.0).unwrap());
             let child = builder
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile,
                     placement: Placement3::IDENTITY,
                     height: 10.0,
@@ -496,7 +492,7 @@ mod tests {
                 })
                 .unwrap();
             let stretch = builder
-                .add(NodeKind::Stretch {
+                .add_node(NodeKind::Stretch {
                     child,
                     plane: Plane3 { normal, distance },
                     length: 3.0,
@@ -520,7 +516,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile_id = builder.add_profile(profile);
         let child = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: profile_id,
                 placement: Placement3::IDENTITY,
                 height: 20.0,
@@ -578,7 +574,7 @@ mod tests {
         let profile = builder
             .add_profile(crate::builders::rounded_rect_from_corner(400.0, 300.0, 50.0).unwrap());
         let child = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 20.0,
@@ -586,7 +582,7 @@ mod tests {
             })
             .unwrap();
         let stretch = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -634,7 +630,7 @@ mod tests {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(crate::builders::rect_from_corner(10.0, 4.0).unwrap());
         let child = builder
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 2.0,
@@ -642,7 +638,7 @@ mod tests {
             })
             .unwrap();
         let stretch = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -931,7 +927,7 @@ mod tests {
         fn build(stretch_inside: bool) -> Recipe {
             let mut builder = RecipeBuilder::new();
             let host = builder
-                .add(NodeKind::Primitive {
+                .add_node(NodeKind::Primitive {
                     spec: PrimitiveSpec::Box {
                         size: [10.0, 4.0, 2.0],
                     },
@@ -939,7 +935,7 @@ mod tests {
                 })
                 .unwrap();
             let cutter = builder
-                .add(NodeKind::Primitive {
+                .add_node(NodeKind::Primitive {
                     spec: PrimitiveSpec::Box {
                         size: [2.0, 2.0, 4.0],
                     },
@@ -948,7 +944,7 @@ mod tests {
                 .unwrap();
             if stretch_inside {
                 let stretched = builder
-                    .add(NodeKind::Stretch {
+                    .add_node(NodeKind::Stretch {
                         child: host,
                         plane: Plane3 {
                             normal: [1.0, 0.0, 0.0],
@@ -958,7 +954,7 @@ mod tests {
                     })
                     .unwrap();
                 let root = builder
-                    .add(NodeKind::Csg {
+                    .add_node(NodeKind::Csg {
                         op: CsgOp::Difference,
                         operands: vec![stretched, cutter],
                     })
@@ -966,13 +962,13 @@ mod tests {
                 builder.finish(root).unwrap()
             } else {
                 let difference = builder
-                    .add(NodeKind::Csg {
+                    .add_node(NodeKind::Csg {
                         op: CsgOp::Difference,
                         operands: vec![host, cutter],
                     })
                     .unwrap();
                 let root = builder
-                    .add(NodeKind::Stretch {
+                    .add_node(NodeKind::Stretch {
                         child: difference,
                         plane: Plane3 {
                             normal: [1.0, 0.0, 0.0],
@@ -1124,7 +1120,7 @@ mod tests {
         // select a different zone and violate sequential composition.
         let mut builder = RecipeBuilder::new();
         let child = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [10.0, 4.0, 2.0],
                 },
@@ -1132,7 +1128,7 @@ mod tests {
             })
             .unwrap();
         let inner = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -1142,7 +1138,7 @@ mod tests {
             })
             .unwrap();
         let outer = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: inner,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -1166,7 +1162,7 @@ mod tests {
         // the exact box rewrite must grow Y while retaining the rotated AABB.
         let mut builder = RecipeBuilder::new();
         let box_node = builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [10.0, 4.0, 2.0],
                 },
@@ -1174,7 +1170,7 @@ mod tests {
             })
             .unwrap();
         let transformed = builder
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: box_node,
                 xf: Placement3::rotate_z_then_translate(
                     core::f64::consts::FRAC_PI_2,
@@ -1185,7 +1181,7 @@ mod tests {
             })
             .unwrap();
         let stretch = builder
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: transformed,
                 plane: Plane3 {
                     normal: [0.0, 1.0, 0.0],
@@ -1214,14 +1210,14 @@ mod tests {
             let child = if imported {
                 let import = builder.add_import(imported_box()).unwrap();
                 builder
-                    .add(NodeKind::MeshImport {
+                    .add_node(NodeKind::MeshImport {
                         import,
                         placement: Placement3::IDENTITY,
                     })
                     .unwrap()
             } else {
                 builder
-                    .add(NodeKind::Primitive {
+                    .add_node(NodeKind::Primitive {
                         spec: PrimitiveSpec::Box {
                             size: [10.0, 4.0, 2.0],
                         },
@@ -1230,7 +1226,7 @@ mod tests {
                     .unwrap()
             };
             let stretch = builder
-                .add(NodeKind::Stretch {
+                .add_node(NodeKind::Stretch {
                     child,
                     plane: Plane3 {
                         normal: [1.0, 0.0, 0.0],
@@ -1240,7 +1236,7 @@ mod tests {
                 })
                 .unwrap();
             let root = builder
-                .add(NodeKind::Transform {
+                .add_node(NodeKind::Transform {
                     child: stretch,
                     xf: Placement3 {
                         rows: [

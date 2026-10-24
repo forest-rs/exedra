@@ -12,7 +12,7 @@ use alloc::{vec, vec::Vec};
 fn cylinder_with_spherical_top_is_an_exact_union() {
     let mut b = RecipeBuilder::new();
     let cylinder = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Cylinder {
                 radius: 0.02,
                 height: 0.5,
@@ -23,7 +23,7 @@ fn cylinder_with_spherical_top_is_an_exact_union() {
         .unwrap();
     // Construct cylinders extend along Z; ODB cylinders extend along Y.
     let cylinder = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: cylinder,
             xf: Placement3 {
                 rows: [
@@ -41,7 +41,7 @@ fn cylinder_with_spherical_top_is_an_exact_union() {
         .unwrap(),
     );
     let sphere = b
-        .add(NodeKind::Revolve {
+        .add_node(NodeKind::Revolve {
             profile,
             placement: Placement3::IDENTITY,
             sweep: core::f64::consts::TAU,
@@ -49,13 +49,13 @@ fn cylinder_with_spherical_top_is_an_exact_union() {
         })
         .unwrap();
     let sphere = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: sphere,
             xf: Placement3::translate(0.0, 0.5, 0.0),
         })
         .unwrap();
     let union = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: vec![cylinder, sphere],
         })

@@ -82,7 +82,7 @@ fn probes() -> Vec<Probe> {
 // ---------------------------------------------------------------------------
 
 fn add_box(b: &mut RecipeBuilder, size: [f64; 3], origin: [f64; 3]) -> NodeId {
-    b.add(NodeKind::Primitive {
+    b.add_node(NodeKind::Primitive {
         spec: PrimitiveSpec::Box { size },
         placement: Placement3::translate(origin[0], origin[1], origin[2]),
     })
@@ -90,7 +90,7 @@ fn add_box(b: &mut RecipeBuilder, size: [f64; 3], origin: [f64; 3]) -> NodeId {
 }
 
 fn add_cylinder(b: &mut RecipeBuilder, radius: f64, height: f64, placement: Placement3) -> NodeId {
-    b.add(NodeKind::Primitive {
+    b.add_node(NodeKind::Primitive {
         spec: PrimitiveSpec::Cylinder {
             radius,
             height,
@@ -107,7 +107,7 @@ fn add_extrude(
     placement: Placement3,
     height: f64,
 ) -> NodeId {
-    b.add(NodeKind::Extrude {
+    b.add_node(NodeKind::Extrude {
         profile,
         placement,
         height,
@@ -117,7 +117,8 @@ fn add_extrude(
 }
 
 fn csg(b: &mut RecipeBuilder, op: CsgOp, operands: Vec<NodeId>) -> NodeId {
-    b.add(NodeKind::Csg { op, operands }).expect("valid csg")
+    b.add_node(NodeKind::Csg { op, operands })
+        .expect("valid csg")
 }
 
 fn plane(normal: [f64; 3], distance: f64) -> Plane3 {
@@ -144,7 +145,7 @@ fn semicircle(r: f64, bulge: f64) -> Profile2 {
 
 fn sphere(b: &mut RecipeBuilder, r: f64, placement: Placement3) -> NodeId {
     let profile = b.add_profile(semicircle(r, 1.0));
-    b.add(NodeKind::Revolve {
+    b.add_node(NodeKind::Revolve {
         profile,
         placement,
         sweep: 2.0 * PI,
@@ -174,13 +175,13 @@ fn mortise_and_tenon() -> Probe {
     // Rail runs along +X from the post; its tenon (x in [0, 100]) enters the
     // mortise. Place so tenon occupies post x in [30, 70]... approximately.
     let placed_rail = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: tenon_rail,
             xf: Placement3::translate(30.0, 0.0, 300.0),
         })
         .expect("valid transform");
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![post_cut, placed_rail],
         })
         .expect("valid group");
@@ -212,13 +213,13 @@ fn bracket_with_holes() -> Probe {
     operands.extend(holes);
     let drilled = csg(&mut b, CsgOp::Difference, operands);
     let mirrored = b
-        .add(NodeKind::Mirror {
+        .add_node(NodeKind::Mirror {
             child: drilled,
             plane: plane([1.0, 0.0, 0.0], -20.0),
         })
         .expect("valid mirror");
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![drilled, mirrored],
         })
         .expect("valid group");
@@ -358,7 +359,7 @@ fn two_cylinder_skewed() -> Probe {
     let r = 40.0;
     let z = add_cylinder(&mut b, r, 200.0, Placement3::translate(0.0, 0.0, -100.0));
     let x = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Cylinder {
                 radius: r,
                 height: 200.0,
@@ -419,7 +420,7 @@ fn bent_pipe_sweep() -> Probe {
     let mut b = RecipeBuilder::new();
     let ring = b.add_profile(builders::ring(20.0, 14.0).expect("ring"));
     let root = b
-        .add(NodeKind::Sweep {
+        .add_node(NodeKind::Sweep {
             section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile: ring,
             path: Path3::Polyline {
@@ -451,7 +452,7 @@ fn tapered_loft() -> Probe {
     let base = b.add_profile(builders::rect_from_corner(200.0, 120.0).expect("rect"));
     let top = b.add_profile(builders::rect_from_corner(100.0, 60.0).expect("rect"));
     let root = b
-        .add(NodeKind::Loft {
+        .add_node(NodeKind::Loft {
             sections: vec![
                 LoftSection::new(Placement3::IDENTITY, base),
                 LoftSection::new(Placement3::translate(50.0, 30.0, 150.0), top),
@@ -480,7 +481,7 @@ fn loft_between_circles() -> Probe {
     let big = b.add_profile(builders::circle(60.0).expect("circle"));
     let small = b.add_profile(builders::circle(25.0).expect("circle"));
     let root = b
-        .add(NodeKind::Loft {
+        .add_node(NodeKind::Loft {
             sections: vec![
                 LoftSection::new(Placement3::IDENTITY, big),
                 LoftSection::new(Placement3::translate(0.0, 0.0, 120.0), small),
@@ -508,7 +509,7 @@ fn stretched_frame() -> Probe {
     let hole = add_cylinder(&mut b, 6.0, 60.0, Placement3::translate(40.0, 20.0, -10.0));
     let drilled = csg(&mut b, CsgOp::Difference, vec![member, hole]);
     let root = b
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child: drilled,
             plane: plane([1.0, 0.0, 0.0], 150.0),
             length: 200.0,
@@ -575,25 +576,25 @@ fn attributed_import_mirrored_instances() -> Probe {
     let mut b = RecipeBuilder::new();
     let import = b.add_import(mesh).expect("valid import");
     let placed = b
-        .add(NodeKind::MeshImport {
+        .add_node(NodeKind::MeshImport {
             import,
             placement: Placement3::rotate_x_then_translate(PI / 6.0, 0.0, 0.0, 0.0),
         })
         .expect("valid import node");
     let inst = b
-        .add(NodeKind::Instance {
+        .add_node(NodeKind::Instance {
             of: placed,
             placement: Placement3::rotate_z_then_translate(PI / 3.0, 150.0, 0.0, 0.0),
         })
         .expect("valid instance");
     let mirrored = b
-        .add(NodeKind::Mirror {
+        .add_node(NodeKind::Mirror {
             child: inst,
             plane: plane([0.0, 1.0, 0.0], -40.0),
         })
         .expect("valid mirror");
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![placed, inst, mirrored],
         })
         .expect("valid group");
@@ -678,7 +679,7 @@ fn rotated_boxes() -> Probe {
     let mut b = RecipeBuilder::new();
     let a = add_box(&mut b, [100.0, 60.0, 40.0], [0.0, 0.0, 0.0]);
     let c = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box {
                 size: [90.0, 90.0, 90.0],
             },
@@ -693,13 +694,13 @@ fn rotated_boxes() -> Probe {
     let inter = csg(&mut b, CsgOp::Intersection, vec![a, c]);
     let diff = csg(&mut b, CsgOp::Difference, vec![a, c]);
     let moved = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: diff,
             xf: Placement3::translate(0.0, 120.0, 0.0),
         })
         .expect("valid transform");
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![inter, moved],
         })
         .expect("valid group");
@@ -724,7 +725,7 @@ fn nested_instances() -> Probe {
     let legs: Vec<NodeId> = [(10.0, 10.0), (360.0, 10.0), (10.0, 210.0), (360.0, 210.0)]
         .into_iter()
         .map(|(x, y)| {
-            b.add(NodeKind::Instance {
+            b.add_node(NodeKind::Instance {
                 of: leg,
                 placement: Placement3::translate(x, y, 0.0),
             })
@@ -734,21 +735,23 @@ fn nested_instances() -> Probe {
     let top = add_box(&mut b, [400.0, 250.0, 20.0], [0.0, 0.0, 400.0]);
     let mut children = legs;
     children.push(top);
-    let table = b.add(NodeKind::Group { children }).expect("valid group");
+    let table = b
+        .add_node(NodeKind::Group { children })
+        .expect("valid group");
     let table_b = b
-        .add(NodeKind::Instance {
+        .add_node(NodeKind::Instance {
             of: table,
             placement: Placement3::rotate_z_then_translate(0.3, 600.0, 0.0, 0.0),
         })
         .expect("valid instance");
     let table_c = b
-        .add(NodeKind::Mirror {
+        .add_node(NodeKind::Mirror {
             child: table_b,
             plane: plane([0.0, 1.0, 0.0], -50.0),
         })
         .expect("valid mirror");
     let root = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![table, table_b, table_c],
         })
         .expect("valid group");
@@ -779,7 +782,7 @@ fn grid_shell_cut() -> Probe {
         })
         .collect();
     let shell = b
-        .add(NodeKind::GridSurface {
+        .add_node(NodeKind::GridSurface {
             points,
             rows,
             cols,
@@ -821,7 +824,7 @@ fn revolve_notched() -> Probe {
     .expect("goblet profile");
     let p = b.add_profile(profile);
     let goblet = b
-        .add(NodeKind::Revolve {
+        .add_node(NodeKind::Revolve {
             profile: p,
             placement: Placement3::IDENTITY,
             sweep: 2.0 * PI,
@@ -830,7 +833,7 @@ fn revolve_notched() -> Probe {
         .expect("valid revolve");
     // The revolve axis is local Y: the rim sits at y = 120, radius 50..60.
     let notch = b
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box {
                 size: [40.0, 40.0, 200.0],
             },

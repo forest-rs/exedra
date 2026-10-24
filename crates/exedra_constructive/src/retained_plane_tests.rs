@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::ir::Node;
 use crate::{
     builders,
     cache::{EvalCache, policy_fingerprint},
@@ -18,22 +19,24 @@ fn recipe(side: PlaneSide, distance: f64, parent: Placement3) -> Recipe {
     let cap = b.material_slot("cut");
     let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let child = b
-        .with_material(wall)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 4.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 4.0,
+                caps: CapMode::Both,
+            })
+            .with_material(wall),
+        )
         .unwrap();
     let child = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child,
             xf: Placement3::translate(0.0, 0.0, 10.0),
         })
         .unwrap();
     let cut = b
-        .add(NodeKind::PlaneCut {
+        .add_node(NodeKind::PlaneCut {
             child,
             plane: Plane3 {
                 normal: [0.0, 0.0, 1.0],
@@ -47,7 +50,7 @@ fn recipe(side: PlaneSide, distance: f64, parent: Placement3) -> Recipe {
         })
         .unwrap();
     let root = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: cut,
             xf: parent,
         })
@@ -168,7 +171,7 @@ fn retained_plane_extrusion_round_trips_and_rebinds_target_with_holes() {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::ring(2.0, 0.75).unwrap());
         let root = b
-            .add(NodeKind::ExtrudeToPlane {
+            .add_node(NodeKind::ExtrudeToPlane {
                 profile,
                 placement: Placement3::translate(0.0, 0.0, 2.0),
                 plane: Plane3 {
@@ -235,25 +238,29 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
     let blue = b.material_slot("blue");
     let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let a = b
-        .with_material(red)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 4.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 4.0,
+                caps: CapMode::Both,
+            })
+            .with_material(red),
+        )
         .unwrap();
     let other = b
-        .with_material(blue)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::translate(4.0, 0.0, 0.0),
-            height: 4.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::translate(4.0, 0.0, 0.0),
+                height: 4.0,
+                caps: CapMode::Both,
+            })
+            .with_material(blue),
+        )
         .unwrap();
     let group = b
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: alloc::vec![a, other],
         })
         .unwrap();
@@ -262,7 +269,7 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
         distance: 1.75,
     };
     assert!(matches!(
-        b.add(NodeKind::PlaneCut {
+        b.add_node(NodeKind::PlaneCut {
             child: group,
             plane,
             side: PlaneSide::Negative,
@@ -274,7 +281,7 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
         Err(RecipeError::UnknownSlot { slot: 99 })
     ));
     let root = b
-        .add(NodeKind::PlaneCut {
+        .add_node(NodeKind::PlaneCut {
             child: group,
             plane,
             side: PlaneSide::Negative,
@@ -298,13 +305,13 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let open = b
-        .add(NodeKind::PlanarFace {
+        .add_node(NodeKind::PlanarFace {
             profile,
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let refused = b
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child: open,
             plane: Plane3 {
                 normal: [1.0, 0.0, 0.0],
@@ -314,7 +321,7 @@ fn grouped_bodies_keep_defaults_distinct_and_refused_children_do_not_leak() {
         })
         .unwrap();
     let root = b
-        .add(NodeKind::PlaneCut {
+        .add_node(NodeKind::PlaneCut {
             child: refused,
             plane,
             side: PlaneSide::Negative,
@@ -334,7 +341,7 @@ fn reflected_scaled_parents_place_completed_extrusion_and_cut() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
     let leaf = b
-        .add(NodeKind::ExtrudeToPlane {
+        .add_node(NodeKind::ExtrudeToPlane {
             profile,
             placement: Placement3::IDENTITY,
             plane: Plane3 {
@@ -344,7 +351,7 @@ fn reflected_scaled_parents_place_completed_extrusion_and_cut() {
         })
         .unwrap();
     let cut = b
-        .add(NodeKind::PlaneCut {
+        .add_node(NodeKind::PlaneCut {
             child: leaf,
             plane: Plane3 {
                 normal: [0.0, 0.0, 1.0],
@@ -358,7 +365,7 @@ fn reflected_scaled_parents_place_completed_extrusion_and_cut() {
         })
         .unwrap();
     let root = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: cut,
             xf: Placement3 {
                 rows: [

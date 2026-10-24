@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 
 use crate::builders;
 use crate::evaluate::{Evaluation, evaluate};
-use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
+use crate::ir::{CapMode, CsgOp, Node, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
 use crate::tessellate::EvalPolicy;
 
 struct Fixture {
@@ -43,13 +43,15 @@ fn fixtures() -> Vec<Fixture> {
         let p = b.add_profile(builders::rect_from_corner(600.0, 400.0).expect("rect"));
         let src = b.source_ref("gallery:rect_prism");
         let n = b
-            .with_source(src)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 720.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 720.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "rect_prism",
@@ -63,13 +65,15 @@ fn fixtures() -> Vec<Fixture> {
         let p = b.add_profile(builders::l_profile(600.0, 600.0, 300.0, 300.0).expect("L"));
         let src = b.source_ref("gallery:l_prism");
         let n = b
-            .with_source(src)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 500.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 500.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "l_prism",
@@ -84,13 +88,15 @@ fn fixtures() -> Vec<Fixture> {
             b.add_profile(builders::rounded_rect_from_corner(400.0, 300.0, 50.0).expect("rounded"));
         let src = b.source_ref("gallery:rounded_prism");
         let n = b
-            .with_source(src)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 200.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 200.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "rounded_prism",
@@ -104,13 +110,15 @@ fn fixtures() -> Vec<Fixture> {
         let p = b.add_profile(builders::ring(120.0, 60.0).expect("ring"));
         let src = b.source_ref("gallery:ring_prism");
         let n = b
-            .with_source(src)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 40.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 40.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "ring_prism",
@@ -124,13 +132,15 @@ fn fixtures() -> Vec<Fixture> {
         let p = b.add_profile(annulus_square(300.0, 80.0));
         let src = b.source_ref("gallery:quarter_sweep");
         let n = b
-            .with_source(src)
-            .add(NodeKind::Revolve {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                sweep: core::f64::consts::FRAC_PI_2,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Revolve {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    sweep: core::f64::consts::FRAC_PI_2,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "quarter_sweep",
@@ -154,16 +164,18 @@ fn fixtures() -> Vec<Fixture> {
             })
             .collect();
         let n = b
-            .with_source(src)
-            .add(NodeKind::GridSurface {
-                points,
-                rows,
-                cols,
-                close_u: false,
-                close_w: false,
-                thickness: Some(18.0),
-                placement: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::GridSurface {
+                    points,
+                    rows,
+                    cols,
+                    close_u: false,
+                    close_w: false,
+                    thickness: Some(18.0),
+                    placement: Placement3::IDENTITY,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "grid_shell",
@@ -179,16 +191,18 @@ fn fixtures() -> Vec<Fixture> {
             b.add_profile(builders::rounded_rect_from_corner(400.0, 300.0, 50.0).expect("rounded"));
         let src = b.source_ref("gallery:stretched_panel");
         let child = b
-            .with_source(src)
-            .add(NodeKind::Extrude {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                height: 100.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    height: 100.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         let stretch = b
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -210,11 +224,13 @@ fn fixtures() -> Vec<Fixture> {
         let p = b.add_profile(builders::ring(2.0, 1.0).expect("ring"));
         let src = b.source_ref("gallery:planar_face");
         let n = b
-            .with_source(src)
-            .add(NodeKind::PlanarFace {
-                profile: p,
-                placement: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::PlanarFace {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "planar_face",
@@ -230,13 +246,15 @@ fn fixtures() -> Vec<Fixture> {
         let p = b.add_profile(axis_closed_semicircle(0.02));
         let src = b.source_ref("gallery:axis_revolve");
         let n = b
-            .with_source(src)
-            .add(NodeKind::Revolve {
-                profile: p,
-                placement: Placement3::IDENTITY,
-                sweep: core::f64::consts::TAU,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Revolve {
+                    profile: p,
+                    placement: Placement3::IDENTITY,
+                    sweep: core::f64::consts::TAU,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid");
         out.push(Fixture {
             name: "axis_revolve",
@@ -278,7 +296,7 @@ fn csg_fixture() -> Recipe {
     let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).expect("rect"));
     let cut = b.add_profile(builders::rect_from_corner(80.0, 80.0).expect("rect"));
     let e1 = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: block,
             placement: Placement3::IDENTITY,
             height: 80.0,
@@ -288,7 +306,7 @@ fn csg_fixture() -> Recipe {
     // A corner notch: transversal crossings only (interior cut loops are
     // the pipeline's remaining typed deferral, tracked separately).
     let e2 = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: cut,
             placement: Placement3::translate(160.0, 60.0, -10.0),
             height: 100.0,
@@ -296,13 +314,13 @@ fn csg_fixture() -> Recipe {
         })
         .expect("valid");
     let csg = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![e1, e2],
         })
         .expect("valid");
     let moved = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: csg,
             xf: Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_4, 50.0, 0.0, 0.0),
         })

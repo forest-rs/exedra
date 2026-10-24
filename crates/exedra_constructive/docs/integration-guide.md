@@ -30,7 +30,7 @@ your identifiers travel as opaque interned strings.
 ```rust
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::evaluate;
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder};
 use exedra_constructive::tessellate::EvalPolicy;
 
 let mut b = RecipeBuilder::new();
@@ -40,15 +40,13 @@ let source = b.source_ref("yourspec:part/7#body");
 let front = b.material_slot("front");
 
 let profile = b.add_profile(builders::rounded_rect_from_corner(600.0, 400.0, 40.0)?);
-let node = b
-    .with_source(source)
-    .with_material(front)
-    .add(NodeKind::Extrude {
-        profile,
-        placement: Placement3::IDENTITY,
-        height: 720.0,
-        caps: CapMode::Both,
-    })?;
+let body = NodeKind::Extrude {
+    profile,
+    placement: Placement3::IDENTITY,
+    height: 720.0,
+    caps: CapMode::Both,
+};
+let node = b.add_node(Node::new(body).with_source(source).with_material(front))?;
 let recipe = b.finish(node)?;
 
 let result = evaluate(&recipe, &EvalPolicy::default())?;
@@ -105,8 +103,8 @@ policy** and say so:
 
 When an authored source contradicts itself, cite the issue:
 
-- `b.with_issue(b.source_ref("yourspec.issue.nonclosing-profile"))` before
-  `add`. The node still builds (viewers need something on screen) but
+- `Node::new(kind).with_issue(b.source_ref("yourspec.issue.nonclosing-profile"))`
+  passed to `add_node`. The node still builds (viewers need something on screen) but
   reports `Fidelity::Conflicted(issue)` — build, but confess.
 
 CSG nodes use the mesh Boolean pipeline for handled configurations. A refused

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
-use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+use exedra_constructive::ir::{Node, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use serde_json::{Value, json};
 
@@ -20,14 +20,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from("target/material-gallery"));
     let mut recipe = RecipeBuilder::new();
     let finish = recipe.material_slot("finish");
-    let root = recipe.with_material(finish).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Cylinder {
-            radius: 0.4,
-            height: 1.2,
-            segments: 64,
-        },
-        placement: Placement3::IDENTITY,
-    })?;
+    let root = recipe.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Cylinder {
+                radius: 0.4,
+                height: 1.2,
+                segments: 64,
+            },
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(finish),
+    )?;
     let mut assembly = Assembly::new();
     let part = assembly.add_recipe_part("sample", recipe.finish(root)?)?;
     assembly.set_part_material(part, "finish", "paint.red")?;

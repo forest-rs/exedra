@@ -52,7 +52,7 @@ use exedra_constructive::{
 
 let mut builder = RecipeBuilder::new();
 let root = builder
-    .add(NodeKind::Primitive {
+    .add_node(NodeKind::Primitive {
         spec: PrimitiveSpec::Box { size: [1.0; 3] },
         placement: Placement3::IDENTITY,
     })

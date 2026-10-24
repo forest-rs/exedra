@@ -272,7 +272,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         let n = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile: p,
                 placement: Placement3::translate(offset, offset, offset),
                 height: 1.0,

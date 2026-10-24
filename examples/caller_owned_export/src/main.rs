@@ -14,7 +14,7 @@ use exedra::gltf::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = RecipeBuilder::new();
-    let root = builder.add(NodeKind::Primitive {
+    let root = builder.add_node(NodeKind::Primitive {
         spec: PrimitiveSpec::Box {
             size: [2.0, 3.0, 1.0],
         },

@@ -90,7 +90,7 @@ fn multiple_curved_holes_have_intact_caps() {
                     placement: Placement3::IDENTITY,
                 }
             };
-            let root = builder.add(operation).unwrap();
+            let root = builder.add_node(operation).unwrap();
             let recipe = builder.finish(root).unwrap();
             let result = evaluate(&recipe, &policy).unwrap_or_else(|error| {
                 panic!("{rows} disjoint leaf holes, loft={loft}: {error:?}")

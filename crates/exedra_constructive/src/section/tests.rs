@@ -340,7 +340,7 @@ fn converted_profile_can_be_retained_extruded_and_lofted() {
     let mut builder = RecipeBuilder::new();
     let profile = builder.add_profile(converted.profile);
     let extrusion = builder
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: converted.placement,
             height: 2.5,
@@ -351,7 +351,7 @@ fn converted_profile_can_be_retained_extruded_and_lofted() {
     let mut end = converted.placement;
     end.rows[2][3] += 2.5;
     let loft = builder
-        .add(NodeKind::Loft {
+        .add_node(NodeKind::Loft {
             sections: alloc::vec![
                 LoftSection::new(converted.placement, profile),
                 LoftSection::new(end, profile)
@@ -361,7 +361,7 @@ fn converted_profile_can_be_retained_extruded_and_lofted() {
         })
         .unwrap();
     let group = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: alloc::vec![extrusion, loft],
         })
         .unwrap();

@@ -24,7 +24,7 @@ use kurbo::Point;
 use crate::chart::{ChartTransform, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
+    CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, Node, NodeId, NodeKind, Path3,
     PathClosure, PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder,
     RecipeError, SectionLaw, VertexStretchStep,
 };
@@ -1302,15 +1302,10 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
     let (body, issue) = split_suffix(body, "issue", line)?;
     let (body, material) = split_suffix(&body, "material", line)?;
     let (body, source) = split_suffix(&body, "source", line)?;
-    if let Some(source) = parse_opt_index(&source, line)? {
-        builder.with_source(crate::ir::SourceId(source));
-    }
-    if let Some(material) = parse_opt_index(&material, line)? {
-        builder.with_material(crate::ir::SlotId(material));
-    }
-    if let Some(issue) = parse_opt_index(&issue, line)? {
-        builder.with_issue(crate::ir::SourceId(issue));
-    }
+    let source = parse_opt_index(&source, line)?.map(crate::ir::SourceId);
+    let material = parse_opt_index(&material, line)?.map(crate::ir::SlotId);
+    let issue = parse_opt_index(&issue, line)?.map(crate::ir::SourceId);
+    let mut surface_chart = None;
 
     let mut tokens = body.split_whitespace();
     let mut kind_name = tokens.next().ok_or(TextError::Malformed { line })?;
@@ -1351,7 +1346,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
         };
         let wall = transform("wall")?;
         let caps = transform("caps")?;
-        builder.with_surface_chart(match metric {
+        surface_chart = Some(match metric {
             "extrude" => SurfaceChart::Extrude { wall, caps },
             "revolve" => SurfaceChart::Revolve {
                 reference_radius,
@@ -2015,7 +2010,15 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
         }
         _ => return Err(TextError::Malformed { line }),
     };
-    builder.add(kind).map_err(TextError::Recipe)?;
+    builder
+        .add_node(Node {
+            surface_chart,
+            kind,
+            source,
+            material,
+            issue,
+        })
+        .map_err(TextError::Recipe)?;
     Ok(())
 }
 
@@ -2069,17 +2072,19 @@ pub(crate) mod tests_support {
         let slot = b.material_slot("front");
 
         let extrude = b
-            .with_source(src)
-            .with_material(slot)
-            .add(NodeKind::Extrude {
-                profile: rect,
-                placement: Placement3::translate(0.5, 0.25, 0.0),
-                height: 2.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: rect,
+                    placement: Placement3::translate(0.5, 0.25, 0.0),
+                    height: 2.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(src)
+                .with_material(slot),
+            )
             .expect("valid");
         let revolve = b
-            .add(NodeKind::Revolve {
+            .add_node(NodeKind::Revolve {
                 profile: ring,
                 placement: Placement3::translate(5.0, 0.0, 0.0),
                 sweep: core::f64::consts::FRAC_PI_2,
@@ -2087,7 +2092,7 @@ pub(crate) mod tests_support {
             })
             .expect("valid");
         let loft = b
-            .add(NodeKind::Loft {
+            .add_node(NodeKind::Loft {
                 sections: vec![
                     LoftSection::new(Placement3::IDENTITY, rect),
                     LoftSection::new(Placement3::translate(0.0, 0.0, 2.0), rect),
@@ -2097,7 +2102,7 @@ pub(crate) mod tests_support {
             })
             .expect("valid");
         let sweep = b
-            .add(NodeKind::Sweep {
+            .add_node(NodeKind::Sweep {
                 section: SectionLaw::IDENTITY,
                 profile: rounded,
                 path: Path3::Polyline {
@@ -2108,13 +2113,13 @@ pub(crate) mod tests_support {
             })
             .expect("valid");
         let face = b
-            .add(NodeKind::PlanarFace {
+            .add_node(NodeKind::PlanarFace {
                 profile: rect,
                 placement: Placement3::IDENTITY,
             })
             .expect("valid");
         let primitive = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Cylinder {
                     radius: 0.5,
                     height: 2.0,
@@ -2124,19 +2129,19 @@ pub(crate) mod tests_support {
             })
             .expect("valid");
         let csg = b
-            .add(NodeKind::Csg {
+            .add_node(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands: vec![extrude, primitive],
             })
             .expect("valid");
         let transform = b
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: csg,
                 xf: Placement3::rotate_z_then_translate(0.3, 1.0, 2.0, 3.0),
             })
             .expect("valid");
         let mirror = b
-            .add(NodeKind::Mirror {
+            .add_node(NodeKind::Mirror {
                 child: revolve,
                 plane: Plane3 {
                     normal: [0.0, 1.0, 0.0],
@@ -2145,13 +2150,13 @@ pub(crate) mod tests_support {
             })
             .expect("valid");
         let instance = b
-            .add(NodeKind::Instance {
+            .add_node(NodeKind::Instance {
                 of: loft,
                 placement: Placement3::translate(10.0, 0.0, 0.0),
             })
             .expect("valid");
         let stretch = b
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: sweep,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -2162,13 +2167,13 @@ pub(crate) mod tests_support {
             .expect("valid");
         let import = b.add_import(tetrahedron()).expect("valid import");
         let imported = b
-            .add(NodeKind::MeshImport {
+            .add_node(NodeKind::MeshImport {
                 import,
                 placement: Placement3::translate(20.0, 0.0, 0.0),
             })
             .expect("valid");
         let grid = b
-            .add(NodeKind::GridSurface {
+            .add_node(NodeKind::GridSurface {
                 points: vec![
                     [0.0, 0.0, 0.0],
                     [1.0, 0.0, 0.1],
@@ -2186,7 +2191,7 @@ pub(crate) mod tests_support {
             })
             .expect("valid");
         let group = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![transform, mirror, instance, stretch, face, imported, grid],
             })
             .expect("valid");
@@ -2264,7 +2269,7 @@ mod tests {
             let mut b = RecipeBuilder::new();
             let p = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
             let n = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: p,
                     placement: Placement3::IDENTITY,
                     height: 1.0,

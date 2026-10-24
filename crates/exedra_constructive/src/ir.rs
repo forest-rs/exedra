@@ -594,6 +594,61 @@ pub struct Node {
     pub issue: Option<SourceId>,
 }
 
+impl Node {
+    /// An operation with no source, material, chart or issue binding.
+    #[must_use]
+    pub const fn new(kind: NodeKind) -> Self {
+        Self {
+            surface_chart: None,
+            kind,
+            source: None,
+            material: None,
+            issue: None,
+        }
+    }
+
+    /// Binds an opaque source reference interned with [`RecipeBuilder::source_ref`].
+    #[must_use]
+    pub const fn with_source(mut self, source: SourceId) -> Self {
+        self.source = Some(source);
+        self
+    }
+
+    /// Binds a material slot interned with [`RecipeBuilder::material_slot`].
+    #[must_use]
+    pub const fn with_material(mut self, slot: SlotId) -> Self {
+        self.material = Some(slot);
+        self
+    }
+
+    /// Authors construction UV coordinates for this generating operation.
+    ///
+    /// Extrusion, revolution, loft and sweep charts must match the node's
+    /// operation; insertion refuses other pairings with
+    /// [`RecipeError::SurfaceChart`]. Charts are not inherited through wrappers,
+    /// and material values remain outside geometry.
+    #[must_use]
+    pub const fn with_surface_chart(mut self, chart: SurfaceChart) -> Self {
+        self.surface_chart = Some(chart);
+        self
+    }
+
+    /// Cites an opaque issue reference, interned in the source table, for a
+    /// contradictory specification. Evaluation reports the node as conflicted
+    /// instead of exact.
+    #[must_use]
+    pub const fn with_issue(mut self, issue: SourceId) -> Self {
+        self.issue = Some(issue);
+        self
+    }
+}
+
+impl From<NodeKind> for Node {
+    fn from(kind: NodeKind) -> Self {
+        Self::new(kind)
+    }
+}
+
 /// The most operands one CSG node accepts: Boolean provenance
 /// ([`crate::tessellate::Feature::BooleanFace`]) addresses operands as
 /// `u16`, and validation refuses larger lists rather than letting indices
@@ -650,18 +705,19 @@ impl Recipe {
     ///
     /// ```
     /// use exedra_constructive::ir::{
-    ///     NodeKind, Placement3, PrimitiveSpec, RecipeBuilder, RecipeError,
+    ///     Node, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder, RecipeError,
     /// };
     ///
     /// # fn main() -> Result<(), RecipeError> {
     /// let mut builder = RecipeBuilder::new();
     /// let source = builder.source_ref("panel/left");
-    /// let node = builder.with_source(source).add(NodeKind::Primitive {
+    /// let panel = NodeKind::Primitive {
     ///     spec: PrimitiveSpec::Box {
     ///         size: [1.0, 2.0, 3.0],
     ///     },
     ///     placement: Placement3::IDENTITY,
-    /// })?;
+    /// };
+    /// let node = builder.add_node(Node::new(panel).with_source(source))?;
     /// let recipe = builder.finish(node)?;
     /// assert_eq!(recipe.source_of(node), Some("panel/left"));
     /// # Ok(())
@@ -776,7 +832,7 @@ impl Recipe {
     /// normalized into a finite reflection matrix.
     pub fn mirrored(&self, plane: Plane3) -> Result<Self, RecipeError> {
         let mut builder = RecipeBuilder::from_recipe(self);
-        let root = builder.add(NodeKind::Mirror {
+        let root = builder.add_node(NodeKind::Mirror {
             child: self.root,
             plane,
         })?;
@@ -902,10 +958,6 @@ pub struct RecipeBuilder {
     slots: Vec<String>,
     policies: Vec<String>,
     imports: Vec<exedra_mesh::Mesh>,
-    pending_source: Option<SourceId>,
-    pending_surface_chart: Option<SurfaceChart>,
-    pending_material: Option<SlotId>,
-    pending_issue: Option<SourceId>,
 }
 
 impl RecipeBuilder {
@@ -926,10 +978,6 @@ impl RecipeBuilder {
             slots: recipe.slots.clone(),
             policies: recipe.policies.clone(),
             imports: recipe.imports.clone(),
-            pending_source: None,
-            pending_surface_chart: None,
-            pending_material: None,
-            pending_issue: None,
         }
     }
 
@@ -968,7 +1016,7 @@ impl RecipeBuilder {
 
     /// Adds a local UV mapping with primary-channel, seam-continuity and face-average pole defaults.
     pub fn map_uv(&mut self, child: NodeId, mapping: UvMapping) -> Result<NodeId, RecipeError> {
-        self.add(NodeKind::UvMap {
+        self.add_node(NodeKind::UvMap {
             child,
             mapping,
             options: UvMappingOptions::default(),
@@ -1050,104 +1098,44 @@ impl RecipeBuilder {
         Ok(ImportId(len_u32(self.imports.len()) - 1))
     }
 
-    /// Declares that the next node's specification is contradictory, citing
-    /// an opaque issue reference (interned in the source table). Evaluation
-    /// reports the node as conflicted instead of exact.
-    pub fn with_issue(&mut self, issue: SourceId) -> &mut Self {
-        self.pending_issue = Some(issue);
-        self
-    }
-
-    /// Attaches a source reference to the next node added.
-    pub fn with_source(&mut self, source: SourceId) -> &mut Self {
-        self.pending_source = Some(source);
-        self
-    }
-
-    /// Attaches a material slot to the next node added.
-    pub fn with_material(&mut self, slot: SlotId) -> &mut Self {
-        self.pending_material = Some(slot);
-        self
-    }
-
-    /// Authors construction UV coordinates on the next node.
+    /// Adds a complete node after validating its operation and bindings.
     ///
-    /// Extrusion, revolution, loft and sweep metrics must match the generating node.
-    /// Other nodes fail with [`RecipeError::SurfaceChart`]; charts are not
-    /// inherited through wrappers. Material values remain outside geometry.
-    pub fn with_surface_chart(&mut self, chart: SurfaceChart) -> &mut Self {
-        self.pending_surface_chart = Some(chart);
-        self
-    }
-
-    /// Adds a node after validating its parameters and references.
+    /// Parameters, child and table references, and the source, material,
+    /// chart and issue bindings are checked against this builder before the
+    /// node is appended, so a failed insertion leaves the builder unchanged.
+    /// A plain [`NodeKind`] converts to an unbound [`Node`].
+    ///
+    /// ```
+    /// use exedra_constructive::ir::{Node, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+    /// let mut builder = RecipeBuilder::new();
+    /// let source = builder.source_ref("panel/left");
+    /// let finish = builder.material_slot("finish");
+    /// let panel = NodeKind::Primitive {
+    ///     spec: PrimitiveSpec::Box { size: [1.0, 2.0, 0.1] },
+    ///     placement: Placement3::IDENTITY,
+    /// };
+    /// let node = builder.add_node(Node::new(panel).with_source(source).with_material(finish))?;
+    /// assert_eq!(builder.finish(node)?.source_of(node), Some("panel/left"));
+    /// # Ok::<(), exedra_constructive::ir::RecipeError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns a typed [`RecipeError`]; the builder is unchanged on error.
-    pub fn add(&mut self, mut kind: NodeKind) -> Result<NodeId, RecipeError> {
-        if let NodeKind::EdgeFinish { selection, .. } = &mut kind {
+    /// Returns the first typed [`RecipeError`] found.
+    pub fn add_node(&mut self, node: impl Into<Node>) -> Result<NodeId, RecipeError> {
+        let mut node = node.into();
+        if let NodeKind::EdgeFinish { selection, .. } = &mut node.kind {
             selection.canonicalize();
         }
-        self.validate_kind(&kind)?;
+        self.validate_node(&node)?;
         // An identity-shaped law is stored as the canonical identity: every
         // encoding writes it as a constant sweep, so a round trip compares
         // equal to the recipe that was built.
-        if let NodeKind::Sweep { section, .. } = &mut kind
+        if let NodeKind::Sweep { section, .. } = &mut node.kind
             && section.is_identity()
         {
             *section = SectionLaw::IDENTITY;
         }
-        // Pending bindings must reference interned entries: hostile ids are
-        // typed errors here, never a downstream index panic. Taken even on
-        // error so a rejected binding does not leak onto the next node.
-        let source = self.pending_source.take();
-        let surface_chart = self.pending_surface_chart.take();
-        let material = self.pending_material.take();
-        let issue = self.pending_issue.take();
-        for id in [source, issue].into_iter().flatten() {
-            if id.0 as usize >= self.sources.len() {
-                return Err(RecipeError::UnknownSource { source: id.0 });
-            }
-        }
-        if let Some(slot) = material
-            && slot.0 as usize >= self.slots.len()
-        {
-            return Err(RecipeError::UnknownSlot { slot: slot.0 });
-        }
-        if let Some(chart) = surface_chart {
-            chart.validate().map_err(RecipeError::SurfaceChart)?;
-            if !matches!(
-                (&kind, chart),
-                (NodeKind::Extrude { .. }, SurfaceChart::Extrude { .. })
-                    | (NodeKind::Revolve { .. }, SurfaceChart::Revolve { .. })
-                    | (NodeKind::Loft { .. }, SurfaceChart::Loft { .. })
-                    | (NodeKind::Sweep { .. }, SurfaceChart::Sweep { .. })
-            ) {
-                return Err(RecipeError::SurfaceChart(ChartError::WrongOperation));
-            }
-        }
-        if let (
-            NodeKind::Loft { sections, .. },
-            Some(SurfaceChart::Loft {
-                reference_section, ..
-            }),
-        ) = (&kind, surface_chart)
-            && reference_section as usize >= sections.len()
-        {
-            return Err(RecipeError::SurfaceChart(
-                ChartError::InvalidReferenceSection {
-                    section: reference_section,
-                },
-            ));
-        }
-        let node = Node {
-            surface_chart,
-            kind,
-            source,
-            material,
-            issue,
-        };
         self.nodes.push(node);
         Ok(NodeId(len_u32(self.nodes.len()) - 1))
     }
@@ -1233,6 +1221,50 @@ impl RecipeBuilder {
         } else {
             Err(RecipeError::InvalidParameter { what: "plane" })
         }
+    }
+
+    fn validate_node(&self, node: &Node) -> Result<(), RecipeError> {
+        let kind = &node.kind;
+        self.validate_kind(kind)?;
+        // Bindings must reference interned entries: hostile ids are typed
+        // errors here, never a downstream index panic.
+        for id in [node.source, node.issue].into_iter().flatten() {
+            if id.0 as usize >= self.sources.len() {
+                return Err(RecipeError::UnknownSource { source: id.0 });
+            }
+        }
+        if let Some(slot) = node.material
+            && slot.0 as usize >= self.slots.len()
+        {
+            return Err(RecipeError::UnknownSlot { slot: slot.0 });
+        }
+        if let Some(chart) = node.surface_chart {
+            chart.validate().map_err(RecipeError::SurfaceChart)?;
+            if !matches!(
+                (kind, chart),
+                (NodeKind::Extrude { .. }, SurfaceChart::Extrude { .. })
+                    | (NodeKind::Revolve { .. }, SurfaceChart::Revolve { .. })
+                    | (NodeKind::Loft { .. }, SurfaceChart::Loft { .. })
+                    | (NodeKind::Sweep { .. }, SurfaceChart::Sweep { .. })
+            ) {
+                return Err(RecipeError::SurfaceChart(ChartError::WrongOperation));
+            }
+            if let (
+                NodeKind::Loft { sections, .. },
+                SurfaceChart::Loft {
+                    reference_section, ..
+                },
+            ) = (kind, chart)
+                && reference_section as usize >= sections.len()
+            {
+                return Err(RecipeError::SurfaceChart(
+                    ChartError::InvalidReferenceSection {
+                        section: reference_section,
+                    },
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn validate_kind(&self, kind: &NodeKind) -> Result<(), RecipeError> {
@@ -2578,13 +2610,15 @@ mod tests {
         let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let src = b.source_ref("test:panel");
         let node = b
-            .with_source(src)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height,
+                    caps: CapMode::Both,
+                })
+                .with_source(src),
+            )
             .expect("valid extrude");
         b.finish(node).expect("valid recipe")
     }
@@ -2593,7 +2627,7 @@ mod tests {
     fn builder_validates_references_and_parameters() {
         let mut b = RecipeBuilder::new();
         assert_eq!(
-            b.add(NodeKind::Extrude {
+            b.add_node(NodeKind::Extrude {
                 profile: ProfileId(0),
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -2603,7 +2637,7 @@ mod tests {
         );
         let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         assert_eq!(
-            b.add(NodeKind::Extrude {
+            b.add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: -1.0,
@@ -2612,7 +2646,7 @@ mod tests {
             Err(RecipeError::InvalidParameter { what: "height" })
         );
         assert_eq!(
-            b.add(NodeKind::Csg {
+            b.add_node(NodeKind::Csg {
                 op: CsgOp::Union,
                 operands: vec![NodeId(5), NodeId(6)],
             }),
@@ -2620,7 +2654,7 @@ mod tests {
         );
         // Forward references are impossible: children must already exist.
         let node = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -2628,11 +2662,82 @@ mod tests {
             })
             .expect("valid");
         assert_eq!(
-            b.add(NodeKind::Instance {
+            b.add_node(NodeKind::Instance {
                 of: NodeId(node.0 + 1),
                 placement: Placement3::IDENTITY,
             }),
             Err(RecipeError::UnknownNode { node: 1 })
+        );
+    }
+
+    #[test]
+    fn failed_insertions_leave_no_node_or_binding_behind() {
+        let extrude = |profile, height| NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height,
+            caps: CapMode::Both,
+        };
+        let build = |failures: bool| {
+            let mut b = RecipeBuilder::new();
+            let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
+            let source = b.source_ref("test:panel");
+            let slot = b.material_slot("finish");
+            if failures {
+                // Invalid geometry with valid bindings, then valid geometry
+                // with each kind of invalid binding.
+                let bound = |kind| Node::new(kind).with_source(source).with_material(slot);
+                assert_eq!(
+                    b.add_node(bound(extrude(profile, -1.0))),
+                    Err(RecipeError::InvalidParameter { what: "height" })
+                );
+                for (node, error) in [
+                    (
+                        Node::new(extrude(profile, 1.0)).with_source(SourceId(9)),
+                        RecipeError::UnknownSource { source: 9 },
+                    ),
+                    (
+                        Node::new(extrude(profile, 1.0)).with_material(SlotId(9)),
+                        RecipeError::UnknownSlot { slot: 9 },
+                    ),
+                    (
+                        Node::new(extrude(profile, 1.0)).with_issue(SourceId(9)),
+                        RecipeError::UnknownSource { source: 9 },
+                    ),
+                    (
+                        Node::new(NodeKind::Primitive {
+                            spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                            placement: Placement3::IDENTITY,
+                        })
+                        .with_surface_chart(SurfaceChart::Extrude {
+                            wall: crate::chart::ChartTransform::IDENTITY,
+                            caps: crate::chart::ChartTransform::IDENTITY,
+                        }),
+                        RecipeError::SurfaceChart(ChartError::WrongOperation),
+                    ),
+                ] {
+                    assert_eq!(b.add_node(node), Err(error));
+                }
+                assert!(b.nodes.is_empty());
+            }
+            let first = b.add_node(extrude(profile, 1.0)).expect("unbound retry");
+            let second = b
+                .add_node(Node::new(extrude(profile, 2.0)).with_source(source))
+                .expect("bound retry");
+            assert_eq!((first, second), (NodeId(0), NodeId(1)));
+            let root = b
+                .add_node(NodeKind::Group {
+                    children: vec![first, second],
+                })
+                .expect("group");
+            b.finish(root).expect("recipe")
+        };
+        let retried = build(true);
+        assert_eq!(retried.node(NodeId(0)).unwrap().source, None);
+        assert_eq!(retried.node(NodeId(0)).unwrap().material, None);
+        assert_eq!(
+            retried.recipe_fingerprint(),
+            build(false).recipe_fingerprint()
         );
     }
 
@@ -2672,7 +2777,7 @@ mod tests {
             let mut b = RecipeBuilder::new();
             let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
             let child = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile,
                     placement: Placement3::IDENTITY,
                     height,
@@ -2680,7 +2785,7 @@ mod tests {
                 })
                 .expect("valid");
             let parent = b
-                .add(NodeKind::Transform {
+                .add_node(NodeKind::Transform {
                     child,
                     xf: Placement3::translate(1.0, 0.0, 0.0),
                 })
@@ -2726,15 +2831,17 @@ mod tests {
         .expect("valid imported triangle");
         builder.add_import(imported).expect("valid import");
         let body = builder
-            .with_source(source)
-            .with_material(material)
-            .with_issue(issue)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: 3.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: 3.0,
+                    caps: CapMode::Both,
+                })
+                .with_source(source)
+                .with_material(material)
+                .with_issue(issue),
+            )
             .expect("valid body");
         let recipe = builder.finish(body).expect("valid recipe");
         let original_root = recipe.root();
@@ -2786,20 +2893,20 @@ mod tests {
     fn csg_operand_counts_are_bounded_by_provenance() {
         let mut b = RecipeBuilder::new();
         let body = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box { size: [1.0; 3] },
                 placement: Placement3::IDENTITY,
             })
             .expect("valid box");
         assert!(
-            b.add(NodeKind::Csg {
+            b.add_node(NodeKind::Csg {
                 op: CsgOp::Union,
                 operands: vec![body; MAX_CSG_OPERANDS],
             })
             .is_ok()
         );
         assert_eq!(
-            b.add(NodeKind::Csg {
+            b.add_node(NodeKind::Csg {
                 op: CsgOp::Union,
                 operands: vec![body; MAX_CSG_OPERANDS + 1],
             }),
@@ -2881,7 +2988,7 @@ mod tests {
             let mut b = RecipeBuilder::new();
             let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
             let n = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile,
                     placement: Placement3::IDENTITY,
                     height: 3.0,
@@ -2912,7 +3019,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).expect("rect"));
         let body = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::IDENTITY,
                 height: 1.0,
@@ -2920,7 +3027,7 @@ mod tests {
             })
             .expect("valid");
         let stretch = b
-            .add(NodeKind::Stretch {
+            .add_node(NodeKind::Stretch {
                 child: body,
                 plane: Plane3 {
                     normal: [1.0, 0.0, 0.0],
@@ -2936,7 +3043,7 @@ mod tests {
     fn stretch_rejects_non_finite_lengths_at_construction() {
         let mut b = RecipeBuilder::new();
         let body = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [2.0, 1.0, 1.0],
                 },
@@ -2945,7 +3052,7 @@ mod tests {
             .unwrap();
         for length in [f64::NAN, f64::INFINITY] {
             assert_eq!(
-                b.add(NodeKind::Stretch {
+                b.add_node(NodeKind::Stretch {
                     child: body,
                     plane: Plane3 {
                         normal: [1.0, 0.0, 0.0],
@@ -2998,7 +3105,7 @@ mod tests {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(1.0, 1.0).expect("rect"));
         assert_eq!(
-            b.add(NodeKind::Extrude {
+            b.add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3 {
                     rows: [[f64::NAN; 4]; 3]
@@ -3133,7 +3240,7 @@ mod tests {
     fn grid_surface_validation() {
         let grid = |points: Vec<[f64; 3]>, rows, cols, close_u, close_w, thickness| {
             let mut b = RecipeBuilder::new();
-            b.add(NodeKind::GridSurface {
+            b.add_node(NodeKind::GridSurface {
                 points,
                 rows,
                 cols,
@@ -3202,7 +3309,7 @@ mod tests {
                 .flat_map(|r| (0..3).map(move |c| [f64::from(c), f64::from(r), 0.0]))
                 .collect();
             let n = b
-                .add(NodeKind::GridSurface {
+                .add_node(NodeKind::GridSurface {
                     points,
                     rows: 3,
                     cols: 3,

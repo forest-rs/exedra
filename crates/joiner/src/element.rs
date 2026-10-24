@@ -27,7 +27,9 @@
 use alloc::string::{String, ToString};
 
 use exedra_constructive::builders;
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{
+    CapMode, Node as RecipeNode, NodeKind, Placement3, Recipe, RecipeBuilder,
+};
 
 use crate::evidence::Evidence;
 use crate::geometry::{OrientedBox, Vec3};
@@ -98,14 +100,16 @@ impl Part {
         let slot = builder.material_slot(DEFAULT_SLOT);
         let profile = builder.add_profile(builders::rect_from_corner(size[0], size[1]).ok()?);
         let node = builder
-            .with_source(source)
-            .with_material(slot)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: size[2],
-                caps: CapMode::Both,
-            })
+            .add_node(
+                RecipeNode::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: size[2],
+                    caps: CapMode::Both,
+                })
+                .with_source(source)
+                .with_material(slot),
+            )
             .ok()?;
         builder.finish(node).ok()
     }

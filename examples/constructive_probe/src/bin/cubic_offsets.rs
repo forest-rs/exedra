@@ -17,7 +17,7 @@ fn extrude(profile: Profile2, height: f64) -> Recipe {
     let mut builder = RecipeBuilder::new();
     let profile = builder.add_profile(profile);
     let node = builder
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,
             height,

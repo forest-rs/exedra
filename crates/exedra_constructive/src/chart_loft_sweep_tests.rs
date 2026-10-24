@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use crate::ir::Node;
 use crate::{
     ir::{FramePolicy, LoftPolicy, LoftSection, Path3, PathClosure, PathJoin},
     path::{PathSegment3, discretize_path},
@@ -319,9 +320,11 @@ fn retained(chart: SurfaceChart, smooth: bool) -> Recipe {
         }
     };
     let root = b
-        .with_source(source)
-        .with_surface_chart(chart)
-        .add(kind)
+        .add_node(
+            Node::new(kind)
+                .with_source(source)
+                .with_surface_chart(chart),
+        )
         .unwrap();
     b.finish(root).unwrap()
 }
@@ -401,14 +404,17 @@ fn invalid_loft_metrics_reference_and_chart_rounding_fail_typed() {
     let mut b = RecipeBuilder::new();
     let p = b.add_profile(profile.clone());
     assert!(matches!(
-        b.with_surface_chart(loft(2, 1.0)).add(NodeKind::Loft {
-            sections: vec![
-                LoftSection::new(sections[0].0, p),
-                LoftSection::new(sections[1].0, p)
-            ],
-            policy: LoftPolicy::Ruled,
-            caps: CapMode::Both
-        }),
+        b.add_node(
+            Node::new(NodeKind::Loft {
+                sections: vec![
+                    LoftSection::new(sections[0].0, p),
+                    LoftSection::new(sections[1].0, p)
+                ],
+                policy: LoftPolicy::Ruled,
+                caps: CapMode::Both
+            })
+            .with_surface_chart(loft(2, 1.0))
+        ),
         Err(RecipeError::SurfaceChart(
             ChartError::InvalidReferenceSection { section: 2 }
         ))
@@ -463,10 +469,12 @@ fn existing_metric_fingerprints_stay_unchanged() {
                 caps: CapMode::Both,
             }
         };
-        if let Some(chart) = metric {
-            b.with_surface_chart(chart);
-        }
-        let root = b.add(kind).unwrap();
+        let root = b
+            .add_node(Node {
+                surface_chart: metric,
+                ..Node::new(kind)
+            })
+            .unwrap();
         let recipe = b.finish(root).unwrap();
         assert_eq!(
             recipe.recipe_fingerprint().0,

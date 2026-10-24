@@ -3,7 +3,9 @@
 
 //! An authored dàjǐ: fitted ridge-foot closures, a fillet course, and clay crown.
 
-use exedra_constructive::ir::{NodeKind, Placement3, Plane3, PlaneSide, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{
+    Node, NodeKind, Placement3, Plane3, PlaneSide, Recipe, RecipeBuilder,
+};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 use exedra_constructive::section::CutCap;
 
@@ -109,9 +111,8 @@ pub(super) fn foot(section: &RoofSection, width: f64, end: bool) -> Result<Recip
         point[1] = -point[1];
     }
     let profile = builder.add_profile(geometry::polygon(&outline)?);
-    let half = builder
-        .with_material(material)
-        .add(NodeKind::ExtrudeToPlane {
+    let half = builder.add_node(
+        Node::new(NodeKind::ExtrudeToPlane {
             profile,
             placement: Placement3::from_axes(
                 [1.0, 0.0, 0.0],
@@ -123,8 +124,10 @@ pub(super) fn foot(section: &RoofSection, width: f64, end: bool) -> Result<Recip
                 normal: [0.0, 1.0, 0.0],
                 distance: 0.0,
             },
-        })?;
-    let half = builder.add(NodeKind::PlaneCut {
+        })
+        .with_material(material),
+    )?;
+    let half = builder.add_node(NodeKind::PlaneCut {
         child: half,
         plane: Plane3 {
             normal: [0.0, 0.0, 1.0],
@@ -136,14 +139,14 @@ pub(super) fn foot(section: &RoofSection, width: f64, end: bool) -> Result<Recip
             material: Some(material),
         },
     })?;
-    let other = builder.add(NodeKind::Mirror {
+    let other = builder.add_node(NodeKind::Mirror {
         child: half,
         plane: Plane3 {
             normal: [0.0, 1.0, 0.0],
             distance: 0.0,
         },
     })?;
-    let root = builder.add(NodeKind::Group {
+    let root = builder.add_node(NodeKind::Group {
         children: vec![half, other],
     })?;
     Ok(builder.finish(root)?)

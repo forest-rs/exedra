@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{CompilePolicy, PartCompiler, compose, flatten};
-use exedra_constructive::ir::{CsgOp, NodeKind, PrimitiveSpec, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{CsgOp, Node, NodeKind, PrimitiveSpec, Recipe, RecipeBuilder};
 use exedra_mesh::Mesh;
 use std::{collections::BTreeSet, f64::consts::FRAC_PI_2, sync::Arc};
 
@@ -13,17 +13,19 @@ fn boxes(size: f64, count: usize) -> Recipe {
     let children = (0..count)
         .map(|i| {
             builder
-                .with_material(slot)
-                .add(NodeKind::Primitive {
-                    spec: PrimitiveSpec::Box {
-                        size: [size, 0.1, size],
-                    },
-                    placement: Placement3::translate(0.0, i as f64 * 0.2, 0.0),
-                })
+                .add_node(
+                    Node::new(NodeKind::Primitive {
+                        spec: PrimitiveSpec::Box {
+                            size: [size, 0.1, size],
+                        },
+                        placement: Placement3::translate(0.0, i as f64 * 0.2, 0.0),
+                    })
+                    .with_material(slot),
+                )
                 .unwrap()
         })
         .collect();
-    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let root = builder.add_node(NodeKind::Group { children }).unwrap();
     builder.finish(root).unwrap()
 }
 
@@ -355,25 +357,25 @@ fn material_pose_and_cache_release_keep_old_exports_usable_but_resized_sources_a
 fn error_level_partial_geometry_cannot_be_hidden_by_frame_nodes_or_cache_hits() {
     let mut builder = RecipeBuilder::new();
     let a = builder
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box { size: [1.0; 3] },
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let b = builder
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box { size: [1.0; 3] },
             placement: Placement3::translate(1.0, 1.0, 0.0),
         })
         .unwrap();
     let refused = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: vec![a, b],
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![a, refused],
         })
         .unwrap();

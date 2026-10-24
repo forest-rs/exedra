@@ -4,7 +4,7 @@
 use super::*;
 use crate::{CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::builders;
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder};
 use exedra_mesh::{BuildParams, Mesh};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -15,13 +15,15 @@ fn example() -> (Assembly, CompiledParts) {
     let front = b.material_slot("front");
     let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
     let node = b
-        .with_material(front)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 10.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 10.0,
+                caps: CapMode::Both,
+            })
+            .with_material(front),
+        )
         .unwrap();
     let recipe = b.finish(node).unwrap();
 
@@ -301,14 +303,14 @@ fn empty_intersection_exports_identity_without_empty_geometry() {
     let mut builder = RecipeBuilder::new();
     let operands = [0.0, 2.0, 4.0].map(|x| {
         builder
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box { size: [1.0; 3] },
                 placement: Placement3::translate(x, 0.0, 0.0),
             })
             .expect("box")
     });
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Intersection,
             operands: operands.to_vec(),
         })

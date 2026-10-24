@@ -12,7 +12,8 @@
 use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::evaluate::{Fidelity, evaluate};
 use exedra_constructive::ir::{
-    CapMode, LoftPolicy, LoftSection, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, LoftPolicy, LoftSection, Node, NodeKind, Placement3, PrimitiveSpec, Recipe,
+    RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 use exedra_constructive::tessellate::EvalPolicy;
@@ -53,12 +54,14 @@ fn loft(sections: &[(Placement3, Profile2)], policy: LoftPolicy) -> Recipe {
         .map(|(placement, profile)| LoftSection::new(*placement, b.add_profile(profile.clone())))
         .collect();
     let root = b
-        .with_material(finish)
-        .add(NodeKind::Loft {
-            sections,
-            policy,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Loft {
+                sections,
+                policy,
+                caps: CapMode::Both,
+            })
+            .with_material(finish),
+        )
         .expect("loft");
     b.finish(root).expect("recipe")
 }
@@ -117,12 +120,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut b = RecipeBuilder::new();
         let finish = b.material_slot("finish");
         let id = b.add_profile(profile.clone());
-        let root = b.with_material(finish).add(NodeKind::Extrude {
-            profile: id,
-            placement: *placement,
-            height: 0.025,
-            caps: CapMode::Both,
-        })?;
+        let root = b.add_node(
+            Node::new(NodeKind::Extrude {
+                profile: id,
+                placement: *placement,
+                height: 0.025,
+                caps: CapMode::Both,
+            })
+            .with_material(finish),
+        )?;
         add(
             &mut assembly,
             &format!("section-{i}"),
@@ -133,14 +139,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (seam, _) = profile.outer().iter_with_starts().next().expect("seam");
         let mut b = RecipeBuilder::new();
         let finish = b.material_slot("finish");
-        let root = b.with_material(finish).add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box { size: [0.06; 3] },
-            placement: Placement3::translate(
-                placement.rows[0][3] + seam.x - 0.03,
-                placement.rows[1][3] + seam.y - 0.03,
-                placement.rows[2][3] + 0.025,
-            ),
-        })?;
+        let root = b.add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [0.06; 3] },
+                placement: Placement3::translate(
+                    placement.rows[0][3] + seam.x - 0.03,
+                    placement.rows[1][3] + seam.y - 0.03,
+                    placement.rows[2][3] + 0.025,
+                ),
+            })
+            .with_material(finish),
+        )?;
         add(
             &mut assembly,
             &format!("seam-{i}"),

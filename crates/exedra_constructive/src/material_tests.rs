@@ -8,18 +8,18 @@ use alloc::vec::Vec;
 use crate::cache::EvalCache;
 use crate::evaluate::{Fidelity, evaluate, evaluate_with_cache};
 use crate::ir::{
-    CsgOp, NodeId, NodeKind, Placement3, Plane3, PrimitiveSpec, RecipeBuilder, SlotId,
+    CsgOp, Node, NodeId, NodeKind, Placement3, Plane3, PrimitiveSpec, RecipeBuilder, SlotId,
 };
 use crate::tessellate::EvalPolicy;
 
 fn cube(builder: &mut RecipeBuilder, material: Option<SlotId>, x: f64) -> NodeId {
-    if let Some(slot) = material {
-        builder.with_material(slot);
-    }
     builder
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box { size: [1.0; 3] },
-            placement: Placement3::translate(x, 0.0, 0.0),
+        .add_node(Node {
+            material,
+            ..Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                placement: Placement3::translate(x, 0.0, 0.0),
+            })
         })
         .unwrap()
 }
@@ -30,23 +30,27 @@ fn recessed_panel_accepts_distinct_shell_and_cutter_slots() {
     let front = builder.material_slot("front");
     let cutter = builder.material_slot("cutter");
     let shell = builder
-        .with_material(front)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box {
-                size: [4.0, 4.0, 2.0],
-            },
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [4.0, 4.0, 2.0],
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(front),
+        )
         .unwrap();
     let recess = builder
-        .with_material(cutter)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box { size: [2.0; 3] },
-            placement: Placement3::translate(1.0, 1.0, 1.0),
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [2.0; 3] },
+                placement: Placement3::translate(1.0, 1.0, 1.0),
+            })
+            .with_material(cutter),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![shell, recess],
         })
@@ -64,51 +68,63 @@ fn inherited_slots_are_occurrence_local_and_cache_independent() {
     let shared = cube(&mut builder, None, 0.0);
     let explicit = cube(&mut builder, Some(b), 2.0);
     let group = builder
-        .with_material(a)
-        .add(NodeKind::Group {
-            children: vec![shared, explicit],
-        })
+        .add_node(
+            Node::new(NodeKind::Group {
+                children: vec![shared, explicit],
+            })
+            .with_material(a),
+        )
         .unwrap();
     let transform = builder
-        .with_material(b)
-        .add(NodeKind::Transform {
-            child: shared,
-            xf: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Transform {
+                child: shared,
+                xf: Placement3::IDENTITY,
+            })
+            .with_material(b),
+        )
         .unwrap();
     let mirror = builder
-        .with_material(a)
-        .add(NodeKind::Mirror {
-            child: shared,
-            plane: Plane3 {
-                normal: [1.0, 0.0, 0.0],
-                distance: 0.0,
-            },
-        })
+        .add_node(
+            Node::new(NodeKind::Mirror {
+                child: shared,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.0,
+                },
+            })
+            .with_material(a),
+        )
         .unwrap();
     let first_instance = builder
-        .with_material(a)
-        .add(NodeKind::Instance {
-            of: shared,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Instance {
+                of: shared,
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(a),
+        )
         .unwrap();
     let second_instance = builder
-        .with_material(b)
-        .add(NodeKind::Instance {
-            of: shared,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Instance {
+                of: shared,
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(b),
+        )
         .unwrap();
     let explicit_instance = builder
-        .with_material(a)
-        .add(NodeKind::Instance {
-            of: explicit,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Instance {
+                of: explicit,
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(a),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![
                 group,
                 transform,
@@ -161,14 +177,16 @@ fn exact_and_mesh_stretches_preserve_effective_child_slots() {
     let inherited = cube(&mut builder, None, 0.0);
     let explicit = cube(&mut builder, Some(b), 0.0);
     let transform = builder
-        .with_material(b)
-        .add(NodeKind::Transform {
-            child: inherited,
-            xf: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Transform {
+                child: inherited,
+                xf: Placement3::IDENTITY,
+            })
+            .with_material(b),
+        )
         .unwrap();
     let group = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![inherited, explicit],
         })
         .unwrap();
@@ -180,17 +198,19 @@ fn exact_and_mesh_stretches_preserve_effective_child_slots() {
     for child in [inherited, explicit, transform, group] {
         stretches.push(
             builder
-                .with_material(a)
-                .add(NodeKind::Stretch {
-                    child,
-                    plane,
-                    length: 0.2,
-                })
+                .add_node(
+                    Node::new(NodeKind::Stretch {
+                        child,
+                        plane,
+                        length: 0.2,
+                    })
+                    .with_material(a),
+                )
                 .unwrap(),
         );
     }
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: stretches,
         })
         .unwrap();
@@ -221,11 +241,13 @@ fn boolean_faces_preserve_uniform_and_mixed_slots() {
             let first = cube(&mut builder, Some(a), 0.0);
             let second = cube(&mut builder, mixed.then_some(b), 0.5);
             let root = builder
-                .with_material(a)
-                .add(NodeKind::Csg {
-                    op,
-                    operands: vec![first, second],
-                })
+                .add_node(
+                    Node::new(NodeKind::Csg {
+                        op,
+                        operands: vec![first, second],
+                    })
+                    .with_material(a),
+                )
                 .unwrap();
             let recipe = builder.finish(root).unwrap();
             let mut cache = EvalCache::new();
@@ -264,35 +286,41 @@ fn imported_bodies_keep_their_slot_through_mirror_and_mesh_stretch() {
         .add_import(evaluated.bodies[0].body.mesh.clone())
         .unwrap();
     let imported = builder
-        .with_material(b)
-        .add(NodeKind::MeshImport {
-            import,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::MeshImport {
+                import,
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(b),
+        )
         .unwrap();
     let mirrored = builder
-        .with_material(a)
-        .add(NodeKind::Mirror {
-            child: imported,
-            plane: Plane3 {
-                normal: [1.0, 0.0, 0.0],
-                distance: 0.0,
-            },
-        })
+        .add_node(
+            Node::new(NodeKind::Mirror {
+                child: imported,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.0,
+                },
+            })
+            .with_material(a),
+        )
         .unwrap();
     let stretched = builder
-        .with_material(a)
-        .add(NodeKind::Stretch {
-            child: imported,
-            plane: Plane3 {
-                normal: [1.0, 0.0, 0.0],
-                distance: 0.5,
-            },
-            length: 0.2,
-        })
+        .add_node(
+            Node::new(NodeKind::Stretch {
+                child: imported,
+                plane: Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.5,
+                },
+                length: 0.2,
+            })
+            .with_material(a),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![imported, mirrored, stretched],
         })
         .unwrap();
@@ -319,13 +347,13 @@ fn boolean_operand_groups_preserve_assigned_and_unassigned_faces() {
     let assigned = cube(&mut builder, Some(a), 0.0);
     let unassigned = cube(&mut builder, None, 2.0);
     let group = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![assigned, unassigned],
         })
         .unwrap();
     let cutter = cube(&mut builder, Some(a), 0.5);
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![group, cutter],
         })
@@ -358,37 +386,39 @@ fn repeated_partial_instances_do_not_hide_topology_refusals_from_booleans() {
     let b = builder.material_slot("b");
     let first = cube(&mut builder, Some(a), 0.0);
     let second = builder
-        .with_material(b)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box { size: [1.0; 3] },
-            placement: Placement3::translate(1.0, 1.0, 0.0),
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                placement: Placement3::translate(1.0, 1.0, 0.0),
+            })
+            .with_material(b),
+        )
         .unwrap();
     let refused = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: vec![first, second],
         })
         .unwrap();
     let partial = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![first, refused],
         })
         .unwrap();
     let instance = builder
-        .add(NodeKind::Instance {
+        .add_node(NodeKind::Instance {
             of: partial,
             placement: Placement3::IDENTITY,
         })
         .unwrap();
     let consuming = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: vec![instance, first],
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: vec![consuming, consuming],
         })
         .unwrap();
@@ -437,22 +467,24 @@ fn boolean_cached_face_slots_do_not_capture_inherited_defaults() {
     let shell = cube(&mut builder, None, 0.0);
     let cutter = cube(&mut builder, Some(cutter_slot), 0.5);
     let shared = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![shell, cutter],
         })
         .unwrap();
     let children = [red, blue].map(|slot| {
         builder
-            .with_material(slot)
-            .add(NodeKind::Transform {
-                child: shared,
-                xf: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::Transform {
+                    child: shared,
+                    xf: Placement3::IDENTITY,
+                })
+                .with_material(slot),
+            )
             .unwrap()
     });
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: children.to_vec(),
         })
         .unwrap();
@@ -480,22 +512,24 @@ fn nested_boolean_preserves_distinct_slots_within_one_operand() {
     let first = cube(&mut builder, Some(a), 0.0);
     let second = cube(&mut builder, Some(b), 0.5);
     let union = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: vec![first, second],
         })
         .unwrap();
     let cutter = builder
-        .with_material(c)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box {
-                size: [0.5, 0.5, 1.0],
-            },
-            placement: Placement3::translate(0.75, 0.25, 0.5),
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [0.5, 0.5, 1.0],
+                },
+                placement: Placement3::translate(0.75, 0.25, 0.5),
+            })
+            .with_material(c),
+        )
         .unwrap();
     let root = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![union, cutter],
         })
@@ -559,7 +593,7 @@ fn coincident_faces_and_cutters_use_operand_order_without_merging_slots() {
                 let shell = cube(&mut builder, Some(default), 0.0);
                 operands.insert(0, shell);
             }
-            let root = builder.add(NodeKind::Csg { op, operands }).unwrap();
+            let root = builder.add_node(NodeKind::Csg { op, operands }).unwrap();
             let recipe = builder.finish(root).unwrap();
             assert_eq!(recipe.slots(), &["a", "b", "shell"]);
             let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
@@ -583,13 +617,13 @@ fn mixed_boolean_slots_survive_mirrors_instances_and_mesh_stretch() {
     let shell = cube(&mut builder, Some(a), 0.0);
     let cutter = cube(&mut builder, Some(b), 0.5);
     let difference = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![shell, cutter],
         })
         .unwrap();
     let mirror = builder
-        .add(NodeKind::Mirror {
+        .add_node(NodeKind::Mirror {
             child: difference,
             plane: Plane3 {
                 normal: [1.0, 0.0, 0.0],
@@ -598,7 +632,7 @@ fn mixed_boolean_slots_survive_mirrors_instances_and_mesh_stretch() {
         })
         .unwrap();
     let instance = builder
-        .add(NodeKind::Instance {
+        .add_node(NodeKind::Instance {
             of: difference,
             placement: Placement3 {
                 rows: [
@@ -618,7 +652,7 @@ fn mixed_boolean_slots_survive_mirrors_instances_and_mesh_stretch() {
         for distance in [-1.0, 0.25, 2.0] {
             children.push(
                 builder
-                    .add(NodeKind::Stretch {
+                    .add_node(NodeKind::Stretch {
                         child: difference,
                         plane: Plane3 {
                             normal: [1.0, 0.0, 0.0],
@@ -633,7 +667,7 @@ fn mixed_boolean_slots_survive_mirrors_instances_and_mesh_stretch() {
             expected_bounds.push(([min, 0.0, 0.0], [max, 1.0, 1.0]));
         }
     }
-    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let root = builder.add_node(NodeKind::Group { children }).unwrap();
     let recipe = builder.finish(root).unwrap();
     let mut cache = EvalCache::new();
     for _ in 0..2 {

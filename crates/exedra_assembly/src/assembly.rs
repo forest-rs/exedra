@@ -823,7 +823,7 @@ fn finite_placement(placement: &Placement3) -> bool {
 mod tests {
     use super::*;
     use exedra_constructive::builders;
-    use exedra_constructive::ir::{CapMode, NodeKind, RecipeBuilder};
+    use exedra_constructive::ir::{CapMode, Node, NodeKind, RecipeBuilder};
 
     fn test_recipe() -> Recipe {
         let mut b = RecipeBuilder::new();
@@ -832,13 +832,15 @@ mod tests {
         let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let _ = body;
         let node = b
-            .with_material(front)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: 10.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: 10.0,
+                    caps: CapMode::Both,
+                })
+                .with_material(front),
+            )
             .unwrap();
         b.finish(node).unwrap()
     }
@@ -848,13 +850,15 @@ mod tests {
         let surface = b.material_slot("surface");
         let profile = b.add_profile(builders::rect_from_corner(40.0, 20.0).unwrap());
         let node = b
-            .with_material(surface)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height: 10.0,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height: 10.0,
+                    caps: CapMode::Both,
+                })
+                .with_material(surface),
+            )
             .unwrap();
         b.finish(node).unwrap()
     }

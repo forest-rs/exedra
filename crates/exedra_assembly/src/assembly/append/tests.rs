@@ -4,7 +4,7 @@
 use super::*;
 use crate::{CompilePolicy, InstancePath, PartCompiler, assembly_fingerprint, flatten};
 use alloc::sync::Arc;
-use exedra_constructive::ir::{NodeKind, PrimitiveSpec, RecipeBuilder};
+use exedra_constructive::ir::{Node, NodeKind, PrimitiveSpec, RecipeBuilder};
 use exedra_mesh::Mesh;
 
 fn recipe() -> Recipe {
@@ -16,11 +16,13 @@ fn sized_recipe(size: f64) -> Recipe {
     let surface = builder.material_slot("surface");
     builder.material_slot("edge");
     let root = builder
-        .with_material(surface)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box { size: [size; 3] },
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size: [size; 3] },
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(surface),
+        )
         .unwrap();
     builder.finish(root).unwrap()
 }

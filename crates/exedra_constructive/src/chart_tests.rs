@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use crate::ir::Node;
 use crate::{
     builders,
     cache::EvalCache,
@@ -65,14 +66,16 @@ fn recipe(chart: SurfaceChart) -> Recipe {
     let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).unwrap());
     let source = b.source_ref("authored-panel");
     let root = b
-        .with_source(source)
-        .with_surface_chart(chart)
-        .add(NodeKind::Extrude {
-            profile,
-            height: 3.0,
-            caps: CapMode::Both,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                height: 3.0,
+                caps: CapMode::Both,
+                placement: Placement3::IDENTITY,
+            })
+            .with_source(source)
+            .with_surface_chart(chart),
+        )
         .unwrap();
     b.finish(root).unwrap()
 }
@@ -387,7 +390,7 @@ fn invalid_metrics_and_uv_overflow_fail_explicitly() {
         caps: CapMode::Both,
     };
     assert_eq!(
-        builder.with_surface_chart(revolution()).add(kind.clone()),
+        builder.add_node(Node::new(kind.clone()).with_surface_chart(revolution())),
         Err(RecipeError::SurfaceChart(ChartError::WrongOperation))
     );
     let invalid = SurfaceChart::Extrude {
@@ -398,7 +401,7 @@ fn invalid_metrics_and_uv_overflow_fail_explicitly() {
         caps: ChartTransform::IDENTITY,
     };
     assert_eq!(
-        builder.with_surface_chart(invalid).add(kind),
+        builder.add_node(Node::new(kind).with_surface_chart(invalid)),
         Err(RecipeError::SurfaceChart(ChartError::InvalidTransform))
     );
     let p = builders::rect_from_corner(2.0, 1.0).unwrap();
@@ -470,13 +473,15 @@ fn retained_revolution_chart_roundtrips_all_metric_fields() {
         },
     };
     let root = b
-        .with_surface_chart(chart)
-        .add(NodeKind::Revolve {
-            profile,
-            placement: Placement3::IDENTITY,
-            sweep: core::f64::consts::TAU,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Revolve {
+                profile,
+                placement: Placement3::IDENTITY,
+                sweep: core::f64::consts::TAU,
+                caps: CapMode::Both,
+            })
+            .with_surface_chart(chart),
+        )
         .unwrap();
     let recipe = b.finish(root).unwrap();
     let parsed = crate::text::parse_recipe(&crate::text::dump_recipe(&recipe)).unwrap();
@@ -535,16 +540,18 @@ fn charted_extrusion_stretch_uses_the_mapped_mesh_path() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).unwrap());
     let child = b
-        .with_surface_chart(extrusion())
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 3.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 3.0,
+                caps: CapMode::Both,
+            })
+            .with_surface_chart(extrusion()),
+        )
         .unwrap();
     let root = b
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child,
             plane: Plane3 {
                 normal: [0.0, 0.0, 1.0],

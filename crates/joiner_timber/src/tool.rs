@@ -4,7 +4,7 @@
 //! Constructive tool building at the rule-library boundary.
 
 use exedra_constructive::builders;
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder};
 use exedra_constructive::offset::CornerPolicy;
 use exedra_constructive::profile::Profile2;
 use joiner::{OrientedBox, RuleError, ToolSolid, Vec3};
@@ -46,12 +46,15 @@ pub(crate) fn profile_tool_world(
     let mut builder = RecipeBuilder::new();
     let source = builder.source_ref(&alloc::format!("joiner_timber:tool/{key}"));
     let profile = builder.add_profile(profile);
-    let node = builder.with_source(source).add(NodeKind::Extrude {
-        profile,
-        placement: Placement3::IDENTITY,
-        height,
-        caps: CapMode::Both,
-    })?;
+    let node = builder.add_node(
+        Node::new(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height,
+            caps: CapMode::Both,
+        })
+        .with_source(source),
+    )?;
     let recipe = builder.finish(node)?;
     Ok(ToolSolid::new(
         key,

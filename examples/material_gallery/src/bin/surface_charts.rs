@@ -9,7 +9,7 @@ use exedra_constructive::{
     builders,
     chart::{ChartTransform, LoftStations, SurfaceChart},
     ir::{
-        CapMode, LoftPolicy, LoftSection, NodeKind, Path3, PathClosure, PathJoin, Placement3,
+        CapMode, LoftPolicy, LoftSection, Node, NodeKind, Path3, PathClosure, PathJoin, Placement3,
         Recipe, RecipeBuilder,
     },
     path::PathSegment3,
@@ -63,22 +63,24 @@ fn vault() -> Recipe {
     let profile = b.add_profile(p);
     let slot = b.material_slot("surface");
     let root = b
-        .with_material(slot)
-        .with_surface_chart(SurfaceChart::Extrude {
-            wall: ChartTransform::IDENTITY,
-            caps: ChartTransform::IDENTITY,
-        })
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::euler_extrinsic_xyz_then_translate(
-                std::f64::consts::FRAC_PI_2,
-                0.0,
-                0.0,
-                [0.0, 4.5, 0.0],
-            ),
-            height: 4.5,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::euler_extrinsic_xyz_then_translate(
+                    std::f64::consts::FRAC_PI_2,
+                    0.0,
+                    0.0,
+                    [0.0, 4.5, 0.0],
+                ),
+                height: 4.5,
+                caps: CapMode::Both,
+            })
+            .with_material(slot)
+            .with_surface_chart(SurfaceChart::Extrude {
+                wall: ChartTransform::IDENTITY,
+                caps: ChartTransform::IDENTITY,
+            }),
+        )
         .unwrap();
     b.finish(root).unwrap()
 }
@@ -103,23 +105,25 @@ fn vessel() -> Recipe {
     let profile = b.add_profile(p);
     let slot = b.material_slot("surface");
     let root = b
-        .with_material(slot)
-        .with_surface_chart(SurfaceChart::Revolve {
-            reference_radius: 1.0,
-            wall: ChartTransform::IDENTITY,
-            caps: ChartTransform::IDENTITY,
-        })
-        .add(NodeKind::Revolve {
-            profile,
-            placement: Placement3::euler_extrinsic_xyz_then_translate(
-                std::f64::consts::FRAC_PI_2,
-                0.0,
-                0.0,
-                [0.0; 3],
-            ),
-            sweep: std::f64::consts::TAU,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Revolve {
+                profile,
+                placement: Placement3::euler_extrinsic_xyz_then_translate(
+                    std::f64::consts::FRAC_PI_2,
+                    0.0,
+                    0.0,
+                    [0.0; 3],
+                ),
+                sweep: std::f64::consts::TAU,
+                caps: CapMode::Both,
+            })
+            .with_material(slot)
+            .with_surface_chart(SurfaceChart::Revolve {
+                reference_radius: 1.0,
+                wall: ChartTransform::IDENTITY,
+                caps: ChartTransform::IDENTITY,
+            }),
+        )
         .unwrap();
     b.finish(root).unwrap()
 }
@@ -142,21 +146,23 @@ fn draped_strip() -> Recipe {
         })
         .collect();
     let root = b
-        .with_material(slot)
-        .with_surface_chart(SurfaceChart::Loft {
-            reference_section: 0,
-            // Authored undeformed length: 2 m per uniformly parameterized band.
-            // The chart deliberately stretches as this strip drapes.
-            rest_length: 6.0,
-            stations: LoftStations::SectionIndex,
-            wall: ChartTransform::IDENTITY,
-            caps: ChartTransform::IDENTITY,
-        })
-        .add(NodeKind::Loft {
-            sections,
-            policy: LoftPolicy::Smooth,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Loft {
+                sections,
+                policy: LoftPolicy::Smooth,
+                caps: CapMode::Both,
+            })
+            .with_material(slot)
+            .with_surface_chart(SurfaceChart::Loft {
+                reference_section: 0,
+                // Authored undeformed length: 2 m per uniformly parameterized band.
+                // The chart deliberately stretches as this strip drapes.
+                rest_length: 6.0,
+                stations: LoftStations::SectionIndex,
+                wall: ChartTransform::IDENTITY,
+                caps: ChartTransform::IDENTITY,
+            }),
+        )
         .unwrap();
     b.finish(root).unwrap()
 }
@@ -166,28 +172,30 @@ fn curved_rail() -> Recipe {
     let profile = b.add_profile(builders::rect_centered(0.5, 0.8).unwrap());
     let slot = b.material_slot("surface");
     let root = b
-        .with_material(slot)
-        .with_surface_chart(SurfaceChart::Sweep {
-            wall: ChartTransform::IDENTITY,
-            caps: ChartTransform::IDENTITY,
-        })
-        .add(NodeKind::Sweep {
-            section: exedra_constructive::ir::SectionLaw::IDENTITY,
-            profile,
-            path: Path3::Curves {
-                start: [0.0, 0.0, 0.6],
-                segments: vec![PathSegment3::Cubic {
-                    control1: [0.0, 2.0, 0.6],
-                    control2: [2.0, 3.0, 1.8],
-                    to: [2.0, 5.4, 1.8],
-                }],
-                section_x: [1.0, 0.0, 0.0],
-                section_origin: [0.0; 2],
-                closure: PathClosure::Open,
-                joins: PathJoin::Smooth,
-            },
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Sweep {
+                section: exedra_constructive::ir::SectionLaw::IDENTITY,
+                profile,
+                path: Path3::Curves {
+                    start: [0.0, 0.0, 0.6],
+                    segments: vec![PathSegment3::Cubic {
+                        control1: [0.0, 2.0, 0.6],
+                        control2: [2.0, 3.0, 1.8],
+                        to: [2.0, 5.4, 1.8],
+                    }],
+                    section_x: [1.0, 0.0, 0.0],
+                    section_origin: [0.0; 2],
+                    closure: PathClosure::Open,
+                    joins: PathJoin::Smooth,
+                },
+                caps: CapMode::Both,
+            })
+            .with_material(slot)
+            .with_surface_chart(SurfaceChart::Sweep {
+                wall: ChartTransform::IDENTITY,
+                caps: ChartTransform::IDENTITY,
+            }),
+        )
         .unwrap();
     b.finish(root).unwrap()
 }

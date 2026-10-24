@@ -179,7 +179,7 @@ fn multi_body_parts_batch_every_body_with_shared_transforms() {
     let children = (0..2)
         .map(|i| {
             builder
-                .add(NodeKind::Primitive {
+                .add_node(NodeKind::Primitive {
                     spec: PrimitiveSpec::Box {
                         size: [0.5, 0.1, 0.5],
                     },
@@ -188,7 +188,7 @@ fn multi_body_parts_batch_every_body_with_shared_transforms() {
                 .unwrap()
         })
         .collect();
-    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let root = builder.add_node(NodeKind::Group { children }).unwrap();
     let mut assembly = Assembly::new();
     let part = assembly
         .add_recipe_part("pair", builder.finish(root).unwrap())

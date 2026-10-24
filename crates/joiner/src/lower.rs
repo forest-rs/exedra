@@ -30,8 +30,8 @@ use alloc::vec::Vec;
 
 use exedra_assembly::{Assembly, AssemblyError, InstancePath, PartId, PartSource};
 use exedra_constructive::ir::{
-    CsgOp, ImportId, LoftSection, NodeId, NodeKind, Placement3, ProfileId, Recipe, RecipeBuilder,
-    RecipeError, SlotId, SourceId,
+    CsgOp, ImportId, LoftSection, Node, NodeId, NodeKind, Placement3, ProfileId, Recipe,
+    RecipeBuilder, RecipeError, SlotId, SourceId,
 };
 use hashbrown::HashMap;
 
@@ -271,7 +271,7 @@ pub fn compose(construction: &Construction, element: &Element) -> Result<Recipe,
             let mut node = splice(&mut builder, &tool.recipe)
                 .map_err(|error| error.into_lower(&element.key, &tool.key))?;
             if tool.placement != Placement3::IDENTITY {
-                node = builder.add(NodeKind::Transform {
+                node = builder.add_node(NodeKind::Transform {
                     child: node,
                     xf: tool.placement,
                 })?;
@@ -279,9 +279,8 @@ pub fn compose(construction: &Construction, element: &Element) -> Result<Recipe,
             operands.push(node);
             index += 1;
         }
-        root = builder
-            .with_material(material)
-            .add(NodeKind::Csg { op, operands })?;
+        root =
+            builder.add_node(Node::new(NodeKind::Csg { op, operands }).with_material(material))?;
     }
     Ok(builder.finish(root)?)
 }
@@ -352,16 +351,19 @@ fn splice(builder: &mut RecipeBuilder, source: &Recipe) -> Result<NodeId, Splice
     for node in source.nodes() {
         let kind = remap(&node.kind, &profiles, &nodes, &imports, &sources)
             .ok_or(SpliceError::UnsupportedNode)?;
-        if let Some(id) = node.source.and_then(|id| sources.get(id.0 as usize)) {
-            builder.with_source(*id);
-        }
-        if let Some(id) = node.material.and_then(|id| slots.get(id.0 as usize)) {
-            builder.with_material(*id);
-        }
-        if let Some(id) = node.issue.and_then(|id| sources.get(id.0 as usize)) {
-            builder.with_issue(*id);
-        }
-        nodes.push(builder.add(kind)?);
+        let source_of =
+            |id: Option<SourceId>| id.and_then(|id| sources.get(id.0 as usize).copied());
+        nodes.push(
+            builder.add_node(Node {
+                surface_chart: node.surface_chart,
+                kind,
+                source: source_of(node.source),
+                material: node
+                    .material
+                    .and_then(|id| slots.get(id.0 as usize).copied()),
+                issue: source_of(node.issue),
+            })?,
+        );
     }
     nodes
         .get(source.root().0 as usize)

@@ -14,7 +14,7 @@ fn slotted_recipe() -> Recipe {
     let _ = b.material_slot("bark");
     let profile = b.add_profile(builders::rect_from_corner(2.0, 2.0).unwrap());
     let node = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,
             height: 4.0,

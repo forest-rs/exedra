@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::l_profile(0.8, 0.6, 0.2, 0.15)?);
-        let root = builder.add(NodeKind::Sweep {
+        let root = builder.add_node(NodeKind::Sweep {
             section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile,
             path: Path3::MiteredPolyline {

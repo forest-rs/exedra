@@ -292,7 +292,7 @@ fn recipe(x: [f64; 3], miter_limit: f64) -> Recipe {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(asymmetric());
     let root = b
-        .add(NodeKind::Sweep {
+        .add_node(NodeKind::Sweep {
             section: SectionLaw::IDENTITY,
             profile,
             path: Path3::MiteredPolyline {
@@ -430,7 +430,7 @@ fn evaluation_keeps_miter_failure_node_and_payload() {
     let mut b = RecipeBuilder::new();
     let profile = b.add_profile(asymmetric());
     let root = b
-        .add(NodeKind::Sweep {
+        .add_node(NodeKind::Sweep {
             section: SectionLaw::IDENTITY,
             profile,
             path: Path3::MiteredPolyline {
