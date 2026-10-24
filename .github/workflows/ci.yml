@@ -19,6 +19,7 @@ env:
     -p exedra_mesh_ops
     -p exedra_analytic
     -p exedra_assembly
+    -p exedra_compile
     -p exedra_constructive
     -p exedra_fidget
     -p exedra_gltf
@@ -38,6 +39,7 @@ env:
     -p exedra_mesh_ops
     -p exedra_analytic
     -p exedra_assembly
+    -p exedra_compile
     -p exedra_constructive
     -p exedra_isosurface
     -p exedra_primitives
@@ -179,8 +181,8 @@ jobs:
             exit 1
           fi
           cargo tree -p exedra --locked --edges normal --prefix none > facade-dependencies.txt
-          if grep -E '^exedra_edit ' facade-dependencies.txt; then
-            echo "The default facade must not enable command execution."
+          if grep -E '^(exedra_edit|exedra_assembly) ' facade-dependencies.txt; then
+            echo "The default geometry facade must not enable command execution or assembly structure."
             exit 1
           fi
 
@@ -218,6 +220,18 @@ jobs:
 
       - name: cargo check (opt-in command runner)
         run: cargo check -p exedra --locked --no-default-features --features std,edit
+
+      - name: cargo check (standalone compilation without std)
+        run: cargo check -p exedra --locked --no-default-features --features libm,compile --target x86_64-unknown-none
+
+      - name: enforce compilation ownership
+        shell: bash
+        run: |
+          cargo tree -p exedra_compile --locked --edges normal --prefix none > compile-dependencies.txt
+          if grep -E '^exedra_assembly ' compile-dependencies.txt; then
+            echo "Geometry compilation must be independent of assembly structure."
+            exit 1
+          fi
 
       - name: cargo check (all features)
         run: cargo check -p exedra --locked --all-features
@@ -421,6 +435,11 @@ jobs:
         run: cargo doc --workspace --locked --all-features --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: '--cfg docsrs -D warnings'
+
+      - name: cargo doc (default geometry facade)
+        run: cargo doc -p exedra --locked --no-deps
+        env:
+          RUSTDOCFLAGS: '-D warnings'
 
   # If this fails, consider changing your text or adding something to .typos.toml.
   typos:

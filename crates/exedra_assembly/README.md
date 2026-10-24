@@ -7,6 +7,31 @@ material slot binding, content-addressed part compilation, and a flat
 once-per-part, part-local geometry accounting; render lists expose placed,
 world-space accounting with instance multiplicity.
 
+## Geometry ownership
+
+Compilation, cache retention, extraction and geometry queries now belong to
+[`exedra_compile`](../exedra_compile/). Assembly compilation is an adapter: it
+supplies part records and captures placements and material bindings in the
+result. Structural fingerprints remain here; geometry and policy fingerprints
+retain their existing encodings.
+
+Existing `PartCompiler`, `CompiledParts`, `EvaluationSnapshot`, body queries and
+flattening calls continue to work. `PartCompiler::geometry_mut` exposes the same
+service for direct use. Explicit invalidation handles refer to
+the last successful input list compiled through that service, including direct
+calls. `EvaluationSnapshot::geometry` exposes its structure-free snapshot.
+
+Callers needing only compilation and queries can migrate to borrowed
+`PartInput { key, source }` records and `exedra_compile::PartCompiler`. Its
+`GeometrySnapshot` contains buffers, reports and retained bodies, with no render
+list or placements. Keep occurrence transforms separately. The facade's defaults
+now select independent `compile`; enable `assembly` explicitly for structural
+workflows. `gltf` and `serde` still select it.
+
+Assembly remains a standalone structure/export surface with part registration,
+placements and opaque material binding. It owns no evaluation or extraction
+algorithm and no separate geometry cache.
+
 `CompiledBody::signed_volume()` measures the existing part-local triangle buffers
 without retaining topology or evaluating geometry again. The returned
 `SignedVolume` records its reference point and triangle count. Apply
@@ -250,11 +275,12 @@ See the [structure-head scope](https://github.com/forest-rs/exedra/blob/main/cra
 and `exedra_constructive` for the geometry side of the boundary.
 
 For mesh inspections that must match compiled triangles, use
-`CompilePolicy::extraction_params()`. Compilation uses robust polygon
-triangulation; the kernel's default is a fan. The returned settings also expose
-normal selection, UV fallback, carried attributes and tangents. Stored-UV quality
-surveys do not synthesize missing-coordinate fallbacks. Migration: this method is
-additive and leaves compilation and policy fingerprints unchanged.
+`CompilePolicy::extraction_params()`, reexported from `exedra_compile`.
+Compilation uses robust polygon triangulation; the kernel's default is a fan.
+The returned settings also expose normal selection, UV fallback, carried
+attributes and tangents. Stored-UV quality surveys do not synthesize
+missing-coordinate fallbacks. Migration: this method is additive and leaves
+compilation and policy fingerprints unchanged.
 
 ## License
 

@@ -21,9 +21,10 @@ exedra = "0.1"
 ```
 
 Its default features provide the mesh kernel, constructive recipes,
-assemblies, and direct mesh operations. Primitive generation, analytic topology,
-implicit surfaces, command execution, glTF export, and interchange are opt-in features. Disable
-default features and select `libm` for a `no_std` application.
+independent compilation and queries, and direct mesh operations. Assemblies,
+primitive generation, analytic topology, implicit surfaces, command execution,
+glTF export, and interchange are opt-in features. Disable default features and
+select `libm` for a `no_std` application.
 
 Depend directly on a focused crate when you are implementing a lower-level
 algorithm or only need that domain. The public family includes the facade and
@@ -52,6 +53,10 @@ Construction and extraction crates:
 - **[exedra_constructive](crates/exedra_constructive/)** - Immutable,
   fingerprinted constructive recipes with deterministic tessellation,
   provenance, fidelity reporting, interchange, and evaluation caching.
+- **[exedra_compile](crates/exedra_compile/)** - Structure-independent
+  compilation, extraction, content caching and retained geometry queries over
+  explicit recipe or baked-mesh inputs. Assembly compiles through the same
+  service.
 - **[exedra_assembly](crates/exedra_assembly/)** - Named parts and instances,
   stable paths, material-slot binding, cached compilation, and deterministic
   flattening.
@@ -128,6 +133,13 @@ above these crates.
 Implicit and primitive crates stay outside the mesh kernel. They produce or
 adapt geometry through explicit mesh/field boundaries rather than introducing
 a scene graph into the core.
+
+Geometry compilation follows the same rule. `exedra_compile` evaluates and
+extracts explicit recipe or baked-mesh inputs; `Assembly`'s compilation API is
+an adapter over that service. The facade selects `compile` by default; enable
+its `assembly` feature explicitly to retain structural workflows. `gltf` and
+`serde` still select it. The [geometry query example](examples/geometry_queries/)
+constructs, compiles, inspects and retains geometry without an `Assembly`.
 
 ## Example Flow
 

@@ -22,11 +22,11 @@ native application:
 exedra = "0.1"
 ```
 
-It enables `std`, `assembly`, and `mesh_ops`; `assembly` also enables
-`constructive` because assemblies publicly admit recipe-backed parts.
-`edit`, `analytic`, `isosurface`, `primitives`, `gltf`, and `serde` interchange are
-opt-in. `gltf` and `serde` also select `std`. For a `no_std` application,
-disable defaults and select `libm` plus the needed heads:
+It enables `std`, `compile`, and `mesh_ops`; `compile` also enables
+`constructive`. `assembly` selects the same compilation service.
+`assembly`, `edit`, `analytic`, `isosurface`, `primitives`, `gltf`, and `serde`
+interchange are opt-in. `gltf` and `serde` also select `std`. For a
+`no_std` application, disable defaults and select `libm` plus the needed heads:
 
 ```toml
 [dependencies]
@@ -41,6 +41,7 @@ their own operations and conversions directly.
 
 - `exedra::mesh`: mesh topology, attributes, construction, editing, and extraction.
 - `exedra::constructive`: immutable recipes, profiles, evaluation, and tessellation.
+- `exedra::compile`: independent compilation, extraction and retained geometry queries.
 - `exedra::assembly`: parts, instances, material bindings, compilation, and flattening.
 - `exedra::mesh_ops`: direct mesh modeling, geometric queries and correspondence.
 - `exedra::edit`: opt-in mesh command execution, preview and reporting.
@@ -53,10 +54,25 @@ The primitive, analytic, isosurface, and export namespaces are opt-in. Use the
 namespace that owns an operation instead of expecting the facade to add
 behavior between domains.
 
+## Compilation and structure
+
+Standalone compilation and extraction use `compile` without an `Assembly`.
+Existing Assembly compilation and export APIs still work as adapters over the
+same service; defaults now select `compile` instead of `assembly`. Enable
+`assembly` explicitly when using its root anchor or namespace:
+
+```toml
+[dependencies]
+exedra = { version = "0.1", features = ["assembly"] }
+```
+
+`gltf` and `serde` still select `assembly`.
+
 ## Mixed geometry sources
 
 ```rust
-use exedra::{Assembly, Mesh, Recipe};
+use exedra::{Mesh, Recipe};
+use exedra::compile::{CompilePolicy, PartCompiler, PartInput, PartSource};
 use exedra::constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,9 +83,14 @@ let root = builder.add(NodeKind::Primitive {
 })?;
 let recipe: Recipe = builder.finish(root)?;
 
-let mut assembly = Assembly::new();
-assembly.add_recipe_part("body", recipe)?;
-assembly.add_baked_part("detail", Mesh::new(), &[])?;
+let body = PartSource::Recipe(recipe);
+let detail = PartSource::Baked(Mesh::new());
+let inputs = [
+    PartInput::new("body", &body),
+    PartInput::new("detail", &detail),
+];
+let geometry = PartCompiler::new().compile_snapshot(&inputs, &CompilePolicy::default())?;
+assert_eq!(geometry.compiled().parts().len(), 2);
 # Ok(())
 # }
 ```

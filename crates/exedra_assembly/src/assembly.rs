@@ -41,12 +41,8 @@ pub enum Occurrence {
     PlacementSet(PlacementSetId),
 }
 
-/// Index of a registered part within an [`Assembly`].
-///
-/// Handles are only meaningful for the assembly that produced them; they
-/// are *not* identity across re-evaluations — part keys are.
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PartId(pub u32);
+/// Input-local part handle, owned by the independent compilation service.
+pub use exedra_compile::PartId;
 
 /// Index of an instance within an [`Assembly`].
 ///
@@ -55,18 +51,8 @@ pub struct PartId(pub u32);
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstanceId(pub u32);
 
-/// Index into a part's slot table.
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SlotIndex(pub u32);
-
-/// The geometry source of a part.
-#[derive(Clone, Debug)]
-pub enum PartSource {
-    /// A constructive recipe, tessellated on demand.
-    Recipe(Recipe),
-    /// A baked mesh, used as-is.
-    Baked(exedra_mesh::Mesh),
-}
+/// Geometry sources and unresolved material-slot indices.
+pub use exedra_compile::{PartSource, SlotIndex};
 
 /// A part definition: geometry source plus declared material slots.
 ///
@@ -79,10 +65,7 @@ pub enum PartSource {
 #[derive(Clone, Debug)]
 pub struct PartDef {
     key: String,
-    source: PartSource,
-    // Source is immutable between explicit replacement calls. Keep its content
-    // identity with it so compilation and validation never rescan the mesh.
-    fingerprint: crate::compile::PartFingerprint,
+    source: exedra_compile::PreparedSource,
     slots: Vec<String>,
     /// `(region, slot)` pairs sorted by region.
     region_slots: Vec<(u32, SlotIndex)>,
@@ -103,11 +86,15 @@ impl PartDef {
     /// The geometry source.
     #[must_use]
     pub fn source(&self) -> &PartSource {
+        self.source.source()
+    }
+
+    pub(crate) fn prepared_source(&self) -> &exedra_compile::PreparedSource {
         &self.source
     }
 
     pub(crate) fn source_fingerprint(&self) -> crate::compile::PartFingerprint {
-        self.fingerprint
+        self.source.fingerprint()
     }
 
     /// Declared slot names, in slot-index order.
@@ -451,8 +438,7 @@ impl Assembly {
         let default_materials = alloc::vec![None; slots.len()];
         self.parts.push(PartDef {
             key: key.to_string(),
-            fingerprint: crate::compile::part_fingerprint(&source),
-            source,
+            source: exedra_compile::PreparedSource::new(source),
             slots,
             region_slots: Vec::new(),
             default_slot,
@@ -469,8 +455,7 @@ impl Assembly {
     /// slot tables are preserved when the name sets match, otherwise the
     /// new recipe's table wins and stale bindings resolve to nothing.
     ///
-    /// This is the content edit that invalidates compiled caches (the
-    /// compile layer subscribes via its parts channel).
+    /// Content addressing distinguishes the replacement from cached geometry.
     /// Computes the replacement source's content fingerprint before installing it.
     ///
     /// # Errors
@@ -489,8 +474,7 @@ impl Assembly {
             def.slots = recipe.slots().to_vec();
             def.default_materials.resize(def.slots.len(), None);
         }
-        def.fingerprint = crate::compile::part_fingerprint(&source);
-        def.source = source;
+        def.source = exedra_compile::PreparedSource::new(source);
         self.content_generation += 1;
         Ok(())
     }

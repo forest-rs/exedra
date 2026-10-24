@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use exedra_mesh::{Mesh, MeshBuilder, op};
+use crate::PartSource;
+use exedra_mesh::{ExtractAttribute, Mesh, MeshBuilder, NormalsSource, TangentUv, op};
 
 fn triangle(normals: &[[f32; 3]]) -> Mesh {
     let mut builder = MeshBuilder::new();
@@ -294,7 +295,7 @@ fn baked_parts_recompile_when_a_carried_layer_changes() {
     };
     let color_of = |assembly: &Assembly, compiler: &mut PartCompiler| {
         let compiled = compiler.compile_parts(assembly, &policy).unwrap();
-        let tri = &compiled.parts[0].bodies[0].tri;
+        let tri = &compiled.parts()[0].bodies[0].tri;
         match tri.attribute(exedra_mesh::attr::CORNER_COLOR) {
             Some(exedra_mesh::AttributeBuffer::Vec4(colors)) => colors[0],
             other => panic!("color stream: {other:?}"),
