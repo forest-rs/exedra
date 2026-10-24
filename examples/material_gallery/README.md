@@ -66,13 +66,14 @@ right), `recess-chamfer-close.png`, and `recess-fillet-close.png`.
 ## Textured edge finishes
 
 ```sh
-cargo run -p material_gallery --bin textured_finishes -- target/textured-finishes
-blender --background --python examples/material_gallery/tools/render_textured_finishes.py -- target/textured-finishes
+cargo run -p material_gallery --bin textured_finishes -- target/textured_finishes
+blender --background --python examples/material_gallery/tools/render_textured_finishes.py -- target/textured_finishes
 ```
 
-The example exports a 450 × 24 × 700 mm slab door with caller-authored UVs,
-then a 4 mm chamfer and a 4 mm fillet of the same door. The finish happens inside
-the constructive recipe, before assembly compilation and GLB export.
+The example imports a 450 × 24 × 700 mm slab door, authors box UVs through
+`NodeKind::UvMap` at one repeat per 80 mm, then applies a 4 mm chamfer or fillet.
+Mapping and finishing happen inside the constructive recipe, before assembly
+compilation and GLB export. A loader-provided mesh follows the same path.
 
 The Blender script renders checkerboard and woodgrain views using only the
 exported UVs; it never unwraps or repairs the imported mesh. Textures in this older example are supplied
@@ -81,6 +82,27 @@ the material resolver. Fillet and chamfer mapping projects the owning source fac
 the close views show both texture continuity on that side and stretching toward
 the other tangency. Source-chart changes at bands and corner patches are seams.
 
+
+## UV projection gallery
+
+```sh
+python3 examples/material_gallery/tools/make_projection_grid.py
+cargo run -p material_gallery --bin uv_projections -- target/uv_projections
+blender --background --python examples/material_gallery/tools/render_uv_projections.py -- target/uv_projections
+```
+
+Eight imported meshes demonstrate planar fitting, oriented box faces, per-face
+planes, cylindrical, spherical, toroidal and perspective projection, plus a
+pivoted affine transform copied into the secondary UV channel. All mappings
+are construction nodes. The GLB embeds its labeled diagnostic texture; the
+Blender script displays the exported coordinates without repairing or unwrapping
+them. glTF axis conversion keeps each study on its own labeled pedestal.
+
+Open `target/uv_projections/gallery.png` for the complete comparison,
+`sphere-pole.png` and `torus-seams.png` for close views, or
+`uv-projections.glb` in a glTF viewer. `gallery.json` records per-study mapping
+counts and placement. Tests check pole/seam evidence, complete finite coverage,
+secondary coordinates in the exported GLB, and geometry reuse after material edits.
 
 ## Construction surface charts
 

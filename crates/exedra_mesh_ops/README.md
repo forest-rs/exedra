@@ -30,6 +30,44 @@ edit sessions are eager; use a clone when an application needs transactional
 behavior. Geometric source IDs are transient evidence, not persistent feature
 selectors. The crate-level rustdoc includes a direct edit example.
 
+## Texture coordinates
+
+`uv::map_uvs` authors either built-in corner UV channel on loaded or generated
+meshes. Choose existing coordinates, arbitrary planar frames, signed box faces,
+per-face planes, cylindrical, spherical, toroidal or perspective projection,
+then apply an affine UV transform. Box layouts independently swap and flip axes
+on each face pair; authored corner normals select sides when available.
+`UvMappingOptions` chooses source/target channels, seam lifting and pole recovery.
+Angular correction operates per face and preserves topology.
+
+Use `inspect_uvs` for coverage, finite bounds and offending corner IDs;
+`preview_uvs` computes the same report as authoring without mutation. Reports
+include writes, unchanged/skipped corners, normal fallbacks, seam lifts, pole
+repairs, coarse angular faces and retained scratch capacity. All selections and
+coordinates are checked before the first write. Unchanged bit patterns create
+no dirty corners. Finish the caller's edit session to advance revision and
+obtain its change output.
+
+Retain `UvAuthoringScratch` and call `map_uvs_with_scratch` for repeated work.
+Gathering uses small batches for linear modes and reusable per-face buffers for
+angular/normal-dependent modes. Sorted pending writes merge into sparse storage
+without per-corner insertion shifts; small selected-face edits avoid scanning
+the whole authored layer. Scratch capacity is explicit and can be released.
+The returned report owns its selected-face list separately.
+
+`UvTransform::rotate_offset_scale` uses radians and applies rotation, offset,
+then nonuniform scale. Zero and negative scales are supported. `then` composes
+in call order; `around_pivot` and `fit_bounds` provide explicit authoring helpers.
+Existing mapping refuses missing coordinates. Use projection with
+`write_missing_only` to fill gaps, or select distinct source/target channels to
+copy and transform coordinates while retaining the original channel.
+
+Migration: existing `project_planar`, `project_box`, and `project_cylinder` keep
+their scale-then-offset semantics. The new mapping API is opt-in. Exhaustive
+`UvError` matches must handle `Mapping`, `IncompatibleLayer` and `BulkWrite`.
+`UvOutput` adds mapping evidence and finite bounds and implements `PartialEq`
+instead of `Eq`; struct literals can use `..Default::default()`.
+
 ## Edge finishing
 
 `round_sharp_edges` selects authored sharp edges. `round_edges` accepts an

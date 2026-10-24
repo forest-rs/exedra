@@ -7,7 +7,7 @@ pub(crate) trait FloatExt {
     fn acos_ext(self) -> Self;
     fn atan2_ext(self, other: Self) -> Self;
     fn cos_ext(self) -> Self;
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "libm")))]
     fn sin_ext(self) -> Self;
 }
 
@@ -29,7 +29,7 @@ impl FloatExt for f32 {
     }
 
     #[inline]
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "libm")))]
     fn sin_ext(self) -> Self {
         self.sin()
     }
@@ -53,7 +53,7 @@ impl FloatExt for f32 {
     }
 
     #[inline]
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "libm")))]
     fn sin_ext(self) -> Self {
         libm::sinf(self)
     }
@@ -77,7 +77,7 @@ impl FloatExt for f64 {
     }
 
     #[inline]
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "libm")))]
     fn sin_ext(self) -> Self {
         self.sin()
     }
@@ -101,7 +101,7 @@ impl FloatExt for f64 {
     }
 
     #[inline]
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "libm")))]
     fn sin_ext(self) -> Self {
         libm::sin(self)
     }

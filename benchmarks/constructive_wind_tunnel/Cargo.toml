@@ -1,5 +1,6 @@
 [package]
 name = "constructive_wind_tunnel"
+default-run = "constructive_wind_tunnel"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true

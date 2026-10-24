@@ -318,6 +318,10 @@ pub const REGION_GRID_SIDE_BASE: u32 = 2;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TessellateError {
+    /// A retained UV mapping refused a corner or parameter.
+    UvMapping(exedra_mesh_ops::uv::UvError),
+    /// UV mapping requires a complete, nonempty child evaluation.
+    IncompleteUvMapping,
     /// Construction coordinates could not be represented under the authored chart.
     Chart(ChartError),
     /// Evaluated or imported mesh structure is invalid for a geometric operation.
@@ -476,6 +480,8 @@ pub enum TessellateError {
 impl core::fmt::Display for TessellateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UvMapping(error) => write!(f, "UV mapping failed: {error}"),
+            Self::IncompleteUvMapping => f.write_str("UV mapping child is incomplete or empty"),
             Self::InvalidMesh(errors) => {
                 write!(f, "invalid mesh: {} structural failures", errors.len())
             }

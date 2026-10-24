@@ -254,6 +254,67 @@ pub struct SparseLayer<T> {
 }
 
 impl<T> SparseLayer<T> {
+    /// Stored slot/value pairs in ascending slot order, without allocating.
+    pub fn entries(&self) -> impl DoubleEndedIterator<Item = (u32, &T)> + ExactSizeIterator {
+        self.values.iter().map(|(index, value)| (*index, value))
+    }
+
+    /// Merges a sorted unique batch in place, retaining unmentioned values.
+    /// The caller checks sortedness and element liveness before mutation.
+    pub(crate) fn set_sorted<I>(&mut self, incoming: I)
+    where
+        T: Clone,
+        I: Iterator<Item = (u32, T)> + DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let Some(filler) = incoming.clone().next() else {
+            return;
+        };
+        // A small edit to already-authored values should not scan the whole
+        // layer. New slots use the merge path to avoid repeated vector shifts.
+        if incoming.len() <= self.values.len() / 64
+            && incoming.clone().all(|(index, _)| {
+                self.values
+                    .binary_search_by_key(&index, |(slot, _)| *slot)
+                    .is_ok()
+            })
+        {
+            for (index, value) in incoming {
+                let at = self
+                    .values
+                    .binary_search_by_key(&index, |(slot, _)| *slot)
+                    .expect("checked existing slot");
+                self.values[at].1 = value;
+            }
+            return;
+        }
+        let mut existing = self.values.iter().peekable();
+        let mut added = 0;
+        for (index, _) in incoming.clone() {
+            while existing.peek().is_some_and(|value| value.0 < index) {
+                existing.next();
+            }
+            if !existing.peek().is_some_and(|value| value.0 == index) {
+                added += 1;
+            }
+        }
+        let mut source = self.values.len();
+        self.values.resize(source + added, filler);
+        let mut target = self.values.len();
+        for value in incoming.rev() {
+            while source > 0 && self.values[source - 1].0 > value.0 {
+                source -= 1;
+                target -= 1;
+                if source != target {
+                    self.values[target] = self.values[source].clone();
+                }
+            }
+            if source > 0 && self.values[source - 1].0 == value.0 {
+                source -= 1;
+            }
+            target -= 1;
+            self.values[target] = value;
+        }
+    }
     /// Creates an empty sparse layer.
     #[must_use]
     pub const fn new() -> Self {
@@ -994,6 +1055,44 @@ mod tests {
 
     use super::{AttrError, AttrKey, Attributes, Domain};
     use crate::{Id, attr};
+
+    #[test]
+    fn sorted_sparse_merge_matches_all_small_presence_combinations() {
+        for old in 0..64_u32 {
+            for new in 0..64_u32 {
+                let mut layer = super::SparseLayer::new();
+                for index in 0..6_u32 {
+                    if old & (1 << index) != 0 {
+                        layer.set(Id::new(index, NonZeroU32::MIN), index);
+                    }
+                }
+                let updates: alloc::vec::Vec<_> = (0..6_u32)
+                    .filter(|index| new & (1 << index) != 0)
+                    .map(|index| (index, 100 + index))
+                    .collect();
+                layer.set_sorted(updates.iter().copied());
+                let expected: alloc::vec::Vec<_> = (0..6_u32)
+                    .filter_map(|index| {
+                        if new & (1 << index) != 0 {
+                            Some((index, 100 + index))
+                        } else if old & (1 << index) != 0 {
+                            Some((index, index))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    layer
+                        .entries()
+                        .map(|(index, &value)| (index, value))
+                        .collect::<alloc::vec::Vec<_>>(),
+                    expected,
+                    "old={old} new={new}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn vertex_position_builtin_exists() {

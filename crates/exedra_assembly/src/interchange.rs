@@ -463,37 +463,11 @@ pub fn from_dto(dto: &AssemblyDto) -> Result<Assembly, AssemblyInterchangeError>
 }
 
 fn mesh_to_dto(mesh: &exedra_mesh::Mesh) -> MeshDto {
-    MeshDto {
-        positions: mesh
-            .vertices()
-            .filter_map(|v| mesh.vertex_position(v))
-            .copied()
-            .collect(),
-        faces: mesh
-            .faces()
-            .map(|face| {
-                let mut loop_vertices: Vec<u32> = mesh
-                    .face_loop(face)
-                    .filter_map(|he| mesh.to_vertex(he))
-                    .map(exedra_mesh::VertexId::index)
-                    .collect();
-                if let Some(min_pos) = loop_vertices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, v)| **v)
-                    .map(|(i, _)| i)
-                {
-                    loop_vertices.rotate_left(min_pos);
-                }
-                loop_vertices
-            })
-            .collect(),
-    }
+    MeshDto::from_mesh(mesh)
 }
 
 fn mesh_from_dto(dto: &MeshDto) -> Result<exedra_mesh::Mesh, AssemblyInterchangeError> {
-    let loops: Vec<&[u32]> = dto.faces.iter().map(Vec::as_slice).collect();
-    exedra_mesh::Mesh::from_polygons(&dto.positions, &loops)
+    dto.to_mesh()
         .map_err(|_| AssemblyInterchangeError::InvalidMesh)
 }
 

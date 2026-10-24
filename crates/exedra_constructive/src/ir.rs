@@ -64,6 +64,11 @@ pub struct Fingerprint(pub u128);
 
 /// Shared geometric placement and plane representations.
 pub use exedra_math::{FrameError, Placement3, Plane3};
+/// Shared kernel texture-coordinate mappings.
+pub use exedra_mesh::uv_mapping::{
+    BoxUv, PerspectiveUv, UvFrame, UvMapping, UvMappingOptions, UvPolePolicy, UvProjection,
+    UvSeamPolicy, UvSet, UvTransform,
+};
 /// One plane-selected displacement for [`NodeKind::StretchVertices`].
 pub use exedra_mesh_ops::stretch::VertexStretchStep;
 
@@ -310,6 +315,19 @@ pub enum PlaneSide {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum NodeKind {
+    /// Authors the selected corner UV channel on every complete child body.
+    ///
+    /// Projection uses the child's evaluated coordinates before ancestor
+    /// placement. Later placement carries UVs with the mesh. Existing mapping
+    /// requires complete authored UV coverage. Source maps and materials survive.
+    UvMap {
+        /// Geometry to map, including imported meshes or groups.
+        child: NodeId,
+        /// Projection followed by a UV transform.
+        mapping: UvMapping,
+        /// Source/target channels and angular recovery policies.
+        options: UvMappingOptions,
+    },
     /// Places a child in an authored workplane resolved on one complete support
     /// body. The support is evaluated in this node's local coordinates and is
     /// not emitted by this node. Child-local XY lies on the resolved surface;
@@ -948,6 +966,15 @@ impl RecipeBuilder {
         intern(&mut self.policies, name, PolicyId)
     }
 
+    /// Adds a local UV mapping with primary-channel, seam-continuity and face-average pole defaults.
+    pub fn map_uv(&mut self, child: NodeId, mapping: UvMapping) -> Result<NodeId, RecipeError> {
+        self.add(NodeKind::UvMap {
+            child,
+            mapping,
+            options: UvMappingOptions::default(),
+        })
+    }
+
     /// Adds an externally produced mesh as an opaque import leaf.
     ///
     /// The frontend owns parsing (OFF/3DS/glTF live in its repository);
@@ -964,6 +991,16 @@ impl RecipeBuilder {
                 import: len_u32(self.imports.len()),
             });
         }
+        let uv1 = exedra_mesh::attr::CORNER_UV1;
+        if mesh.attrs().layer_kind(uv1.domain(), uv1.name()).is_some()
+            && mesh.attrs().sparse(uv1).is_none()
+            && mesh.attrs().dense(uv1).is_none()
+        {
+            return Err(RecipeError::UnsupportedImportLayer {
+                import: len_u32(self.imports.len()),
+                name: uv1.name(),
+            });
+        }
         const BUILT_IN_LAYERS: &[(exedra_mesh::attributes::Domain, &str)] = &[
             (
                 exedra_mesh::attr::VERTEX_POSITION.domain(),
@@ -976,6 +1013,10 @@ impl RecipeBuilder {
             (
                 exedra_mesh::attr::CORNER_UV.domain(),
                 exedra_mesh::attr::CORNER_UV.name(),
+            ),
+            (
+                exedra_mesh::attr::CORNER_UV1.domain(),
+                exedra_mesh::attr::CORNER_UV1.name(),
             ),
             (
                 exedra_mesh::attr::CORNER_NORMAL_OVERRIDE.domain(),
@@ -1488,6 +1529,12 @@ impl RecipeBuilder {
                 self.check_node(*child)?;
                 self.check_placement(xf)
             }
+            NodeKind::UvMap { child, mapping, .. } => {
+                self.check_node(*child)?;
+                mapping
+                    .validate()
+                    .map_err(|_| RecipeError::InvalidParameter { what: "uv mapping" })
+            }
             NodeKind::Mirror { child, plane } => {
                 self.check_node(*child)?;
                 self.check_plane(plane)
@@ -1642,7 +1689,7 @@ fn fnv128(bytes: &[u8], seed: u128) -> u128 {
 /// A face loop's half-edges rotated so the corner landing on the smallest
 /// vertex index comes first — canonical under the arbitrary loop phase a
 /// rebuild introduces.
-fn canonical_face_loop_half_edges(
+pub(crate) fn canonical_face_loop_half_edges(
     mesh: &exedra_mesh::Mesh,
     face: exedra_mesh::FaceId,
 ) -> Vec<exedra_mesh::HalfEdgeId> {
@@ -1774,6 +1821,32 @@ fn mesh_canon_bytes(mesh: &exedra_mesh::Mesh, out: &mut Vec<u8>) {
             put_present_f32(out, mesh.edge_sharpness(he));
         }
     }
+    if let Some(rule) = mesh.attrs().propagation(
+        exedra_mesh::attr::CORNER_UV1.domain(),
+        exedra_mesh::attr::CORNER_UV1.name(),
+    ) {
+        out.extend_from_slice(b"uv1");
+        if let Some(layer) = mesh.attrs().dense(exedra_mesh::attr::CORNER_UV1) {
+            out.push(1);
+            for value in layer.default() {
+                out.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        } else {
+            out.push(0);
+        }
+        out.push(match rule {
+            exedra_mesh::attributes::Propagation::Unspecified => 0,
+            exedra_mesh::attributes::Propagation::Clear => 1,
+            exedra_mesh::attributes::Propagation::Copy => 2,
+            exedra_mesh::attributes::Propagation::Interpolate => 3,
+        });
+        for face in mesh.faces() {
+            for corner in canonical_face_loop_half_edges(mesh, face) {
+                let uv = exedra_mesh_ops::uv::corner_uv(mesh, UvSet::Secondary, corner);
+                put_present_floats(out, uv.as_ref().map(|v| v.as_slice()));
+            }
+        }
+    }
 }
 
 fn ambiguous_sources(nodes: &[Node], sources: &[String], root: NodeId) -> Vec<String> {
@@ -1798,6 +1871,7 @@ fn ambiguous_sources(nodes: &[Node], sources: &[String], root: NodeId) -> Vec<St
             NodeKind::PlaneCut { child, .. }
             | NodeKind::EdgeFinish { child, .. }
             | NodeKind::Transform { child, .. }
+            | NodeKind::UvMap { child, .. }
             | NodeKind::Mirror { child, .. }
             | NodeKind::Stretch { child, .. }
             | NodeKind::StretchVertices { child, .. } => visit(*child),
@@ -2274,6 +2348,79 @@ fn node_canon_bytes(
             out.push(7);
             child(out, *c);
             put_placement(out, xf);
+        }
+        NodeKind::UvMap {
+            child: c,
+            mapping,
+            options,
+        } => {
+            out.push(19);
+            child(out, *c);
+            out.extend_from_slice(&[
+                u8::from(options.source == UvSet::Secondary),
+                u8::from(options.target == UvSet::Secondary),
+                u8::from(options.seams == UvSeamPolicy::Continuous),
+                u8::from(options.poles == UvPolePolicy::FaceAverage),
+            ]);
+            match mapping.projection {
+                UvProjection::Face => out.push(3),
+                UvProjection::Cylindrical(frame)
+                | UvProjection::Spherical(frame)
+                | UvProjection::Toroidal { frame, .. } => {
+                    out.push(match mapping.projection {
+                        UvProjection::Cylindrical(_) => 4,
+                        UvProjection::Spherical(_) => 5,
+                        _ => 6,
+                    });
+                    for value in frame.origin.into_iter().chain(frame.u).chain(frame.v) {
+                        put_f64(out, value);
+                    }
+                    if let UvProjection::Toroidal { major_radius, .. } = mapping.projection {
+                        put_f64(out, major_radius);
+                    }
+                }
+                UvProjection::Perspective(projector) => {
+                    out.push(7);
+                    for value in projector
+                        .frame
+                        .origin
+                        .into_iter()
+                        .chain(projector.frame.u)
+                        .chain(projector.frame.v)
+                        .chain(projector.focal)
+                        .chain([projector.near])
+                    {
+                        put_f64(out, value);
+                    }
+                }
+                UvProjection::Existing => out.push(0),
+                UvProjection::Planar(frame) => {
+                    out.push(1);
+                    for value in frame.origin.into_iter().chain(frame.u).chain(frame.v) {
+                        put_f64(out, value);
+                    }
+                }
+                UvProjection::Box(layout) => {
+                    out.push(2);
+                    for value in layout
+                        .swap_axes
+                        .into_iter()
+                        .chain(layout.flip_u)
+                        .chain(layout.flip_v)
+                    {
+                        out.push(u8::from(value));
+                    }
+                }
+            }
+            for value in mapping
+                .transform
+                .matrix
+                .into_iter()
+                .flatten()
+                .chain(mapping.transform.offset)
+            {
+                put_f64(out, value);
+            }
         }
         NodeKind::Mirror { child: c, plane } => {
             out.push(8);

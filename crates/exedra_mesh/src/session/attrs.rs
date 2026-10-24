@@ -5,6 +5,42 @@ use super::*;
 use crate::attributes::{AttrKey, Domain, LayerValue};
 
 impl<S: ChangeSink> EditSession<'_, S> {
+    pub(crate) fn set_corner_uvs_impl(
+        &mut self,
+        set: crate::uv_mapping::UvSet,
+        values: &[(CornerId, [f32; 2])],
+    ) {
+        if values.is_empty() {
+            return;
+        }
+        let key = set.key();
+        if self
+            .mesh
+            .attrs()
+            .layer_kind(key.domain(), key.name())
+            .is_none()
+        {
+            self.mesh
+                .attrs_mut()
+                .define_sparse(key)
+                .expect("validated UV key");
+            if set == crate::uv_mapping::UvSet::Secondary {
+                self.mesh
+                    .set_layer_propagation(key, crate::attributes::Propagation::Interpolate)
+                    .expect("UV values support interpolation");
+            }
+        }
+        if let Some(layer) = self.mesh.attrs_mut().sparse_mut(key) {
+            layer.set_sorted(values.iter().map(|&(corner, uv)| (corner.index(), uv)));
+        } else if let Some(layer) = self.mesh.attrs_mut().dense_mut(key) {
+            for &(corner, uv) in values {
+                let _ = layer.set(corner.into(), uv);
+            }
+        }
+        for &(corner, _) in values {
+            self.sink.mark_corner_dirty(corner);
+        }
+    }
     /// Returns an immutable view of the mesh being edited.
     #[must_use]
     pub fn mesh(&self) -> &Mesh {

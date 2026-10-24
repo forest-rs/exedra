@@ -2,6 +2,35 @@
 
 Structural half-edge mesh kernel.
 
+Texture-coordinate math lives in `uv_mapping`, independent of mesh ownership.
+`UvMapping` supports existing coordinates, arbitrary planar frames, signed box
+faces, per-face planes, cylindrical, spherical, toroidal and perspective
+projections. `UvFrame` supplies the origin and orthonormal image axes; its cross
+product supplies the angular/projector axis. Perspective refuses points at or
+behind its near depth; it does not clip geometry or test visibility.
+
+`UvTransform` supplies an affine matrix, translation, scale, rotation, pivot,
+composition in call order, and bounds fitting with optional aspect preservation.
+`rotate_offset_scale` rotates about UV zero, adds offset, then scales each axis.
+Coordinates are dimensionless repeats, may leave `[0, 1]`, and are never clamped.
+Image resources and samplers belong to consumers.
+
+`map_face_into` reuses caller-owned storage. Angular mapping optionally lifts
+coordinates across the largest gap on each face and recovers undefined pole
+angles from its defined neighbors. Reports expose seam lifts, pole repairs,
+degenerate-normal fallbacks and faces spanning more than half a turn. These
+operations do not split topology, unwrap arbitrary surfaces or pack islands.
+Linear batches keep validation outside arithmetic loops so the compiler can
+vectorize without changing arithmetic order or introducing unsafe code.
+
+`UvSet` selects the primary or secondary corner channel. Mesh authoring uses
+`op::set_corner_uvs` for validated, sorted batches: sparse values merge in place,
+small updates to authored values use indexed writes, and dense secondary values
+write directly. Newly created secondary layers declare interpolating propagation.
+Existing layer rules and unmentioned values survive. `SparseLayer::entries`
+provides allocation-free ordered inspection. Higher-level selection, preview,
+coverage inspection and no-op detection live in `exedra_mesh_ops::uv`.
+
 `prepare_polygons` checks indexed polygon soup before topology construction.
 It triangulates simple concave faces and returns original face/local corner
 offsets for remapping UVs, normals, and material subsets. Distinct collinear

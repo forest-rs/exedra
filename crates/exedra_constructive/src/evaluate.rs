@@ -167,6 +167,18 @@ impl Aabb3 {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EvalCounters {
+    /// Child bodies whose selected UV channel was mapped on a cache miss.
+    pub uv_mapping_passes: u32,
+    /// Corner UV values authored by retained UV mapping on cache misses.
+    pub uv_corners_written: u64,
+    /// Faces using a degenerate-normal fallback during UV mapping work.
+    pub uv_fallback_faces: u64,
+    /// Corners whose angular seam was corrected during mapping work.
+    pub uv_seam_corners_adjusted: u64,
+    /// Corners whose undefined angular coordinates were recovered from neighbors.
+    pub uv_pole_corners_repaired: u64,
+    /// Mapped corners already equal to their target values on cache misses.
+    pub uv_corners_unchanged: u64,
     /// Bodies in the evaluation output.
     ///
     /// The output counters (`bodies`, `faces`, `vertices`,
@@ -575,6 +587,13 @@ impl EvalCx<'_> {
         let node = self.recipe.node(node_id).expect("walked ids are validated");
         let material = node.material.or(inherited_material);
         match &node.kind {
+            NodeKind::UvMap {
+                child,
+                mapping,
+                options,
+            } => {
+                self.evaluate_uv_mapping(node_id, *child, *mapping, *options, world, emit, material)
+            }
             NodeKind::OnWorkplane {
                 support,
                 child,
@@ -902,6 +921,93 @@ impl EvalCx<'_> {
                 Ok(bounds)
             }
         }
+    }
+
+    fn evaluate_uv_mapping(
+        &mut self,
+        node_id: NodeId,
+        child: NodeId,
+        mapping: crate::ir::UvMapping,
+        options: crate::ir::UvMappingOptions,
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+    ) -> Result<Aabb3, EvalError> {
+        let taken = core::mem::take(&mut self.bodies);
+        let errors_before = self.error_count();
+        let envelopes_before = self.report.envelopes.len();
+        // Mapping belongs to this local occurrence, never the shared child.
+        // Visit the child even on cache hits to retain all child diagnostics.
+        let result = self.walk(child, &Placement3::IDENTITY, true, None);
+        let collected = core::mem::replace(&mut self.bodies, taken);
+        for (_, bounds) in &mut self.report.envelopes[envelopes_before..] {
+            *bounds = placed_bounds(*bounds, world);
+        }
+        result?;
+        if self.error_count() != errors_before || collected.is_empty() {
+            return Err(EvalError::new(
+                node_id,
+                TessellateError::IncompleteUvMapping,
+            ));
+        }
+        let key = (collected.len() == 1)
+            .then(|| self.cache_key(node_id, &Placement3::IDENTITY))
+            .flatten();
+        let cached = self.lookup_cached_body(key.as_ref());
+        let mut mapped = Vec::with_capacity(collected.len());
+        if let Some(body) = cached {
+            mapped.push((body, collected[0].material));
+        } else {
+            let mut scratch = exedra_mesh_ops::uv::UvAuthoringScratch::default();
+            for placed in collected {
+                let mut body = (*placed.body).clone();
+                let mut edit = body.mesh.edit();
+                let output = exedra_mesh_ops::uv::map_uvs_with_scratch(
+                    &mut edit,
+                    &exedra_mesh_ops::uv::UvMappingParams {
+                        scope: exedra_mesh_ops::uv::UvScope::WholeMesh,
+                        mapping,
+                        options,
+                        write_missing_only: false,
+                    },
+                    &mut scratch,
+                )
+                .map_err(|error| EvalError::new(node_id, TessellateError::UvMapping(error)))?;
+                let _: () = edit.finish();
+                body.source_map = body.source_map.repinned(&body.mesh);
+                self.report.counters.uv_seam_corners_adjusted += output.seam_corners_adjusted;
+                self.report.counters.uv_pole_corners_repaired += output.pole_corners_repaired;
+                self.report.counters.uv_corners_unchanged += output.corners_unchanged;
+                self.report.counters.uv_mapping_passes += 1;
+                self.report.counters.uv_corners_written += output.corners_written;
+                self.report.counters.uv_fallback_faces += output.fallback_faces.len() as u64;
+                mapped.push((Rc::new(body), placed.material));
+            }
+            if let (Some(cache), Some(key), [(body, _)]) =
+                (self.cache.as_deref_mut(), key, mapped.as_slice())
+            {
+                cache.insert(key, Rc::clone(body));
+            }
+        }
+        let placed = mapped
+            .into_iter()
+            .map(|(body, child_material)| {
+                self.place_body(node_id, body, world)
+                    .map(|body| (body, child_material))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut bounds = Aabb3::EMPTY;
+        for (body, child_material) in placed {
+            let fidelity = self.body_fidelity(node_id, &[]);
+            bounds.union(&self.finish_body(
+                node_id,
+                body,
+                emit,
+                fidelity,
+                child_material.or(material),
+            ));
+        }
+        Ok(bounds)
     }
 
     fn evaluate_edge_finish(

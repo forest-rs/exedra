@@ -12,6 +12,14 @@ use exedra_mesh_ops::uv::{UvError, UvOutput};
 
 pub(crate) fn projection_error(ctx: &OpContext, error: UvError) -> OpError {
     let (kind, code) = match &error {
+        UvError::Mapping {
+            error: exedra_mesh_ops::uv::UvMappingError::MissingUv,
+            ..
+        } => (
+            OpErrorKind::PreconditionFailed,
+            DiagCode::PreconditionFailed,
+        ),
+        UvError::Mapping { .. } => (OpErrorKind::NumericFailure, DiagCode::NumericToleranceIssue),
         UvError::InvalidParameters | UvError::NumericLimit => {
             (OpErrorKind::NumericFailure, DiagCode::NumericToleranceIssue)
         }
@@ -19,7 +27,10 @@ pub(crate) fn projection_error(ctx: &OpContext, error: UvError) -> OpError {
             OpErrorKind::PreconditionFailed,
             DiagCode::PreconditionFailed,
         ),
-        UvError::InvalidCorner { .. } | UvError::Write(_) => (
+        UvError::InvalidCorner { .. }
+        | UvError::Write(_)
+        | UvError::IncompatibleLayer { .. }
+        | UvError::BulkWrite(_) => (
             OpErrorKind::InvalidMesh,
             DiagCode::InternalInvariantViolation,
         ),
