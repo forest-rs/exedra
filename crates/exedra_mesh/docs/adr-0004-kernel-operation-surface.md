@@ -6,7 +6,7 @@
 ## Context
 
 Exedra's topology-editing surface currently lives mostly on
-[`EditSession`](crate::EditSession). That makes one type act as:
+[`EditSession`](../src/session/mod.rs). That makes one type act as:
 
 1. edit host,
 2. bookkeeping/change-set owner,
