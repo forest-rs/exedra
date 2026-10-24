@@ -121,6 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     selected_face_benchmark(side, repetitions)?;
+    quality_benchmark(side, repetitions)?;
     Ok(())
 }
 
@@ -166,6 +167,72 @@ fn selected_face_benchmark(side: u32, repetitions: u32) -> Result<(), Box<dyn Er
         mesh.faces().count(),
         durations[durations.len() / 2] * 1e6
     );
+    Ok(())
+}
+
+fn quality_benchmark(side: u32, repetitions: u32) -> Result<(), Box<dyn Error>> {
+    use exedra_mesh_ops::uv::quality::{UvQualityParams, UvQualityScratch, inspect_uv_quality};
+    let mut mesh = grid_mesh(side, side);
+    let mut edit = mesh.edit();
+    map_uvs(
+        &mut edit,
+        &UvMappingParams {
+            scope: UvScope::WholeMesh,
+            mapping: UvMapping {
+                projection: UvProjection::Planar(UvFrame::XY),
+                transform: UvTransform::IDENTITY,
+            },
+            options: UvMappingOptions::default(),
+            write_missing_only: false,
+        },
+    )?;
+    let _: () = edit.finish();
+    for (name, scope) in [
+        ("whole", UvScope::WholeMesh),
+        (
+            "last_face",
+            UvScope::FaceSet(vec![mesh.faces().last().expect("grid face")]),
+        ),
+    ] {
+        let params = UvQualityParams {
+            scope,
+            texture_size: [1024; 2],
+            ..UvQualityParams::default()
+        };
+        let mut scratch = UvQualityScratch::default();
+        let expected = inspect_uv_quality(&mesh, &params, &mut scratch)?;
+        assert!(
+            expected.is_acceptable(),
+            "planar quality must be measurable and within limits"
+        );
+        assert_eq!(
+            inspect_uv_quality(&mesh, &params, &mut scratch)?,
+            expected,
+            "quality reports must be deterministic"
+        );
+        let mut durations = Vec::new();
+        let batch = if name == "last_face" { 100 } else { 1 };
+        for repetition in 0..repetitions + 1 {
+            let start = Instant::now();
+            for _ in 0..batch {
+                let report = inspect_uv_quality(&mesh, black_box(&params), &mut scratch)?;
+                black_box(report);
+            }
+            if repetition > 0 {
+                durations.push(start.elapsed().as_secs_f64() / f64::from(batch));
+            }
+        }
+        durations.sort_by(f64::total_cmp);
+        let median = durations[durations.len() / 2];
+        println!(
+            "uv_quality: scope={name} mesh_faces={} triangles={} median_us={:.3} million_triangles_per_second={:.3} retained_bytes={}",
+            mesh.faces().count(),
+            expected.triangles_examined,
+            median * 1e6,
+            expected.triangles_examined as f64 / median / 1e6,
+            scratch.retained_bytes()
+        );
+    }
     Ok(())
 }
 

@@ -95,6 +95,15 @@ the same workload. At 262,144 corners planar throughput remained about 56 millio
 corners/second. A four-corner last-face update took 0.29–0.35 microseconds across
 those mesh sizes. These are local observations, not portable timing guarantees.
 
+The same binary also measures `uv::quality` surveys, including a last-face
+selection. On the local Apple Silicon host, 32,768 stored triangles took about
+3.2 ms (10.2 million triangles/second), retaining 96 bytes of operation scratch.
+A selected two-triangle face took about 0.22 microseconds. These timings include
+UV reads, differential measurements and summary construction. Bounded issue
+witnesses are output allocations; robust nontriangle polygons may also allocate
+inside the kernel. The benchmark uses the default fan enumeration and validates
+repeatable reports before timing.
+
 For external allocation inspection, set `EXEDRA_UV_PROFILE=warm` (or `cold`)
 when running `target/release/uv_mapping`. The process pauses before and after
 three mappings for an OS profiler to attach. Stack-log flush allocations happen

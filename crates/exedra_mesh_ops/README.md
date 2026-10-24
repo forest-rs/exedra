@@ -68,6 +68,26 @@ their scale-then-offset semantics. The new mapping API is opt-in. Exhaustive
 `UvOutput` adds mapping evidence and finite bounds and implements `PartialEq`
 instead of `Eq`; struct literals can use `..Default::default()`.
 
+`uv::quality::inspect_uv_quality` measures the stored triangle map in texels per
+position unit, using explicit image dimensions and triangulation. Reports expose
+principal densities, directional anisotropy, mirrored orientation, missing or
+degenerate coordinates, optional acceptance bounds, and bounded source-corner
+witnesses. Reports retain the channel, image dimensions, triangulation and limits,
+and expose the surface area outside limits as well as triangle counts. This
+distinguishes ill-conditioned slivers from large distorted patches. Mirroring is permitted unless explicitly forbidden. `visit_uv_quality`
+streams the same triangle results for heatmaps without storing a whole-mesh
+report. Select faces and retain `UvQualityScratch` for local repeated inspection.
+
+These are f64 differential measurements of piecewise affine triangles, not a
+certificate of global overlap, smooth-surface fidelity or an unknown rest chart.
+Match the renderer's triangulation when inspecting its output. Robust polygon
+fallbacks are reported and excluded; the kernel may allocate for robust polygons.
+Returned revisions belong to the caller's source mesh, not a cross-mesh cache key.
+
+Migration: quality inspection is additive; existing UV authoring behavior and
+reports are unchanged. Thresholds are opt-in and image dimensions have no implicit
+model-unit conversion. The default `[1, 1]` reports repeats per position unit.
+
 ## Edge finishing
 
 `round_sharp_edges` selects authored sharp edges. `round_edges` accepts an
