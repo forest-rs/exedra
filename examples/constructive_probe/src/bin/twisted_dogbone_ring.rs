@@ -11,83 +11,14 @@ use std::path::PathBuf;
 use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::{
     evaluate::{Severity, evaluate},
-    ir::{
-        CapMode, CsgOp, NodeKind, Path3, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
-        SectionLaw,
-    },
-    profile::{Loop2, Profile2, ProfileError, Seg2},
-    tessellate::{EvalPolicy, SweepFrameNormal, sample_sweep_frames},
+    ir::Placement3,
+    tessellate::EvalPolicy,
 };
+#[path = "../dogbone.rs"]
+mod dogbone;
+use dogbone::{CUT_COUNT, ring_recipe};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use serde_json::json;
-
-const RING_RADIUS: f64 = 50.0;
-const END_OFFSET: f64 = 7.5;
-const END_RADIUS: f64 = 1.5;
-const WEB_HALF_WIDTH: f64 = 1.0;
-const CUT_RADIUS: f64 = 5.0;
-const CUT_DEPTH: f64 = 8.0;
-const CUT_COUNT: usize = 21;
-
-fn dogbone() -> Result<Profile2, ProfileError> {
-    // Boundary of the union of a 15 x 2 rectangle and two radius-1.5 discs.
-    // Each exposed circular lobe is a major arc between the web intersections.
-    let inset = (END_RADIUS * END_RADIUS - WEB_HALF_WIDTH * WEB_HALF_WIDTH).sqrt();
-    let inner = END_OFFSET - inset;
-    let lobe_angle = core::f64::consts::TAU - 2.0 * (WEB_HALF_WIDTH / END_RADIUS).asin();
-    let bulge = (lobe_angle / 4.0).tan();
-    Profile2::simple(Loop2::new(vec![
-        Seg2::line((inner, -WEB_HALF_WIDTH)),
-        Seg2::arc((inner, WEB_HALF_WIDTH), bulge),
-        Seg2::line((-inner, WEB_HALF_WIDTH)),
-        Seg2::arc((-inner, -WEB_HALF_WIDTH), bulge),
-    ])?)
-}
-
-fn ring_recipe(
-    cut_count: usize,
-    first_cut: usize,
-    policy: &EvalPolicy,
-) -> Result<Recipe, Box<dyn std::error::Error>> {
-    let mut builder = RecipeBuilder::new();
-    let profile = builder.add_profile(dogbone()?);
-    let finish = builder.material_slot("finish");
-    let path = Path3::xy_circle(RING_RADIUS)?;
-    let section = SectionLaw::IDENTITY.with_turns(4);
-    let cutter_frames = sample_sweep_frames(&path, &section, &policy.sweep_path)?
-        .closed_stations(CUT_COUNT, 0.5)?;
-    let sweep = builder.with_material(finish).add(NodeKind::Sweep {
-        profile,
-        path,
-        section,
-        caps: CapMode::None,
-    })?;
-    if cut_count == 0 {
-        return Ok(builder.finish(sweep)?);
-    }
-    let mut operands = Vec::with_capacity(cut_count + 1);
-    operands.push(sweep);
-    for frame in &cutter_frames[first_cut..first_cut + cut_count] {
-        let cutter = builder.with_material(finish).add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Cylinder {
-                radius: CUT_RADIUS,
-                height: CUT_DEPTH,
-                segments: 64,
-            },
-            placement: frame.normal_placement(
-                SweepFrameNormal::SectionY,
-                -0.5 * CUT_DEPTH,
-                core::f64::consts::PI / 64.0,
-            )?,
-        })?;
-        operands.push(cutter);
-    }
-    let root = builder.add(NodeKind::Csg {
-        op: CsgOp::Difference,
-        operands,
-    })?;
-    Ok(builder.finish(root)?)
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
@@ -109,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut policy = EvalPolicy::default();
     policy.sweep_path.max_tangent_angle = 0.0125;
-    let recipe = ring_recipe(cut_count, first_cut, &policy)?;
+    let recipe = ring_recipe(cut_count, first_cut, &policy, false, None)?;
     let evaluated = evaluate(&recipe, &policy)?;
     assert!(
         evaluated.report.clean_at(Severity::Error),
