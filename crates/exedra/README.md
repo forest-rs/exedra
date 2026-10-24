@@ -66,7 +66,14 @@ same service; defaults now select `compile` instead of `assembly`. Enable
 exedra = { version = "0.1", features = ["assembly"] }
 ```
 
-`gltf` and `serde` still select `assembly`.
+`gltf` selects independent compilation and `serde` selects recipe interchange;
+neither selects `assembly`. Existing Assembly export callers select
+`assembly,gltf`; Assembly interchange callers select `assembly,serde`.
+
+The [caller-owned export example](../../examples/caller_owned_export/) serializes
+a recipe, compiles it, resolves a hierarchy and materials, and exports GLB using
+only `gltf,serde`. The exporter owns format records and encoding; callers own
+authored structure and appearance resolution.
 
 ## Mixed geometry sources
 

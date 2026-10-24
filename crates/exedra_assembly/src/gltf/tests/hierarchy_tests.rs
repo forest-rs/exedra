@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use exedra_assembly::{CompilePolicy, PartCompiler, compose, flatten};
+use crate::{CompilePolicy, PartCompiler, compose, flatten};
 use exedra_constructive::ir::{CsgOp, NodeKind, PrimitiveSpec, Recipe, RecipeBuilder};
 use exedra_mesh::Mesh;
 use std::{collections::BTreeSet, f64::consts::FRAC_PI_2, sync::Arc};
@@ -200,10 +200,8 @@ fn retained_hierarchy_matches_evaluated_vertices_through_intermediate_poses() {
         previous = Some(Arc::clone(arm_part));
         let draw = flatten(&assembly, &compiled);
         for coordinates in [GltfCoordinates::Preserve, GltfCoordinates::ZUpToYUp] {
-            let options = GltfExportOptions {
-                coordinates,
-                ..GltfExportOptions::default()
-            };
+            let mut options = GltfExportOptions::default();
+            options.coordinates = coordinates;
             let export = export_glb_with_options(&assembly, &compiled, options).unwrap();
             assert_eq!(
                 export.bytes,
@@ -288,6 +286,7 @@ fn retained_hierarchy_matches_evaluated_vertices_through_intermediate_poses() {
                             match coordinates {
                                 GltfCoordinates::Preserve => world,
                                 GltfCoordinates::ZUpToYUp => [world[0], world[2], -world[1]],
+                                _ => unreachable!("tested coordinate options"),
                             }
                         })
                 })

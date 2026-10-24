@@ -4,7 +4,7 @@
 //! Tangents and mapped attribute streams in exported glTF.
 
 use super::*;
-use exedra_assembly::{CompilePolicy, PartCompiler};
+use crate::{CompilePolicy, PartCompiler};
 use exedra_mesh::attributes::{AttrKey, Domain};
 use exedra_mesh::{ExtractAttribute, MeshBuilder, TangentUv, attr, op};
 

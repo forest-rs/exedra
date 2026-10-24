@@ -4,7 +4,7 @@
 //! Numerical GLB regressions for imported normals and their corner attributes.
 
 use super::*;
-use exedra_assembly::{CompilePolicy, NormalsSource, PartCompiler, flatten};
+use crate::{CompilePolicy, NormalsSource, PartCompiler, flatten};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 use exedra_mesh::{Mesh, MeshBuilder, op};
 

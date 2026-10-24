@@ -233,6 +233,28 @@ jobs:
             exit 1
           fi
 
+      - name: enforce standalone export and interchange dependencies
+        shell: bash
+        run: |
+          for features in gltf serde gltf,serde; do
+            cargo tree -p exedra --locked --no-default-features --features "$features" --edges normal --prefix none > standalone-dependencies.txt
+            if grep -E '^exedra_assembly ' standalone-dependencies.txt; then
+              echo "Standalone export and recipe interchange must not enable authored structure."
+              exit 1
+            fi
+            cargo check -p exedra --locked --no-default-features --features "$features"
+            cargo test -p exedra --locked --no-default-features --features "$features" --doc
+          done
+          cargo tree -p exedra_gltf --locked --edges normal --prefix none > export-dependencies.txt
+          if grep -E '^exedra_assembly ' export-dependencies.txt; then
+            echo "The exporter must depend only on independent geometry."
+            exit 1
+          fi
+          cargo check -p exedra --locked --no-default-features --features assembly,gltf,serde
+
+      - name: run caller-owned export
+        run: cargo run -p caller_owned_export --locked
+
       - name: cargo check (all features)
         run: cargo check -p exedra --locked --all-features
 
