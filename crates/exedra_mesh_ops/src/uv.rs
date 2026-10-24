@@ -30,6 +30,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+/// Differential UV measurements, acceptance bounds and bounded issue witnesses.
+pub mod quality;
+
 #[cfg(test)]
 #[path = "uv_mapping_tests.rs"]
 mod mapping_tests;
