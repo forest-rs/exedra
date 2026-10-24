@@ -95,14 +95,19 @@ the same workload. At 262,144 corners planar throughput remained about 56 millio
 corners/second. A four-corner last-face update took 0.29–0.35 microseconds across
 those mesh sizes. These are local observations, not portable timing guarantees.
 
-The same binary also measures `uv::quality` surveys, including a last-face
-selection. On the local Apple Silicon host, 32,768 stored triangles took about
-3.2 ms (10.2 million triangles/second), retaining 96 bytes of operation scratch.
-A selected two-triangle face took about 0.22 microseconds. These timings include
-UV reads, differential measurements and summary construction. Bounded issue
-witnesses are output allocations; robust nontriangle polygons may also allocate
-inside the kernel. The benchmark uses the default fan enumeration and validates
-repeatable reports before timing.
+The same binary also measures `uv::quality` surveys with fan and robust
+triangulation, including a last-face selection for each. On the local Apple
+Silicon host, release medians over 25 repetitions for 32,768 stored triangles
+were 3.05 ms with fan triangulation (10.7 million triangles/second) and 10.18 ms
+with robust triangulation (3.2 million triangles/second). Both retained 96 bytes
+of operation scratch. A selected two-triangle face took about 0.22 microseconds
+with fan triangulation and 0.65 microseconds with robust triangulation, retaining
+128 bytes. These timings include UV reads, triangulation, differential
+measurements and summary construction. Bounded issue witnesses are output
+allocations; robust nontriangle polygons also allocate temporary buffers inside
+the kernel. Retained scratch is not a measure of those transient allocations.
+Repeatable reports are validated before timing. These are local observations,
+not portable timing guarantees.
 
 For external allocation inspection, set `EXEDRA_UV_PROFILE=warm` (or `cold`)
 when running `target/release/uv_mapping`. The process pauses before and after
