@@ -7,7 +7,9 @@
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::{
     builders,
-    ir::{CapMode, NodeKind, Path3, PathClosure, PathJoin, Placement3, Recipe, RecipeBuilder},
+    ir::{
+        CapMode, Node, NodeKind, Path3, PathClosure, PathJoin, Placement3, Recipe, RecipeBuilder,
+    },
     path::PathSegment3,
 };
 use exedra_gltf::{GltfExportOptions, export_glb_with_options};
@@ -55,22 +57,24 @@ fn surround(size: f64, circle: bool) -> Recipe {
         "arched-molding"
     });
     let root = builder
-        .with_source(source)
-        .add(NodeKind::Sweep {
-            section: exedra_constructive::ir::SectionLaw::IDENTITY,
-            profile,
-            path: Path3::Curves {
-                start,
-                segments,
-                section_x,
-                section_origin: [0.0; 2],
-                closure: PathClosure::ClosedPlanar {
-                    normal: [0.0, 0.0, 1.0],
+        .add_node(
+            Node::new(NodeKind::Sweep {
+                section: exedra_constructive::ir::SectionLaw::IDENTITY,
+                profile,
+                path: Path3::Curves {
+                    start,
+                    segments,
+                    section_x,
+                    section_origin: [0.0; 2],
+                    closure: PathClosure::ClosedPlanar {
+                        normal: [0.0, 0.0, 1.0],
+                    },
+                    joins,
                 },
-                joins,
-            },
-            caps: CapMode::None,
-        })
+                caps: CapMode::None,
+            })
+            .with_source(source),
+        )
         .unwrap();
     builder.finish(root).unwrap()
 }

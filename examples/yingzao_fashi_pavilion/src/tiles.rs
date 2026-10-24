@@ -5,7 +5,7 @@
 
 use exedra_constructive::builders::circle;
 use exedra_constructive::ir::{
-    CapMode, LoftPolicy, LoftSection, NodeKind, Placement3, Recipe, RecipeBuilder,
+    CapMode, LoftPolicy, LoftSection, Node, NodeKind, Placement3, Recipe, RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 
@@ -171,11 +171,14 @@ pub(crate) fn shell(cap: bool, radius: f64, length: f64) -> Result<Recipe> {
             profile,
         ));
     }
-    let root = builder.with_material(material).add(NodeKind::Loft {
-        sections,
-        policy: LoftPolicy::Ruled,
-        caps: CapMode::Both,
-    })?;
+    let root = builder.add_node(
+        Node::new(NodeKind::Loft {
+            sections,
+            policy: LoftPolicy::Ruled,
+            caps: CapMode::Both,
+        })
+        .with_material(material),
+    )?;
     Ok(builder.finish(root)?)
 }
 
@@ -204,17 +207,22 @@ fn terminal() -> Result<Recipe> {
     let mut add = |profile, depth, outward: f64, angle: f64| -> Result<()> {
         let profile = builder.add_profile(profile);
         let (s, c) = angle.sin_cos();
-        nodes.push(builder.with_material(material).add(NodeKind::Extrude {
-            profile,
-            height: depth,
-            caps: CapMode::Both,
-            placement: Placement3::from_axes(
-                [c, 0.0, s],
-                [-s, 0.0, c],
-                [0.0, -1.0, 0.0],
-                [0.0, -outward, 0.0],
-            ),
-        })?);
+        nodes.push(
+            builder.add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    height: depth,
+                    caps: CapMode::Both,
+                    placement: Placement3::from_axes(
+                        [c, 0.0, s],
+                        [-s, 0.0, c],
+                        [0.0, -1.0, 0.0],
+                        [0.0, -outward, 0.0],
+                    ),
+                })
+                .with_material(material),
+            )?,
+        );
         Ok(())
     };
     add(circle(0.086)?, 0.016, 0.0, 0.0)?;
@@ -239,7 +247,7 @@ fn terminal() -> Result<Recipe> {
             f64::from(i) * core::f64::consts::FRAC_PI_4,
         )?;
     }
-    let root = builder.add(NodeKind::Group { children: nodes })?;
+    let root = builder.add_node(NodeKind::Group { children: nodes })?;
     Ok(builder.finish(root)?)
 }
 

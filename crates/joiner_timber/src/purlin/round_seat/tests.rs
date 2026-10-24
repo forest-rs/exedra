@@ -3,7 +3,7 @@
 
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::{Severity, evaluate};
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, Node as RecipeNode, NodeKind, Placement3, RecipeBuilder};
 use exedra_constructive::tessellate::EvalPolicy;
 use joiner::{
     Construction, Element, Evidence, EvidenceClass, EvidenceSource, Member, Node, OrientedBox,
@@ -35,18 +35,20 @@ fn fixture_in_frame(depth: f64, station: f64, size: [f64; 3], frame: &OrientedBo
     let slot = builder.material_slot("surface");
     let circle = builder.add_profile(builders::circle(size[1] * 0.5).unwrap());
     let root = builder
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile: circle,
-            placement: Placement3::from_axes(
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 0.0],
-                [0.0, size[1] * 0.5, size[2] * 0.5],
-            ),
-            height: size[0],
-            caps: CapMode::Both,
-        })
+        .add_node(
+            RecipeNode::new(NodeKind::Extrude {
+                profile: circle,
+                placement: Placement3::from_axes(
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, size[1] * 0.5, size[2] * 0.5],
+                ),
+                height: size[0],
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .unwrap();
     let purlin = Element::new(
         "purlin",

@@ -14,14 +14,16 @@
 //!
 //! ```
 //! use exedra_constructive::{builders, chart::{ChartTransform, SurfaceChart},
-//!     ir::{CapMode, NodeKind, Placement3, RecipeBuilder}};
+//!     ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder}};
 //! let mut builder = RecipeBuilder::new();
 //! let profile = builder.add_profile(builders::rect_from_corner(2.0, 1.0)?);
-//! let root = builder.with_surface_chart(SurfaceChart::Extrude {
-//!     wall: ChartTransform::IDENTITY, caps: ChartTransform::IDENTITY,
-//! }).add(NodeKind::Extrude {
+//! let block = NodeKind::Extrude {
 //!     profile, placement: Placement3::IDENTITY, height: 3.0, caps: CapMode::Both,
-//! })?;
+//! };
+//! let chart = SurfaceChart::Extrude {
+//!     wall: ChartTransform::IDENTITY, caps: ChartTransform::IDENTITY,
+//! };
+//! let root = builder.add_node(Node::new(block).with_surface_chart(chart))?;
 //! let recipe = builder.finish(root)?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -167,7 +169,7 @@ impl Default for ChartTransform {
 
 /// Construction metric and texture mapping for one generating node.
 ///
-/// Use [`crate::ir::RecipeBuilder::with_surface_chart`]. Other node kinds reject
+/// Bind with [`crate::ir::Node::with_surface_chart`]. Other node kinds reject
 /// charts until they define an explicit rest metric. All loops have independent
 /// distance origins at their authored starts; use [`crate::profile::Loop2::with_seam`]
 /// to choose these seams. Caps have independent planar charts.

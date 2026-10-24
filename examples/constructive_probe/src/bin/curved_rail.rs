@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (index, segments) in paths.into_iter().enumerate() {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::l_profile(0.3, 0.2, 0.1, 0.05)?);
-        let root = b.add(NodeKind::Sweep {
+        let root = b.add_node(NodeKind::Sweep {
             section: exedra_constructive::ir::SectionLaw::IDENTITY,
             profile,
             path: Path3::Curves {

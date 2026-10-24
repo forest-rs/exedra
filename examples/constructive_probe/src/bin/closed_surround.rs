@@ -12,7 +12,8 @@ use exedra_assembly::{Assembly, PartCompiler};
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::{Severity, evaluate};
 use exedra_constructive::ir::{
-    CapMode, CsgOp, NodeKind, Path3, PathClosure, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, CsgOp, Node, NodeKind, Path3, PathClosure, Placement3, PrimitiveSpec, Recipe,
+    RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegTag};
 use exedra_constructive::tessellate::EvalPolicy;
@@ -58,37 +59,41 @@ fn surround(profile: Profile2, concave: bool, cuts: bool) -> Recipe {
         ]
     };
     let mut root = b
-        .with_source(source)
-        .with_material(finish)
-        .add(NodeKind::Sweep {
-            section: exedra_constructive::ir::SectionLaw::IDENTITY,
-            profile,
-            path: Path3::MiteredPolyline {
-                points,
-                section_x: [0.0, 1.0, 0.0],
-                section_origin: [0.0; 2],
-                closure: PathClosure::ClosedPlanar {
-                    normal: [0.0, 0.0, 1.0],
+        .add_node(
+            Node::new(NodeKind::Sweep {
+                section: exedra_constructive::ir::SectionLaw::IDENTITY,
+                profile,
+                path: Path3::MiteredPolyline {
+                    points,
+                    section_x: [0.0, 1.0, 0.0],
+                    section_origin: [0.0; 2],
+                    closure: PathClosure::ClosedPlanar {
+                        normal: [0.0, 0.0, 1.0],
+                    },
+                    miter_limit: 2.0,
                 },
-                miter_limit: 2.0,
-            },
-            caps: CapMode::None,
-        })
+                caps: CapMode::None,
+            })
+            .with_source(source)
+            .with_material(finish),
+        )
         .expect("surround");
     if cuts {
         for x in [2.3, 6.3] {
             let slot = b.material_slot("cut");
             let tool = b
-                .with_material(slot)
-                .add(NodeKind::Primitive {
-                    spec: PrimitiveSpec::Box {
-                        size: [0.7, 2.0, 2.0],
-                    },
-                    placement: Placement3::translate(x, -0.5, -0.5),
-                })
+                .add_node(
+                    Node::new(NodeKind::Primitive {
+                        spec: PrimitiveSpec::Box {
+                            size: [0.7, 2.0, 2.0],
+                        },
+                        placement: Placement3::translate(x, -0.5, -0.5),
+                    })
+                    .with_material(slot),
+                )
                 .expect("cutter");
             root = b
-                .add(NodeKind::Csg {
+                .add_node(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![root, tool],
                 })

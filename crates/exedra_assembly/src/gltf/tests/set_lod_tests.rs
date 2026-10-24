@@ -365,7 +365,7 @@ fn two_body_part(assembly: &mut Assembly, key: &str) -> PartId {
     let children = (0..2)
         .map(|i| {
             builder
-                .add(NodeKind::Primitive {
+                .add_node(NodeKind::Primitive {
                     spec: PrimitiveSpec::Box {
                         size: [0.5, 0.1, 0.5],
                     },
@@ -374,7 +374,7 @@ fn two_body_part(assembly: &mut Assembly, key: &str) -> PartId {
                 .unwrap()
         })
         .collect();
-    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let root = builder.add_node(NodeKind::Group { children }).unwrap();
     assembly
         .add_recipe_part(key, builder.finish(root).unwrap())
         .unwrap()

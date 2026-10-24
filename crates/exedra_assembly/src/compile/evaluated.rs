@@ -72,7 +72,7 @@ mod tests {
     };
     use exedra_constructive::{
         clearance::BoundaryPolicy,
-        ir::Plane3,
+        ir::{Node, Plane3},
         section::SectionPolicy,
         workplane::{
             SurfaceInventoryPolicy, WorkplaneAttachment, WorkplaneFailure, WorkplanePolicy,
@@ -90,14 +90,16 @@ mod tests {
             height: 1.0,
             caps: CapMode::Both,
         };
-        let first = b.with_source(label).add(kind.clone()).unwrap();
+        let first = b
+            .add_node(Node::new(kind.clone()).with_source(label))
+            .unwrap();
         let second = if duplicate {
-            b.with_source(label).add(kind).unwrap()
+            b.add_node(Node::new(kind).with_source(label)).unwrap()
         } else {
             first
         };
         let second = if retained {
-            b.add(NodeKind::OnWorkplane {
+            b.add_node(NodeKind::OnWorkplane {
                 support: second,
                 child: first,
                 attachment: named_cap(),
@@ -107,7 +109,7 @@ mod tests {
             second
         };
         let root = b
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: alloc::vec![first, second],
             })
             .unwrap();
@@ -207,7 +209,7 @@ mod tests {
     #[test]
     fn surface_inspection_diagnoses_and_recovers_without_private_geometry_access() {
         use exedra_constructive::{
-            ir::CsgOp,
+            ir::{CsgOp, Node},
             workplane::{SurfaceSelector, WorkplaneEvidence},
         };
         let mut b = RecipeBuilder::new();
@@ -216,23 +218,27 @@ mod tests {
         for (source, x) in [("left", 0.0), ("right", 6.0)] {
             let source = b.source_ref(source);
             operands.push(
-                b.with_source(source)
-                    .add(NodeKind::Extrude {
+                b.add_node(
+                    Node::new(NodeKind::Extrude {
                         profile,
                         placement: Placement3::translate(x, 0.0, 0.0),
                         height: 2.0,
                         caps: CapMode::Both,
                     })
-                    .unwrap(),
+                    .with_source(source),
+                )
+                .unwrap(),
             );
         }
         let source = b.source_ref("panels");
         let root = b
-            .with_source(source)
-            .add(NodeKind::Csg {
-                op: CsgOp::Union,
-                operands,
-            })
+            .add_node(
+                Node::new(NodeKind::Csg {
+                    op: CsgOp::Union,
+                    operands,
+                })
+                .with_source(source),
+            )
             .unwrap();
         let mut assembly = Assembly::new();
         let part = assembly
@@ -305,13 +311,15 @@ mod tests {
         let profile = builder.add_profile(builders::rect_from_corner(2.0, 3.0).unwrap());
         let label = builder.source_ref("panel");
         let node = builder
-            .with_source(label)
-            .add(NodeKind::Extrude {
-                profile,
-                placement: Placement3::IDENTITY,
-                height,
-                caps: CapMode::Both,
-            })
+            .add_node(
+                Node::new(NodeKind::Extrude {
+                    profile,
+                    placement: Placement3::IDENTITY,
+                    height,
+                    caps: CapMode::Both,
+                })
+                .with_source(label),
+            )
             .unwrap();
         let mut assembly = Assembly::new();
         let part = assembly
@@ -462,7 +470,7 @@ mod tests {
     fn semantic_attachment_and_clearance_survive_edits_with_explicit_stale_and_missing_results() {
         use exedra_constructive::{
             clearance::ClearanceDecision,
-            ir::Plane3,
+            ir::{Node, Plane3},
             workplane::{SurfaceSelector, WorkplaneAttachment},
         };
         let attachment = WorkplaneAttachment {
@@ -476,19 +484,21 @@ mod tests {
             let label = b.source_ref("panel/origin");
             let profile = b.add_profile(builders::rect_from_corner(width, 3.0).unwrap());
             let support = b
-                .with_source(label)
-                .add(NodeKind::ExtrudeToPlane {
-                    profile,
-                    placement: Placement3::IDENTITY,
-                    plane: Plane3 {
-                        normal: [-0.2, 0.0, 1.0],
-                        distance: 1.0,
-                    },
-                })
+                .add_node(
+                    Node::new(NodeKind::ExtrudeToPlane {
+                        profile,
+                        placement: Placement3::IDENTITY,
+                        plane: Plane3 {
+                            normal: [-0.2, 0.0, 1.0],
+                            distance: 1.0,
+                        },
+                    })
+                    .with_source(label),
+                )
                 .unwrap();
             let hole_profile = b.add_profile(builders::rect_from_corner(0.2, 0.2).unwrap());
             let hole = b
-                .add(NodeKind::Extrude {
+                .add_node(NodeKind::Extrude {
                     profile: hole_profile,
                     placement: Placement3::translate(0.1, 2.0, -1.0),
                     height: 4.0,
@@ -497,14 +507,16 @@ mod tests {
                 .unwrap();
             let label = b.source_ref("panel");
             let support = b
-                .with_source(label)
-                .add(NodeKind::Csg {
-                    op: exedra_constructive::ir::CsgOp::Difference,
-                    operands: alloc::vec![support, hole],
-                })
+                .add_node(
+                    Node::new(NodeKind::Csg {
+                        op: exedra_constructive::ir::CsgOp::Difference,
+                        operands: alloc::vec![support, hole],
+                    })
+                    .with_source(label),
+                )
                 .unwrap();
             let root = if duplicate {
-                b.add(NodeKind::Group {
+                b.add_node(NodeKind::Group {
                     children: alloc::vec![support, support],
                 })
                 .unwrap()

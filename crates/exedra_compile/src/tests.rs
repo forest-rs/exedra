@@ -5,7 +5,7 @@ use super::*;
 use alloc::sync::Arc;
 use exedra_constructive::{
     builders,
-    ir::{CapMode, NodeKind, Placement3, RecipeBuilder},
+    ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder},
     tessellate::REGION_CAP_END,
     workplane::{SurfaceInventoryPolicy, WorkplanePolicy, WorkplaneSelection},
 };
@@ -15,13 +15,15 @@ fn panel(width: f64) -> PartSource {
     let profile = builder.add_profile(builders::rect_from_corner(width, 3.0).unwrap());
     let label = builder.source_ref("panel");
     let root = builder
-        .with_source(label)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 1.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 1.0,
+                caps: CapMode::Both,
+            })
+            .with_source(label),
+        )
         .unwrap();
     PartSource::Recipe(builder.finish(root).unwrap())
 }
@@ -232,7 +234,7 @@ fn prepared_sources_bind_geometry_and_identity_across_reinstallation() {
         .unwrap();
     let mut builder = RecipeBuilder::new();
     let root = builder
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: exedra_constructive::ir::PrimitiveSpec::Box { size: [1.0; 3] },
             placement: Placement3::IDENTITY,
         })

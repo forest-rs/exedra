@@ -36,7 +36,7 @@ use exedra_constructive::builders;
 use exedra_constructive::cache::EvalCache;
 use exedra_constructive::evaluate::{Evaluation, evaluate, evaluate_with_cache};
 use exedra_constructive::ir::{
-    CapMode, CsgOp, FramePolicy, NodeKind, Path3, Placement3, Plane3, PrimitiveSpec, Recipe,
+    CapMode, CsgOp, FramePolicy, Node, NodeKind, Path3, Placement3, Plane3, PrimitiveSpec, Recipe,
     RecipeBuilder, SectionLaw,
 };
 use exedra_constructive::tessellate::{EvalPolicy, tessellate_path_sweep, tessellate_primitive};
@@ -227,7 +227,7 @@ fn build_recipe(index: u32) -> Recipe {
             .expect("wind-tunnel dimensions are valid"),
     );
     let node = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::translate(f64::from(index) * 300.0, 0.0, 0.0),
             height: depth,
@@ -343,7 +343,7 @@ fn build_ct2_recipe(nodes: u32, edit_index: u32, edited: Option<f64>) -> Recipe 
                 .expect("wind-tunnel dimensions are valid"),
         );
         let node = b
-            .add(NodeKind::Extrude {
+            .add_node(NodeKind::Extrude {
                 profile,
                 placement: Placement3::translate(f64::from(i) * 300.0, 0.0, 0.0),
                 height: depth,
@@ -353,7 +353,7 @@ fn build_ct2_recipe(nodes: u32, edit_index: u32, edited: Option<f64>) -> Recipe 
         children.push(node);
     }
     let root = b
-        .add(NodeKind::Group { children })
+        .add_node(NodeKind::Group { children })
         .expect("wind-tunnel group is valid");
     b.finish(root).expect("wind-tunnel recipe is valid")
 }
@@ -520,38 +520,38 @@ fn build_gallery_csg_recipe(mixed_materials: bool) -> Recipe {
     let block =
         builder.add_profile(builders::rect_from_corner(200.0, 100.0).expect("valid block profile"));
     let drill = builder.add_profile(builders::circle(30.0).expect("valid drill profile"));
-    if mixed_materials {
-        let slot = builder.material_slot("panel");
-        builder.with_material(slot);
-    }
+    let panel = mixed_materials.then(|| builder.material_slot("panel"));
     let block = builder
-        .add(NodeKind::Extrude {
-            profile: block,
-            placement: Placement3::IDENTITY,
-            height: 80.0,
-            caps: CapMode::Both,
+        .add_node(Node {
+            material: panel,
+            ..Node::new(NodeKind::Extrude {
+                profile: block,
+                placement: Placement3::IDENTITY,
+                height: 80.0,
+                caps: CapMode::Both,
+            })
         })
         .expect("valid block extrusion");
-    if mixed_materials {
-        let slot = builder.material_slot("cut");
-        builder.with_material(slot);
-    }
+    let cut = mixed_materials.then(|| builder.material_slot("cut"));
     let drill = builder
-        .add(NodeKind::Extrude {
-            profile: drill,
-            placement: Placement3::translate(130.0, 50.0, -20.0),
-            height: 120.0,
-            caps: CapMode::Both,
+        .add_node(Node {
+            material: cut,
+            ..Node::new(NodeKind::Extrude {
+                profile: drill,
+                placement: Placement3::translate(130.0, 50.0, -20.0),
+                height: 120.0,
+                caps: CapMode::Both,
+            })
         })
         .expect("valid drill extrusion");
     let difference = builder
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![block, drill],
         })
         .expect("valid difference");
     let moved = builder
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: difference,
             xf: Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_4, 50.0, 0.0, 0.0),
         })
@@ -758,7 +758,7 @@ fn fold_mesh_signature(mesh: &Mesh) -> u64 {
 fn build_ct4_exact_box() -> Recipe {
     let mut builder = RecipeBuilder::new();
     let child = builder
-        .add(NodeKind::Primitive {
+        .add_node(NodeKind::Primitive {
             spec: PrimitiveSpec::Box {
                 size: [800.0, 450.0, 18.0],
             },
@@ -766,7 +766,7 @@ fn build_ct4_exact_box() -> Recipe {
         })
         .expect("CT-4 box is valid");
     let stretch = builder
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child,
             plane: Plane3 {
                 normal: [1.0, 0.0, 0.0],
@@ -784,7 +784,7 @@ fn build_ct4_exact_extrude() -> Recipe {
         builders::rounded_rect_from_corner(800.0, 450.0, 25.0).expect("CT-4 profile is valid"),
     );
     let child = builder
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             placement: Placement3::IDENTITY,
             height: 18.0,
@@ -792,7 +792,7 @@ fn build_ct4_exact_extrude() -> Recipe {
         })
         .expect("CT-4 extrude is valid");
     let stretch = builder
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child,
             plane: Plane3 {
                 normal: [1.0, 0.0, 0.0],
@@ -838,13 +838,13 @@ fn build_ct4_import(sides: u32) -> Recipe {
     let mut builder = RecipeBuilder::new();
     let import = builder.add_import(mesh).expect("CT-4 import is valid");
     let child = builder
-        .add(NodeKind::MeshImport {
+        .add_node(NodeKind::MeshImport {
             import,
             placement: Placement3::IDENTITY,
         })
         .expect("CT-4 import node is valid");
     let stretch = builder
-        .add(NodeKind::Stretch {
+        .add_node(NodeKind::Stretch {
             child,
             plane: Plane3 {
                 normal: [1.0, 0.0, 0.0],

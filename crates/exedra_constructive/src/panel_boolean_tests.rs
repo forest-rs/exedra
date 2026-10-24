@@ -3,7 +3,7 @@
 
 use crate::builders;
 use crate::evaluate::{Fidelity, evaluate};
-use crate::ir::{CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder};
+use crate::ir::{CapMode, CsgOp, Node, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder};
 use crate::tessellate::EvalPolicy;
 use alloc::{format, vec, vec::Vec};
 
@@ -54,7 +54,7 @@ fn shelf_difference(rotated: bool, order: &[usize], chained: bool, front: Front)
     };
     let profile = b.add_profile(profile);
     let shelf = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             height,
             caps: CapMode::Both,
@@ -86,7 +86,7 @@ fn shelf_difference(rotated: bool, order: &[usize], chained: bool, front: Front)
             ][index - 3]
         };
         operands.push(
-            b.add(NodeKind::Primitive {
+            b.add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box { size },
                 placement: {
                     let (s, c) = match degrees {
@@ -103,20 +103,24 @@ fn shelf_difference(rotated: bool, order: &[usize], chained: bool, front: Front)
     }
     let root = if chained {
         operands[1..].iter().fold(shelf, |left, &right| {
-            b.with_material(slot)
-                .add(NodeKind::Csg {
+            b.add_node(
+                Node::new(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![left, right],
                 })
-                .unwrap()
+                .with_material(slot),
+            )
+            .unwrap()
         })
     } else {
-        b.with_material(slot)
-            .add(NodeKind::Csg {
+        b.add_node(
+            Node::new(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands,
             })
-            .unwrap()
+            .with_material(slot),
+        )
+        .unwrap()
     };
     b.finish(root).unwrap()
 }

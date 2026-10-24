@@ -7,7 +7,7 @@
 use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::{
     builders::ring,
-    ir::{NodeKind, Placement3, Plane3, PlaneSide, RecipeBuilder},
+    ir::{Node, NodeKind, Placement3, Plane3, PlaneSide, RecipeBuilder},
     section::{CutCap, SectionPolicy},
     tessellate::REGION_CAP_END,
     workplane::{WorkplanePolicy, WorkplaneSelection},
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         recipe.material_slot("surface");
         let cap = recipe.material_slot("cut");
         let profile = recipe.add_profile(ring(0.75, 0.5)?);
-        let body = recipe.add(NodeKind::ExtrudeToPlane {
+        let body = recipe.add_node(NodeKind::ExtrudeToPlane {
             profile,
             placement: Placement3::translate(x, 0.0, 0.0),
             plane: Plane3 {
@@ -35,18 +35,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         })?;
         let source = recipe.source_ref(&format!("support/{index}"));
-        let root = recipe.with_source(source).add(NodeKind::PlaneCut {
-            child: body,
-            plane: Plane3 {
-                normal: [0.0, 0.1, 1.0],
-                distance: 0.2,
-            },
-            side: PlaneSide::Positive,
-            cap: CutCap {
-                region: 100,
-                material: Some(cap),
-            },
-        })?;
+        let root = recipe.add_node(
+            Node::new(NodeKind::PlaneCut {
+                child: body,
+                plane: Plane3 {
+                    normal: [0.0, 0.1, 1.0],
+                    distance: 0.2,
+                },
+                side: PlaneSide::Positive,
+                cap: CutCap {
+                    region: 100,
+                    material: Some(cap),
+                },
+            })
+            .with_source(source),
+        )?;
         let part = assembly.add_recipe_part(&format!("support-{index}"), recipe.finish(root)?)?;
         assembly.set_default_slot(part, "surface")?;
         assembly.bind_region_slot(part, REGION_CAP_END, "cut")?;

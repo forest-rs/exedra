@@ -9,7 +9,7 @@ use crate::compile::{CompilePolicy, PartCompiler, assembly_fingerprint};
 use crate::flatten::{FlattenOptions, LodEmission, flatten, flatten_with};
 use crate::{InstanceId, InstancePath, PlacementSetId, RenderItem};
 use exedra_constructive::builders;
-use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, Recipe, RecipeBuilder};
 
 /// A slotted prism standing in for one level of a tree.
 fn tree(width: u32) -> Recipe {
@@ -17,13 +17,15 @@ fn tree(width: u32) -> Recipe {
     let bark = b.material_slot("bark");
     let profile = b.add_profile(builders::rect_from_corner(f64::from(width), 1.0).unwrap());
     let node = b
-        .with_material(bark)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 10.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 10.0,
+                caps: CapMode::Both,
+            })
+            .with_material(bark),
+        )
         .unwrap();
     b.finish(node).unwrap()
 }

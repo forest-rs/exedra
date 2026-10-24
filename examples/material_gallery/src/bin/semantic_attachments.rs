@@ -14,7 +14,7 @@ use exedra_constructive::{
     builders::{circle, rect_from_corner, ring},
     clearance::{BoundaryPolicy, ClearanceDecision},
     evaluate::Severity,
-    ir::{CapMode, CsgOp, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder},
+    ir::{CapMode, CsgOp, Node, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder},
     tessellate::{EvalPolicy, tessellate_sweep},
     text::dump_recipe,
     workplane::{SurfaceSelector, WorkplaneAttachment, WorkplaneError},
@@ -44,59 +44,71 @@ fn recipe(
     let mut b = RecipeBuilder::new();
     let panel_profile = b.add_profile(rect_from_corner(width, height)?);
     let surface_source = b.source_ref("panel/surface");
-    let definition = b
-        .with_source(surface_source)
-        .add(NodeKind::ExtrudeToPlane {
+    let definition = b.add_node(
+        Node::new(NodeKind::ExtrudeToPlane {
             profile: panel_profile,
             placement: Placement3::IDENTITY,
             plane: Plane3 {
                 normal: [-slope, 0.0, 1.0],
                 distance: thickness,
             },
-        })?;
+        })
+        .with_source(surface_source),
+    )?;
     let source = b.source_ref("panel");
     // Explicitly share the support definition among queries and construction.
-    let panel = b.with_source(source).add(NodeKind::Instance {
-        of: definition,
-        placement: Placement3::IDENTITY,
-    })?;
+    let panel = b.add_node(
+        Node::new(NodeKind::Instance {
+            of: definition,
+            placement: Placement3::IDENTITY,
+        })
+        .with_source(source),
+    )?;
     let hole_profile = b.add_profile(circle(RADIUS)?);
     let collar_profile = b.add_profile(ring(RADIUS + 0.07, RADIUS)?);
     let mut cutters = Vec::new();
     let mut collars = Vec::new();
     for (index, [x, y]) in HOLES.into_iter().enumerate() {
-        cutters.push(b.add(NodeKind::Extrude {
+        cutters.push(b.add_node(NodeKind::Extrude {
             profile: hole_profile,
             placement: Placement3::translate(x, y, -1.0),
             height: 2.0,
             caps: CapMode::Both,
         })?);
         let source = b.source_ref(&format!("mount/{index}"));
-        collars.push(b.with_source(source).add(NodeKind::Extrude {
-            profile: collar_profile,
-            placement: Placement3::translate(x, y, 0.006),
-            height: 0.05,
-            caps: CapMode::Both,
-        })?);
+        collars.push(
+            b.add_node(
+                Node::new(NodeKind::Extrude {
+                    profile: collar_profile,
+                    placement: Placement3::translate(x, y, 0.006),
+                    height: 0.05,
+                    caps: CapMode::Both,
+                })
+                .with_source(source),
+            )?,
+        );
     }
-    let cutters = b.add(NodeKind::Group { children: cutters })?;
-    let cutters = b.add(NodeKind::OnWorkplane {
+    let cutters = b.add_node(NodeKind::Group { children: cutters })?;
+    let cutters = b.add_node(NodeKind::OnWorkplane {
         support: panel,
         child: cutters,
         attachment: attachment(),
     })?;
     let source = b.source_ref("drilled");
-    let drilled = b.with_source(source).add(NodeKind::Csg {
-        op: CsgOp::Difference,
-        operands: vec![panel, cutters],
-    })?;
-    let collars = b.add(NodeKind::Group { children: collars })?;
-    let collars = b.add(NodeKind::OnWorkplane {
+    let drilled = b.add_node(
+        Node::new(NodeKind::Csg {
+            op: CsgOp::Difference,
+            operands: vec![panel, cutters],
+        })
+        .with_source(source),
+    )?;
+    let collars = b.add_node(NodeKind::Group { children: collars })?;
+    let collars = b.add_node(NodeKind::OnWorkplane {
         support: drilled,
         child: collars,
         attachment: attachment(),
     })?;
-    let root = b.add(NodeKind::Group {
+    let root = b.add_node(NodeKind::Group {
         children: vec![panel, drilled, collars],
     })?;
     Ok(b.finish(root)?)

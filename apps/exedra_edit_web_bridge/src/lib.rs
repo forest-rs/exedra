@@ -214,7 +214,7 @@ pub fn run_assembly_scenario_json() -> Result<String, JsValue> {
 pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String> {
     use exedra_assembly::Assembly;
     use exedra_constructive::builders;
-    use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+    use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder};
 
     let mut b = RecipeBuilder::new();
     let front = b.material_slot("front");
@@ -222,13 +222,15 @@ pub(crate) fn panel_trio_assembly() -> Result<exedra_assembly::Assembly, String>
         builders::rounded_rect_from_corner(600.0, 400.0, 40.0).map_err(|e| format!("{e}"))?,
     );
     let node = b
-        .with_material(front)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 18.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 18.0,
+                caps: CapMode::Both,
+            })
+            .with_material(front),
+        )
         .map_err(|e| format!("{e}"))?;
     let recipe = b.finish(node).map_err(|e| format!("{e}"))?;
 

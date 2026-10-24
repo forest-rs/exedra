@@ -6,8 +6,8 @@
 use exedra_constructive::{
     chart::{ChartTransform, SurfaceChart},
     ir::{
-        CapMode, CsgOp, NodeKind, Path3, PrimitiveSpec, Recipe, RecipeBuilder, SectionLaw, UvFrame,
-        UvMapping, UvProjection, UvTransform,
+        CapMode, CsgOp, Node, NodeKind, Path3, PrimitiveSpec, Recipe, RecipeBuilder, SectionLaw,
+        UvFrame, UvMapping, UvProjection, UvTransform,
     },
     profile::{Loop2, Profile2, ProfileError, Seg2},
     tessellate::{EvalPolicy, SweepFrameNormal, sample_sweep_frames},
@@ -50,24 +50,24 @@ pub(crate) fn ring_recipe(
     let section = SectionLaw::IDENTITY.with_turns(4);
     let cutter_frames = sample_sweep_frames(&path, &section, &policy.sweep_path)?
         .closed_stations(CUT_COUNT, 0.5)?;
-    if native_charts {
-        builder.with_surface_chart(SurfaceChart::Sweep {
+    let labeled = native_charts || projection.is_some();
+    let source = labeled.then(|| builder.source_ref("swept-body"));
+    let sweep = builder.add_node(Node {
+        surface_chart: native_charts.then_some(SurfaceChart::Sweep {
             wall: ChartTransform {
                 matrix: [[1.0 / 40.0, 0.0], [0.0, 1.0 / 40.0]],
                 offset: [0.0; 2],
             },
             caps: ChartTransform::IDENTITY,
-        });
-    }
-    if native_charts || projection.is_some() {
-        let source = builder.source_ref("swept-body");
-        builder.with_source(source);
-    }
-    let sweep = builder.with_material(finish).add(NodeKind::Sweep {
-        profile,
-        path,
-        section,
-        caps: CapMode::None,
+        }),
+        source,
+        ..Node::new(NodeKind::Sweep {
+            profile,
+            path,
+            section,
+            caps: CapMode::None,
+        })
+        .with_material(finish)
     })?;
     if cut_count == 0 {
         let root = if let Some(mapping) = projection {
@@ -88,17 +88,19 @@ pub(crate) fn ring_recipe(
             -0.5 * CUT_DEPTH,
             core::f64::consts::PI / 64.0,
         )?;
-        if native_charts || projection.is_some() {
-            let source = builder.source_ref(&format!("cut-tool-{}", first_cut + index));
-            builder.with_source(source);
-        }
-        let cutter = builder.with_material(finish).add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Cylinder {
-                radius: CUT_RADIUS,
-                height: CUT_DEPTH,
-                segments: 64,
-            },
-            placement,
+        let source =
+            labeled.then(|| builder.source_ref(&format!("cut-tool-{}", first_cut + index)));
+        let cutter = builder.add_node(Node {
+            source,
+            ..Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Cylinder {
+                    radius: CUT_RADIUS,
+                    height: CUT_DEPTH,
+                    segments: 64,
+                },
+                placement,
+            })
+            .with_material(finish)
         })?;
         let cutter = if native_charts {
             builder.map_uv(
@@ -116,7 +118,7 @@ pub(crate) fn ring_recipe(
         };
         operands.push(cutter);
     }
-    let root = builder.add(NodeKind::Csg {
+    let root = builder.add_node(NodeKind::Csg {
         op: CsgOp::Difference,
         operands,
     })?;

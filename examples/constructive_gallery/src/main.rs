@@ -6,7 +6,7 @@
 
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::evaluate;
-use exedra_constructive::ir::{CapMode, CsgOp, NodeKind, Placement3, Recipe, RecipeBuilder};
+use exedra_constructive::ir::{CapMode, CsgOp, Node, NodeKind, Placement3, Recipe, RecipeBuilder};
 use exedra_constructive::profile::{Loop2, Profile2, Seg2, SegKind, SegTag};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_mesh::ExtractParams;
@@ -54,16 +54,18 @@ fn grid_shell() -> Scenario {
         .collect();
     let src = b.source_ref("gallery:grid_shell");
     let n = b
-        .with_source(src)
-        .add(NodeKind::GridSurface {
-            points,
-            rows,
-            cols,
-            close_u: false,
-            close_w: false,
-            thickness: Some(12.0),
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::GridSurface {
+                points,
+                rows,
+                cols,
+                close_u: false,
+                close_w: false,
+                thickness: Some(12.0),
+                placement: Placement3::IDENTITY,
+            })
+            .with_source(src),
+        )
         .expect("valid grid");
     Scenario {
         name: "grid_shell",
@@ -76,13 +78,15 @@ fn rect_prism() -> Scenario {
     let p = b.add_profile(builders::rect_from_corner(600.0, 400.0).expect("rect"));
     let src = b.source_ref("gallery:rect_prism");
     let n = b
-        .with_source(src)
-        .add(NodeKind::Extrude {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            height: 720.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 720.0,
+                caps: CapMode::Both,
+            })
+            .with_source(src),
+        )
         .expect("valid extrude");
     Scenario {
         name: "rect_prism",
@@ -95,13 +99,15 @@ fn l_prism() -> Scenario {
     let p = b.add_profile(builders::l_profile(600.0, 600.0, 300.0, 300.0).expect("L"));
     let src = b.source_ref("gallery:l_prism");
     let n = b
-        .with_source(src)
-        .add(NodeKind::Extrude {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            height: 500.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 500.0,
+                caps: CapMode::Both,
+            })
+            .with_source(src),
+        )
         .expect("valid extrude");
     Scenario {
         name: "l_prism",
@@ -114,13 +120,15 @@ fn rounded_prism() -> Scenario {
     let p = b.add_profile(builders::rounded_rect_from_corner(400.0, 300.0, 50.0).expect("rounded"));
     let src = b.source_ref("gallery:rounded_prism");
     let n = b
-        .with_source(src)
-        .add(NodeKind::Extrude {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            height: 200.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 200.0,
+                caps: CapMode::Both,
+            })
+            .with_source(src),
+        )
         .expect("valid extrude");
     Scenario {
         name: "rounded_prism",
@@ -133,13 +141,15 @@ fn ring_prism() -> Scenario {
     let p = b.add_profile(builders::ring(120.0, 60.0).expect("ring"));
     let src = b.source_ref("gallery:ring_prism");
     let n = b
-        .with_source(src)
-        .add(NodeKind::Extrude {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            height: 40.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 40.0,
+                caps: CapMode::Both,
+            })
+            .with_source(src),
+        )
         .expect("valid extrude");
     Scenario {
         name: "ring_prism",
@@ -162,13 +172,15 @@ fn quarter_sweep() -> Scenario {
     let p = b.add_profile(profile);
     let src = b.source_ref("gallery:quarter_sweep");
     let n = b
-        .with_source(src)
-        .add(NodeKind::Revolve {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            sweep: std::f64::consts::FRAC_PI_2,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Revolve {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                sweep: std::f64::consts::FRAC_PI_2,
+                caps: CapMode::Both,
+            })
+            .with_source(src),
+        )
         .expect("valid revolve");
     Scenario {
         name: "quarter_sweep",
@@ -181,7 +193,7 @@ fn csg_difference() -> Scenario {
     let block = b.add_profile(builders::rect_from_corner(200.0, 100.0).expect("rect"));
     let drill = b.add_profile(builders::circle(30.0).expect("circle"));
     let e1 = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: block,
             placement: Placement3::IDENTITY,
             height: 80.0,
@@ -191,7 +203,7 @@ fn csg_difference() -> Scenario {
     // A cylinder drilled clean through the slab: the cut loops are fully
     // interior to the caps, exercising interior-loop face splitting.
     let e2 = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile: drill,
             placement: Placement3::translate(130.0, 50.0, -20.0),
             height: 120.0,
@@ -199,13 +211,13 @@ fn csg_difference() -> Scenario {
         })
         .expect("valid");
     let csg = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![e1, e2],
         })
         .expect("valid");
     let moved = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: csg,
             xf: Placement3::rotate_z_then_translate(std::f64::consts::FRAC_PI_4, 50.0, 0.0, 0.0),
         })
@@ -235,14 +247,16 @@ fn policy_curve() -> Scenario {
     let profile = Profile2::simple(outer).expect("valid profile");
     let p = b.add_profile(profile);
     let n = b
-        .with_source(src)
-        .with_issue(issue)
-        .add(NodeKind::Extrude {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            height: 18.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 18.0,
+                caps: CapMode::Both,
+            })
+            .with_source(src)
+            .with_issue(issue),
+        )
         .expect("valid extrude");
     Scenario {
         name: "policy_curve",

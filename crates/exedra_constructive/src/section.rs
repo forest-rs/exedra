@@ -100,7 +100,7 @@ impl PlaneSection {
     /// for converted in section.to_profiles()? {
     ///     let mut builder = RecipeBuilder::new();
     ///     let profile = builder.add_profile(converted.profile);
-    ///     let extrusion = builder.add(NodeKind::Extrude {
+    ///     let extrusion = builder.add_node(NodeKind::Extrude {
     ///         profile, placement: converted.placement, height: 0.5, caps: CapMode::Both,
     ///     })?;
     ///     let recipe = builder.finish(extrusion)?;

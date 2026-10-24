@@ -8,7 +8,7 @@ use crate::{Assembly, CompileError, CompilePolicy, PartCompiler};
 use exedra_constructive::builders;
 use exedra_constructive::evaluate::evaluate;
 use exedra_constructive::ir::{
-    CapMode, LoftPolicy, LoftSection, NodeKind, Placement3, Recipe, RecipeBuilder,
+    CapMode, LoftPolicy, LoftSection, Node, NodeKind, Placement3, Recipe, RecipeBuilder,
 };
 use exedra_constructive::loft::LoftError;
 use exedra_constructive::tessellate::{EvalPolicy, TessellateError};
@@ -39,19 +39,19 @@ fn vessel(labeled: bool, transform: Placement3, unused_source: bool) -> Recipe {
             }
         })
         .collect();
-    if labeled {
-        let source = builder.source_ref("vessel/body");
-        builder.with_source(source);
-    }
+    let source = labeled.then(|| builder.source_ref("vessel/body"));
     let loft = builder
-        .add(NodeKind::Loft {
-            sections,
-            policy: LoftPolicy::Smooth,
-            caps: CapMode::Both,
+        .add_node(Node {
+            source,
+            ..Node::new(NodeKind::Loft {
+                sections,
+                policy: LoftPolicy::Smooth,
+                caps: CapMode::Both,
+            })
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: loft,
             xf: transform,
         })

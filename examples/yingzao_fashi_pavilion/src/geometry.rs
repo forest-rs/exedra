@@ -6,7 +6,7 @@
 use exedra_constructive::builders::l_profile;
 use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
 use exedra_constructive::ir::{
-    CapMode, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, Node, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 
@@ -19,11 +19,14 @@ pub(crate) fn block(size: [f64; 3]) -> Result<Recipe> {
 pub(crate) fn dressed_block(size: [f64; 3]) -> Result<Recipe> {
     let mut recipe = RecipeBuilder::new();
     let material = recipe.material_slot("surface");
-    let child = recipe.with_material(material).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Box { size },
-        placement: Placement3::IDENTITY,
-    })?;
-    let root = recipe.add(NodeKind::EdgeFinish {
+    let child = recipe.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box { size },
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(material),
+    )?;
+    let root = recipe.add_node(NodeKind::EdgeFinish {
         child,
         selection: EdgeSelection::SharpEdges,
         policy: RoundPolicy::chamfer(0.003),
@@ -42,10 +45,13 @@ pub(crate) fn cylinder(radius: f64, height: f64) -> Result<Recipe> {
 fn primitive(spec: PrimitiveSpec) -> Result<Recipe> {
     let mut recipe = RecipeBuilder::new();
     let material = recipe.material_slot("surface");
-    let root = recipe.with_material(material).add(NodeKind::Primitive {
-        spec,
-        placement: Placement3::IDENTITY,
-    })?;
+    let root = recipe.add_node(
+        Node::new(NodeKind::Primitive {
+            spec,
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(material),
+    )?;
     Ok(recipe.finish(root)?)
 }
 
@@ -53,12 +59,15 @@ pub(crate) fn extrude(profile: Profile2, height: f64, placement: Placement3) -> 
     let mut recipe = RecipeBuilder::new();
     let profile = recipe.add_profile(profile);
     let material = recipe.material_slot("surface");
-    let root = recipe.with_material(material).add(NodeKind::Extrude {
-        profile,
-        height,
-        placement,
-        caps: CapMode::Both,
-    })?;
+    let root = recipe.add_node(
+        Node::new(NodeKind::Extrude {
+            profile,
+            height,
+            placement,
+            caps: CapMode::Both,
+        })
+        .with_material(material),
+    )?;
     Ok(recipe.finish(root)?)
 }
 
@@ -99,20 +108,23 @@ pub(crate) fn concave_shoulder(finish: Option<RoundPolicy>) -> Result<Recipe> {
     let mut builder = RecipeBuilder::new();
     let material = builder.material_slot("surface");
     let profile = builder.add_profile(l_profile(0.2, 0.2, 0.1, 0.1)?);
-    let mut root = builder.with_material(material).add(NodeKind::Extrude {
-        profile,
-        placement: Placement3::from_axes(
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, -1.0, 0.0],
-            [0.0, 0.2, 0.0],
-        ),
-        height: 0.4,
-        caps: CapMode::Both,
-    })?;
+    let mut root = builder.add_node(
+        Node::new(NodeKind::Extrude {
+            profile,
+            placement: Placement3::from_axes(
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 0.2, 0.0],
+            ),
+            height: 0.4,
+            caps: CapMode::Both,
+        })
+        .with_material(material),
+    )?;
     if let Some(policy) = finish {
         // The two internal profile walls, selected by semantic region.
-        root = builder.add(NodeKind::EdgeFinish {
+        root = builder.add_node(NodeKind::EdgeFinish {
             child: root,
             selection: EdgeSelection::RegionBoundaries(vec![[4, 5]]),
             policy,

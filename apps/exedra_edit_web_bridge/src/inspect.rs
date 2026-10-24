@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 
 use exedra_constructive::evaluate::{Evaluation, Fidelity, Severity, evaluate};
 use exedra_constructive::ir::{
-    CapMode, CsgOp, NodeId, NodeKind, Placement3, Recipe, RecipeBuilder,
+    CapMode, CsgOp, Node, NodeId, NodeKind, Placement3, Recipe, RecipeBuilder,
 };
 use exedra_constructive::tessellate::{EvalPolicy, Feature};
 use serde::{Deserialize, Serialize};
@@ -247,34 +247,40 @@ fn drilled_block_recipe() -> Result<Recipe, String> {
     let drill = b.add_profile(builders::circle(30.0).map_err(|e| format!("{e}"))?);
     let slab_src = b.source_ref("demo:drilled_block/slab");
     let e1 = b
-        .with_source(slab_src)
-        .add(NodeKind::Extrude {
-            profile: block,
-            placement: Placement3::IDENTITY,
-            height: 80.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: block,
+                placement: Placement3::IDENTITY,
+                height: 80.0,
+                caps: CapMode::Both,
+            })
+            .with_source(slab_src),
+        )
         .map_err(|e| format!("{e}"))?;
     let drill_src = b.source_ref("demo:drilled_block/drill");
     let e2 = b
-        .with_source(drill_src)
-        .add(NodeKind::Extrude {
-            profile: drill,
-            placement: Placement3::translate(130.0, 50.0, -20.0),
-            height: 120.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: drill,
+                placement: Placement3::translate(130.0, 50.0, -20.0),
+                height: 120.0,
+                caps: CapMode::Both,
+            })
+            .with_source(drill_src),
+        )
         .map_err(|e| format!("{e}"))?;
     let csg_src = b.source_ref("demo:drilled_block/difference");
     let csg = b
-        .with_source(csg_src)
-        .add(NodeKind::Csg {
-            op: CsgOp::Difference,
-            operands: alloc::vec![e1, e2],
-        })
+        .add_node(
+            Node::new(NodeKind::Csg {
+                op: CsgOp::Difference,
+                operands: alloc::vec![e1, e2],
+            })
+            .with_source(csg_src),
+        )
         .map_err(|e| format!("{e}"))?;
     let moved = b
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: csg,
             xf: Placement3::translate(50.0, 0.0, 0.0),
         })
@@ -302,14 +308,16 @@ fn policy_curve_recipe() -> Result<Recipe, String> {
     let profile = Profile2::simple(outer).map_err(|e| format!("{e}"))?;
     let p = b.add_profile(profile);
     let n = b
-        .with_source(src)
-        .with_issue(issue)
-        .add(NodeKind::Extrude {
-            profile: p,
-            placement: Placement3::IDENTITY,
-            height: 18.0,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile: p,
+                placement: Placement3::IDENTITY,
+                height: 18.0,
+                caps: CapMode::Both,
+            })
+            .with_source(src)
+            .with_issue(issue),
+        )
         .map_err(|e| format!("{e}"))?;
     b.finish(n).map_err(|e| format!("{e}"))
 }

@@ -7,7 +7,9 @@ use exedra_mesh::{BuildParams, Mesh};
 
 use crate::cache::EvalCache;
 use crate::evaluate::{Severity, evaluate, evaluate_with_cache, mesh_bounds};
-use crate::ir::{NodeId, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder, VertexStretchStep};
+use crate::ir::{
+    Node, NodeId, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder, VertexStretchStep,
+};
 use crate::tessellate::EvalPolicy;
 use crate::text::{dump_recipe, parse_recipe};
 
@@ -31,7 +33,7 @@ fn triangle() -> Mesh {
 fn import(builder: &mut RecipeBuilder, mesh: Mesh) -> NodeId {
     let import = builder.add_import(mesh).unwrap();
     builder
-        .add(NodeKind::MeshImport {
+        .add_node(NodeKind::MeshImport {
             import,
             placement: Placement3::IDENTITY,
         })
@@ -41,7 +43,7 @@ fn recipe(mesh: Mesh, steps: Vec<VertexStretchStep>) -> Recipe {
     let mut builder = RecipeBuilder::new();
     let child = import(&mut builder, mesh);
     let root = builder
-        .add(NodeKind::StretchVertices { child, steps })
+        .add_node(NodeKind::StretchVertices { child, steps })
         .unwrap();
     builder.finish(root).unwrap()
 }
@@ -51,7 +53,7 @@ fn cache_roundtrip_preserves_geometry_provenance_and_occurrence_materials() {
     let mut builder = RecipeBuilder::new();
     let child = import(&mut builder, triangle());
     let stretch = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![step(1.0, 1.0)],
         })
@@ -61,16 +63,18 @@ fn cache_roundtrip_preserves_geometry_provenance_and_occurrence_materials() {
     for slot in slots {
         instances.push(
             builder
-                .with_material(slot)
-                .add(NodeKind::Instance {
-                    of: stretch,
-                    placement: Placement3::IDENTITY,
-                })
+                .add_node(
+                    Node::new(NodeKind::Instance {
+                        of: stretch,
+                        placement: Placement3::IDENTITY,
+                    })
+                    .with_material(slot),
+                )
                 .unwrap(),
         );
     }
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             children: instances,
         })
         .unwrap();
@@ -116,7 +120,7 @@ fn steps_have_one_input_frame_and_transform_with_ancestors() {
     let mut builder = RecipeBuilder::new();
     let child = import(&mut builder, source);
     let stretch = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![step(0.4, -0.3), step(0.2, -0.3)],
         })
@@ -128,7 +132,7 @@ fn steps_have_one_input_frame_and_transform_with_ancestors() {
         [7.0, 9.0, 11.0],
     );
     let root = builder
-        .add(NodeKind::Transform { child: stretch, xf })
+        .add_node(NodeKind::Transform { child: stretch, xf })
         .unwrap();
     let recipe = builder.finish(root).unwrap();
     let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
@@ -157,7 +161,7 @@ fn group_refusal_is_atomic_including_a_child_that_already_refused() {
         let bad = import(&mut builder, quad);
         let bad = if refuse_in_child {
             builder
-                .add(NodeKind::StretchVertices {
+                .add_node(NodeKind::StretchVertices {
                     child: bad,
                     steps: vec![step(1.0, 1.0)],
                 })
@@ -166,12 +170,12 @@ fn group_refusal_is_atomic_including_a_child_that_already_refused() {
             bad
         };
         let child = builder
-            .add(NodeKind::Group {
+            .add_node(NodeKind::Group {
                 children: vec![good, bad],
             })
             .unwrap();
         let root = builder
-            .add(NodeKind::StretchVertices {
+            .add_node(NodeKind::StretchVertices {
                 child,
                 steps: vec![step(1.0, 1.0)],
             })
@@ -250,7 +254,7 @@ fn step_content_and_order_affect_fingerprints_and_invalid_steps_are_rejected() {
     ] {
         assert!(
             builder
-                .add(NodeKind::StretchVertices { child, steps })
+                .add_node(NodeKind::StretchVertices { child, steps })
                 .is_err()
         );
     }
@@ -281,11 +285,13 @@ fn body_adapter_retains_face_ownership_and_rejects_stale_correspondence() {
     let source = builder.source_ref("panel");
     let mesh = builder.add_import(triangle()).unwrap();
     let root = builder
-        .with_source(source)
-        .add(NodeKind::MeshImport {
-            import: mesh,
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::MeshImport {
+                import: mesh,
+                placement: Placement3::IDENTITY,
+            })
+            .with_source(source),
+        )
         .unwrap();
     let recipe = builder.finish(root).unwrap();
     let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
@@ -323,7 +329,7 @@ fn transforms_and_instances_share_local_selection_and_deformation_cache() {
     let mut builder = RecipeBuilder::new();
     let child = import(&mut builder, source.clone());
     let stretch = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![step(1.0, 1.0)],
         })
@@ -341,19 +347,19 @@ fn transforms_and_instances_share_local_selection_and_deformation_cache() {
     for xf in placements {
         children.push(
             builder
-                .add(NodeKind::Transform { child: stretch, xf })
+                .add_node(NodeKind::Transform { child: stretch, xf })
                 .unwrap(),
         );
         children.push(
             builder
-                .add(NodeKind::Instance {
+                .add_node(NodeKind::Instance {
                     of: stretch,
                     placement: xf,
                 })
                 .unwrap(),
         );
     }
-    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let root = builder.add_node(NodeKind::Group { children }).unwrap();
     let recipe = builder.finish(root).unwrap();
     let policy = EvalPolicy::default();
     let mut cache = EvalCache::new();
@@ -398,13 +404,13 @@ fn nonparallel_steps_share_input_while_nested_nodes_observe_prior_results() {
     let mut builder = RecipeBuilder::new();
     let child = import(&mut builder, source);
     let child = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![first],
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![second],
         })
@@ -436,12 +442,16 @@ fn multi_body_output_keeps_child_materials_across_placed_cached_occurrences() {
     ];
     let mut children = Vec::new();
     for slot in slots {
-        builder.with_material(slot);
-        children.push(import(&mut builder, triangle()));
+        let import = builder.add_import(triangle()).unwrap();
+        let node = Node::new(NodeKind::MeshImport {
+            import,
+            placement: Placement3::IDENTITY,
+        });
+        children.push(builder.add_node(node.with_material(slot)).unwrap());
     }
-    let child = builder.add(NodeKind::Group { children }).unwrap();
+    let child = builder.add_node(NodeKind::Group { children }).unwrap();
     let stretch = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![step(1.0, 1.0)],
         })
@@ -450,14 +460,14 @@ fn multi_body_output_keeps_child_materials_across_placed_cached_occurrences() {
     for x in [0.1, 5.1] {
         children.push(
             builder
-                .add(NodeKind::Transform {
+                .add_node(NodeKind::Transform {
                     child: stretch,
                     xf: Placement3::translate(x, 0.0, 0.0),
                 })
                 .unwrap(),
         );
     }
-    let root = builder.add(NodeKind::Group { children }).unwrap();
+    let root = builder.add_node(NodeKind::Group { children }).unwrap();
     let recipe = builder.finish(root).unwrap();
     let mut cache = EvalCache::new();
     for _ in 0..2 {
@@ -487,25 +497,25 @@ fn local_refusal_envelope_is_reported_in_world_coordinates() {
         .unwrap(),
     );
     let stretch = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child,
             steps: vec![step(0.5, -1.0)],
         })
         .unwrap();
     let outer = builder
-        .add(NodeKind::StretchVertices {
+        .add_node(NodeKind::StretchVertices {
             child: stretch,
             steps: vec![step(0.5, 1.0)],
         })
         .unwrap();
     let placed = builder
-        .add(NodeKind::Transform {
+        .add_node(NodeKind::Transform {
             child: outer,
             xf: Placement3::translate(10.0, 20.0, 30.0),
         })
         .unwrap();
     let root = builder
-        .add(NodeKind::Group {
+        .add_node(NodeKind::Group {
             // A prior occurrence's envelope must not be transformed again.
             children: vec![stretch, placed],
         })

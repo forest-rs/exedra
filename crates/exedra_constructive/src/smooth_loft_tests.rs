@@ -56,7 +56,7 @@ fn recipe(mode: LoftPolicy) -> Recipe {
     let middle = b.add_profile(section(1.5, 0.8));
     let c = b.add_profile(section(0.7, 1.2));
     let node = b
-        .add(NodeKind::Loft {
+        .add_node(NodeKind::Loft {
             sections: vec![
                 LoftSection::new(Placement3::IDENTITY, a),
                 LoftSection::new(Placement3::translate(0.3, 0.1, 1.5), middle),
@@ -284,7 +284,7 @@ fn smooth_loft_degenerate_sections_never_claim_a_section_envelope() {
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(builders::rect_from_corner(1.0, 1.0).unwrap());
         let root = builder
-            .add(NodeKind::Loft {
+            .add_node(NodeKind::Loft {
                 sections: vec![
                     LoftSection::new(Placement3::IDENTITY, profile),
                     LoftSection::new(Placement3::translate(1.0, 0.0, height), profile),

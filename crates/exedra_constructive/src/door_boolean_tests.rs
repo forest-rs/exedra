@@ -1,6 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::ir::Node;
 use crate::{
     builders,
     evaluate::{Fidelity, evaluate},
@@ -18,7 +19,7 @@ fn recessed_panel(scale: f64, holes: bool, chained: bool) -> Recipe {
         builders::rounded_rect_from_corner(0.6 * scale, 0.8 * scale, 0.02 * scale).unwrap(),
     );
     let panel = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             height: 0.02 * scale,
             caps: CapMode::Both,
@@ -29,7 +30,7 @@ fn recessed_panel(scale: f64, holes: bool, chained: bool) -> Recipe {
         builders::rounded_rect_from_corner(0.5 * scale, 0.7 * scale, 0.012 * scale).unwrap(),
     );
     let pocket = b
-        .add(NodeKind::Extrude {
+        .add_node(NodeKind::Extrude {
             profile,
             height: 0.012 * scale,
             caps: CapMode::Both,
@@ -41,7 +42,7 @@ fn recessed_panel(scale: f64, holes: bool, chained: bool) -> Recipe {
         for x in [0.025, 0.575] {
             let profile = b.add_profile(builders::circle(0.0025 * scale).unwrap());
             operands.push(
-                b.add(NodeKind::Extrude {
+                b.add_node(NodeKind::Extrude {
                     profile,
                     height: 0.04 * scale,
                     caps: CapMode::Both,
@@ -53,20 +54,24 @@ fn recessed_panel(scale: f64, holes: bool, chained: bool) -> Recipe {
     }
     let root = if chained {
         operands[1..].iter().fold(panel, |left, &right| {
-            b.with_material(finish)
-                .add(NodeKind::Csg {
+            b.add_node(
+                Node::new(NodeKind::Csg {
                     op: CsgOp::Difference,
                     operands: vec![left, right],
                 })
-                .unwrap()
+                .with_material(finish),
+            )
+            .unwrap()
         })
     } else {
-        b.with_material(finish)
-            .add(NodeKind::Csg {
+        b.add_node(
+            Node::new(NodeKind::Csg {
                 op: CsgOp::Difference,
                 operands,
             })
-            .unwrap()
+            .with_material(finish),
+        )
+        .unwrap()
     };
     b.finish(root).unwrap()
 }

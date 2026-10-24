@@ -8,7 +8,7 @@ use exedra_assembly::{Assembly, CompilePolicy, PartCompiler};
 use exedra_constructive::{
     builders,
     clearance::{BoundaryPolicy, PolygonClearancePolicy},
-    ir::{CapMode, NodeKind, Placement3, Recipe, RecipeBuilder},
+    ir::{CapMode, Node, NodeKind, Placement3, Recipe, RecipeBuilder},
     profile::{Loop2, Profile2, Seg2},
     workplane::{SurfaceSelector, WorkplaneAttachment, WorkplanePolicy},
 };
@@ -23,13 +23,15 @@ fn extrude(profile: Profile2, depth: f64) -> Recipe {
     let profile = builder.add_profile(profile);
     let slot = builder.material_slot("surface");
     let node = builder
-        .with_material(slot)
-        .add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: depth,
-            caps: CapMode::Both,
-        })
+        .add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: depth,
+                caps: CapMode::Both,
+            })
+            .with_material(slot),
+        )
         .expect("extrusion");
     builder.finish(node).expect("recipe")
 }

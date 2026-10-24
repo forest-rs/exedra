@@ -84,7 +84,7 @@ use exedra::constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilde
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let mut builder = RecipeBuilder::new();
-let root = builder.add(NodeKind::Primitive {
+let root = builder.add_node(NodeKind::Primitive {
     spec: PrimitiveSpec::Box { size: [1.0, 1.0, 1.0] },
     placement: Placement3::IDENTITY,
 })?;

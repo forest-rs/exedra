@@ -23,7 +23,7 @@ fn splicing_remaps_authored_loft_section_sources() {
     let bottom = source.source_ref("part/bottom");
     let top = source.source_ref("part/top");
     let root = source
-        .add(NodeKind::Loft {
+        .add_node(NodeKind::Loft {
             sections: vec![
                 LoftSection::new(Placement3::IDENTITY, profile).with_source(bottom),
                 LoftSection::new(Placement3::translate(0.0, 0.0, 2.0), profile).with_source(top),
@@ -67,16 +67,18 @@ fn block(builder: &mut RecipeBuilder, size: [f64; 3], slot: &str, finish: bool) 
     let material = builder.material_slot(slot);
     let source = builder.source_ref(slot);
     let child = builder
-        .with_material(material)
-        .with_source(source)
-        .add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box { size },
-            placement: Placement3::IDENTITY,
-        })
+        .add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box { size },
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(material)
+            .with_source(source),
+        )
         .unwrap();
     if finish {
         builder
-            .add(NodeKind::EdgeFinish {
+            .add_node(NodeKind::EdgeFinish {
                 child,
                 selection: EdgeSelection::SharpEdges,
                 policy: RoundPolicy::chamfer(0.03),
@@ -141,18 +143,20 @@ fn joint_cuts_preserve_finishes_on_hosts_and_tools() {
         let host = block(&mut direct, host_size, "host", finish_host);
         let tool = block(&mut direct, tool_size, "cut", finish_tool);
         let tool = direct
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: tool,
                 xf: placement,
             })
             .unwrap();
         let material = direct.material_slot("host");
         let root = direct
-            .with_material(material)
-            .add(NodeKind::Csg {
-                op: CsgOp::Difference,
-                operands: vec![host, tool],
-            })
+            .add_node(
+                Node::new(NodeKind::Csg {
+                    op: CsgOp::Difference,
+                    operands: vec![host, tool],
+                })
+                .with_material(material),
+            )
             .unwrap();
         let expected = direct.finish(root).unwrap();
         assert_eq!(composed.slots(), expected.slots());
@@ -307,12 +311,14 @@ fn sharing_distinguishes_slot_tables_default_slots_and_sources() {
         builder.material_slot("end");
         let source = builder.source_ref(source);
         let root = builder
-            .with_material(material)
-            .with_source(source)
-            .add(NodeKind::Primitive {
-                spec: PrimitiveSpec::Box { size: [1.0; 3] },
-                placement: Placement3::IDENTITY,
-            })
+            .add_node(
+                Node::new(NodeKind::Primitive {
+                    spec: PrimitiveSpec::Box { size: [1.0; 3] },
+                    placement: Placement3::IDENTITY,
+                })
+                .with_material(material)
+                .with_source(source),
+            )
             .unwrap();
         construction
             .add_element(

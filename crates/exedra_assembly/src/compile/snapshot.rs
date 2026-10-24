@@ -41,7 +41,7 @@ mod tests {
     use crate::{CompileError, CompilePolicy, CompiledPart, PartCompiler, PartId};
     use alloc::format;
     use alloc::sync::Arc;
-    use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
+    use exedra_constructive::ir::{Node, NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 
     fn assembly(sizes: &[f64]) -> Assembly {
         let mut assembly = Assembly::new();
@@ -49,11 +49,13 @@ mod tests {
             let mut recipe = RecipeBuilder::new();
             let slot = recipe.material_slot("surface");
             let root = recipe
-                .with_material(slot)
-                .add(NodeKind::Primitive {
-                    spec: PrimitiveSpec::Box { size: [size; 3] },
-                    placement: Placement3::IDENTITY,
-                })
+                .add_node(
+                    Node::new(NodeKind::Primitive {
+                        spec: PrimitiveSpec::Box { size: [size; 3] },
+                        placement: Placement3::IDENTITY,
+                    })
+                    .with_material(slot),
+                )
                 .unwrap();
             assembly
                 .add_recipe_part(&format!("part-{i}"), recipe.finish(root).unwrap())

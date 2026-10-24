@@ -7,7 +7,7 @@ use core::f64::consts::TAU;
 use crate::Length;
 use exedra_constructive::builders::circle;
 use exedra_constructive::ir::{
-    CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, CsgOp, Node, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
 use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 use joiner::{Element, OrientedBox, Part, RuleContext, RuleError, RuleOutput};
@@ -71,27 +71,33 @@ pub(crate) fn brick_recipe(
     }
     let mut builder = RecipeBuilder::new();
     let slot = builder.material_slot("surface");
-    let mut root = builder.with_material(slot).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Box { size },
-        placement: Placement3::IDENTITY,
-    })?;
+    let mut root = builder.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box { size },
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(slot),
+    )?;
     if let Some((cx, cz, radius)) = cut {
         let profile =
             builder.add_profile(circle(radius).map_err(|_| RuleError::InvalidParameter {
                 what: "opening circle",
             })?);
-        let cutter = builder.with_material(slot).add(NodeKind::Extrude {
-            profile,
-            height: depth + 0.02,
-            caps: CapMode::Both,
-            placement: Placement3::from_axes(
-                [1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [0.0, -1.0, 0.0],
-                [cx, depth + 0.01, cz],
-            ),
-        })?;
-        root = builder.add(NodeKind::Csg {
+        let cutter = builder.add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                height: depth + 0.02,
+                caps: CapMode::Both,
+                placement: Placement3::from_axes(
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, -1.0, 0.0],
+                    [cx, depth + 0.01, cz],
+                ),
+            })
+            .with_material(slot),
+        )?;
+        root = builder.add_node(NodeKind::Csg {
             op: CsgOp::Difference,
             operands: vec![root, cutter],
         })?;
@@ -133,17 +139,20 @@ pub(crate) fn surround(
     let mut builder = RecipeBuilder::new();
     let slot = builder.material_slot("surface");
     let profile = builder.add_profile(profile);
-    let root = builder.with_material(slot).add(NodeKind::Extrude {
-        profile,
-        height: wall.extent.size[1],
-        caps: CapMode::Both,
-        placement: Placement3::from_axes(
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, -1.0, 0.0],
-            [0.0, wall.extent.size[1], 0.0],
-        ),
-    })?;
+    let root = builder.add_node(
+        Node::new(NodeKind::Extrude {
+            profile,
+            height: wall.extent.size[1],
+            caps: CapMode::Both,
+            placement: Placement3::from_axes(
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [0.0, wall.extent.size[1], 0.0],
+            ),
+        })
+        .with_material(slot),
+    )?;
     let recipe = builder.finish(root)?;
     for i in 0..opening.segments {
         let angle = f64::from(i) * step;

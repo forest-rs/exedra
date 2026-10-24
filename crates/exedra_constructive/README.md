@@ -50,7 +50,7 @@ use exedra_constructive::{
 
 let mut builder = RecipeBuilder::new();
 let root = builder
-    .add(NodeKind::Primitive {
+    .add_node(NodeKind::Primitive {
         spec: PrimitiveSpec::Box {
             size: [1.0, 2.0, 0.5],
         },
@@ -72,7 +72,7 @@ geometry alone as success. Use the `serde` feature for host-side interchange.
 
 ## Construction UV charts
 
-Call `RecipeBuilder::with_surface_chart` before an ordinary `Extrude`, `Revolve`,
+Bind a chart with `Node::with_surface_chart` on an ordinary `Extrude`, `Revolve`,
 `Loft` or `Sweep` node. `SurfaceChart::Extrude` maps walls by sampled profile distance and extrusion
 height. `SurfaceChart::Revolve` maps them by angle times an explicit reference
 radius and sampled profile distance. `SurfaceChart::Loft` uses the sampled
@@ -466,13 +466,13 @@ use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
 use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
 
 let mut recipe = RecipeBuilder::new();
-let rail = recipe.add(NodeKind::Primitive {
+let rail = recipe.add_node(NodeKind::Primitive {
     spec: PrimitiveSpec::Box { size: [0.09, 0.2, 2.0] },
     placement: Placement3::IDENTITY,
 }).unwrap();
 let mut policy = RoundPolicy::fillet(0.006);
 policy.chord_tolerance = 0.00002;
-let finished = recipe.add(NodeKind::EdgeFinish {
+let finished = recipe.add_node(NodeKind::EdgeFinish {
     child: rail,
     selection: EdgeSelection::SharpEdges,
     policy,

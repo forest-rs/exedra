@@ -42,22 +42,21 @@
 //! ```
 //! use exedra_constructive::builders;
 //! use exedra_constructive::evaluate::{Fidelity, evaluate};
-//! use exedra_constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder};
+//! use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder};
 //! use exedra_constructive::tessellate::EvalPolicy;
 //!
 //! let mut b = RecipeBuilder::new();
 //! let source = b.source_ref("yourspec:part/7#body");
 //! let front = b.material_slot("front");
 //! let profile = b.add_profile(builders::rounded_rect_from_corner(600.0, 400.0, 40.0).unwrap());
+//! let body = NodeKind::Extrude {
+//!     profile,
+//!     placement: Placement3::IDENTITY,
+//!     height: 720.0,
+//!     caps: CapMode::Both,
+//! };
 //! let node = b
-//!     .with_source(source)
-//!     .with_material(front)
-//!     .add(NodeKind::Extrude {
-//!         profile,
-//!         placement: Placement3::IDENTITY,
-//!         height: 720.0,
-//!         caps: CapMode::Both,
-//!     })
+//!     .add_node(Node::new(body).with_source(source).with_material(front))
 //!     .unwrap();
 //! let recipe = b.finish(node).unwrap();
 //!

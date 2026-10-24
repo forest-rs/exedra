@@ -36,7 +36,7 @@ fn recipe(w: f64, h: f64, bar: f64, distinct: bool, stage: u8) -> Recipe {
         ),
     ] {
         let child = b
-            .add(NodeKind::Sweep {
+            .add_node(NodeKind::Sweep {
                 section: crate::ir::SectionLaw::IDENTITY,
                 profile: p,
                 path: Path3::Polyline {
@@ -47,7 +47,7 @@ fn recipe(w: f64, h: f64, bar: f64, distinct: bool, stage: u8) -> Recipe {
             })
             .unwrap();
         bars.push(
-            b.add(NodeKind::Transform {
+            b.add_node(NodeKind::Transform {
                 child,
                 xf: Placement3::translate(0.0, 0.0, z),
             })
@@ -55,7 +55,7 @@ fn recipe(w: f64, h: f64, bar: f64, distinct: bool, stage: u8) -> Recipe {
         );
     }
     let union = b
-        .add(NodeKind::Csg {
+        .add_node(NodeKind::Csg {
             op: CsgOp::Union,
             operands: bars,
         })
@@ -65,7 +65,7 @@ fn recipe(w: f64, h: f64, bar: f64, distinct: bool, stage: u8) -> Recipe {
     } else {
         let (x, y) = if stage == 3 { (0.05, 0.03) } else { (0.0, 0.0) };
         let panel = b
-            .add(NodeKind::Primitive {
+            .add_node(NodeKind::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: [w, h, if stage == 1 { 0.018 } else { 0.004 }],
                 },
@@ -73,12 +73,12 @@ fn recipe(w: f64, h: f64, bar: f64, distinct: bool, stage: u8) -> Recipe {
             })
             .unwrap();
         let cutter = b
-            .add(NodeKind::Transform {
+            .add_node(NodeKind::Transform {
                 child: union,
                 xf: Placement3::translate(x, y, 0.0),
             })
             .unwrap();
-        b.add(NodeKind::Csg {
+        b.add_node(NodeKind::Csg {
             op: if stage == 1 {
                 CsgOp::Intersection
             } else {

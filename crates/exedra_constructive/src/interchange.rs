@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use crate::chart::{ChartError, ChartTransform, LoftStations, SurfaceChart};
 use crate::edge_finish::{EdgeSelection, OperandRegion, RoundKind, RoundPolicy};
 use crate::ir::{
-    CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, NodeId, NodeKind, Path3,
+    CapMode, CsgOp, FramePolicy, Law, LoftPolicy, LoftSection, Node, NodeId, NodeKind, Path3,
     PathClosure, PathJoin, Placement3, Plane3, PrimitiveSpec, ProfileId, Recipe, RecipeBuilder,
     RecipeError, SectionLaw, SlotId, SourceId, VertexStretchStep,
 };
@@ -1684,23 +1684,21 @@ pub fn from_dto(dto: &RecipeDto) -> Result<Recipe, InterchangeError> {
         builder.add_profile(Profile2::new(outer, holes).map_err(InterchangeError::Profile)?);
     }
     for node in &dto.nodes {
-        if let Some(source) = node.source {
-            builder.with_source(SourceId(source));
-        }
-        if let Some(material) = node.material {
-            builder.with_material(SlotId(material));
-        }
-        if let Some(issue) = node.issue {
-            builder.with_issue(SourceId(issue));
-        }
-        let operation = if let NodeKindDto::Charted { operation, chart } = &node.kind {
-            builder.with_surface_chart((*chart).into());
-            operation.as_ref()
-        } else {
-            &node.kind
+        let (operation, surface_chart) = match &node.kind {
+            NodeKindDto::Charted { operation, chart } => {
+                (operation.as_ref(), Some((*chart).into()))
+            }
+            kind => (kind, None),
         };
-        let kind = kind_value(operation)?;
-        builder.add(kind).map_err(InterchangeError::Recipe)?;
+        builder
+            .add_node(Node {
+                surface_chart,
+                kind: kind_value(operation)?,
+                source: node.source.map(SourceId),
+                material: node.material.map(SlotId),
+                issue: node.issue.map(SourceId),
+            })
+            .map_err(InterchangeError::Recipe)?;
     }
     builder
         .finish(NodeId(dto.root))

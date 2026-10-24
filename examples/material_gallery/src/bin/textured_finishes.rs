@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use exedra_assembly::{Assembly, CompilePolicy, NormalsSource, PartCompiler, flatten};
 use exedra_constructive::edge_finish::{EdgeSelection, RoundPolicy};
 use exedra_constructive::ir::{
-    BoxUv, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder, UvMapping, UvProjection,
-    UvTransform,
+    BoxUv, Node, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder, UvMapping,
+    UvProjection, UvTransform,
 };
 use exedra_constructive::tessellate::{EvalPolicy, tessellate_primitive};
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
@@ -34,11 +34,14 @@ fn panel(policy: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
     let mut builder = RecipeBuilder::new();
     let surface = builder.material_slot("surface");
     let import = builder.add_import(panel_mesh()?)?;
-    let child = builder.with_material(surface).add(NodeKind::MeshImport {
-        import,
-        placement: Placement3::IDENTITY,
-    })?;
-    let child = builder.add(NodeKind::UvMap {
+    let child = builder.add_node(
+        Node::new(NodeKind::MeshImport {
+            import,
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(surface),
+    )?;
+    let child = builder.add_node(NodeKind::UvMap {
         options: exedra_mesh::uv_mapping::UvMappingOptions::default(),
         child,
         mapping: UvMapping {
@@ -52,7 +55,7 @@ fn panel(policy: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
         },
     })?;
     let root = if let Some(policy) = policy {
-        builder.add(NodeKind::EdgeFinish {
+        builder.add_node(NodeKind::EdgeFinish {
             child,
             selection: EdgeSelection::SharpEdges,
             policy,

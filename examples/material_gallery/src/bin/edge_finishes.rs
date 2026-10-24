@@ -10,7 +10,7 @@ use exedra_assembly::{Assembly, CompilePolicy, NormalsSource, PartCompiler, flat
 use exedra_constructive::builders;
 use exedra_constructive::edge_finish::{EdgeSelection, OperandRegion, RoundPolicy};
 use exedra_constructive::ir::{
-    CapMode, CsgOp, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
+    CapMode, CsgOp, Node, NodeKind, Placement3, PrimitiveSpec, Recipe, RecipeBuilder,
 };
 use exedra_gltf::{GltfExportOptions, export_glb_with_materials};
 use serde_json::json;
@@ -20,22 +20,28 @@ fn rail(profile_rounding: bool) -> Result<Recipe, Box<dyn Error>> {
     let surface = b.material_slot("surface");
     let root = if profile_rounding {
         let profile = b.add_profile(builders::rounded_rect_from_corner(0.09, 0.2, 0.006)?);
-        b.with_material(surface).add(NodeKind::Extrude {
-            profile,
-            placement: Placement3::IDENTITY,
-            height: 2.0,
-            caps: CapMode::Both,
-        })?
+        b.add_node(
+            Node::new(NodeKind::Extrude {
+                profile,
+                placement: Placement3::IDENTITY,
+                height: 2.0,
+                caps: CapMode::Both,
+            })
+            .with_material(surface),
+        )?
     } else {
-        let child = b.with_material(surface).add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Box {
-                size: [0.09, 0.2, 2.0],
-            },
-            placement: Placement3::IDENTITY,
-        })?;
+        let child = b.add_node(
+            Node::new(NodeKind::Primitive {
+                spec: PrimitiveSpec::Box {
+                    size: [0.09, 0.2, 2.0],
+                },
+                placement: Placement3::IDENTITY,
+            })
+            .with_material(surface),
+        )?;
         let mut policy = RoundPolicy::fillet(0.006);
         policy.chord_tolerance = 0.00002;
-        b.add(NodeKind::EdgeFinish {
+        b.add_node(NodeKind::EdgeFinish {
             child,
             selection: EdgeSelection::SharpEdges,
             policy,
@@ -47,14 +53,17 @@ fn rail(profile_rounding: bool) -> Result<Recipe, Box<dyn Error>> {
 fn foot() -> Result<Recipe, Box<dyn Error>> {
     let mut b = RecipeBuilder::new();
     let surface = b.material_slot("surface");
-    let child = b.with_material(surface).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Box {
-            size: [0.09, 0.2, 0.15],
-        },
-        placement: Placement3::IDENTITY,
-    })?;
+    let child = b.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [0.09, 0.2, 0.15],
+            },
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(surface),
+    )?;
     // Stable +X/+Y box regions identify one exposed vertical edge.
-    let root = b.add(NodeKind::EdgeFinish {
+    let root = b.add_node(NodeKind::EdgeFinish {
         child,
         selection: EdgeSelection::RegionBoundaries(vec![[1, 3]]),
         policy: RoundPolicy::chamfer(0.006),
@@ -74,26 +83,32 @@ fn compile_policy() -> CompilePolicy {
 fn recessed_door(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
     let mut b = RecipeBuilder::new();
     let surface = b.material_slot("surface");
-    let panel = b.with_material(surface).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Box {
-            size: [0.45, 0.024, 0.7],
-        },
-        placement: Placement3::IDENTITY,
-    })?;
-    let cutter = b.with_material(surface).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Box {
-            size: [0.33, 0.02, 0.58],
-        },
-        placement: Placement3::translate(0.06, -0.008, 0.06),
-    })?;
-    let child = b.add(NodeKind::Csg {
+    let panel = b.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [0.45, 0.024, 0.7],
+            },
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(surface),
+    )?;
+    let cutter = b.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [0.33, 0.02, 0.58],
+            },
+            placement: Placement3::translate(0.06, -0.008, 0.06),
+        })
+        .with_material(surface),
+    )?;
+    let child = b.add_node(NodeKind::Csg {
         op: CsgOp::Difference,
         operands: vec![panel, cutter],
     })?;
     let root = if let Some(mut policy) = finish {
         policy.max_tangent_turn = std::f64::consts::FRAC_PI_2;
         policy.chord_tolerance = 0.00002;
-        b.add(NodeKind::EdgeFinish {
+        b.add_node(NodeKind::EdgeFinish {
             child,
             // Panel operand 0, region 4 is the -Y front. Cutter operand 1
             // uses its ordinary box regions for the four walls at that front.
@@ -121,30 +136,38 @@ fn recessed_door(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> 
 fn two_pockets(finish: Option<RoundPolicy>) -> Result<Recipe, Box<dyn Error>> {
     let mut b = RecipeBuilder::new();
     let surface = b.material_slot("surface");
-    let panel = b.with_material(surface).add(NodeKind::Primitive {
-        spec: PrimitiveSpec::Box {
-            size: [0.4, 0.2, 0.1],
-        },
-        placement: Placement3::IDENTITY,
-    })?;
+    let panel = b.add_node(
+        Node::new(NodeKind::Primitive {
+            spec: PrimitiveSpec::Box {
+                size: [0.4, 0.2, 0.1],
+            },
+            placement: Placement3::IDENTITY,
+        })
+        .with_material(surface),
+    )?;
     let mut operands = vec![panel];
     for x in [0.1, 0.3] {
-        operands.push(b.with_material(surface).add(NodeKind::Primitive {
-            spec: PrimitiveSpec::Cylinder {
-                radius: 0.025,
-                height: 0.04,
-                segments: 32,
-            },
-            placement: Placement3::translate(x, 0.1, 0.08),
-        })?);
+        operands.push(
+            b.add_node(
+                Node::new(NodeKind::Primitive {
+                    spec: PrimitiveSpec::Cylinder {
+                        radius: 0.025,
+                        height: 0.04,
+                        segments: 32,
+                    },
+                    placement: Placement3::translate(x, 0.1, 0.08),
+                })
+                .with_material(surface),
+            )?,
+        );
     }
-    let child = b.add(NodeKind::Csg {
+    let child = b.add_node(NodeKind::Csg {
         op: CsgOp::Difference,
         operands,
     })?;
     let root = if let Some(mut policy) = finish {
         policy.chord_tolerance = 0.00002;
-        b.add(NodeKind::EdgeFinish {
+        b.add_node(NodeKind::EdgeFinish {
             child,
             // Each cutter's wall meets the panel top. The two disconnected
             // rims are selected separately by their immediate CSG operands.
