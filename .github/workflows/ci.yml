@@ -24,6 +24,8 @@ env:
     -p exedra_fidget
     -p exedra_gltf
     -p exedra_isosurface
+    -p exedra_math
+    -p exedra_measurements
     -p exedra_primitives
     -p exedra_qef
     -p exedra_spatial
@@ -42,6 +44,8 @@ env:
     -p exedra_compile
     -p exedra_constructive
     -p exedra_isosurface
+    -p exedra_math
+    -p exedra_measurements
     -p exedra_primitives
     -p exedra_qef
     -p exedra_spatial
