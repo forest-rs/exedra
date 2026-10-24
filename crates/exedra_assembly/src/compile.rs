@@ -1,1127 +1,135 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Content-addressed, memoized part compilation.
-//!
-//! [`PartCompiler::compile_parts`] tessellates each distinct part once per
-//! `(content fingerprint, policy fingerprint)` pair; any number of
-//! instances share the compiled result. Compilation is deterministic, so
-//! the cache is pure memoization: hits and misses can never change output,
-//! only work. Constructive reports are cached with the geometry: callers can
-//! inspect every diagnostic on successful (including partial) evaluations,
-//! while an error-level refusal that emits no bodies is a typed compilation
-//! failure and can never disappear during flattening.
-//!
-//! Dirty tracking runs through the `invalidation` crate: part-content
-//! edits are marked on a parts channel, and the next compile drains the
-//! channel and evicts the marked entries from the last successful snapshot.
-//! Shared aliases refer to the same cache entry. Binding and metadata edits
-//! never touch this layer; callers can explicitly release the whole cache.
+//! Assembly adapters over the independent geometry compilation service.
+//! Placements and appearance are captured here; geometry algorithms and caches
+//! belong to `exedra_compile`.
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use crate::{Assembly, PartId};
+use alloc::{sync::Arc, vec::Vec};
+use exedra_compile::PartInput;
+use exedra_constructive::evaluate::GeometryReport;
 
-use exedra_constructive::EVAL_SCHEMA_VERSION;
-use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
-use exedra_constructive::tessellate::EvalPolicy;
-use exedra_mesh::attributes::Domain;
-use exedra_mesh::{
-    AttributeValue, ExtractAttribute, ExtractParams, ExtractStats, FaceTriangulation,
-    NormalsSource, TangentUv, TriMesh, UvSource,
+pub use exedra_compile::{
+    BodyLookupError, CompilationMismatch, CompileCounters, CompileError, CompilePolicy,
+    CompiledBody, CompiledPart, PartFingerprint, PolicyFingerprint, RegionRange, SignedVolume,
+    SnapshotBody, SnapshotSurfaceInventory, SnapshotWorkplane, StaleSelection, VolumeError,
+    policy_fingerprint,
 };
-pub use exedra_mesh_ops::measure::{SignedVolume, VolumeError};
-use hashbrown::HashMap;
-use invalidation::{Channel, InvalidationSet};
-
-use crate::assembly::{Assembly, PartId, PartSource, SlotIndex};
-
 mod evaluated;
 #[cfg(test)]
 mod failure_tests;
+mod fingerprint;
 mod snapshot;
-use evaluated::EvaluatedPart;
-pub use evaluated::{
-    BodyLookupError, EvaluationSnapshot, SnapshotBody, SnapshotSurfaceInventory, SnapshotWorkplane,
-    StaleSelection,
-};
-pub use snapshot::CompilationMismatch;
+pub use evaluated::EvaluationSnapshot;
+pub use fingerprint::assembly_fingerprint;
 
-/// The single invalidation channel this layer uses: part content.
-const PARTS_CHANNEL: Channel = Channel::new(0);
-
-/// Evaluation and render extraction policy for recipe and baked parts.
-///
-/// Defaults to derived normals and authored-only UVs. Select
-/// [`NormalsSource::CustomOrDerived`] to preserve authored corner normals and
-/// derive any missing overrides; select [`UvSource::CustomOrBoxProjected`] to
-/// box-project every corner that has no authored UV. List extra layers in
-/// [`Self::attributes`] to carry them into compiled bodies. Every
-/// output-affecting setting participates in [`policy_fingerprint`].
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct CompilePolicy {
-    /// Constructive evaluation settings; baked parts skip evaluation.
-    pub evaluation: EvalPolicy,
-    /// Normal selection for every emitted body, including imported meshes.
-    ///
-    /// [`NormalsSource::CustomOnly`] emits zero normals for missing overrides.
-    /// Use [`NormalsSource::CustomOrDerived`] for partially authored meshes or
-    /// parts that combine imported and generated geometry.
-    pub normals: NormalsSource,
-    /// UV selection for every emitted body, including imported meshes.
-    ///
-    /// [`UvSource::CustomOnly`] emits zero UVs for corners without an authored
-    /// value and leaves [`RegionRange::has_uvs`] false for them. Under
-    /// [`UvSource::CustomOrBoxProjected`] those corners project their position
-    /// on the face's dominant-axis plane and count toward coverage whenever
-    /// the emitted coordinates are finite. Authored UVs are never overwritten.
-    pub uvs: UvSource,
-    /// Attribute layers emitted as extra streams on every compiled body, in
-    /// this order. See [`ExtractAttribute`] for resolution and splitting.
-    pub attributes: Vec<ExtractAttribute>,
-    /// MikkTSpace tangents for every compiled body, from the selected UV set.
-    /// See [`ExtractParams::tangents`].
-    ///
-    /// [`TangentUv::Attribute`] reads a carried stream: list its key in
-    /// [`Self::attributes`] too, or every tangent is a fallback (counted in
-    /// [`CompileCounters::missing_tangent_uv_sets`]).
-    pub tangents: Option<TangentUv>,
+fn inputs(assembly: &Assembly) -> Vec<PartInput<'_>> {
+    assembly
+        .parts()
+        .iter()
+        .map(|part| PartInput::prepared(part.key(), part.prepared_source()))
+        .collect()
 }
 
-impl CompilePolicy {
-    /// Returns the mesh extraction settings used by part compilation.
-    ///
-    /// Use these settings when inspecting or extracting the same stored mesh:
-    /// compilation uses robust polygon triangulation rather than the kernel's
-    /// default fan. Attribute descriptors are cloned; no mesh is evaluated.
-    /// UV quality inspection of stored coordinates does not resolve the missing
-    /// coordinate fallback in `uvs`; account for that policy separately.
-    #[must_use]
-    pub fn extraction_params(&self) -> ExtractParams {
-        ExtractParams {
-            normals: self.normals,
-            uvs: self.uvs,
-            face_triangulation: FaceTriangulation::Robust,
-            attributes: self.attributes.clone(),
-            tangents: self.tangents,
-            ..ExtractParams::default()
-        }
-    }
-}
-
-impl From<EvalPolicy> for CompilePolicy {
-    fn from(evaluation: EvalPolicy) -> Self {
-        Self {
-            evaluation,
-            ..Self::default()
-        }
-    }
-}
-
-/// Content identity of a compiled part (recipe fingerprint, or canonical
-/// mesh bytes for baked parts).
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PartFingerprint(pub u128);
-
-/// Identity of evaluation and extraction settings that can change compiled
-/// output, including [`EVAL_SCHEMA_VERSION`].
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PolicyFingerprint(pub u64);
-
-/// Computes the policy fingerprint for `policy`.
-///
-/// Combines the constructive policy fingerprint with the normal and UV
-/// sources, the carried attributes, and the tangent request. Constructive
-/// evaluation owns fingerprinting its settings, including refinement budgets
-/// and [`EVAL_SCHEMA_VERSION`]. The prefix advanced to `v4` when tangents
-/// joined the identity, so fingerprints persisted from earlier versions never
-/// collide with current ones.
-#[must_use]
-pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v4"[..]);
-    bytes.extend_from_slice(
-        &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
-    );
-    bytes.push(match policy.normals {
-        NormalsSource::Derived => 0,
-        NormalsSource::CustomOrDerived => 1,
-        NormalsSource::CustomOnly => 2,
-    });
-    match policy.uvs {
-        UvSource::CustomOnly => bytes.push(0),
-        UvSource::CustomOrBoxProjected { scale } => {
-            bytes.push(1);
-            bytes.extend_from_slice(&scale.to_bits().to_le_bytes());
-        }
-    }
-    bytes.extend_from_slice(&(policy.attributes.len() as u64).to_le_bytes());
-    for attribute in &policy.attributes {
-        bytes.push(match attribute.domain() {
-            Domain::Vertex => 0,
-            Domain::Face => 1,
-            Domain::HalfEdge => 2,
-        });
-        let name = attribute.name().as_bytes();
-        bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(name);
-        let mut push = |tag: u8, words: &[u32]| {
-            bytes.push(tag);
-            for word in words {
-                bytes.extend_from_slice(&word.to_le_bytes());
-            }
-        };
-        match attribute.missing() {
-            AttributeValue::F32(v) => push(0, &[v.to_bits()]),
-            AttributeValue::Vec2(v) => push(1, &v.map(f32::to_bits)),
-            AttributeValue::Vec3(v) => push(2, &v.map(f32::to_bits)),
-            AttributeValue::Vec4(v) => push(3, &v.map(f32::to_bits)),
-            AttributeValue::U32(v) => push(4, &[v]),
-        }
-    }
-    match policy.tangents {
-        None => bytes.push(0),
-        Some(TangentUv::Primary) => bytes.push(1),
-        Some(TangentUv::Attribute(key)) => {
-            bytes.push(2);
-            bytes.push(match key.domain() {
-                Domain::Vertex => 0,
-                Domain::Face => 1,
-                Domain::HalfEdge => 2,
-            });
-            let name = key.name().as_bytes();
-            bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
-            bytes.extend_from_slice(name);
-        }
-    }
-    let h = fnv128(&bytes);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "xor-folding a 128-bit hash to 64 bits is the intended narrowing"
-    )]
-    PolicyFingerprint((h ^ (h >> 64)) as u64)
-}
-
-/// One contiguous run of triangle indices sharing a geometric region and slot.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RegionRange {
-    /// The `FACE_REGION` value.
-    pub region: u32,
-    /// Authored slot for these triangles, independent of their region ID.
-    /// `None` permits assembly region/default mappings as fallback.
-    pub material_slot: Option<SlotIndex>,
-    /// First index (multiple of 3) in the body's index buffer.
-    pub start: u32,
-    /// Number of indices (multiple of 3).
-    pub count: u32,
-    /// Whether every emitted triangle corner in this range has a finite UV
-    /// after [`CompilePolicy::uvs`] is applied.
-    ///
-    /// Under [`UvSource::CustomOnly`] only finite authored UVs count;
-    /// extraction's zero fallback for missing attributes does not. Under
-    /// [`UvSource::CustomOrBoxProjected`] a corner without an authored UV
-    /// counts when its emitted projected coordinates are finite. That is
-    /// checked on the emitted values, not assumed: a finite position times a
-    /// finite scale can still overflow, and an authored non-finite UV is left
-    /// as authored.
-    pub has_uvs: bool,
-}
-
-/// One tessellated body of a compiled part, region-grouped for rendering.
-///
-/// Ranges are ordered by `(region, material_slot)` with unassigned first;
-/// triangle order within each range preserves extraction order. One region
-/// may occur in several ranges when Boolean operands use different slots.
-#[derive(Clone, Debug)]
-pub struct CompiledBody {
-    /// Extracted render buffers (indices region-grouped).
-    pub tri: TriMesh,
-    /// Contiguous region/slot ranges covering the whole index buffer.
-    pub regions: Vec<RegionRange>,
-    /// Counters from extracting this body, including carried-attribute
-    /// fallbacks and missing layers.
-    pub extraction: ExtractStats,
-}
-
-impl CompiledBody {
-    /// Measures signed volume from the existing part-local render triangles.
-    ///
-    /// No evaluation, tessellation or topology retention is required. This is
-    /// an algebraic measurement, not a closed-solid certificate. A positive sum
-    /// does not prove every connected component faces outward. Assembly instance
-    /// placement is separate: call [`SignedVolume::transformed`] with a render
-    /// item's world placement to include its scale and handedness.
-    ///
-    /// # Errors
-    /// Identifies malformed triangle indices, nonfinite referenced positions or
-    /// nonrepresentable arithmetic. No partial measurement is returned.
-    pub fn signed_volume(&self) -> Result<SignedVolume, VolumeError> {
-        exedra_mesh_ops::measure::signed_volume(&self.tri)
-    }
-
-    /// Axis-aligned bounds of the emitted render positions in part-local space.
-    ///
-    /// Bounds are derived on demand from [`TriMesh::positions`], after
-    /// constructive evaluation and its `f64`-to-`f32` emission boundary. They
-    /// therefore describe exactly the geometry a renderer receives. Assembly
-    /// instance placement has not been applied. Returns `None` for an empty
-    /// body.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use exedra_mesh::TriMesh;
-    /// use exedra_assembly::CompiledBody;
-    ///
-    /// let body = CompiledBody {
-    ///     tri: TriMesh {
-    ///         positions: vec![[-2.0, 1.0, 4.0], [3.0, 5.0, -1.0]],
-    ///         ..TriMesh::default()
-    ///     },
-    ///     regions: vec![],
-    ///     extraction: Default::default(),
-    /// };
-    /// let bounds = body.bounds().expect("two emitted positions");
-    /// assert_eq!(bounds.min, [-2.0, 1.0, -1.0]);
-    /// assert_eq!(bounds.max, [3.0, 5.0, 4.0]);
-    /// ```
-    #[must_use]
-    pub fn bounds(&self) -> Option<Aabb3> {
-        bounds_of_positions(&self.tri.positions)
-    }
-}
-
-/// A compiled part: identity plus its tessellated bodies.
-#[derive(Clone, Debug)]
-pub struct CompiledPart {
-    /// Content identity this compilation was keyed on.
-    pub fingerprint: PartFingerprint,
-    /// Bodies in deterministic evaluation order (one for baked parts).
-    pub bodies: Vec<CompiledBody>,
-}
-
-impl CompiledPart {
-    /// Total compiled triangle count across all bodies in this part.
-    ///
-    /// Each triangle is counted once, regardless of how many assembly
-    /// instances place the part. Use [`crate::RenderList::triangle_count`] for
-    /// the placed count with instance multiplicity.
-    #[must_use]
-    pub fn triangle_count(&self) -> u64 {
-        self.bodies
-            .iter()
-            .map(|b| (b.tri.indices.len() / 3) as u64)
-            .sum()
-    }
-
-    /// Axis-aligned union of every body bound in part-local space.
-    ///
-    /// Like [`CompiledBody::bounds`], this is derived on demand from emitted
-    /// render positions and excludes assembly instance placement. Empty bodies
-    /// do not affect the union; a part with no render positions returns `None`.
-    #[must_use]
-    pub fn bounds(&self) -> Option<Aabb3> {
-        let mut bounds = Aabb3::EMPTY;
-        for body in self.bodies.iter().filter_map(CompiledBody::bounds) {
-            bounds.union(&body);
-        }
-        (!bounds.is_empty()).then_some(bounds)
-    }
-}
-
-fn bounds_of_positions(positions: &[[f32; 3]]) -> Option<Aabb3> {
-    let mut positions = positions.iter();
-    let first = positions.next()?.map(f64::from);
-    let mut bounds = Aabb3 {
-        min: first,
-        max: first,
-    };
-    for position in positions {
-        for (axis, component) in position.iter().copied().map(f64::from).enumerate() {
-            bounds.min[axis] = bounds.min[axis].min(component);
-            bounds.max[axis] = bounds.max[axis].max(component);
-        }
-    }
-    Some(bounds)
-}
-
-/// Introspection counters accumulated across a compiler's lifetime.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct CompileCounters {
-    /// Parts tessellated (cache misses).
-    pub parts_compiled: u64,
-    /// Cache hits (a compiled entry was reused).
-    pub cache_hits: u64,
-    /// Entries evicted through the parts invalidation channel.
-    pub cache_evictions: u64,
-    /// Triangles emitted by cache-miss compilations.
-    pub triangles_emitted: u64,
-    /// Carried attribute values that used their missing value, summed over
-    /// cache-miss compilations ([`ExtractStats::attribute_fallback_count`]).
-    pub attribute_fallbacks: u64,
-    /// Carried attributes with no layer of the requested type, summed per
-    /// body over cache-miss compilations
-    /// ([`ExtractStats::missing_attribute_layers`]).
-    pub missing_attribute_layers: u64,
-    /// Render vertices given the fallback tangent, summed over cache-miss
-    /// compilations ([`ExtractStats::tangent_fallback_count`]).
-    pub tangent_fallbacks: u64,
-    /// Bodies whose tangent UV stream was not carried, summed over cache-miss
-    /// compilations ([`ExtractStats::missing_tangent_uv_sets`]). Nonzero
-    /// means [`CompilePolicy::tangents`] names a key that
-    /// [`CompilePolicy::attributes`] does not carry.
-    pub missing_tangent_uv_sets: u64,
-}
-
-/// Typed compilation failure.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub enum CompileError {
-    /// A recipe part failed to evaluate.
-    Evaluate {
-        /// The failing part.
-        part: PartId,
-        /// Owned authored key, retained independently of the assembly.
-        part_key: String,
-        /// The underlying evaluation failure.
-        error: Box<EvalError>,
-    },
-    /// Evaluation explicitly refused a recipe and produced no geometry.
-    NoGeometry {
-        /// The rejected part.
-        part: PartId,
-        /// Owned authored key, retained independently of the assembly.
-        part_key: String,
-        /// The complete constructive report, including the refusal reason.
-        report: Arc<GeometryReport>,
-    },
-}
-
-impl core::fmt::Display for CompileError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Evaluate {
-                part,
-                part_key,
-                error,
-            } => {
-                write!(
-                    f,
-                    "part {part_key:?} ({part:?}) failed to evaluate: {error}"
-                )
-            }
-            Self::NoGeometry {
-                part,
-                part_key,
-                report,
-            } => {
-                let diagnostic = report
-                    .diagnostics
-                    .iter()
-                    .find(|diagnostic| diagnostic.severity >= Severity::Error);
-                if let Some(diagnostic) = diagnostic {
-                    write!(
-                        f,
-                        "part {part_key:?} ({part:?}) produced no geometry: {}: {}",
-                        diagnostic.code, diagnostic.message
-                    )
-                } else {
-                    write!(f, "part {part_key:?} ({part:?}) produced no geometry")
-                }
-            }
-        }
-    }
-}
-
-impl core::error::Error for CompileError {}
-
-/// The compiled view of an assembly's parts.
-///
-/// Geometry and reports share immutable [`Arc`] ownership. Cloning this snapshot
-/// copies its handle tables without copying buffers or diagnostics. Snapshots
-/// are [`Send`] and [`Sync`] and remain usable after their compiler is dropped
-/// or its cache is cleared.
+/// Compiled geometry associated with an assembly's local part handles.
+/// Geometry and reports are owned by the independent compilation service.
 #[derive(Clone, Debug)]
 pub struct CompiledParts {
-    /// Compiled entry per part, indexed by [`PartId`].
-    parts: Vec<Arc<CompiledPart>>,
-    /// Constructive report per recipe part, parallel to `parts`.
-    reports: Vec<Option<Arc<GeometryReport>>>,
-    policy: PolicyFingerprint,
+    geometry: exedra_compile::CompiledParts,
 }
-
 impl CompiledParts {
-    /// The compiled entry for a part.
+    /// Independent geometry results with the same local part ordering.
     #[must_use]
-    pub fn part(&self, id: PartId) -> Option<&Arc<CompiledPart>> {
-        self.parts.get(id.0 as usize)
+    pub fn geometry(&self) -> &exedra_compile::CompiledParts {
+        &self.geometry
     }
-
-    /// All compiled entries in [`PartId`] order.
+    /// Compiled entry for an assembly-local part.
+    #[must_use]
+    pub fn part(&self, part: PartId) -> Option<&Arc<CompiledPart>> {
+        self.geometry.part(part)
+    }
+    /// All compiled entries in local part order.
     #[must_use]
     pub fn parts(&self) -> &[Arc<CompiledPart>] {
-        &self.parts
+        self.geometry.parts()
     }
-
-    /// The constructive evaluation report for a recipe part.
-    ///
-    /// Baked parts have no constructive evaluation and return `None`, as do
-    /// unknown part ids. A cache hit returns the content-addressed report
-    /// captured with the compiled part; its evaluation counters therefore
-    /// describe the original compilation. Use [`PartCompiler::counters`] to
-    /// measure work performed by the current compiler call.
+    /// Constructive report for a recipe part, including cached diagnostics.
+    /// Baked geometry and unknown handles have no constructive report.
     #[must_use]
-    pub fn report(&self, id: PartId) -> Option<&GeometryReport> {
-        self.reports.get(id.0 as usize).and_then(Option::as_deref)
+    pub fn report(&self, part: PartId) -> Option<&GeometryReport> {
+        self.geometry.report(part)
     }
 }
 
-/// One successful content-addressed cache entry.
-///
-/// The report is cached beside the geometry rather than recomputed on a hit:
-/// diagnostics are part of the compilation result, not incidental logging.
-#[derive(Clone, Debug)]
-struct CachedCompilation {
-    evaluated: Option<Arc<EvaluatedPart>>,
-    part: Arc<CompiledPart>,
-    report: Option<Arc<GeometryReport>>,
-}
-
-/// Memoizing part compiler with invalidation-channel eviction.
-///
-/// The compiler is [`Send`] and [`Sync`]; mutation requires exclusive access.
-/// A worker can own it and publish [`CompiledParts`] to other threads without
-/// copying geometry. Shared ownership uses [`alloc::sync::Arc`], requiring
-/// pointer-width atomic operations even when the `std` feature is disabled.
+/// Convenience adapter from assembly part records to independent compilation.
+/// Has no geometry implementation, invalidation channels or separate cache.
 #[derive(Debug, Default)]
 pub struct PartCompiler {
-    cache: HashMap<(PartFingerprint, PolicyFingerprint), CachedCompilation>,
-    /// Keys in the most recent successful compilation, including cache hits.
-    /// Part IDs identify only that snapshot; older variants remain content keyed.
-    part_keys: Vec<(PartFingerprint, PolicyFingerprint)>,
-    dirty: InvalidationSet<PartId>,
-    counters: CompileCounters,
+    geometry: exedra_compile::PartCompiler,
 }
-
 impl PartCompiler {
-    /// Creates an empty compiler.
+    /// Creates an empty geometry compiler behind the assembly adapter.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// Lifetime counters.
+    /// Access to the same service for standalone compilation.
+    pub fn geometry_mut(&mut self) -> &mut exedra_compile::PartCompiler {
+        &mut self.geometry
+    }
+    /// Lifetime work measured by the shared geometry compiler.
     #[must_use]
     pub fn counters(&self) -> CompileCounters {
-        self.counters
+        self.geometry.counters()
     }
-
-    /// Number of live cache entries.
+    /// Content/policy pairs retained by the shared compiler.
     #[must_use]
     pub fn cached_entries(&self) -> usize {
-        self.cache.len()
+        self.geometry.cached_entries()
     }
-
-    /// Marks a part from the most recent successful compilation for eviction.
-    ///
-    /// Call after changing a part in that assembly. The next compilation evicts
-    /// its previous content/policy entry, including entries first obtained on a
-    /// cache hit. Equal-content parts share an entry, so evicting one releases
-    /// the cached entry for all of its aliases. Older variants remain cached.
-    ///
-    /// Handles belong to the last successful compilation, not to a persistent
-    /// occurrence. When rebuilding assemblies, content addressing alone keeps
-    /// results correct; do not reinterpret their new IDs as old invalidations.
-    /// Marking controls cache retention, not geometry correctness.
+    /// Explicitly evicts content addressed by the last successful input ordering.
+    /// This controls retention; fresh content fingerprints ensure correctness.
     pub fn mark_part_changed(&mut self, part: PartId) {
-        self.dirty.mark(part, PARTS_CHANNEL);
+        self.geometry.mark_part_changed(part);
     }
-
-    /// Releases all cached geometry and reports while retaining lifetime counters.
-    ///
-    /// Existing [`CompiledParts`] snapshots keep their own shared ownership and
-    /// remain usable. This also clears pending invalidations and local handle
-    /// associations. Callers can use [`Self::cached_entries`] to choose when to
-    /// release cache retention; this does not bound memory held by old snapshots.
+    /// Releases the shared compiler cache; held snapshots remain usable.
     pub fn clear_cache(&mut self) {
-        self.counters.cache_evictions += self.cache.len() as u64;
-        self.cache = HashMap::new();
-        self.part_keys = Vec::new();
-        self.dirty = InvalidationSet::default();
+        self.geometry.clear_cache();
     }
-
-    /// Compiles every part of `assembly` under `policy`, reusing cached
-    /// entries whenever content and policy fingerprints match.
-    ///
+    /// Compiles geometry from part records without reading instance structure.
     /// # Errors
-    ///
-    /// Fails when a recipe part fails to evaluate, or when its evaluation
-    /// reports an error and emits no bodies. The cache keeps all other
-    /// entries.
+    /// Preserves checked evaluation failures and complete refusal reports.
     pub fn compile_parts(
         &mut self,
         assembly: &Assembly,
         policy: &CompilePolicy,
     ) -> Result<CompiledParts, CompileError> {
-        self.compile_parts_inner(assembly, policy, false)
-            .map(|(parts, _)| parts)
+        self.geometry
+            .compile_parts(&inputs(assembly), policy)
+            .map(|geometry| CompiledParts { geometry })
     }
-
-    /// Compiles render buffers and retains their evaluated bodies for queries.
-    ///
-    /// The returned immutable snapshot also freezes the render list's instance
-    /// paths and placements. Cached topology is shared; upgrading a render-only
-    /// cache entry evaluates it once. Subsequent queries never reevaluate it.
-    /// Dropping or clearing this compiler does not invalidate a live snapshot.
-    ///
+    /// Compiles retained geometry and captures assembly placement and appearance.
     /// # Errors
-    ///
-    /// Same checked evaluation failures as [`Self::compile_parts`].
+    /// Preserves the same failures as [`Self::compile_parts`].
     pub fn compile_snapshot(
         &mut self,
         assembly: &Assembly,
         policy: &CompilePolicy,
     ) -> Result<EvaluationSnapshot, CompileError> {
-        let (compiled, evaluated) = self.compile_parts_inner(assembly, policy, true)?;
-        let render = crate::flatten(assembly, &compiled);
-        Ok(EvaluationSnapshot::new(compiled, evaluated, render))
-    }
-
-    fn compile_parts_inner(
-        &mut self,
-        assembly: &Assembly,
-        policy: &CompilePolicy,
-        retain: bool,
-    ) -> Result<(CompiledParts, Vec<Arc<EvaluatedPart>>), CompileError> {
-        self.drain_dirty();
-        let policy_fp = policy_fingerprint(policy);
-        let mut out = Vec::with_capacity(assembly.parts().len());
-        let mut reports = Vec::with_capacity(assembly.parts().len());
-        let mut part_keys = Vec::with_capacity(assembly.parts().len());
-        let mut evaluated = Vec::new();
-        for (index, def) in assembly.parts().iter().enumerate() {
-            let id = PartId(crate::len_u32(index));
-            let content_fp = def.source_fingerprint();
-            let key = (content_fp, policy_fp);
-            part_keys.push(key);
-            if let Some(hit) = self.cache.get(&key)
-                && (!retain || hit.evaluated.is_some())
-            {
-                self.counters.cache_hits += 1;
-                out.push(Arc::clone(&hit.part));
-                reports.push(hit.report.as_ref().map(Arc::clone));
-                if retain {
-                    evaluated.push(Arc::clone(hit.evaluated.as_ref().expect("retained hit")));
-                }
-                continue;
-            }
-            let (part, report, geometry) =
-                compile_source(id, def.key(), def.source(), policy, content_fp, retain)?;
-            let compiled = CachedCompilation {
-                evaluated: geometry.map(Arc::new),
-                part: Arc::new(part),
-                report: report.map(Arc::new),
-            };
-            self.counters.parts_compiled += 1;
-            self.counters.triangles_emitted += compiled.part.triangle_count();
-            for body in &compiled.part.bodies {
-                self.counters.attribute_fallbacks += body.extraction.attribute_fallback_count;
-                self.counters.missing_attribute_layers += body.extraction.missing_attribute_layers;
-                self.counters.tangent_fallbacks += body.extraction.tangent_fallback_count;
-                self.counters.missing_tangent_uv_sets += body.extraction.missing_tangent_uv_sets;
-            }
-            self.cache.insert(key, compiled.clone());
-            if retain {
-                evaluated.push(compiled.evaluated.expect("retained compilation"));
-            }
-            out.push(compiled.part);
-            reports.push(compiled.report);
-        }
-        self.part_keys = part_keys;
-        Ok((
-            CompiledParts {
-                parts: out,
-                reports,
-                policy: policy_fp,
-            },
-            evaluated,
-        ))
-    }
-
-    fn drain_dirty(&mut self) {
-        if !self.dirty.has_invalidated(PARTS_CHANNEL) {
-            return;
-        }
-        // Drain to a sorted list: eviction is order-independent, but the
-        // counters and map states must not depend on hash order.
-        let mut marked: Vec<PartId> = self.dirty.drain(PARTS_CHANNEL).collect();
-        marked.sort_unstable();
-        for part in marked {
-            if let Some(key) = self.part_keys.get(part.0 as usize)
-                && self.cache.remove(key).is_some()
-            {
-                self.counters.cache_evictions += 1;
-            }
-        }
-    }
-}
-
-pub(crate) fn part_fingerprint(source: &PartSource) -> PartFingerprint {
-    match source {
-        PartSource::Recipe(recipe) => PartFingerprint(recipe.recipe_fingerprint().0),
-        // Assemblies can be rebuilt with the same local ids and generation.
-        // Recompute content identity; those counters cannot identify a mesh.
-        PartSource::Baked(mesh) => baked_mesh_fingerprint(mesh),
-    }
-}
-
-fn compile_source(
-    part: PartId,
-    part_key: &str,
-    source: &PartSource,
-    policy: &CompilePolicy,
-    fingerprint: PartFingerprint,
-    retain: bool,
-) -> Result<(CompiledPart, Option<GeometryReport>, Option<EvaluatedPart>), CompileError> {
-    let (bodies, report, evaluated) = match source {
-        PartSource::Recipe(recipe) => {
-            let evaluation =
-                evaluate(recipe, &policy.evaluation).map_err(|error| CompileError::Evaluate {
-                    part,
-                    part_key: String::from(part_key),
-                    error: Box::new(error),
-                })?;
-            // Constructive refusals are represented as reports rather than
-            // `EvalError`s. Reject only when an Error leaves the entire part
-            // empty: partial geometry stays usable, but its complete report is
-            // retained below so the limitation remains visible to callers.
-            if evaluation.bodies.is_empty() && !evaluation.report.clean_at(Severity::Error) {
-                return Err(CompileError::NoGeometry {
-                    part,
-                    part_key: String::from(part_key),
-                    report: Arc::new(evaluation.report),
-                });
-            }
-            let bodies = evaluation
-                .bodies
-                .iter()
-                .map(|placed| {
-                    compile_body(
-                        &placed.body.mesh,
-                        |face| placed.material_for_face(face).map(|slot| SlotIndex(slot.0)),
-                        policy,
-                    )
-                })
-                .collect();
-            let geometry =
-                retain.then(|| EvaluatedPart::from_evaluation(evaluation.bodies, recipe));
-            (bodies, Some(evaluation.report), geometry)
-        }
-        PartSource::Baked(mesh) => (
-            alloc::vec![compile_body(mesh, |_| None, policy)],
-            None,
-            retain.then(|| EvaluatedPart::from_baked(mesh)),
-        ),
-    };
-    Ok((
-        CompiledPart {
-            fingerprint,
-            bodies,
-        },
-        report,
-        evaluated,
-    ))
-}
-
-/// Extracts render buffers and regroups the index buffer so each
-/// `(FACE_REGION, material slot)` pair is one contiguous range.
-fn compile_body(
-    mesh: &exedra_mesh::Mesh,
-    material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
-    policy: &CompilePolicy,
-) -> CompiledBody {
-    let params = policy.extraction_params();
-    let (tri, extraction) = mesh.to_trimesh(&params);
-    // Per-triangle regions in extraction order: to_trimesh emits faces in
-    // face-id order, so per-face triangle counts line up exactly.
-    let regions_layer = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
-    let triangle_count = tri.indices.len() / 3;
-    let mut tri_regions = Vec::with_capacity(triangle_count);
-    let mut tri_uvs = Vec::with_capacity(triangle_count);
-    let uv_layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
-    // A corner counts as textured when the policy resolves a finite UV for
-    // it. Authored values are checked at the source; a projected fallback is
-    // checked on the emitted buffer, where extraction-order triangle `t`
-    // occupies indices `3t..3t + 3`. The zero fallback of `CustomOnly` is not
-    // a UV and never counts.
-    let is_finite_uv = |uv: &[f32; 2]| uv.iter().all(|v| v.is_finite());
-    let corner_has_uv = |corner: exedra_mesh::CornerId, emitted: usize| match uv_layer
-        .and_then(|layer| layer.get(corner.into()))
-    {
-        Some(uv) => is_finite_uv(uv),
-        None => match policy.uvs {
-            UvSource::CustomOnly => false,
-            UvSource::CustomOrBoxProjected { .. } => {
-                is_finite_uv(&tri.uvs[tri.indices[emitted] as usize])
-            }
-        },
-    };
-    for face in mesh.faces() {
-        let (triangles, _) = mesh.face_triangles_counted(face, FaceTriangulation::Robust);
-        let region = regions_layer
-            .and_then(|layer| layer.get(face.as_id()).copied())
-            .unwrap_or(0);
-        let slot = material_for_face(face);
-        for triangle in &triangles {
-            let base = tri_regions.len() * 3;
-            tri_regions.push((region, slot));
-            tri_uvs.push(
-                triangle
-                    .iter()
-                    .enumerate()
-                    .all(|(k, corner)| corner_has_uv(*corner, base + k)),
-            );
-        }
-    }
-    debug_assert_eq!(
-        tri_regions.len(),
-        triangle_count,
-        "per-face counts must match extraction emission"
-    );
-    // Stable regroup: order triangles by (region, slot, extraction order).
-    let mut order: Vec<u32> = (0..crate::len_u32(triangle_count)).collect();
-    order.sort_by_key(|&t| (tri_regions[t as usize], t));
-    let mut indices = Vec::with_capacity(tri.indices.len());
-    let mut regions: Vec<RegionRange> = Vec::new();
-    for &t in &order {
-        let (region, material_slot) = tri_regions[t as usize];
-        let start = crate::len_u32(indices.len());
-        match regions.last_mut() {
-            Some(last) if last.region == region && last.material_slot == material_slot => {
-                last.count += 3;
-                last.has_uvs &= tri_uvs[t as usize];
-            }
-            _ => regions.push(RegionRange {
-                region,
-                material_slot,
-                start,
-                count: 3,
-                has_uvs: tri_uvs[t as usize],
-            }),
-        }
-        let base = t as usize * 3;
-        indices.extend_from_slice(&tri.indices[base..base + 3]);
-    }
-    CompiledBody {
-        tri: TriMesh { indices, ..tri },
-        regions,
-        extraction,
-    }
-}
-
-/// Canonical baked-mesh identity including the built-in render attributes.
-/// Corner attributes rotate together with their owning face loop.
-fn baked_mesh_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
-    bytes.extend_from_slice(b"baked-mesh-v3");
-    bytes.extend_from_slice(&crate::len_u32(mesh.vertices().count()).to_le_bytes());
-    for vertex in mesh.vertices() {
-        // Face loops reference slot indices, which need not be contiguous.
-        bytes.extend_from_slice(&vertex.index().to_le_bytes());
-        let p = mesh.vertex_position(vertex).copied().unwrap_or([0.0; 3]);
-        for c in p {
-            bytes.extend_from_slice(&c.to_bits().to_le_bytes());
-        }
-        put_optional_floats(&mut bytes, mesh.vertex_sharpness(vertex).map(|v| [v]));
-    }
-    bytes.extend_from_slice(&crate::len_u32(mesh.faces().count()).to_le_bytes());
-    for face in mesh.faces() {
-        let mut corners: Vec<_> = mesh.face_loop(face).collect();
-        if let Some(min_pos) = corners
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, he)| mesh.to_vertex(**he).map(exedra_mesh::VertexId::index))
-            .map(|(i, _)| i)
-        {
-            corners.rotate_left(min_pos);
-        }
-        bytes.extend_from_slice(&crate::len_u32(corners.len()).to_le_bytes());
-        let region = mesh
-            .attrs()
-            .dense(exedra_mesh::attr::FACE_REGION)
-            .and_then(|layer| layer.get(face.into()))
-            .copied()
-            .unwrap_or(0);
-        bytes.extend_from_slice(&region.to_le_bytes());
-        for he in corners {
-            bytes.extend_from_slice(
-                &mesh
-                    .to_vertex(he)
-                    .expect("live face corner")
-                    .index()
-                    .to_le_bytes(),
-            );
-            let uv = mesh
-                .attrs()
-                .sparse(exedra_mesh::attr::CORNER_UV)
-                .and_then(|layer| layer.get(he.into()))
-                .copied();
-            let normal = mesh
-                .attrs()
-                .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
-                .and_then(|layer| layer.get(he.into()))
-                .copied();
-            put_optional_floats(&mut bytes, uv);
-            put_optional_floats(&mut bytes, normal);
-            put_optional_floats(&mut bytes, mesh.edge_sharpness(he).map(|v| [v]));
-            bytes.push(match mesh.edge_seam(he) {
-                None => 0,
-                Some(false) => 1,
-                Some(true) => 2,
-            });
-        }
-    }
-    put_custom_layers(&mut bytes, mesh);
-    PartFingerprint(fnv128(&bytes))
-}
-
-/// Appends every caller-defined layer: carried attribute streams read them, so
-/// they are compiled content. Layers are ordered by domain and name; values
-/// follow live elements in slot order, each with a presence byte so dense
-/// defaults and sparse gaps stay distinct.
-fn put_custom_layers(bytes: &mut Vec<u8>, mesh: &exedra_mesh::Mesh) {
-    use exedra_mesh::attributes::{Domain, LayerKind};
-    let domain_tag = |domain: Domain| match domain {
-        Domain::Vertex => 0_u8,
-        Domain::Face => 1,
-        Domain::HalfEdge => 2,
-    };
-    let mut keys: Vec<_> = mesh
-        .attrs()
-        .keys()
-        .filter(|(domain, name)| !exedra_mesh::attr::is_reserved(*domain, name))
-        .collect();
-    keys.sort_by_key(|(domain, name)| (domain_tag(*domain), *name));
-    bytes.extend_from_slice(&crate::len_u32(keys.len()).to_le_bytes());
-    for (domain, name) in keys {
-        bytes.push(domain_tag(domain));
-        bytes.extend_from_slice(&crate::len_u32(name.len()).to_le_bytes());
-        bytes.extend_from_slice(name.as_bytes());
-        bytes.push(match mesh.attrs().layer_kind(domain, name) {
-            Some(LayerKind::F32) => 0,
-            Some(LayerKind::Vec2) => 1,
-            Some(LayerKind::Vec3) => 2,
-            Some(LayerKind::Vec4) => 3,
-            Some(LayerKind::U32) => 4,
-            Some(LayerKind::Bool) => 5,
-            None => 6,
-        });
-        let ids: Vec<exedra_mesh::Id> = match domain {
-            Domain::Vertex => mesh.vertices().map(|v| v.as_id()).collect(),
-            Domain::Face => mesh.faces().map(|f| f.as_id()).collect(),
-            Domain::HalfEdge => mesh.half_edges().map(|h| h.as_id()).collect(),
+        let geometry = self.geometry.compile_snapshot(&inputs(assembly), policy)?;
+        let compiled = CompiledParts {
+            geometry: geometry.compiled().clone(),
         };
-        for id in ids {
-            bytes.extend_from_slice(&id.index().to_le_bytes());
-            match mesh.attrs().value_words(domain, name, id) {
-                Some(value) => {
-                    bytes.push(1);
-                    for word in value.words() {
-                        bytes.extend_from_slice(&word.to_le_bytes());
-                    }
-                }
-                None => bytes.push(0),
-            }
-        }
+        let render = Arc::new(crate::flatten(assembly, &compiled));
+        Ok(EvaluationSnapshot::new(geometry, compiled, render))
     }
 }
 
-fn put_optional_floats<const N: usize>(bytes: &mut Vec<u8>, values: Option<[f32; N]>) {
-    bytes.push(u8::from(values.is_some()));
-    if let Some(values) = values {
-        for value in values {
-            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
-        }
+impl AsRef<exedra_compile::CompiledParts> for CompiledParts {
+    fn as_ref(&self) -> &exedra_compile::CompiledParts {
+        self.geometry()
     }
-}
-
-// The v1 assembly interchange encodes baked geometry without its attributes.
-// Keep its existing structural identity separate from compilation identity.
-fn baked_geometry_fingerprint(mesh: &exedra_mesh::Mesh) -> PartFingerprint {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
-    bytes.extend_from_slice(b"baked-mesh");
-    for vertex in mesh.vertices() {
-        let p = mesh.vertex_position(vertex).copied().unwrap_or([0.0; 3]);
-        for c in p {
-            bytes.extend_from_slice(&c.to_bits().to_le_bytes());
-        }
-    }
-    bytes.push(0xFF);
-    for face in mesh.faces() {
-        let mut loop_vertices: Vec<u32> = mesh
-            .face_loop(face)
-            .filter_map(|he| mesh.to_vertex(he))
-            .map(exedra_mesh::VertexId::index)
-            .collect();
-        if let Some(min_pos) = loop_vertices
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, v)| **v)
-            .map(|(i, _)| i)
-        {
-            loop_vertices.rotate_left(min_pos);
-        }
-        bytes.extend_from_slice(&crate::len_u32(loop_vertices.len()).to_le_bytes());
-        for v in loop_vertices {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-    }
-    PartFingerprint(fnv128(&bytes))
-}
-
-/// Structural fingerprint of an assembly: recipe contents, baked geometry,
-/// slot tables and mappings, placements, bindings, metadata, placement sets
-/// (their placements, seeds, tints, bindings and metadata), and part
-/// level-of-detail chains.
-///
-/// Baked attributes are absent from the v1 JSON interchange and are excluded
-/// here. Rendering caches must use [`CompiledPart::fingerprint`] together with
-/// [`policy_fingerprint`], which include the consumed attributes and settings.
-///
-/// This is the round-trip oracle for the `exedra-assembly-v1` interchange:
-/// serialize, rebuild, and the fingerprints must match bit-for-bit.
-#[must_use]
-pub fn assembly_fingerprint(assembly: &Assembly) -> u128 {
-    fn push_str(bytes: &mut Vec<u8>, s: &str) {
-        bytes.extend_from_slice(&crate::len_u32(s.len()).to_le_bytes());
-        bytes.extend_from_slice(s.as_bytes());
-    }
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"exedra-assembly-fp");
-    bytes.extend_from_slice(&EVAL_SCHEMA_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&crate::len_u32(assembly.parts().len()).to_le_bytes());
-    for def in assembly.parts() {
-        push_str(&mut bytes, def.key());
-        let content = match def.source() {
-            PartSource::Recipe(recipe) => recipe.recipe_fingerprint().0,
-            PartSource::Baked(mesh) => baked_geometry_fingerprint(mesh).0,
-        };
-        bytes.extend_from_slice(&content.to_le_bytes());
-        bytes.extend_from_slice(&crate::len_u32(def.slots().len()).to_le_bytes());
-        for slot in def.slots() {
-            push_str(&mut bytes, slot);
-        }
-        for (region, slot) in def.region_slots() {
-            bytes.extend_from_slice(&region.to_le_bytes());
-            bytes.extend_from_slice(&slot.0.to_le_bytes());
-        }
-        bytes.extend_from_slice(&def.default_slot().map_or(u32::MAX, |s| s.0).to_le_bytes());
-        for material in def.default_materials() {
-            match material {
-                Some(m) => push_str(&mut bytes, m),
-                None => bytes.push(0),
-            }
-        }
-    }
-    bytes.extend_from_slice(&crate::len_u32(assembly.instances().len()).to_le_bytes());
-    for inst in assembly.instances() {
-        bytes.extend_from_slice(&inst.parent().map_or(u32::MAX, |p| p.0).to_le_bytes());
-        push_str(&mut bytes, inst.key());
-        match inst.part() {
-            Some(part) => {
-                bytes.push(1);
-                bytes.extend_from_slice(&part.0.to_le_bytes());
-            }
-            None => bytes.push(0),
-        }
-        for row in inst.placement().rows {
-            for v in row {
-                bytes.extend_from_slice(&v.to_bits().to_le_bytes());
-            }
-        }
-        bytes.extend_from_slice(&crate::len_u32(inst.bindings().len()).to_le_bytes());
-        for (slot, material) in inst.bindings() {
-            bytes.extend_from_slice(&slot.0.to_le_bytes());
-            push_str(&mut bytes, material);
-        }
-        bytes.extend_from_slice(&crate::len_u32(inst.metadata().len()).to_le_bytes());
-        for (key, value) in inst.metadata() {
-            push_str(&mut bytes, key);
-            push_str(&mut bytes, value);
-        }
-    }
-    // Placement sets extend the encoding only when present, so assemblies
-    // without sets keep their fingerprints.
-    if !assembly.placement_sets().is_empty() {
-        bytes.extend_from_slice(b"placement-sets");
-        bytes.extend_from_slice(&crate::len_u32(assembly.placement_sets().len()).to_le_bytes());
-        for set in assembly.placement_sets() {
-            bytes.extend_from_slice(&set.parent().map_or(u32::MAX, |p| p.0).to_le_bytes());
-            push_str(&mut bytes, set.key());
-            bytes.extend_from_slice(&set.part().0.to_le_bytes());
-            bytes.extend_from_slice(&crate::len_u32(set.len()).to_le_bytes());
-            for placement in set.placements() {
-                for v in placement.rows.iter().flatten() {
-                    bytes.extend_from_slice(&v.to_bits().to_le_bytes());
-                }
-            }
-            match set.seeds() {
-                Some(seeds) => {
-                    bytes.push(1);
-                    for seed in seeds {
-                        bytes.extend_from_slice(&seed.to_le_bytes());
-                    }
-                }
-                None => bytes.push(0),
-            }
-            match set.tints() {
-                Some(tints) => {
-                    bytes.push(1);
-                    for v in tints.iter().flatten() {
-                        bytes.extend_from_slice(&v.to_bits().to_le_bytes());
-                    }
-                }
-                None => bytes.push(0),
-            }
-            bytes.extend_from_slice(&crate::len_u32(set.bindings().len()).to_le_bytes());
-            for (slot, material) in set.bindings() {
-                bytes.extend_from_slice(&slot.0.to_le_bytes());
-                push_str(&mut bytes, material);
-            }
-            bytes.extend_from_slice(&crate::len_u32(set.metadata().len()).to_le_bytes());
-            for (key, value) in set.metadata() {
-                push_str(&mut bytes, key);
-                push_str(&mut bytes, value);
-            }
-        }
-    }
-    // Level-of-detail chains, likewise only when some part has one.
-    if assembly.parts().iter().any(|def| !def.lods().is_empty()) {
-        bytes.extend_from_slice(b"part-lods");
-        for def in assembly.parts() {
-            bytes.extend_from_slice(&crate::len_u32(def.lods().len()).to_le_bytes());
-            for level in def.lods() {
-                bytes.extend_from_slice(&level.part.0.to_le_bytes());
-                bytes.extend_from_slice(&level.min_coverage.to_bits().to_le_bytes());
-                bytes.extend_from_slice(&level.crossfade.to_bits().to_le_bytes());
-            }
-        }
-    }
-    fnv128(&bytes)
-}
-
-/// FNV-1a 128-bit over `bytes`.
-fn fnv128(bytes: &[u8]) -> u128 {
-    const FNV128_OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
-    const FNV128_PRIME: u128 = 0x0000000001000000000000000000013b;
-    let mut hash = FNV128_OFFSET;
-    for &b in bytes {
-        hash ^= u128::from(b);
-        hash = hash.wrapping_mul(FNV128_PRIME);
-    }
-    hash
 }
 
 #[cfg(test)]
@@ -1131,11 +139,14 @@ mod normal_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembly::{Assembly, InstanceId};
+    use crate::assembly::{Assembly, InstanceId, PartSource};
     use exedra_constructive::builders;
     use exedra_constructive::discretize::{DiscretizeError, DiscretizePolicy};
+    use exedra_constructive::evaluate::{Aabb3, EvalError, evaluate};
     use exedra_constructive::ir::{CapMode, NodeKind, Placement3, Plane3, Recipe, RecipeBuilder};
+    use exedra_constructive::tessellate::EvalPolicy;
     use exedra_constructive::tessellate::TessellateError;
+    use exedra_mesh::{ExtractAttribute, ExtractStats, TriMesh, UvSource};
 
     fn prism_recipe(width: f64) -> Recipe {
         let mut b = RecipeBuilder::new();
@@ -1248,40 +259,6 @@ mod tests {
             .unwrap();
         }
         asm
-    }
-
-    #[test]
-    fn public_extraction_settings_match_compiled_concave_mesh_buffers() {
-        let mesh = exedra_mesh::Mesh::from_polygons(
-            &[
-                [0.0, 0.0, 0.0],
-                [3.0, 0.0, 0.0],
-                [3.0, 1.0, 0.0],
-                [1.0, 1.0, 0.0],
-                [1.0, 3.0, 0.0],
-                [0.0, 3.0, 0.0],
-            ],
-            &[&[0, 1, 2, 3, 4, 5]],
-        )
-        .unwrap();
-        let policy = CompilePolicy {
-            uvs: UvSource::CustomOrBoxProjected { scale: 2.0 },
-            ..CompilePolicy::default()
-        };
-        let (expected, _) = mesh.to_trimesh(&policy.extraction_params());
-        let mut assembly = Assembly::new();
-        let part = assembly.add_baked_part("concave", mesh, &[]).unwrap();
-        assembly
-            .add_instance(None, "concave", part, Placement3::IDENTITY)
-            .unwrap();
-        let compiled = PartCompiler::new()
-            .compile_parts(&assembly, &policy)
-            .unwrap();
-        let actual = &compiled.part(part).unwrap().bodies[0].tri;
-        assert_eq!(actual.positions, expected.positions);
-        assert_eq!(actual.normals, expected.normals);
-        assert_eq!(actual.uvs, expected.uvs);
-        assert_eq!(actual.indices, expected.indices);
     }
 
     #[test]

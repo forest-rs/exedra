@@ -1,79 +1,27 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use super::{CompiledParts, PartFingerprint, PolicyFingerprint};
+use super::{CompilationMismatch, CompiledParts, PolicyFingerprint};
 use crate::{Assembly, PartId};
-
-/// Compiled geometry does not correspond to an assembly's current part records.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CompilationMismatch {
-    /// The assembly and compilation have different part counts.
-    PartCount {
-        /// Number of parts registered in the assembly.
-        expected: usize,
-        /// Number of compiled entries supplied.
-        actual: usize,
-    },
-    /// A local handle refers to different source geometry.
-    PartContent {
-        /// The mismatched assembly-local handle.
-        part: PartId,
-        /// Fingerprint of the current assembly part source.
-        expected: PartFingerprint,
-        /// Fingerprint of the supplied compiled entry.
-        actual: PartFingerprint,
-    },
-}
-
-impl core::fmt::Display for CompilationMismatch {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::PartCount { expected, actual } => write!(
-                f,
-                "assembly has {expected} parts but compilation has {actual}"
-            ),
-            Self::PartContent { part, .. } => {
-                write!(f, "compiled content does not match assembly part {part:?}")
-            }
-        }
-    }
-}
-
-impl core::error::Error for CompilationMismatch {}
-
 impl CompiledParts {
-    /// Identity of the evaluation and extraction policy used for this snapshot.
+    /// Evaluation and extraction policy identity of these buffers.
     #[must_use]
     pub fn policy_fingerprint(&self) -> PolicyFingerprint {
-        self.policy
+        self.geometry.policy_fingerprint()
     }
-
-    /// Checks that every compiled entry corresponds to the assembly's part source.
-    ///
-    /// Placements, frame instances, keys, metadata and material bindings may change
-    /// without invalidating geometry. Reordered handles or replaced source content
-    /// require a matching compilation. The supplied snapshot determines the policy;
-    /// callers can compare [`Self::policy_fingerprint`] with their intended policy.
-    ///
-    /// This compares content fingerprints retained when each source was installed
-    /// or replaced, including baked mesh attributes. It does not rescan geometry,
-    /// tessellate or measure placed bounds. Use it at snapshot/export
-    /// boundaries; reading local poses directly needs no geometry validation walk.
-    /// Geometry reports remain accessible through [`Self::report`], including reports
-    /// for partial evaluations. Matching content alone does not certify completeness.
-    ///
+    /// Validates source content independently of assembly placement or appearance.
+    /// Uses retained source fingerprints without rescanning geometry. Matching
+    /// content does not certify complete geometry; inspect reports separately.
     /// # Errors
-    ///
-    /// Reports a part-count mismatch first, then the first mismatched part source.
+    /// Reports changed input counts or source content under reused handles.
     pub fn validate_for(&self, assembly: &Assembly) -> Result<(), CompilationMismatch> {
-        if assembly.parts().len() != self.parts.len() {
+        if assembly.parts().len() != self.parts().len() {
             return Err(CompilationMismatch::PartCount {
                 expected: assembly.parts().len(),
-                actual: self.parts.len(),
+                actual: self.parts().len(),
             });
         }
-        for (index, (def, compiled)) in assembly.parts().iter().zip(&self.parts).enumerate() {
+        for (index, (def, compiled)) in assembly.parts().iter().zip(self.parts()).enumerate() {
             let expected = def.source_fingerprint();
             if expected != compiled.fingerprint {
                 return Err(CompilationMismatch::PartContent {
@@ -90,7 +38,7 @@ impl CompiledParts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CompileError, CompilePolicy, CompiledPart, PartCompiler};
+    use crate::{CompileError, CompilePolicy, CompiledPart, PartCompiler, PartId};
     use alloc::format;
     use alloc::sync::Arc;
     use exedra_constructive::ir::{NodeKind, Placement3, PrimitiveSpec, RecipeBuilder};
