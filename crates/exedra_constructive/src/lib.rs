@@ -132,11 +132,10 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 40 fixes hole-bridge endpoint ordering and distinguishes unresolved
-/// triangulation failures from witnessed invalid input. Previously refused
-/// multi-hole caps can now evaluate, and deterministic triangulations can change.
-/// Migration: reevaluate cached recipes and regenerate schema-stamped text.
-pub const EVAL_SCHEMA_VERSION: u32 = 40;
+/// Schema 41 splits every shaped sweep wall quad into two planar triangles and
+/// keeps complete turns separate from the base twist angle. Sweeps with a
+/// nonidentity section law change topology; constant sweeps are unchanged.
+pub const EVAL_SCHEMA_VERSION: u32 = 41;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;

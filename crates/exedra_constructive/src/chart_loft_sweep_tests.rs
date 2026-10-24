@@ -437,13 +437,14 @@ fn invalid_loft_metrics_reference_and_chart_rounding_fail_typed() {
     ));
 }
 
-// Fingerprints evaluated independently at pre-extension commit 6a89e76.
+// Fingerprints evaluated independently at pre-extension commit 6a89e76, then
+// re-stamped for schema 41, which changes no recipe encoding.
 #[test]
 fn existing_metric_fingerprints_stay_unchanged() {
     for (metric, expected) in [
-        (None, 0xd1191c3620938d795e1b049ea49213ff_u128),
-        (Some(extrusion()), 0x1765bb836a352ffcde43ae0a553c770e),
-        (Some(revolution()), 0x95b07bd475f1172d96d05bc2da49acc2),
+        (None, 0xa5f78987a976a724b93563b0bdcaa5bd_u128),
+        (Some(extrusion()), 0xa9f8e1bfb6ca8aa4e01590b33e2683cc),
+        (Some(revolution()), 0x2ab076b0398e90de753b41fda09e55e0),
     ] {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).unwrap());
@@ -470,7 +471,7 @@ fn existing_metric_fingerprints_stay_unchanged() {
         assert_eq!(
             recipe.recipe_fingerprint().0,
             expected,
-            "pre-extension schema40 identity"
+            "pre-extension identity at schema 41"
         );
     }
 }

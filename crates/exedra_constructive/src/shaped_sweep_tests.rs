@@ -552,6 +552,57 @@ fn closed_sweep_retains_four_complete_turns() {
 }
 
 #[test]
+fn large_base_twist_keeps_complete_turns() {
+    // Summed with a base twist of 1e17 radians, a whole turn is below one ulp.
+    let ring = |stations: u32| Path3::MiteredPolyline {
+        points: (0..stations)
+            .map(|i| {
+                let angle = core::f64::consts::TAU * f64::from(i) / f64::from(stations);
+                [10.0 * libm::cos(angle), 10.0 * libm::sin(angle), 0.0]
+            })
+            .collect(),
+        section_x: [0.0, 0.0, 1.0],
+        section_origin: [0.0; 2],
+        closure: PathClosure::ClosedPlanar {
+            normal: [0.0, 0.0, 1.0],
+        },
+        miter_limit: 1.1,
+    };
+    let profile = builders::rect_centered(1.0, 0.5).unwrap();
+    for turns in [4, -4] {
+        let section = SectionLaw::new(Law::Constant(1.0), Law::Constant(1.0e17)).with_turns(turns);
+        let run = |path: &Path3| {
+            tessellate_path_sweep(
+                &profile,
+                &Placement3::IDENTITY,
+                path,
+                &section,
+                CapMode::None,
+                None,
+                &EvalPolicy::default(),
+            )
+        };
+        let body = run(&ring(128)).unwrap();
+        assert_clean(&body);
+        // Sixteen of 128 stations is half of one of four turns: the section
+        // is point-reflected about the path in its own plane.
+        let points = positions(&body);
+        let ring_size = points.len() / 128;
+        let local = |p: [f64; 3]| [libm::hypot(p[0], p[1]) - 10.0, p[2]];
+        for j in 0..ring_size {
+            let start = local(points[j]);
+            let half = local(points[16 * ring_size + j]);
+            let reflected = (start[0] + half[0]).abs().max((start[1] + half[1]).abs());
+            assert!(reflected < 1e-5, "{turns} turns: {start:?} {half:?}");
+        }
+        assert!(matches!(
+            run(&ring(8)),
+            Err(TessellateError::SweepTwistUndersampled { band: 0, .. })
+        ));
+    }
+}
+
+#[test]
 fn complete_turns_refuse_undersampled_paths() {
     let profile = builders::rect_centered(1.0, 0.5).unwrap();
     let path = Path3::MiteredPolyline {
@@ -703,13 +754,14 @@ fn laws_that_fold_a_controlled_wall_are_refused() {
 }
 
 /// Fingerprints of constant-section sweeps computed on the code before
-/// section laws existed. Shaped sweeps must not disturb them.
+/// section laws existed, re-stamped for each later schema. Shaped sweeps must
+/// not disturb them.
 #[test]
 fn constant_sweep_fingerprints_are_unchanged() {
     let expected = [
-        0xd54f_904c_e91f_26b4_1401_1032_2618_bcd9_u128,
-        0xec11_4550_faab_cc41_8baf_63ca_6fb4_0c77,
-        0x62c6_e3e4_0a0f_c017_995f_8728_8e51_17e4,
+        0x7c89_59ab_abec_ce1f_75b5_a6e7_0e20_6f3e_u128,
+        0xcfdb_8e5b_d5fb_11ee_7d50_3570_f45c_877c,
+        0x48c4_7e23_22ec_0524_2b30_da1c_34ac_2c63,
     ];
     let paths = [
         straight_polyline(),
