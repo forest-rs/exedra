@@ -93,12 +93,16 @@ pub struct RealizationReport {
     pub tolerance: f64,
     /// Largest conservative native endpoint/support gap from validation.
     pub geometry_gap: f64,
-    /// Largest circular chord sagitta before narrowing.
+    /// Largest circular chord sagitta from actual sampled parameter intervals,
+    /// before narrowing.
     pub max_curve_deviation: f64,
     /// Largest emitted vertex displacement, including placement and narrowing.
     pub max_vertex_displacement: f64,
-    /// Conservative geometric deviation bound: curve error, displacement and
-    /// two native gaps (endpoint-to-curve and curve-to-support).
+    /// Largest native paired-sample residual from a fixed axial ruling.
+    /// Includes parameter-grid mismatch and authoritative endpoint offsets.
+    pub max_ruling_displacement: f64,
+    /// Conservative geometric deviation bound: curve error, emitted and ruling
+    /// displacement, and two native gaps (endpoint-to-curve and curve-to-support).
     pub max_deviation: f64,
     /// Segment counts indexed by native edge; zero for detached edges.
     pub edge_segments: Vec<u32>,
@@ -213,6 +217,7 @@ struct Incidence {
 struct Patch {
     a: Coedge,
     b: Coedge,
+    translation: [f64; 3],
 }
 
 struct Chains {
@@ -439,11 +444,19 @@ impl<F, E> Body<F, E> {
             chains
                 .vertices
                 .push(vertex_map[edge.start.index()].expect("active vertex"));
+            let [min, max] = edge.range.bounds();
+            let mut previous_parameter = min;
+            let mut max_parameter_step = 0.0_f64;
             for k in 1..n {
                 let t = f64::from(k) / f64::from(n);
+                let parameter = edge.range.at(t).expect("bounded sample fraction");
+                max_parameter_step = max_parameter_step.max((parameter - previous_parameter).abs());
+                previous_parameter = parameter;
                 let exact = placement.transform_point(
-                    self.edge_point(id, t)
-                        .ok_or(RealizationError::CollapsedEdge { edge: id })?,
+                    edge.curve
+                        .evaluate(parameter)
+                        .ok_or(RealizationError::CollapsedEdge { edge: id })?
+                        .point,
                 );
                 let p = narrow(exact);
                 if !p.iter().all(|v| v.is_finite()) {
@@ -468,7 +481,10 @@ impl<F, E> Body<F, E> {
                 return Err(RealizationError::CollapsedEdge { edge: id });
             }
             if let Curve::Circle(circle) = &edge.curve {
-                let sin = libm::sin(edge.range.span() / (4.0 * f64::from(n)));
+                // Absolute parameter origins can make nominally equal steps
+                // round differently. Bound the intervals actually evaluated.
+                max_parameter_step = max_parameter_step.max((max - previous_parameter).abs());
+                let sin = libm::sin(max_parameter_step / 4.0);
                 curve_deviation = curve_deviation.max(2.0 * circle.radius() * sin * sin);
             }
         }
@@ -505,6 +521,7 @@ impl<F, E> Body<F, E> {
         let mut triangles = Vec::new();
         let mut regions = Vec::new();
         let mut native_faces = Vec::new();
+        let mut ruling_displacement = 0.0_f64;
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
             let face_region = region(id, face);
@@ -552,6 +569,24 @@ impl<F, E> Body<F, E> {
                 let (a, b) = (chains.get(patch.a.edge), chains.get(patch.b.edge));
                 let a_at = |j: usize| a[if patch.a.reversed { a.len() - 1 - j } else { j }];
                 let b_at = |j: usize| b[if patch.b.reversed { j } else { b.len() - 1 - j }];
+                // Replace each upper sample by its paired lower sample plus
+                // one fixed axial translation. Barycentric interpolation moves
+                // every triangle point by at most the largest such residual.
+                // Evaluate the native samples, including authoritative endpoints,
+                // in precisely the orientation used to emit these strips.
+                let n = counts[patch.a.edge.index()];
+                for j in 0..=n {
+                    let lower_index = if patch.a.reversed { n - j } else { j };
+                    let upper_index = if patch.b.reversed { j } else { n - j };
+                    let lower = self
+                        .edge_point(patch.a.edge, f64::from(lower_index) / f64::from(n))
+                        .ok_or(RealizationError::DegenerateFace { face: id })?;
+                    let upper = self
+                        .edge_point(patch.b.edge, f64::from(upper_index) / f64::from(n))
+                        .ok_or(RealizationError::DegenerateFace { face: id })?;
+                    ruling_displacement = ruling_displacement
+                        .max(distance(exedra_math::sub(upper, lower), patch.translation));
+                }
                 // Check orientation once, at the first strip's midpoint. The
                 // midpoint of a full periodic edge faces the opposite direction.
                 let step = 1.0 / f64::from(counts[patch.a.edge.index()]);
@@ -684,7 +719,11 @@ impl<F, E> Body<F, E> {
                 geometry_gap: validation.max_gap,
                 max_curve_deviation: curve_deviation,
                 max_vertex_displacement: displacement,
-                max_deviation: curve_deviation + displacement + 2.0 * validation.max_gap,
+                max_ruling_displacement: ruling_displacement,
+                max_deviation: curve_deviation
+                    + displacement
+                    + ruling_displacement
+                    + 2.0 * validation.max_gap,
                 edge_segments: counts,
             },
         })
@@ -719,6 +758,8 @@ impl<F, E> Body<F, E> {
             return Err(refuse());
         }
         let axis = face.surface.frame().rows.map(|r| r[2]);
+        let axis_length = distance(axis, [0.0; 3]);
+        let axis = axis.map(|v| v / axis_length);
         let signed = |coedge: Coedge| {
             let edge = &self.edges()[coedge.edge.index()];
             let Curve::Circle(circle) = &edge.curve else {
@@ -736,7 +777,56 @@ impl<F, E> Body<F, E> {
         {
             return Err(refuse());
         }
-        Ok(Patch { a, b })
+        let Curve::Circle(lower) = &self.edges()[a.edge.index()].curve else {
+            unreachable!()
+        };
+        let Curve::Circle(upper) = &self.edges()[b.edge.index()].curve else {
+            unreachable!()
+        };
+        let lower_axis = lower.frame().rows.map(|r| r[2]);
+        let upper_axis = upper.frame().rows.map(|r| r[2]);
+        let height = exedra_math::dot(
+            exedra_math::sub(
+                upper.frame().rows.map(|r| r[3]),
+                lower.frame().rows.map(|r| r[3]),
+            ),
+            axis,
+        );
+        let translation = axis.map(|v| v * height);
+        // Rectangular eligibility is independent of caller support-gap slack.
+        // Parallel circle planes and axial boundary rulings are required;
+        // the measured residual still contributes to the report, rather than
+        // being silently excused by this numerical comparison.
+        let angular_slack = 64.0 * crate::geometry::FRAME_TOLERANCE;
+        let linear_slack = 64.0 * f64::EPSILON * (cylinder.radius() + height.abs());
+        if distance(
+            exedra_math::sub(
+                upper.frame().rows.map(|r| r[3]),
+                lower.frame().rows.map(|r| r[3]),
+            ),
+            translation,
+        ) > linear_slack
+            || (upper.radius() - lower.radius()).abs() > linear_slack
+        {
+            return Err(refuse());
+        }
+        if distance(exedra_math::cross(lower_axis, axis), [0.0; 3]) > angular_slack
+            || distance(exedra_math::cross(upper_axis, axis), [0.0; 3]) > angular_slack
+        {
+            return Err(refuse());
+        }
+        for fraction in [0.0, 1.0] {
+            let lower = self
+                .edge_point(a.edge, if a.reversed { 1.0 - fraction } else { fraction })
+                .ok_or_else(refuse)?;
+            let upper = self
+                .edge_point(b.edge, if b.reversed { fraction } else { 1.0 - fraction })
+                .ok_or_else(refuse)?;
+            if distance(exedra_math::sub(upper, lower), translation) > linear_slack {
+                return Err(refuse());
+            }
+        }
+        Ok(Patch { a, b, translation })
     }
 
     fn edge_sharpness(&self, id: EdgeId, incidence: Incidence) -> f32 {
@@ -811,6 +901,192 @@ mod tests {
 
     fn cylinder() -> Body {
         Body::try_from_parts(cylinder_parts(), &ValidationPolicy { max_gap: 1e-12 }).unwrap()
+    }
+
+    fn strip(start: f64, span: f64, offset: f64, gap: f64) -> Body {
+        use crate::body::{BodyParts, BoundaryLoop, Edge, LoopId, Sense};
+        use crate::geometry::{ParameterDomain, ParameterRange};
+        let lower = Curve::circle(Placement3::IDENTITY, 1.0).unwrap();
+        let upper = Curve::circle(Placement3::translate(0.0, 0.0, 1.0), 1.0).unwrap();
+        let a = ParameterRange::new(start, start + span).unwrap();
+        let b = ParameterRange::new(start + offset, start + offset + span).unwrap();
+        let vertices = vec![
+            lower.evaluate(a.bounds()[0]).unwrap().point,
+            lower.evaluate(a.bounds()[1]).unwrap().point,
+            upper.evaluate(b.bounds()[0]).unwrap().point,
+            upper.evaluate(b.bounds()[1]).unwrap().point,
+        ];
+        let line = |from: usize, to: usize| Edge {
+            curve: Curve::line(
+                vertices[from],
+                exedra_math::sub(vertices[to], vertices[from]),
+            )
+            .unwrap(),
+            range: ParameterRange::UNIT,
+            start: VertexId(u32::try_from(from).unwrap()),
+            end: VertexId(u32::try_from(to).unwrap()),
+            role: (),
+        };
+        let edges = vec![
+            Edge {
+                curve: lower,
+                range: a,
+                start: VertexId(0),
+                end: VertexId(1),
+                role: (),
+            },
+            Edge {
+                curve: upper,
+                range: b,
+                start: VertexId(2),
+                end: VertexId(3),
+                role: (),
+            },
+            line(1, 3),
+            line(0, 2),
+        ];
+        Body::try_from_parts(
+            BodyParts {
+                vertices,
+                edges,
+                loops: vec![BoundaryLoop {
+                    coedges: vec![
+                        Coedge {
+                            edge: EdgeId(0),
+                            reversed: false,
+                        },
+                        Coedge {
+                            edge: EdgeId(2),
+                            reversed: false,
+                        },
+                        Coedge {
+                            edge: EdgeId(1),
+                            reversed: true,
+                        },
+                        Coedge {
+                            edge: EdgeId(3),
+                            reversed: true,
+                        },
+                    ],
+                }],
+                faces: vec![Face {
+                    surface: Surface::cylinder(Placement3::IDENTITY, 1.0).unwrap(),
+                    domain: ParameterDomain {
+                        u: a,
+                        v: ParameterRange::UNIT,
+                    },
+                    sense: Sense::Forward,
+                    loops: vec![LoopId(0)],
+                    role: (),
+                }],
+            },
+            &ValidationPolicy { max_gap: gap },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn non_axial_rulings_do_not_pass_as_rectangular_strips_under_a_loose_gap() {
+        let body = strip(0.0, 1.0, 0.01, 0.000013);
+        let result = body.realize(
+            Placement3::IDENTITY,
+            &RealizationPolicy {
+                tolerance: 0.008,
+                geometry_gap: 0.000013,
+                ..RealizationPolicy::default()
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(RealizationError::UnsupportedCylinder { face: FaceId(0) })
+        ));
+    }
+
+    #[test]
+    fn large_angle_origins_report_actual_sample_spacing_after_parameter_rounding() {
+        let body = strip(1e15, 1.125, 0.0, 1e-12);
+        for placement in [
+            Placement3::IDENTITY,
+            Placement3::rotate_y_then_translate(0.7, 3.0, -2.0, 1.0),
+        ] {
+            let result = body
+                .realize(
+                    placement,
+                    &RealizationPolicy {
+                        tolerance: 0.011,
+                        ..RealizationPolicy::default()
+                    },
+                )
+                .unwrap();
+            assert!(!result.report.within_tolerance());
+            assert!(result.report.max_curve_deviation >= 0.0175);
+            for edge in result.mesh.half_edges() {
+                let a = result
+                    .mesh
+                    .vertex_position(result.mesh.from_vertex(edge).unwrap())
+                    .unwrap();
+                let b = result
+                    .mesh
+                    .vertex_position(result.mesh.to_vertex(edge).unwrap())
+                    .unwrap();
+                let midpoint = core::array::from_fn(|i| (f64::from(a[i]) + f64::from(b[i])) * 0.5);
+                let xy = project(placement, midpoint);
+                let error = (1.0 - libm::hypot(xy[0], xy[1])).abs();
+                assert!(
+                    error <= result.report.max_deviation,
+                    "{error} exceeds {:?}",
+                    result.report
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn paired_parameter_grids_and_reversed_face_traversal_contribute_ruling_error() {
+        use crate::body::Sense;
+        use crate::geometry::ParameterRange;
+        let mut parts = strip(1e15, 1.125, 0.0, 1e-12).into_parts();
+        parts.edges[0].curve = Curve::circle(
+            Placement3::rotate_z_then_translate(1e15, 0.0, 0.0, 0.0),
+            1.0,
+        )
+        .unwrap();
+        parts.edges[0].range = ParameterRange::new(0.0, 1.125).unwrap();
+        for reverse in [false, true] {
+            let mut parts = parts.clone();
+            if reverse {
+                parts.faces[0].sense = Sense::Reverse;
+                parts.loops[0].coedges.reverse();
+                for coedge in &mut parts.loops[0].coedges {
+                    coedge.reversed = !coedge.reversed;
+                }
+            }
+            let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-12 }).unwrap();
+            let result = body
+                .realize(
+                    Placement3::IDENTITY,
+                    &RealizationPolicy {
+                        tolerance: 0.011,
+                        ..RealizationPolicy::default()
+                    },
+                )
+                .unwrap();
+            assert!(result.report.max_ruling_displacement > 0.06);
+            assert!(!result.report.within_tolerance());
+            for edge in result.mesh.half_edges() {
+                let a = result
+                    .mesh
+                    .vertex_position(result.mesh.from_vertex(edge).unwrap())
+                    .unwrap();
+                let b = result
+                    .mesh
+                    .vertex_position(result.mesh.to_vertex(edge).unwrap())
+                    .unwrap();
+                let x = (f64::from(a[0]) + f64::from(b[0])) * 0.5;
+                let y = (f64::from(a[1]) + f64::from(b[1])) * 0.5;
+                assert!((1.0 - libm::hypot(x, y)).abs() <= result.report.max_deviation);
+            }
+        }
     }
 
     fn volume(mesh: &Mesh) -> f64 {

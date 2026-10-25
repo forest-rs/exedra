@@ -25,8 +25,11 @@ including full periodic walls. Native edges are sampled once into flat shared
 chains; paired circular edges have synchronized counts. Other cylindrical trims
 are typed refusals. Realization checks planar arrangements and local triangle
 orientation after f32 emission; global solid validity remains the caller's
-responsibility. The report separates chord error, vertex displacement and native
-support gaps, and includes all three in its deviation bound. Storage and sampling
+responsibility. The report bounds chord error using the actual rounded parameter intervals,
+measures paired samples against one fixed axial ruling, and includes that
+residual alongside vertex displacement and native support gaps in its deviation
+bound. Rectangular-strip eligibility is checked independently of caller gap
+slack. Storage and sampling
 budgets are explicit. `realize_with_regions` maps metadata to mesh regions once
 per native face while retaining individual native correspondence.
 
