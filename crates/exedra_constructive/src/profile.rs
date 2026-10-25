@@ -607,6 +607,64 @@ impl Profile2 {
         Self::new(self.outer.translated(offset)?, holes)
     }
 
+    /// This profile as a line and arc [`exedra_profile::Profile`], for heads
+    /// that accept only exact lines and circular arcs.
+    ///
+    /// Endpoints, bulges and tags carry over unchanged, and `policy` validates
+    /// the arrangement. Cubic segments are refused rather than approximated,
+    /// and policy-defined segments are refused because their policy is local
+    /// to a recipe.
+    ///
+    /// ```
+    /// use exedra_constructive::builders::{circle, rect_centered};
+    /// use exedra_profile::ProfilePolicy;
+    ///
+    /// let plate = rect_centered(80.0, 40.0)?.with_cutouts([circle(5.0)?])?;
+    /// let shared = plate.to_line_arc(&ProfilePolicy::new(1e-6))?;
+    /// assert_eq!(shared.holes().len(), 1);
+    /// # Ok::<(), Box<dyn core::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LineArcError::Unsupported`] for the first cubic or
+    /// policy-defined segment, then any loop or arrangement error.
+    pub fn to_line_arc(
+        &self,
+        policy: &exedra_profile::ProfilePolicy,
+    ) -> Result<exedra_profile::Profile, LineArcError> {
+        let convert = |loop_: &Loop2, hole: Option<usize>| {
+            let segments = loop_
+                .segs()
+                .iter()
+                .enumerate()
+                .map(|(seg, s)| {
+                    let to = [s.to.x, s.to.y];
+                    let segment = match s.kind {
+                        SegKind::Line => exedra_profile::Segment::line(to),
+                        SegKind::Arc { bulge } => exedra_profile::Segment::arc(to, bulge),
+                        SegKind::Cubic { .. } | SegKind::PolicyTo { .. } => {
+                            return Err(LineArcError::Unsupported { hole, seg });
+                        }
+                    };
+                    Ok(match s.tag {
+                        Some(SegTag(tag)) => segment.tagged(exedra_profile::SegmentTag(tag)),
+                        None => segment,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            exedra_profile::Loop::new(segments).map_err(LineArcError::Loop)
+        };
+        let outer = convert(&self.outer, None)?;
+        let holes = self
+            .holes
+            .iter()
+            .enumerate()
+            .map(|(hole, loop_)| convert(loop_, Some(hole)))
+            .collect::<Result<Vec<_>, _>>()?;
+        exedra_profile::Profile::new(outer, holes, policy).map_err(LineArcError::Profile)
+    }
+
     /// The outer loop.
     #[must_use]
     pub fn outer(&self) -> &Loop2 {
@@ -617,6 +675,45 @@ impl Profile2 {
     #[must_use]
     pub fn holes(&self) -> &[Loop2] {
         &self.holes
+    }
+}
+
+/// Why a [`Profile2`] has no line and arc form.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LineArcError {
+    /// A cubic or policy-defined segment has no exact line or arc form.
+    Unsupported {
+        /// Hole index, or `None` for the outer loop.
+        hole: Option<usize>,
+        /// Offending segment.
+        seg: usize,
+    },
+    /// A loop failed the shared loop checks.
+    Loop(exedra_profile::LoopError),
+    /// The loops failed the shared arrangement checks.
+    Profile(exedra_profile::ProfileError),
+}
+
+impl core::fmt::Display for LineArcError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsupported { hole, seg } => {
+                write!(f, "{}: segment {seg} is not a line or arc", Loc(*hole))
+            }
+            Self::Loop(error) => error.fmt(f),
+            Self::Profile(error) => error.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for LineArcError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Unsupported { .. } => None,
+            Self::Loop(error) => Some(error),
+            Self::Profile(error) => Some(error),
+        }
     }
 }
 
@@ -1123,6 +1220,55 @@ mod tests {
                 first: 0,
                 second: 1
             })
+        );
+    }
+
+    #[test]
+    fn line_arc_form_keeps_geometry_and_tags_and_refuses_curves() {
+        let plate = crate::builders::rounded_rect_centered(8.0, 4.0, 1.0)
+            .unwrap()
+            .with_cutouts([crate::builders::circle(0.5).unwrap()])
+            .unwrap();
+        let policy = exedra_profile::ProfilePolicy::new(1e-9);
+        let shared = plate.to_line_arc(&policy).unwrap();
+        let source = plate.holes()[0].segs();
+        let converted = shared.holes()[0].segments();
+        assert_eq!(converted.len(), source.len());
+        for (a, b) in source.iter().zip(converted) {
+            assert_eq!([a.to.x, a.to.y], b.to);
+            assert_eq!(a.tag.map(|t| t.0), b.tag.map(|t| t.0));
+        }
+        // Exact: 8 x 4 less four corners plus a unit circle, less the hole.
+        let exact = 32.0 - 4.0 + core::f64::consts::PI * (1.0 - 0.25);
+        assert!((shared.area() - exact).abs() < 1e-12);
+
+        let cubic = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((2.0, 0.0)),
+                Seg2::cubic((0.0, 0.0), (1.5, 1.0), (0.5, 1.0)),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cubic.to_line_arc(&policy),
+            Err(LineArcError::Unsupported { hole: None, seg: 1 })
+        );
+        let policy_curve = Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((2.0, 0.0)),
+                Seg2::policy(
+                    (0.0, 0.0),
+                    crate::ir::PolicyId(0),
+                    SegKind::Arc { bulge: 0.5 },
+                ),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            policy_curve.to_line_arc(&policy),
+            Err(LineArcError::Unsupported { hole: None, seg: 1 })
         );
     }
 

@@ -292,6 +292,7 @@ dependencies = [
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_primitives",
+ "exedra_profile",
 ]
 
 [[package]]
