@@ -39,6 +39,7 @@ members = [
     "crates/setout_generate",
     "crates/setout_joiner",
     "crates/setout_reconstruction",
+    "examples/analytic_extrusion",
     "examples/basilica_ruin",
     "examples/basilica_structure_lab",
     "examples/caller_owned_export",
