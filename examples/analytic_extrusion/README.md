@@ -20,7 +20,7 @@ cargo run -p analytic_extrusion
 `instrument_panel` builds a front panel from several analytic extrusions. A
 bezel's opening is an inset faceplate offset by a 1.5 mm reveal. The faceplate
 has a display window recessed into its front as a pocket, a knob bore, vent
-slots drawn with `LoopCursor`, indicator holes, and four blind bores in its
+slots placed from one tagged slot profile, indicator holes, and four blind bores in its
 back. The vent segments carry a tag, and `tessellate_with_regions` groups
 every wall with that tag into one region, and the window's recess into
 another. The parts compile as baked geometry, and the GLB binds one material
@@ -30,3 +30,22 @@ faces.
 ```sh
 cargo run -p analytic_extrusion --example instrument_panel -- panel.glb
 ```
+
+## Filled-region and corner studies
+
+```sh
+cargo run -p analytic_extrusion --example region_studies -- /tmp/region-studies
+```
+
+Writes `/tmp/region-studies.svg` and `/tmp/region-studies.glb`. The labelled SVG
+compares a union cross, concave fillets and chamfers, circular union/intersection/
+difference, disconnected material and an island. An enlarged corner detail marks
+the tangent joins against the original boundary. The GLB extrudes those same
+analytic profiles into ten closed meshes; generated corner transitions share a
+feature tag and appear in orange. Console reports give native volume, face counts
+and mesh-deviation evidence. Every emitted solid must be closed and meet its
+requested chord tolerance.
+
+The example keeps the region operation, validation policy, disconnected-result
+handling, selected corners, transition labels and workplane placements explicit.
+It introduces no mesh approximation into the line/arc composition itself.
