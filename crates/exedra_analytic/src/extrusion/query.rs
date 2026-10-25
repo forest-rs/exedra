@@ -10,7 +10,7 @@
 use exedra_math::Placement3;
 use exedra_profile::{Curve, LoopRef};
 
-use super::{Boundary, BoundarySegment, EdgeCurve, EdgeId, Extrusion, FaceId, FaceRole, Surface};
+use super::{Boundary, BoundarySegment, EdgeId, Extrusion, FaceId, FaceRole, Surface};
 
 /// A point on a face with its outward unit normal, in local coordinates.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -33,59 +33,31 @@ impl Extrusion {
     /// its span.
     #[must_use]
     pub fn evaluate(&self, face: FaceId, uv: [f64; 2]) -> Option<SurfacePoint> {
-        let face = self.faces.get(face.index())?;
-        match (face.role, face.surface) {
-            (FaceRole::Cap(_) | FaceRole::Floor { .. }, Surface::Plane { normal, offset }) => {
-                Some(SurfacePoint {
-                    point: [uv[0], uv[1], offset * normal[2]],
-                    normal,
-                })
+        let record = self.body.face(face)?;
+        let uv = if matches!(record.role, FaceRole::Wall { .. }) {
+            let u = record.domain.u.at(uv[0])?;
+            let v = match &record.surface {
+                Surface::Plane(_) => uv[1],
+                Surface::Cylinder(c) => uv[1] * c.frame().rows[2][2],
+            };
+            if !record.domain.v.contains(v) {
+                return None;
             }
-            (FaceRole::Wall { segment, .. }, surface) => {
-                let [u, v] = uv;
-                let heights = self.band_of(segment.boundary).heights;
-                if !(0.0..=1.0).contains(&u) || !(heights[0]..=heights[1]).contains(&v) {
-                    return None;
-                }
-                let loop_ = self.boundary_loop(segment.boundary);
-                let (from, to) = segment_ends(loop_, segment.segment);
-                let (point, normal) = match surface {
-                    Surface::Plane { normal, .. } => (
-                        [
-                            from[0] + u * (to[0] - from[0]),
-                            from[1] + u * (to[1] - from[1]),
-                        ],
-                        [normal[0], normal[1]],
-                    ),
-                    Surface::Cylinder {
-                        center, outward, ..
-                    } => {
-                        let arc = loop_.arc(segment.segment).expect("cylinder walls are arcs");
-                        let point = arc.point_at(u);
-                        let radial = [
-                            (point[0] - center[0]) / arc.radius,
-                            (point[1] - center[1]) / arc.radius,
-                        ];
-                        let sense = if outward { 1.0 } else { -1.0 };
-                        (point, [sense * radial[0], sense * radial[1]])
-                    }
-                };
-                Some(SurfacePoint {
-                    point: [point[0], point[1], v],
-                    normal: [normal[0], normal[1], 0.0],
-                })
-            }
-            (_, Surface::Cylinder { .. }) => None,
-        }
+            [u, v]
+        } else {
+            uv
+        };
+        let evaluation = self.body.evaluate_support(face, uv)?;
+        Some(SurfacePoint {
+            point: evaluation.point,
+            normal: evaluation.normal,
+        })
     }
 
     /// Exact length of edge `edge`.
     #[must_use]
     pub fn edge_length(&self, edge: EdgeId) -> Option<f64> {
-        Some(match self.edges.get(edge.index())?.curve {
-            EdgeCurve::Line { from, to } => exedra_math::norm(exedra_math::sub(to, from)),
-            EdgeCurve::Arc { arc, .. } => arc.length(),
-        })
+        self.body.edge_length(edge)
     }
 
     /// Exact area of face `face`: the profile's area less the pockets opening
@@ -93,7 +65,7 @@ impl Extrusion {
     /// length times its span for a wall.
     #[must_use]
     pub fn face_area(&self, face: FaceId) -> Option<f64> {
-        Some(match self.faces.get(face.index())?.role {
+        Some(match self.body.faces().get(face.index())?.role {
             FaceRole::Cap(end) => {
                 self.profile.area()
                     + self
@@ -122,7 +94,7 @@ impl Extrusion {
     /// Exact total boundary area.
     #[must_use]
     pub fn surface_area(&self) -> f64 {
-        (0..self.faces.len())
+        (0..self.body.faces().len())
             .filter_map(|face| self.face_area(FaceId(crate::usize_to_u32(face))))
             .sum()
     }
@@ -158,36 +130,13 @@ impl Extrusion {
     /// segment's start at the bottom of its span.
     #[must_use]
     pub fn attachment_frame(&self, face: FaceId) -> Option<Placement3> {
-        let face = self.faces.get(face.index())?;
-        let local = match (face.role, face.surface) {
-            (FaceRole::Cap(_) | FaceRole::Floor { .. }, Surface::Plane { normal, offset }) => {
-                let height = offset * normal[2];
-                if normal[2] > 0.0 {
-                    Placement3::translate(0.0, 0.0, height)
-                } else {
-                    Placement3::from_axes(
-                        [1.0, 0.0, 0.0],
-                        [0.0, -1.0, 0.0],
-                        [0.0, 0.0, -1.0],
-                        [0.0, 0.0, height],
-                    )
-                }
-            }
-            (FaceRole::Wall { segment, .. }, Surface::Plane { normal, .. }) => {
-                let (from, _) = segment_ends(self.boundary_loop(segment.boundary), segment.segment);
-                let low = self.band_of(segment.boundary).heights[0];
-                // The outward normal is the travel direction turned right, so
-                // travel, +Z and the normal are right-handed.
-                Placement3::from_axes(
-                    [-normal[1], normal[0], 0.0],
-                    [0.0, 0.0, 1.0],
-                    normal,
-                    [from[0], from[1], low],
-                )
-            }
-            (_, Surface::Cylinder { .. }) => return None,
+        let record = self.body.face(face)?;
+        let uv = if matches!(record.role, FaceRole::Wall { .. }) {
+            [0.0, record.domain.v.bounds()[0]]
+        } else {
+            [0.0; 2]
         };
-        Some(self.frame * local)
+        Some(self.frame * self.body.planar_frame(face, uv)?)
     }
 
     /// Whether `segment` is an arc, whose wall is a cylinder.
@@ -280,20 +229,23 @@ mod tests {
                     .evaluate(FaceId(crate::usize_to_u32(index)), uv)
                     .unwrap();
                 close(exedra_math::norm(sample.normal), 1.0);
-                match face.surface {
-                    Surface::Plane { normal, offset } => {
+                match &face.surface {
+                    Surface::Plane(plane) => {
+                        let normal = plane.frame().rows.map(|r| r[2] * face.sense.sign());
+                        let origin = plane.frame().rows.map(|r| r[3]);
                         assert_eq!(sample.normal, normal);
-                        close(exedra_math::dot(normal, sample.point), offset);
+                        close(
+                            exedra_math::dot(normal, exedra_math::sub(sample.point, origin)),
+                            0.0,
+                        );
                     }
-                    Surface::Cylinder {
-                        center,
-                        radius,
-                        outward,
-                    } => {
+                    Surface::Cylinder(cylinder) => {
+                        let center = cylinder.frame().rows.map(|r| r[3]);
+                        let radius = cylinder.radius();
                         let radial = [sample.point[0] - center[0], sample.point[1] - center[1]];
                         close(libm::hypot(radial[0], radial[1]), radius);
                         // The hole's walls face the axis.
-                        assert!(!outward);
+                        assert_eq!(face.sense, crate::body::Sense::Reverse);
                         assert!(exedra_math::dot(sample.normal, [radial[0], radial[1], 0.0]) < 0.0);
                     }
                 }
@@ -314,15 +266,15 @@ mod tests {
         for (index, face) in solid.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(index));
             let Some(attached) = solid.attachment_frame(id) else {
-                assert!(matches!(face.surface, Surface::Cylinder { .. }));
+                assert!(matches!(face.surface, Surface::Cylinder(_)));
                 continue;
             };
             close(attached.linear_determinant(), 1.0);
             // +Z of the attachment is the placed outward normal.
             let z = attached.rows.map(|row| row[2]);
-            let normal = match face.surface {
-                Surface::Plane { normal, .. } => normal,
-                Surface::Cylinder { .. } => unreachable!(),
+            let normal = match &face.surface {
+                Surface::Plane(plane) => plane.frame().rows.map(|r| r[2] * face.sense.sign()),
+                Surface::Cylinder(_) => unreachable!(),
             };
             let placed_normal = frame
                 .rows

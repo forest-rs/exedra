@@ -454,7 +454,7 @@ impl<F, E> Body<F, E> {
 }
 
 /// A boundary-table, incidence or geometric-support violation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BodyError {
     /// A finite nonnegative agreement tolerance was required.
     InvalidTolerance {

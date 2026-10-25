@@ -198,29 +198,19 @@ fn pockets_add_walls_floors_and_cap_holes_and_stay_closed() {
         3,
         "outline, through hole and bore"
     );
-    let floors: Vec<_> = solid.faces()[14..]
-        .iter()
-        .map(|face| (face.role, face.surface))
-        .collect();
-    assert_eq!(
-        floors,
-        [
-            (
-                FaceRole::Floor { pocket: 0 },
-                Surface::Plane {
-                    normal: [0.0, 0.0, 1.0],
-                    offset: 1.5
-                }
-            ),
-            (
-                FaceRole::Floor { pocket: 1 },
-                Surface::Plane {
-                    normal: [0.0, 0.0, -1.0],
-                    offset: -1.0
-                }
-            ),
-        ]
-    );
+    for (index, expected_normal, expected_z) in
+        [(14, [0.0, 0.0, 1.0], 1.5), (15, [0.0, 0.0, -1.0], 1.0)]
+    {
+        assert_eq!(
+            solid.faces()[index].role,
+            FaceRole::Floor { pocket: index - 14 }
+        );
+        let sample = solid
+            .evaluate(FaceId(crate::usize_to_u32(index)), [2.0, 2.0])
+            .unwrap();
+        assert_eq!(sample.normal, expected_normal);
+        assert_eq!(sample.point[2], expected_z);
+    }
     // The bore's walls face into the bore, toward its axis.
     let bore_wall = solid
         .faces()
@@ -230,7 +220,8 @@ fn pockets_add_walls_floors_and_cap_holes_and_stay_closed() {
         })
         .unwrap();
     assert!(
-        matches!(bore_wall.surface, Surface::Cylinder { outward: false, radius, .. } if radius == 1.0)
+        matches!(&bore_wall.surface, Surface::Cylinder(c) if c.radius() == 1.0)
+            && bore_wall.sense == Sense::Reverse
     );
 }
 

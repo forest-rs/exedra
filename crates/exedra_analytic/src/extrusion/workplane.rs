@@ -186,7 +186,7 @@ impl Extrusion {
     ///
     /// Distinguishes an unknown local face ID from a cylindrical wall.
     pub fn workplane(&self, face: FaceId) -> Result<Workplane, WorkplaneError> {
-        if face.index() >= self.faces.len() {
+        if face.index() >= self.body.faces().len() {
             return Err(WorkplaneError::UnknownFace { face });
         }
         self.attachment_frame(face)

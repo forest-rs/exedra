@@ -394,7 +394,7 @@ impl Extrusion {
         region: &dyn Fn(FaceId, &Face) -> u32,
     ) -> Result<TessellatedExtrusion, Refusal> {
         let bands = self.bands();
-        let region_of = |face: FaceId| region(face, &self.faces[face.index()]);
+        let region_of = |face: FaceId| region(face, &self.body.faces()[face.index()]);
         // Each band has a vertex block per level: its ring at that height.
         let mut blocks = Vec::with_capacity(bands.len());
         let mut emitted = Vec::new();
@@ -584,7 +584,7 @@ impl Extrusion {
         // Correspondence: every sample is a native vertex or an interior
         // point of the boundary edge at its level.
         let mut sources = Vec::with_capacity(emitted.len());
-        let mut edge_chains = alloc::vec![Vec::new(); self.edges.len()];
+        let mut edge_chains = alloc::vec![Vec::new(); self.body.edges().len()];
         for ((band, ring), block) in bands.iter().zip(rings).zip(&blocks) {
             let n = ring.points.len();
             let segments = ring.starts.len() - 1;
