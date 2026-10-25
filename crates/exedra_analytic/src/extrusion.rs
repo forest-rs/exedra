@@ -69,14 +69,7 @@ pub type Edge = crate::body::Edge<EdgeRole>;
 /// Shared trimmed face with extrusion provenance.
 pub type Face = crate::body::Face<FaceRole>;
 
-/// One end of an extrusion.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum End {
-    /// The profile plane, `z = 0`.
-    Start,
-    /// The far end, `z = length`.
-    End,
-}
+pub use crate::End;
 
 /// A height at which boundary edges and vertices lie.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -25,11 +25,21 @@ pub mod extrusion;
 pub mod geometry;
 mod planar;
 pub mod realize;
+pub mod revolve;
 pub use planar::{
     AnalyticFaceId, AnalyticLoopId, AnalyticShell, AnalyticShellBuilder, AnalyticVertexId,
     BuildError, EditError, PlanarFace, RectFrameParams, RectOpeningParams, RegionId,
     TessellateError, TessellateParams, TessellatedShell, rect_frame_xy,
 };
+
+/// One end of a profile construction's parameter span.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum End {
+    /// The generating profile at the start of the construction.
+    Start,
+    /// The generating profile at the end of the construction.
+    End,
+}
 
 fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("analytic table exceeds u32 local ID range")
