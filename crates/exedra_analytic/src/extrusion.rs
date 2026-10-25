@@ -42,9 +42,12 @@
 
 use alloc::vec::Vec;
 
+use crate::body::{Body, BodyParts, BoundaryLoop, Sense, ValidationPolicy};
+use crate::geometry::{ParameterDomain, ParameterRange};
 use exedra_math::{FrameError, Placement3};
-use exedra_profile::{Arc, Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
+use exedra_profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 
+mod boundary;
 mod query;
 mod selection;
 mod tessellate;
@@ -58,37 +61,13 @@ pub use tessellate::{
     VertexSource,
 };
 
-/// Absolute tolerance on frame axis lengths and dot products.
-pub const FRAME_TOLERANCE: f64 = 1e-12;
+pub use crate::body::{Coedge, EdgeId, FaceId, VertexId};
+pub use crate::geometry::{FRAME_TOLERANCE, Surface};
 
-macro_rules! solid_id {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-        pub struct $name(pub u32);
-
-        impl $name {
-            /// The zero-based index.
-            #[must_use]
-            pub const fn index(self) -> usize {
-                self.0 as usize
-            }
-        }
-    };
-}
-
-solid_id!(
-    /// A vertex of one [`Extrusion`].
-    VertexId
-);
-solid_id!(
-    /// An edge of one [`Extrusion`].
-    EdgeId
-);
-solid_id!(
-    /// A face of one [`Extrusion`].
-    FaceId
-);
+/// Shared bounded edge with extrusion provenance.
+pub type Edge = crate::body::Edge<EdgeRole>;
+/// Shared trimmed face with extrusion provenance.
+pub type Face = crate::body::Face<FaceRole>;
 
 /// One end of an extrusion.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -181,80 +160,6 @@ pub enum FaceRole {
         /// The pocket.
         pocket: usize,
     },
-}
-
-/// The exact curve of an edge, in local coordinates.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum EdgeCurve {
-    /// A straight edge between its endpoints.
-    Line {
-        /// Start point.
-        from: [f64; 3],
-        /// End point.
-        to: [f64; 3],
-    },
-    /// A circular arc in the plane `z`.
-    Arc {
-        /// The profile arc.
-        arc: Arc,
-        /// Height of its plane.
-        z: f64,
-    },
-}
-
-/// The exact support of a face, in local coordinates, with its outward sense.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Surface {
-    /// The plane `dot(normal, p) = offset`, with `normal` unit and outward.
-    Plane {
-        /// Outward unit normal.
-        normal: [f64; 3],
-        /// Plane offset along the normal.
-        offset: f64,
-    },
-    /// A cylinder about the line through `center` parallel to local Z.
-    Cylinder {
-        /// Axis position in the profile plane.
-        center: [f64; 2],
-        /// Radius; positive.
-        radius: f64,
-        /// Whether the outward normal points away from the axis (a convex
-        /// wall) rather than toward it.
-        outward: bool,
-    },
-}
-
-/// An edge used by a face loop, in that loop's direction.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Coedge {
-    /// The shared edge.
-    pub edge: EdgeId,
-    /// Whether the loop traverses the edge from its end to its start.
-    pub reversed: bool,
-}
-
-/// One edge: its curve, endpoints and source.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Edge {
-    /// The exact curve, from `start` to `end`.
-    pub curve: EdgeCurve,
-    /// Start vertex.
-    pub start: VertexId,
-    /// End vertex.
-    pub end: VertexId,
-    /// Source of the edge.
-    pub role: EdgeRole,
-}
-
-/// One face: its support, boundary loops and source.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Face {
-    /// The exact support, oriented outward.
-    pub surface: Surface,
-    /// Boundary loops, outer first, each counter-clockwise seen from outside.
-    pub loops: Vec<Vec<Coedge>>,
-    /// Source of the face.
-    pub role: FaceRole,
 }
 
 /// A region cut from one end of an extrusion to a depth: a hole that stops.
@@ -428,6 +333,8 @@ pub enum ExtrusionError {
     /// The profile and pockets have more vertices than the identifier space
     /// allows.
     TooLarge,
+    /// The constructed boundary failed structural or support validation.
+    Body(crate::body::BodyError),
     /// A pocket cannot be cut.
     Pocket {
         /// The pocket's index, the count of earlier pockets.
@@ -445,6 +352,7 @@ impl core::fmt::Display for ExtrusionError {
                 "extrusion length must be finite and positive, got {length}"
             ),
             Self::SingularFrame(error) => write!(f, "extrusion frame: {error}"),
+            Self::Body(error) => write!(f, "extrusion {error}"),
             Self::TooLarge => write!(f, "profile is too large to extrude"),
             Self::Pocket { pocket, error } => write!(f, "pocket {pocket}: {error}"),
         }
@@ -490,10 +398,8 @@ pub struct Extrusion {
     /// `[end pocket, start pocket]` pairs whose regions overlap, leaving a
     /// web of material between their floors.
     webs: Vec<[usize; 2]>,
-    vertices: Vec<[f64; 3]>,
+    body: Body<FaceRole, EdgeRole>,
     vertex_roles: Vec<VertexRole>,
-    edges: Vec<Edge>,
-    faces: Vec<Face>,
     bands: Vec<Band>,
     planes: Vec<PlanarFace>,
 }
@@ -677,18 +583,17 @@ impl Extrusion {
                 band.edges[slot] = edges.len();
                 let z = heights[slot];
                 for (k, (from, segment)) in loop_.iter_with_starts().enumerate() {
-                    let curve = match segment.curve {
-                        Curve::Line => EdgeCurve::Line {
-                            from: [from[0], from[1], z],
-                            to: [segment.to[0], segment.to[1], z],
-                        },
-                        Curve::Arc { .. } => EdgeCurve::Arc {
-                            arc: loop_.arc(k).expect("validated arc"),
-                            z,
-                        },
+                    let (curve, range) = match segment.curve {
+                        Curve::Line => {
+                            boundary::line([from[0], from[1], z], [segment.to[0], segment.to[1], z])
+                        }
+                        Curve::Arc { .. } => {
+                            boundary::circle(loop_.arc(k).expect("validated arc"), z)
+                        }
                     };
                     edges.push(Edge {
                         curve,
+                        range,
                         start: vertex_id(band.vertices[slot] + (k + n - 1) % n),
                         end: vertex_id(band.vertices[slot] + k),
                         role: EdgeRole::Boundary {
@@ -703,11 +608,13 @@ impl Extrusion {
             }
             band.seams = edges.len();
             for (k, segment) in loop_.segments().iter().enumerate() {
+                let (curve, range) = boundary::line(
+                    [segment.to[0], segment.to[1], heights[0]],
+                    [segment.to[0], segment.to[1], heights[1]],
+                );
                 edges.push(Edge {
-                    curve: EdgeCurve::Line {
-                        from: [segment.to[0], segment.to[1], heights[0]],
-                        to: [segment.to[0], segment.to[1], heights[1]],
-                    },
+                    curve,
+                    range,
                     start: vertex_id(band.vertices[0] + k),
                     end: vertex_id(band.vertices[1] + k),
                     role: EdgeRole::Seam {
@@ -752,33 +659,15 @@ impl Extrusion {
         }
         let edge = |index: usize| EdgeId(crate::usize_to_u32(index));
         let mut faces = Vec::with_capacity(walls + pockets.len());
+        let mut loops = Vec::<BoundaryLoop>::new();
         for plane in &planes[..2] {
-            faces.push(plane_face(plane, &bands, &boundaries, edge));
+            faces.push(plane_face(plane, &bands, &boundaries, edge, &mut loops));
         }
         for (band, &(boundary, _, _, loop_)) in bands.iter().zip(&boundaries) {
             let n = loop_.segments().len();
             for (k, (from, segment)) in loop_.iter_with_starts().enumerate() {
-                let surface = match segment.curve {
-                    Curve::Line => {
-                        let direction = [segment.to[0] - from[0], segment.to[1] - from[1]];
-                        let span = exedra_math::norm([direction[0], direction[1], 0.0]);
-                        // Material is left of the travel direction, so the
-                        // outward normal is to its right.
-                        let normal = [direction[1] / span, -direction[0] / span, 0.0];
-                        Surface::Plane {
-                            normal,
-                            offset: normal[0] * from[0] + normal[1] * from[1],
-                        }
-                    }
-                    Curve::Arc { .. } => {
-                        let arc = loop_.arc(k).expect("validated arc");
-                        Surface::Cylinder {
-                            center: arc.center,
-                            radius: arc.radius,
-                            outward: arc.sweep > 0.0,
-                        }
-                    }
-                };
+                let (surface, domain, sense) =
+                    boundary::wall(from, segment.to, loop_.arc(k), band.heights);
                 // Lower edge forward, seam up at the segment's end, upper
                 // edge backward, seam down at its start.
                 let boundary_loop = alloc::vec![
@@ -801,7 +690,9 @@ impl Extrusion {
                 ];
                 faces.push(Face {
                     surface,
-                    loops: alloc::vec![boundary_loop],
+                    loops: alloc::vec![boundary::push_loop(&mut loops, boundary_loop)],
+                    domain,
+                    sense,
                     role: FaceRole::Wall {
                         segment: BoundarySegment {
                             boundary,
@@ -813,18 +704,32 @@ impl Extrusion {
             }
         }
         for plane in &planes[2..] {
-            faces.push(plane_face(plane, &bands, &boundaries, edge));
+            faces.push(plane_face(plane, &bands, &boundaries, edge, &mut loops));
         }
+        let scale = vertices
+            .iter()
+            .flatten()
+            .fold(1.0_f64, |a, v| a.max(v.abs()));
+        let body = Body::try_from_parts(
+            BodyParts {
+                vertices,
+                edges,
+                loops,
+                faces,
+            },
+            &ValidationPolicy {
+                max_gap: 128.0 * f64::EPSILON * scale,
+            },
+        )
+        .map_err(ExtrusionError::Body)?;
         let solid = Self {
             profile,
             frame,
             length,
             pockets,
             webs,
-            vertices,
+            body,
             vertex_roles,
-            edges,
-            faces,
             bands,
             planes,
         };
@@ -883,7 +788,7 @@ impl Extrusion {
     /// Vertex positions in local coordinates.
     #[must_use]
     pub fn vertices(&self) -> &[[f64; 3]] {
-        &self.vertices
+        self.body.vertices()
     }
 
     /// The profile vertex and end each vertex was generated from.
@@ -896,51 +801,27 @@ impl Extrusion {
     /// edges, then seams, each in outer-then-hole segment order.
     #[must_use]
     pub fn edges(&self) -> &[Edge] {
-        &self.edges
+        self.body.edges()
     }
 
     /// Faces in deterministic order: start cap, end cap, then walls in
     /// outer-then-hole segment order.
     #[must_use]
     pub fn faces(&self) -> &[Face] {
-        &self.faces
+        self.body.faces()
     }
 
     /// Whether every edge is used once in each direction by face loops whose
     /// coedges chain end to start: a closed, consistently oriented boundary.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        let mut uses = alloc::vec![[0_u32; 2]; self.edges.len()];
-        for face in &self.faces {
-            for loop_ in &face.loops {
-                for (index, coedge) in loop_.iter().enumerate() {
-                    let next = loop_[(index + 1) % loop_.len()];
-                    if self.coedge_end(*coedge) != self.coedge_start(next) {
-                        return false;
-                    }
-                    uses[coedge.edge.index()][usize::from(coedge.reversed)] += 1;
-                }
-            }
-        }
-        uses.iter().all(|counts| *counts == [1, 1])
+        self.body.is_closed()
     }
 
-    fn coedge_start(&self, coedge: Coedge) -> VertexId {
-        let edge = &self.edges[coedge.edge.index()];
-        if coedge.reversed {
-            edge.end
-        } else {
-            edge.start
-        }
-    }
-
-    fn coedge_end(&self, coedge: Coedge) -> VertexId {
-        let edge = &self.edges[coedge.edge.index()];
-        if coedge.reversed {
-            edge.start
-        } else {
-            edge.end
-        }
+    /// The canonical boundary, with geometry independent of construction roles.
+    #[must_use]
+    pub fn body(&self) -> &Body<FaceRole, EdgeRole> {
+        &self.body
     }
 }
 
@@ -951,6 +832,7 @@ fn plane_face(
     bands: &[Band],
     boundaries: &[(Boundary, [Level; 2], [f64; 2], &Loop)],
     edge: impl Fn(usize) -> EdgeId,
+    body_loops: &mut Vec<BoundaryLoop>,
 ) -> Face {
     // Seen from below, left and right swap; a floor's region is right of its
     // stored ring.
@@ -970,21 +852,27 @@ fn plane_face(
             if reversed {
                 coedges.reverse();
             }
-            coedges
+            boundary::push_loop(body_loops, coedges)
         })
         .collect();
     let height = bands[plane.rings[0].0].heights[plane.rings[0].1];
-    let (normal, offset) = if plane.upward {
-        ([0.0, 0.0, 1.0], height)
-    } else {
-        ([0.0, 0.0, -1.0], -height)
+    let bounds = boundaries[plane.rings[0].0].3.bounds();
+    let domain = ParameterDomain {
+        u: ParameterRange::new(bounds[0][0], bounds[1][0]).expect("profile width"),
+        v: ParameterRange::new(bounds[0][1], bounds[1][1]).expect("profile height"),
     };
     let role = match boundaries[plane.rings[0].0].0 {
         Boundary::Pocket(pocket) if plane.region_right => FaceRole::Floor { pocket },
         _ => FaceRole::Cap(if plane.upward { End::End } else { End::Start }),
     };
     Face {
-        surface: Surface::Plane { normal, offset },
+        surface: Surface::plane(Placement3::translate(0.0, 0.0, height)).expect("finite plane"),
+        domain,
+        sense: if plane.upward {
+            Sense::Forward
+        } else {
+            Sense::Reverse
+        },
         loops,
         role,
     }
@@ -1037,57 +925,74 @@ mod tests {
         );
         // Any face missing a coedge leaves its partner unpaired.
         let mut open = solid.clone();
-        open.faces[3].loops[0].pop();
+        let loop_id = open.faces()[3].loops[0];
+        open.body.parts.loops[loop_id.index()].coedges.pop();
         assert!(!open.is_closed());
+    }
+
+    #[test]
+    fn boundary_evaluation_survives_removing_all_construction_roles() {
+        let source = Extrusion::new(rect_with_round_hole(), Placement3::IDENTITY, 3.0).unwrap();
+        let expected: Vec<_> = source
+            .body()
+            .faces()
+            .iter()
+            .enumerate()
+            .map(|(i, face)| {
+                let uv = [
+                    face.domain.u.at(0.5).unwrap(),
+                    face.domain.v.at(0.5).unwrap(),
+                ];
+                (
+                    FaceId(crate::usize_to_u32(i)),
+                    uv,
+                    source
+                        .body()
+                        .evaluate_support(FaceId(crate::usize_to_u32(i)), uv)
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let mut parts = source.body().clone().into_parts();
+        drop(source);
+        for face in &mut parts.faces {
+            face.role = FaceRole::Cap(End::Start);
+        }
+        let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-12 }).unwrap();
+        for (id, uv, evaluation) in expected {
+            assert_eq!(body.evaluate_support(id, uv), Some(evaluation));
+        }
+        assert!(body.is_closed());
     }
 
     #[test]
     fn supports_face_outward() {
         let solid = Extrusion::new(rect_with_round_hole(), Placement3::IDENTITY, 3.0).unwrap();
-        let planes: Vec<_> = solid.faces()[2..6]
-            .iter()
-            .map(|face| face.surface)
+        let normals: Vec<_> = (2..6)
+            .map(|i| solid.evaluate(FaceId(i), [0.5, 1.0]).unwrap().normal)
             .collect();
         assert_eq!(
-            planes,
+            normals,
             [
-                Surface::Plane {
-                    normal: [0.0, -1.0, 0.0],
-                    offset: 0.0
-                },
-                Surface::Plane {
-                    normal: [1.0, 0.0, 0.0],
-                    offset: 4.0
-                },
-                Surface::Plane {
-                    normal: [0.0, 1.0, 0.0],
-                    offset: 2.0
-                },
-                Surface::Plane {
-                    normal: [-1.0, 0.0, 0.0],
-                    offset: 0.0
-                },
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0]
             ]
         );
-        // The hole's walls face into the hole, toward the axis.
         for face in &solid.faces()[6..] {
-            let Surface::Cylinder {
-                center,
-                radius,
-                outward,
-            } = face.surface
-            else {
+            let Surface::Cylinder(cylinder) = &face.surface else {
                 panic!("arc walls are cylinders");
             };
-            assert_eq!((center, radius, outward), ([2.0, 1.0], 0.5, false));
+            assert_eq!(cylinder.frame().rows.map(|r| r[3]), [2.0, 1.0, 0.0]);
+            assert_eq!(cylinder.radius(), 0.5);
+            assert_eq!(face.sense, Sense::Reverse);
         }
         assert_eq!(
             solid.faces()[1].surface,
-            Surface::Plane {
-                normal: [0.0, 0.0, 1.0],
-                offset: 3.0
-            }
+            Surface::plane(Placement3::translate(0.0, 0.0, 3.0)).unwrap()
         );
+        assert_eq!(solid.faces()[1].sense, Sense::Forward);
     }
 
     #[test]

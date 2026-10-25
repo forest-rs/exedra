@@ -9,7 +9,7 @@ use exedra_profile::SegTag;
 impl Extrusion {
     /// Faces paired with their IDs in this solid, in deterministic table order.
     pub fn indexed_faces(&self) -> impl Iterator<Item = (FaceId, &Face)> + '_ {
-        self.faces
+        self.faces()
             .iter()
             .enumerate()
             .map(|(i, face)| (FaceId(crate::usize_to_u32(i)), face))
@@ -17,7 +17,7 @@ impl Extrusion {
 
     /// Edges paired with their IDs in this solid, in deterministic table order.
     pub fn indexed_edges(&self) -> impl Iterator<Item = (EdgeId, &Edge)> + '_ {
-        self.edges
+        self.edges()
             .iter()
             .enumerate()
             .map(|(i, edge)| (EdgeId(crate::usize_to_u32(i)), edge))
@@ -31,7 +31,7 @@ impl Extrusion {
     /// Returns `None` for an out-of-range face ID as well as an unlabelled face.
     #[must_use]
     pub fn face_tag(&self, face: FaceId) -> Option<SegTag> {
-        match self.faces.get(face.index())?.role {
+        match self.body.faces().get(face.index())?.role {
             FaceRole::Cap(_) => None,
             FaceRole::Floor { pocket } => self.pockets[pocket].tag,
             FaceRole::Wall { segment, .. } => self.boundary_tag(segment),
@@ -46,7 +46,7 @@ impl Extrusion {
     /// solid; an out-of-range ID returns `None`.
     #[must_use]
     pub fn edge_tag(&self, edge: EdgeId) -> Option<SegTag> {
-        match self.edges.get(edge.index())?.role {
+        match self.edges().get(edge.index())?.role {
             EdgeRole::Boundary { segment, .. } => self.boundary_tag(segment),
             EdgeRole::Seam { segment } => {
                 if let Boundary::Pocket(pocket) = segment.boundary
