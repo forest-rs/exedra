@@ -235,7 +235,9 @@ straight segment unless the cursor ends exactly at its start. A step that has
 no circle is reported by `close` with its segment index. `Profile2::with_cutouts`
 adds simple filled profiles as holes by reversing them, so
 `circle(r)?.translated(offset)?` places a round hole; tags travel with the
-reversed segments.
+reversed segments. `Loop2::tagged` and `Profile2::tagged` tag every segment
+at once, replacing the builders' index tags, so a feature can be tagged once
+and then placed with `translated` as often as needed.
 
 `Profile2::to_line_arc` lowers a profile into the shared
 `exedra_profile::Profile` that the analytic head extrudes exactly. Endpoints,
