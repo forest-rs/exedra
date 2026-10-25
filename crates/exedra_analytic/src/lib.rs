@@ -24,6 +24,7 @@ pub mod body;
 pub mod extrusion;
 pub mod geometry;
 mod planar;
+pub mod realize;
 pub use planar::{
     AnalyticFaceId, AnalyticLoopId, AnalyticShell, AnalyticShellBuilder, AnalyticVertexId,
     BuildError, EditError, PlanarFace, RectFrameParams, RectOpeningParams, RegionId,

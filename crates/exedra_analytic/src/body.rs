@@ -626,12 +626,12 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use alloc::vec;
     const POLICY: ValidationPolicy = ValidationPolicy { max_gap: 1e-12 };
 
-    fn cylinder_parts() -> BodyParts {
+    pub(crate) fn cylinder_parts() -> BodyParts {
         let circle = |z| Curve::circle(Placement3::translate(0.0, 0.0, z), 2.0).unwrap();
         let full = ParameterRange::new(0.0, core::f64::consts::TAU).unwrap();
         let coedge = |edge, reversed| Coedge {

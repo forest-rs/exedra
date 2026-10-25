@@ -55,19 +55,7 @@ impl Default for TessellationPolicy {
     }
 }
 
-/// Where a mesh vertex lies on the native solid.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum VertexSource {
-    /// A native vertex.
-    Vertex(VertexId),
-    /// An interior sample of a native edge, at a fraction of its sweep.
-    Edge {
-        /// The sampled edge.
-        edge: EdgeId,
-        /// Fraction from the edge's start to its end, in `(0, 1)`.
-        parameter: f64,
-    },
-}
+pub use crate::realize::VertexSource;
 
 /// Evidence about one realization.
 #[derive(Clone, Debug, PartialEq)]
