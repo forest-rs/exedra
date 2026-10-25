@@ -2031,7 +2031,9 @@ impl Mesh {
             .iter()
             .map(|(from, to, hid)| (u32::min(*from, *to), u32::max(*from, *to), *from, *to, *hid))
             .collect();
-        grouped.sort_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
+        // The live half-edge ID makes this a total, unique key. Stability
+        // cannot affect the result, so sorting needs no auxiliary allocation.
+        grouped.sort_unstable_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
 
         let mut boundary_interior: Vec<HalfEdgeId> = Vec::new();
         let mut cursor = 0_usize;
@@ -2067,7 +2069,7 @@ impl Mesh {
             cursor = end;
         }
 
-        boundary_interior.sort_by_key(|id| id.index());
+        boundary_interior.sort_unstable_by_key(|id| id.index());
         let mut boundary_ids = Vec::with_capacity(boundary_interior.len());
         for interior in &boundary_interior {
             let (from, to) = get_endpoint(&endpoints, *interior);
@@ -2542,7 +2544,9 @@ impl MeshBuilder {
             .iter()
             .map(|(from, to, hid)| (u32::min(*from, *to), u32::max(*from, *to), *from, *to, *hid))
             .collect();
-        grouped.sort_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
+        // The live half-edge ID makes this a total, unique key. Stability
+        // cannot affect the result, so sorting needs no auxiliary allocation.
+        grouped.sort_unstable_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
 
         let mut boundary_interior = Vec::<HalfEdgeId>::new();
         let mut cursor = 0_usize;
@@ -2577,7 +2581,7 @@ impl MeshBuilder {
             cursor = end;
         }
 
-        boundary_interior.sort_by_key(|id| id.index());
+        boundary_interior.sort_unstable_by_key(|id| id.index());
         let mut boundary_ids = Vec::with_capacity(boundary_interior.len());
         for interior in &boundary_interior {
             let (from, to) = get_endpoint(&endpoints, *interior);

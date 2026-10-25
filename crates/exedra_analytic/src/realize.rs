@@ -553,6 +553,18 @@ impl<F, E> Body<F, E> {
                 });
             }
         }
+        // The sorted native boundary table is sparse in emitted vertex pairs.
+        // Index its rows once so each mesh edge searches only the boundary
+        // neighbors of its lower endpoint, rather than the entire table.
+        let mut sharp_offsets = Vec::with_capacity(vertex_count + 1);
+        let mut next = 0;
+        for vertex in 0..vertex_count {
+            sharp_offsets.push(next);
+            while next < sharp.len() && sharp[next].0 as usize == vertex {
+                next += 1;
+            }
+        }
+        sharp_offsets.push(next);
         // Counts and trims already determine output cardinality. Reserve the
         // three parallel arrays once instead of repeatedly growing each while
         // emitting strips. A planar polygon contributes N + 2H - 2 triangles.
@@ -759,10 +771,11 @@ impl<F, E> Body<F, E> {
                 }
                 let a = mesh.from_vertex(edge)?.index();
                 let b = mesh.to_vertex(edge)?.index();
-                sharp
-                    .binary_search_by_key(&ordered(a, b), |&(a, b, _, _)| (a, b))
+                let (a, b) = ordered(a, b);
+                let row = &sharp[sharp_offsets[a as usize]..sharp_offsets[a as usize + 1]];
+                row.binary_search_by_key(&b, |&(_, b, _, _)| b)
                     .ok()
-                    .map(|i| (edge, sharp[i].2))
+                    .map(|i| (edge, row[i].2))
             })
             .collect();
         let mut edit = mesh.edit();
