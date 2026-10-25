@@ -30,6 +30,9 @@ use alloc::vec::Vec;
 
 use kurbo::{BezPath, PathEl, Point, Shape};
 
+mod cursor;
+pub use cursor::LoopCursor;
+
 /// Opaque per-segment provenance tag.
 ///
 /// Frontends assign tags (typically indices into a recipe-level source
@@ -357,6 +360,26 @@ impl Loop2 {
         Self::new(segs)
     }
 
+    /// This loop moved by `offset`, with segment kinds and tags unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Loop2::new`] error for a coordinate that is no longer
+    /// finite or consecutive endpoints that round together.
+    pub fn translated(&self, offset: impl Into<kurbo::Vec2>) -> Result<Self, ProfileError> {
+        let offset = offset.into();
+        let segs = self
+            .segs
+            .iter()
+            .map(|seg| Seg2 {
+                to: seg.to + offset,
+                kind: translate_kind(&seg.kind, offset),
+                tag: seg.tag,
+            })
+            .collect();
+        Self::new(segs)
+    }
+
     /// Signed area of the loop (positive = counter-clockwise), computed via
     /// the [`BezPath`] rendering — approximate for arcs, exact for lines
     /// and cubics; the sign is reliable for valid loops.
@@ -375,6 +398,21 @@ fn append_kind(path: &mut BezPath, from: Point, to: Point, kind: &SegKind) {
             policy: _,
             realized,
         } => append_kind(path, from, to, realized),
+    }
+}
+
+fn translate_kind(kind: &SegKind, offset: kurbo::Vec2) -> SegKind {
+    match kind {
+        SegKind::Line => SegKind::Line,
+        SegKind::Arc { bulge } => SegKind::Arc { bulge: *bulge },
+        SegKind::Cubic { c1, c2 } => SegKind::Cubic {
+            c1: *c1 + offset,
+            c2: *c2 + offset,
+        },
+        SegKind::PolicyTo { policy, realized } => SegKind::PolicyTo {
+            policy: *policy,
+            realized: alloc::boxed::Box::new(translate_kind(realized, offset)),
+        },
     }
 }
 
@@ -515,6 +553,58 @@ impl Profile2 {
     /// Same requirements as [`Profile2::new`].
     pub fn simple(outer: Loop2) -> Result<Self, ProfileError> {
         Self::new(outer, Vec::new())
+    }
+
+    /// This profile with each simple filled profile in `cutouts` added as a
+    /// hole, after the existing holes and in order.
+    ///
+    /// Each cutout must be a valid simple profile: its counter-clockwise outer
+    /// loop is reversed, so tags and segment geometry carry over and only the
+    /// orientation changes. The result is validated by [`Profile2::new`];
+    /// hole errors index the combined list.
+    ///
+    /// ```
+    /// use exedra_constructive::builders::{circle, rect_centered};
+    ///
+    /// let hole = circle(5.0)?.translated((20.0, 0.0))?;
+    /// let plate = rect_centered(80.0, 40.0)?.with_cutouts([hole])?;
+    /// assert_eq!(plate.holes().len(), 1);
+    /// assert!(plate.holes()[0].signed_area() < 0.0);
+    /// # Ok::<(), exedra_constructive::profile::ProfileError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProfileError::CutoutHasHoles`] for a cutout with holes, then
+    /// any [`Profile2::new`] error.
+    pub fn with_cutouts(
+        self,
+        cutouts: impl IntoIterator<Item = Self>,
+    ) -> Result<Self, ProfileError> {
+        let Self { outer, mut holes } = self;
+        for (cutout, profile) in cutouts.into_iter().enumerate() {
+            if !profile.holes.is_empty() {
+                return Err(ProfileError::CutoutHasHoles { cutout });
+            }
+            holes.push(profile.outer.reversed());
+        }
+        Self::new(outer, holes)
+    }
+
+    /// This profile moved by `offset`, with every loop's tags unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Loop2::translated`] or [`Profile2::new`] error when
+    /// rounding invalidates the moved loops.
+    pub fn translated(&self, offset: impl Into<kurbo::Vec2>) -> Result<Self, ProfileError> {
+        let offset = offset.into();
+        let holes = self
+            .holes
+            .iter()
+            .map(|hole| hole.translated(offset))
+            .collect::<Result<_, _>>()?;
+        Self::new(self.outer.translated(offset)?, holes)
     }
 
     /// The outer loop.
@@ -773,6 +863,20 @@ pub enum ProfileError {
         /// Index of the offending hole.
         hole: usize,
     },
+    /// A [`LoopCursor`] arc has no circle: its points coincide or are
+    /// collinear, its current point is its center, or its sweep is zero,
+    /// non-finite or a full turn.
+    DegenerateArc {
+        /// Index the arc segment would have had.
+        seg: usize,
+    },
+    /// [`LoopCursor::tagged`] was called before any segment was drawn.
+    NoSegmentToTag,
+    /// A cutout passed to [`Profile2::with_cutouts`] has holes of its own.
+    CutoutHasHoles {
+        /// Index of the offending cutout.
+        cutout: usize,
+    },
 }
 
 impl core::fmt::Display for ProfileError {
@@ -865,6 +969,9 @@ impl core::fmt::Display for ProfileError {
                     "hole {hole} touches or escapes the outer loop after the offset"
                 )
             }
+            Self::DegenerateArc { seg } => write!(f, "segment {seg}: arc has no circle"),
+            Self::NoSegmentToTag => write!(f, "no segment to tag before the first one"),
+            Self::CutoutHasHoles { cutout } => write!(f, "cutout {cutout} has holes"),
         }
     }
 }
@@ -976,6 +1083,69 @@ mod tests {
             Seg2::line((0.0, 0.0)),
         ])
         .expect("valid square")
+    }
+
+    #[test]
+    fn cutouts_reverse_filled_profiles_and_keep_their_tags() {
+        let outer = crate::builders::rect_from_corner(10.0, 10.0).unwrap();
+        let cutout = Profile2::simple(unit_square().translated((2.0, 2.0)).unwrap()).unwrap();
+        let tagged = crate::builders::circle(1.0)
+            .unwrap()
+            .translated((7.0, 7.0))
+            .unwrap();
+        let plate = outer
+            .clone()
+            .with_cutouts([cutout.clone(), tagged.clone()])
+            .unwrap();
+        assert_eq!(plate.outer(), outer.outer());
+        assert_eq!(
+            plate.holes(),
+            [cutout.outer().reversed(), tagged.outer().reversed()]
+        );
+        let tags: Vec<_> = plate.holes()[1].segs().iter().map(|seg| seg.tag).collect();
+        assert_eq!(tags, [Some(SegTag(1)), Some(SegTag(0))]);
+
+        // Profiles are counter-clockwise by construction, so only the
+        // orientation of a filled cutout is ever reversed.
+        let square = Profile2::simple(unit_square().translated((5.0, 5.0)).unwrap()).unwrap();
+        let ring = crate::builders::ring(2.0, 1.0)
+            .unwrap()
+            .translated((5.0, 5.0))
+            .unwrap();
+        assert_eq!(
+            outer.clone().with_cutouts([square, ring]),
+            Err(ProfileError::CutoutHasHoles { cutout: 1 })
+        );
+        let overlapping = [cutout.clone(), cutout];
+        assert_eq!(
+            outer.with_cutouts(overlapping),
+            Err(ProfileError::OverlappingHoles {
+                first: 0,
+                second: 1
+            })
+        );
+    }
+
+    #[test]
+    fn translation_moves_every_control_point_and_keeps_kinds() {
+        let policy = crate::ir::PolicyId(3);
+        let curved = Loop2::new(vec![
+            Seg2::cubic((1.0, 0.0), (0.25, -0.5), (0.75, -0.5)).tagged(SegTag(4)),
+            Seg2::policy((0.0, 0.0), policy, SegKind::Arc { bulge: 0.5 }),
+        ])
+        .unwrap();
+        let moved = curved.translated((10.0, -1.0)).unwrap();
+        assert_eq!(
+            moved.segs(),
+            [
+                Seg2::cubic((11.0, -1.0), (10.25, -1.5), (10.75, -1.5)).tagged(SegTag(4)),
+                Seg2::policy((10.0, -1.0), policy, SegKind::Arc { bulge: 0.5 }),
+            ]
+        );
+        assert_eq!(
+            unit_square().translated((f64::MAX, 0.0)),
+            Err(ProfileError::ZeroLengthChord { seg: 0 })
+        );
     }
 
     #[test]
