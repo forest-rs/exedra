@@ -162,3 +162,22 @@ These timings are comparisons of work paths, not a speedup claim.
 For external allocation tracing, set `EXEDRA_ANALYTIC_PROFILE=body` or `extrusion`
 on the built executable. It warms once, waits for Enter, runs exactly three
 realizations, then waits again so before/after histories can be collected.
+
+### Native and mesh revolution
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_revolve -- 15
+```
+
+Compares full and partial turns of the sample's stepped, tapered fitting at
+24, 64 and 128 angular intervals. Reports native construction, plain realization
+and construction-aware UV realization alongside existing mesh revolution.
+Both paths must be valid, closed and have equal final triangle counts; the
+native report must meet its tolerance. Inputs are prepared outside realization
+timings, output destruction is included, two iterations warm each path, and
+three-call batches rotate order before taking medians.
+
+Set `EXEDRA_REVOLVE_PROFILE` to `native`, `native-uv`, `mesh` or `mesh-uv` on the
+built executable for external allocation tracing. After one warm call it pauses
+before and after exactly three realizations. The flush allocations are separate
+from realization stacks; exclude them when comparing allocation histories.

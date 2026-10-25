@@ -98,7 +98,7 @@ pub struct RealizationReport {
     pub max_curve_deviation: f64,
     /// Largest emitted vertex displacement, including placement and narrowing.
     pub max_vertex_displacement: f64,
-    /// Largest native paired-sample residual from the ideal rotational ruling.
+    /// Largest emitted paired-sample residual from the ideal rotational ruling.
     /// Cylinder rulings translate; conical rulings also scale the reference radius.
     /// Includes parameter-grid mismatch and authoritative endpoint offsets.
     pub max_ruling_displacement: f64,
@@ -444,6 +444,11 @@ impl<F, E> Body<F, E> {
             offsets: Vec::with_capacity(self.edges().len() + 1),
         };
         let mut curve_deviation = 0.0_f64;
+        // Consecutive circles commonly share the same angular schedule. Keep
+        // one reusable phase grid, bounded by the checked boundary-sample
+        // budget, rather than evaluating sin/cos again for every profile ring.
+        let mut phase_key = None;
+        let mut phases = Vec::new();
         for (i, (edge, &n)) in self.edges().iter().zip(&counts).enumerate() {
             chains.offsets.push(chains.vertices.len());
             if n == 0 {
@@ -454,6 +459,13 @@ impl<F, E> Body<F, E> {
                 .vertices
                 .push(vertex_map[edge.start.index()].expect("active vertex"));
             let [min, max] = edge.range.bounds();
+            let key = (min.to_bits(), max.to_bits(), n);
+            let reuse_phases = phase_key == Some(key);
+            if matches!(edge.curve, Curve::Circle(_)) && !reuse_phases {
+                phases.clear();
+                phases.reserve(n as usize - 1);
+                phase_key = Some(key);
+            }
             let mut previous_parameter = min;
             let mut max_parameter_step = 0.0_f64;
             for k in 1..n {
@@ -461,12 +473,26 @@ impl<F, E> Body<F, E> {
                 let parameter = edge.range.at(t).expect("bounded sample fraction");
                 max_parameter_step = max_parameter_step.max((parameter - previous_parameter).abs());
                 previous_parameter = parameter;
-                let exact = placement.transform_point(
-                    edge.curve
-                        .evaluate(parameter)
-                        .ok_or(RealizationError::CollapsedEdge { edge: id })?
-                        .point,
-                );
+                let point = match &edge.curve {
+                    Curve::Circle(circle) => {
+                        let [sin, cos] = if reuse_phases {
+                            phases[k as usize - 1]
+                        } else {
+                            let phase = [libm::sin(parameter), libm::cos(parameter)];
+                            phases.push(phase);
+                            phase
+                        };
+                        let r = circle.radius();
+                        circle.frame().transform_point([r * cos, r * sin, 0.0])
+                    }
+                    Curve::Line(_) => {
+                        edge.curve
+                            .evaluate(parameter)
+                            .ok_or(RealizationError::CollapsedEdge { edge: id })?
+                            .point
+                    }
+                };
+                let exact = placement.transform_point(point);
                 let p = narrow(exact);
                 if !p.iter().all(|v| v.is_finite()) {
                     return Err(RealizationError::CollapsedEdge { edge: id });
@@ -527,9 +553,42 @@ impl<F, E> Body<F, E> {
                 });
             }
         }
-        let mut triangles = Vec::new();
-        let mut regions = Vec::new();
-        let mut native_faces = Vec::new();
+        // Counts and trims already determine output cardinality. Reserve the
+        // three parallel arrays once instead of repeatedly growing each while
+        // emitting strips. A planar polygon contributes N + 2H - 2 triangles.
+        let triangle_count = self
+            .faces()
+            .iter()
+            .enumerate()
+            .map(|(i, face)| {
+                patches[i].map_or_else(
+                    || {
+                        face.loops
+                            .iter()
+                            .flat_map(|id| {
+                                &self.boundary_loop(*id).expect("validated loop").coedges
+                            })
+                            .map(|coedge| counts[coedge.edge.index()] as usize)
+                            .fold(0_usize, usize::saturating_add)
+                            .saturating_add(face.loops.len().saturating_sub(1).saturating_mul(2))
+                            .saturating_sub(2)
+                    },
+                    |patch| (counts[patch.a.edge.index()] as usize).saturating_mul(2),
+                )
+            })
+            .try_fold(0_usize, |total, count| {
+                total
+                    .checked_add(count)
+                    .filter(|&n| n <= u32::MAX as usize)
+                    .ok_or(RealizationError::Budget {
+                        storage: "triangles",
+                        required: total.saturating_add(count),
+                        maximum: u32::MAX,
+                    })
+            })?;
+        let mut triangles = Vec::with_capacity(triangle_count);
+        let mut regions = Vec::with_capacity(triangle_count);
+        let mut native_faces = Vec::with_capacity(triangle_count);
         let mut ruling_displacement = 0.0_f64;
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
@@ -581,23 +640,26 @@ impl<F, E> Body<F, E> {
                 // Replace each upper sample by its paired lower sample plus
                 // the ideal axial/radial map. Barycentric interpolation moves
                 // every triangle point by at most the largest such residual.
-                // Evaluate the native samples, including authoritative endpoints,
-                // in precisely the orientation used to emit these strips.
-                let n = counts[patch.a.edge.index()];
-                for j in 0..=n {
-                    let lower_index = if patch.a.reversed { n - j } else { j };
-                    let upper_index = if patch.b.reversed { j } else { n - j };
-                    let lower = self
-                        .edge_point(patch.a.edge, f64::from(lower_index) / f64::from(n))
-                        .ok_or(RealizationError::DegenerateFace { face: id })?;
-                    let upper = self
-                        .edge_point(patch.b.edge, f64::from(upper_index) / f64::from(n))
-                        .ok_or(RealizationError::DegenerateFace { face: id })?;
-                    let radial_change = exedra_math::sub(lower, patch.center)
-                        .map(|v| v * (patch.radius_scale - 1.0));
-                    let expected_delta = exedra_math::add(patch.translation, radial_change);
-                    ruling_displacement = ruling_displacement
-                        .max(distance(exedra_math::sub(upper, lower), expected_delta));
+                // Use the emitted chains themselves, including authoritative
+                // endpoints. The reference chord's sagitta and narrowing error
+                // are already bounded; the upper map is contractive because
+                // radius_scale <= 1. This residual also includes upper narrowing.
+                let center = placement.transform_point(patch.center);
+                let translation = crate::geometry::vector(placement, patch.translation);
+                if !center.iter().chain(&translation).all(|v| v.is_finite()) {
+                    return Err(RealizationError::DegenerateFace { face: id });
+                }
+                for j in 0..a.len() {
+                    let lower = emitted[a_at(j) as usize].map(f64::from);
+                    let upper = emitted[b_at(j) as usize].map(f64::from);
+                    let radial_change =
+                        exedra_math::sub(lower, center).map(|v| v * (patch.radius_scale - 1.0));
+                    let expected_delta = exedra_math::add(translation, radial_change);
+                    let residual = distance(exedra_math::sub(upper, lower), expected_delta);
+                    if !residual.is_finite() {
+                        return Err(RealizationError::DegenerateFace { face: id });
+                    }
+                    ruling_displacement = ruling_displacement.max(residual);
                 }
                 // Check orientation once, at the first strip's midpoint. The
                 // midpoint of a full periodic edge faces the opposite direction.
@@ -1119,6 +1181,50 @@ mod tests {
             result,
             Err(RealizationError::UnsupportedSurfaceTrim { face: FaceId(0) })
         ));
+    }
+
+    #[test]
+    fn reused_and_changed_phase_grids_match_independent_native_evaluation() {
+        use crate::geometry::ParameterRange;
+        for phase in [0.0, 0.125] {
+            let mut parts = cylinder_parts();
+            parts.edges[1].curve = Curve::circle(
+                Placement3::rotate_z_then_translate(-phase, 0.0, 0.0, 3.0),
+                2.0,
+            )
+            .unwrap();
+            parts.edges[1].range =
+                ParameterRange::new(phase, phase + core::f64::consts::TAU).unwrap();
+            let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-12 }).unwrap();
+            let placement = Placement3::rotate_y_then_translate(0.7, 3.0, -2.0, 1.0);
+            let realized = body
+                .realize(
+                    placement,
+                    &RealizationPolicy {
+                        min_arc_segments: 64,
+                        max_edge_segments: 64,
+                        ..RealizationPolicy::default()
+                    },
+                )
+                .unwrap();
+            for &(vertex, source) in &realized.mesh_vertices {
+                let native = match source {
+                    VertexSource::Vertex(id) => body.vertices()[id.index()],
+                    VertexSource::Edge { edge, parameter } => {
+                        let curve = &body.edges()[edge.index()];
+                        curve
+                            .curve
+                            .evaluate(curve.range.at(parameter).unwrap())
+                            .unwrap()
+                            .point
+                    }
+                };
+                assert_eq!(
+                    realized.mesh.vertex_position(vertex).copied(),
+                    Some(narrow(placement.transform_point(native))),
+                );
+            }
+        }
     }
 
     #[test]
