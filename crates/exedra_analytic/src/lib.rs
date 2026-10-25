@@ -1,19 +1,22 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Planar analytic topology spike for Exedra.
+//! Analytic geometry head for Exedra.
 //!
-//! This crate is the first "second head" in the workspace's multi-domain
-//! geometry architecture. It intentionally starts narrow:
-//! - planar faces,
-//! - line-segment coedges,
-//! - shell/loop/coedge topology,
-//! - explicit planar opening loops,
-//! - face-level mutation for regions and XY rectangular openings,
-//! - deterministic tessellation into [`exedra_mesh::Mesh`].
+//! The crate retains exact boundary geometry until an explicit conversion to
+//! [`exedra_mesh::Mesh`]. It has two parts:
 //!
-//! It is not a general CAD kernel. Curved edges, booleans, and reverse
-//! conversion are all deferred.
+//! - [`extrusion`]: closed solids extruded from `exedra_profile` line and arc
+//!   profiles, with planar and cylindrical faces, shared oriented edges,
+//!   source roles, and a realization that samples each edge once, checks the
+//!   emitted arrangement in `f32`, and reports correspondence and measured
+//!   deviation.
+//! - The planar shell: planar faces with line-segment coedges, explicit
+//!   opening loops, face-level region and opening edits, and deterministic
+//!   tessellation.
+//!
+//! It is not a general CAD kernel: surface intersections, booleans, fillets,
+//! healing and reverse conversion from meshes are out of scope.
 //!
 //! # Example
 //!

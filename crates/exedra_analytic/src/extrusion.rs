@@ -14,11 +14,36 @@
 //! each edge is used by exactly two faces through oriented [`Coedge`]s, once
 //! in each direction. [`Extrusion::is_closed`] verifies that incidence: an
 //! extrusion is a closed solid with outward-facing boundary loops.
+//!
+//! [`Extrusion::tessellate`] realizes the solid as a mesh from shared edge
+//! samples and reports how closely the emitted coordinates follow it.
+//!
+//! ```
+//! use exedra_analytic::extrusion::{Extrusion, TessellationPolicy};
+//! use exedra_math::Placement3;
+//! use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+//!
+//! let disk = Loop::new(vec![Segment::arc([-1.0, 0.0], 1.0), Segment::arc([1.0, 0.0], 1.0)])?;
+//! let profile = Profile::new(disk, vec![], &ProfilePolicy::new(1e-9))?;
+//! let solid = Extrusion::new(profile, Placement3::IDENTITY, 2.0)?;
+//! assert_eq!(solid.faces().len(), 4, "two caps and two cylindrical walls");
+//! let realized = solid.tessellate(&TessellationPolicy::default())?;
+//! assert!(realized.mesh.boundary_loops()?.is_empty());
+//! assert!(realized.report.within_tolerance());
+//! # Ok::<(), Box<dyn core::error::Error>>(())
+//! ```
 
 use alloc::vec::Vec;
 
 use exedra_math::{FrameError, Placement3};
 use exedra_profile::{Arc, Curve, LoopRef, Profile, SegmentRef, SegmentTag};
+
+mod tessellate;
+
+pub use tessellate::{
+    TessellateExtrusionError, TessellatedExtrusion, TessellationPolicy, TessellationReport,
+    VertexSource,
+};
 
 /// Absolute tolerance on frame axis lengths and dot products.
 pub const FRAME_TOLERANCE: f64 = 1e-12;
