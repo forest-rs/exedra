@@ -193,8 +193,12 @@ impl Default for ExtrudeFacesParams {
 pub struct InsetFacesParams {
     /// Canonical face selection.
     pub faces: FaceSet,
-    /// Inset interpolation factor toward face centroid (`0 < factor < 1`).
+    /// Fraction of the way from each boundary vertex to its face centroid
+    /// (`0 < factor < 1`).
     ///
+    /// This is not a distance: on an elongated face the frame is wider across
+    /// its short ends than along its long sides. A constant-distance inset is
+    /// a separate operation.
     /// `0.0` and `1.0` are rejected to avoid degenerate frame topology.
     pub factor: f32,
 }

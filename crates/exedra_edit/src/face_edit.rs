@@ -175,7 +175,8 @@ impl EditOperator for ExtrudeFaces {
     }
 }
 
-/// `edit.face.inset` operator.
+/// `edit.face.inset` operator: moves each selected face's boundary toward its
+/// centroid by [`InsetFacesParams::factor`], a fraction rather than a distance.
 ///
 /// v0.1 propagation behavior:
 /// - `face.region` is copied from source face to generated frame/inner faces,
