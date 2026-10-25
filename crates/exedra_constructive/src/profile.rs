@@ -256,6 +256,16 @@ impl Loop2 {
         Some(Self { segs })
     }
 
+    /// This loop with every segment tagged `tag`, replacing earlier tags such
+    /// as the index tags builders assign. Geometry is unchanged.
+    #[must_use]
+    pub fn tagged(mut self, tag: SegTag) -> Self {
+        for seg in &mut self.segs {
+            seg.tag = Some(tag);
+        }
+        self
+    }
+
     /// This loop with reversed orientation.
     ///
     /// Segment order reverses, arc bulges negate, cubic control points
@@ -589,6 +599,35 @@ impl Profile2 {
             holes.push(profile.outer.reversed());
         }
         Self::new(outer, holes)
+    }
+
+    /// This profile with every segment of every loop tagged `tag`, replacing
+    /// earlier tags such as the index tags builders assign. Geometry is
+    /// unchanged, so the profile stays valid.
+    ///
+    /// Tag a whole feature once, then place copies of it:
+    ///
+    /// ```
+    /// use exedra_constructive::builders::{circle, rect_centered};
+    /// use exedra_constructive::profile::SegTag;
+    ///
+    /// const BORE: SegTag = SegTag(7);
+    /// let bore = circle(2.0)?.tagged(BORE);
+    /// let plate = rect_centered(40.0, 20.0)?
+    ///     .with_cutouts([bore.translated((-10.0, 0.0))?, bore.translated((10.0, 0.0))?])?;
+    /// assert!(plate.holes().iter().flat_map(|hole| hole.segs()).all(|seg| seg.tag == Some(BORE)));
+    /// # Ok::<(), exedra_constructive::profile::ProfileError>(())
+    /// ```
+    #[must_use]
+    pub fn tagged(self, tag: SegTag) -> Self {
+        Self {
+            outer: self.outer.tagged(tag),
+            holes: self
+                .holes
+                .into_iter()
+                .map(|hole| hole.tagged(tag))
+                .collect(),
+        }
     }
 
     /// This profile moved by `offset`, with every loop's tags unchanged.
@@ -1270,6 +1309,24 @@ mod tests {
             policy_curve.to_line_arc(&policy),
             Err(LineArcError::Unsupported { hole: None, seg: 1 })
         );
+    }
+
+    #[test]
+    fn tagging_a_profile_replaces_every_segment_tag_and_keeps_geometry() {
+        let ring = crate::builders::ring(2.0, 1.0).unwrap();
+        let tagged = ring.clone().tagged(SegTag(9));
+        let loops = |p: &Profile2| {
+            core::iter::once(p.outer().clone())
+                .chain(p.holes().iter().cloned())
+                .collect::<Vec<_>>()
+        };
+        for (before, after) in loops(&ring).iter().zip(loops(&tagged)) {
+            assert_eq!(before.segs().len(), after.segs().len());
+            for (a, b) in before.segs().iter().zip(after.segs()) {
+                assert_eq!((a.to, &a.kind), (b.to, &b.kind));
+                assert_eq!(b.tag, Some(SegTag(9)));
+            }
+        }
     }
 
     #[test]
