@@ -20,7 +20,7 @@ use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder};
 use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, Curve, circular_edge_count};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
 
-use super::{Boundary, BoundarySegment, EdgeId, End, Extrusion, FaceId, Level, VertexId};
+use super::{Boundary, BoundarySegment, EdgeId, End, Extrusion, Face, FaceId, Level, VertexId};
 
 /// Accuracy and work limits for [`Extrusion::tessellate`].
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -100,7 +100,9 @@ impl TessellationReport {
 #[derive(Clone, Debug)]
 pub struct TessellatedExtrusion {
     /// The closed triangle-and-quad mesh in placed coordinates. Face regions
-    /// are native face indices; rims and nonsmooth seams are sharp.
+    /// are native face indices, or the caller's mapping from
+    /// [`Extrusion::tessellate_with_regions`]; rims and nonsmooth seams are
+    /// sharp.
     pub mesh: Mesh,
     /// The native face of each mesh face, in mesh face order.
     pub mesh_faces: Vec<(exedra_mesh::FaceId, FaceId)>,
@@ -206,7 +208,8 @@ impl Ring {
 }
 
 impl Extrusion {
-    /// Realizes the solid as a mesh under `policy`.
+    /// Realizes the solid as a mesh under `policy`, with each mesh face's
+    /// `FACE_REGION` set to its native face index.
     ///
     /// # Errors
     ///
@@ -216,6 +219,55 @@ impl Extrusion {
     pub fn tessellate(
         &self,
         policy: &TessellationPolicy,
+    ) -> Result<TessellatedExtrusion, TessellateExtrusionError> {
+        self.tessellate_with_regions(policy, |face, _| face.0)
+    }
+
+    /// Realizes the solid like [`Self::tessellate`], with each mesh face's
+    /// `FACE_REGION` set by `region` from its native face.
+    ///
+    /// Several native faces can share a region, so a material bound to one
+    /// region covers a whole feature: for example every wall whose segment
+    /// carries a given tag. [`TessellatedExtrusion::mesh_faces`] still maps
+    /// each mesh face to its own native face.
+    ///
+    /// ```
+    /// use exedra_analytic::extrusion::{Extrusion, FaceRole, TessellationPolicy};
+    /// use exedra_math::Placement3;
+    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment, SegmentTag};
+    ///
+    /// const ROUND: SegmentTag = SegmentTag(1);
+    /// let outline = Loop::new(vec![
+    ///     Segment::line([2.0, 0.0]),
+    ///     Segment::arc([2.0, 2.0], 1.0).tagged(ROUND),
+    ///     Segment::line([0.0, 2.0]),
+    ///     Segment::line([0.0, 0.0]),
+    /// ])?;
+    /// let profile = Profile::new(outline, vec![], &ProfilePolicy::new(1e-9))?;
+    /// let solid = Extrusion::new(profile, Placement3::IDENTITY, 1.0)?;
+    /// let realized = solid.tessellate_with_regions(&TessellationPolicy::default(), |_, face| {
+    ///     match face.role {
+    ///         FaceRole::Wall { tag: Some(ROUND), .. } => 1,
+    ///         _ => 0,
+    ///     }
+    /// })?;
+    /// let regions = realized.mesh.attrs().dense(exedra_mesh::attr::FACE_REGION).unwrap();
+    /// let rounded = realized
+    ///     .mesh_faces
+    ///     .iter()
+    ///     .filter(|(mesh_face, _)| regions.get(mesh_face.as_id()) == Some(&1))
+    ///     .count();
+    /// assert!(rounded > 1, "the round wall is several mesh faces in one region");
+    /// # Ok::<(), Box<dyn core::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::tessellate`].
+    pub fn tessellate_with_regions(
+        &self,
+        policy: &TessellationPolicy,
+        region: impl Fn(FaceId, &Face) -> u32,
     ) -> Result<TessellatedExtrusion, TessellateExtrusionError> {
         if !(policy.chord_tolerance.is_finite() && policy.chord_tolerance > 0.0)
             || !(policy.smooth_seam_angle.is_finite() && policy.smooth_seam_angle >= 0.0)
@@ -267,7 +319,7 @@ impl Extrusion {
                     maximum: policy.max_vertices,
                 });
             }
-            match self.realize(&rings, policy) {
+            match self.realize(&rings, policy, &region) {
                 Ok(mut realized) => {
                     realized.report.segment_edges = counts.concat();
                     realized.report.refinements = refinements;
@@ -339,8 +391,10 @@ impl Extrusion {
         &self,
         rings: &[Ring],
         policy: &TessellationPolicy,
+        region: &dyn Fn(FaceId, &Face) -> u32,
     ) -> Result<TessellatedExtrusion, Refusal> {
         let bands = self.bands();
+        let region_of = |face: FaceId| region(face, &self.faces[face.index()]);
         // Each band has a vertex block per level: its ring at that height.
         let mut blocks = Vec::with_capacity(bands.len());
         let mut emitted = Vec::new();
@@ -474,7 +528,7 @@ impl Extrusion {
                     .add_face_with_attrs(
                         &corners,
                         &FaceBuildAttrs {
-                            region: Some(face.0),
+                            region: Some(region_of(face)),
                             edge_seams: None,
                             edge_sharpness: None,
                         },
@@ -516,7 +570,7 @@ impl Extrusion {
                                 index(block[1] + i),
                             ],
                             &FaceBuildAttrs {
-                                region: Some(face.0),
+                                region: Some(region_of(face)),
                                 edge_seams: None,
                                 edge_sharpness: Some(&sharpness),
                             },
