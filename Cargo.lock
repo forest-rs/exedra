@@ -187,6 +187,7 @@ dependencies = [
 name = "constructive_wind_tunnel"
 version = "0.0.0"
 dependencies = [
+ "exedra_analytic",
  "exedra_constructive",
  "exedra_mesh",
  "exedra_mesh_ops",

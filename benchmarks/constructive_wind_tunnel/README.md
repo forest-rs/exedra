@@ -143,3 +143,22 @@ validation buffers, output profiles and correspondence still allocate.
 ## License
 
 Apache-2.0 OR MIT
+
+### Retained analytic body
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin analytic_body -- 9
+```
+
+Times native extrusion construction and compares its specialized realization
+with construction-independent `Body::realize` on rounded plates with 0, 8, 32
+and 128 circular holes. Inputs are prepared outside realization timings; output
+allocation and destruction are included. Each case checks closure, topology,
+tolerance and equal triangle counts before alternating the two timed paths.
+The generic path emits triangles throughout; the extrusion path retains wall
+quads. Both share the same planar triangulator, so complex cap costs are shared.
+These timings are comparisons of work paths, not a speedup claim.
+
+For external allocation tracing, set `EXEDRA_ANALYTIC_PROFILE=body` or `extrusion`
+on the built executable. It warms once, waits for Enter, runs exactly three
+realizations, then waits again so before/after histories can be collected.
