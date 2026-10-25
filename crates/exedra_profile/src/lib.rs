@@ -3,10 +3,24 @@
 
 //! Line and circular-arc 2D profiles shared by Exedra geometry heads.
 //!
-//! The crate owns deterministic circular sampling counts: the smallest edge
-//! count meeting a chord tolerance under explicit topology and work limits.
-//! Trig always routes through `libm`, so results are bit-identical on every
-//! platform and build mode.
+//! A [`Profile`] is a counter-clockwise outer [`Loop`] with clockwise holes,
+//! in `f64` model units. Segments are straight or circular arcs given by their
+//! endpoints and a bulge, so loops close exactly; an [`Arc`] derives the
+//! center, radius and sweep. Nothing here refers to recipes, policies or
+//! meshes: heads lower their own profiles into this one through explicit
+//! adapters.
+//!
+//! [`Profile::new`] validates the arrangement against an explicit
+//! [`ProfilePolicy`]: winding, segments that cross, touch, overlap or come
+//! closer than the separation, holes outside the outer loop or inside one
+//! another. It reports the first violation with the segments involved and
+//! never moves, merges or heals geometry.
+//!
+//! The crate also owns deterministic circular sampling counts:
+//! [`circular_edge_count`] returns the smallest edge count meeting a chord
+//! tolerance under explicit topology and work limits. Trig always routes
+//! through `libm`, so results are bit-identical on every platform and build
+//! mode.
 //!
 //! ```
 //! use exedra_profile::{CircularEdgeConstraints, circular_edge_count};
@@ -18,7 +32,15 @@
 //! ```
 
 #![no_std]
+extern crate alloc;
 
+mod arc;
+mod profile;
 mod sampling;
 
+pub use arc::Arc;
+pub use profile::{
+    Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, Segment, SegmentRef,
+    SegmentTag,
+};
 pub use sampling::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
