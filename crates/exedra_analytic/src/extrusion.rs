@@ -5,14 +5,21 @@
 //!
 //! An [`Extrusion`] sweeps a validated [`Profile`] along local +Z for a
 //! positive length, placed by a rigid frame. Its boundary is exact: planar
-//! caps at both ends, and one wall per profile segment, planar for a line and
-//! cylindrical for an arc. Geometry stays in local coordinates; the frame
+//! caps at both ends, pocket floors, and one wall per boundary segment, planar
+//! for a line and cylindrical for an arc. Geometry stays in local coordinates; the frame
 //! places it.
 //!
-//! Topology is shared, not duplicated per face. Every profile segment gives
-//! one edge at each end, every profile vertex gives one seam edge along Z, and
-//! each edge is used by exactly two faces through oriented [`Coedge`]s, once
-//! in each direction. [`Extrusion::is_closed`] verifies that incidence: an
+//! [`Extrusion::with_pocket`] cuts a [`Pocket`] from either end to a depth:
+//! a hole that stops, with its own walls and a planar floor. A round pocket
+//! is a blind bore. Pockets on one end are validated as holes of the profile;
+//! pockets on opposite ends may overlap only where material remains between
+//! them.
+//!
+//! Topology is shared, not duplicated per face. Every [`Boundary`] (profile
+//! loop or pocket outline) is a band of walls between two levels: each
+//! segment gives one edge per level and each vertex one seam along Z. Every
+//! edge is used by exactly two faces through oriented [`Coedge`]s, once in
+//! each direction. [`Extrusion::is_closed`] verifies that incidence: an
 //! extrusion is a closed solid with outward-facing boundary loops.
 //!
 //! [`Extrusion::tessellate`] realizes the solid as a mesh from shared edge
@@ -36,7 +43,7 @@
 use alloc::vec::Vec;
 
 use exedra_math::{FrameError, Placement3};
-use exedra_profile::{Arc, Curve, LoopRef, Profile, SegmentRef, SegmentTag};
+use exedra_profile::{Arc, Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegmentTag};
 
 mod query;
 mod tessellate;
@@ -89,43 +96,87 @@ pub enum End {
     End,
 }
 
-/// A profile vertex: the end of `segment` in its loop.
+/// A height at which boundary edges and vertices lie.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Level {
+    /// The start cap, `z = 0`.
+    Start,
+    /// The end cap, `z = length`.
+    End,
+    /// A pocket's floor, at its depth from its end.
+    Floor,
+}
+
+impl From<End> for Level {
+    fn from(end: End) -> Self {
+        match end {
+            End::Start => Self::Start,
+            End::End => Self::End,
+        }
+    }
+}
+
+/// A closed boundary of the solid's cross-section.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Boundary {
+    /// A loop of the extruded profile, running the full length.
+    Profile(LoopRef),
+    /// A pocket's outline, running from its end to its floor.
+    Pocket(usize),
+}
+
+/// A segment of a [`Boundary`], indexed in its stored order.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BoundarySegment {
+    /// The boundary.
+    pub boundary: Boundary,
+    /// The segment's index in its loop.
+    pub segment: usize,
+}
+
+/// A vertex: the end of a boundary segment at one level.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct VertexRole {
-    /// The profile segment ending at this vertex.
-    pub segment: SegmentRef,
-    /// Which end of the extrusion.
-    pub end: End,
+    /// The boundary segment ending at this vertex.
+    pub segment: BoundarySegment,
+    /// The vertex's level.
+    pub level: Level,
 }
 
 /// What an edge was generated from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EdgeRole {
-    /// A profile segment at one end.
-    Profile {
+    /// A boundary segment at one level.
+    Boundary {
         /// The source segment.
-        segment: SegmentRef,
-        /// Which end.
-        end: End,
+        segment: BoundarySegment,
+        /// The edge's level.
+        level: Level,
     },
-    /// The Z-parallel seam at the end vertex of a profile segment.
+    /// The Z-parallel seam at the end vertex of a boundary segment, spanning
+    /// its boundary's wall.
     Seam {
         /// The segment ending at the seam.
-        segment: SegmentRef,
+        segment: BoundarySegment,
     },
 }
 
 /// What a face was generated from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FaceRole {
-    /// The cap at one end.
+    /// The cap at one end, with any pockets on that end as holes.
     Cap(End),
-    /// The wall swept by a profile segment.
+    /// The wall swept by a boundary segment.
     Wall {
         /// The source segment.
-        segment: SegmentRef,
+        segment: BoundarySegment,
         /// The segment's caller tag.
         tag: Option<SegmentTag>,
+    },
+    /// A pocket's floor.
+    Floor {
+        /// The pocket.
+        pocket: usize,
     },
 }
 
@@ -203,6 +254,97 @@ pub struct Face {
     pub role: FaceRole,
 }
 
+/// A region cut from one end of an extrusion to a depth: a hole that stops.
+///
+/// The outline winds clockwise, like a profile hole, so the solid's material
+/// stays to the left of every boundary. A round outline is a blind bore.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pocket {
+    /// The clockwise outline in the profile plane.
+    pub outline: Loop,
+    /// The end the pocket opens on.
+    pub end: End,
+    /// Distance from that end to the floor; positive, and leaving at least
+    /// the profile policy's separation before the other end.
+    pub depth: f64,
+}
+
+impl Pocket {
+    /// A pocket removing the region inside `region`, a counter-clockwise
+    /// outline like a filled profile's, from `end` to `depth`.
+    ///
+    /// The outline is stored reversed, so tags and geometry carry over and
+    /// only the orientation changes. A clockwise `region` yields an outline
+    /// that [`Extrusion::with_pocket`] refuses as wrongly wound.
+    ///
+    /// ```
+    /// use exedra_analytic::extrusion::{End, Extrusion, Pocket};
+    /// use exedra_math::Placement3;
+    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    ///
+    /// let square = |min: f64, max: f64| {
+    ///     Loop::new(vec![
+    ///         Segment::line([max, min]),
+    ///         Segment::line([max, max]),
+    ///         Segment::line([min, max]),
+    ///         Segment::line([min, min]),
+    ///     ])
+    /// };
+    /// let policy = ProfilePolicy::new(1e-9);
+    /// let block = Extrusion::new(
+    ///     Profile::new(square(0.0, 10.0)?, vec![], &policy)?,
+    ///     Placement3::IDENTITY,
+    ///     4.0,
+    /// )?;
+    /// let recessed = block.with_pocket(Pocket::from_region(&square(2.0, 8.0)?, End::End, 1.0), &policy)?;
+    /// assert_eq!(recessed.volume(), 400.0 - 36.0);
+    /// # Ok::<(), Box<dyn core::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn from_region(region: &Loop, end: End, depth: f64) -> Self {
+        Self {
+            outline: region.reversed(),
+            end,
+            depth,
+        }
+    }
+}
+
+/// Why a pocket cannot be cut.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PocketError {
+    /// The depth is not finite, not positive, or leaves less than the
+    /// separation before the other end.
+    InvalidDepth,
+    /// Against the profile's loops and the other pockets on its end, the
+    /// outline is not a valid hole. Holes past the profile's own index the
+    /// earlier pockets on this end, then the new outline.
+    Arrangement(ProfileError),
+    /// The pocket meets one on the other end: their regions overlap and
+    /// their floors are closer than the separation.
+    BreaksThrough {
+        /// The pocket on the other end.
+        other: usize,
+    },
+}
+
+impl core::fmt::Display for PocketError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidDepth => {
+                write!(f, "pocket depth must be positive and less than the length")
+            }
+            Self::Arrangement(error) => write!(f, "pocket outline: {error}"),
+            Self::BreaksThrough { other } => {
+                write!(f, "pocket meets pocket {other} from the other end")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PocketError {}
+
 /// Why an extrusion cannot be built.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -212,8 +354,16 @@ pub enum ExtrusionError {
     /// The frame is not a finite right-handed orthonormal frame within
     /// [`FRAME_TOLERANCE`].
     SingularFrame(FrameError),
-    /// The profile has more vertices than the identifier space allows.
+    /// The profile and pockets have more vertices than the identifier space
+    /// allows.
     TooLarge,
+    /// A pocket cannot be cut.
+    Pocket {
+        /// The pocket's index, the count of earlier pockets.
+        pocket: usize,
+        /// Why.
+        error: PocketError,
+    },
 }
 
 impl core::fmt::Display for ExtrusionError {
@@ -222,22 +372,56 @@ impl core::fmt::Display for ExtrusionError {
             Self::InvalidLength => write!(f, "extrusion length must be finite and positive"),
             Self::SingularFrame(error) => write!(f, "extrusion frame: {error}"),
             Self::TooLarge => write!(f, "profile is too large to extrude"),
+            Self::Pocket { pocket, error } => write!(f, "pocket {pocket}: {error}"),
         }
     }
 }
 
 impl core::error::Error for ExtrusionError {}
 
-/// A closed solid swept from a profile along local +Z.
+/// Where one boundary's wall band sits among the solid's tables.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Band {
+    pub(crate) boundary: Boundary,
+    /// Lower and upper level, and their heights.
+    pub(crate) levels: [Level; 2],
+    pub(crate) heights: [f64; 2],
+    /// First vertex and first edge of each level's ring.
+    pub(crate) vertices: [usize; 2],
+    pub(crate) edges: [usize; 2],
+    pub(crate) seams: usize,
+    pub(crate) walls: usize,
+}
+
+/// A planar face as rings of bands: caps and pocket floors.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PlanarFace {
+    pub(crate) face: usize,
+    /// `(band, level slot)` per ring, the face's outer boundary first.
+    pub(crate) rings: Vec<(usize, usize)>,
+    /// Whether the face's region lies right of its stored rings (a floor)
+    /// rather than left (a cap).
+    pub(crate) region_right: bool,
+    /// Whether the face looks along +Z.
+    pub(crate) upward: bool,
+}
+
+/// A closed solid swept from a profile along local +Z, with pockets.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Extrusion {
     profile: Profile,
     frame: Placement3,
     length: f64,
+    pockets: Vec<Pocket>,
+    /// `[end pocket, start pocket]` pairs whose regions overlap, leaving a
+    /// web of material between their floors.
+    webs: Vec<[usize; 2]>,
     vertices: Vec<[f64; 3]>,
     vertex_roles: Vec<VertexRole>,
     edges: Vec<Edge>,
     faces: Vec<Face>,
+    bands: Vec<Band>,
+    planes: Vec<PlanarFace>,
 }
 
 impl Extrusion {
@@ -261,7 +445,98 @@ impl Extrusion {
             FRAME_TOLERANCE,
         )
         .map_err(ExtrusionError::SingularFrame)?;
-        let loops: Vec<(LoopRef, &exedra_profile::Loop)> =
+        Self::build(profile, frame, length, Vec::new(), Vec::new())
+    }
+
+    /// This solid with `pocket` cut from its end.
+    ///
+    /// The outline must be a valid hole of the profile, apart from the other
+    /// pockets on the same end under `policy`. Its floor must stay at least
+    /// the policy's separation from the other end, and a pocket on the other
+    /// end may overlap it only where their floors are at least that far
+    /// apart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtrusionError::Pocket`] naming the new pocket and the
+    /// failed check.
+    pub fn with_pocket(
+        self,
+        pocket: Pocket,
+        policy: &ProfilePolicy,
+    ) -> Result<Self, ExtrusionError> {
+        let index = self.pockets.len();
+        let refuse = |error| ExtrusionError::Pocket {
+            pocket: index,
+            error,
+        };
+        let separation = policy.min_separation;
+        // Compare the remaining material directly: adding a small separation
+        // to a depth can round back to that depth and admit a zero web.
+        if !(pocket.depth.is_finite()
+            && pocket.depth > 0.0
+            && self.length - pocket.depth >= separation)
+        {
+            return Err(refuse(PocketError::InvalidDepth));
+        }
+        let holes_with = |others: &mut dyn Iterator<Item = &Loop>| {
+            let mut holes = self.profile.holes().to_vec();
+            holes.extend(others.cloned());
+            holes.push(pocket.outline.clone());
+            Profile::new(self.profile.outer().clone(), holes, policy)
+        };
+        holes_with(
+            &mut self
+                .pockets
+                .iter()
+                .filter(|p| p.end == pocket.end)
+                .map(|p| &p.outline),
+        )
+        .map_err(|error| refuse(PocketError::Arrangement(error)))?;
+        // Opposite pockets whose regions overlap share a web of material
+        // between their floors.
+        let mut webs = self.webs.clone();
+        for (other, existing) in self.pockets.iter().enumerate() {
+            if existing.end == pocket.end
+                || holes_with(&mut core::iter::once(&existing.outline)).is_ok()
+            {
+                continue;
+            }
+            let (end_depth, start_depth) = if pocket.end == End::End {
+                (pocket.depth, existing.depth)
+            } else {
+                (existing.depth, pocket.depth)
+            };
+            // Use the same floor coordinates stored by build().
+            if (self.length - end_depth) - start_depth < separation {
+                return Err(refuse(PocketError::BreaksThrough { other }));
+            }
+            webs.push(if pocket.end == End::End {
+                [index, other]
+            } else {
+                [other, index]
+            });
+        }
+        let Self {
+            profile,
+            frame,
+            length,
+            mut pockets,
+            ..
+        } = self;
+        pockets.push(pocket);
+        Self::build(profile, frame, length, pockets, webs)
+    }
+
+    #[expect(clippy::too_many_lines, reason = "one pass over every band")]
+    fn build(
+        profile: Profile,
+        frame: Placement3,
+        length: f64,
+        pockets: Vec<Pocket>,
+        webs: Vec<[usize; 2]>,
+    ) -> Result<Self, ExtrusionError> {
+        let mut boundaries: Vec<(Boundary, [Level; 2], [f64; 2], &Loop)> =
             core::iter::once((LoopRef::Outer, profile.outer()))
                 .chain(
                     profile
@@ -270,52 +545,62 @@ impl Extrusion {
                         .enumerate()
                         .map(|(hole, loop_)| (LoopRef::Hole(hole), loop_)),
                 )
+                .map(|(loop_ref, loop_)| {
+                    (
+                        Boundary::Profile(loop_ref),
+                        [Level::Start, Level::End],
+                        [0.0, length],
+                        loop_,
+                    )
+                })
                 .collect();
-        let count: usize = loops.iter().map(|(_, l)| l.segments().len()).sum();
+        for (index, pocket) in pockets.iter().enumerate() {
+            let (levels, heights) = match pocket.end {
+                End::Start => ([Level::Start, Level::Floor], [0.0, pocket.depth]),
+                End::End => ([Level::Floor, Level::End], [length - pocket.depth, length]),
+            };
+            boundaries.push((Boundary::Pocket(index), levels, heights, &pocket.outline));
+        }
+        let count: usize = boundaries.iter().map(|(.., l)| l.segments().len()).sum();
         if count
             .checked_mul(3)
-            .and_then(|n| n.checked_add(2))
+            .and_then(|n| n.checked_add(2 + pockets.len()))
             .is_none_or(|n| u32::try_from(n).is_err())
         {
             return Err(ExtrusionError::TooLarge);
         }
-        let mut solid = Parts {
-            vertices: Vec::with_capacity(2 * count),
-            vertex_roles: Vec::with_capacity(2 * count),
-            edges: Vec::with_capacity(3 * count),
-            faces: Vec::with_capacity(count + 2),
-        };
-        // Vertices and edges for each end, then seams.
-        let mut first_vertex = Vec::with_capacity(loops.len());
-        let mut first_edge = [Vec::with_capacity(loops.len()), Vec::new()];
-        for end in [End::Start, End::End] {
-            let z = if end == End::Start { 0.0 } else { length };
-            for (loop_ref, loop_) in &loops {
-                if end == End::Start {
-                    first_vertex.push(solid.vertices.len());
-                }
+        let mut vertices = Vec::with_capacity(2 * count);
+        let mut vertex_roles = Vec::with_capacity(2 * count);
+        let mut edges = Vec::with_capacity(3 * count);
+        let mut bands = Vec::with_capacity(boundaries.len());
+        let vertex_id = |index: usize| VertexId(crate::usize_to_u32(index));
+        // Two caps first, then one wall per boundary segment, then floors.
+        let mut walls = 2;
+        for &(boundary, levels, heights, loop_) in &boundaries {
+            let n = loop_.segments().len();
+            let mut band = Band {
+                boundary,
+                levels,
+                heights,
+                vertices: [0; 2],
+                edges: [0; 2],
+                seams: 0,
+                walls,
+            };
+            walls += n;
+            for slot in 0..2 {
+                band.vertices[slot] = vertices.len();
                 for (segment, s) in loop_.segments().iter().enumerate() {
-                    solid.vertices.push([s.to[0], s.to[1], z]);
-                    solid.vertex_roles.push(VertexRole {
-                        segment: SegmentRef {
-                            loop_ref: *loop_ref,
-                            segment,
-                        },
-                        end,
+                    vertices.push([s.to[0], s.to[1], heights[slot]]);
+                    vertex_roles.push(VertexRole {
+                        segment: BoundarySegment { boundary, segment },
+                        level: levels[slot],
                     });
                 }
             }
-        }
-        let half = solid.vertices.len() / 2;
-        let vertex = |loop_index: usize, k: usize, end: End| {
-            let base = first_vertex[loop_index] + if end == End::Start { 0 } else { half };
-            VertexId(crate::usize_to_u32(base + k))
-        };
-        for (end_index, end) in [End::Start, End::End].into_iter().enumerate() {
-            let z = if end == End::Start { 0.0 } else { length };
-            for (loop_index, (loop_ref, loop_)) in loops.iter().enumerate() {
-                first_edge[end_index].push(solid.edges.len());
-                let n = loop_.segments().len();
+            for slot in 0..2 {
+                band.edges[slot] = edges.len();
+                let z = heights[slot];
                 for (k, (from, segment)) in loop_.iter_with_starts().enumerate() {
                     let curve = match segment.curve {
                         Curve::Line => EdgeCurve::Line {
@@ -327,77 +612,75 @@ impl Extrusion {
                             z,
                         },
                     };
-                    solid.edges.push(Edge {
+                    edges.push(Edge {
                         curve,
-                        start: vertex(loop_index, (k + n - 1) % n, end),
-                        end: vertex(loop_index, k, end),
-                        role: EdgeRole::Profile {
-                            segment: SegmentRef {
-                                loop_ref: *loop_ref,
+                        start: vertex_id(band.vertices[slot] + (k + n - 1) % n),
+                        end: vertex_id(band.vertices[slot] + k),
+                        role: EdgeRole::Boundary {
+                            segment: BoundarySegment {
+                                boundary,
                                 segment: k,
                             },
-                            end,
+                            level: levels[slot],
                         },
                     });
                 }
             }
-        }
-        let mut first_seam = Vec::with_capacity(loops.len());
-        for (loop_index, (loop_ref, loop_)) in loops.iter().enumerate() {
-            first_seam.push(solid.edges.len());
+            band.seams = edges.len();
             for (k, segment) in loop_.segments().iter().enumerate() {
-                solid.edges.push(Edge {
+                edges.push(Edge {
                     curve: EdgeCurve::Line {
-                        from: [segment.to[0], segment.to[1], 0.0],
-                        to: [segment.to[0], segment.to[1], length],
+                        from: [segment.to[0], segment.to[1], heights[0]],
+                        to: [segment.to[0], segment.to[1], heights[1]],
                     },
-                    start: vertex(loop_index, k, End::Start),
-                    end: vertex(loop_index, k, End::End),
+                    start: vertex_id(band.vertices[0] + k),
+                    end: vertex_id(band.vertices[1] + k),
                     role: EdgeRole::Seam {
-                        segment: SegmentRef {
-                            loop_ref: *loop_ref,
+                        segment: BoundarySegment {
+                            boundary,
                             segment: k,
                         },
                     },
                 });
             }
+            bands.push(band);
         }
-        let edge = |index: usize| EdgeId(crate::usize_to_u32(index));
-        // Caps: the end cap follows the profile; the start cap, facing -Z,
-        // traverses every loop backwards.
-        for (end_index, end) in [End::Start, End::End].into_iter().enumerate() {
-            let reversed = end == End::Start;
-            let loops_of_cap = loops
+        // Planar faces as rings of bands: each cap holds every profile loop
+        // and the pockets opening on it; each floor is its pocket's outline.
+        let mut planes = Vec::with_capacity(2 + pockets.len());
+        for (face, end) in [End::Start, End::End].into_iter().enumerate() {
+            let slot = usize::from(end == End::End);
+            let rings = bands
                 .iter()
                 .enumerate()
-                .map(|(loop_index, (_, loop_))| {
-                    let first = first_edge[end_index][loop_index];
-                    let mut coedges: Vec<Coedge> = (0..loop_.segments().len())
-                        .map(|k| Coedge {
-                            edge: edge(first + k),
-                            reversed,
-                        })
-                        .collect();
-                    if reversed {
-                        coedges.reverse();
-                    }
-                    coedges
+                .filter(|(_, band)| match band.boundary {
+                    Boundary::Profile(_) => true,
+                    Boundary::Pocket(pocket) => pockets[pocket].end == end,
                 })
+                .map(|(index, _)| (index, slot))
                 .collect();
-            let (normal, offset) = if reversed {
-                ([0.0, 0.0, -1.0], 0.0)
-            } else {
-                ([0.0, 0.0, 1.0], length)
-            };
-            solid.faces.push(Face {
-                surface: Surface::Plane { normal, offset },
-                loops: loops_of_cap,
-                role: FaceRole::Cap(end),
+            planes.push(PlanarFace {
+                face,
+                rings,
+                region_right: false,
+                upward: end == End::End,
             });
         }
-        // Walls: start edge forward, seam up at the segment's end, end edge
-        // backward, seam down at its start.
-        for (loop_index, (loop_ref, loop_)) in loops.iter().enumerate() {
+        for (pocket, p) in pockets.iter().enumerate() {
+            let band = boundaries.len() - pockets.len() + pocket;
+            planes.push(PlanarFace {
+                face: walls + pocket,
+                rings: alloc::vec![(band, usize::from(p.end == End::Start))],
+                region_right: true,
+                upward: p.end == End::End,
+            });
+        }
+        let edge = |index: usize| EdgeId(crate::usize_to_u32(index));
+        let mut faces = Vec::with_capacity(walls + pockets.len());
+        for plane in &planes[..2] {
+            faces.push(plane_face(plane, &bands, &boundaries, edge));
+        }
+        for (band, &(boundary, _, _, loop_)) in bands.iter().zip(&boundaries) {
             let n = loop_.segments().len();
             for (k, (from, segment)) in loop_.iter_with_starts().enumerate() {
                 let surface = match segment.curve {
@@ -421,30 +704,32 @@ impl Extrusion {
                         }
                     }
                 };
-                let boundary = alloc::vec![
+                // Lower edge forward, seam up at the segment's end, upper
+                // edge backward, seam down at its start.
+                let boundary_loop = alloc::vec![
                     Coedge {
-                        edge: edge(first_edge[0][loop_index] + k),
+                        edge: edge(band.edges[0] + k),
                         reversed: false,
                     },
                     Coedge {
-                        edge: edge(first_seam[loop_index] + k),
+                        edge: edge(band.seams + k),
                         reversed: false,
                     },
                     Coedge {
-                        edge: edge(first_edge[1][loop_index] + k),
+                        edge: edge(band.edges[1] + k),
                         reversed: true,
                     },
                     Coedge {
-                        edge: edge(first_seam[loop_index] + (k + n - 1) % n),
+                        edge: edge(band.seams + (k + n - 1) % n),
                         reversed: true,
                     },
                 ];
-                solid.faces.push(Face {
+                faces.push(Face {
                     surface,
-                    loops: alloc::vec![boundary],
+                    loops: alloc::vec![boundary_loop],
                     role: FaceRole::Wall {
-                        segment: SegmentRef {
-                            loop_ref: *loop_ref,
+                        segment: BoundarySegment {
+                            boundary,
                             segment: k,
                         },
                         tag: segment.tag,
@@ -452,26 +737,54 @@ impl Extrusion {
                 });
             }
         }
-        let Parts {
-            vertices,
-            vertex_roles,
-            edges,
-            faces,
-        } = solid;
+        for plane in &planes[2..] {
+            faces.push(plane_face(plane, &bands, &boundaries, edge));
+        }
         let solid = Self {
             profile,
             frame,
             length,
+            pockets,
+            webs,
             vertices,
             vertex_roles,
             edges,
             faces,
+            bands,
+            planes,
         };
         debug_assert!(
             solid.is_closed(),
             "extrusion topology is closed by construction"
         );
         Ok(solid)
+    }
+
+    /// The pockets cut so far, in order.
+    #[must_use]
+    pub fn pockets(&self) -> &[Pocket] {
+        &self.pockets
+    }
+
+    pub(crate) fn bands(&self) -> &[Band] {
+        &self.bands
+    }
+
+    pub(crate) fn webs(&self) -> &[[usize; 2]] {
+        &self.webs
+    }
+
+    pub(crate) fn planes(&self) -> &[PlanarFace] {
+        &self.planes
+    }
+
+    /// The stored loop of `boundary`: the profile loop, or the pocket outline.
+    pub(crate) fn boundary_loop(&self, boundary: Boundary) -> &Loop {
+        match boundary {
+            Boundary::Profile(LoopRef::Outer) => self.profile.outer(),
+            Boundary::Profile(LoopRef::Hole(hole)) => &self.profile.holes()[hole],
+            Boundary::Pocket(pocket) => &self.pockets[pocket].outline,
+        }
     }
 
     /// The extruded profile.
@@ -556,13 +869,54 @@ impl Extrusion {
     }
 }
 
-/// Tables filled while an [`Extrusion`] is built.
-struct Parts {
-    vertices: Vec<[f64; 3]>,
-    vertex_roles: Vec<VertexRole>,
-    edges: Vec<Edge>,
-    faces: Vec<Face>,
+/// The face for one planar ring set: rings traversed so the face's region
+/// lies to their left seen from outside.
+fn plane_face(
+    plane: &PlanarFace,
+    bands: &[Band],
+    boundaries: &[(Boundary, [Level; 2], [f64; 2], &Loop)],
+    edge: impl Fn(usize) -> EdgeId,
+) -> Face {
+    // Seen from below, left and right swap; a floor's region is right of its
+    // stored ring.
+    let reversed = plane.upward == plane.region_right;
+    let loops = plane
+        .rings
+        .iter()
+        .map(|&(band, slot)| {
+            let n = boundaries[band].3.segments().len();
+            let first = bands[band].edges[slot];
+            let mut coedges: Vec<Coedge> = (0..n)
+                .map(|k| Coedge {
+                    edge: edge(first + k),
+                    reversed,
+                })
+                .collect();
+            if reversed {
+                coedges.reverse();
+            }
+            coedges
+        })
+        .collect();
+    let height = bands[plane.rings[0].0].heights[plane.rings[0].1];
+    let (normal, offset) = if plane.upward {
+        ([0.0, 0.0, 1.0], height)
+    } else {
+        ([0.0, 0.0, -1.0], -height)
+    };
+    let role = match boundaries[plane.rings[0].0].0 {
+        Boundary::Pocket(pocket) if plane.region_right => FaceRole::Floor { pocket },
+        _ => FaceRole::Cap(if plane.upward { End::End } else { End::Start }),
+    };
+    Face {
+        surface: Surface::Plane { normal, offset },
+        loops,
+        role,
+    }
 }
+
+#[cfg(test)]
+mod pocket_tests;
 
 #[cfg(test)]
 mod tests {
@@ -599,8 +953,8 @@ mod tests {
         assert_eq!(
             solid.faces()[2].role,
             FaceRole::Wall {
-                segment: SegmentRef {
-                    loop_ref: LoopRef::Outer,
+                segment: BoundarySegment {
+                    boundary: Boundary::Profile(LoopRef::Outer),
                     segment: 0
                 },
                 tag: Some(SegmentTag(10)),

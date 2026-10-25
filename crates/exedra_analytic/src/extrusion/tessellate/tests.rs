@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::extrusion::{EdgeRole, FaceRole};
+use crate::extrusion::{Boundary, EdgeRole, FaceRole, Level};
 use alloc::vec;
 use core::f64::consts::{PI, TAU};
+use exedra_profile::LoopRef;
 use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 
 const SEPARATION: ProfilePolicy = ProfilePolicy::new(1e-9);
@@ -195,12 +196,11 @@ fn caps_and_walls_share_each_rim_sample() {
             .unwrap()
     };
     let mesh = &realized.mesh;
-    let profile_edges = solid.edges().len() / 3 * 2;
-    for (edge, chain) in realized.edge_chains.iter().enumerate().take(profile_edges) {
-        let EdgeRole::Profile { segment, end } = solid.edges()[edge].role else {
-            panic!("profile edges come first");
+    for (edge, chain) in realized.edge_chains.iter().enumerate() {
+        let EdgeRole::Boundary { segment, level } = solid.edges()[edge].role else {
+            continue;
         };
-        let cap = FaceId(u32::from(end == End::End));
+        let cap = FaceId(u32::from(level == Level::End));
         let wall = solid
             .faces()
             .iter()
@@ -369,4 +369,56 @@ fn invalid_policies_and_budgets_are_refused() {
         solid.tessellate(&few),
         Err(TessellateExtrusionError::VertexBudget { .. })
     ));
+}
+
+#[test]
+fn axial_narrowing_error_counts_against_the_tolerance() {
+    // A radius-one hole far along the extrusion axis: f32 moves every
+    // vertex about 0.03 in z, on top of the in-plane chord error.
+    let profile = Profile::new(
+        rect([-3.0, -3.0], [3.0, 3.0]),
+        vec![circle([0.0, 0.0], 1.0).reversed()],
+        &SEPARATION,
+    )
+    .unwrap();
+    let far = Placement3::translate(0.0, 0.0, 1_000_000.03);
+    let solid = Extrusion::new(profile, far, 1.0).unwrap();
+    let policy = TessellationPolicy {
+        chord_tolerance: 0.031,
+        ..TessellationPolicy::default()
+    };
+    let realized = solid.tessellate(&policy).unwrap();
+    assert!(!realized.report.within_tolerance(), "{:?}", realized.report);
+    // The bound covers the farthest emitted chord midpoint from the hole's
+    // rim, measured independently in 3D.
+    let mesh = &realized.mesh;
+    let mut worst = 0.0_f64;
+    for (edge, chain) in realized.edge_chains.iter().enumerate() {
+        let EdgeRole::Boundary { segment, level } = solid.edges()[edge].role else {
+            continue;
+        };
+        if segment.boundary != Boundary::Profile(LoopRef::Hole(0)) {
+            continue;
+        }
+        let height = if level == Level::Start { 0.0 } else { 1.0 };
+        for pair in chain.windows(2) {
+            let [a, b] = [pair[0], pair[1]].map(|v| {
+                let p = exedra_math::promote(*mesh.vertex_position(v).unwrap());
+                [p[0], p[1], p[2] - 1_000_000.03]
+            });
+            let mid = [
+                0.5 * (a[0] + b[0]),
+                0.5 * (a[1] + b[1]),
+                0.5 * (a[2] + b[2]),
+            ];
+            let radial = libm::hypot(mid[0], mid[1]) - 1.0;
+            worst = worst.max(libm::hypot(radial, mid[2] - height));
+        }
+    }
+    assert!(worst > 0.031, "{worst}");
+    assert!(
+        realized.report.max_deviation >= worst,
+        "{:?} < {worst}",
+        realized.report
+    );
 }
