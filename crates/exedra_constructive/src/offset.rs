@@ -278,7 +278,11 @@ impl Profile2 {
         if let CornerPolicy::Miter { limit } = corners
             && !(limit.is_finite() && limit >= 1.0)
         {
-            return Err(ProfileError::InvalidDimension);
+            return Err(ProfileError::InvalidDimension {
+                parameter: "miter_limit",
+                value: limit,
+                constraint: crate::profile::DimensionConstraint::AtLeast { minimum: 1.0 },
+            });
         }
         if distance != 0.0
             && context
@@ -1458,14 +1462,14 @@ mod tests {
             source.offset(f64::INFINITY, MITER),
             Err(ProfileError::OffsetDistanceNotFinite)
         );
-        assert_eq!(
+        assert!(matches!(
             source.offset(1.0, CornerPolicy::Miter { limit: 0.5 }),
-            Err(ProfileError::InvalidDimension)
-        );
-        assert_eq!(
+            Err(ProfileError::InvalidDimension { .. })
+        ));
+        assert!(matches!(
             source.offset(1.0, CornerPolicy::Miter { limit: f64::NAN }),
-            Err(ProfileError::InvalidDimension)
-        );
+            Err(ProfileError::InvalidDimension { .. })
+        ));
     }
 
     #[test]

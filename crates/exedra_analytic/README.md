@@ -16,6 +16,9 @@ outline, like a filled shape. Each pocket adds walls and a planar floor and
 becomes a hole of its cap.
 Pockets on one end must be valid holes of the profile; pockets on opposite
 ends may overlap only where material remains between them.
+Depth refusals carry the requested depth, host length, remaining material and
+required separation. Opposite-pocket refusals name the other pocket and the
+actual web thickness, so callers can diagnose and revise a dimension directly.
 
 `Pocket::tagged` labels a whole pocket. `faces_tagged` selects its floor and
 walls, and `edges_tagged` selects its rims and seams, independently of pocket

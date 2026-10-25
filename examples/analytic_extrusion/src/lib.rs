@@ -248,7 +248,9 @@ mod tests {
         };
         assert_eq!(
             extrude(handwritten_profile(&flat).unwrap(), &flat),
-            Err(PlateError::Extrusion(ExtrusionError::InvalidLength))
+            Err(PlateError::Extrusion(ExtrusionError::InvalidLength {
+                length: 0.0
+            }))
         );
     }
 }

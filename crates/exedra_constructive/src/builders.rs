@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use kurbo::Point;
 
-use crate::profile::{Loop2, Profile2, ProfileError, Seg2, SegTag};
+use crate::profile::{DimensionConstraint, Loop2, Profile2, ProfileError, Seg2, SegTag};
 
 /// Half-circle bulge: `tan(pi / 8)`, the bulge of a 90-degree arc.
 ///
@@ -31,8 +31,26 @@ fn quarter_arc_bulge() -> f64 {
     libm::tan(core::f64::consts::FRAC_PI_8)
 }
 
-fn positive_finite(v: f64) -> bool {
-    v.is_finite() && v > 0.0
+fn positive(parameter: &'static str, value: f64) -> Result<(), ProfileError> {
+    if value.is_finite() && value > 0.0 {
+        return Ok(());
+    }
+    Err(ProfileError::InvalidDimension {
+        parameter,
+        value,
+        constraint: DimensionConstraint::PositiveFinite,
+    })
+}
+
+fn less_than(parameter: &'static str, value: f64, maximum: f64) -> Result<(), ProfileError> {
+    if value.is_finite() && value < maximum {
+        return Ok(());
+    }
+    Err(ProfileError::InvalidDimension {
+        parameter,
+        value,
+        constraint: DimensionConstraint::LessThan { maximum },
+    })
 }
 
 /// An axis-aligned rectangle: origin corner, counter-clockwise.
@@ -43,9 +61,8 @@ fn positive_finite(v: f64) -> bool {
 ///
 /// Both dimensions must be positive and finite.
 pub fn rect_from_corner(width: f64, height: f64) -> Result<Profile2, ProfileError> {
-    if !positive_finite(width) || !positive_finite(height) {
-        return Err(ProfileError::InvalidDimension);
-    }
+    positive("width", width)?;
+    positive("height", height)?;
     let outer = Loop2::new(vec![
         Seg2::line((width, 0.0)).tagged(SegTag(0)),
         Seg2::line((width, height)).tagged(SegTag(1)),
@@ -82,12 +99,10 @@ pub fn rounded_rect_from_corner(
     height: f64,
     radius: f64,
 ) -> Result<Profile2, ProfileError> {
-    if !positive_finite(width) || !positive_finite(height) || !positive_finite(radius) {
-        return Err(ProfileError::InvalidDimension);
-    }
-    if radius >= 0.5 * width || radius >= 0.5 * height {
-        return Err(ProfileError::InvalidDimension);
-    }
+    positive("width", width)?;
+    positive("height", height)?;
+    positive("radius", radius)?;
+    less_than("radius", radius, 0.5 * width.min(height))?;
     let b = quarter_arc_bulge();
     let outer = Loop2::new(vec![
         Seg2::line((width - radius, 0.0)).tagged(SegTag(0)),
@@ -151,8 +166,15 @@ fn center_rectangle(profile: Profile2, width: f64, height: f64) -> Result<Profil
 /// The radius must be positive and finite, and the length finite and
 /// greater than twice the radius; an equal length is a [`circle`].
 pub fn slot_centered(length: f64, radius: f64) -> Result<Profile2, ProfileError> {
-    if !positive_finite(radius) || !length.is_finite() || length <= 2.0 * radius {
-        return Err(ProfileError::InvalidDimension);
+    positive("radius", radius)?;
+    if !length.is_finite() || length <= 2.0 * radius {
+        return Err(ProfileError::InvalidDimension {
+            parameter: "length",
+            value: length,
+            constraint: DimensionConstraint::GreaterThan {
+                minimum: 2.0 * radius,
+            },
+        });
     }
     let straight = 0.5 * length - radius;
     let outer = Loop2::new(vec![
@@ -179,15 +201,12 @@ pub fn l_profile(
     notch_width: f64,
     notch_height: f64,
 ) -> Result<Profile2, ProfileError> {
-    if !positive_finite(width)
-        || !positive_finite(height)
-        || !positive_finite(notch_width)
-        || !positive_finite(notch_height)
-        || notch_width >= width
-        || notch_height >= height
-    {
-        return Err(ProfileError::InvalidDimension);
-    }
+    positive("width", width)?;
+    positive("height", height)?;
+    positive("notch_width", notch_width)?;
+    positive("notch_height", notch_height)?;
+    less_than("notch_width", notch_width, width)?;
+    less_than("notch_height", notch_height, height)?;
     let outer = Loop2::new(vec![
         Seg2::line((width, 0.0)).tagged(SegTag(0)),
         Seg2::line((width, height - notch_height)).tagged(SegTag(1)),
@@ -217,18 +236,16 @@ pub fn circle(radius: f64) -> Result<Profile2, ProfileError> {
 ///
 /// Radii must be positive and finite with `inner_radius < outer_radius`.
 pub fn ring(outer_radius: f64, inner_radius: f64) -> Result<Profile2, ProfileError> {
-    if !positive_finite(inner_radius) || inner_radius >= outer_radius {
-        return Err(ProfileError::InvalidDimension);
-    }
+    positive("outer_radius", outer_radius)?;
+    positive("inner_radius", inner_radius)?;
+    less_than("inner_radius", inner_radius, outer_radius)?;
     let outer = circle_loop(outer_radius, false)?;
     let hole = circle_loop(inner_radius, true)?;
     Profile2::new(outer, vec![hole])
 }
 
 fn circle_loop(radius: f64, clockwise: bool) -> Result<Loop2, ProfileError> {
-    if !positive_finite(radius) {
-        return Err(ProfileError::InvalidDimension);
-    }
+    positive("radius", radius)?;
     let ccw = Loop2::new(vec![
         Seg2::arc((radius, 0.0), 1.0).tagged(SegTag(0)),
         Seg2::arc((-radius, 0.0), 1.0).tagged(SegTag(1)),
@@ -360,6 +377,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_dimensions_name_the_value_and_recoverable_bound() {
+        let error = slot_centered(4.0, 2.5).unwrap_err();
+        assert_eq!(
+            error,
+            ProfileError::InvalidDimension {
+                parameter: "length",
+                value: 4.0,
+                constraint: DimensionConstraint::GreaterThan { minimum: 5.0 },
+            }
+        );
+        assert_eq!(
+            alloc::format!("{error}"),
+            "length must be finite and greater than 5, got 4"
+        );
+        assert!(slot_centered(6.0, 2.5).is_ok());
+        assert_eq!(
+            rounded_rect_centered(10.0, 4.0, 2.0).unwrap_err(),
+            ProfileError::InvalidDimension {
+                parameter: "radius",
+                value: 2.0,
+                constraint: DimensionConstraint::LessThan { maximum: 2.0 },
+            }
+        );
+        assert_eq!(
+            ring(2.0, 3.0).unwrap_err(),
+            ProfileError::InvalidDimension {
+                parameter: "inner_radius",
+                value: 3.0,
+                constraint: DimensionConstraint::LessThan { maximum: 2.0 },
+            }
+        );
+        let error = rect_centered(f64::NAN, 2.0).unwrap_err();
+        assert!(
+            matches!(error, ProfileError::InvalidDimension {parameter:"width",value,constraint:DimensionConstraint::PositiveFinite} if value.is_nan())
+        );
+    }
+
+    #[test]
     fn slots_are_stadiums_with_tagged_sides_and_ends() {
         let slot = slot_centered(35.0, 2.5).unwrap();
         let exact = 30.0 * 5.0 + core::f64::consts::PI * 2.5 * 2.5;
@@ -383,10 +438,10 @@ mod tests {
             slot.tagged(SegTag(9))
         );
         for (length, radius) in [(5.0, 2.5), (4.0, 2.5), (10.0, 0.0), (f64::NAN, 1.0)] {
-            assert_eq!(
+            assert!(matches!(
                 slot_centered(length, radius),
-                Err(ProfileError::InvalidDimension)
-            );
+                Err(ProfileError::InvalidDimension { .. })
+            ));
         }
     }
 
@@ -432,19 +487,19 @@ mod tests {
             assert!(body.mesh.validate_deep().is_empty());
         }
         for dimension in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert_eq!(
+            assert!(matches!(
                 rect_centered(dimension, 2.0),
-                Err(ProfileError::InvalidDimension)
-            );
-            assert_eq!(
+                Err(ProfileError::InvalidDimension { .. })
+            ));
+            assert!(matches!(
                 rounded_rect_centered(4.0, dimension, 0.25),
-                Err(ProfileError::InvalidDimension)
-            );
+                Err(ProfileError::InvalidDimension { .. })
+            ));
         }
-        assert_eq!(
+        assert!(matches!(
             rounded_rect_centered(4.0, 2.0, 1.0),
-            Err(ProfileError::InvalidDimension)
-        );
+            Err(ProfileError::InvalidDimension { .. })
+        ));
     }
 
     #[test]

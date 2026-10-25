@@ -866,8 +866,30 @@ fn normalize_point(p: &mut Point) {
     }
 }
 
+/// Requirement violated by a named builder dimension.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum DimensionConstraint {
+    /// The value must be finite and strictly positive.
+    PositiveFinite,
+    /// The value must be finite and strictly greater than this bound.
+    GreaterThan {
+        /// Exclusive lower bound in the parameter's units.
+        minimum: f64,
+    },
+    /// The value must be finite and at least this bound.
+    AtLeast {
+        /// Inclusive lower bound in the parameter's units.
+        minimum: f64,
+    },
+    /// The value must be finite and strictly less than this bound.
+    LessThan {
+        /// Exclusive upper bound in the parameter's units.
+        maximum: f64,
+    },
+}
+
 /// Typed profile-construction failure.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ProfileError {
     /// A loop needs at least two segments.
@@ -916,7 +938,14 @@ pub enum ProfileError {
     UnsupportedPath,
     /// A builder dimension is zero, negative, non-finite, or inconsistent
     /// (for example a corner radius that does not fit).
-    InvalidDimension,
+    InvalidDimension {
+        /// Stable name of the offending parameter, such as `radius` or `length`.
+        parameter: &'static str,
+        /// The supplied value.
+        value: f64,
+        /// The requirement that value failed.
+        constraint: DimensionConstraint,
+    },
     /// A policy-defined segment's realization is itself policy-defined.
     NestedPolicy {
         /// Index of the offending segment.
@@ -1039,11 +1068,21 @@ impl core::fmt::Display for ProfileError {
                     "path is not a single closed subpath of supported elements"
                 )
             }
-            Self::InvalidDimension => {
-                write!(
-                    f,
-                    "builder dimension is non-positive, non-finite, or inconsistent"
-                )
+            Self::InvalidDimension {
+                parameter,
+                value,
+                constraint,
+            } => {
+                write!(f, "{parameter} must be finite and ")?;
+                match constraint {
+                    DimensionConstraint::PositiveFinite => write!(f, "positive"),
+                    DimensionConstraint::GreaterThan { minimum } => {
+                        write!(f, "greater than {minimum}")
+                    }
+                    DimensionConstraint::AtLeast { minimum } => write!(f, "at least {minimum}"),
+                    DimensionConstraint::LessThan { maximum } => write!(f, "less than {maximum}"),
+                }?;
+                write!(f, ", got {value}")
             }
             Self::NestedPolicy { seg } => {
                 write!(f, "segment {seg}: policy realizations must be concrete")

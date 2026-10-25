@@ -9,6 +9,48 @@ use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
 
 #[test]
+fn refused_depth_reports_the_actual_remaining_material_and_requirement() {
+    let policy = ProfilePolicy::new(0.5);
+    let pocket = Pocket::from_region(
+        &hole_rect([1.0, 1.0], [4.0, 4.0]).reversed(),
+        End::End,
+        1.75,
+    );
+    assert!(matches!(
+        plate().with_pocket(pocket, &policy),
+        Err(ExtrusionError::Pocket {
+            pocket: 0,
+            error: PocketError::InvalidDepth {
+                depth: 1.75,
+                length: 2.0,
+                remaining: 0.25,
+                min_separation: 0.5
+            }
+        })
+    ));
+    let first = Pocket::from_region(&hole_rect([1.0, 1.0], [4.0, 4.0]).reversed(), End::End, 1.0);
+    let host = plate().with_pocket(first, &policy).unwrap();
+    let second = Pocket::from_region(
+        &hole_rect([2.0, 2.0], [5.0, 5.0]).reversed(),
+        End::Start,
+        1.0,
+    );
+    let error = host.with_pocket(second, &policy).unwrap_err();
+    assert!(matches!(
+        error,
+        ExtrusionError::Pocket {
+            pocket: 1,
+            error: PocketError::BreaksThrough {
+                other: 0,
+                remaining: 0.0,
+                min_separation: 0.5
+            }
+        }
+    ));
+    assert!(alloc::format!("{error}").contains("requiring at least 0.5"));
+}
+
+#[test]
 fn whole_pocket_labels_survive_reordering_and_mesh_correspondence() {
     const RECESS: SegTag = SegTag(100);
     const INSERT: SegTag = SegTag(101);
@@ -244,15 +286,25 @@ fn pockets_are_refused_with_the_failed_check() {
         other => panic!("expected a pocket refusal, got {other:?}"),
     };
     for depth in [0.0, 2.0, -1.0, f64::NAN] {
-        assert_eq!(
-            refused(cut(
-                plate(),
-                hole_rect([1.0, 1.0], [2.0, 2.0]),
-                End::End,
-                depth
-            )),
-            PocketError::InvalidDepth
-        );
+        let error = refused(cut(
+            plate(),
+            hole_rect([1.0, 1.0], [2.0, 2.0]),
+            End::End,
+            depth,
+        ));
+        let PocketError::InvalidDepth {
+            depth: supplied,
+            length,
+            remaining,
+            min_separation,
+        } = error
+        else {
+            panic!("{error:?}");
+        };
+        assert_eq!(supplied.to_bits(), depth.to_bits());
+        assert_eq!(length, 2.0);
+        assert_eq!(remaining.to_bits(), (2.0 - depth).to_bits());
+        assert_eq!(min_separation, POLICY.min_separation);
     }
     // Counter-clockwise, crossing the outline, over the through hole.
     for outline in [
@@ -284,7 +336,11 @@ fn pockets_are_refused_with_the_failed_check() {
             End::Start,
             1.5
         )),
-        PocketError::BreaksThrough { other: 0 }
+        PocketError::BreaksThrough {
+            other: 0,
+            remaining: 0.0,
+            min_separation: POLICY.min_separation
+        }
     );
     let web = cut(once, hole_rect([3.0, 3.0], [5.0, 5.0]), End::Start, 1.0).unwrap();
     assert!(web.is_closed());
@@ -412,15 +468,18 @@ fn webs_thinner_than_the_separation_are_refused() {
         other => panic!("expected a pocket refusal, got {other:?}"),
     };
     // A floor within the separation of the other end.
-    assert_eq!(
+    assert!(matches!(
         refused(cut(block(), End::End, 1.0 - 1e-7)),
-        PocketError::InvalidDepth
-    );
+        PocketError::InvalidDepth {
+            length: 1.0,
+            min_separation: 1e-6,
+            ..
+        }
+    ));
     // Opposite floors within the separation of each other.
     let once = cut(block(), End::End, 0.5).unwrap();
-    assert_eq!(
-        refused(cut(once.clone(), End::Start, 0.5 - 1e-7)),
-        PocketError::BreaksThrough { other: 0 }
+    assert!(
+        matches!(refused(cut(once.clone(), End::Start, 0.5 - 1e-7)), PocketError::BreaksThrough { other: 0, min_separation:1e-6, remaining } if (remaining - 1e-7).abs()<1e-15)
     );
     assert!(cut(once, End::Start, 0.4).unwrap().is_closed());
 }
@@ -483,7 +542,7 @@ fn native_clearance_checks_keep_separations_smaller_than_a_depth_ulp() {
             assert!(matches!(
                 cut(block(), end, length),
                 Err(ExtrusionError::Pocket {
-                    error: PocketError::InvalidDepth,
+                    error: PocketError::InvalidDepth { .. },
                     ..
                 })
             ));
@@ -496,7 +555,7 @@ fn native_clearance_checks_keep_separations_smaller_than_a_depth_ulp() {
             assert!(matches!(
                 cut(once, opposite, 0.5 * length),
                 Err(ExtrusionError::Pocket {
-                    error: PocketError::BreaksThrough { other: 0 },
+                    error: PocketError::BreaksThrough { other: 0, .. },
                     ..
                 })
             ));
