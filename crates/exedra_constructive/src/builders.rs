@@ -4,13 +4,13 @@
 //! Generic profile builders.
 //!
 //! Deliberately spec-agnostic conveniences: rectangles, rounded rectangles,
-//! L-shaped corner profiles, circles, and rings. External frontends compose
+//! slots, L-shaped corner profiles, circles, and rings. External frontends compose
 //! spec-driven shapes from these (and from raw segments) without any spec
 //! vocabulary living here.
 //!
 //! All builders produce validated counter-clockwise [`Profile2`] values in
 //! the XY plane. Rectangles name their origin explicitly: minimum corner or
-//! center. Circular shapes are centered; L profiles start at their minimum
+//! center. Circular shapes and slots are centered; L profiles start at their minimum
 //! corner. Each segment is tagged with its index so downstream
 //! source maps can name features without the caller doing anything; callers
 //! that want their own tags draw loops with [`crate::profile::LoopCursor`] or
@@ -129,6 +129,39 @@ fn center_rectangle(profile: Profile2, width: f64, height: f64) -> Result<Profil
         segment.to.y -= height * 0.5;
     }
     Profile2::simple(Loop2::new(segments)?)
+}
+
+/// A slot centered at `(0, 0)`: straight sides along X joined by semicircular
+/// ends of `radius`, `length` long overall and `2 * radius` wide.
+///
+/// Four segments, counter-clockwise from the lower side, tagged 0 (lower
+/// side), 1 (right end), 2 (upper side) and 3 (left end). For corners smaller
+/// than half the width, use [`rounded_rect_centered`].
+///
+/// ```
+/// use exedra_constructive::builders::slot_centered;
+///
+/// let slot = slot_centered(35.0, 2.5)?;
+/// assert_eq!(slot.outer().segs().len(), 4);
+/// # Ok::<(), exedra_constructive::profile::ProfileError>(())
+/// ```
+///
+/// # Errors
+///
+/// The radius must be positive and finite, and the length finite and
+/// greater than twice the radius; an equal length is a [`circle`].
+pub fn slot_centered(length: f64, radius: f64) -> Result<Profile2, ProfileError> {
+    if !positive_finite(radius) || !length.is_finite() || length <= 2.0 * radius {
+        return Err(ProfileError::InvalidDimension);
+    }
+    let straight = 0.5 * length - radius;
+    let outer = Loop2::new(vec![
+        Seg2::line((straight, -radius)).tagged(SegTag(0)),
+        Seg2::arc((straight, radius), 1.0).tagged(SegTag(1)),
+        Seg2::line((-straight, radius)).tagged(SegTag(2)),
+        Seg2::arc((-straight, -radius), 1.0).tagged(SegTag(3)),
+    ])?;
+    Profile2::simple(outer)
 }
 
 /// An L-shaped corner profile: a `width x height` rectangle with a
@@ -325,6 +358,37 @@ pub fn profile_tags(profile: &Profile2) -> Vec<SegTag> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slots_are_stadiums_with_tagged_sides_and_ends() {
+        let slot = slot_centered(35.0, 2.5).unwrap();
+        let exact = 30.0 * 5.0 + core::f64::consts::PI * 2.5 * 2.5;
+        let shared = slot
+            .to_line_arc(&exedra_profile::ProfilePolicy::new(1e-9))
+            .unwrap();
+        assert!((shared.area() - exact).abs() < 1e-12);
+        assert_eq!(shared.bounds(), [[-17.5, -2.5], [17.5, 2.5]]);
+        let tags: Vec<_> = slot.outer().segs().iter().map(|seg| seg.tag).collect();
+        assert_eq!(tags, [0, 1, 2, 3].map(|tag| Some(SegTag(tag))));
+        // The same slot drawn by hand with a cursor.
+        let drawn = crate::profile::LoopCursor::new((-15.0, -2.5))
+            .line_to((15.0, -2.5))
+            .arc_through((17.5, 0.0), (15.0, 2.5))
+            .line_to((-15.0, 2.5))
+            .arc_through((-17.5, 0.0), (-15.0, -2.5))
+            .close()
+            .unwrap();
+        assert_eq!(
+            Profile2::simple(drawn).unwrap().tagged(SegTag(9)),
+            slot.tagged(SegTag(9))
+        );
+        for (length, radius) in [(5.0, 2.5), (4.0, 2.5), (10.0, 0.0), (f64::NAN, 1.0)] {
+            assert_eq!(
+                slot_centered(length, radius),
+                Err(ProfileError::InvalidDimension)
+            );
+        }
+    }
 
     #[test]
     fn centered_builders_align_with_circles_and_preserve_boundary_tags() {
