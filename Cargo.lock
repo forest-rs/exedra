@@ -300,6 +300,7 @@ version = "0.1.0"
 dependencies = [
  "exedra_math",
  "exedra_mesh",
+ "exedra_profile",
  "exedra_triangulate",
  "libm",
 ]

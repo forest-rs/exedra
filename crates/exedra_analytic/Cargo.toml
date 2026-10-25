@@ -12,6 +12,7 @@ categories = ["data-structures", "algorithms"]
 [dependencies]
 exedra_math.workspace = true
 exedra_mesh.workspace = true
+exedra_profile.workspace = true
 exedra_triangulate.workspace = true
 libm = { optional = true, workspace = true }
 

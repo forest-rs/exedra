@@ -40,6 +40,8 @@ extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 
+pub mod extrusion;
+
 use alloc::vec::Vec;
 
 use exedra_math::{cross, dot, sub};
