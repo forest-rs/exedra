@@ -1,0 +1,19 @@
+[package]
+name = "exedra_profile"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Line and circular-arc 2D profiles with deterministic sampling for Exedra"
+readme = "README.md"
+keywords = ["geometry", "profile", "arc", "no_std", "deterministic"]
+categories = ["graphics", "mathematics", "no-std"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Non-optional by design: sampling trig always routes through libm, so counts
+# and points are bit-identical across platforms and backends.
+libm.workspace = true

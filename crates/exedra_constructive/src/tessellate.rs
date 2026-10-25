@@ -1931,7 +1931,8 @@ fn revolve_impl(
     if full {
         constraints = constraints.with_edge_multiple(4);
     }
-    let steps = circular_edge_count(max_x, sweep, policy.discretize.chord_tolerance, constraints)?;
+    let steps = circular_edge_count(max_x, sweep, policy.discretize.chord_tolerance, constraints)
+        .map_err(DiscretizeError::from)?;
     // Vertex rings: `steps` for a full sweep (wrapping), `steps + 1`
     // otherwise.
     let vertex_rings = if full {

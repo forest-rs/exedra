@@ -76,42 +76,7 @@ impl DiscretizePolicy {
     }
 }
 
-/// Edge-count constraints for one circular sweep.
-///
-/// Minimum topology, maximum work, and optional angular alignment are
-/// independent choices. Set [`Self::edge_multiple`] to `1` when no alignment
-/// is required, or for example `4` when a full circle must include cardinal
-/// axes. The multiple is caller-selected and is never imposed on profile arcs.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct CircularEdgeConstraints {
-    /// Minimum permitted edge count.
-    pub min_edges: u32,
-    /// Maximum permitted edge count (the finite work budget).
-    pub max_edges: u32,
-    /// Required edge-count multiple; `1` means no additional alignment.
-    pub edge_multiple: u32,
-}
-
-impl CircularEdgeConstraints {
-    /// Creates constraints without an additional edge-count multiple.
-    #[must_use]
-    pub const fn new(min_edges: u32, max_edges: u32) -> Self {
-        Self {
-            min_edges,
-            max_edges,
-            edge_multiple: 1,
-        }
-    }
-
-    /// Requires the result to be a multiple of `edge_multiple`.
-    ///
-    /// A zero multiple is rejected by [`circular_edge_count`].
-    #[must_use]
-    pub const fn with_edge_multiple(mut self, edge_multiple: u32) -> Self {
-        self.edge_multiple = edge_multiple;
-        self
-    }
-}
+pub use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
 
 /// One discretized loop: a point ring plus edge-to-segment provenance.
 ///
@@ -194,98 +159,19 @@ impl core::fmt::Display for DiscretizeError {
 
 impl core::error::Error for DiscretizeError {}
 
-/// Returns the smallest circular edge count that satisfies a chord tolerance
-/// and explicit count constraints.
-///
-/// The count uses the cancellation-resistant identity
-/// `acos(1 - x) = 2 asin(sqrt(x / 2))`. This remains stable when tolerance is
-/// tiny relative to radius. A requested multiple rounds upward only; a work
-/// budget never silently coarsens the result.
-///
-/// # Errors
-///
-/// Returns a typed error for invalid tolerance, circle geometry, constraints,
-/// an unrepresentable required count, or a maximum below the required count.
-pub fn circular_edge_count(
-    radius: f64,
-    sweep: f64,
-    chord_tolerance: f64,
-    constraints: CircularEdgeConstraints,
-) -> Result<u32, DiscretizeError> {
-    if !(chord_tolerance.is_finite() && chord_tolerance > 0.0) {
-        return Err(DiscretizeError::InvalidTolerance);
+impl From<CircularSamplingError> for DiscretizeError {
+    fn from(error: CircularSamplingError) -> Self {
+        match error {
+            CircularSamplingError::InvalidTolerance => Self::InvalidTolerance,
+            CircularSamplingError::InvalidEdgeBounds => Self::InvalidEdgeBounds,
+            CircularSamplingError::InvalidCircularGeometry => Self::InvalidCircularGeometry,
+            CircularSamplingError::ToleranceBudgetExceeded { required, maximum } => {
+                Self::ToleranceBudgetExceeded { required, maximum }
+            }
+            CircularSamplingError::EdgeCountOverflow => Self::EdgeCountOverflow,
+            _ => Self::NumericLimit,
+        }
     }
-    if !(radius.is_finite()
-        && radius > 0.0
-        && sweep.is_finite()
-        && sweep > 0.0
-        && sweep <= core::f64::consts::TAU)
-    {
-        return Err(DiscretizeError::InvalidCircularGeometry);
-    }
-    if constraints.min_edges == 0
-        || constraints.max_edges == 0
-        || constraints.edge_multiple == 0
-        || constraints.min_edges > constraints.max_edges
-    {
-        return Err(DiscretizeError::InvalidEdgeBounds);
-    }
-
-    // sqrt(tol / (2r)), factored so tol/r cannot underflow before sqrt.
-    let ratio_root = libm::sqrt(chord_tolerance) / libm::sqrt(radius) / core::f64::consts::SQRT_2;
-    if ratio_root == 0.0 {
-        return Err(DiscretizeError::EdgeCountOverflow);
-    }
-    let needed = if ratio_root >= 1.0 {
-        1.0
-    } else {
-        let per_edge_angle = 4.0 * libm::asin(ratio_root);
-        libm::ceil(sweep / per_edge_angle)
-    };
-    if !needed.is_finite() || needed > f64::from(u32::MAX) {
-        return Err(DiscretizeError::EdgeCountOverflow);
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "needed is a finite nonnegative ceil within the u32 domain"
-    )]
-    let needed = needed as u32;
-    let mut required = needed.max(1).max(constraints.min_edges);
-    required = round_up_to_multiple(required, constraints.edge_multiple)
-        .ok_or(DiscretizeError::EdgeCountOverflow)?;
-
-    // Guard a count that landed infinitesimally below the exact threshold due
-    // to floating rounding. Incrementing by the requested multiple preserves
-    // alignment and makes successful outcomes conservative.
-    while !circular_sagitta_within(radius, sweep, chord_tolerance, required) {
-        required = required
-            .checked_add(constraints.edge_multiple)
-            .ok_or(DiscretizeError::EdgeCountOverflow)?;
-    }
-    if required > constraints.max_edges {
-        return Err(DiscretizeError::ToleranceBudgetExceeded {
-            required,
-            maximum: constraints.max_edges,
-        });
-    }
-    Ok(required)
-}
-
-fn round_up_to_multiple(value: u32, multiple: u32) -> Option<u32> {
-    let remainder = value % multiple;
-    if remainder == 0 {
-        Some(value)
-    } else {
-        value.checked_add(multiple - remainder)
-    }
-}
-
-fn circular_sagitta_within(radius: f64, sweep: f64, tolerance: f64, edges: u32) -> bool {
-    // sqrt(sagitta) = sqrt(2r) * sin(sweep / 4n). Compare after dividing by
-    // sqrt(2r) to avoid forming either 2r or a tiny tolerance/radius ratio.
-    let allowed_sine = libm::sqrt(tolerance) / libm::sqrt(radius) / core::f64::consts::SQRT_2;
-    libm::sin(sweep / (4.0 * f64::from(edges))) <= allowed_sine
 }
 
 /// Discretizes one loop.
@@ -1175,73 +1061,6 @@ mod tests {
                 Err(DiscretizeError::ToleranceBudgetExceeded { maximum: 4, .. })
             ),
             "four chords cannot satisfy a 1e-9 sagitta bound on a unit-radius semicircle"
-        );
-    }
-
-    #[test]
-    fn circular_count_is_stable_monotone_and_caller_aligned() {
-        let constraints = CircularEdgeConstraints::new(8, u32::MAX).with_edge_multiple(4);
-        let representative = circular_edge_count(1.0, core::f64::consts::TAU, 5.0e-4, constraints)
-            .expect("representative circle count");
-        assert_eq!(representative, 100);
-        assert_eq!(representative % 4, 0, "caller alignment is honored");
-
-        let mut previous = 0;
-        for tolerance in [1.0, 0.1, 1.0e-3, 1.0e-6, 1.0e-12] {
-            let edges = circular_edge_count(2.0, core::f64::consts::TAU, tolerance, constraints)
-                .expect("representable count");
-            assert!(
-                edges >= previous,
-                "tightening tolerance reduced {previous} edges to {edges}"
-            );
-            previous = edges;
-        }
-    }
-
-    #[test]
-    fn circular_count_reports_budget_overflow_and_invalid_inputs() {
-        assert!(matches!(
-            circular_edge_count(
-                1.0,
-                core::f64::consts::PI,
-                1.0e-9,
-                CircularEdgeConstraints::new(1, 4),
-            ),
-            Err(DiscretizeError::ToleranceBudgetExceeded { maximum: 4, .. })
-        ));
-        assert_eq!(
-            circular_edge_count(
-                1.0,
-                core::f64::consts::TAU,
-                1.0e-20,
-                CircularEdgeConstraints::new(1, u32::MAX),
-            ),
-            Err(DiscretizeError::EdgeCountOverflow)
-        );
-        for (radius, sweep, tolerance) in [
-            (0.0, 1.0, 0.1),
-            (1.0, 0.0, 0.1),
-            (1.0, core::f64::consts::TAU + 0.1, 0.1),
-            (f64::INFINITY, 1.0, 0.1),
-        ] {
-            assert_eq!(
-                circular_edge_count(
-                    radius,
-                    sweep,
-                    tolerance,
-                    CircularEdgeConstraints::new(1, 100),
-                ),
-                Err(DiscretizeError::InvalidCircularGeometry)
-            );
-        }
-        assert_eq!(
-            circular_edge_count(
-                1.0,
-                1.0,
-                0.1,
-                CircularEdgeConstraints::new(1, 100).with_edge_multiple(0),
-            ),
-            Err(DiscretizeError::InvalidEdgeBounds)
         );
     }
 

@@ -725,8 +725,8 @@ fn sample_arc(
         crate::discretize::CircularEdgeConstraints::new(1, maximum),
     );
     let mut count = count.map_err(|error| match error {
-        crate::discretize::DiscretizeError::ToleranceBudgetExceeded { .. }
-        | crate::discretize::DiscretizeError::EdgeCountOverflow => {
+        crate::discretize::CircularSamplingError::ToleranceBudgetExceeded { .. }
+        | crate::discretize::CircularSamplingError::EdgeCountOverflow => {
             budget_error(segment, policy, remaining)
         }
         _ => PathDiscretizeError::NumericLimit { segment },
