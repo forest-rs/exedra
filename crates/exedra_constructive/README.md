@@ -229,8 +229,8 @@ corresponding `rounded_rect_*` builders. Circles and rings are centered at the
 origin. Centered rectangles compose directly with concentric circular holes.
 
 Draw other loops with `profile::LoopCursor`: start at an explicit point, add
-`line_to`, `arc_to` (bulge), `arc_through` (three points) or `arc_about` (center
-and sweep) segments, tag the latest with `tagged`, then `close`. Closing adds a
+`line_to`, `arc_to` (bulge), `arc_through` (three points), `arc_about` (center
+and sweep) or `tangent_arc_to` (continuing the previous direction) segments, tag the latest with `tagged`, then `close`. Closing adds a
 straight segment unless the cursor ends exactly at its start. A step that has
 no circle is reported by `close` with its segment index. `Profile2::with_cutouts`
 adds simple filled profiles as holes by reversing them, so

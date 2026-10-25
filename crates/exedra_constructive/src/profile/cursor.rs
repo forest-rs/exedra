@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use kurbo::{Point, Vec2};
 
-use super::{Loop2, ProfileError, Seg2, SegTag};
+use super::{Loop2, ProfileError, Seg2, SegKind, SegTag};
 
 /// Draws a [`Loop2`] one segment at a time from an explicit start point.
 ///
@@ -71,7 +71,7 @@ impl LoopCursor {
     }
 
     /// Appends a circular arc to `to` with an explicit bulge, as in
-    /// [`SegKind::Arc`](super::SegKind::Arc).
+    /// [`SegKind::Arc`].
     pub fn arc_to(self, to: impl Into<Point>, bulge: f64) -> Self {
         self.segment(Seg2::arc(to, bulge))
     }
@@ -120,6 +120,51 @@ impl LoopCursor {
                 radius.x * sin + radius.y * cos,
             );
         self.arc_to(to, libm::tan(sweep / 4.0))
+    }
+
+    /// Appends the circular arc to `to` that leaves the current point along
+    /// the previous segment's end direction, so the two meet without a
+    /// corner.
+    ///
+    /// Only the endpoint is given: the tangent fixes the circle. Without a
+    /// previous segment, or when `to` lies straight ahead (use
+    /// [`Self::line_to`]) or straight behind, the cursor records
+    /// [`ProfileError::DegenerateArc`].
+    ///
+    /// ```
+    /// use exedra_constructive::profile::LoopCursor;
+    ///
+    /// // A 4 x 2 rectangle whose right end is a half circle.
+    /// let bay = LoopCursor::new((0.0, 0.0))
+    ///     .line_to((3.0, 0.0))
+    ///     .tangent_arc_to((3.0, 2.0))
+    ///     .line_to((0.0, 2.0))
+    ///     .close()?;
+    /// assert_eq!(bay.segs().len(), 4);
+    /// # Ok::<(), exedra_constructive::profile::ProfileError>(())
+    /// ```
+    pub fn tangent_arc_to(self, to: impl Into<Point>) -> Self {
+        let to = to.into();
+        let bulge = self
+            .segs
+            .last()
+            .and_then(|last| end_direction(self.previous_point(), last))
+            .and_then(|direction| tangent_bulge(direction, to - self.current));
+        match bulge {
+            Some(bulge) => self.arc_to(to, bulge),
+            None => {
+                let seg = self.segs.len();
+                self.fail(ProfileError::DegenerateArc { seg })
+            }
+        }
+    }
+
+    /// The start of the most recent segment.
+    fn previous_point(&self) -> Point {
+        match self.segs.len() {
+            0 | 1 => self.start,
+            n => self.segs[n - 2].to,
+        }
     }
 
     /// Appends a prepared segment, such as a cubic or policy-defined curve.
@@ -172,6 +217,51 @@ impl LoopCursor {
     }
 }
 
+/// The unit direction in which `seg`, starting at `from`, arrives at its end.
+fn end_direction(from: Point, seg: &Seg2) -> Option<Vec2> {
+    let mut kind = &seg.kind;
+    while let SegKind::PolicyTo { realized, .. } = kind {
+        kind = realized;
+    }
+    let direction = match *kind {
+        SegKind::Line => seg.to - from,
+        SegKind::Arc { bulge } => {
+            // The chord turns by half the sweep from the start tangent, and
+            // the end tangent turns by as much again past the chord.
+            let chord = seg.to - from;
+            let half = 2.0 * libm::atan(bulge);
+            let (sin, cos) = (libm::sin(half), libm::cos(half));
+            Vec2::new(chord.x * cos - chord.y * sin, chord.x * sin + chord.y * cos)
+        }
+        SegKind::Cubic { c1, c2 } => {
+            let handle = if seg.to == c2 {
+                if seg.to == c1 { from } else { c1 }
+            } else {
+                c2
+            };
+            seg.to - handle
+        }
+        SegKind::PolicyTo { .. } => return None,
+    };
+    let length = direction.hypot();
+    (length.is_finite() && length > 0.0).then(|| direction / length)
+}
+
+/// The bulge of the arc leaving along unit `direction` with `chord`.
+///
+/// The sweep is twice the turn from the tangent to the chord, so the bulge
+/// `tan(sweep / 4)` is `tan(turn / 2)`: `c / (n + d)` or `(n - d) / c` with
+/// `n = |chord|`, `d` the dot and `c` the cross product of direction and
+/// chord, each used where it does not cancel.
+fn tangent_bulge(direction: Vec2, chord: Vec2) -> Option<f64> {
+    let (n, d, c) = (chord.hypot(), direction.dot(chord), direction.cross(chord));
+    if c == 0.0 || !n.is_finite() {
+        return None;
+    }
+    let bulge = if d >= 0.0 { c / (n + d) } else { (n - d) / c };
+    (bulge.is_finite() && bulge != 0.0).then_some(bulge)
+}
+
 /// The bulge of the arc from `start` through `via` to `end`, or `None` when the
 /// points determine no circle.
 ///
@@ -218,7 +308,7 @@ fn through_bulge([start, via, end]: [Point; 3]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{SegKind, bulge_arc_center_radius};
+    use crate::profile::bulge_arc_center_radius;
 
     #[test]
     fn three_point_arcs_take_the_side_of_their_via_point() {
@@ -306,6 +396,75 @@ mod tests {
             panic!("expected an arc");
         };
         assert!((bulge + 1e-9).abs() <= 4.0 * f64::EPSILON * 1e-9);
+    }
+
+    /// The unit direction in which `seg`, starting at `from`, leaves.
+    fn start_direction(from: Point, seg: &Seg2) -> Vec2 {
+        let chord = seg.to - from;
+        let SegKind::Arc { bulge } = seg.kind else {
+            return chord / chord.hypot();
+        };
+        let half = -2.0 * libm::atan(bulge);
+        let (sin, cos) = (libm::sin(half), libm::cos(half));
+        let turned = Vec2::new(chord.x * cos - chord.y * sin, chord.x * sin + chord.y * cos);
+        turned / turned.hypot()
+    }
+
+    #[test]
+    fn tangent_arcs_continue_the_previous_direction() {
+        let bay = LoopCursor::new((0.0, 0.0))
+            .line_to((3.0, 0.0))
+            .tangent_arc_to((3.0, 2.0));
+        assert_eq!(bay.segs[1].kind, SegKind::Arc { bulge: 1.0 });
+        let corner = LoopCursor::new((0.0, 0.0))
+            .line_to((4.0, 0.0))
+            .tangent_arc_to((5.0, 1.0));
+        let SegKind::Arc { bulge } = corner.segs[1].kind else {
+            panic!("expected an arc");
+        };
+        assert!((bulge - libm::tan(core::f64::consts::FRAC_PI_8)).abs() < 1e-15);
+        // An S-curve: each arc leaves where the previous one arrived.
+        let wave = LoopCursor::new((0.0, 0.0))
+            .line_to((1.0, 0.0))
+            .tangent_arc_to((2.0, 0.7))
+            .tangent_arc_to((3.5, 0.4))
+            .tangent_arc_to((4.0, -1.0));
+        let mut from = Point::new(0.0, 0.0);
+        let mut arriving: Option<Vec2> = None;
+        for seg in &wave.segs {
+            if let Some(arriving) = arriving {
+                let leaving = start_direction(from, seg);
+                assert!(
+                    (leaving - arriving).hypot() < 1e-14,
+                    "{leaving:?} {arriving:?}"
+                );
+            }
+            arriving = end_direction(from, seg);
+            from = seg.to;
+        }
+        // After a cubic, the tangent is its last handle's direction.
+        let after_cubic = LoopCursor::new((0.0, 0.0))
+            .segment(Seg2::cubic((2.0, 0.0), (0.5, 1.0), (1.0, 1.0)))
+            .tangent_arc_to((3.0, 0.0));
+        let leaving = start_direction(Point::new(2.0, 0.0), &after_cubic.segs[1]);
+        let handle = Vec2::new(1.0, -1.0) / 2.0_f64.sqrt();
+        assert!((leaving - handle).hypot() < 1e-14);
+    }
+
+    #[test]
+    fn tangent_arcs_need_a_turn_and_a_previous_segment() {
+        for cursor in [
+            LoopCursor::new((0.0, 0.0)).tangent_arc_to((1.0, 1.0)),
+            LoopCursor::new((0.0, 0.0))
+                .line_to((1.0, 0.0))
+                .tangent_arc_to((3.0, 0.0)),
+            LoopCursor::new((0.0, 0.0))
+                .line_to((1.0, 0.0))
+                .tangent_arc_to((-2.0, 0.0)),
+        ] {
+            let seg = cursor.segs.len();
+            assert_eq!(cursor.close(), Err(ProfileError::DegenerateArc { seg }));
+        }
     }
 
     #[test]
