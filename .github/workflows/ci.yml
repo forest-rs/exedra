@@ -27,6 +27,7 @@ env:
     -p exedra_math
     -p exedra_measurements
     -p exedra_primitives
+    -p exedra_profile
     -p exedra_qef
     -p exedra_spatial
     -p exedra_testkit
@@ -47,6 +48,7 @@ env:
     -p exedra_math
     -p exedra_measurements
     -p exedra_primitives
+    -p exedra_profile
     -p exedra_qef
     -p exedra_spatial
     -p exedra_testkit

@@ -27,6 +27,7 @@ members = [
     "crates/exedra_mesh",
     "crates/exedra_mesh_ops",
     "crates/exedra_primitives",
+    "crates/exedra_profile",
     "crates/exedra_qef",
     "crates/exedra_spatial",
     "crates/exedra_testkit",
@@ -125,6 +126,7 @@ exedra_measurements = { default-features = false, path = "crates/exedra_measurem
 exedra_mesh = { default-features = false, path = "crates/exedra_mesh", version = "0.1.0" }
 exedra_mesh_ops = { default-features = false, path = "crates/exedra_mesh_ops", version = "0.1.0" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives", version = "0.1.0" }
+exedra_profile = { path = "crates/exedra_profile", version = "0.1.0" }
 exedra_qef = { default-features = false, path = "crates/exedra_qef", version = "0.1.0" }
 exedra_spatial = { default-features = false, path = "crates/exedra_spatial", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }

@@ -174,7 +174,7 @@ let cylinder = PrimitiveSpec::Cylinder {
 };
 assert_eq!(segments % 4, 0);
 # let _ = cylinder;
-# Ok::<(), exedra_constructive::discretize::DiscretizeError>(())
+# Ok::<(), exedra_constructive::discretize::CircularSamplingError>(())
 ```
 
 The multiple-of-four choice is explicit here because this caller wants axis

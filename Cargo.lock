@@ -336,6 +336,7 @@ dependencies = [
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_primitives",
+ "exedra_profile",
  "exedra_testkit",
  "exedra_triangulate",
  "hashbrown",
@@ -474,6 +475,13 @@ name = "exedra_primitives"
 version = "0.1.0"
 dependencies = [
  "exedra_mesh",
+ "libm",
+]
+
+[[package]]
+name = "exedra_profile"
+version = "0.1.0"
+dependencies = [
  "libm",
 ]
 
