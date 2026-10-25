@@ -43,6 +43,7 @@ extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 
+pub mod body;
 pub mod extrusion;
 pub mod geometry;
 
