@@ -203,6 +203,40 @@ impl Placement3 {
             .iter()
             .all(|row| row.iter().all(|v| v.is_finite()))
     }
+
+    /// Maps a point: `linear * point + translation`.
+    #[must_use]
+    pub fn transform_point(&self, point: [f64; 3]) -> [f64; 3] {
+        self.rows
+            .map(|r| r[0] * point[0] + r[1] * point[1] + r[2] * point[2] + r[3])
+    }
+}
+
+/// `outer * inner` applies `inner` first, then `outer`.
+///
+/// ```
+/// use exedra_math::Placement3;
+///
+/// let turn = Placement3::rotate_z_then_translate(core::f64::consts::FRAC_PI_2, 0.0, 0.0, 0.0);
+/// let shift = Placement3::translate(1.0, 0.0, 0.0);
+/// // Shift first, then turn: +X lands on +Y.
+/// let [x, y, _] = (turn * shift).transform_point([0.0; 3]);
+/// assert!(x.abs() < 1e-15 && (y - 1.0).abs() < 1e-15);
+/// ```
+impl core::ops::Mul for Placement3 {
+    type Output = Self;
+
+    fn mul(self, inner: Self) -> Self {
+        let (a, b) = (&self.rows, &inner.rows);
+        let mut rows = [[0.0; 4]; 3];
+        for (i, row) in rows.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate().take(3) {
+                *cell = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+            }
+            row[3] = a[i][0] * b[0][3] + a[i][1] * b[1][3] + a[i][2] * b[2][3] + a[i][3];
+        }
+        Self { rows }
+    }
 }
 
 /// A plane in 3D: a normal plus signed distance from the origin.

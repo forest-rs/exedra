@@ -179,7 +179,7 @@ fn reflected_placement_keeps_outward_winding_and_provenance() {
         mirrored.source_map.face_features()
     );
     for (a, b) in positions(&original).into_iter().zip(positions(&mirrored)) {
-        assert!(norm(sub(apply_placement(&placement, a), b)) < 1e-6);
+        assert!(norm(sub(placement.transform_point(a), b)) < 1e-6);
     }
 }
 

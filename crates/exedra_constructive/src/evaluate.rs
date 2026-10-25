@@ -637,7 +637,7 @@ impl EvalCx<'_> {
                 height,
                 caps,
             } => {
-                let combined = compose(world, placement);
+                let combined = *world * *placement;
                 let (profile, height, caps) = (*profile, *height, *caps);
                 let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
@@ -659,7 +659,7 @@ impl EvalCx<'_> {
                 sweep,
                 caps,
             } => {
-                let combined = compose(world, placement);
+                let combined = *world * *placement;
                 let (profile, sweep, caps) = (*profile, *sweep, *caps);
                 let chart = node.surface_chart;
                 let body = self.body_cached(node_id, world, |cx| {
@@ -684,7 +684,7 @@ impl EvalCx<'_> {
                     .iter()
                     .map(|section| {
                         (
-                            compose(world, &section.placement),
+                            *world * section.placement,
                             self.recipe
                                 .profile(section.profile)
                                 .expect("validated profile id"),
@@ -771,7 +771,7 @@ impl EvalCx<'_> {
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::PlanarFace { profile, placement } => {
-                let combined = compose(world, placement);
+                let combined = *world * *placement;
                 let profile = *profile;
                 let body = self.body_cached(node_id, world, |cx| {
                     tessellate_planar_face(
@@ -785,7 +785,7 @@ impl EvalCx<'_> {
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::Primitive { spec, placement } => {
-                let combined = compose(world, placement);
+                let combined = *world * *placement;
                 let spec = *spec;
                 let body = self.body_cached(node_id, world, |cx| {
                     tessellate_primitive(spec, &combined, cx.policy)
@@ -804,7 +804,7 @@ impl EvalCx<'_> {
                 Ok(bounds)
             }
             NodeKind::Transform { child, xf } => {
-                let combined = compose(world, xf);
+                let combined = *world * *xf;
                 let child = *child;
                 self.walk(child, &combined, emit, material)
             }
@@ -829,7 +829,7 @@ impl EvalCx<'_> {
                 thickness,
                 placement,
             } => {
-                let combined = compose(world, placement);
+                let combined = *world * *placement;
                 let points = points.clone();
                 let (rows, cols) = (*rows, *cols);
                 let (close_u, close_w, thickness) = (*close_u, *close_w, *thickness);
@@ -843,7 +843,7 @@ impl EvalCx<'_> {
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
             }
             NodeKind::MeshImport { import, placement } => {
-                let placement = compose(world, placement);
+                let placement = *world * *placement;
                 let import = *import;
                 let body = self.body_cached(node_id, world, |cx| {
                     let source = cx.recipe.import(import).expect("validated import id");
@@ -876,7 +876,7 @@ impl EvalCx<'_> {
             } => self.evaluate_stretch(node_id, *child, plane, *length, world, emit, material),
             NodeKind::Mirror { child, plane } => {
                 let reflection = reflection_placement(plane);
-                let combined = compose(world, &reflection);
+                let combined = *world * reflection;
                 let child = *child;
                 // The reflecting placement composes downward; body
                 // tessellation detects the negative determinant and
@@ -885,7 +885,7 @@ impl EvalCx<'_> {
             }
             NodeKind::Instance { of, placement } => {
                 let of = *of;
-                let placement = compose(world, placement);
+                let placement = *world * *placement;
                 let local = if let Some(cached) = self.instance_cache.get(&(of, material)) {
                     Rc::clone(cached)
                 } else {
@@ -1151,7 +1151,7 @@ impl EvalCx<'_> {
         let frame = attachment
             .resolve(&support_body.body, &self.policy.workplane)
             .map_err(|error| fail(TessellateError::Attachment(error)))?;
-        let combined = compose(world, &frame.frame());
+        let combined = *world * frame.frame();
         self.report.attachments.push(AttachmentResolution {
             node,
             support,
@@ -2268,20 +2268,6 @@ fn instantiate(
         loft_sampling: source.loft_sampling.clone(),
         refinement: source.refinement,
     })
-}
-
-/// Composes two placements: `outer * inner` (inner applies first).
-fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
-    let a = &outer.rows;
-    let b = &inner.rows;
-    let mut rows = [[0.0; 4]; 3];
-    for (i, row) in rows.iter_mut().enumerate() {
-        for j in 0..3 {
-            row[j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-        row[3] = a[i][0] * b[0][3] + a[i][1] * b[1][3] + a[i][2] * b[2][3] + a[i][3];
-    }
-    Placement3 { rows }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use exedra_assembly::{PartId, compose as compose_placement};
+use exedra_assembly::PartId;
 use exedra_constructive::ir::{Placement3, Plane3, Recipe};
 use exedra_math::{add, cross, norm, normalize, scale, sub};
 use joiner::{
@@ -141,7 +141,7 @@ fn instantiate_station(
         context.add_instance(
             &truss_member_instance_key(station_key, member.key_suffix),
             member.part,
-            compose_placement(&station_placement, &member.placement),
+            station_placement * member.placement,
             names::roles::NAVE_TRUSS_MEMBER,
         );
     }
@@ -1448,13 +1448,7 @@ mod tests {
     }
 
     fn transform_point(placement: &Placement3, point: [f32; 3]) -> [f64; 3] {
-        let point = point.map(f64::from);
-        let rows = &placement.rows;
-        [
-            rows[0][0] * point[0] + rows[0][1] * point[1] + rows[0][2] * point[2] + rows[0][3],
-            rows[1][0] * point[0] + rows[1][1] * point[1] + rows[1][2] * point[2] + rows[1][3],
-            rows[2][0] * point[0] + rows[2][1] * point[1] + rows[2][2] * point[2] + rows[2][3],
-        ]
+        placement.transform_point(point.map(f64::from))
     }
 
     fn rotation_determinant(placement: &Placement3) -> f64 {

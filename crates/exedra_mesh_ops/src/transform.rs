@@ -154,7 +154,7 @@ fn placed_positions(
             .copied()
             .expect("a live vertex has a position")
             .map(f64::from);
-        let position = exedra_math::narrow(apply_placement(placement, local));
+        let position = exedra_math::narrow(placement.transform_point(local));
         if !exedra_math::finite(position) {
             return Err(TransformError::NonFiniteGeometry);
         }
@@ -504,15 +504,6 @@ fn inverse_linear(placement: &Placement3) -> Option<[[f64; 3]; 3]> {
         .flatten()
         .all(|value| value.is_finite())
         .then_some(inverse)
-}
-
-fn apply_placement(placement: &Placement3, point: [f64; 3]) -> [f64; 3] {
-    let r = &placement.rows;
-    [
-        r[0][0] * point[0] + r[0][1] * point[1] + r[0][2] * point[2] + r[0][3],
-        r[1][0] * point[0] + r[1][1] * point[1] + r[1][2] * point[2] + r[1][3],
-        r[2][0] * point[0] + r[2][1] * point[1] + r[2][2] * point[2] + r[2][3],
-    ]
 }
 
 fn ordered_edge(a: u32, b: u32) -> (u32, u32) {

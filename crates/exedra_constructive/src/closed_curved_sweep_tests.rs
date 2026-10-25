@@ -655,7 +655,7 @@ fn tilted_closed_plane_matches_a_placed_circle() {
             placement.rows[i][0] * p[0] + placement.rows[i][1] * p[1] + placement.rows[i][2] * p[2]
         })
     };
-    let point = |p| apply_placement(&placement, p);
+    let point = |p| placement.transform_point(p);
     let section = profile();
     let policy = EvalPolicy::default();
     let placed = tessellate_curved_sweep(
