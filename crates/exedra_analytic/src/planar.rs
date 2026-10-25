@@ -544,6 +544,32 @@ pub enum BuildError {
     InvalidRectFrame,
 }
 
+impl core::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Geometry(error) => write!(f, "planar geometry: {error}"),
+            Self::Boundary(error) => write!(f, "planar boundary: {error}"),
+            Self::LoopTooSmall => f.write_str("a planar loop needs at least three vertices"),
+            Self::RepeatedVertex => f.write_str("a planar loop repeats a vertex identity"),
+            Self::DegenerateLoop => f.write_str("planar loop vertices do not define a plane"),
+            Self::NonPlanarLoop => f.write_str("loop vertices exceed the planarity tolerance"),
+            Self::MissingVertex(vertex) => {
+                write!(f, "planar loop references missing vertex {vertex:?}")
+            }
+            Self::InvalidRectFrame => f.write_str("frame bounds or opening bounds are invalid"),
+        }
+    }
+}
+impl core::error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Geometry(error) => Some(error),
+            Self::Boundary(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// Analytic face-mutation error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum EditError {
