@@ -101,8 +101,6 @@ dependencies = [
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_primitives",
- "exedra_qef",
- "exedra_spatial",
  "exedra_triangulate",
 ]
 
@@ -407,8 +405,6 @@ version = "0.0.0"
 dependencies = [
  "exedra_fidget",
  "exedra_isosurface",
- "exedra_qef",
- "exedra_spatial",
  "fidget",
 ]
 
@@ -429,8 +425,6 @@ version = "0.1.0"
 dependencies = [
  "exedra_math",
  "exedra_mesh",
- "exedra_qef",
- "exedra_spatial",
  "hashbrown",
  "libm",
 ]
@@ -496,18 +490,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "exedra_qef"
-version = "0.1.0"
-dependencies = [
- "exedra_math",
- "libm",
-]
-
-[[package]]
 name = "exedra_qef_bench"
 version = "0.0.0"
 dependencies = [
- "exedra_qef",
+ "exedra_isosurface",
 ]
 
 [[package]]
@@ -518,14 +504,8 @@ dependencies = [
  "exedra_isosurface",
  "exedra_mesh",
  "exedra_primitives",
- "exedra_qef",
- "exedra_spatial",
  "fidget",
 ]
-
-[[package]]
-name = "exedra_spatial"
-version = "0.1.0"
 
 [[package]]
 name = "exedra_testkit"
@@ -852,8 +832,6 @@ dependencies = [
  "exedra_isosurface",
  "exedra_math",
  "exedra_mesh",
- "exedra_qef",
- "exedra_spatial",
 ]
 
 [[package]]

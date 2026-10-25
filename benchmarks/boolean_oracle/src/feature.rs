@@ -11,14 +11,14 @@ use std::path::PathBuf;
 use exedra_isosurface::analytic::{
     BoxField, CylinderField, Difference, Intersection, TaggedField, Union,
 };
+use exedra_isosurface::qef::QefParams;
+use exedra_isosurface::spatial::Aabb;
 use exedra_isosurface::{
     DualContourParams, EdgeSearchParams, SemiAnalyticContourResult, SemiAnalyticField, Translate,
     UniformScale, dual_contour, dual_contour_semi_analytic,
 };
 use exedra_math::{add, dot, scale, sub};
 use exedra_mesh::{ExtractParams, Mesh, VertexId, attr};
-use exedra_qef::QefParams;
-use exedra_spatial::Aabb;
 
 const BOX_REGION: u32 = 10;
 const CYLINDER_REGION: u32 = 20;

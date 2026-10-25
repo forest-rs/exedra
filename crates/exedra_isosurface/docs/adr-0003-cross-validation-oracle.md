@@ -149,8 +149,6 @@ vertices in stable mesh order and faces grouped by `FACE_REGION`; it adds no
 serialization dependency and cannot write outside the target subtree. The
 artifact is deliberately generated rather than checked in.
 
-The non-published harness directly depends on the existing workspace
-`exedra_spatial` and `exedra_qef` crates only because constructing the public
-`DualContourParams` struct requires naming `Aabb` and `QefParams`. Re-exporting
-those types or adding a core convenience API solely for this harness would
-widen the core surface for the wrong reason.
+The non-published harness names `Aabb` and `QefParams` through
+`exedra_isosurface`, because constructing the public `DualContourParams`
+struct requires them; it adds no core convenience API of its own.

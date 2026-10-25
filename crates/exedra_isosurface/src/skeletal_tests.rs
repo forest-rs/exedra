@@ -4,7 +4,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra_spatial::Aabb;
+use crate::spatial::Aabb;
 
 use super::{BoundedField, CapsuleField, RoundConeField, SmoothUnionN};
 use crate::{DualContourParams, EdgeSearchParams, QefParams, ScalarField, dual_contour};

@@ -5,14 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use exedra_isosurface::qef::{PlaneConstraint, QefBounds, QefSolver, SharpnessClass};
+use exedra_isosurface::spatial::Aabb;
 use exedra_isosurface::{
     DualContourParams, DualContourStats, HermiteIntersection, ScalarField,
     SemiAnalyticContourStats, SemiAnalyticFeature, SemiAnalyticField,
     SemiAnalyticProjectionOutcome, locate_edge_intersection,
 };
 use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder, attr, op};
-use exedra_qef::{PlaneConstraint, QefBounds, QefSolver, SharpnessClass};
-use exedra_spatial::Aabb;
 
 use crate::fixture::{H1Field, H1Fixture};
 use exedra_math::{distance_squared, dot, sub};

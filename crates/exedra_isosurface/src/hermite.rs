@@ -167,7 +167,7 @@ mod tests {
     };
     use crate::ScalarField;
     use crate::analytic::SphereField;
-    use exedra_spatial::Aabb;
+    use crate::spatial::Aabb;
 
     #[derive(Copy, Clone, Debug)]
     struct NanGradientField;

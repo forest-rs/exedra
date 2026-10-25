@@ -8,9 +8,9 @@ use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::fmt;
 
+use crate::qef::QefSolveError;
+use crate::spatial::RefineError;
 use exedra_mesh::{BuildError, op::CollapseEdgeError};
-use exedra_qef::QefSolveError;
-use exedra_spatial::RefineError;
 
 use super::{DualContourParameter, DualContourStats};
 use crate::{Aabb, ScalarField};

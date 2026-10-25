@@ -3,7 +3,7 @@
 
 //! Lift 2D profile fields into 3D scalar fields.
 
-use exedra_spatial::Aabb;
+use crate::spatial::Aabb;
 
 use crate::{Aabb2, ScalarField, ScalarField2d};
 use exedra_math::{add, scale};
@@ -246,15 +246,15 @@ mod tests {
     use crate::ExtractionLimits;
     use alloc::vec;
 
-    use exedra_spatial::Aabb;
+    use crate::spatial::Aabb;
 
+    use crate::qef::QefParams;
     use crate::{
         Aabb2, EdgeSearchParams, ScalarField, ScalarField2d,
         analytic::{CylinderField, TorusField},
         analytic2d::CircleField2d,
         dual_contour::{DualContourParams, dual_contour},
     };
-    use exedra_qef::QefParams;
 
     use super::{Extrude, Revolve};
 

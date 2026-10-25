@@ -1,9 +1,9 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Simple executable benchmark for representative `exedra_qef` solve sizes.
+//! Simple executable benchmark for representative `exedra_isosurface::qef` solve sizes.
 
-use exedra_qef::{PlaneConstraint, QefBounds, QefParams, QefSolver};
+use exedra_isosurface::qef::{PlaneConstraint, QefBounds, QefParams, QefSolver};
 use std::time::Instant;
 
 fn main() {

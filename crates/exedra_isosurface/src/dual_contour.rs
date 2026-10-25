@@ -8,9 +8,9 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use crate::qef::{PlaneConstraint, QefBounds, QefResult, QefSolver, SharpnessClass};
+use crate::spatial::{CellId, CellRef, Octree, OctreeError, OctreeVisitor};
 use exedra_mesh::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
-use exedra_qef::{PlaneConstraint, QefBounds, QefResult, QefSolver, SharpnessClass};
-use exedra_spatial::{CellId, CellRef, Octree, OctreeError, OctreeVisitor};
 use hashbrown::HashMap;
 
 use crate::adaptive_transition::{
@@ -2397,14 +2397,14 @@ mod tests {
         BoxField, CylinderField, Difference, HalfSpaceField, SphereField, TaggedField, Union,
     };
     use crate::cell_topology::classify_cell;
+    use crate::qef::{QefParams, QefResult};
+    use crate::spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
     use crate::{
         AnalyticCylinder, AnalyticPrimitive, CellHermiteData, EdgeSearchParams,
         HermiteIntersection, ProvenanceField, ScalarField, SemiAnalyticField,
         SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
     };
     use exedra_mesh::{BuildError, ExtractParams, FaceLoopErrorKind, attr};
-    use exedra_qef::{QefParams, QefResult};
-    use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeVisitor};
     use hashbrown::HashSet;
 
     fn params(bounds: Aabb, max_depth: u8) -> DualContourParams {
@@ -3435,12 +3435,12 @@ mod tests {
                 },
                 bounds,
                 position: [0.25, 0.5, 0.75],
-                sharpness: exedra_qef::SharpnessClass::Smooth,
+                sharpness: crate::qef::SharpnessClass::Smooth,
                 topology: classify_cell(&values_for_mask(1)),
                 components: Vec::new(),
                 compatibility: ComponentVertex {
                     position: [0.25, 0.5, 0.75],
-                    sharpness: exedra_qef::SharpnessClass::Smooth,
+                    sharpness: crate::qef::SharpnessClass::Smooth,
                     constraint_count: 0,
                     qef: None,
                 },
@@ -3536,11 +3536,11 @@ mod tests {
         assert_eq!(solved.components[1].position, [0.75; 3]);
         assert_eq!(
             solved.components[0].sharpness,
-            exedra_qef::SharpnessClass::Corner
+            crate::qef::SharpnessClass::Corner
         );
         assert_eq!(
             solved.components[1].sharpness,
-            exedra_qef::SharpnessClass::Corner
+            crate::qef::SharpnessClass::Corner
         );
         assert_eq!(
             solved.compatibility.position, [0.5; 3],
@@ -4628,7 +4628,7 @@ mod tests {
             position: transform([0.25; 3]),
             residual_error: 0.0,
             rank: 3,
-            sharpness_class: exedra_qef::SharpnessClass::Corner,
+            sharpness_class: crate::qef::SharpnessClass::Corner,
             eigenvalues: [1.0; 3],
             was_clamped: false,
         };

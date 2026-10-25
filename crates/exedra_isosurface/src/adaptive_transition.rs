@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use exedra_spatial::{Aabb, CellId, CellRef, Octree, OctreeError, OctreeVisitor};
+use crate::spatial::{Aabb, CellId, CellRef, Octree, OctreeError, OctreeVisitor};
 use hashbrown::HashMap;
 
 use crate::ScalarField;

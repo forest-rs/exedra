@@ -11,11 +11,11 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use exedra_fidget::VmField;
+use exedra_isosurface::qef::QefParams;
+use exedra_isosurface::spatial::Aabb;
 use exedra_isosurface::{DualContourParams, EdgeSearchParams, dual_contour};
 use exedra_mesh::{ExtractParams, Mesh, NormalsSource, op};
 use exedra_primitives::{TorusParams, UvSphereParams, torus, uv_sphere};
-use exedra_qef::QefParams;
-use exedra_spatial::Aabb;
 use fidget::{context::Tree, vm::VmShape};
 
 fn main() {

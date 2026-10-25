@@ -21,5 +21,3 @@ workspace = true
 exedra_isosurface = { features = ["std"], workspace = true }
 exedra_math = { features = ["std"], workspace = true }
 exedra_mesh = { features = ["std"], workspace = true }
-exedra_qef = { features = ["std"], workspace = true }
-exedra_spatial.workspace = true

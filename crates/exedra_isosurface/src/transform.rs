@@ -3,7 +3,7 @@
 
 //! Reusable transform wrappers for [`crate::ScalarField`] implementations.
 
-use exedra_spatial::Aabb;
+use crate::spatial::Aabb;
 
 use crate::{ProvenanceField, ScalarField, SpecializableField};
 use exedra_math::{add, dot, normalize, scale, sub};
@@ -451,7 +451,7 @@ fn abs(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use exedra_spatial::Aabb;
+    use crate::spatial::Aabb;
 
     use crate::{
         ScalarField,
