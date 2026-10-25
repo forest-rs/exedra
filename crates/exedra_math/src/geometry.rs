@@ -52,6 +52,17 @@ impl Placement3 {
         }
     }
 
+    /// Rotation about +Y by `radians` (libm trig when enabled), then translation.
+    ///
+    /// A positive angle carries +Z toward +X, right-handed about +Y.
+    #[must_use]
+    pub fn rotate_y_then_translate(radians: f64, x: f64, y: f64, z: f64) -> Self {
+        let (s, c) = trig::sincos(radians);
+        Self {
+            rows: [[c, 0.0, s, x], [0.0, 1.0, 0.0, y], [-s, 0.0, c, z]],
+        }
+    }
+
     /// Builds a placement from local basis axes and a translation.
     ///
     /// The three axes become the matrix columns: transforming local
