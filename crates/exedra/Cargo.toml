@@ -36,9 +36,9 @@ libm = [
 ]
 
 # Application-facing domain namespaces.
-analytic = ["dep:exedra_analytic"]
+analytic = ["dep:exedra_analytic", "dep:exedra_profile"]
 assembly = ["dep:exedra_assembly", "compile"]
-constructive = ["dep:exedra_constructive"]
+constructive = ["dep:exedra_constructive", "dep:exedra_profile"]
 compile = ["dep:exedra_compile", "constructive"]
 gltf = ["dep:exedra_gltf", "compile", "exedra_assembly?/gltf", "std"]
 isosurface = ["dep:exedra_isosurface"]
@@ -63,6 +63,7 @@ exedra_isosurface = { optional = true, workspace = true }
 exedra_mesh.workspace = true
 exedra_mesh_ops = { optional = true, workspace = true }
 exedra_primitives = { optional = true, workspace = true }
+exedra_profile = { optional = true, workspace = true }
 
 [lints]
 workspace = true

@@ -17,6 +17,8 @@
 //! - `edit` contains opt-in command execution, preview and reports for editors.
 //! - `primitives` contains deterministic primitive mesh generators (opt-in).
 //! - `analytic` and `isosurface` contain alternative geometry heads (opt-in).
+//! - `profile` contains the line and arc profiles both `constructive` and
+//!   `analytic` accept; either feature enables it.
 //! - `gltf` exports compiled geometry and caller-prepared structure (opt-in).
 //! - `serde` exposes recipe interchange and forwards to optional Assembly interchange.
 //!
@@ -131,9 +133,13 @@ pub use exedra_mesh_ops as mesh_ops;
 #[cfg(feature = "edit")]
 pub use exedra_edit as edit;
 
-/// Planar analytic topology and tessellation.
+/// Analytic extrusions and planar shells with explicit mesh realization.
 #[cfg(feature = "analytic")]
 pub use exedra_analytic as analytic;
+
+/// Line and circular-arc profiles shared by the constructive and analytic heads.
+#[cfg(any(feature = "analytic", feature = "constructive"))]
+pub use exedra_profile as profile;
 
 /// Implicit fields, field composition, and isosurface extraction.
 #[cfg(feature = "isosurface")]

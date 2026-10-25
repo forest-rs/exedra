@@ -236,6 +236,12 @@ no circle is reported by `close` with its segment index. `Profile2::with_cutouts
 adds simple filled profiles as holes by reversing them, so
 `circle(r)?.translated(offset)?` places a round hole; tags travel with the
 reversed segments.
+
+`Profile2::to_line_arc` lowers a profile into the shared
+`exedra_profile::Profile` that the analytic head extrudes exactly. Endpoints,
+bulges and tags carry over and the shared arrangement checks apply. Cubic and
+policy-defined segments are refused rather than approximated, because a
+policy is local to its recipe.
 Migration: the old `rect` and `rounded_rect` names are replaced by their
 `*_from_corner` names for identical geometry; existing serialized recipes do
 not change.
