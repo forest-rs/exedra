@@ -342,7 +342,7 @@ impl Pocket {
 }
 
 /// Why a pocket cannot be cut.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PocketError {
     /// A filled pocket region contains holes, which would leave unsupported islands.
@@ -352,7 +352,16 @@ pub enum PocketError {
     },
     /// The depth is not finite, not positive, or leaves less than the
     /// separation before the other end.
-    InvalidDepth,
+    InvalidDepth {
+        /// Requested depth, including a non-finite input when applicable.
+        depth: f64,
+        /// Host extrusion length.
+        length: f64,
+        /// Material remaining between the requested floor and opposite end.
+        remaining: f64,
+        /// Required minimum material thickness.
+        min_separation: f64,
+    },
     /// Against the profile's loops and the other pockets on its end, the
     /// outline is not a valid hole. Holes past the profile's own index the
     /// earlier pockets on this end, then the new outline.
@@ -362,6 +371,10 @@ pub enum PocketError {
     BreaksThrough {
         /// The pocket on the other end.
         other: usize,
+        /// Signed material thickness between the two native floor coordinates.
+        remaining: f64,
+        /// Required minimum material thickness.
+        min_separation: f64,
     },
 }
 
@@ -372,12 +385,27 @@ impl core::fmt::Display for PocketError {
                 f,
                 "pocket region has {count} holes; this pocket model requires one filled outline"
             ),
-            Self::InvalidDepth => {
-                write!(f, "pocket depth must be positive and less than the length")
+            Self::InvalidDepth {
+                depth,
+                length,
+                remaining,
+                min_separation,
+            } => {
+                write!(
+                    f,
+                    "pocket depth {depth} must be finite and positive; length {length} leaves {remaining} material, requiring at least {min_separation}"
+                )
             }
             Self::Arrangement(error) => write!(f, "pocket outline: {error}"),
-            Self::BreaksThrough { other } => {
-                write!(f, "pocket meets pocket {other} from the other end")
+            Self::BreaksThrough {
+                other,
+                remaining,
+                min_separation,
+            } => {
+                write!(
+                    f,
+                    "pocket leaves {remaining} material before pocket {other} from the other end, requiring at least {min_separation}"
+                )
             }
         }
     }
@@ -390,7 +418,10 @@ impl core::error::Error for PocketError {}
 #[non_exhaustive]
 pub enum ExtrusionError {
     /// The length is zero, negative or non-finite.
-    InvalidLength,
+    InvalidLength {
+        /// Requested extrusion length.
+        length: f64,
+    },
     /// The frame is not a finite right-handed orthonormal frame within
     /// [`FRAME_TOLERANCE`].
     SingularFrame(FrameError),
@@ -409,7 +440,10 @@ pub enum ExtrusionError {
 impl core::fmt::Display for ExtrusionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InvalidLength => write!(f, "extrusion length must be finite and positive"),
+            Self::InvalidLength { length } => write!(
+                f,
+                "extrusion length must be finite and positive, got {length}"
+            ),
             Self::SingularFrame(error) => write!(f, "extrusion frame: {error}"),
             Self::TooLarge => write!(f, "profile is too large to extrude"),
             Self::Pocket { pocket, error } => write!(f, "pocket {pocket}: {error}"),
@@ -474,7 +508,7 @@ impl Extrusion {
     /// that is not right-handed and orthonormal.
     pub fn new(profile: Profile, frame: Placement3, length: f64) -> Result<Self, ExtrusionError> {
         if !(length.is_finite() && length > 0.0) {
-            return Err(ExtrusionError::InvalidLength);
+            return Err(ExtrusionError::InvalidLength { length });
         }
         Workplane::new(frame).map_err(ExtrusionError::SingularFrame)?;
         Self::build(profile, frame, length, Vec::new(), Vec::new())
@@ -509,7 +543,12 @@ impl Extrusion {
             && pocket.depth > 0.0
             && self.length - pocket.depth >= separation)
         {
-            return Err(refuse(PocketError::InvalidDepth));
+            return Err(refuse(PocketError::InvalidDepth {
+                depth: pocket.depth,
+                length: self.length,
+                remaining: self.length - pocket.depth,
+                min_separation: separation,
+            }));
         }
         let holes_with = |others: &mut dyn Iterator<Item = &Loop>| {
             let mut holes = self.profile.holes().to_vec();
@@ -541,7 +580,11 @@ impl Extrusion {
             };
             // Use the same floor coordinates stored by build().
             if (self.length - end_depth) - start_depth < separation {
-                return Err(refuse(PocketError::BreaksThrough { other }));
+                return Err(refuse(PocketError::BreaksThrough {
+                    other,
+                    remaining: (self.length - end_depth) - start_depth,
+                    min_separation: separation,
+                }));
             }
             webs.push(if pocket.end == End::End {
                 [index, other]
@@ -1050,10 +1093,12 @@ mod tests {
     #[test]
     fn length_and_frame_are_checked() {
         for length in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert_eq!(
-                Extrusion::new(rect_with_round_hole(), Placement3::IDENTITY, length),
-                Err(ExtrusionError::InvalidLength)
-            );
+            let error =
+                Extrusion::new(rect_with_round_hole(), Placement3::IDENTITY, length).unwrap_err();
+            let ExtrusionError::InvalidLength { length: supplied } = error else {
+                panic!("{error:?}");
+            };
+            assert_eq!(supplied.to_bits(), length.to_bits());
         }
         let mirrored =
             Placement3::from_axes([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]);
