@@ -372,6 +372,39 @@ fn invalid_policies_and_budgets_are_refused() {
 }
 
 #[test]
+fn caller_regions_group_faces_without_losing_correspondence() {
+    let solid = Extrusion::new(panel(), Placement3::IDENTITY, 2.0).unwrap();
+    // Holes' walls share region 9; everything else keeps its face index.
+    let region = |face: FaceId, native: &Face| match native.role {
+        FaceRole::Wall { segment, .. } if segment.boundary != Boundary::Profile(LoopRef::Outer) => {
+            9
+        }
+        _ => face.0,
+    };
+    let realized = solid
+        .tessellate_with_regions(&TessellationPolicy::default(), region)
+        .unwrap();
+    let regions = realized
+        .mesh
+        .attrs()
+        .dense(exedra_mesh::attr::FACE_REGION)
+        .unwrap();
+    for (mesh_face, native) in &realized.mesh_faces {
+        let expected = region(*native, &solid.faces()[native.index()]);
+        assert_eq!(regions.get(mesh_face.as_id()), Some(&expected));
+    }
+    let hole_walls = realized
+        .mesh_faces
+        .iter()
+        .filter(|(mesh_face, _)| regions.get(mesh_face.as_id()) == Some(&9))
+        .count();
+    assert!(hole_walls > 3, "every hole's walls share one region");
+    // The geometry is the same as with native regions.
+    let plain = solid.tessellate(&TessellationPolicy::default()).unwrap();
+    assert_eq!(plain.report, realized.report);
+}
+
+#[test]
 fn axial_narrowing_error_counts_against_the_tolerance() {
     // A radius-one hole far along the extrusion axis: f32 moves every
     // vertex about 0.03 in z, on top of the in-plane chord error.
