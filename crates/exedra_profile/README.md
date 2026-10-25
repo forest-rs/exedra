@@ -10,6 +10,11 @@ closer than `min_separation`, and holes outside the outer loop or nested in
 one another. The first violation names its loops and segments. Nothing is
 moved, merged or healed. Areas and lengths are exact for lines and arcs.
 
+`SegTag` is the shared feature label used by constructive profiles and analytic
+face roles. A tag passed to a constructive cutout stays the same typed value
+after `to_line_arc` and extrusion; queries can match `tag: Some(VENT)` directly.
+Tags do not replace the owning geometry's scoped face and edge ids.
+
 ```rust
 use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 

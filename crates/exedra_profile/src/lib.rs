@@ -40,7 +40,7 @@ mod sampling;
 
 pub use arc::Arc;
 pub use profile::{
-    Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, Segment, SegmentRef,
-    SegmentTag,
+    Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
+    SegmentRef,
 };
 pub use sampling::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};

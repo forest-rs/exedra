@@ -33,13 +33,9 @@ use kurbo::{BezPath, PathEl, Point, Shape};
 mod cursor;
 pub use cursor::LoopCursor;
 
-/// Opaque per-segment provenance tag.
-///
-/// Frontends assign tags (typically indices into a recipe-level source
-/// table); this crate round-trips them through discretization and source
-/// maps without interpreting them.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SegTag(pub u32);
+/// Shared opaque segment tag, carried through profiles, source maps and
+/// analytic face roles without conversion or interpretation.
+pub use exedra_profile::SegTag;
 
 /// Geometry of one segment; the start point is the previous segment's
 /// endpoint, the end point lives in [`Seg2::to`].
@@ -687,7 +683,7 @@ impl Profile2 {
                         }
                     };
                     Ok(match s.tag {
-                        Some(SegTag(tag)) => segment.tagged(exedra_profile::SegmentTag(tag)),
+                        Some(tag) => segment.tagged(tag),
                         None => segment,
                     })
                 })
@@ -1275,7 +1271,7 @@ mod tests {
         assert_eq!(converted.len(), source.len());
         for (a, b) in source.iter().zip(converted) {
             assert_eq!([a.to.x, a.to.y], b.to);
-            assert_eq!(a.tag.map(|t| t.0), b.tag.map(|t| t.0));
+            assert_eq!(a.tag, b.tag);
         }
         // Exact: 8 x 4 less four corners plus a unit circle, less the hole.
         let exact = 32.0 - 4.0 + core::f64::consts::PI * (1.0 - 0.25);

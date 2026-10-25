@@ -15,7 +15,7 @@ use exedra::analytic::extrusion::{Extrusion, ExtrusionError};
 use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
 use exedra::constructive::profile::LineArcError;
-use exedra::profile::{Loop, LoopError, Profile, ProfileError, ProfilePolicy, Segment, SegmentTag};
+use exedra::profile::{Loop, LoopError, Profile, ProfileError, ProfilePolicy, SegTag, Segment};
 
 /// Plate dimensions in millimeters, centered on the origin.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -85,16 +85,16 @@ impl core::error::Error for PlateError {}
 pub fn handwritten_profile(spec: &PlateSpec) -> Result<Profile, PlateError> {
     let (x, y) = (0.5 * spec.width, 0.5 * spec.depth);
     let outer = Loop::new(vec![
-        Segment::line([x, -y]).tagged(SegmentTag(0)),
-        Segment::line([x, y]).tagged(SegmentTag(1)),
-        Segment::line([-x, y]).tagged(SegmentTag(2)),
-        Segment::line([-x, -y]).tagged(SegmentTag(3)),
+        Segment::line([x, -y]).tagged(SegTag(0)),
+        Segment::line([x, y]).tagged(SegTag(1)),
+        Segment::line([-x, y]).tagged(SegTag(2)),
+        Segment::line([-x, -y]).tagged(SegTag(3)),
     ])
     .map_err(PlateError::Loop)?;
     let (center, r) = (spec.hole_x, spec.hole_radius);
     let hole = Loop::new(vec![
-        Segment::arc([center + r, 0.0], -1.0).tagged(SegmentTag(1)),
-        Segment::arc([center - r, 0.0], -1.0).tagged(SegmentTag(0)),
+        Segment::arc([center + r, 0.0], -1.0).tagged(SegTag(1)),
+        Segment::arc([center - r, 0.0], -1.0).tagged(SegTag(0)),
     ])
     .map_err(PlateError::Loop)?;
     Profile::new(outer, vec![hole], &POLICY).map_err(PlateError::Profile)
@@ -175,6 +175,53 @@ mod tests {
             .sum();
         let expected = core::f64::consts::TAU * spec.hole_radius * spec.thickness;
         assert!((hole_area - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn one_tag_names_the_feature_through_constructive_and_analytic_profiles() {
+        const BORE: SegTag = SegTag(100);
+        let drawn = builders::rect_centered(20.0, 10.0)
+            .unwrap()
+            .with_cutouts([builders::circle(2.0).unwrap().tagged(BORE)])
+            .unwrap();
+        let profile = drawn.to_line_arc(&POLICY).unwrap();
+        assert!(
+            profile.holes()[0]
+                .segments()
+                .iter()
+                .all(|s| s.tag == Some(BORE))
+        );
+        let solid = Extrusion::new(profile, Placement3::IDENTITY, 3.0).unwrap();
+        let walls: Vec<_> = solid
+            .faces()
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| {
+                matches!(
+                    face.role,
+                    FaceRole::Wall {
+                        tag: Some(BORE),
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(
+            walls.len(),
+            2,
+            "both half-circle walls use the original tag"
+        );
+        let area: f64 = walls
+            .iter()
+            .map(|(index, _)| {
+                solid
+                    .face_area(exedra::analytic::extrusion::FaceId(
+                        u32::try_from(*index).unwrap(),
+                    ))
+                    .unwrap()
+            })
+            .sum();
+        assert!((area - core::f64::consts::TAU * 2.0 * 3.0).abs() < 1e-9);
     }
 
     #[test]
