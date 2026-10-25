@@ -46,6 +46,7 @@ use exedra_math::{FrameError, Placement3};
 use exedra_profile::{Arc, Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 
 mod query;
+mod selection;
 mod tessellate;
 
 pub use query::SurfacePoint;
@@ -267,6 +268,9 @@ pub struct Pocket {
     /// Distance from that end to the floor; positive, and leaving at least
     /// the profile policy's separation before the other end.
     pub depth: f64,
+    /// Caller feature label for the floor, walls and rims. Labels may repeat
+    /// across pockets and do not replace this solid's local topology IDs.
+    pub tag: Option<SegTag>,
 }
 
 impl Pocket {
@@ -306,7 +310,16 @@ impl Pocket {
             outline: region.reversed(),
             end,
             depth,
+            tag: None,
         }
+    }
+
+    /// Labels the whole pocket without replacing its segments' source tags.
+    /// Native feature queries prefer this label on its floor, walls and rims.
+    #[must_use]
+    pub const fn tagged(mut self, tag: SegTag) -> Self {
+        self.tag = Some(tag);
+        self
     }
 }
 

@@ -17,6 +17,14 @@ becomes a hole of its cap.
 Pockets on one end must be valid holes of the profile; pockets on opposite
 ends may overlap only where material remains between them.
 
+`Pocket::tagged` labels a whole pocket. `faces_tagged` selects its floor and
+walls, and `edges_tagged` selects its rims and seams, independently of pocket
+insertion order. Repeated labels select all matching features. `face_tag` and
+`edge_tag` resolve the same labels from the native IDs in mesh correspondence;
+material callbacks can group whole features without guessing table indexes.
+An unlabelled pocket keeps its individual wall-segment tags. These caller
+labels are separate from each solid's local topology IDs.
+
 `Extrusion::tessellate` realizes it under an explicit `TessellationPolicy`:
 - Each segment's sample count is chosen once and shared by both caps and its
   wall, so the mesh is closed by construction rather than welding.

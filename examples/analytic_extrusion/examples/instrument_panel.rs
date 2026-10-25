@@ -18,9 +18,7 @@
 //! cargo run -p analytic_extrusion --example instrument_panel -- panel.glb
 //! ```
 
-use exedra::analytic::extrusion::{
-    Boundary, End, Extrusion, Face, FaceId, FaceRole, Pocket, TessellationPolicy,
-};
+use exedra::analytic::extrusion::{End, Extrusion, FaceId, Pocket, TessellationPolicy};
 use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
@@ -35,6 +33,7 @@ const POLICY: ProfilePolicy = ProfilePolicy::new(1e-6);
 /// small indices, so a feature tag must not reuse them; `tagged` replaces
 /// them on the slot.
 const VENT: SegTag = SegTag(0x5645_4e54);
+const WINDOW: SegTag = SegTag(0x5749_4e44);
 
 /// Faceplate regions: the plate, the vents' walls, and the window recess.
 const PLATE: u32 = 0;
@@ -55,13 +54,10 @@ fn solid(profile: &Profile2, z: f64, length: f64) -> Result<Extrusion, Box<dyn s
 
 /// The faceplate's region for a native face: vent walls and the window's
 /// recess are features; everything else is plate.
-fn faceplate_region(_: FaceId, face: &Face) -> u32 {
-    match face.role {
-        FaceRole::Wall {
-            tag: Some(VENT), ..
-        } => VENTS,
-        FaceRole::Floor { pocket: 0 } => RECESS,
-        FaceRole::Wall { segment, .. } if segment.boundary == Boundary::Pocket(0) => RECESS,
+fn faceplate_region(solid: &Extrusion, face: FaceId) -> u32 {
+    match solid.face_tag(face) {
+        Some(VENT) => VENTS,
+        Some(WINDOW) => RECESS,
         _ => PLATE,
     }
 }
@@ -98,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // blind bores in the back for threaded inserts.
     let window = builders::rounded_rect_centered(90.0, 50.0, 3.0)?.translated((-5.0, 5.0))?;
     let mut panel = solid(&faceplate, 0.0, thickness)?.with_pocket(
-        Pocket::from_region(shared(&window).outer(), End::End, 2.0),
+        Pocket::from_region(shared(&window).outer(), End::End, 2.0).tagged(WINDOW),
         &POLICY,
     )?;
     for (x, y) in [(-88.0, -50.0), (88.0, -50.0), (-88.0, 50.0), (88.0, 50.0)] {
@@ -126,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sources = Vec::with_capacity(parts.len());
     for (name, part, _) in &parts {
         let realized = if *name == "faceplate" {
-            part.tessellate_with_regions(&policy, faceplate_region)?
+            part.tessellate_with_regions(&policy, |id, _| faceplate_region(part, id))?
         } else {
             part.tessellate_with_regions(&policy, |_, _| PLATE)?
         };
@@ -144,17 +140,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .faces()
                 .iter()
                 .enumerate()
-                .filter(|(index, face)| {
-                    faceplate_region(FaceId(u32::try_from(*index).expect("few faces")), face)
+                .filter(|(index, _)| {
+                    faceplate_region(part, FaceId(u32::try_from(*index).expect("few faces")))
                         == VENTS
                 })
                 .count();
             let vent_faces = realized
                 .mesh_faces
                 .iter()
-                .filter(|(_, native)| {
-                    faceplate_region(*native, &part.faces()[native.index()]) == VENTS
-                })
+                .filter(|(_, native)| faceplate_region(part, *native) == VENTS)
                 .count();
             println!(
                 "           vent walls: {vents} native faces, {vent_faces} mesh faces, one region"

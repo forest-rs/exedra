@@ -8,6 +8,90 @@ use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
 
+#[test]
+fn whole_pocket_labels_survive_reordering_and_mesh_correspondence() {
+    const RECESS: SegTag = SegTag(100);
+    const INSERT: SegTag = SegTag(101);
+    let recess = Pocket::from_region(&hole_rect([1.0, 1.0], [6.0, 5.0]).reversed(), End::End, 0.5)
+        .tagged(RECESS);
+    let bore = Pocket::from_region(&hole_circle([3.0, 3.0], 1.0).reversed(), End::Start, 1.0)
+        .tagged(INSERT);
+    for pockets in [[recess.clone(), bore.clone()], [bore, recess]] {
+        let mut solid = plate();
+        for pocket in pockets {
+            solid = solid.with_pocket(pocket, &POLICY).unwrap();
+        }
+        let faces: Vec<_> = solid.faces_tagged(RECESS).collect();
+        assert_eq!(faces.len(), 5, "four walls and the floor");
+        let floor = faces
+            .iter()
+            .find(|(_, face)| matches!(face.role, FaceRole::Floor { .. }))
+            .unwrap()
+            .0;
+        assert_eq!(solid.face_area(floor), Some(20.0));
+        let edges: Vec<_> = solid.edges_tagged(RECESS).collect();
+        assert_eq!(edges.len(), 12, "both four-edge rims and four seams");
+        let realized = solid
+            .tessellate_with_regions(&TessellationPolicy::default(), |id, _| {
+                u32::from(solid.face_tag(id) == Some(RECESS))
+            })
+            .unwrap();
+        let regions = realized
+            .mesh
+            .attrs()
+            .dense(exedra_mesh::attr::FACE_REGION)
+            .unwrap();
+        for &(mesh_face, native) in &realized.mesh_faces {
+            assert_eq!(
+                regions.get(mesh_face.as_id()),
+                Some(&u32::from(solid.face_tag(native) == Some(RECESS)))
+            );
+        }
+        for (edge, _) in edges {
+            assert!(realized.edge_chains[edge.index()].len() >= 2);
+        }
+    }
+}
+
+#[test]
+fn repeated_pocket_labels_select_all_instances_without_erasing_segment_sources() {
+    const FEATURE: SegTag = SegTag(200);
+    const SEGMENT: SegTag = SegTag(201);
+    let region = hole_rect([1.0, 1.0], [2.0, 2.0]).reversed();
+    let labelled = Loop::new(
+        region
+            .segments()
+            .iter()
+            .copied()
+            .map(|s| s.tagged(SEGMENT))
+            .collect(),
+    )
+    .unwrap();
+    let solid = plate()
+        .with_pocket(
+            Pocket::from_region(&labelled, End::End, 0.5).tagged(FEATURE),
+            &POLICY,
+        )
+        .unwrap()
+        .with_pocket(
+            Pocket::from_region(&hole_rect([4.0, 1.0], [5.0, 2.0]).reversed(), End::End, 0.5)
+                .tagged(FEATURE),
+            &POLICY,
+        )
+        .unwrap();
+    assert_eq!(solid.faces_tagged(FEATURE).count(), 10);
+    assert_eq!(solid.edges_tagged(FEATURE).count(), 24);
+    assert!(solid.faces().iter().any(|face| matches!(
+        face.role,
+        FaceRole::Wall {
+            tag: Some(SEGMENT),
+            ..
+        }
+    )));
+    assert_eq!(solid.face_tag(FaceId(u32::MAX)), None);
+    assert_eq!(solid.edge_tag(EdgeId(u32::MAX)), None);
+}
+
 /// A clockwise rectangle, as a hole or pocket outline.
 fn hole_rect(min: [f64; 2], max: [f64; 2]) -> Loop {
     Loop::new(vec![
@@ -38,6 +122,7 @@ fn pocketed() -> Extrusion {
     plate()
         .with_pocket(
             Pocket {
+                tag: None,
                 outline: hole_rect([1.0, 1.0], [6.0, 5.0]),
                 end: End::End,
                 depth: 0.5,
@@ -47,6 +132,7 @@ fn pocketed() -> Extrusion {
         .unwrap()
         .with_pocket(
             Pocket {
+                tag: None,
                 outline: hole_circle([3.0, 3.0], 1.0),
                 end: End::Start,
                 depth: 1.0,
@@ -145,6 +231,7 @@ fn pockets_are_refused_with_the_failed_check() {
     let cut = |solid: Extrusion, outline: Loop, end: End, depth: f64| {
         solid.with_pocket(
             Pocket {
+                tag: None,
                 outline,
                 end,
                 depth,
@@ -210,6 +297,7 @@ fn pocketed_solids_realize_closed_meshes_with_their_volume() {
         plate()
             .with_pocket(
                 Pocket {
+                    tag: None,
                     outline: hole_rect([1.0, 1.0], [4.0, 4.0]),
                     end: End::End,
                     depth: 0.75,
@@ -219,6 +307,7 @@ fn pocketed_solids_realize_closed_meshes_with_their_volume() {
             .unwrap()
             .with_pocket(
                 Pocket {
+                    tag: None,
                     outline: hole_circle([3.0, 3.0], 1.5),
                     end: End::Start,
                     depth: 1.0,
@@ -310,6 +399,7 @@ fn webs_thinner_than_the_separation_are_refused() {
     let cut = |solid: Extrusion, end: End, depth: f64| {
         solid.with_pocket(
             Pocket {
+                tag: None,
                 outline: hole_rect([2.0, 2.0], [5.0, 4.0]),
                 end,
                 depth,
@@ -350,6 +440,7 @@ fn webs_that_collapse_in_f32_are_refused_at_realization() {
                 solid
                     .with_pocket(
                         Pocket {
+                            tag: None,
                             outline: hole_rect([2.0, 2.0], [5.0, 4.0]),
                             end,
                             depth,
@@ -380,6 +471,7 @@ fn native_clearance_checks_keep_separations_smaller_than_a_depth_ulp() {
         let cut = |solid: Extrusion, end, depth| {
             solid.with_pocket(
                 Pocket {
+                    tag: None,
                     outline: hole_rect([2.0, 2.0], [5.0, 4.0]),
                     end,
                     depth,
