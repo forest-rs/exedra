@@ -44,6 +44,7 @@ extern crate std;
 compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 
 pub mod extrusion;
+pub mod geometry;
 
 use alloc::vec::Vec;
 
