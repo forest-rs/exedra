@@ -84,9 +84,8 @@ Workspace-only construction, test, benchmark, and app crates:
 - **[joiner](crates/joiner/)** and related `setout`/`joiner_timber`/`joiner_masonry` crates -
   evolving construction and joinery layers kept outside the first public
   package set.
-- **[exedra_testkit](crates/exedra_testkit/)** and
-  **[exedra_edit_testkit](crates/exedra_edit_testkit/)** - Deterministic fixtures,
-  golden snapshots, and debug dumps.
+- **[exedra_testkit](crates/exedra_testkit/)** - Deterministic fixtures,
+  mesh and edit golden snapshots, and debug dumps.
 - **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for Exedra
   kernel scenarios, QEF solves, render extraction, and Fidget-backed
   field/extraction paths.

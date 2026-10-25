@@ -53,7 +53,7 @@ Recommended companion crates already exist:
 - `crates/exedra_testkit/` — fixtures, golden dumps (may depend on `std`)
 - `crates/exedra_wind_tunnel/` — perf scenarios (may depend on `std`)
 
-`exedra_primitives` should be usable from `exedra_testkit` and `exedra_edit_testkit` later.
+`exedra_primitives` should be usable from `exedra_testkit` later.
 
 ---
 

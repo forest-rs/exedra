@@ -359,21 +359,11 @@ name = "exedra_edit"
 version = "0.1.0"
 dependencies = [
  "exedra_constructive",
- "exedra_edit_testkit",
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_testkit",
  "invalidation",
  "web-time",
-]
-
-[[package]]
-name = "exedra_edit_testkit"
-version = "0.1.0"
-dependencies = [
- "exedra_edit",
- "exedra_mesh",
- "exedra_primitives",
 ]
 
 [[package]]
@@ -511,6 +501,7 @@ dependencies = [
 name = "exedra_testkit"
 version = "0.1.0"
 dependencies = [
+ "exedra_edit",
  "exedra_mesh",
  "exedra_primitives",
 ]

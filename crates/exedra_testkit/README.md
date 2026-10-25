@@ -5,6 +5,8 @@ Deterministic test helpers for Exedra:
 - fixture mesh generators (`fixtures`)
 - mesh golden dumps and TriMesh golden snapshot helpers (`golden`)
 - topology/attribute/OBJ debug dumps (`dump`)
+- the `exedra-ops-golden-v1` multi-step edit snapshot format (`snapshot`)
+- region IDs of the worked edit scenarios (`regions`)
 
 This crate is intended for tests and examples.
 

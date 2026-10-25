@@ -20,5 +20,8 @@ std = ["exedra_mesh/std", "exedra_primitives/std"]
 exedra_mesh = { workspace = true }
 exedra_primitives = { workspace = true }
 
+[dev-dependencies]
+exedra_edit = { features = ["std"], workspace = true }
+
 [lints]
 workspace = true

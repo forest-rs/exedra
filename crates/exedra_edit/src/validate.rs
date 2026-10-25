@@ -135,8 +135,8 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
 
-    use exedra_edit_testkit::{GoldenSnapshot, GoldenStep, parse_snapshot, render_snapshot};
     use exedra_mesh::Mesh;
+    use exedra_testkit::snapshot::{GoldenSnapshot, GoldenStep, parse_snapshot, render_snapshot};
 
     use super::{ValidateMesh, ValidateMeshMode, ValidateMeshParams, validation_diagnostics};
     use crate::{DiagCode, DiagLevel, EditOperator, OpContext};
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn exedra_edit_tests_can_use_exedra_edit_testkit_snapshot_format() {
+    fn exedra_edit_tests_can_use_the_testkit_snapshot_format() {
         let snapshot = GoldenSnapshot {
             scenario: String::from("validate-op"),
             steps: vec![GoldenStep {

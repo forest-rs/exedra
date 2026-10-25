@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Test helpers for Exedra fixtures, snapshots, and debug dumps.
+//!
+//! [`snapshot`] holds the line-oriented golden format for multi-step edit
+//! tests, and [`regions`] the region IDs of the worked edit scenarios.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -12,6 +15,10 @@ extern crate std;
 pub mod dump;
 pub mod fixtures;
 pub mod golden;
+pub mod regions;
+#[cfg(test)]
+mod smoke;
+pub mod snapshot;
 
 pub use dump::{dump_attributes, dump_mesh_topology, mesh_to_obj};
 pub use fixtures::{

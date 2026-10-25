@@ -13,7 +13,6 @@ env:
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS:
     -p exedra_edit
-    -p exedra_edit_testkit
     -p exedra
     -p exedra_mesh
     -p exedra_mesh_ops
@@ -34,7 +33,6 @@ env:
   # this positive list in sync with crate-level `#![no_std]` declarations.
   RUST_NO_STD_PKGS:
     -p exedra_edit
-    -p exedra_edit_testkit
     -p exedra
     -p exedra_mesh
     -p exedra_mesh_ops

@@ -378,10 +378,7 @@ mod tests {
 
     #[test]
     fn testkit_region_untagged_matches_exedra_edit_constant() {
-        assert_eq!(
-            exedra_edit_testkit::regions::REGION_UNTAGGED,
-            REGION_UNTAGGED
-        );
+        assert_eq!(exedra_testkit::regions::REGION_UNTAGGED, REGION_UNTAGGED);
     }
 
     #[test]
