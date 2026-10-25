@@ -147,7 +147,9 @@ inspects and retains geometry without an `Assembly`; the
 recipe and exports GLB from an application hierarchy. The
 [component routes example](examples/component_routes/) builds one component by
 hand and as complete compiler tables, and shows that both freeze to the same
-recipe.
+recipe. The [analytic extrusion example](examples/analytic_extrusion/) reaches
+one exact line and arc solid by hand and through constructive builders, then
+realizes and compiles it with measured evidence.
 
 ## Example Flow
 
