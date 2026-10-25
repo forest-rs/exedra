@@ -35,11 +35,16 @@
 extern crate alloc;
 
 mod arc;
+mod corner;
 mod profile;
 mod region;
 mod sampling;
 
 pub use arc::Arc;
+pub use corner::{
+    Corner, CornerError, CornerKind, CornerResult, CornerSegment, CornerShape, CornerSource,
+    CornerTreatment,
+};
 pub use profile::{
     Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
     SegmentRef,

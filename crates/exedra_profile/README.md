@@ -73,6 +73,22 @@ Conservative cached bounds reject separated pieces before their analytic
 predicates; output rings move into validated profiles without duplicate segment
 arrays. Returned geometry and correspondence still own their allocations.
 
+## Corners
+
+`Profile::corners` classifies each boundary vertex as convex, concave or smooth
+relative to the filled material, including on holes. Select references from
+that immutable profile and pass them to `with_corners` with
+`CornerTreatment::fillet(radius)` or `CornerTreatment::chamfer(distance)`.
+Treatments accept a feature tag for generated transitions; retained segments
+keep their existing tags. `CornerResult::segments` distinguishes trimmed source
+intervals from newly generated corner transitions.
+
+Treatments currently require two adjacent straight segments. Other arcs stay
+analytic and unchanged; selected line/arc or arc/arc corners are explicitly
+refused. Dimensions, references, neighbouring trim overlap and the final profile
+arrangement are checked under the caller's policy. An error identifies the
+offending corner or limiting edge and its requested/available lengths.
+
 ## License
 
 Licensed under either of Apache License 2.0 or MIT license at your option. See
