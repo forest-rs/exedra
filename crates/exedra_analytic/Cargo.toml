@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Planar analytic topology and deterministic mesh tessellation for Exedra"
+description = "Retained analytic geometry, shared boundary topology and explicit mesh realization for Exedra"
 keywords = ["geometry", "analytic", "tessellation", "no_std"]
 categories = ["data-structures", "algorithms"]
 

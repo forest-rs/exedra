@@ -3,6 +3,33 @@
 Narrow analytic geometry head for Exedra. It retains exact boundary geometry
 until an explicit conversion into `exedra_mesh::Mesh`.
 
+`geometry` provides checked f64 lines, circles, planes and cylinders, with
+first and second derivatives in their native parameter units. Circle and cylinder
+angles are radians; cylinder height and plane coordinates are model lengths.
+Supporting geometry is untrimmed. Surface parameters, boundary trims and mesh
+texture coordinates are separate concepts.
+
+`body::Body<F, E>` owns f64 vertices, bounded edges, oriented coedges, boundary
+loops and faces. Generic metadata holds caller identity or provenance without
+being required for evaluation. Local topology IDs are indexes within one body.
+A closed circle can have one endpoint vertex; a periodic face can use its seam
+edge twice. `Body::try_from_parts` checks references, loop closure and conservative
+curve/vertex/support agreement against an explicit gap tolerance. It does not
+heal geometry or certify trim nesting, global self-intersection, shell containment
+or regular-solid validity. `is_closed` checks oriented edge incidence.
+
+Both the extrusion constructor and the planar shell builder own this shared
+model and expose it through `body()`. A cloned body can outlive its construction
+record. `Body::realize` handles planar trims and four-edge cylindrical strips,
+including full periodic walls. Native edges are sampled once into flat shared
+chains; paired circular edges have synchronized counts. Other cylindrical trims
+are typed refusals. Realization checks planar arrangements and local triangle
+orientation after f32 emission; global solid validity remains the caller's
+responsibility. The report separates chord error, vertex displacement and native
+support gaps, and includes all three in its deviation bound. Storage and sampling
+budgets are explicit. `realize_with_regions` maps metadata to mesh regions once
+per native face while retaining individual native correspondence.
+
 `extrusion::Extrusion` extrudes an `exedra_profile::Profile` of lines and
 circular arcs along local +Z under a checked rigid frame. The result is a closed
 solid with planar caps, planar and cylindrical walls, and shared edges used
@@ -66,10 +93,11 @@ Missing or ambiguous floor labels and curved or unknown faces are distinct
 typed refusals. `Pocket::from_profile` accepts a whole filled profile and
 explicitly refuses holes that would require islands.
 
-The planar shell keeps the earlier scope: `AnalyticShellBuilder` for planar
+The planar shell also uses native f64 geometry: `AnalyticShellBuilder` for planar
 faces with line-segment coedges and explicit opening loops, `AnalyticShell`
 for face-level region and opening edits, and `TessellatedShell` for the mesh
-plus its analytic-face provenance.
+plus its analytic-face provenance and emitted vertex displacement.
+Its builder shares edges by vertex identity and validates on `build()`.
 
 This crate is deliberately not a full CAD kernel: no surface intersections,
 booleans, fillets, healing or reverse conversion from meshes.

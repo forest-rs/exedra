@@ -31,6 +31,20 @@ faces.
 cargo run -p analytic_extrusion --example instrument_panel -- panel.glb
 ```
 
+`boundary_geometry` exports three closed models through the construction-independent
+body realizer: a periodic cylinder authored directly with two vertices and three
+edges, a pocketed plate with the extrusion record discarded, and a box assembled
+from six planar faces. All share boundary samples, retain native correspondence,
+and check the emitted result against a 0.02 mm tolerance. Each native face maps
+once to a material region.
+
+```sh
+cargo run -p analytic_extrusion --example boundary_geometry -- boundary.glb
+blender --background --python examples/analytic_extrusion/render_boundary.py -- boundary.glb boundary.png
+```
+
+The render uses Blender only for lighting and presentation of the exported mesh.
+
 ## Filled-region and corner studies
 
 ```sh
