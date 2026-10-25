@@ -230,7 +230,8 @@ origin. Centered rectangles compose directly with concentric circular holes.
 
 Draw other loops with `profile::LoopCursor`: start at an explicit point, add
 `line_to`, `arc_to` (bulge), `arc_through` (three points), `arc_about` (center
-and sweep) or `tangent_arc_to` (continuing the previous direction) segments, tag the latest with `tagged`, then `close`. Closing adds a
+and sweep) or `tangent_arc_to` (continuing the previous direction) segments,
+or `line_by` and `tangent_arc_by` relative to the current point, tag the latest with `tagged`, then `close`. Closing adds a
 straight segment unless the cursor ends exactly at its start. A step that has
 no circle is reported by `close` with its segment index. `Profile2::with_cutouts`
 adds simple filled profiles as holes by reversing them, so
