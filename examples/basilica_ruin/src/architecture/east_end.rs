@@ -287,13 +287,7 @@ mod tests {
     }
 
     fn transform_point(placement: &Placement3, point: [f32; 3]) -> [f64; 3] {
-        let point = point.map(f64::from);
-        let rows = &placement.rows;
-        [
-            rows[0][0] * point[0] + rows[0][1] * point[1] + rows[0][2] * point[2] + rows[0][3],
-            rows[1][0] * point[0] + rows[1][1] * point[1] + rows[1][2] * point[2] + rows[1][3],
-            rows[2][0] * point[0] + rows[2][1] * point[1] + rows[2][2] * point[2] + rows[2][3],
-        ]
+        placement.transform_point(point.map(f64::from))
     }
 
     fn ray_triangle_distance(

@@ -554,12 +554,7 @@ mod tests {
     }
 
     fn transform_point(placement: &Placement3, point: [f64; 3]) -> [f64; 3] {
-        let rows = &placement.rows;
-        [
-            rows[0][0] * point[0] + rows[0][1] * point[1] + rows[0][2] * point[2] + rows[0][3],
-            rows[1][0] * point[0] + rows[1][1] * point[1] + rows[1][2] * point[2] + rows[1][3],
-            rows[2][0] * point[0] + rows[2][1] * point[1] + rows[2][2] * point[2] + rows[2][3],
-        ]
+        placement.transform_point(point)
     }
 
     fn rotation_determinant(placement: &Placement3) -> f64 {

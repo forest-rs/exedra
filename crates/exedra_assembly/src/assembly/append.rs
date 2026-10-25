@@ -4,7 +4,6 @@
 use alloc::{format, vec};
 
 use super::*;
-use crate::compose;
 
 /// Source-to-destination handles from an assembly append.
 ///
@@ -196,7 +195,7 @@ impl Assembly {
                         key: copied.key,
                     });
                 }
-                copied.placement = compose(&placement, &instance.placement);
+                copied.placement = placement * instance.placement;
                 if !finite_placement(&copied.placement) {
                     return Err(AssemblyError::NonFinitePlacement);
                 }
@@ -235,7 +234,7 @@ impl Assembly {
                     });
                 }
                 for local in &mut copied.placements {
-                    *local = compose(&placement, local);
+                    *local = placement * *local;
                     if !finite_placement(local) {
                         return Err(AssemblyError::NonFinitePlacement);
                     }

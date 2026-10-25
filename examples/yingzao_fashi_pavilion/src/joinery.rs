@@ -5,9 +5,7 @@
 
 use std::collections::HashMap;
 
-use exedra_assembly::{
-    Assembly, CompiledParts, InstanceId, PartFingerprint, compose as compose_placements,
-};
+use exedra_assembly::{Assembly, CompiledParts, InstanceId, PartFingerprint};
 use exedra_constructive::ir::{Placement3, Recipe};
 use joiner::{
     Construction, Element, Evidence, EvidenceClass, EvidenceSource, Member, Node, OrientedBox,
@@ -64,7 +62,7 @@ impl FittedConstruction {
             let mut parent = instance.parent();
             while let Some(id) = parent {
                 let ancestor = assembly.instance(id).ok_or("missing fitted ancestor")?;
-                world = compose_placements(ancestor.placement(), &world);
+                world = *(ancestor.placement()) * world;
                 parent = ancestor.parent();
             }
             if world != element.extent.placement() {

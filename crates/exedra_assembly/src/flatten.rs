@@ -260,22 +260,6 @@ impl RenderList {
     }
 }
 
-/// Composes two placements: `outer` applied after `inner`
-/// (`world = outer ∘ inner`).
-#[must_use]
-pub fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
-    let a = &outer.rows;
-    let b = &inner.rows;
-    let mut rows = [[0.0; 4]; 3];
-    for (i, row) in rows.iter_mut().enumerate() {
-        for (j, cell) in row.iter_mut().enumerate().take(3) {
-            *cell = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-        row[3] = a[i][0] * b[0][3] + a[i][1] * b[1][3] + a[i][2] * b[2][3] + a[i][3];
-    }
-    Placement3 { rows }
-}
-
 /// Flattens `assembly` against its compiled parts with default options:
 /// [`BoundsPolicy::TransformedBox`] bounds.
 ///
@@ -326,7 +310,7 @@ pub fn flatten_with(
         }
         for &child in inst.children().iter().rev() {
             if let Some(c) = assembly.instance(child) {
-                stack.push((child, compose(&world, c.placement())));
+                stack.push((child, world * *c.placement()));
             }
         }
     }
@@ -411,7 +395,7 @@ impl Flattener<'_> {
         let world: Arc<[Placement3]> = set
             .placements()
             .iter()
-            .map(|local| compose(parent_world, local))
+            .map(|local| *parent_world * *local)
             .collect();
         for (part, lod) in Self::levels(assembly, self.lods, owner) {
             let (Some(def), Some(entry)) = (assembly.part(part), self.compiled.part(part)) else {
@@ -910,18 +894,5 @@ mod tests {
                 .iter()
                 .all(|r| r.material.as_deref() == Some("steel"))
         );
-    }
-
-    #[test]
-    fn compose_is_affine_composition() {
-        let t = Placement3::translate(1.0, 2.0, 3.0);
-        let r = Placement3::rotate_z_then_translate(core::f64::consts::PI, 0.0, 0.0, 0.0);
-        let world = compose(&r, &t);
-        // Rz(180°) then nothing: translation flips in x/y.
-        approx(world.rows[0][3], -1.0);
-        approx(world.rows[1][3], -2.0);
-        approx(world.rows[2][3], 3.0);
-        let identity = compose(&Placement3::IDENTITY, &t);
-        assert_eq!(identity, t);
     }
 }

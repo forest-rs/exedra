@@ -622,13 +622,7 @@ pub(crate) fn export_obj(compiled: &CompiledParts, list: &RenderList) -> String 
 }
 
 fn transform_point(placement: &Placement3, p: [f32; 3]) -> [f64; 3] {
-    let p = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-    let r = &placement.rows;
-    [
-        r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + r[0][3],
-        r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + r[1][3],
-        r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + r[2][3],
-    ]
+    placement.transform_point(p.map(f64::from))
 }
 
 fn transform_vector(placement: &Placement3, p: [f32; 3]) -> [f64; 3] {

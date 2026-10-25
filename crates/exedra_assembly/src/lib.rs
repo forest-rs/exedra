@@ -94,7 +94,7 @@ pub use compile::{
 pub use exedra_mesh::NormalsSource;
 pub use flatten::{
     BoundsPolicy, FlattenOptions, LodEmission, LodTag, RenderBatch, RenderItem, RenderList,
-    ResolvedRegion, compose, flatten, flatten_with,
+    ResolvedRegion, flatten, flatten_with,
 };
 
 /// Narrows a validated count to `u32`.

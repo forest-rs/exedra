@@ -394,7 +394,7 @@ pub fn distribute_linear(
 /// A generated key is `prefix-ordinal` for an empty member suffix and
 /// `prefix-ordinal-suffix` otherwise. The ordinal uses the caller-fixed
 /// minimum decimal width. Placement composition is
-/// `occurrence ∘ member`, matching [`crate::compose`].
+/// `occurrence * member`, as [`Placement3`] multiplication composes.
 ///
 /// The function preflights every reference, key, binding, metadata
 /// declaration, collision, occurrence order, work budget, `InstanceId` space,
@@ -437,7 +437,7 @@ pub fn instantiate_named(
             if existing.contains(key.as_str()) || !generated.insert(key.clone()) {
                 return Err(PatternError::DuplicateInstanceKey(key));
             }
-            let placement = crate::compose(&occurrence.placement, &member.placement);
+            let placement = occurrence.placement * member.placement;
             validate_placement(
                 &placement,
                 PlacementSite::Composed,

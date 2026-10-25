@@ -614,15 +614,6 @@ impl From<exedra_mesh::BuildError> for TessellateError {
     }
 }
 
-fn apply_placement(p: &Placement3, v: [f64; 3]) -> [f64; 3] {
-    let r = &p.rows;
-    [
-        r[0][0] * v[0] + r[0][1] * v[1] + r[0][2] * v[2] + r[0][3],
-        r[1][0] * v[0] + r[1][1] * v[1] + r[1][2] * v[2] + r[1][3],
-        r[2][0] * v[0] + r[2][1] * v[1] + r[2][2] * v[2] + r[2][3],
-    ]
-}
-
 /// Determinant of the placement's linear part. Negative means the
 /// placement reflects, and emitted face loops must reverse to keep
 /// outward orientation.
@@ -901,7 +892,7 @@ fn rebuild_placed_primitive(
 
     for (ordinal, vertex) in source.vertices().enumerate() {
         let local = primitive_local_position(source, vertex, ordinal, coordinates);
-        let local_index = builder.push_vertex(narrow(apply_placement(placement, local)));
+        let local_index = builder.push_vertex(narrow(placement.transform_point(local)));
         let index = vertex.index() as usize;
         if vertex_remap.len() <= index {
             vertex_remap.resize(index + 1, None);
@@ -1140,10 +1131,7 @@ pub fn tessellate_planar_face(
     // transformed local +Z direction.
     let mut builder = OrientedBuilder::new(det3(placement) < 0.0);
     for point in &points {
-        builder.push_vertex(narrow(apply_placement(
-            placement,
-            [point[0], point[1], 0.0],
-        )));
+        builder.push_vertex(narrow(placement.transform_point([point[0], point[1], 0.0])));
     }
     let mut face_features = Vec::with_capacity(triangles.len());
     for triangle in triangles {
@@ -1253,12 +1241,12 @@ fn extrude_impl(
     // Bottom ring vertices (z = 0), then top ring vertices (z = height).
     for ring in d.rings() {
         for p in &ring.points {
-            builder.push_chart_vertex(narrow(apply_placement(placement, [p[0], p[1], 0.0])), *p);
+            builder.push_chart_vertex(narrow(placement.transform_point([p[0], p[1], 0.0])), *p);
         }
     }
     for ring in d.rings() {
         for p in &ring.points {
-            builder.push_chart_vertex(narrow(apply_placement(placement, [p[0], p[1], height])), *p);
+            builder.push_chart_vertex(narrow(placement.transform_point([p[0], p[1], height])), *p);
         }
     }
     let top_offset = len_u32(total);
@@ -1382,7 +1370,7 @@ fn extrude_impl(
             let mut base = None;
             for p in generated {
                 let index = builder
-                    .push_chart_vertex(narrow(apply_placement(placement, [p[0], p[1], z])), *p);
+                    .push_chart_vertex(narrow(placement.transform_point([p[0], p[1], z])), *p);
                 base.get_or_insert(index);
                 extra_vertex_features.push(feature);
             }
@@ -1450,7 +1438,7 @@ fn extrude_impl(
                     if enabled {
                         check_triangle_realization(triangle.map(|i| {
                             let p = points[i as usize];
-                            apply_placement(placement, [p[0], p[1], z])
+                            placement.transform_point([p[0], p[1], z])
                         }))?;
                     }
                 }
@@ -2002,7 +1990,7 @@ fn revolve_impl(
                     vertex
                 } else {
                     let vertex =
-                        builder.push_chart_vertex(narrow(apply_placement(placement, v)), *p);
+                        builder.push_chart_vertex(narrow(placement.transform_point(v)), *p);
                     if p[0] == 0.0 {
                         axis_vertices[flat as usize] = Some(vertex);
                     }
@@ -2303,7 +2291,7 @@ fn loft_station_params(
         crate::chart::LoftStations::DatumDistance => {
             let datums: Vec<[f64; 3]> = sections
                 .iter()
-                .map(|(placement, _)| apply_placement(placement, [0.0; 3]))
+                .map(|(placement, _)| placement.transform_point([0.0; 3]))
                 .collect();
             let mut cumulative = Vec::with_capacity(sections.len());
             cumulative.push(0.0);
@@ -2406,7 +2394,7 @@ fn loft_impl(
                 .flat_map(|ring| {
                     ring.points
                         .iter()
-                        .map(|p| apply_placement(placement, [p[0], p[1], 0.0]))
+                        .map(|p| placement.transform_point([p[0], p[1], 0.0]))
                 })
                 .collect()
         })
@@ -2711,7 +2699,7 @@ fn loft_has_volumetric_span(
     let first_points: Vec<[f64; 3]> = discretized[0]
         .rings()
         .flat_map(|ring| &ring.points)
-        .map(|point| apply_placement(&sections[0].0, [point[0], point[1], 0.0]))
+        .map(|point| sections[0].0.transform_point([point[0], point[1], 0.0]))
         .collect();
     let origin = first_points[0];
     let plane_scale = first_points
@@ -2737,7 +2725,7 @@ fn loft_has_volumetric_span(
             profile.rings().flat_map(move |ring| {
                 ring.points
                     .iter()
-                    .map(move |point| apply_placement(placement, [point[0], point[1], 0.0]))
+                    .map(move |point| placement.transform_point([point[0], point[1], 0.0]))
             })
         })
         .any(|point| dot(normal, sub(point, origin)).abs() / normal_length > span_tolerance)
@@ -3459,7 +3447,7 @@ fn check_sweep_realization(
                     sweep_point(&pair[1], q),
                     sweep_point(&pair[1], p),
                 ]
-                .map(|point| apply_placement(placement, point));
+                .map(|point| placement.transform_point(point));
                 let rounded = placed.map(|point| narrow(point).map(f64::from));
                 if rounded.iter().flatten().any(|v| !v.is_finite()) {
                     return Err(TessellateError::NonFiniteGeometry);
@@ -3975,7 +3963,7 @@ fn tessellate_sweep_rings(
         for ring in d.rings() {
             for p in &ring.points {
                 let local = add(add(*origin, scale(*u, p[0])), scale(*v, p[1]));
-                builder.push_chart_vertex(narrow(apply_placement(placement, local)), *p);
+                builder.push_chart_vertex(narrow(placement.transform_point(local)), *p);
             }
         }
     }
@@ -4118,7 +4106,7 @@ fn tessellate_sweep_rings(
                 let placed: Vec<_> = d
                     .rings()
                     .flat_map(|ring| &ring.points)
-                    .map(|&point| apply_placement(placement, sweep_point(frame, point)))
+                    .map(|&point| placement.transform_point(sweep_point(frame, point)))
                     .collect();
                 let triangles = triangulate_cap(profile, d, &input, |t| {
                     check_triangle_realization(t.map(|i| placed[i as usize]))
@@ -4221,7 +4209,7 @@ pub fn tessellate_grid(
     let flip = det3(placement) < 0.0;
     let placed: Vec<[f64; 3]> = points
         .iter()
-        .map(|p| apply_placement(placement, *p))
+        .map(|p| placement.transform_point(*p))
         .collect();
 
     // Patch counts: wrapping directions close the last band back to 0.
@@ -5037,8 +5025,7 @@ mod tests {
                             mesh.to_vertex(edge).unwrap(),
                         ]
                         .map(|vertex| {
-                            narrow(apply_placement(
-                                placement,
+                            narrow(placement.transform_point(
                                 mesh.vertex_position(vertex).unwrap().map(f64::from),
                             ))
                             .map(f32::to_bits)
@@ -5868,12 +5855,12 @@ mod tests {
             let n = d.points_len();
             for (i, point) in d.outer.points.iter().enumerate() {
                 let start = [point[0], point[1], 0.0];
-                let end = apply_placement(&quarter, start);
-                assert!(norm(sub(vertices[i], apply_placement(&placement, start))) < 1e-6);
+                let end = quarter.transform_point(start);
+                assert!(norm(sub(vertices[i], placement.transform_point(start))) < 1e-6);
                 assert!(
                     norm(sub(
                         vertices[vertices.len() - n + i],
-                        apply_placement(&placement, end)
+                        placement.transform_point(end)
                     )) < 1e-6,
                     "revolution must match the placement rotation, including its sign"
                 );

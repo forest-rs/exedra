@@ -72,7 +72,7 @@ impl ExactStretchPlan {
         let placement = match &mut self {
             Self::Primitive { placement, .. } | Self::Extrude { placement, .. } => placement,
         };
-        *placement = compose(outer, placement);
+        *placement = *outer * *placement;
         self
     }
 }
@@ -192,10 +192,8 @@ fn stretch_exact_plan(
             let mut stretched_size = size;
             stretched_size[axis] = interval.extent;
             let local_shift = axis_vector(axis, interval.origin_shift);
-            let placement = compose(
-                &placement,
-                &Placement3::translate(local_shift[0], local_shift[1], local_shift[2]),
-            );
+            let placement =
+                placement * Placement3::translate(local_shift[0], local_shift[1], local_shift[2]);
             Ok(Some(ExactStretchPlan::Primitive {
                 spec: PrimitiveSpec::Box {
                     size: stretched_size,
@@ -220,10 +218,7 @@ fn stretch_exact_plan(
                 && axis == 2
             {
                 let interval = stretch_interval(height, sign, local_distance, length)?;
-                let placement = compose(
-                    &placement,
-                    &Placement3::translate(0.0, 0.0, interval.origin_shift),
-                );
+                let placement = placement * Placement3::translate(0.0, 0.0, interval.origin_shift);
                 return Ok(Some(ExactStretchPlan::Extrude {
                     profile,
                     wall_sources,
@@ -254,10 +249,7 @@ fn stretch_exact_plan(
                     [length * normal_2d[0], length * normal_2d[1]],
                 ),
             };
-            let placement = compose(
-                &placement,
-                &Placement3::translate(local_shift[0], local_shift[1], 0.0),
-            );
+            let placement = placement * Placement3::translate(local_shift[0], local_shift[1], 0.0);
             Ok(Some(ExactStretchPlan::Extrude {
                 profile,
                 wall_sources,
@@ -882,17 +874,4 @@ fn realized_kind(mut kind: &SegKind) -> &SegKind {
         kind = realized;
     }
     kind
-}
-
-fn compose(outer: &Placement3, inner: &Placement3) -> Placement3 {
-    let a = &outer.rows;
-    let b = &inner.rows;
-    let mut rows = [[0.0; 4]; 3];
-    for (i, row) in rows.iter_mut().enumerate() {
-        for j in 0..3 {
-            row[j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-        row[3] = a[i][0] * b[0][3] + a[i][1] * b[1][3] + a[i][2] * b[2][3] + a[i][3];
-    }
-    Placement3 { rows }
 }

@@ -103,7 +103,7 @@ fn asymmetric_smooth_loft_retains_sections_caps_and_source_bands() {
         let discretized =
             discretize_profile(recipe.profile(*profile).unwrap(), &policy.discretize).unwrap();
         for p in discretized.outer.points {
-            assert!(positions.contains(&narrow(apply_placement(placement, [p[0], p[1], 0.0]))));
+            assert!(positions.contains(&narrow(placement.transform_point([p[0], p[1], 0.0]))));
         }
     }
     let mut caps = [0, 0];

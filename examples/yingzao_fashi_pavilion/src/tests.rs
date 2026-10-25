@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use exedra_assembly::{PartSource, compose as compose_placements};
+use exedra_assembly::PartSource;
 use exedra_constructive::ir::{Placement3, Recipe};
 use exedra_gltf::GlbDocument;
 use exedra_math::{cross, dot, norm, sub};
@@ -319,10 +319,7 @@ fn separating_roof_members_reuses_geometry_and_exposes_assembled_contacts() -> R
                 offset[2] += 1.8 + f64::from(segment % 2) * 0.135;
             }
         }
-        let expected = compose_placements(
-            &Placement3::translate(offset[0], offset[1], offset[2]),
-            &a.world,
-        );
+        let expected = Placement3::translate(offset[0], offset[1], offset[2]) * a.world;
         for (expected, actual) in expected
             .rows
             .iter()

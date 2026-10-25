@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::{CompilePolicy, PartCompiler, compose, flatten};
+use crate::{CompilePolicy, PartCompiler, flatten};
 use exedra_constructive::ir::{CsgOp, Node, NodeKind, PrimitiveSpec, Recipe, RecipeBuilder};
 use exedra_mesh::Mesh;
 use std::{collections::BTreeSet, f64::consts::FRAC_PI_2, sync::Arc};
@@ -125,7 +125,7 @@ fn world_geometry(document: &GlbDocument) -> (Vec<[f64; 3]>, Vec<(usize, Placeme
                     std::array::from_fn(|c| matrix[c * 4 + r].as_f64().unwrap())
                 }),
             });
-        let world = compose(&parent, &local);
+        let world = parent * local;
         placements.push((id, world));
         if let Some(children) = node.get("children") {
             stack.extend(
@@ -158,11 +158,7 @@ fn world_geometry(document: &GlbDocument) -> (Vec<[f64; 3]>, Vec<(usize, Placeme
                         document.bin()[offset..offset + 4].try_into().unwrap(),
                     ))
                 });
-                points.push(
-                    world
-                        .rows
-                        .map(|r| r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3]),
-                );
+                points.push(world.transform_point(p));
             }
         }
     }
@@ -281,10 +277,7 @@ fn retained_hierarchy_matches_evaluated_vertices_through_intermediate_poses() {
                         .iter()
                         .map(move |p| {
                             let p = p.map(f64::from);
-                            let world = item
-                                .world
-                                .rows
-                                .map(|r| r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3]);
+                            let world = item.world.transform_point(p);
                             match coordinates {
                                 GltfCoordinates::Preserve => world,
                                 GltfCoordinates::ZUpToYUp => [world[0], world[2], -world[1]],
