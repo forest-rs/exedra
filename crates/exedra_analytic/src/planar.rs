@@ -125,14 +125,20 @@ impl AnalyticShell {
             return Err(EditError::InvalidRectBounds);
         }
         let record = self.face(face).ok_or(EditError::MissingFace { face })?;
-        let z = xy_plane_z(face, plane_of(record))?;
+        let plane = plane_of(record);
+        let z = xy_plane_z(face, plane)?;
         let outer = self
             .face_vertices(face)
             .ok_or(EditError::InvalidFaceTopology { face })?;
         let openings = self
             .face_opening_vertices(face)
             .ok_or(EditError::InvalidFaceTopology { face })?;
-        let points = rect_loop_vertices(params, z);
+        let mut points = rect_loop_vertices(params, z);
+        // Holes oppose the outer loop in the owning face's outward frame.
+        // A -Z face therefore needs a counter-clockwise opening in XY.
+        if plane.normal[2] < 0.0 {
+            points.reverse();
+        }
         validate_rect_opening_xy(self, face, &outer, &openings, &points)?;
         let ids: Vec<_> = points
             .into_iter()
@@ -1379,6 +1385,29 @@ mod tests {
             )
             .expect("opening should be added to clockwise XY face");
 
+        let ring = &shell.face_opening_vertices(face).unwrap()[0];
+        let area2: f64 = ring
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let a = shell.vertices()[id.index()];
+                let b = shell.vertices()[ring[(i + 1) % ring.len()].index()];
+                a[0] * b[1] - a[1] * b[0]
+            })
+            .sum();
+        assert!(
+            area2 > 0.0,
+            "a -Z face needs a counter-clockwise XY opening"
+        );
+        let retained = shell
+            .body()
+            .realize(
+                exedra_math::Placement3::IDENTITY,
+                &crate::realize::RealizationPolicy::default(),
+            )
+            .expect("the retained body's opening must have the owning face's winding");
+        assert!(retained.mesh.validate_deep().is_empty());
+        assert!(retained.report.within_tolerance());
         let tessellated = shell
             .to_exedra_mesh(&TessellateParams::default())
             .expect("mutated shell should tessellate");
