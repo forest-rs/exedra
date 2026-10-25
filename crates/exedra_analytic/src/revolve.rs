@@ -610,6 +610,60 @@ mod tests {
         close(solid.volume(), 70.0 * core::f64::consts::PI);
         assert!(solid.body().is_closed());
     }
+    fn mesh_volume(mesh: &exedra_mesh::Mesh) -> f64 {
+        mesh.faces()
+            .map(|f| {
+                let p: Vec<_> = mesh
+                    .face_loop(f)
+                    .map(|c| {
+                        mesh.vertex_position(mesh.from_vertex(c).unwrap())
+                            .unwrap()
+                            .map(f64::from)
+                    })
+                    .collect();
+                assert_eq!(p.len(), 3);
+                exedra_math::dot(p[0], exedra_math::cross(p[1], p[2])) / 6.0
+            })
+            .sum()
+    }
+    #[test]
+    fn conical_strips_share_rings_and_converge_on_independent_frustum_volume() {
+        for sweep in [core::f64::consts::TAU, 1.8] {
+            let profile = Profile::new(
+                polygon(&[[2.0, 0.0], [3.0, 3.0], [1.0, 3.0], [1.0, 0.0]]),
+                vec![],
+                &ProfilePolicy::new(1e-9),
+            )
+            .unwrap();
+            let solid = Revolution::new(
+                profile,
+                Placement3::rotate_x_then_translate(0.4, 4.0, -2.0, 1.0),
+                sweep,
+            )
+            .unwrap();
+            let mut previous = f64::INFINITY;
+            for tolerance in [0.02, 0.001] {
+                let result = solid
+                    .realize(&RealizationPolicy {
+                        tolerance,
+                        ..RealizationPolicy::default()
+                    })
+                    .unwrap();
+                assert!(result.mesh.validate_deep().is_empty());
+                assert!(result.mesh.boundary_loops().unwrap().is_empty());
+                assert!(result.report.within_tolerance());
+                let expected = 8.0 * sweep;
+                let error = (mesh_volume(&result.mesh) - expected).abs();
+                assert!(error < previous, "{error} >= {previous}");
+                previous = error;
+                for (_, native) in &result.mesh_faces {
+                    assert!(solid.body().face(*native).is_some());
+                }
+            }
+            assert!(previous < 0.06, "{previous}");
+        }
+    }
+
     #[test]
     fn combined_cap_and_wall_area_overflow_is_a_numeric_refusal() {
         let profile = Profile::new(

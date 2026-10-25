@@ -1,12 +1,12 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Construction-independent realization of planar and rectangular cylindrical faces.
+//! Construction-independent realization of planar and rotational strip faces.
 //!
 //! Shared edges are sampled once. Planar trims are checked in emitted coordinates;
-//! rectangular cylindrical faces use paired boundary strips, so a generic planar
+//! cylindrical and conical faces use paired boundary strips, so a generic planar
 //! triangulation cannot introduce long chords across a curved face. Other
-//! cylindrical trims are explicit refusals. Tighten sampling when an emitted
+//! curved trims are explicit refusals. Tighten sampling when an emitted
 //! arrangement is refused; this path does not heal or refine trim contacts.
 
 use crate::body::{Body, BodyError, Coedge, EdgeId, Face, FaceId, ValidationPolicy, VertexId};
@@ -98,7 +98,8 @@ pub struct RealizationReport {
     pub max_curve_deviation: f64,
     /// Largest emitted vertex displacement, including placement and narrowing.
     pub max_vertex_displacement: f64,
-    /// Largest native paired-sample residual from a fixed axial ruling.
+    /// Largest native paired-sample residual from the ideal rotational ruling.
+    /// Cylinder rulings translate; conical rulings also scale the reference radius.
     /// Includes parameter-grid mismatch and authoritative endpoint offsets.
     pub max_ruling_displacement: f64,
     /// Conservative geometric deviation bound: curve error, emitted and ruling
@@ -218,6 +219,8 @@ struct Patch {
     a: Coedge,
     b: Coedge,
     translation: [f64; 3],
+    center: [f64; 3],
+    radius_scale: f64,
 }
 
 struct Chains {
@@ -337,11 +340,8 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
-            if matches!(face.surface, Surface::Cone(_)) {
-                return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
-            }
-            if matches!(face.surface, Surface::Cylinder(_)) {
-                let patch = self.cylinder_patch(id, policy.geometry_gap)?;
+            if matches!(face.surface, Surface::Cylinder(_) | Surface::Cone(_)) {
+                let patch = self.rotational_patch(id, policy.geometry_gap)?;
                 groups.join(patch.a.edge.index(), patch.b.edge.index());
                 patches[i] = Some(patch);
             }
@@ -573,7 +573,7 @@ impl<F, E> Body<F, E> {
                 let a_at = |j: usize| a[if patch.a.reversed { a.len() - 1 - j } else { j }];
                 let b_at = |j: usize| b[if patch.b.reversed { j } else { b.len() - 1 - j }];
                 // Replace each upper sample by its paired lower sample plus
-                // one fixed axial translation. Barycentric interpolation moves
+                // the ideal axial/radial map. Barycentric interpolation moves
                 // every triangle point by at most the largest such residual.
                 // Evaluate the native samples, including authoritative endpoints,
                 // in precisely the orientation used to emit these strips.
@@ -587,8 +587,11 @@ impl<F, E> Body<F, E> {
                     let upper = self
                         .edge_point(patch.b.edge, f64::from(upper_index) / f64::from(n))
                         .ok_or(RealizationError::DegenerateFace { face: id })?;
+                    let radial_change = exedra_math::sub(lower, patch.center)
+                        .map(|v| v * (patch.radius_scale - 1.0));
+                    let expected_delta = exedra_math::add(patch.translation, radial_change);
                     ruling_displacement = ruling_displacement
-                        .max(distance(exedra_math::sub(upper, lower), patch.translation));
+                        .max(distance(exedra_math::sub(upper, lower), expected_delta));
                 }
                 // Check orientation once, at the first strip's midpoint. The
                 // midpoint of a full periodic edge faces the opposite direction.
@@ -732,7 +735,7 @@ impl<F, E> Body<F, E> {
         })
     }
 
-    fn cylinder_patch(&self, id: FaceId, gap: f64) -> Result<Patch, RealizationError> {
+    fn rotational_patch(&self, id: FaceId, gap: f64) -> Result<Patch, RealizationError> {
         let face = self.face(id).expect("known face");
         let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
         if face.loops.len() != 1 {
@@ -749,7 +752,7 @@ impl<F, E> Body<F, E> {
             .iter()
             .position(|c| matches!(self.edges()[c.edge.index()].curve, Curve::Circle(_)))
             .ok_or_else(refuse)?;
-        let (a, b) = (coedges[first], coedges[(first + 2) % 4]);
+        let (mut a, mut b) = (coedges[first], coedges[(first + 2) % 4]);
         if !matches!(self.edges()[b.edge.index()].curve, Curve::Circle(_))
             || [1, 3].into_iter().any(|j| {
                 !matches!(
@@ -772,19 +775,27 @@ impl<F, E> Body<F, E> {
                 * edge.range.span()
                 * if coedge.reversed { -1.0 } else { 1.0 }
         };
-        let Surface::Cylinder(cylinder) = &face.surface else {
-            unreachable!();
+        let circle = |coedge: Coedge| {
+            let Curve::Circle(circle) = &self.edges()[coedge.edge.index()].curve else {
+                unreachable!()
+            };
+            circle
         };
-        if (signed(a) + signed(b)).abs() * cylinder.radius()
-            > gap.max(64.0 * f64::EPSILON * cylinder.radius())
-        {
+        // Use the larger reference ring for cones. The radial map then
+        // contracts, so its reference-boundary error is never amplified.
+        let conical = matches!(face.surface, Surface::Cone(_));
+        if conical && circle(a).radius() < circle(b).radius() {
+            core::mem::swap(&mut a, &mut b);
+        }
+        let (lower, upper) = (circle(a), circle(b));
+        let radius = lower.radius().max(upper.radius());
+        if (signed(a) + signed(b)).abs() * radius > gap.max(64.0 * f64::EPSILON * radius) {
             return Err(refuse());
         }
-        let Curve::Circle(lower) = &self.edges()[a.edge.index()].curve else {
-            unreachable!()
-        };
-        let Curve::Circle(upper) = &self.edges()[b.edge.index()].curve else {
-            unreachable!()
+        let radius_scale = if conical {
+            upper.radius() / lower.radius()
+        } else {
+            1.0
         };
         let lower_axis = lower.frame().rows.map(|r| r[2]);
         let upper_axis = upper.frame().rows.map(|r| r[2]);
@@ -801,7 +812,7 @@ impl<F, E> Body<F, E> {
         // the measured residual still contributes to the report, rather than
         // being silently excused by this numerical comparison.
         let angular_slack = 64.0 * crate::geometry::FRAME_TOLERANCE;
-        let linear_slack = 64.0 * f64::EPSILON * (cylinder.radius() + height.abs());
+        let linear_slack = 64.0 * f64::EPSILON * (radius + height.abs());
         if distance(
             exedra_math::sub(
                 upper.frame().rows.map(|r| r[3]),
@@ -809,7 +820,7 @@ impl<F, E> Body<F, E> {
             ),
             translation,
         ) > linear_slack
-            || (upper.radius() - lower.radius()).abs() > linear_slack
+            || (!conical && (upper.radius() - lower.radius()).abs() > linear_slack)
         {
             return Err(refuse());
         }
@@ -825,11 +836,23 @@ impl<F, E> Body<F, E> {
             let upper = self
                 .edge_point(b.edge, if b.reversed { fraction } else { 1.0 - fraction })
                 .ok_or_else(refuse)?;
-            if distance(exedra_math::sub(upper, lower), translation) > linear_slack {
+            let radial_change = exedra_math::sub(lower, circle(a).frame().rows.map(|r| r[3]))
+                .map(|v| v * (radius_scale - 1.0));
+            if distance(
+                exedra_math::sub(upper, lower),
+                exedra_math::add(translation, radial_change),
+            ) > linear_slack
+            {
                 return Err(refuse());
             }
         }
-        Ok(Patch { a, b, translation })
+        Ok(Patch {
+            a,
+            b,
+            translation,
+            center: lower.frame().rows.map(|r| r[3]),
+            radius_scale,
+        })
     }
 
     fn edge_sharpness(&self, id: EdgeId, incidence: Incidence) -> f32 {
