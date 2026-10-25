@@ -94,16 +94,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // blind bores in the back for threaded inserts.
     let window = builders::rounded_rect_centered(90.0, 50.0, 3.0)?.translated((-5.0, 5.0))?;
     let mut panel = solid(&faceplate, 0.0, thickness)?.with_pocket(
-        Pocket::from_region(shared(&window).outer(), End::End, 2.0).tagged(WINDOW),
+        Pocket::from_profile(&shared(&window), End::End, 2.0)?.tagged(WINDOW),
         &POLICY,
     )?;
     for (x, y) in [(-88.0, -50.0), (88.0, -50.0), (-88.0, 50.0), (88.0, 50.0)] {
         let bore = shared(&builders::circle(2.5)?.translated((x, y))?);
-        panel = panel.with_pocket(Pocket::from_region(bore.outer(), End::Start, 4.0), &POLICY)?;
+        panel = panel.with_pocket(Pocket::from_profile(&bore, End::Start, 4.0)?, &POLICY)?;
     }
 
     // A lens floating in the window's recess, 0.3 mm clear of its walls.
     let lens = window.offset(-0.3, CornerPolicy::Round)?;
+    let lens_solid = panel
+        .workplane(panel.floor_tagged(WINDOW)?)?
+        .extrude(shared(&lens), 1.5)?;
     let knob_stem = builders::circle(6.0)?.translated(knob_at)?;
     let knob = builders::circle(14.0)?.translated(knob_at)?;
 
@@ -111,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parts: [(&str, Extrusion, &[&str]); 5] = [
         ("bezel", solid(&bezel, -2.0, 12.0)?, &["anodized"]),
         ("faceplate", panel, &["aluminum", "vent", "recess"]),
-        ("lens", solid(&lens, thickness - 2.0, 1.5)?, &["glass"]),
+        ("lens", lens_solid, &["glass"]),
         ("knob_stem", solid(&knob_stem, thickness, 8.0)?, &["knob"]),
         ("knob", solid(&knob, thickness + 8.0, 12.0)?, &["knob"]),
     ];

@@ -48,8 +48,10 @@ use exedra_profile::{Arc, Curve, Loop, LoopRef, Profile, ProfileError, ProfilePo
 mod query;
 mod selection;
 mod tessellate;
+mod workplane;
 
 pub use query::SurfacePoint;
+pub use workplane::{FaceSelectionError, Workplane, WorkplaneError};
 
 pub use tessellate::{
     TessellateExtrusionError, TessellatedExtrusion, TessellationPolicy, TessellationReport,
@@ -274,6 +276,22 @@ pub struct Pocket {
 }
 
 impl Pocket {
+    /// Removes a filled profile from an extrusion end, preserving its outer
+    /// boundary tags. A region containing holes would leave islands, which
+    /// this bounded pocket model does not support.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PocketError::RegionHasHoles`] with the number of holes.
+    pub fn from_profile(region: &Profile, end: End, depth: f64) -> Result<Self, PocketError> {
+        if !region.holes().is_empty() {
+            return Err(PocketError::RegionHasHoles {
+                count: region.holes().len(),
+            });
+        }
+        Ok(Self::from_region(region.outer(), end, depth))
+    }
+
     /// A pocket removing the region inside `region`, a counter-clockwise
     /// outline like a filled profile's, from `end` to `depth`.
     ///
@@ -327,6 +345,11 @@ impl Pocket {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PocketError {
+    /// A filled pocket region contains holes, which would leave unsupported islands.
+    RegionHasHoles {
+        /// Number of holes in the region.
+        count: usize,
+    },
     /// The depth is not finite, not positive, or leaves less than the
     /// separation before the other end.
     InvalidDepth,
@@ -345,6 +368,10 @@ pub enum PocketError {
 impl core::fmt::Display for PocketError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::RegionHasHoles { count } => write!(
+                f,
+                "pocket region has {count} holes; this pocket model requires one filled outline"
+            ),
             Self::InvalidDepth => {
                 write!(f, "pocket depth must be positive and less than the length")
             }
@@ -449,15 +476,7 @@ impl Extrusion {
         if !(length.is_finite() && length > 0.0) {
             return Err(ExtrusionError::InvalidLength);
         }
-        let column = |axis: usize| frame.rows.map(|row| row[axis]);
-        Placement3::try_from_orthonormal_axes(
-            column(0),
-            column(1),
-            column(2),
-            column(3),
-            FRAME_TOLERANCE,
-        )
-        .map_err(ExtrusionError::SingularFrame)?;
+        Workplane::new(frame).map_err(ExtrusionError::SingularFrame)?;
         Self::build(profile, frame, length, Vec::new(), Vec::new())
     }
 
