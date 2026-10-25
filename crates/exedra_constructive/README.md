@@ -70,6 +70,13 @@ Start with `RecipeBuilder` and `NodeKind` to author a recipe, then call
 a `GeometryReport`; callers should inspect both rather than treating emitted
 geometry alone as success. Use the `serde` feature for host-side interchange.
 
+The `ops` records state conventions the node kinds leave implicit:
+`Extrude::forward`, `backward` and `symmetric` name which way a solid runs from
+its profile plane, `Revolve::about(Axis::Z)` names the axis instead of the
+native +Y, and `Primitive::centered_cuboid` centers a box whose native origin is
+its minimum corner. `Csg::difference(stock, cutters)` and `Csg::union` name the
+operands. Each lowers to the `NodeKind` it names and is validated by `add_node`.
+
 `RecipeBuilder::add_node` takes a complete `Node`: the operation plus its
 optional source, material, chart and issue bindings, assembled with
 `Node::new(kind).with_source(source)` and similar methods. A failed insertion
