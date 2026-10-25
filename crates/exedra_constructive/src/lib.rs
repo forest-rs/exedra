@@ -14,7 +14,7 @@
 //! - the constructive node set (primitives, extrude, revolve, loft, sweep,
 //!   planar faces, grids, stretch, CSG, transforms, instances) and its
 //!   content-addressed identity,
-//! - deterministic evaluation and tessellation with source maps and reports.
+//! - deterministic evaluation and tessellation with source maps and reports,
 //! - evaluated-body plane sections and capped cuts preserving surface attribution,
 //! - revision-checked planar workplanes with authored origin and in-plane axes.
 //!
@@ -33,6 +33,15 @@
 //! hash so an upgrade to kurbo or to any discretization rule invalidates
 //! caches and goldens explicitly.
 //!
+//! ## Recommended imports
+//!
+//! Most construction needs [`ir::RecipeBuilder`] and [`ir::Node`], the
+//! [`ops`] records ([`ops::Extrude`], [`ops::Revolve`], [`ops::Csg`],
+//! [`ops::Primitive`]), profiles from [`builders`] or drawn with
+//! [`profile::LoopCursor`], and [`evaluate::evaluate`] with a
+//! [`tessellate::EvalPolicy`]. Every [`ir::NodeKind`] remains available
+//! directly, and the other modules own their advanced operations.
+//!
 //! ## Integrating an external compiler
 //!
 //! The full walkthrough lives in `docs/integration-guide.md`. The core
@@ -42,19 +51,15 @@
 //! ```
 //! use exedra_constructive::builders;
 //! use exedra_constructive::evaluate::{Fidelity, evaluate};
-//! use exedra_constructive::ir::{CapMode, Node, NodeKind, Placement3, RecipeBuilder};
+//! use exedra_constructive::ir::{Node, RecipeBuilder};
+//! use exedra_constructive::ops::Extrude;
 //! use exedra_constructive::tessellate::EvalPolicy;
 //!
 //! let mut b = RecipeBuilder::new();
 //! let source = b.source_ref("yourspec:part/7#body");
 //! let front = b.material_slot("front");
 //! let profile = b.add_profile(builders::rounded_rect_from_corner(600.0, 400.0, 40.0).unwrap());
-//! let body = NodeKind::Extrude {
-//!     profile,
-//!     placement: Placement3::IDENTITY,
-//!     height: 720.0,
-//!     caps: CapMode::Both,
-//! };
+//! let body = Extrude::forward(profile, 720.0);
 //! let node = b
 //!     .add_node(Node::new(body).with_source(source).with_material(front))
 //!     .unwrap();
@@ -97,6 +102,7 @@ pub mod loft;
 mod material_tests;
 pub mod measure;
 pub mod offset;
+pub mod ops;
 #[cfg(test)]
 mod panel_boolean_tests;
 pub mod path;

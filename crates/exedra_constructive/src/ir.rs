@@ -595,12 +595,13 @@ pub struct Node {
 }
 
 impl Node {
-    /// An operation with no source, material, chart or issue binding.
+    /// An operation, such as a [`NodeKind`] or an [`crate::ops`] record, with
+    /// no source, material, chart or issue binding.
     #[must_use]
-    pub const fn new(kind: NodeKind) -> Self {
+    pub fn new(kind: impl Into<NodeKind>) -> Self {
         Self {
             surface_chart: None,
-            kind,
+            kind: kind.into(),
             source: None,
             material: None,
             issue: None,
