@@ -133,7 +133,7 @@ pub fn extrude(profile: Profile, spec: &PlateSpec) -> Result<Extrusion, PlateErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exedra::analytic::extrusion::{FaceRole, TessellationPolicy};
+    use exedra::analytic::extrusion::{Boundary, FaceRole, TessellationPolicy};
     use exedra::profile::LoopRef;
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(_, face)| {
-                matches!(face.role, FaceRole::Wall { segment, .. } if segment.loop_ref == LoopRef::Hole(0))
+                matches!(face.role, FaceRole::Wall { segment, .. } if segment.boundary == Boundary::Profile(LoopRef::Hole(0)))
             })
             .map(|(index, _)| {
                 solid

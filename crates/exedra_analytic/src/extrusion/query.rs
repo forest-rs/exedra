@@ -8,9 +8,9 @@
 //! geometry, not for a realized mesh.
 
 use exedra_math::Placement3;
-use exedra_profile::{Curve, LoopRef, SegmentRef};
+use exedra_profile::{Curve, LoopRef};
 
-use super::{EdgeCurve, EdgeId, End, Extrusion, FaceId, FaceRole, Surface};
+use super::{Boundary, BoundarySegment, EdgeCurve, EdgeId, Extrusion, FaceId, FaceRole, Surface};
 
 /// A point on a face with its outward unit normal, in local coordinates.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -24,30 +24,32 @@ pub struct SurfacePoint {
 impl Extrusion {
     /// Evaluates face `face` at `uv`.
     ///
-    /// For a wall, `u` is the fraction along its profile segment, by angle for
-    /// an arc, and `v` the height in `[0, length]`. For a cap, `uv` is a point
-    /// of the profile plane; the cap's own boundary decides whether it lies on
-    /// the face, which this does not check. Returns `None` for an unknown face
-    /// or a wall coordinate outside `[0, 1] x [0, length]`.
+    /// For a wall, `u` is the fraction along its boundary segment, by angle
+    /// for an arc, and `v` the height, within the wall's span: the whole
+    /// length for a profile wall, the pocket's depth for a pocket wall. For a
+    /// cap or floor, `uv` is a point of the profile plane; the face's own
+    /// boundary decides whether it lies on the face, which this does not
+    /// check. Returns `None` for an unknown face or a wall coordinate outside
+    /// its span.
     #[must_use]
     pub fn evaluate(&self, face: FaceId, uv: [f64; 2]) -> Option<SurfacePoint> {
         let face = self.faces.get(face.index())?;
-        match face.role {
-            FaceRole::Cap(end) => Some(SurfacePoint {
-                point: [uv[0], uv[1], self.end_height(end)],
-                normal: [0.0, 0.0, if end == End::Start { -1.0 } else { 1.0 }],
-            }),
-            FaceRole::Wall { segment, .. } => {
+        match (face.role, face.surface) {
+            (FaceRole::Cap(_) | FaceRole::Floor { .. }, Surface::Plane { normal, offset }) => {
+                Some(SurfacePoint {
+                    point: [uv[0], uv[1], offset * normal[2]],
+                    normal,
+                })
+            }
+            (FaceRole::Wall { segment, .. }, surface) => {
                 let [u, v] = uv;
-                if !(0.0..=1.0).contains(&u) || !(0.0..=self.length).contains(&v) {
+                let heights = self.band_of(segment.boundary).heights;
+                if !(0.0..=1.0).contains(&u) || !(heights[0]..=heights[1]).contains(&v) {
                     return None;
                 }
-                let loop_ = self.loop_of(segment);
-                let from = loop_.segments()
-                    [(segment.segment + loop_.segments().len() - 1) % loop_.segments().len()]
-                .to;
-                let to = loop_.segments()[segment.segment].to;
-                let (point, normal) = match face.surface {
+                let loop_ = self.boundary_loop(segment.boundary);
+                let (from, to) = segment_ends(loop_, segment.segment);
+                let (point, normal) = match surface {
                     Surface::Plane { normal, .. } => (
                         [
                             from[0] + u * (to[0] - from[0]),
@@ -73,6 +75,7 @@ impl Extrusion {
                     normal: [normal[0], normal[1], 0.0],
                 })
             }
+            (_, Surface::Cylinder { .. }) => None,
         }
     }
 
@@ -85,24 +88,33 @@ impl Extrusion {
         })
     }
 
-    /// Exact area of face `face`: the profile's area for a cap, the segment
-    /// length times the extrusion length for a wall.
+    /// Exact area of face `face`: the profile's area less the pockets opening
+    /// on it for a cap, the outline's area for a floor, and the segment's
+    /// length times its span for a wall.
     #[must_use]
     pub fn face_area(&self, face: FaceId) -> Option<f64> {
         Some(match self.faces.get(face.index())?.role {
-            FaceRole::Cap(_) => self.profile.area(),
+            FaceRole::Cap(end) => {
+                self.profile.area()
+                    + self
+                        .pockets
+                        .iter()
+                        .filter(|pocket| pocket.end == end)
+                        .map(|pocket| pocket.outline.signed_area())
+                        .sum::<f64>()
+            }
+            FaceRole::Floor { pocket } => -self.pockets[pocket].outline.signed_area(),
             FaceRole::Wall { segment, .. } => {
-                let loop_ = self.loop_of(segment);
+                let loop_ = self.boundary_loop(segment.boundary);
                 let length = match loop_.arc(segment.segment) {
                     Some(arc) => arc.length(),
                     None => {
-                        let n = loop_.segments().len();
-                        let from = loop_.segments()[(segment.segment + n - 1) % n].to;
-                        let to = loop_.segments()[segment.segment].to;
+                        let (from, to) = segment_ends(loop_, segment.segment);
                         libm::hypot(to[0] - from[0], to[1] - from[1])
                     }
                 };
-                length * self.length
+                let [low, high] = self.band_of(segment.boundary).heights;
+                length * (high - low)
             }
         })
     }
@@ -115,11 +127,17 @@ impl Extrusion {
             .sum()
     }
 
-    /// Exact enclosed volume: the profile's area times the length. The solid
-    /// is closed and its loops are oriented, so this is its signed volume.
+    /// Exact enclosed volume: the profile's area times the length, less each
+    /// pocket's area times its depth. The solid is closed and its loops are
+    /// oriented, so this is its signed volume.
     #[must_use]
     pub fn volume(&self) -> f64 {
         self.profile.area() * self.length
+            + self
+                .pockets
+                .iter()
+                .map(|pocket| pocket.outline.signed_area() * pocket.depth)
+                .sum::<f64>()
     }
 
     /// The smallest local axis-aligned box containing the solid, as
@@ -131,64 +149,80 @@ impl Extrusion {
     }
 
     /// A placed right-handed frame on planar face `face`, with +Z along its
-    /// outward normal and its origin on the face's boundary. Cylindrical walls
+    /// outward normal and its origin on the face's plane. Cylindrical walls
     /// have no planar frame and return `None`.
     ///
-    /// A cap's frame keeps the profile's X axis; its origin is the local
-    /// origin projected onto the cap. A planar wall's frame runs +X along its
-    /// segment and +Y along the extrusion from the segment's start at the
-    /// start cap.
+    /// A cap's or floor's frame keeps the profile's X axis; its origin is the
+    /// local origin projected onto the face's plane. A planar wall's frame
+    /// runs +X along its segment and +Y along the extrusion from the
+    /// segment's start at the bottom of its span.
     #[must_use]
     pub fn attachment_frame(&self, face: FaceId) -> Option<Placement3> {
         let face = self.faces.get(face.index())?;
         let local = match (face.role, face.surface) {
-            (FaceRole::Cap(End::End), _) => Placement3::translate(0.0, 0.0, self.length),
-            (FaceRole::Cap(End::Start), _) => Placement3::from_axes(
-                [1.0, 0.0, 0.0],
-                [0.0, -1.0, 0.0],
-                [0.0, 0.0, -1.0],
-                [0.0; 3],
-            ),
+            (FaceRole::Cap(_) | FaceRole::Floor { .. }, Surface::Plane { normal, offset }) => {
+                let height = offset * normal[2];
+                if normal[2] > 0.0 {
+                    Placement3::translate(0.0, 0.0, height)
+                } else {
+                    Placement3::from_axes(
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                        [0.0, 0.0, height],
+                    )
+                }
+            }
             (FaceRole::Wall { segment, .. }, Surface::Plane { normal, .. }) => {
-                let loop_ = self.loop_of(segment);
-                let n = loop_.segments().len();
-                let from = loop_.segments()[(segment.segment + n - 1) % n].to;
+                let (from, _) = segment_ends(self.boundary_loop(segment.boundary), segment.segment);
+                let low = self.band_of(segment.boundary).heights[0];
                 // The outward normal is the travel direction turned right, so
                 // travel, +Z and the normal are right-handed.
                 Placement3::from_axes(
                     [-normal[1], normal[0], 0.0],
                     [0.0, 0.0, 1.0],
                     normal,
-                    [from[0], from[1], 0.0],
+                    [from[0], from[1], low],
                 )
             }
-            (FaceRole::Wall { .. }, Surface::Cylinder { .. }) => return None,
+            (_, Surface::Cylinder { .. }) => return None,
         };
         Some(self.frame * local)
     }
 
     /// Whether `segment` is an arc, whose wall is a cylinder.
     #[must_use]
-    pub fn is_cylindrical(&self, segment: SegmentRef) -> bool {
-        matches!(
-            self.loop_of(segment)
-                .segments()
-                .get(segment.segment)
-                .map(|s| s.curve),
-            Some(Curve::Arc { .. })
-        )
+    pub fn is_cylindrical(&self, segment: BoundarySegment) -> bool {
+        let exists = match segment.boundary {
+            Boundary::Profile(LoopRef::Outer) => true,
+            Boundary::Profile(LoopRef::Hole(hole)) => hole < self.profile.holes().len(),
+            Boundary::Pocket(pocket) => pocket < self.pockets.len(),
+        };
+        exists
+            && matches!(
+                self.boundary_loop(segment.boundary)
+                    .segments()
+                    .get(segment.segment)
+                    .map(|s| s.curve),
+                Some(Curve::Arc { .. })
+            )
     }
 
-    fn end_height(&self, end: End) -> f64 {
-        if end == End::Start { 0.0 } else { self.length }
+    fn band_of(&self, boundary: Boundary) -> &super::Band {
+        self.bands()
+            .iter()
+            .find(|band| band.boundary == boundary)
+            .expect("every boundary has a band")
     }
+}
 
-    fn loop_of(&self, segment: SegmentRef) -> &exedra_profile::Loop {
-        match segment.loop_ref {
-            LoopRef::Outer => self.profile.outer(),
-            LoopRef::Hole(hole) => &self.profile.holes()[hole],
-        }
-    }
+/// The start and end points of segment `index`.
+fn segment_ends(loop_: &exedra_profile::Loop, index: usize) -> ([f64; 2], [f64; 2]) {
+    let segments = loop_.segments();
+    (
+        segments[(index + segments.len() - 1) % segments.len()].to,
+        segments[index].to,
+    )
 }
 
 #[cfg(test)]
@@ -231,7 +265,8 @@ mod tests {
         close(solid.surface_area(), 2.0 * area + 3.0 * (12.0 + PI));
         let seam = EdgeId(crate::usize_to_u32(solid.edges().len() - 1));
         close(solid.edge_length(seam).unwrap(), 3.0);
-        close(solid.edge_length(EdgeId(4)).unwrap(), PI / 2.0);
+        // Edges run per boundary: the outer loop's twelve, then the hole's.
+        close(solid.edge_length(EdgeId(12)).unwrap(), PI / 2.0);
         assert_eq!(solid.local_bounds(), [[0.0, 0.0, 0.0], [4.0, 2.0, 3.0]]);
         assert_eq!(solid.face_area(FaceId(99)), None);
     }
@@ -296,8 +331,8 @@ mod tests {
                 close(*a, b);
             }
         }
-        assert!(solid.is_cylindrical(SegmentRef {
-            loop_ref: LoopRef::Hole(0),
+        assert!(solid.is_cylindrical(BoundarySegment {
+            boundary: Boundary::Profile(LoopRef::Hole(0)),
             segment: 1
         }));
     }

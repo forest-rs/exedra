@@ -9,10 +9,18 @@ solid with planar caps, planar and cylindrical walls, and shared edges used
 once in each direction by oriented coedges. Faces, edges and vertices record
 the profile segment, end and tag they come from.
 
+`Extrusion::with_pocket` cuts a `Pocket`, a clockwise outline that stops at a
+depth, from either end: a recess, or a blind bore when the outline is round.
+`Pocket::from_region` takes the region to remove as a counter-clockwise
+outline, like a filled shape. Each pocket adds walls and a planar floor and
+becomes a hole of its cap.
+Pockets on one end must be valid holes of the profile; pockets on opposite
+ends may overlap only where material remains between them.
+
 `Extrusion::tessellate` realizes it under an explicit `TessellationPolicy`:
 - Each segment's sample count is chosen once and shared by both caps and its
   wall, so the mesh is closed by construction rather than welding.
-- Caps are triangulated in the emitted `f32` coordinates, so boundaries that
+- Caps and floors are triangulated in the emitted `f32` coordinates, so boundaries that
   cross, touch or collapse after narrowing are refused or, for arcs, refined
   within budget.
 - The result carries mesh-to-native face and vertex correspondence, each

@@ -17,12 +17,10 @@ use alloc::vec::Vec;
 
 use exedra_math::{Placement3, narrow};
 use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder};
-use exedra_profile::{
-    CircularEdgeConstraints, CircularSamplingError, Curve, LoopRef, SegmentRef, circular_edge_count,
-};
+use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, Curve, circular_edge_count};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
 
-use super::{EdgeId, End, Extrusion, FaceId, VertexId};
+use super::{Boundary, BoundarySegment, EdgeId, End, Extrusion, FaceId, Level, VertexId};
 
 /// Accuracy and work limits for [`Extrusion::tessellate`].
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -76,9 +74,10 @@ pub enum VertexSource {
 pub struct TessellationReport {
     /// The requested chord tolerance.
     pub chord_tolerance: f64,
-    /// Largest distance from an emitted boundary chord to its native curve,
-    /// measured on the emitted `f32` coordinates in local units. Includes
-    /// narrowing.
+    /// Bound on the distance from an emitted boundary chord to its native
+    /// curve, measured on the emitted `f32` coordinates in local units: the
+    /// in-plane chord deviation and the endpoints' axial error combined.
+    /// Includes narrowing.
     pub max_deviation: f64,
     /// Largest distance from an emitted vertex to its native position, in
     /// local units: the narrowing error alone.
@@ -121,8 +120,8 @@ pub enum TessellateExtrusionError {
     InvalidPolicy,
     /// An arc cannot meet the tolerance within the per-segment budget.
     Sampling {
-        /// The arc's profile segment.
-        segment: SegmentRef,
+        /// The arc's boundary segment.
+        segment: BoundarySegment,
         /// The sampling failure.
         error: CircularSamplingError,
     },
@@ -137,15 +136,24 @@ pub enum TessellateExtrusionError {
     /// the same `f32` point.
     Collapsed {
         /// The segment whose samples coincide.
-        segment: SegmentRef,
+        segment: BoundarySegment,
     },
-    /// A cap's emitted boundary is not a valid arrangement, and refinement
-    /// could not or did not repair it.
+    /// A planar face's emitted boundary is not a valid arrangement, and
+    /// refinement could not or did not repair it.
     Arrangement {
-        /// The refused cap.
-        cap: End,
+        /// The refused cap or floor.
+        face: FaceId,
         /// The triangulator's diagnosis on emitted coordinates.
         error: TriError,
+    },
+    /// After narrowing, a pocket's floor meets or passes the opposite cap
+    /// (`None`) or the floor of an overlapping pocket on the other end: the
+    /// material between them would vanish or turn inside out.
+    Web {
+        /// The pocket.
+        pocket: usize,
+        /// The overlapping pocket on the other end, or `None` for the cap.
+        opposite: Option<usize>,
     },
     /// The mesh builder refused the faces.
     Build(exedra_mesh::BuildError),
@@ -159,7 +167,7 @@ impl core::fmt::Display for TessellateExtrusionError {
                 write!(
                     f,
                     "segment {} of {:?}: {error}",
-                    segment.segment, segment.loop_ref
+                    segment.segment, segment.boundary
                 )
             }
             Self::VertexBudget { required, maximum } => {
@@ -168,9 +176,15 @@ impl core::fmt::Display for TessellateExtrusionError {
             Self::Collapsed { segment } => write!(
                 f,
                 "segment {} of {:?} collapses in f32",
-                segment.segment, segment.loop_ref
+                segment.segment, segment.boundary
             ),
-            Self::Arrangement { cap, error } => write!(f, "{cap:?} cap boundary: {error}"),
+            Self::Arrangement { face, error } => {
+                write!(f, "face {} boundary: {error}", face.0)
+            }
+            Self::Web { pocket, opposite } => match opposite {
+                Some(other) => write!(f, "pocket {pocket} floor meets pocket {other} in f32"),
+                None => write!(f, "pocket {pocket} floor meets the opposite cap in f32"),
+            },
             Self::Build(error) => write!(f, "mesh build: {error}"),
         }
     }
@@ -178,12 +192,17 @@ impl core::fmt::Display for TessellateExtrusionError {
 
 impl core::error::Error for TessellateExtrusionError {}
 
-/// One loop's samples, in segment order: segment `k` owns ring points
+/// One boundary's samples, in segment order: segment `k` owns ring points
 /// `starts[k] .. starts[k + 1]`, the first of which is its start vertex.
 struct Ring {
-    loop_ref: LoopRef,
     points: Vec<[f64; 2]>,
     starts: Vec<usize>,
+}
+
+impl Ring {
+    fn segment_of(&self, point: usize) -> usize {
+        self.starts.partition_point(|&s| s <= point) - 1
+    }
 }
 
 impl Extrusion {
@@ -192,8 +211,8 @@ impl Extrusion {
     /// # Errors
     ///
     /// Returns a typed error for an invalid policy, an arc or vertex budget
-    /// that cannot be met, samples that coincide in `f32`, or a cap boundary
-    /// that is not a valid arrangement in the emitted coordinates.
+    /// that cannot be met, samples that coincide in `f32`, or a cap or floor
+    /// boundary that is not a valid arrangement in the emitted coordinates.
     pub fn tessellate(
         &self,
         policy: &TessellationPolicy,
@@ -205,10 +224,10 @@ impl Extrusion {
         {
             return Err(TessellateExtrusionError::InvalidPolicy);
         }
-        let loops = self.loops();
-        let mut counts: Vec<Vec<u32>> = Vec::with_capacity(loops.len());
-        for (loop_ref, loop_) in &loops {
-            let mut loop_counts = Vec::with_capacity(loop_.segments().len());
+        let mut counts: Vec<Vec<u32>> = Vec::with_capacity(self.bands().len());
+        for band in self.bands() {
+            let loop_ = self.boundary_loop(band.boundary);
+            let mut band_counts = Vec::with_capacity(loop_.segments().len());
             for (segment, s) in loop_.segments().iter().enumerate() {
                 let count = match s.curve {
                     Curve::Line => 1,
@@ -225,8 +244,8 @@ impl Extrusion {
                         )
                         .map_err(|error| {
                             TessellateExtrusionError::Sampling {
-                                segment: SegmentRef {
-                                    loop_ref: *loop_ref,
+                                segment: BoundarySegment {
+                                    boundary: band.boundary,
                                     segment,
                                 },
                                 error,
@@ -234,9 +253,9 @@ impl Extrusion {
                         })?
                     }
                 };
-                loop_counts.push(count);
+                band_counts.push(count);
             }
-            counts.push(loop_counts);
+            counts.push(band_counts);
         }
         let mut refinements = 0;
         loop {
@@ -256,26 +275,24 @@ impl Extrusion {
                 }
                 Err(Refusal::Fatal(error)) => return Err(error),
                 Err(Refusal::Contact {
-                    cap,
+                    face,
                     error,
                     segments,
                 }) => {
-                    // Refine the arcs of the touching boundary edges: a chord
-                    // that cuts across a nearby boundary moves toward its arc.
+                    // Refine the arcs involved: a chord that cuts across a
+                    // nearby boundary moves toward its arc.
                     let mut refined = false;
-                    for (loop_index, segment) in segments {
-                        let count = &mut counts[loop_index][segment];
-                        let is_arc = matches!(
-                            loops[loop_index].1.segments()[segment].curve,
-                            Curve::Arc { .. }
-                        );
+                    for (band, segment) in segments {
+                        let loop_ = self.boundary_loop(self.bands()[band].boundary);
+                        let count = &mut counts[band][segment];
+                        let is_arc = matches!(loop_.segments()[segment].curve, Curve::Arc { .. });
                         if is_arc && *count < policy.max_segment_edges {
                             *count = count.saturating_mul(2).min(policy.max_segment_edges);
                             refined = true;
                         }
                     }
                     if !refined || refinements >= policy.max_refinements {
-                        return Err(TessellateExtrusionError::Arrangement { cap, error });
+                        return Err(TessellateExtrusionError::Arrangement { face, error });
                     }
                     refinements += 1;
                 }
@@ -283,27 +300,16 @@ impl Extrusion {
         }
     }
 
-    fn loops(&self) -> Vec<(LoopRef, &exedra_profile::Loop)> {
-        core::iter::once((LoopRef::Outer, self.profile.outer()))
-            .chain(
-                self.profile
-                    .holes()
-                    .iter()
-                    .enumerate()
-                    .map(|(hole, loop_)| (LoopRef::Hole(hole), loop_)),
-            )
-            .collect()
-    }
-
     fn sample(&self, counts: &[Vec<u32>]) -> Vec<Ring> {
-        self.loops()
-            .into_iter()
+        self.bands()
+            .iter()
             .zip(counts)
-            .map(|((loop_ref, loop_), loop_counts)| {
+            .map(|(band, band_counts)| {
+                let loop_ = self.boundary_loop(band.boundary);
                 let mut points = Vec::new();
-                let mut starts = Vec::with_capacity(loop_counts.len() + 1);
+                let mut starts = Vec::with_capacity(band_counts.len() + 1);
                 for (segment, ((from, s), &count)) in
-                    loop_.iter_with_starts().zip(loop_counts).enumerate()
+                    loop_.iter_with_starts().zip(band_counts).enumerate()
                 {
                     starts.push(points.len());
                     points.push(from);
@@ -323,11 +329,7 @@ impl Extrusion {
                     }
                 }
                 starts.push(points.len());
-                Ring {
-                    loop_ref,
-                    points,
-                    starts,
-                }
+                Ring { points, starts }
             })
             .collect()
     }
@@ -338,113 +340,135 @@ impl Extrusion {
         rings: &[Ring],
         policy: &TessellationPolicy,
     ) -> Result<TessellatedExtrusion, Refusal> {
-        let loops = self.loops();
-        let total: usize = rings.iter().map(|ring| ring.points.len()).sum();
-        let ends = [(End::Start, 0.0), (End::End, self.length)];
-        // Emitted positions, and the same points mapped back to local
-        // coordinates, for both ends.
-        let mut emitted = [Vec::with_capacity(total), Vec::with_capacity(total)];
-        let mut local = [Vec::with_capacity(total), Vec::with_capacity(total)];
+        let bands = self.bands();
+        // Each band has a vertex block per level: its ring at that height.
+        let mut blocks = Vec::with_capacity(bands.len());
+        let mut emitted = Vec::new();
+        let mut local = Vec::new();
         let mut max_vertex_displacement = 0.0_f64;
-        for (level, (_, z)) in ends.iter().enumerate() {
-            for ring in rings {
+        for (band, ring) in bands.iter().zip(rings) {
+            let mut band_blocks = [0; 2];
+            for (slot, z) in band.heights.into_iter().enumerate() {
+                band_blocks[slot] = emitted.len();
                 for point in &ring.points {
-                    let exact = [point[0], point[1], *z];
+                    let exact = [point[0], point[1], z];
                     let placed = narrow(self.frame.transform_point(exact));
                     let back = to_local(&self.frame, placed);
                     max_vertex_displacement = max_vertex_displacement
                         .max(exedra_math::norm(exedra_math::sub(back, exact)));
-                    emitted[level].push(placed);
-                    local[level].push(back);
+                    emitted.push(placed);
+                    local.push(back);
                 }
             }
+            blocks.push(band_blocks);
         }
         // Coincident consecutive samples or seam ends cannot form edges.
-        let mut offset = 0;
-        for ring in rings {
+        for ((band, ring), block) in bands.iter().zip(rings).zip(&blocks) {
             let n = ring.points.len();
-            for segment in 0..ring.starts.len() - 1 {
-                for i in ring.starts[segment]..ring.starts[segment + 1] {
-                    let (a, b) = (offset + i, offset + (i + 1) % n);
-                    let collapsed = (0..2).any(|level| emitted[level][a] == emitted[level][b])
-                        || emitted[0][a] == emitted[1][a];
-                    if collapsed {
-                        return Err(Refusal::Fatal(TessellateExtrusionError::Collapsed {
-                            segment: SegmentRef {
-                                loop_ref: ring.loop_ref,
-                                segment,
-                            },
-                        }));
-                    }
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let collapsed = block
+                    .iter()
+                    .any(|&base| emitted[base + i] == emitted[base + j])
+                    || emitted[block[0] + i] == emitted[block[1] + i];
+                if collapsed {
+                    return Err(Refusal::Fatal(TessellateExtrusionError::Collapsed {
+                        segment: BoundarySegment {
+                            boundary: band.boundary,
+                            segment: ring.segment_of(i),
+                        },
+                    }));
                 }
             }
-            offset += n;
         }
-        // Triangulate each cap in emitted coordinates.
-        let mut caps = [Vec::new(), Vec::new()];
-        for (level, (end, _)) in ends.iter().enumerate() {
-            let planar: Vec<[f64; 2]> = local[level].iter().map(|p| [p[0], p[1]]).collect();
-            let mut slices = Vec::with_capacity(rings.len());
-            let mut start = 0;
-            for ring in rings {
-                slices.push(&planar[start..start + ring.points.len()]);
-                start += ring.points.len();
+        self.check_webs(&blocks, rings, &local)?;
+        let mut builder = MeshBuilder::new();
+        for position in &emitted {
+            let _ = builder.push_vertex(*position);
+        }
+        let index = |i: usize| crate::usize_to_u32(i);
+        let build = |error| Refusal::Fatal(TessellateExtrusionError::Build(error));
+        let mut native_faces = Vec::new();
+        // Caps and floors, triangulated in emitted coordinates. A floor's
+        // stored ring winds clockwise, so it is read backwards as an outer
+        // boundary.
+        let mut planar = Vec::with_capacity(self.planes().len());
+        for plane in self.planes() {
+            let reversed = |ring: usize| plane.region_right && ring == 0;
+            let mut points: Vec<Vec<[f64; 2]>> = Vec::with_capacity(plane.rings.len());
+            let mut vertices: Vec<usize> = Vec::new();
+            for (ring_index, &(band, slot)) in plane.rings.iter().enumerate() {
+                let n = rings[band].points.len();
+                let order: Vec<usize> = if reversed(ring_index) {
+                    (0..n).rev().collect()
+                } else {
+                    (0..n).collect()
+                };
+                points.push(
+                    order
+                        .iter()
+                        .map(|&i| {
+                            let p = local[blocks[band][slot] + i];
+                            [p[0], p[1]]
+                        })
+                        .collect(),
+                );
+                vertices.extend(order.iter().map(|&i| blocks[band][slot] + i));
             }
+            let holes: Vec<&[[f64; 2]]> = points[1..].iter().map(Vec::as_slice).collect();
             let input = PolygonInput {
-                outer: slices[0],
-                holes: &slices[1..],
+                outer: &points[0],
+                holes: &holes,
             };
             match triangulate_preserving_boundary(&input, &TriParams::default()) {
-                Ok(triangulation) => caps[level] = triangulation.triangles,
+                Ok(triangulation) => planar.push((plane, vertices, triangulation.triangles)),
                 Err(error) => {
+                    let witness = |ring: usize, edge: usize| {
+                        let (band, _) = plane.rings[ring];
+                        let n = rings[band].points.len();
+                        // Edge `edge` of a reversed ring joins original
+                        // points `n - 1 - edge` and `n - 2 - edge`.
+                        let first = if reversed(ring) {
+                            (2 * n - 2 - edge) % n
+                        } else {
+                            edge
+                        };
+                        (band, rings[band].segment_of(first))
+                    };
                     let segments = match error {
                         TriError::BoundaryContact { first, second, .. } => [first, second]
                             .into_iter()
-                            .map(|edge| {
-                                let loop_index = edge.hole.map_or(0, |hole| hole + 1);
-                                let ring = &rings[loop_index];
-                                let segment = ring.starts.partition_point(|&s| s <= edge.edge) - 1;
-                                (loop_index, segment)
-                            })
+                            .map(|edge| witness(edge.hole.map_or(0, |hole| hole + 1), edge.edge))
                             .collect(),
-                        // A hole left outside by chords that cut under it:
-                        // refine the outer loop and that hole.
+                        // Chords that cut under a hole leave it outside:
+                        // refine the outer boundary and that hole.
                         TriError::HoleOutsideOuter { hole } => [0, hole + 1]
                             .into_iter()
-                            .flat_map(|loop_index| {
-                                (0..rings[loop_index].starts.len() - 1)
-                                    .map(move |segment| (loop_index, segment))
+                            .flat_map(|ring| {
+                                let band = plane.rings[ring].0;
+                                (0..rings[band].starts.len() - 1)
+                                    .map(move |segment| (band, segment))
                             })
                             .collect(),
                         _ => Vec::new(),
                     };
                     return Err(Refusal::Contact {
-                        cap: *end,
+                        face: FaceId(crate::usize_to_u32(plane.face)),
                         error,
                         segments,
                     });
                 }
             }
         }
-        // Vertices: the start ring, then the end ring.
-        let mut builder = MeshBuilder::new();
-        for level in &emitted {
-            for position in level {
-                let _ = builder.push_vertex(*position);
-            }
-        }
-        let index = |level: usize, i: usize| crate::usize_to_u32(level * total + i);
-        let mut native_faces = Vec::new();
-        let build = |error| Refusal::Fatal(TessellateExtrusionError::Build(error));
-        // Caps: the triangulation winds counter-clockwise seen from +Z, which
-        // is outward for the end cap and inward for the start cap.
-        for (level, triangles) in caps.iter().enumerate() {
-            let face = FaceId(crate::usize_to_u32(level));
-            for [a, b, c] in triangles.iter().map(|t| t.map(|v| v as usize)) {
-                let corners = if level == 0 {
-                    [index(0, a), index(0, c), index(0, b)]
+        // Planar faces wind counter-clockwise seen from +Z; downward ones
+        // reverse.
+        for (plane, vertices, triangles) in &planar {
+            let face = FaceId(crate::usize_to_u32(plane.face));
+            for [a, b, c] in triangles.iter().map(|t| t.map(|v| vertices[v as usize])) {
+                let corners = if plane.upward {
+                    [index(a), index(b), index(c)]
                 } else {
-                    [index(1, a), index(1, b), index(1, c)]
+                    [index(a), index(c), index(b)]
                 };
                 builder
                     .add_face_with_attrs(
@@ -459,22 +483,22 @@ impl Extrusion {
                 native_faces.push(face);
             }
         }
-        // Walls: quads [start i, start j, end j, end i] per sample interval,
-        // whose edges are the start rim, the lateral at j, the end rim and
-        // the lateral at i.
-        let mut face = 2;
-        let mut offset = 0;
-        for (ring, (_, loop_)) in rings.iter().zip(&loops) {
+        // Walls: quads [lower i, lower j, upper j, upper i] per sample
+        // interval, whose edges are the lower rim, the lateral at j, the upper
+        // rim and the lateral at i.
+        for ((band, ring), block) in bands.iter().zip(rings).zip(&blocks) {
+            let loop_ = self.boundary_loop(band.boundary);
             let n = ring.points.len();
             let segments = ring.starts.len() - 1;
             for segment in 0..segments {
                 let next = (segment + 1) % segments;
-                let sharp_end = !smooth_at(loop_, segment, next, policy.smooth_seam_angle);
                 let previous = (segment + segments - 1) % segments;
+                let sharp_end = !smooth_at(loop_, segment, next, policy.smooth_seam_angle);
                 let sharp_start = !smooth_at(loop_, previous, segment, policy.smooth_seam_angle);
+                let face = FaceId(crate::usize_to_u32(band.walls + segment));
                 let (first, last) = (ring.starts[segment], ring.starts[segment + 1]);
                 for i in first..last {
-                    let (a, b) = (offset + i, offset + (i + 1) % n);
+                    let j = (i + 1) % n;
                     let lateral =
                         |at_seam: bool, sharp: bool| f32::from(u8::from(at_seam && sharp));
                     let sharpness = [
@@ -485,96 +509,82 @@ impl Extrusion {
                     ];
                     builder
                         .add_face_with_attrs(
-                            &[index(0, a), index(0, b), index(1, b), index(1, a)],
+                            &[
+                                index(block[0] + i),
+                                index(block[0] + j),
+                                index(block[1] + j),
+                                index(block[1] + i),
+                            ],
                             &FaceBuildAttrs {
-                                region: Some(face),
+                                region: Some(face.0),
                                 edge_seams: None,
                                 edge_sharpness: Some(&sharpness),
                             },
                         )
                         .map_err(build)?;
-                    native_faces.push(FaceId(face));
+                    native_faces.push(face);
                 }
-                face += 1;
             }
-            offset += n;
         }
         let built = builder.build().map_err(build)?;
-        // Correspondence.
-        let mut sources = Vec::with_capacity(2 * total);
-        let profile_edges = self.edges.len() / 3;
-        for level in 0..2 {
-            let mut vertex_base = 0;
-            let mut edge_base = 0;
-            for ring in rings {
-                let segments = ring.starts.len() - 1;
+        // Correspondence: every sample is a native vertex or an interior
+        // point of the boundary edge at its level.
+        let mut sources = Vec::with_capacity(emitted.len());
+        let mut edge_chains = alloc::vec![Vec::new(); self.edges.len()];
+        for ((band, ring), block) in bands.iter().zip(rings).zip(&blocks) {
+            let n = ring.points.len();
+            let segments = ring.starts.len() - 1;
+            for slot in 0..2 {
                 for segment in 0..segments {
                     let count = ring.starts[segment + 1] - ring.starts[segment];
                     for i in 0..count {
                         sources.push(if i == 0 {
                             let previous = (segment + segments - 1) % segments;
                             VertexSource::Vertex(VertexId(crate::usize_to_u32(
-                                level * profile_edges + vertex_base + previous,
+                                band.vertices[slot] + previous,
                             )))
                         } else {
                             VertexSource::Edge {
-                                edge: EdgeId(crate::usize_to_u32(
-                                    level * profile_edges + edge_base + segment,
-                                )),
+                                edge: EdgeId(crate::usize_to_u32(band.edges[slot] + segment)),
                                 parameter: f64_ratio(i, count),
                             }
                         });
                     }
-                }
-                vertex_base += segments;
-                edge_base += segments;
-            }
-        }
-        let mesh_vertex = |level: usize, i: usize| built.vertex_ids[level * total + i];
-        let mut edge_chains = Vec::with_capacity(self.edges.len());
-        for level in 0..2 {
-            let mut offset = 0;
-            for ring in rings {
-                let n = ring.points.len();
-                for segment in 0..ring.starts.len() - 1 {
-                    let chain = (ring.starts[segment]..=ring.starts[segment + 1])
-                        .map(|i| mesh_vertex(level, offset + i % n))
+                    edge_chains[band.edges[slot] + segment] = (ring.starts[segment]
+                        ..=ring.starts[segment + 1])
+                        .map(|i| built.vertex_ids[block[slot] + i % n])
                         .collect();
-                    edge_chains.push(chain);
                 }
-                offset += n;
             }
-        }
-        let mut offset = 0;
-        for ring in rings {
-            let n = ring.points.len();
-            for segment in 0..ring.starts.len() - 1 {
-                let at = offset + ring.starts[segment + 1] % n;
-                edge_chains.push(alloc::vec![mesh_vertex(0, at), mesh_vertex(1, at)]);
+            for segment in 0..segments {
+                let at = ring.starts[segment + 1] % n;
+                edge_chains[band.seams + segment] = alloc::vec![
+                    built.vertex_ids[block[0] + at],
+                    built.vertex_ids[block[1] + at]
+                ];
             }
-            offset += n;
         }
         // Evidence on emitted coordinates.
         let mut max_deviation = max_vertex_displacement;
-        for points in &local {
-            let mut offset = 0;
-            for (ring, (_, loop_)) in rings.iter().zip(&loops) {
-                let n = ring.points.len();
-                for segment in 0..ring.starts.len() - 1 {
-                    let Some(arc) = loop_.arc(segment) else {
-                        continue;
-                    };
+        for ((band, ring), block) in bands.iter().zip(rings).zip(&blocks) {
+            let loop_ = self.boundary_loop(band.boundary);
+            let n = ring.points.len();
+            for segment in 0..ring.starts.len() - 1 {
+                let Some(arc) = loop_.arc(segment) else {
+                    continue;
+                };
+                for (base, height) in block.iter().zip(band.heights) {
                     for i in ring.starts[segment]..ring.starts[segment + 1] {
-                        let (a, b) = (points[offset + i], points[offset + (i + 1) % n]);
-                        max_deviation = max_deviation.max(chord_deviation(
-                            [a[0], a[1]],
-                            [b[0], b[1]],
-                            arc.center,
-                            arc.radius,
-                        ));
+                        let (a, b) = (local[base + i], local[base + (i + 1) % n]);
+                        // Height varies linearly along the chord, so its
+                        // error is bounded by the endpoints'; the in-plane
+                        // and axial errors combine.
+                        let planar =
+                            chord_deviation([a[0], a[1]], [b[0], b[1]], arc.center, arc.radius);
+                        let axial = (a[2] - height).abs().max((b[2] - height).abs());
+                        max_deviation = max_deviation.max(libm::hypot(planar, axial));
                     }
                 }
-                offset += n;
             }
         }
         Ok(TessellatedExtrusion {
@@ -593,11 +603,81 @@ impl Extrusion {
     }
 }
 
+impl Extrusion {
+    /// Refuses floors that meet or pass the opposite cap, or the floor of an
+    /// overlapping pocket on the other end, in emitted coordinates. Each ring
+    /// is compared by its whole height range, which also covers the small
+    /// tilt narrowing gives a placed plane.
+    fn check_webs(
+        &self,
+        blocks: &[[usize; 2]],
+        rings: &[Ring],
+        local: &[[f64; 3]],
+    ) -> Result<(), Refusal> {
+        let bands = self.bands();
+        let heights = |band: usize, slot: usize| {
+            let base = blocks[band][slot];
+            (0..rings[band].points.len())
+                .map(|i| local[base + i][2])
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), z| {
+                    (lo.min(z), hi.max(z))
+                })
+        };
+        let pocket_band = |pocket: usize| {
+            bands
+                .iter()
+                .position(|band| band.boundary == Boundary::Pocket(pocket))
+                .expect("every pocket has a band")
+        };
+        // Floors are the pocket band's lower level at the end, upper at the
+        // start; caps are every band's ring at that level.
+        let floor = |pocket: usize| {
+            let slot = usize::from(self.pockets()[pocket].end == End::Start);
+            heights(pocket_band(pocket), slot)
+        };
+        let cap = |level: Level| {
+            bands
+                .iter()
+                .enumerate()
+                .flat_map(|(band, b)| {
+                    b.levels
+                        .iter()
+                        .enumerate()
+                        .map(move |(slot, l)| (band, slot, *l))
+                })
+                .filter(|&(_, _, l)| l == level)
+                .map(|(band, slot, _)| heights(band, slot))
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (a, b)| {
+                    (lo.min(a), hi.max(b))
+                })
+        };
+        let (start_cap, end_cap) = (cap(Level::Start), cap(Level::End));
+        let refuse =
+            |pocket, opposite| Refusal::Fatal(TessellateExtrusionError::Web { pocket, opposite });
+        for (pocket, p) in self.pockets().iter().enumerate() {
+            let (low, high) = floor(pocket);
+            let clear = match p.end {
+                End::End => low > start_cap.1,
+                End::Start => high < end_cap.0,
+            };
+            if !clear {
+                return Err(refuse(pocket, None));
+            }
+        }
+        for &[end_pocket, start_pocket] in self.webs() {
+            if floor(end_pocket).0 <= floor(start_pocket).1 {
+                return Err(refuse(end_pocket, Some(start_pocket)));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Why one realization attempt stopped.
 enum Refusal {
     Fatal(TessellateExtrusionError),
     Contact {
-        cap: End,
+        face: FaceId,
         error: TriError,
         segments: Vec<(usize, usize)>,
     },
