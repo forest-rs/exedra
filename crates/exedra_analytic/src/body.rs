@@ -437,6 +437,16 @@ impl<F, E> Body<F, E> {
             if face.loops.is_empty() {
                 return Err(BodyError::EmptyFace { face: id });
             }
+            if let Surface::Cone(cone) = &face.surface
+                && face
+                    .domain
+                    .v
+                    .bounds()
+                    .iter()
+                    .any(|&v| cone.radius_at(v).is_none())
+            {
+                return Err(BodyError::NonRegularSurface { face: id });
+            }
             for &loop_id in &face.loops {
                 let loop_ = self
                     .boundary_loop(loop_id)
@@ -508,6 +518,11 @@ pub enum BodyError {
         gap: f64,
         /// Allowed distance.
         allowed: f64,
+    },
+    /// A face domain meets a singularity or leaves the regular surface nappe.
+    NonRegularSurface {
+        /// Offending face.
+        face: FaceId,
     },
     /// A face has no outer boundary loop.
     EmptyFace {
@@ -605,6 +620,31 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
                         .max(radial(b[0], b[1]))
                         .max(radial(a[0] + t * dx, a[1] + t * dy))
                 }
+                Surface::Cone(cone) => {
+                    let radial = libm::hypot(a[0], a[1]);
+                    if radial == 0.0 {
+                        return f64::INFINITY;
+                    }
+                    let norm = libm::hypot(1.0, cone.slope());
+                    let (sin, cos) = (cone.slope() / norm, 1.0 / norm);
+                    let unit = [sin * a[0] / radial, sin * a[1] / radial, cos];
+                    let origin = [
+                        cone.radius() * a[0] / radial,
+                        cone.radius() * a[1] / radial,
+                        0.0,
+                    ];
+                    // Project both endpoints onto the same generator. The
+                    // segment between regular projections is itself on the
+                    // cone, so convexity bounds the entire original line.
+                    let gap = |p: [f64; 3]| {
+                        let t = dot(sub(p, origin), unit);
+                        if !t.is_finite() || cone.radius() + sin * t <= 0.0 {
+                            return f64::INFINITY;
+                        }
+                        length(sub(sub(p, origin), unit.map(|v| v * t)))
+                    };
+                    gap(a).max(gap(b))
+                }
             }
         }
         Curve::Circle(circle) => {
@@ -619,6 +659,14 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
                     libm::hypot(center[0], center[1])
                         + (circle.radius() - cylinder.radius()).abs()
                         + circle.radius() * tilt
+                }
+                Surface::Cone(cone) => {
+                    let Some(radius) = cone.radius_at(center[2]) else {
+                        return f64::INFINITY;
+                    };
+                    libm::hypot(center[0], center[1])
+                        + (circle.radius() - radius).abs()
+                        + 2.0 * circle.radius() * tilt
                 }
             }
         }
@@ -768,6 +816,23 @@ pub(crate) mod tests {
                 face: FaceId(0),
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn cone_support_checks_complete_generators_circles_and_apex_domains() {
+        let surface = Surface::cone(Placement3::IDENTITY, 2.0, 0.5).unwrap();
+        let generator = Curve::line([2.0, 0.0, 0.0], [1.0, 0.0, 2.0]).unwrap();
+        assert!(support_gap(&generator, ParameterRange::UNIT, &surface) < 1e-12);
+        let ring = Curve::circle(Placement3::translate(0.0, 0.0, 2.0), 3.0).unwrap();
+        assert!(support_gap(&ring, ParameterRange::UNIT, &surface) < 1e-12);
+        let chord = Curve::line([2.0, 0.0, 0.0], [-4.0, 0.0, 0.0]).unwrap();
+        assert!(support_gap(&chord, ParameterRange::UNIT, &surface) > 1.0);
+        let mut parts = cylinder_parts();
+        parts.faces[0].surface = Surface::cone(Placement3::IDENTITY, 2.0, -1.0).unwrap();
+        assert!(matches!(
+            Body::try_from_parts(parts, &POLICY),
+            Err(BodyError::NonRegularSurface { face: FaceId(0) })
         ));
     }
 

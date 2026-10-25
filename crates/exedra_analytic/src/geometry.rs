@@ -242,6 +242,40 @@ impl Cylinder {
     }
 }
 
+/// One nappe of a cone about a rigid frame's Z axis.
+///
+/// U is radians and V is axial height. The radius is `radius + slope * V`;
+/// only the strictly positive-radius portion is regular and evaluable.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cone {
+    frame: Placement3,
+    radius: f64,
+    slope: f64,
+}
+impl Cone {
+    /// The rigid frame, with the cone axis along local +Z.
+    #[must_use]
+    pub const fn frame(&self) -> Placement3 {
+        self.frame
+    }
+    /// Positive radius at axial height zero.
+    #[must_use]
+    pub const fn radius(&self) -> f64 {
+        self.radius
+    }
+    /// Signed change in radius per unit axial height.
+    #[must_use]
+    pub const fn slope(&self) -> f64 {
+        self.slope
+    }
+    /// Radius at a height, or `None` at/past the apex or on overflow.
+    #[must_use]
+    pub fn radius_at(&self, height: f64) -> Option<f64> {
+        let radius = self.radius + self.slope * height;
+        (radius.is_finite() && radius > 0.0).then_some(radius)
+    }
+}
+
 /// Untrimmed supporting geometry. A face separately owns its trim and sense.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Surface {
@@ -249,6 +283,8 @@ pub enum Surface {
     Plane(Plane),
     /// A cylinder periodic in U with period `TAU`.
     Cylinder(Cylinder),
+    /// A cone periodic in U, restricted to its regular positive-radius nappe.
+    Cone(Cone),
 }
 
 /// Surface position, first and second partials, and geometric unit normal.
@@ -290,12 +326,34 @@ impl Surface {
         Ok(Self::Cylinder(Cylinder { frame, radius }))
     }
 
+    /// Creates a cone with positive base radius and a finite radial slope.
+    ///
+    /// A zero slope is permitted and has cylindrical geometry. Evaluation
+    /// refuses heights at or past the apex; body domains must avoid it.
+    ///
+    /// # Errors
+    /// Returns a frame violation, [`GeometryError::Radius`] or
+    /// [`GeometryError::NonFinite`] for a non-finite slope.
+    pub fn cone(frame: Placement3, radius: f64, slope: f64) -> Result<Self, GeometryError> {
+        rigid(frame)?;
+        check_radius(radius)?;
+        if !slope.is_finite() {
+            return Err(GeometryError::NonFinite);
+        }
+        Ok(Self::Cone(Cone {
+            frame,
+            radius,
+            slope,
+        }))
+    }
+
     /// The supporting geometry's rigid frame.
     #[must_use]
     pub const fn frame(&self) -> Placement3 {
         match self {
             Self::Plane(p) => p.frame,
             Self::Cylinder(c) => c.frame,
+            Self::Cone(c) => c.frame,
         }
     }
 
@@ -304,13 +362,15 @@ impl Surface {
     pub fn periods(&self) -> [Option<f64>; 2] {
         match self {
             Self::Plane(_) => [None, None],
-            Self::Cylinder(_) => [Some(core::f64::consts::TAU), None],
+            Self::Cylinder(_) | Self::Cone(_) => [Some(core::f64::consts::TAU), None],
         }
     }
 
     /// Parameters of the closest point on the untrimmed supporting geometry.
     ///
-    /// Cylinder U is the principal angle in `[-pi,pi]`. A point on the axis
+    /// Cylinder/cone U is the principal angle in `[-pi,pi]`. Cone V is the
+    /// orthogonal meridian projection; a closest point at the apex returns
+    /// `None` because U has no unique value. A point on the axis
     /// has no unique closest angle and returns `None`, as do non-finite inputs
     /// and overflow. Neither a face domain nor its trims are classified.
     #[must_use]
@@ -329,11 +389,21 @@ impl Surface {
         }
         match self {
             Self::Plane(_) => Some([local[0], local[1]]),
-            Self::Cylinder(_) => {
-                if local[0] == 0.0 && local[1] == 0.0 {
+            Self::Cylinder(_) | Self::Cone(_) => {
+                let radial = libm::hypot(local[0], local[1]);
+                if radial == 0.0 || !radial.is_finite() {
                     return None;
                 }
-                Some([libm::atan2(local[1], local[0]), local[2]])
+                let height = if let Self::Cone(cone) = self {
+                    let norm = libm::hypot(1.0, cone.slope);
+                    let (sin, cos) = (cone.slope / norm, 1.0 / norm);
+                    let height = cos * (cos * local[2] + sin * (radial - cone.radius));
+                    cone.radius_at(height)?;
+                    height
+                } else {
+                    local[2]
+                };
+                Some([libm::atan2(local[1], local[0]), height])
             }
         }
     }
@@ -346,36 +416,39 @@ impl Surface {
             return None;
         }
         let frame = self.frame();
-        let (point, du, duu, normal) = match self {
+        let (point, du, dv, duu, duv, normal) = match self {
             Self::Plane(_) => (
                 [uv[0], uv[1], 0.0],
                 [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0; 3],
                 [0.0; 3],
                 [0.0, 0.0, 1.0],
             ),
-            Self::Cylinder(c) => {
+            Self::Cylinder(_) | Self::Cone(_) => {
+                let (radius, slope) = match self {
+                    Self::Cylinder(c) => (c.radius, 0.0),
+                    Self::Cone(c) => (c.radius_at(uv[1])?, c.slope),
+                    Self::Plane(_) => unreachable!(),
+                };
                 let (sin, cos) = (libm::sin(uv[0]), libm::cos(uv[0]));
+                let norm = libm::hypot(1.0, slope);
                 (
-                    [c.radius * cos, c.radius * sin, uv[1]],
-                    [-c.radius * sin, c.radius * cos, 0.0],
-                    [-c.radius * cos, -c.radius * sin, 0.0],
-                    [cos, sin, 0.0],
+                    [radius * cos, radius * sin, uv[1]],
+                    [-radius * sin, radius * cos, 0.0],
+                    [slope * cos, slope * sin, 1.0],
+                    [-radius * cos, -radius * sin, 0.0],
+                    [-slope * sin, slope * cos, 0.0],
+                    [cos / norm, sin / norm, -slope / norm],
                 )
             }
         };
         let result = SurfaceEvaluation {
             point: frame.transform_point(point),
             du: vector(frame, du),
-            dv: vector(
-                frame,
-                if matches!(self, Self::Plane(_)) {
-                    [0.0, 1.0, 0.0]
-                } else {
-                    [0.0, 0.0, 1.0]
-                },
-            ),
+            dv: vector(frame, dv),
             duu: vector(frame, duu),
-            duv: [0.0; 3],
+            duv: vector(frame, duv),
             dvv: [0.0; 3],
             normal: vector(frame, normal),
         };
@@ -539,6 +612,48 @@ mod tests {
         assert_eq!(cylinder.parameters([0.0, 0.0, 3.0]), None);
         assert_eq!(cylinder.parameters([f64::NAN, 0.0, 0.0]), None);
         assert_eq!(cylinder.parameters([14.0, 0.0, 3.0]), Some([0.0, 3.0]));
+    }
+
+    #[test]
+    fn cone_partials_and_closest_parameters_match_independent_differences() {
+        let frame = Placement3::rotate_y_then_translate(0.7, 2.0, -3.0, 4.0);
+        for slope in [-0.8, 0.0, 0.4] {
+            let cone = Surface::cone(frame, 5.0, slope).unwrap();
+            let uv = [0.7, 1.0];
+            let e = cone.evaluate(uv).unwrap();
+            let h = 1e-5;
+            for axis in 0..2 {
+                let mut a = uv;
+                a[axis] -= h;
+                let mut b = uv;
+                b[axis] += h;
+                let (a, b) = (cone.evaluate(a).unwrap(), cone.evaluate(b).unwrap());
+                close(
+                    core::array::from_fn(|i| (b.point[i] - a.point[i]) / (2.0 * h)),
+                    if axis == 0 { e.du } else { e.dv },
+                    1e-8,
+                );
+                close(
+                    core::array::from_fn(|i| (b.du[i] - a.du[i]) / (2.0 * h)),
+                    if axis == 0 { e.duu } else { e.duv },
+                    1e-8,
+                );
+            }
+            assert!(
+                (libm::hypot(libm::hypot(e.normal[0], e.normal[1]), e.normal[2]) - 1.0).abs()
+                    < 1e-12
+            );
+            let found = cone.parameters(e.point).unwrap();
+            assert!((found[0] - uv[0]).abs() < 1e-12 && (found[1] - uv[1]).abs() < 1e-12);
+            let off = core::array::from_fn(|i| e.point[i] + 0.25 * e.normal[i]);
+            let found = cone.parameters(off).unwrap();
+            close(cone.evaluate(found).unwrap().point, e.point, 1e-12);
+        }
+        let cone = Surface::cone(Placement3::IDENTITY, 1.0, -0.5).unwrap();
+        assert!(cone.evaluate([0.0, 2.0]).is_none());
+        assert!(cone.evaluate([0.0, 3.0]).is_none());
+        assert!(cone.parameters([0.0; 3]).is_none());
+        assert!(Surface::cone(Placement3::IDENTITY, 1.0, f64::INFINITY).is_err());
     }
 
     #[test]
