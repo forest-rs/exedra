@@ -60,6 +60,13 @@ where positions are ids) and call `Recipe::try_from_parts`. It applies the same
 checks in table order and reports a `RecipePartsError` naming the refused
 table, position and `RecipeError`.
 
+A reusable component is a function that builds into a caller's
+`&mut RecipeBuilder` and returns the node handles it created; components share
+the builder's tables. One insertion is atomic, but a component is not: if it
+fails after adding profiles or nodes, discard the builder and propagate the
+error. The [component routes example](../../../examples/component_routes/)
+builds one component both ways and shows the recipes are identical.
+
 Everything validates at insertion with typed errors — hostile input never
 panics (fuzz-enforced). Wrong winding is an error with `Loop2::reversed`
 as the deliberate fix; orientation is never changed implicitly.
