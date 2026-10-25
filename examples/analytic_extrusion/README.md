@@ -45,6 +45,32 @@ blender --background --python examples/analytic_extrusion/render_boundary.py -- 
 
 The render uses Blender only for lighting and presentation of the exported mesh.
 
+## Turned fitting and matched mesh comparison
+
+```sh
+cargo run -p analytic_extrusion --example turned_fitting -- /tmp/turned-fitting
+blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/turned-fitting.glb /tmp/turned-fitting.png
+blender --background --python examples/analytic_extrusion/render_revolve_comparison.py -- /tmp/turned-fitting-comparison.glb /tmp/turned-fitting-comparison-topology.json /tmp/turned-fitting-wire.png --wire
+blender --background --python examples/analytic_extrusion/render_revolve_comparison.py -- /tmp/turned-fitting-comparison.glb /tmp/turned-fitting-comparison-topology.json /tmp/turned-fitting-solid.png
+```
+
+`turned_fitting` revolves one tagged radius/height profile into a coarse full
+turn, a finely sampled cutaway and a fine full turn. The stepped outside and
+tapered bore retain planes, cylinders and four conical faces. The cutaway exposes
+the bore and planar caps. A shared embedded grid texture uses construction-aware
+charts with a 12 mm repeat; the bore and cut caps have their own finish. Every
+mesh must be closed and meet its reported tolerance. The SVG shows the generating
+profile; console output reports native measures and realization evidence.
+
+The comparison exports that same cutaway through native and existing mesh-based
+revolution at 64 angular intervals. Both have 1,105 vertices and 2,206 final render
+triangles. The source-edge JSON preserves the native realizer's triangle faces
+and the mesh path's 1,088 wall quads plus 30 cap triangles. Wire rendering draws
+those source edges rather than exposing GLB triangulation on both sides. Vertex
+positions are compared independently of ordering after removing occurrence
+translations. Both paths retain a construction recipe; only the native path
+also retains independent analytic surfaces and boundaries.
+
 ## Filled-region and corner studies
 
 ```sh
