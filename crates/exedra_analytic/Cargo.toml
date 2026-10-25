@@ -14,11 +14,13 @@ exedra_math.workspace = true
 exedra_mesh.workspace = true
 exedra_profile.workspace = true
 exedra_triangulate.workspace = true
-libm = { optional = true, workspace = true }
+# Non-optional by design: realization trig always routes through libm, so
+# meshes are bit-identical across platforms and backends.
+libm.workspace = true
 
 [features]
 default = ["std"]
-libm = ["dep:libm", "exedra_mesh/libm", "exedra_math/libm"]
+libm = ["exedra_mesh/libm", "exedra_math/libm"]
 std = ["exedra_mesh/std", "exedra_math/std"]
 
 [lints]
