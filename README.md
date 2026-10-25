@@ -144,7 +144,10 @@ Assembly adapters are selected with `assembly,gltf` or `assembly,serde`. The
 [geometry query example](examples/geometry_queries/) constructs, compiles,
 inspects and retains geometry without an `Assembly`; the
 [caller-owned export example](examples/caller_owned_export/) serializes a
-recipe and exports GLB from an application hierarchy.
+recipe and exports GLB from an application hierarchy. The
+[component routes example](examples/component_routes/) builds one component by
+hand and as complete compiler tables, and shows that both freeze to the same
+recipe.
 
 ## Example Flow
 
