@@ -38,7 +38,10 @@ use alloc::vec::Vec;
 use exedra_math::{FrameError, Placement3};
 use exedra_profile::{Arc, Curve, LoopRef, Profile, SegmentRef, SegmentTag};
 
+mod query;
 mod tessellate;
+
+pub use query::SurfacePoint;
 
 pub use tessellate::{
     TessellateExtrusionError, TessellatedExtrusion, TessellationPolicy, TessellationReport,
