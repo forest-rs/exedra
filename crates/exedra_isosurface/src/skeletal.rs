@@ -18,8 +18,8 @@
 use alloc::vec::Vec;
 use core::cell::Cell;
 
+use crate::spatial::Aabb;
 use exedra_math::{add, dot, norm, scale, sub};
-use exedra_spatial::Aabb;
 
 use crate::ScalarField;
 

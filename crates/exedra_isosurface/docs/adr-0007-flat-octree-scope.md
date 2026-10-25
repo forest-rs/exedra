@@ -1,7 +1,10 @@
-# ADR-0001: Flat Octree Scope
+# ADR-0007: Flat Octree Scope
 
 - Status: Accepted
 - Date: 2026-03-24
+- Revised: 2026-10-25, when the octree moved from the `exedra_spatial` crate
+  into this crate's `spatial` module; isosurface extraction was its only
+  consumer.
 - Owners: Exedra implicit-surface maintainers
 
 ## Context
@@ -11,7 +14,7 @@ but the spatial layer should stay reusable outside isosurface extraction.
 
 ## Decision
 
-`exedra_spatial` owns:
+The `spatial` module owns:
 
 - `Aabb`,
 - a flat adaptive octree with deterministic child ordering,

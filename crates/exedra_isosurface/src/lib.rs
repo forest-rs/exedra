@@ -65,12 +65,14 @@ mod cell_topology;
 pub mod dual_contour;
 pub mod hermite;
 pub mod lift;
+pub mod qef;
 pub mod semi_analytic;
 pub mod skeletal;
+pub mod spatial;
 pub mod transform;
 
-pub use exedra_qef::QefParams;
-pub use exedra_spatial::Aabb;
+pub use qef::QefParams;
+pub use spatial::Aabb;
 
 pub use bounds2::Aabb2;
 pub use dual_contour::{
@@ -201,7 +203,7 @@ mod tests {
     use super::{
         Aabb2, ScalarField, ScalarField2d, analytic::SphereField, analytic2d::CircleField2d,
     };
-    use exedra_spatial::Aabb;
+    use crate::spatial::Aabb;
 
     #[test]
     fn boxed_dyn_fields_compose_through_combinators() {

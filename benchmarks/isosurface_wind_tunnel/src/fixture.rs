@@ -5,9 +5,9 @@
 
 use exedra_isosurface::ExtractionLimits;
 use exedra_isosurface::analytic::{BoxField, CylinderField, Difference, TaggedField, Union};
+use exedra_isosurface::qef::QefParams;
+use exedra_isosurface::spatial::Aabb;
 use exedra_isosurface::{DualContourParams, EdgeSearchParams};
-use exedra_qef::QefParams;
-use exedra_spatial::Aabb;
 
 pub(crate) const BOX_A_REGION: u32 = 10;
 pub(crate) const BOX_B_REGION: u32 = 20;

@@ -780,9 +780,9 @@ fn millis(duration: Duration) -> f64 {
 mod tests {
     use exedra_isosurface::ExtractionLimits;
     use exedra_isosurface::analytic::{BoxField, TaggedField};
+    use exedra_isosurface::qef::QefParams;
+    use exedra_isosurface::spatial::Aabb;
     use exedra_isosurface::{DualContourParams, EdgeSearchParams, dual_contour_semi_analytic};
-    use exedra_qef::QefParams;
-    use exedra_spatial::Aabb;
 
     use crate::fixture::BOX_A_REGION;
     use crate::{assert_counter_partition, reduction_gate_passes, report};

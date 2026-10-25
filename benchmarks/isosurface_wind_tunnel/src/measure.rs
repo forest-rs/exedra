@@ -6,11 +6,11 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
+use exedra_isosurface::spatial::Aabb;
 use exedra_isosurface::{
     AnalyticPrimitive, ScalarField, SemiAnalyticField, SemiAnalyticProjection,
     SemiAnalyticProjectionOutcome,
 };
-use exedra_spatial::Aabb;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WorkMeasurements {
@@ -236,7 +236,7 @@ fn axis_point(root: Aabb, step: [f32; 3], resolution: u32, axis: usize, key: u32
 #[cfg(test)]
 mod tests {
     use super::{AabbBits, WorkMeasurements, reconstruct_dyadic};
-    use exedra_spatial::Aabb;
+    use exedra_isosurface::spatial::Aabb;
 
     #[test]
     fn dyadic_reconstruction_finds_final_leaves() {

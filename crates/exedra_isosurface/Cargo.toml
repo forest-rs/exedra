@@ -12,15 +12,13 @@ categories = ["data-structures", "algorithms"]
 [dependencies]
 exedra_math.workspace = true
 exedra_mesh.workspace = true
-exedra_qef.workspace = true
-exedra_spatial.workspace = true
 hashbrown.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]
 default = ["std"]
-libm = ["dep:libm", "exedra_mesh/libm", "exedra_math/libm", "exedra_qef/libm"]
-std = ["exedra_mesh/std", "exedra_math/std", "exedra_qef/std"]
+libm = ["dep:libm", "exedra_mesh/libm", "exedra_math/libm"]
+std = ["exedra_mesh/std", "exedra_math/std"]
 
 [lints]
 workspace = true

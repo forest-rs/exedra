@@ -16,6 +16,4 @@ workspace = true
 [dependencies]
 exedra_fidget = { features = ["std"], workspace = true }
 exedra_isosurface = { features = ["std"], workspace = true }
-exedra_qef = { features = ["std"], workspace = true }
-exedra_spatial.workspace = true
 fidget.workspace = true

@@ -67,13 +67,10 @@ Construction and extraction crates:
   UV spheres, and icospheres.
 - **[exedra_analytic](crates/exedra_analytic/)** - Planar analytic topology
   slice that tessellates rectangular frames/openings into Exedra meshes.
-- **[exedra_spatial](crates/exedra_spatial/)** - Small spatial primitives:
-  AABBs and deterministic flat-octree traversal/refinement.
-- **[exedra_qef](crates/exedra_qef/)** - Small QEF solver used by dual
-  contouring and related fitting tasks.
 - **[exedra_isosurface](crates/exedra_isosurface/)** - Scalar-field seams,
   reference analytic fields, transforms, profile lifts, Hermite intersection
-  data, and dual-contouring extraction.
+  data, a deterministic flat octree, a bounded QEF solver, and dual-contouring
+  extraction.
 - **[exedra_gltf](crates/exedra_gltf/)** - Deterministic glTF export of
   compiled geometry with caller-owned hierarchy, materials, instance metadata,
   and face-region provenance.

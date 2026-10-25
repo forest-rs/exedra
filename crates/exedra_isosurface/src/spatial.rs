@@ -24,7 +24,7 @@
 //!
 //! ```
 //! use core::convert::Infallible;
-//! use exedra_spatial::{Aabb, CellRef, Octree, OctreeVisitor};
+//! use exedra_isosurface::spatial::{Aabb, CellRef, Octree, OctreeVisitor};
 //!
 //! struct OneLevel;
 //!
@@ -46,9 +46,6 @@
 //! assert_eq!(tree.leaf_ids().count(), 8);
 //! assert!(tree.leaf_ids().all(|id| tree.cell(id).unwrap().payload() == Some(&1)));
 //! ```
-
-#![no_std]
-extern crate alloc;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

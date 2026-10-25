@@ -23,7 +23,7 @@ Waiting for the entire end-state before landing an extractor would delay the
 `exedra_isosurface` will ship a phase-1 dual-contouring path now with these
 constraints:
 
-- build an interval-culled octree via `exedra_spatial`,
+- build an interval-culled octree with the `spatial` module,
 - when `max_depth` permits, refine every intersecting candidate to depth 2
   before considering retention, because primal-edge emission needs at least
   three cyclic-distinct incident dual vertices to form a face;
@@ -43,7 +43,7 @@ constraints:
   distinct cube-edge hits, and every normalized plane has exactly zero local
   residual at the QEF point; no tolerance or tunable threshold participates,
 - place one vertex per usable classified surface-component QEF in each
-  contributing octree leaf using Hermite samples and `exedra_qef`;
+  contributing octree leaf using Hermite samples and the `qef` module;
   `active_cells` continues to count contributing leaves while `vertices`
   counts emitted component or compatibility representatives,
 - classify sign-changing cube edges into deterministic, face-connected surface
@@ -137,7 +137,7 @@ persist exact vertex sequences must deliberately rebaseline those coordinates.
 
 Extraction owns resource policy and evidence; the reusable spatial tree owns
 fallible traversal and checks its stored-cell cap before allocation. See
-[spatial ADR-0001](../../exedra_spatial/docs/adr-0001-flat-octree-scope.md).
+[ADR-0007](adr-0007-flat-octree-scope.md).
 Initial subdivision, balancing and transition completion all use the same hard
 cell limit. Tree refinement restores the original leaf on failure; extraction
 stops and discards its entire private run rather than reusing visitor state.

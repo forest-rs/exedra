@@ -21,7 +21,7 @@
 //! Three independent planes recover their shared corner:
 //!
 //! ```
-//! use exedra_qef::{QefBounds, QefParams, QefSolver, SharpnessClass};
+//! use exedra_isosurface::qef::{QefBounds, QefParams, QefSolver, SharpnessClass};
 //!
 //! let mut solver = QefSolver::new();
 //! assert!(solver.add([0.25, 0.0, 0.0], [1.0, 0.0, 0.0]));
@@ -36,12 +36,6 @@
 //! assert_eq!(result.position, [0.25, -0.5, 0.75]);
 //! assert_eq!(result.sharpness_class, SharpnessClass::Corner);
 //! ```
-
-#![no_std]
-#[cfg(feature = "std")]
-extern crate std;
-#[cfg(not(any(feature = "std", feature = "libm")))]
-compile_error!("exedra_qef requires either the `std` or `libm` feature");
 
 use exedra_math::{dot, normalize};
 

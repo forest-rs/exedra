@@ -480,7 +480,7 @@ fn analysis_limits_cover_later_balancing_and_completion() {
     use crate::adaptive_transition::AdaptiveGrid;
     use crate::analytic::BoxField;
     use crate::dual_contour::{IntervalVisitor, RefinementMode};
-    use exedra_spatial::Octree;
+    use crate::spatial::Octree;
 
     let field = BoxField {
         center: [0.1375, -0.08125, 0.10625],

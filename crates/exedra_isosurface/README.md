@@ -69,6 +69,18 @@ unrepresentable grid depths, QEF policies and join tolerances fail before field
 evaluation. `DualContourStats` gains join counts and displacement and implements
 `PartialEq` rather than `Eq`.
 
+## Octree and QEF modules
+
+`spatial` holds `Aabb` and a flat adaptive octree with deterministic child
+ordering, visitor-driven construction, depth- and breadth-first traversal,
+leaf-neighbor queries and incremental leaf refinement. `qef` accumulates
+point-normal plane constraints and solves the bounded 3x3 quadratic error
+function for cell-local vertex placement: it anchors rank-deficient directions,
+classifies smooth, edge and corner features by rank, reports residual error,
+and clamps the result to the cell. Neither depends on fields or meshes; dual
+contouring is their consumer. See [ADR-0006](docs/adr-0006-qef-solver-scope.md)
+and [ADR-0007](docs/adr-0007-flat-octree-scope.md).
+
 ## Work limits and evidence
 
 `cell_budget` deliberately limits contributing output cells. It still performs

@@ -12,7 +12,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
-use exedra_spatial::Aabb;
+use crate::spatial::Aabb;
 
 use crate::ScalarField;
 use crate::analytic::{BoxField, CylinderField, Difference, Intersection, TaggedField, Union};
@@ -1547,8 +1547,8 @@ mod tests {
         SemiAnalyticProjectionOutcome, sqrt,
     };
     use crate::analytic::{BoxField, CylinderField, Difference, Intersection, TaggedField, Union};
+    use crate::spatial::Aabb;
     use crate::transform::{RigidTransform3, Transform3, Translate, UniformScale};
-    use exedra_spatial::Aabb;
 
     fn cell() -> Aabb {
         Aabb::new([-10.0; 3], [10.0; 3]).expect("valid cell")

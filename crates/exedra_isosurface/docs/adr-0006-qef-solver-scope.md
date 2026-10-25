@@ -1,7 +1,9 @@
-# ADR-0001: QEF Solver Scope
+# ADR-0006: QEF Solver Scope
 
 - Status: Accepted
 - Date: 2026-03-24
+- Revised: 2026-10-25, when the solver moved from the `exedra_qef` crate into
+  this crate's `qef` module; dual contouring was its only consumer.
 
 ## Context
 
@@ -11,13 +13,13 @@ feature-preserving remeshing, simplification, and fitting.
 
 The workspace needs this capability without:
 
-- pulling mesh or octree types into the solver crate,
+- pulling mesh or octree types into the solver,
 - depending on a general-purpose linear algebra stack,
 - giving up `no_std` compatibility in the reusable core.
 
 ## Decision
 
-`exedra_qef` owns:
+The `qef` module owns:
 
 - raw plane-constraint accumulation,
 - bounded QEF solve for 3x3 symmetric systems,
@@ -40,8 +42,8 @@ information may provide a custom anchor such as a Hermite mass point.
 
 ## Consequences
 
-- `exedra_isosurface` can depend on `exedra_qef` without creating ownership
-  confusion.
+- Dual contouring uses the `qef` module without the solver knowing about
+  fields, octrees or meshes.
 - The solver remains small and replaceable.
 - We keep the public API at the level the mesher actually needs: constraints in,
   bounded solution out.

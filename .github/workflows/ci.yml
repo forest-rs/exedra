@@ -28,8 +28,6 @@ env:
     -p exedra_measurements
     -p exedra_primitives
     -p exedra_profile
-    -p exedra_qef
-    -p exedra_spatial
     -p exedra_testkit
     -p exedra_triangulate
   # Foundational packages whose `no_std` contract is checked directly. Keep
@@ -49,8 +47,6 @@ env:
     -p exedra_measurements
     -p exedra_primitives
     -p exedra_profile
-    -p exedra_qef
-    -p exedra_spatial
     -p exedra_testkit
     -p exedra_triangulate
   # Host auxiliary targets exclude the Wasm-only bridge.

@@ -3,7 +3,7 @@
 
 //! Analytic reference fields and simple CSG combinators.
 
-use exedra_spatial::Aabb;
+use crate::spatial::Aabb;
 
 use crate::{ProvenanceField, ScalarField};
 use exedra_math::{add, dot, norm, normalize, scale, sub};
@@ -967,9 +967,9 @@ mod tests {
         BinaryProvenance, BoxField, CylinderField, Difference, HalfSpaceField, Intersection,
         OperandSource, SmoothUnion, SphereField, TaggedField, TorusField, Union, box_sdf_from_q,
     };
+    use crate::spatial::Aabb;
     use crate::transform::{RigidTransform3, Transform3, Translate, UniformScale};
     use crate::{ProvenanceField, ScalarField};
-    use exedra_spatial::Aabb;
 
     fn finite_difference_gradient<F: ScalarField>(field: &F, point: [f32; 3]) -> [f32; 3] {
         let epsilon = 1.0e-3;
