@@ -3,9 +3,11 @@
 Narrow analytic geometry head for Exedra. It retains exact boundary geometry
 until an explicit conversion into `exedra_mesh::Mesh`.
 
-`geometry` provides checked f64 lines, circles, planes and cylinders, with
-first and second derivatives in their native parameter units. Circle and cylinder
-angles are radians; cylinder height and plane coordinates are model lengths.
+`geometry` provides checked f64 lines, circles, planes, cylinders and regular
+cones, with first and second derivatives in their native parameter units.
+Rotational angles are radians; axial height and plane coordinates are model
+lengths. A cone uses `radius + slope * height` and excludes its apex and the
+nonpositive-radius nappe.
 Supporting geometry is untrimmed. Surface parameters, boundary trims and mesh
 texture coordinates are separate concepts.
 
@@ -18,20 +20,40 @@ curve/vertex/support agreement against an explicit gap tolerance. It does not
 heal geometry or certify trim nesting, global self-intersection, shell containment
 or regular-solid validity. `is_closed` checks oriented edge incidence.
 
-Both the extrusion constructor and the planar shell builder own this shared
+The extrusion and revolution constructors and planar shell builder own this shared
 model and expose it through `body()`. A cloned body can outlive its construction
-record. `Body::realize` handles planar trims and four-edge cylindrical strips,
-including full periodic walls. Native edges are sampled once into flat shared
-chains; paired circular edges have synchronized counts. Other cylindrical trims
+record. `Body::realize` handles planar trims and four-edge cylindrical/conical
+strips, including full periodic walls. Coaxial planar annuli and sectors use
+the same paired strips to preserve their angular coordinate net. Native edges
+are sampled once into flat shared chains; paired circular edges have synchronized
+counts. Other curved trims
 are typed refusals. Realization checks planar arrangements and local triangle
 orientation after f32 emission; global solid validity remains the caller's
 responsibility. The report bounds chord error using the actual rounded parameter intervals,
-measures paired samples against one fixed axial ruling, and includes that
+measures emitted paired samples against one fixed axial/radial ruling, and includes that
 residual alongside vertex displacement and native support gaps in its deviation
 bound. Rectangular-strip eligibility is checked independently of caller gap
 slack. Storage and sampling
 budgets are explicit. `realize_with_regions` maps metadata to mesh regions once
 per native face while retaining individual native correspondence.
+
+`revolve::Revolution` revolves a checked line profile whose XY coordinates are
+radius and height. Every radius must be strictly positive. Rotation is about
+local +Y: a positive angle moves +X toward -Z, matching constructive revolution.
+Sweeps in `(0, TAU]` produce closed native boundaries: full turns share a seam;
+partial turns include planar end caps. Profile holes, segment tags, rigid
+placement, exact volume and surface area are retained. Axis contact and curved
+profile segments are named refusals; spherical/toroidal walls and poles are not
+implemented.
+
+`Revolution::realize_with_uvs` supplies each triangle's construction coordinates
+to a caller mapper. Walls use `(angle, distance along the profile loop)`; caps
+use `(radius, height)`. A full turn shares geometry vertices while retaining
+distinct texture coordinates on either side of the seam. The existing constructive
+`SurfaceChart::Revolve` maps these coordinates through
+`map_revolve_wall_triangle` and `map_cap_triangle`; no geometry crate owns texture
+scale or material policy. Mapping errors name the native face, and non-finite
+UVs are refused before any UV mutation.
 
 `extrusion::Extrusion` extrudes an `exedra_profile::Profile` of lines and
 circular arcs along local +Z under a checked rigid frame. The result is a closed

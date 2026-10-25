@@ -5,7 +5,7 @@
 //!
 //! [`geometry`] owns checked curves, surfaces and parameter domains. [`body`]
 //! owns bounded edges and oriented face loops independently of construction
-//! history. [`extrusion::Extrusion`] and [`AnalyticShell`] construct that model
+//! history. [`extrusion::Extrusion`], [`revolve::Revolution`] and [`AnalyticShell`] construct that model
 //! while preserving source roles and explicit mesh realization correspondence.
 //! Geometry, surface parameters and texture coordinates remain distinct.
 //!
