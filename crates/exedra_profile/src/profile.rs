@@ -7,9 +7,14 @@ use alloc::vec::Vec;
 
 use crate::arc::{Arc, Piece, cross, length, sub, turns, winding_angle};
 
-/// Opaque caller tag carried by a segment.
+/// Opaque caller tag carried by a segment across geometry representations.
+///
+/// Constructive profiles reexport this same type. Lowering, segment reversal
+/// and analytic extrusion preserve it unchanged, so a feature can be tagged
+/// once and selected with the same value after realization. Tags name caller
+/// features; they do not establish ownership or replace scoped element ids.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SegmentTag(pub u32);
+pub struct SegTag(pub u32);
 
 /// Geometry of one segment between its start (the previous endpoint) and
 /// [`Segment::to`].
@@ -34,7 +39,7 @@ pub struct Segment {
     /// Straight or circular geometry.
     pub curve: Curve,
     /// Optional caller tag.
-    pub tag: Option<SegmentTag>,
+    pub tag: Option<SegTag>,
 }
 
 impl Segment {
@@ -60,7 +65,7 @@ impl Segment {
 
     /// Attaches a tag.
     #[must_use]
-    pub const fn tagged(mut self, tag: SegmentTag) -> Self {
+    pub const fn tagged(mut self, tag: SegTag) -> Self {
         self.tag = Some(tag);
         self
     }
@@ -914,16 +919,16 @@ mod tests {
             Err(LoopError::InvalidArc { segment: 0 })
         );
         let tagged = Loop::new(vec![
-            Segment::line([2.0, 0.0]).tagged(SegmentTag(1)),
-            Segment::arc([0.0, 0.0], 0.5).tagged(SegmentTag(2)),
+            Segment::line([2.0, 0.0]).tagged(SegTag(1)),
+            Segment::arc([0.0, 0.0], 0.5).tagged(SegTag(2)),
         ])
         .unwrap();
         let reversed = tagged.reversed();
         assert_eq!(
             reversed.segments(),
             [
-                Segment::arc([2.0, 0.0], -0.5).tagged(SegmentTag(2)),
-                Segment::line([0.0, 0.0]).tagged(SegmentTag(1)),
+                Segment::arc([2.0, 0.0], -0.5).tagged(SegTag(2)),
+                Segment::line([0.0, 0.0]).tagged(SegTag(1)),
             ]
         );
         assert_eq!(reversed.reversed(), tagged);

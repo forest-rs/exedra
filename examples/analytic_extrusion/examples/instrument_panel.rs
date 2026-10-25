@@ -25,9 +25,9 @@ use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource
 use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
 use exedra::constructive::offset::CornerPolicy;
-use exedra::constructive::profile::{Profile2, SegTag};
+use exedra::constructive::profile::Profile2;
 use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
-use exedra::profile::{ProfilePolicy, SegmentTag};
+use exedra::profile::{ProfilePolicy, SegTag};
 
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-6);
 
@@ -58,9 +58,8 @@ fn solid(profile: &Profile2, z: f64, length: f64) -> Result<Extrusion, Box<dyn s
 fn faceplate_region(_: FaceId, face: &Face) -> u32 {
     match face.role {
         FaceRole::Wall {
-            tag: Some(SegmentTag(tag)),
-            ..
-        } if tag == VENT.0 => VENTS,
+            tag: Some(VENT), ..
+        } => VENTS,
         FaceRole::Floor { pocket: 0 } => RECESS,
         FaceRole::Wall { segment, .. } if segment.boundary == Boundary::Pocket(0) => RECESS,
         _ => PLATE,

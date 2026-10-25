@@ -43,7 +43,7 @@
 use alloc::vec::Vec;
 
 use exedra_math::{FrameError, Placement3};
-use exedra_profile::{Arc, Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegmentTag};
+use exedra_profile::{Arc, Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 
 mod query;
 mod tessellate;
@@ -171,7 +171,7 @@ pub enum FaceRole {
         /// The source segment.
         segment: BoundarySegment,
         /// The segment's caller tag.
-        tag: Option<SegmentTag>,
+        tag: Option<SegTag>,
     },
     /// A pocket's floor.
     Floor {
@@ -926,7 +926,7 @@ mod tests {
 
     fn rect_with_round_hole() -> Profile {
         let outer = Loop::new(vec![
-            Segment::line([4.0, 0.0]).tagged(SegmentTag(10)),
+            Segment::line([4.0, 0.0]).tagged(SegTag(10)),
             Segment::line([4.0, 2.0]),
             Segment::line([0.0, 2.0]),
             Segment::line([0.0, 0.0]),
@@ -957,7 +957,7 @@ mod tests {
                     boundary: Boundary::Profile(LoopRef::Outer),
                     segment: 0
                 },
-                tag: Some(SegmentTag(10)),
+                tag: Some(SegTag(10)),
             }
         );
         // Any face missing a coedge leaves its partner unpaired.

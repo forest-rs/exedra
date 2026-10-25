@@ -239,6 +239,8 @@ adds simple filled profiles as holes by reversing them, so
 reversed segments. `Loop2::tagged` and `Profile2::tagged` tag every segment
 at once, replacing the builders' index tags, so a feature can be tagged once
 and then placed with `translated` as often as needed.
+`profile::SegTag` reexports the shared profile tag: the same constant can select
+the feature in analytic face roles after lowering, without a numeric conversion.
 
 `Profile2::to_line_arc` lowers a profile into the shared
 `exedra_profile::Profile` that the analytic head extrudes exactly. Endpoints,

@@ -234,9 +234,9 @@ impl Extrusion {
     /// ```
     /// use exedra_analytic::extrusion::{Extrusion, FaceRole, TessellationPolicy};
     /// use exedra_math::Placement3;
-    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment, SegmentTag};
+    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment, SegTag};
     ///
-    /// const ROUND: SegmentTag = SegmentTag(1);
+    /// const ROUND: SegTag = SegTag(1);
     /// let outline = Loop::new(vec![
     ///     Segment::line([2.0, 0.0]),
     ///     Segment::arc([2.0, 2.0], 1.0).tagged(ROUND),
