@@ -55,6 +55,14 @@ outward normals on caps and walls. Exact measures are `edge_length`,
 gives a placed right-handed frame on a planar face, with +Z outward;
 cylindrical walls have none.
 
+`Workplane` is a checked rigid sketch plane. Select `cap(End::End)` or a unique
+`floor_tagged(label)`, ask the solid for its `workplane`, then translate or
+offset the plane and `extrude` a local profile. This creates an independent
+solid with explicit placement; it does not perform a Boolean on the host.
+Missing or ambiguous floor labels and curved or unknown faces are distinct
+typed refusals. `Pocket::from_profile` accepts a whole filled profile and
+explicitly refuses holes that would require islands.
+
 The planar shell keeps the earlier scope: `AnalyticShellBuilder` for planar
 faces with line-segment coedges and explicit opening loops, `AnalyticShell`
 for face-level region and opening edits, and `TessellatedShell` for the mesh
