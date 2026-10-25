@@ -11,4 +11,5 @@ publish = false
 workspace = true
 
 [dependencies]
-exedra = { features = ["analytic", "compile", "std"], workspace = true }
+exedra = { features = ["analytic", "compile", "gltf", "std"], workspace = true }
+serde_json.workspace = true

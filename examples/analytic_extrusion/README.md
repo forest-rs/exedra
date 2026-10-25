@@ -16,3 +16,17 @@ mesh. The demo:
 ```sh
 cargo run -p analytic_extrusion
 ```
+
+`instrument_panel` builds a front panel from several analytic extrusions. A
+bezel's opening is an inset faceplate offset by a 1.5 mm reveal. The faceplate
+has a display window recessed into its front as a pocket, a knob bore, vent
+slots drawn with `LoopCursor`, indicator holes, and four blind bores in its
+back. The vent segments carry a tag, and `tessellate_with_regions` groups
+every wall with that tag into one region, and the window's recess into
+another. The parts compile as baked geometry, and the GLB binds one material
+per region: the vents and the recess get their own finish without listing
+faces.
+
+```sh
+cargo run -p analytic_extrusion --example instrument_panel -- panel.glb
+```
