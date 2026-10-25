@@ -308,6 +308,36 @@ impl Surface {
         }
     }
 
+    /// Parameters of the closest point on the untrimmed supporting geometry.
+    ///
+    /// Cylinder U is the principal angle in `[-pi,pi]`. A point on the axis
+    /// has no unique closest angle and returns `None`, as do non-finite inputs
+    /// and overflow. Neither a face domain nor its trims are classified.
+    #[must_use]
+    pub fn parameters(&self, point: [f64; 3]) -> Option<[f64; 2]> {
+        if !finite(point) {
+            return None;
+        }
+        let frame = self.frame();
+        let origin = frame.rows.map(|r| r[3]);
+        let delta = core::array::from_fn::<_, 3, _>(|i| point[i] - origin[i]);
+        let local = core::array::from_fn::<_, 3, _>(|i| {
+            delta[0] * frame.rows[0][i] + delta[1] * frame.rows[1][i] + delta[2] * frame.rows[2][i]
+        });
+        if !finite(local) {
+            return None;
+        }
+        match self {
+            Self::Plane(_) => Some([local[0], local[1]]),
+            Self::Cylinder(_) => {
+                if local[0] == 0.0 && local[1] == 0.0 {
+                    return None;
+                }
+                Some([libm::atan2(local[1], local[0]), local[2]])
+            }
+        }
+    }
+
     /// Evaluates the supporting surface without trim classification or clamping.
     /// Returns `None` for non-finite input or an overflowed result.
     #[must_use]
@@ -490,6 +520,25 @@ mod tests {
         assert_eq!(plane.evaluate([-2.0, 8.0]).unwrap().point, [-2.0, 8.0, 0.0]);
         assert!(plane.evaluate([f64::NAN, 0.0]).is_none());
         assert!(line.evaluate(f64::INFINITY).is_none());
+    }
+
+    #[test]
+    fn inverse_support_parameters_use_radians_without_trim_or_domain_clamping() {
+        let frame = Placement3::rotate_y_then_translate(0.7, 2.0, -3.0, 4.0);
+        for surface in [
+            Surface::plane(frame).unwrap(),
+            Surface::cylinder(frame, 7.0).unwrap(),
+        ] {
+            let uv = [-1.2, 8.0];
+            let sample = surface.evaluate(uv).unwrap();
+            let found = surface.parameters(sample.point).unwrap();
+            assert!((found[0] - uv[0]).abs() < 1e-12);
+            assert!((found[1] - uv[1]).abs() < 1e-12);
+        }
+        let cylinder = Surface::cylinder(Placement3::IDENTITY, 7.0).unwrap();
+        assert_eq!(cylinder.parameters([0.0, 0.0, 3.0]), None);
+        assert_eq!(cylinder.parameters([f64::NAN, 0.0, 0.0]), None);
+        assert_eq!(cylinder.parameters([14.0, 0.0, 3.0]), Some([0.0, 3.0]));
     }
 
     #[test]
