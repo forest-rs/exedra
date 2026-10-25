@@ -13,7 +13,9 @@
 //! center. Circular shapes are centered; L profiles start at their minimum
 //! corner. Each segment is tagged with its index so downstream
 //! source maps can name features without the caller doing anything; callers
-//! that want their own tags rebuild the loops with [`Seg2`] directly.
+//! that want their own tags draw loops with [`crate::profile::LoopCursor`] or
+//! [`Seg2`] directly. [`Profile2::with_cutouts`] turns these filled shapes into
+//! holes.
 
 use alloc::vec;
 use alloc::vec::Vec;
