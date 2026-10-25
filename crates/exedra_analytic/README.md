@@ -33,6 +33,12 @@ assert!(realized.report.within_tolerance());
 # Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
+Native queries do not depend on any realization. `evaluate` gives points and
+outward normals on caps and walls. Exact measures are `edge_length`,
+`face_area`, `surface_area`, `volume` and `local_bounds`. `attachment_frame`
+gives a placed right-handed frame on a planar face, with +Z outward;
+cylindrical walls have none.
+
 The planar shell keeps the earlier scope: `AnalyticShellBuilder` for planar
 faces with line-segment coedges and explicit opening loops, `AnalyticShell`
 for face-level region and opening edits, and `TessellatedShell` for the mesh
