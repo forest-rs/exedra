@@ -86,6 +86,35 @@ impl ChartTransform {
             .iter()
             .map(|&p| self.map(p))
             .collect::<Result<Vec<_>, _>>()?;
+        self.validate_mapped_face(points, &uv)?;
+        Ok(uv)
+    }
+
+    /// Maps one construction-coordinate triangle with the same storage checks
+    /// as recipe chart realization, without allocating per triangle.
+    ///
+    /// # Errors
+    /// Returns [`ChartError`] for an invalid transform, non-finite/out-of-range
+    /// coordinates, or f32 edge collapse and orientation changes.
+    pub fn map_triangle(&self, points: [[f64; 2]; 3]) -> Result<[[f32; 2]; 3], ChartError> {
+        self.validate()?;
+        if points
+            .iter()
+            .flatten()
+            .any(|v| !v.is_finite() || v.abs() > MAX_COORDINATE)
+        {
+            return Err(ChartError::NumericLimit);
+        }
+        let uv = [
+            self.map(points[0])?,
+            self.map(points[1])?,
+            self.map(points[2])?,
+        ];
+        self.validate_mapped_face(&points, &uv)?;
+        Ok(uv)
+    }
+
+    fn validate_mapped_face(&self, points: &[[f64; 2]], uv: &[[f32; 2]]) -> Result<(), ChartError> {
         let [a, b] = self.matrix.map(|row| {
             let m = row[0].abs().max(row[1].abs());
             row.map(|v| v / m)
@@ -143,7 +172,7 @@ impl ChartTransform {
                 return Err(ChartError::NumericLimit);
             }
         }
-        Ok(uv)
+        Ok(())
     }
 
     pub(crate) fn map(&self, point: [f64; 2]) -> Result<[f32; 2], ChartError> {
@@ -248,6 +277,36 @@ impl SurfaceChart {
         }
         self.wall().validate()?;
         self.caps().validate()
+    }
+    /// Maps native revolution wall coordinates `(theta, profile_distance)`.
+    ///
+    /// Applies the authored reference radius before the wall transform, using
+    /// the same convention as recipe revolution charts. No allocation occurs.
+    ///
+    /// # Errors
+    /// Refuses another chart operation or any invalid mapping/storage condition.
+    pub fn map_revolve_wall_triangle(
+        &self,
+        points: [[f64; 2]; 3],
+    ) -> Result<[[f32; 2]; 3], ChartError> {
+        self.validate()?;
+        let Self::Revolve {
+            reference_radius,
+            wall,
+            ..
+        } = self
+        else {
+            return Err(ChartError::WrongOperation);
+        };
+        wall.map_triangle(points.map(|[theta, s]| [reference_radius * theta, s]))
+    }
+    /// Maps a cap triangle in its generating profile coordinates.
+    ///
+    /// # Errors
+    /// Returns the chart's validation or f32 storage refusal.
+    pub fn map_cap_triangle(&self, points: [[f64; 2]; 3]) -> Result<[[f32; 2]; 3], ChartError> {
+        self.validate()?;
+        self.caps().map_triangle(points)
     }
     pub(crate) fn wall(self) -> ChartTransform {
         match self {

@@ -668,3 +668,42 @@ fn underflowed_angular_metric_cannot_succeed_as_a_collapsed_chart() {
 
 #[path = "chart_loft_sweep_tests.rs"]
 mod loft_sweep;
+
+#[test]
+fn native_triangle_mapping_uses_revolution_metric_and_checked_storage() {
+    let chart = revolution();
+    let raw = [[0.0, 0.0], [1.0, 0.0], [1.0, 3.0]];
+    assert_eq!(
+        chart.map_revolve_wall_triangle(raw).unwrap(),
+        [[0.0, 0.0], [2.0, 0.0], [2.0, 3.0]],
+        "reference-radius angular coordinates"
+    );
+    assert_eq!(
+        chart.map_cap_triangle(raw).unwrap(),
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 3.0]],
+        "caps keep profile coordinates"
+    );
+    assert_eq!(
+        extrusion().map_revolve_wall_triangle(raw),
+        Err(ChartError::WrongOperation),
+        "operation identity is checked"
+    );
+    let collapsed = ChartTransform {
+        matrix: [[1.0, 0.0], [0.0, 1.0]],
+        offset: [1e6, 0.0],
+    };
+    assert_eq!(
+        collapsed.map_triangle([[0.0, 0.0], [0.001, 0.0], [0.001, 1.0]]),
+        Err(ChartError::NumericLimit),
+        "narrowing cannot erase a chart edge"
+    );
+    let reflected = ChartTransform {
+        matrix: [[0.0, 2.0], [-3.0, 0.0]],
+        offset: [0.5, -0.25],
+    };
+    assert_eq!(
+        reflected.map_triangle(raw).unwrap().as_slice(),
+        reflected.map_face(&raw).unwrap(),
+        "stack and recipe paths preserve the same mapping"
+    );
+}

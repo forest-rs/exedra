@@ -19,6 +19,9 @@ use alloc::vec::Vec;
 use exedra_math::Placement3;
 use exedra_profile::{Curve as ProfileCurve, Loop, LoopRef, Profile, SegTag, SegmentRef};
 
+mod chart;
+pub use chart::RevolutionUvError;
+
 /// Source of a retained revolution face.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FaceRole {

@@ -340,8 +340,14 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
-            if matches!(face.surface, Surface::Cylinder(_) | Surface::Cone(_)) {
-                let patch = self.rotational_patch(id, policy.geometry_gap)?;
+            let patch = if matches!(face.surface, Surface::Plane(_)) {
+                // Coaxial annuli/sectors retain angular rulings, which are
+                // also the construction chart's nondegenerate coordinate net.
+                self.rotational_patch(id, policy.geometry_gap).ok()
+            } else {
+                Some(self.rotational_patch(id, policy.geometry_gap)?)
+            };
+            if let Some(patch) = patch {
                 groups.join(patch.a.edge.index(), patch.b.edge.index());
                 patches[i] = Some(patch);
             }
@@ -528,7 +534,7 @@ impl<F, E> Body<F, E> {
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
             let face_region = region(id, face);
-            if matches!(face.surface, Surface::Plane(_)) {
+            if patches[i].is_none() {
                 let frame = placement * self.planar_frame(id, [0.0; 2]).expect("planar support");
                 let mut rings = Vec::with_capacity(face.loops.len());
                 let mut indices = Vec::new();
@@ -738,31 +744,73 @@ impl<F, E> Body<F, E> {
     fn rotational_patch(&self, id: FaceId, gap: f64) -> Result<Patch, RealizationError> {
         let face = self.face(id).expect("known face");
         let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
-        if face.loops.len() != 1 {
-            return Err(refuse());
-        }
-        let coedges = &self
-            .boundary_loop(face.loops[0])
-            .expect("validated loop")
-            .coedges;
-        if coedges.len() != 4 {
-            return Err(refuse());
-        }
-        let first = coedges
-            .iter()
-            .position(|c| matches!(self.edges()[c.edge.index()].curve, Curve::Circle(_)))
-            .ok_or_else(refuse)?;
-        let (mut a, mut b) = (coedges[first], coedges[(first + 2) % 4]);
-        if !matches!(self.edges()[b.edge.index()].curve, Curve::Circle(_))
-            || [1, 3].into_iter().any(|j| {
-                !matches!(
-                    self.edges()[coedges[(first + j) % 4].edge.index()].curve,
-                    Curve::Line(_)
-                )
-            })
-        {
-            return Err(refuse());
-        }
+        let (mut a, mut b) = if matches!(face.surface, Surface::Plane(_)) && face.loops.len() == 2 {
+            let rings = [
+                self.boundary_loop(face.loops[0]).expect("validated loop"),
+                self.boundary_loop(face.loops[1]).expect("validated loop"),
+            ];
+            if rings.iter().any(|r| r.coedges.len() != 1) {
+                return Err(refuse());
+            }
+            let (a, b) = (rings[0].coedges[0], rings[1].coedges[0]);
+            if [a, b].iter().any(|c| {
+                let edge = &self.edges()[c.edge.index()];
+                !matches!(edge.curve, Curve::Circle(_)) || edge.start != edge.end
+            }) {
+                return Err(refuse());
+            }
+            let circle = |coedge: Coedge| {
+                let Curve::Circle(circle) = &self.edges()[coedge.edge.index()].curve else {
+                    unreachable!()
+                };
+                circle
+            };
+            let normal = face.surface.frame().rows.map(|r| r[2] * face.sense.sign());
+            let winding = |coedge: Coedge| {
+                exedra_math::dot(circle(coedge).frame().rows.map(|r| r[2]), normal)
+                    * if coedge.reversed { -1.0 } else { 1.0 }
+            };
+            // Loop zero is the authored outer boundary. Choosing a reference
+            // ring must never reorder outer/hole semantics or repair winding.
+            if circle(a).radius() <= circle(b).radius()
+                || winding(a) <= 0.0
+                || winding(b) >= 0.0
+                || [a, b].iter().any(|c| {
+                    (self.edges()[c.edge.index()].range.span() - core::f64::consts::TAU).abs()
+                        > 64.0 * f64::EPSILON
+                })
+            {
+                return Err(refuse());
+            }
+            (a, b)
+        } else {
+            if face.loops.len() != 1 {
+                return Err(refuse());
+            }
+            let coedges = &self
+                .boundary_loop(face.loops[0])
+                .expect("validated loop")
+                .coedges;
+            if coedges.len() != 4 {
+                return Err(refuse());
+            }
+            let first = coedges
+                .iter()
+                .position(|c| matches!(self.edges()[c.edge.index()].curve, Curve::Circle(_)))
+                .ok_or_else(refuse)?;
+            let (a, b) = (coedges[first], coedges[(first + 2) % 4]);
+            if !matches!(self.edges()[b.edge.index()].curve, Curve::Circle(_))
+                || [1, 3].into_iter().any(|j| {
+                    !matches!(
+                        self.edges()[coedges[(first + j) % 4].edge.index()].curve,
+                        Curve::Line(_)
+                    )
+                })
+            {
+                return Err(refuse());
+            }
+            (a, b)
+        };
         let axis = face.surface.frame().rows.map(|r| r[2]);
         let axis_length = distance(axis, [0.0; 3]);
         let axis = axis.map(|v| v / axis_length);
@@ -783,7 +831,7 @@ impl<F, E> Body<F, E> {
         };
         // Use the larger reference ring for cones. The radial map then
         // contracts, so its reference-boundary error is never amplified.
-        let conical = matches!(face.surface, Surface::Cone(_));
+        let conical = !matches!(face.surface, Surface::Cylinder(_));
         if conical && circle(a).radius() < circle(b).radius() {
             core::mem::swap(&mut a, &mut b);
         }
@@ -1009,6 +1057,51 @@ mod tests {
             &ValidationPolicy { max_gap: gap },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn planar_annulus_fast_path_preserves_authored_outer_and_hole_roles() {
+        use crate::body::{BoundaryLoop, Coedge, Face, LoopId, Sense};
+        use crate::geometry::{ParameterDomain, ParameterRange};
+        let mut parts = cylinder_parts();
+        parts.vertices[1] = [1.0, 0.0, 0.0];
+        parts.edges.truncate(2);
+        parts.edges[1].curve = Curve::circle(Placement3::IDENTITY, 1.0).unwrap();
+        parts.loops = vec![
+            BoundaryLoop {
+                coedges: vec![Coedge {
+                    edge: EdgeId(1),
+                    reversed: false,
+                }],
+            },
+            BoundaryLoop {
+                coedges: vec![Coedge {
+                    edge: EdgeId(0),
+                    reversed: true,
+                }],
+            },
+        ];
+        parts.faces = vec![Face {
+            surface: Surface::plane(Placement3::IDENTITY).unwrap(),
+            domain: ParameterDomain {
+                u: ParameterRange::new(-2.0, 2.0).unwrap(),
+                v: ParameterRange::new(-2.0, 2.0).unwrap(),
+            },
+            sense: Sense::Reverse,
+            loops: vec![LoopId(0), LoopId(1)],
+            role: (),
+        }];
+        let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-12 }).unwrap();
+        assert!(
+            matches!(
+                body.realize(Placement3::IDENTITY, &RealizationPolicy::default()),
+                Err(RealizationError::Arrangement {
+                    face: FaceId(0),
+                    ..
+                })
+            ),
+            "an outside hole and reversed winding must not be reinterpreted by radius sorting"
+        );
     }
 
     #[test]
