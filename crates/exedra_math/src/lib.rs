@@ -339,6 +339,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn axis_rotations_agree_with_quaternions_and_are_right_handed() {
+        let angle = 0.7_f64;
+        for (axis, placement) in [
+            (
+                [1.0, 0.0, 0.0],
+                Placement3::rotate_x_then_translate(angle, 0.0, 0.0, 0.0),
+            ),
+            (
+                [0.0, 1.0, 0.0],
+                Placement3::rotate_y_then_translate(angle, 0.0, 0.0, 0.0),
+            ),
+            (
+                [0.0, 0.0, 1.0],
+                Placement3::rotate_z_then_translate(angle, 0.0, 0.0, 0.0),
+            ),
+        ] {
+            let rotation = Quat::from_axis_angle(axis, angle).unwrap();
+            for v in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+                let expected = rotation.rotate(v);
+                let actual = placement.transform_point(v);
+                assert!(distance_squared(expected, actual) < 1e-30, "{axis:?} {v:?}");
+            }
+        }
+        let quarter =
+            Placement3::rotate_y_then_translate(core::f64::consts::FRAC_PI_2, 1.0, 2.0, 3.0);
+        let z = quarter.transform_point([0.0, 0.0, 1.0]);
+        assert!(
+            distance_squared(z, [2.0, 2.0, 3.0]) < 1e-30,
+            "+Z turns toward +X"
+        );
+    }
+
+    #[test]
     fn arithmetic_is_componentwise() {
         assert_eq!(add([1.0, 2.0, 3.0], [10.0, 20.0, 30.0]), [11.0, 22.0, 33.0]);
         assert_eq!(
