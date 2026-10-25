@@ -165,6 +165,16 @@ pub(crate) enum Piece {
 }
 
 impl Piece {
+    /// Conservative axis-aligned support bounds including authored endpoints.
+    pub(crate) fn bounds(&self) -> [[f64; 2]; 2] {
+        match self {
+            Self::Line(from, to) => [
+                [from[0].min(to[0]), from[1].min(to[1])],
+                [from[0].max(to[0]), from[1].max(to[1])],
+            ],
+            Self::Arc(arc) => arc.bounds(),
+        }
+    }
     pub(crate) fn from(&self) -> [f64; 2] {
         match self {
             Self::Line(from, _) => *from,
@@ -265,7 +275,10 @@ impl Piece {
             (Self::Line(a, b), Self::Line(c, d)) => {
                 let (o1, o2) = (orient(*a, *b, *c), orient(*a, *b, *d));
                 let (o3, o4) = (orient(*c, *d, *a), orient(*c, *d, *b));
-                if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+                // Compare signs directly: multiplying tiny nonzero
+                // orientations can underflow and hide a proper crossing.
+                let opposite = |a: f64, b: f64| (a < 0.0 && b > 0.0) || (a > 0.0 && b < 0.0);
+                if opposite(o1, o2) && opposite(o3, o4) {
                     let t = o3 / (o3 - o4);
                     points.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
                 }
@@ -465,6 +478,20 @@ pub(crate) fn length(a: [f64; 2]) -> f64 {
     libm::hypot(a[0], a[1])
 }
 
+/// Broad-phase rejection only. Expand by the requested separation and a
+/// roundoff guard; uncertain or overflowing bounds always reach the exact
+/// piece predicate instead of being classified as separate.
+pub(crate) fn bounds_may_contact(a: [[f64; 2]; 2], b: [[f64; 2]; 2], separation: f64) -> bool {
+    let scale = a
+        .into_iter()
+        .chain(b)
+        .flatten()
+        .map(f64::abs)
+        .fold(f64::MIN_POSITIVE, f64::max);
+    let padding = separation + 64.0 * f64::EPSILON * scale;
+    (0..2).all(|axis| !(a[1][axis] + padding < b[0][axis] || b[1][axis] + padding < a[0][axis]))
+}
+
 /// Normalizes a winding angle sum to whole turns.
 pub(crate) fn turns(angle: f64) -> i64 {
     #[expect(
@@ -547,6 +574,14 @@ mod tests {
                 .flat_map(|p| b.iter().map(move |q| length(sub(*p, *q))))
                 .fold(f64::INFINITY, f64::min);
             let exact = first.distance(&second);
+            for separation in [1e-9, 0.001, 0.1, 0.5, 2.0] {
+                if !bounds_may_contact(first.bounds(), second.bounds(), separation) {
+                    assert!(
+                        exact >= separation,
+                        "bounds rejected a contact: {first:?} {second:?}"
+                    );
+                }
+            }
             assert!(
                 exact <= sampled + 1e-12,
                 "{first:?} {second:?}: {exact} > {sampled}"

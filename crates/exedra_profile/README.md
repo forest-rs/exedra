@@ -50,6 +50,29 @@ assert_eq!(edges % 4, 0);
 
 The crate is `no_std` and has no features.
 
+## Filled-region composition
+
+`Profile::combine` computes union, intersection or left-minus-right difference
+under an explicit `RegionPolicy`. It retains line and circular-arc boundaries;
+empty and disconnected results are normal. `into_single` explicitly requires
+one connected profile. Each output is validated against the requested profile
+policy, including holes and separation. `Profile::validate` can check an existing
+profile under a stronger policy without cloning its loops.
+
+Intersections split segments. `RegionResult::segments` records both input
+segment references and oriented parameter intervals, including both sources
+of a retained coincident run. Segment tags survive; if a coincident run carries
+two distinct tags, the left tag takes precedence and both sources remain in
+correspondence. Branching point contacts and numerically ambiguous boundaries
+are typed refusals. The report exposes pair tests, classification tests,
+intersection events, fragment counts and f64 intersection residuals. Those
+residuals are distinct from later mesh approximation error.
+
+The operation uses flat cut-event storage and fixed-capacity contact candidates.
+Conservative cached bounds reject separated pieces before their analytic
+predicates; output rings move into validated profiles without duplicate segment
+arrays. Returned geometry and correspondence still own their allocations.
+
 ## License
 
 Licensed under either of Apache License 2.0 or MIT license at your option. See
