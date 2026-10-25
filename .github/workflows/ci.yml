@@ -375,6 +375,12 @@ jobs:
           version: "latest"
 
       - name: cargo test (wasip1)
+        # WASI geometry tests are CPU-bound; basic optimization keeps the full
+        # suite practical while retaining debug assertions and overflow checks.
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+          CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
+          CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"
         run: cargo test ${{ env.RUST_NO_WASIP1_PKGS }} --workspace --locked --all-features --target wasm32-wasip1 --no-fail-fast
 
       - name: cargo test compile (wasm32-unknown-unknown)
