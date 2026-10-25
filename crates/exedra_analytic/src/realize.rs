@@ -141,8 +141,8 @@ pub enum RealizationError {
     Boundary(BodyError),
     /// No faces were supplied.
     EmptyBoundary,
-    /// A cylindrical trim is not one supported four-edge strip.
-    UnsupportedCylinder {
+    /// A curved surface trim is not one supported four-edge strip.
+    UnsupportedSurfaceTrim {
         /// Offending native face.
         face: FaceId,
     },
@@ -336,6 +336,9 @@ impl<F, E> Body<F, E> {
                     item.faces[item.count] = Some(id);
                     item.count += 1;
                 }
+            }
+            if matches!(face.surface, Surface::Cone(_)) {
+                return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
             }
             if matches!(face.surface, Surface::Cylinder(_)) {
                 let patch = self.cylinder_patch(id, policy.geometry_gap)?;
@@ -599,10 +602,10 @@ impl<F, E> Body<F, E> {
                 let uv = face
                     .surface
                     .parameters(point(patch.a.edge, (start + next) * 0.5)?)
-                    .ok_or(RealizationError::UnsupportedCylinder { face: id })?;
+                    .ok_or(RealizationError::UnsupportedSurfaceTrim { face: id })?;
                 let normal = self
                     .evaluate_support(id, uv)
-                    .ok_or(RealizationError::UnsupportedCylinder { face: id })?
+                    .ok_or(RealizationError::UnsupportedSurfaceTrim { face: id })?
                     .normal;
                 let native_a = point(patch.a.edge, start)?;
                 let native_next = point(patch.a.edge, next)?;
@@ -627,10 +630,10 @@ impl<F, E> Body<F, E> {
                     let uv = face
                         .surface
                         .parameters(point(patch.a.edge, t)?)
-                        .ok_or(RealizationError::UnsupportedCylinder { face: id })?;
+                        .ok_or(RealizationError::UnsupportedSurfaceTrim { face: id })?;
                     let normal = self
                         .evaluate_support(id, uv)
-                        .ok_or(RealizationError::UnsupportedCylinder { face: id })?
+                        .ok_or(RealizationError::UnsupportedSurfaceTrim { face: id })?
                         .normal;
                     for triangle in [
                         [corners[0], corners[1], corners[2]],
@@ -731,7 +734,7 @@ impl<F, E> Body<F, E> {
 
     fn cylinder_patch(&self, id: FaceId, gap: f64) -> Result<Patch, RealizationError> {
         let face = self.face(id).expect("known face");
-        let refuse = || RealizationError::UnsupportedCylinder { face: id };
+        let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
         if face.loops.len() != 1 {
             return Err(refuse());
         }
@@ -998,7 +1001,7 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(RealizationError::UnsupportedCylinder { face: FaceId(0) })
+            Err(RealizationError::UnsupportedSurfaceTrim { face: FaceId(0) })
         ));
     }
 
@@ -1335,7 +1338,7 @@ mod tests {
         assert_eq!(
             body.realize(Placement3::IDENTITY, &RealizationPolicy::default())
                 .unwrap_err(),
-            RealizationError::UnsupportedCylinder { face: FaceId(0) }
+            RealizationError::UnsupportedSurfaceTrim { face: FaceId(0) }
         );
     }
 }
