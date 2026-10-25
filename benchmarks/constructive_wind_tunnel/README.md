@@ -181,3 +181,6 @@ Set `EXEDRA_REVOLVE_PROFILE` to `native`, `native-uv`, `mesh` or `mesh-uv` on th
 built executable for external allocation tracing. After one warm call it pauses
 before and after exactly three realizations. The flush allocations are separate
 from realization stacks; exclude them when comparing allocation histories.
+For CPU sampling, also set `EXEDRA_REVOLVE_SECONDS=12`. Start `sample <pid> 6 1`
+while paused, then press Enter to run repeated realizations for that duration.
+Profile each mode separately, without allocation logging or concurrent workloads.

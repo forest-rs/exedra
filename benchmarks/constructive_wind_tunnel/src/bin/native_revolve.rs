@@ -246,14 +246,32 @@ fn allocation_profile(
     };
     run()?;
     flush_stack_log();
+    let seconds: Option<u64> = std::env::var("EXEDRA_REVOLVE_SECONDS")
+        .ok()
+        .map(|value| value.parse())
+        .transpose()?;
     println!(
-        "profile_ready pid={} mode={mode}; Enter to realize three times",
+        "profile_ready pid={} mode={mode}; Enter to start batch (seconds={seconds:?})",
         std::process::id()
     );
     io::stdout().flush()?;
     io::stdin().read_line(&mut String::new())?;
-    for _ in 0..3 {
-        run()?;
+    if let Some(seconds) = seconds {
+        let start = Instant::now();
+        let duration = std::time::Duration::from_secs(seconds);
+        let mut calls = 0_u64;
+        while start.elapsed() < duration {
+            run()?;
+            calls += 1;
+        }
+        println!(
+            "completed {calls} realizations in {:.3} seconds",
+            start.elapsed().as_secs_f64()
+        );
+    } else {
+        for _ in 0..3 {
+            run()?;
+        }
     }
     flush_stack_log();
     println!("profile_done; Enter to exit");
