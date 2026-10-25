@@ -190,6 +190,7 @@ dependencies = [
  "exedra_constructive",
  "exedra_mesh",
  "exedra_mesh_ops",
+ "exedra_profile",
  "exedra_testkit",
 ]
 

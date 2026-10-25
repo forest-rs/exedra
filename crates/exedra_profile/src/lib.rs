@@ -36,11 +36,16 @@ extern crate alloc;
 
 mod arc;
 mod profile;
+mod region;
 mod sampling;
 
 pub use arc::Arc;
 pub use profile::{
     Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
     SegmentRef,
+};
+pub use region::{
+    InputSegment, Operand, RegionBudget, RegionError, RegionOp, RegionPolicy, RegionReport,
+    RegionResult, RegionSegment, SegmentSource,
 };
 pub use sampling::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};

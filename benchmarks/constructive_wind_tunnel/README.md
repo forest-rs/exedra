@@ -115,6 +115,31 @@ three mappings for an OS profiler to attach. Stack-log flush allocations happen
 outside this batch under their own stack; exclude them from mapping counts.
 Capacity stability alone is not evidence of zero transient allocations.
 
+## Analytic profile regions
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin profile_regions
+cargo run --release -p constructive_wind_tunnel --bin profile_regions -- 5
+```
+
+The dedicated binary measures a filled cross and radial polygon unions at
+48, 192 and 384 segments per input. Input construction is outside timing;
+each timed operation includes requested input validation, intersection and
+classification, output validation, allocation and drop. Geometry and complete
+correspondence are checked for deterministic repeats before timing. Reports
+include input and output work, geometry signatures and median microseconds over
+seven batches. The optional positive multiplier increases batch repetitions.
+
+On the development Apple Silicon host, three interleaved runs of the initial
+per-segment event-list implementation and the final flat representation with
+conservative broad-phase bounds gave medians of 7.58 to 5.08 microseconds for
+the cross, and 20.05 to 8.62 milliseconds for the two 384-segment radial inputs.
+Geometry signatures were identical in every comparison. These are local
+observations with full validation included, not portable timing guarantees or
+allocation counts. The final path removes per-segment cut-list allocations,
+per-pair contact vectors and copies of output ring arrays; graph indexes,
+validation buffers, output profiles and correspondence still allocate.
+
 ## License
 
 Apache-2.0 OR MIT

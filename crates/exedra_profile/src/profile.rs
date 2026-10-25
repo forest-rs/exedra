@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::arc::{Arc, Piece, cross, length, sub, turns, winding_angle};
+use crate::arc::{Arc, Piece, bounds_may_contact, cross, length, sub, turns, winding_angle};
 
 /// Opaque caller tag carried by a segment across geometry representations.
 ///
@@ -271,7 +271,7 @@ impl Loop {
     }
 
     /// Whole turns the loop winds around `point`, which must not lie on it.
-    fn winding(&self, point: [f64; 2]) -> i64 {
+    pub(crate) fn winding(&self, point: [f64; 2]) -> i64 {
         turns(
             self.pieces()
                 .map(|piece| winding_angle(&piece, point))
@@ -443,6 +443,22 @@ impl Profile {
         holes: Vec<Loop>,
         policy: &ProfilePolicy,
     ) -> Result<Self, ProfileError> {
+        let profile = Self { outer, holes };
+        profile.validate(policy)?;
+        Ok(profile)
+    }
+
+    /// Checks this profile against another explicit separation and work budget.
+    /// Geometry and tags are unchanged; this avoids cloning loops when a later
+    /// operation needs stronger validation than the original authoring policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first arrangement or policy violation in the same order as
+    /// [`Self::new`].
+    pub fn validate(&self, policy: &ProfilePolicy) -> Result<(), ProfileError> {
+        let outer = &self.outer;
+        let holes = &self.holes;
         let separation = policy.min_separation;
         if !(separation.is_finite() && separation > 0.0) || policy.max_segments == 0 {
             return Err(ProfileError::InvalidPolicy);
@@ -467,20 +483,28 @@ impl Profile {
                 });
             }
         }
-        let loops: Vec<(LoopRef, Vec<Piece>)> = core::iter::once((LoopRef::Outer, &outer))
+        let loops: Vec<_> = core::iter::once((LoopRef::Outer, outer))
             .chain(
                 holes
                     .iter()
                     .enumerate()
                     .map(|(i, hole)| (LoopRef::Hole(i), hole)),
             )
-            .map(|(loop_ref, loop_)| (loop_ref, loop_.pieces().collect()))
+            .map(|(loop_ref, loop_)| {
+                (
+                    loop_ref,
+                    loop_.pieces().map(|p| (p, p.bounds())).collect::<Vec<_>>(),
+                )
+            })
             .collect();
         for (first_loop, (first_ref, first)) in loops.iter().enumerate() {
             for (second_loop, (second_ref, second)) in loops.iter().enumerate().skip(first_loop) {
-                for (i, p) in first.iter().enumerate() {
+                for (i, (p, p_bounds)) in first.iter().enumerate() {
                     let start = if first_loop == second_loop { i + 1 } else { 0 };
-                    for (j, q) in second.iter().enumerate().skip(start) {
+                    for (j, (q, q_bounds)) in second.iter().enumerate().skip(start) {
+                        if !bounds_may_contact(*p_bounds, *q_bounds, separation) {
+                            continue;
+                        }
                         let adjacent = first_loop == second_loop
                             && (j == i + 1 || (i == 0 && j == first.len() - 1));
                         let contact = if adjacent {
@@ -516,7 +540,7 @@ impl Profile {
                 }
             }
         }
-        Ok(Self { outer, holes })
+        Ok(())
     }
 
     /// The counter-clockwise outer loop.
