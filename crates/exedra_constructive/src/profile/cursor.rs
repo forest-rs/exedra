@@ -70,6 +70,12 @@ impl LoopCursor {
         self.segment(Seg2::line(to))
     }
 
+    /// Appends a straight segment by `offset` from the current point.
+    pub fn line_by(self, offset: impl Into<Vec2>) -> Self {
+        let to = self.current + offset.into();
+        self.line_to(to)
+    }
+
     /// Appends a circular arc to `to` with an explicit bulge, as in
     /// [`SegKind::Arc`].
     pub fn arc_to(self, to: impl Into<Point>, bulge: f64) -> Self {
@@ -157,6 +163,13 @@ impl LoopCursor {
                 self.fail(ProfileError::DegenerateArc { seg })
             }
         }
+    }
+
+    /// Appends the tangent arc by `offset` from the current point; see
+    /// [`Self::tangent_arc_to`].
+    pub fn tangent_arc_by(self, offset: impl Into<Vec2>) -> Self {
+        let to = self.current + offset.into();
+        self.tangent_arc_to(to)
     }
 
     /// The start of the most recent segment.
@@ -449,6 +462,23 @@ mod tests {
         let leaving = start_direction(Point::new(2.0, 0.0), &after_cubic.segs[1]);
         let handle = Vec2::new(1.0, -1.0) / 2.0_f64.sqrt();
         assert!((leaving - handle).hypot() < 1e-14);
+    }
+
+    #[test]
+    fn relative_steps_match_absolute_ones() {
+        let absolute = LoopCursor::new((1.0, 1.0))
+            .line_to((4.0, 1.0))
+            .tangent_arc_to((4.0, 3.0))
+            .line_to((1.0, 3.0))
+            .close()
+            .unwrap();
+        let relative = LoopCursor::new((1.0, 1.0))
+            .line_by((3.0, 0.0))
+            .tangent_arc_by((0.0, 2.0))
+            .line_by((-3.0, 0.0))
+            .close()
+            .unwrap();
+        assert_eq!(absolute, relative);
     }
 
     #[test]
