@@ -254,3 +254,76 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod native_revolve_chart_tests {
+    use super::*;
+    use exedra::analytic::realize::RealizationPolicy;
+    use exedra::analytic::revolve::{FaceRole, Revolution};
+    use exedra::constructive::chart::{ChartTransform, SurfaceChart};
+    use exedra::constructive::ir::CapMode;
+    use exedra::constructive::tessellate::{EvalPolicy, tessellate_revolve_with_chart};
+
+    fn seam_values(mesh: &exedra::Mesh) -> std::collections::BTreeSet<([u32; 3], [u32; 2])> {
+        let uvs = mesh
+            .attrs()
+            .sparse(exedra::mesh::attr::CORNER_UV)
+            .expect("construction chart");
+        mesh.half_edges()
+            .filter_map(|corner| {
+                let point = mesh.vertex_position(mesh.to_vertex(corner)?).unwrap();
+                if point[2] != 0.0 || point[0] <= 0.0 {
+                    return None;
+                }
+                Some((
+                    point.map(|v| (v + 0.0).to_bits()),
+                    uvs.get(corner.as_id())
+                        .unwrap()
+                        .map(|v| (v + 0.0).to_bits()),
+                ))
+            })
+            .collect()
+    }
+    #[test]
+    fn retained_and_constructive_revolutions_share_chart_seam_metric() {
+        let profile = builders::rect_from_corner(1.0, 3.0)
+            .unwrap()
+            .translated((1.0, 0.0))
+            .unwrap();
+        let chart = SurfaceChart::Revolve {
+            reference_radius: 2.0,
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        };
+        let native = Revolution::new(
+            profile.to_line_arc(&POLICY).unwrap(),
+            Placement3::IDENTITY,
+            core::f64::consts::TAU,
+        )
+        .unwrap();
+        let native = native
+            .realize_with_uvs(
+                &RealizationPolicy::default(),
+                |_, _| 0,
+                |role, points| match role {
+                    FaceRole::Wall { .. } => chart.map_revolve_wall_triangle(points),
+                    FaceRole::Cap { .. } => chart.map_cap_triangle(points),
+                },
+            )
+            .unwrap();
+        let constructed = tessellate_revolve_with_chart(
+            &profile,
+            &Placement3::IDENTITY,
+            core::f64::consts::TAU,
+            CapMode::Both,
+            chart,
+            &EvalPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            seam_values(&native.mesh),
+            seam_values(&constructed.mesh),
+            "both heads preserve angular and profile seam coordinates on shared geometry"
+        );
+    }
+}
