@@ -153,6 +153,14 @@ pub struct Body<F = (), E = ()> {
     pub(crate) parts: BodyParts<F, E>,
 }
 
+impl<F, E> Default for Body<F, E> {
+    fn default() -> Self {
+        Self {
+            parts: BodyParts::default(),
+        }
+    }
+}
+
 impl<F, E> Body<F, E> {
     /// Checks references, vertex-identity closure and analytic support agreement.
     ///
