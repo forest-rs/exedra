@@ -13,6 +13,7 @@ use crate::spatial::RefineError;
 use exedra_mesh::{BuildError, op::CollapseEdgeError};
 
 use super::{DualContourParameter, DualContourStats};
+use crate::provenance::RegionAttribution;
 use crate::{Aabb, ScalarField};
 
 /// Hard limits on extractor-controlled storage and work.
@@ -289,6 +290,8 @@ pub struct ExtractionReport {
     /// samples are the ones that set corner normals, so counting costs no
     /// extra field evaluations.
     pub inverted_faces: usize,
+    /// How firmly each patch's region was decided, for region extraction.
+    pub region_attribution: RegionAttribution,
 }
 
 /// Machine-readable extraction failure category.

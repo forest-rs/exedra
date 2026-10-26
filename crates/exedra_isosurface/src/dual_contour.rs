@@ -19,6 +19,7 @@ use crate::adaptive_transition::{
 };
 use crate::cell_topology::{CUBE_EDGES, CellTopology, classify_cell};
 use crate::hermite::locate_edge_zero;
+use crate::provenance::{Attribution, ProjectRegion, RegionAttribution, RegionSample};
 use crate::{
     Aabb, CellHermiteData, EdgeSearchParams, ProvenanceField, QefParams, ScalarField,
     SemiAnalyticFeature, SemiAnalyticField, SemiAnalyticProjectionOutcome,
@@ -175,14 +176,23 @@ pub fn dual_contour<F: ScalarField>(
 
 /// Extracts a mesh from `field`, sampling `FACE_REGION` from field provenance
 /// at each emitted patch's generating zero crossing.
+///
+/// Provenance becomes a region through [`ProjectRegion`], and the report's
+/// [`ExtractionReport::region_attribution`] counts how firmly each patch's
+/// region was decided.
 pub fn dual_contour_with_regions<F>(
     field: &F,
     params: &DualContourParams,
 ) -> Result<DualContourResult, DualContourError>
 where
-    F: ProvenanceField<Provenance = u32>,
+    F: ProvenanceField,
+    F::Provenance: ProjectRegion,
 {
-    dual_contour_impl(field, params, Some(&|point| field.point_provenance(point)))
+    dual_contour_impl(
+        field,
+        params,
+        Some(&|point| field.point_provenance(point).project_region()),
+    )
 }
 
 /// Extracts a mesh while projecting supported cells onto analytic primitive
@@ -202,7 +212,11 @@ where
     let (result, semi_analytic) = dual_contour_projected_impl(
         field,
         params,
-        Some(&|point| field.primitive_at(point)),
+        // The dominating primitive is chosen among those near the point.
+        Some(&|point| RegionSample {
+            region: field.primitive_at(point),
+            attribution: Attribution::Winner,
+        }),
         Some(&|point, cell| field.project_cell_vertex_detailed(point, cell)),
         RefinementMode::ErrorDriven,
     )?;
@@ -344,7 +358,7 @@ struct VertexEntry {
     sharpness: f32,
 }
 
-type RegionQuery<'a> = dyn Fn([f32; 3]) -> u32 + 'a;
+type RegionQuery<'a> = dyn Fn([f32; 3]) -> RegionSample + 'a;
 type ProjectionQuery<'a> = dyn Fn([f32; 3], &Aabb) -> SemiAnalyticProjectionOutcome + 'a;
 
 fn dual_contour_impl<F>(
@@ -480,7 +494,7 @@ fn dual_contour_run<F: ScalarField>(
     }
 
     run.stage.set(ExtractionStage::Emission);
-    let (mut mesh, needs_joining) = emit_transition_faces(
+    let (mut mesh, needs_joining, region_attribution) = emit_transition_faces(
         &segments,
         &locator,
         &visitor.grid,
@@ -490,6 +504,7 @@ fn dual_contour_run<F: ScalarField>(
         params,
         run,
     )?;
+    report.region_attribution = region_attribution;
 
     let mut progress = run.stats.get();
     progress.vertices = mesh.vertices().count();
@@ -616,10 +631,11 @@ fn emit_transition_faces<F>(
     region_at: Option<&RegionQuery<'_>>,
     params: &DualContourParams,
     run: &RunContext,
-) -> Result<(Mesh, bool), DualContourError>
+) -> Result<(Mesh, bool, RegionAttribution), DualContourError>
 where
     F: ScalarField,
 {
+    let mut attribution = RegionAttribution::default();
     let mut builder = MeshBuilder::new();
     let mut vertex_count = 0;
     for cell in active_cells.iter() {
@@ -764,7 +780,9 @@ where
             run.evaluate(Evaluation::Provenance, 1).map_err(|error| {
                 error.with_witness(ExtractionWitness::Transition(witness.clone()))
             })?;
-            region_at(point)
+            let sample = region_at(point);
+            attribution.record(sample.attribution);
+            sample.region
         } else {
             0
         };
@@ -860,7 +878,7 @@ where
             }
         })?
         .mesh;
-    Ok((mesh, needs_joining))
+    Ok((mesh, needs_joining, attribution))
 }
 
 fn patch_witness(face: &[VertexEntry], source: Option<u32>) -> ExtractionWitness {
@@ -2438,6 +2456,7 @@ mod tests {
         select_quad_diagonal, solve_cell_vertices, transition_component_token,
         triangle_is_nondegenerate,
     };
+    use crate::ProjectRegion;
     use crate::analytic::{
         BoxField, CylinderField, Difference, HalfSpaceField, SmoothUnion, SphereField, TaggedField,
         Union,
@@ -5058,7 +5077,7 @@ mod tests {
         dual_contour_projected_impl(
             measured,
             extraction_params,
-            Some(&|point| measured.primitive_at(point)),
+            Some(&|point| measured.primitive_at(point).project_region()),
             Some(&|point, cell| measured.project_cell_vertex_detailed(point, cell)),
             RefinementMode::ForcedUniform,
         )

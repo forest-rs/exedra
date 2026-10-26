@@ -264,7 +264,10 @@ fn offsets_grow_support_only_from_exact_distances() {
     let offset = surface(&grown);
     assert_eq!(larger.len(), offset.len());
     for (a, b) in larger.iter().zip(&offset) {
-        assert!(exedra_math::norm(exedra_math::sub(*a, *b)) < 1e-4, "{a:?} vs {b:?}");
+        assert!(
+            exedra_math::norm(exedra_math::sub(*a, *b)) < 1e-4,
+            "{a:?} vs {b:?}"
+        );
     }
 
     // A half-weighted distance is still Lipschitz, but its offset reaches

@@ -793,13 +793,13 @@ where
             BinaryProvenance {
                 source: OperandSource::Left,
                 value: self.left.point_provenance(point),
-                blended: (0.0..1.0).contains(&h),
+                blended: h > 0.0 && h < 1.0,
             }
         } else {
             BinaryProvenance {
                 source: OperandSource::Right,
                 value: self.right.point_provenance(point),
-                blended: (0.0..1.0).contains(&h),
+                blended: h > 0.0 && h < 1.0,
             }
         }
     }

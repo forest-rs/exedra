@@ -69,6 +69,7 @@ pub mod function;
 pub mod hermite;
 pub mod lift;
 pub mod primitives;
+pub mod provenance;
 pub mod qef;
 pub mod semi_analytic;
 pub mod skeletal;
@@ -98,6 +99,7 @@ pub use lift::{Extrude, Revolve};
 pub use primitives::{
     BoxFrameField, CappedConeField, HexPrismField, LinkField, OctahedronField, PyramidField,
 };
+pub use provenance::{Attribution, ProjectRegion, RegionAttribution, RegionSample};
 pub use semi_analytic::{
     AnalyticBox, AnalyticCylinder, AnalyticPrimitive, SemiAnalyticFeature, SemiAnalyticField,
     SemiAnalyticProjection, SemiAnalyticProjectionOutcome,

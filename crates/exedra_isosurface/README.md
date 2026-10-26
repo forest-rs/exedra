@@ -64,7 +64,8 @@ The current mesher is intentionally phase-1:
 - explicit triangle emission from primal-edge patches with deterministic diagonal choice,
 - QEF placement with edge-sharpness tagging and Hermite mass-point anchoring,
 - authored corner normals from field gradients for smoother render extraction,
-- optional face-region tagging from `ProvenanceField<u32>`,
+- optional face-region tagging from any `ProvenanceField` whose provenance
+  implements `ProjectRegion`, including nested CSG of `u32` tags,
 - first-pass seam tagging on shared edges where adjacent face regions differ,
 - balanced, component-aware transitions across coarse/fine boundaries,
 - topology-checked joining of coincident transition vertices, with an explicit
@@ -131,7 +132,11 @@ were omitted by that budget. It does **not** certify a closed surface, feature
 retention, geometric accuracy, or enclosure within the caller's root domain.
 The report also counts root-boundary crossings, unresolved finest cells and
 finest cells using compatibility evidence. `witness_limit` bounds only the detail
-list; counts remain exact, including `unreported_witnesses`.
+list; counts remain exact, including `unreported_witnesses`. It counts
+`inverted_faces` whose winding opposes the field gradients at their corners,
+and, for region extraction, `region_attribution`: how many patches took their
+region from a sole source, a hard combinator's winner, or the larger
+contributor to a smooth blend, where the surface belongs to both.
 
 Use `limits: ExtractionLimits { ... }` to stop analysis and generation. Independent
 caps cover octree cells (including later refinements), cached corners, transition
