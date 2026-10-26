@@ -280,7 +280,12 @@ pub fn flip_edge<S: ChangeSink>(
     for vertex in [a, b, c, d] {
         session.mark_vertex_dirty(vertex);
     }
-    session.invalidate_outgoing_index();
+    // The diagonal pair now leaves c and d instead of a and b, and one
+    // perimeter edge of each triangle changed faces; nothing else moved.
+    session.reindex_interior_half_edges(
+        &[(half_edge, a), (twin, b)],
+        &[half_edge, twin, t_prev, h_prev],
+    );
     Ok(half_edge)
 }
 

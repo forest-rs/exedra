@@ -892,6 +892,55 @@ impl<S: ChangeSink> EditSession<'_, S> {
         self.outgoing_index_valid = false;
     }
 
+    /// Updates the index in place after an edit that re-aimed or re-faced
+    /// interior half-edges, instead of rebuilding it on the next query.
+    ///
+    /// `moved` lists each re-aimed half-edge with the vertex it left before
+    /// the edit; `changed` lists every half-edge whose ends or face changed,
+    /// the moved ones included. None may border `OUTSIDE`, so the boundary
+    /// index stands. An index not yet built stays unbuilt.
+    pub(crate) fn reindex_interior_half_edges(
+        &mut self,
+        moved: &[(HalfEdgeId, VertexId)],
+        changed: &[HalfEdgeId],
+    ) {
+        if !self.outgoing_index_valid {
+            return;
+        }
+        self.outgoing_index
+            .resize_with(self.mesh.vertices.slot_count(), Vec::new);
+        for &(half_edge, from) in moved {
+            let bucket = &mut self.outgoing_index[from.index() as usize];
+            if let Ok(position) =
+                bucket.binary_search_by_key(&half_edge, |candidate| candidate.half_edge)
+            {
+                bucket.remove(position);
+            }
+        }
+        for &half_edge in changed {
+            let face = self
+                .mesh
+                .half_edges
+                .get(half_edge.as_id())
+                .expect("reindexed half-edges are live")
+                .face;
+            debug_assert_ne!(face, FaceId::OUTSIDE, "reindexed half-edges are interior");
+            let (from, to) = half_edge_vertices(self.mesh, half_edge)
+                .expect("reindexed half-edges are connected");
+            let entry = OutgoingAdj {
+                from,
+                to,
+                half_edge,
+                face,
+            };
+            let bucket = &mut self.outgoing_index[from.index() as usize];
+            match bucket.binary_search_by_key(&half_edge, |candidate| candidate.half_edge) {
+                Ok(position) => bucket[position] = entry,
+                Err(position) => bucket.insert(position, entry),
+            }
+        }
+    }
+
     /// Refreshes a small set of topology records without rebuilding the full
     /// outgoing index.
     ///
@@ -2896,6 +2945,29 @@ mod tests {
             .expect("split should succeed");
         txn.assert_outgoing_index_consistent();
         assert!(!txn.has_undirected_edge(from, to));
+    }
+
+    #[test]
+    fn outgoing_index_follows_flips_without_rebuilding() {
+        let mut mesh = Mesh::new();
+        let a = mesh.add_vertex([0.0, 0.0, 0.0]);
+        let b = mesh.add_vertex([1.0, 1.0, 0.0]);
+        let c = mesh.add_vertex([0.0, 1.0, 0.0]);
+        let d = mesh.add_vertex([1.0, 0.0, 0.0]);
+        let mut txn = mesh.edit_with(ChangeSetBuilder::new());
+        txn.add_face(&[a, b, c]).expect("first triangle");
+        txn.add_face(&[b, a, d]).expect("second triangle");
+        assert!(txn.has_undirected_edge(a, b));
+        let diagonal = find_half_edge(txn.mesh(), a.index(), b.index()).expect("diagonal");
+        op::flip_edge(&mut txn, diagonal).expect("flip");
+        assert!(txn.outgoing_index_valid, "a flip keeps the index");
+        txn.assert_outgoing_index_consistent();
+        assert!(txn.has_undirected_edge(c, d));
+        assert!(!txn.has_undirected_edge(a, b));
+        let diagonal = find_half_edge(txn.mesh(), c.index(), d.index()).expect("new diagonal");
+        op::flip_edge(&mut txn, diagonal).expect("flip back");
+        txn.assert_outgoing_index_consistent();
+        assert!(txn.has_undirected_edge(a, b));
     }
 
     #[test]
