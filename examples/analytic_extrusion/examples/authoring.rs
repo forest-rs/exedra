@@ -10,14 +10,16 @@ use exedra::analytic::extrusion::{
 };
 use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::builders;
-use exedra::constructive::evaluate::{Fidelity, evaluate};
-use exedra::constructive::ir::{CapMode, NodeKind, Placement3, RecipeBuilder, SectionLaw};
+use exedra::constructive::chart::{ChartTransform, SurfaceChart};
+use exedra::constructive::ir::Placement3;
 use exedra::constructive::path::PathCursor3;
 use exedra::constructive::profile::{LineArcError, LoopCursor, MirrorLine, Profile2, Seg2};
-use exedra::constructive::tessellate::EvalPolicy;
-use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
+use exedra::gltf::{
+    GltfExportOptions, GltfMesh, GltfNode, GltfScene, MaterialResolver, Texture,
+    export_glb_with_materials,
+};
 use exedra::profile::{ProfilePolicy, SegTag};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     error::Error,
     f64::consts::{FRAC_PI_2, PI},
@@ -68,26 +70,40 @@ fn curved_rail() -> Result<Mesh> {
         .tangent_arc(40.0, -FRAC_PI_2, [0.0, 0.0, 1.0])
         .line_by([-40.0, 0.0, 0.0])
         .finish([1.0, 0.0, 0.0])?;
-    let mut b = RecipeBuilder::new();
-    let profile = b.add_profile(builders::rect_centered(20.0, 20.0)?);
-    let root = b.add_node(NodeKind::Sweep {
-        profile,
-        path,
-        section: SectionLaw::IDENTITY,
-        caps: CapMode::Both,
-    })?;
-    let result = evaluate(&b.finish(root)?, &EvalPolicy::default())?;
-    assert_eq!(
-        result.report.fidelity_of(root),
-        Some(Fidelity::Exact),
-        "the authored rail must realize"
-    );
+    let sweep = exedra::analytic::sweep::Sweep::from_profile(
+        builders::rect_centered(20.0, 20.0)?,
+        &path,
+        Placement3::IDENTITY,
+        &POLICY,
+    )?;
+    let metric = ChartTransform {
+        matrix: [[0.05, 0.0], [0.0, 0.05]],
+        offset: [0.0; 2],
+    };
+    let chart = SurfaceChart::Sweep {
+        wall: metric,
+        caps: metric,
+    };
+    let output = sweep.realize_with_uvs(
+        &exedra::analytic::realize::RealizationPolicy::default(),
+        |_, _| 0,
+        |role, points| match role {
+            exedra::analytic::sweep::FaceRole::Wall { .. } => chart.map_sweep_wall_triangle(points),
+            exedra::analytic::sweep::FaceRole::Cap { .. } => chart.map_cap_triangle(points),
+        },
+    )?;
     assert!(
-        result.report.diagnostics.is_empty(),
-        "unexpected rail diagnostics"
+        output.report.within_tolerance(),
+        "native rail must meet its geometric bound"
     );
-    assert_eq!(result.bodies.len(), 1, "the rail must produce one body");
-    Ok(result.bodies[0].body.mesh.clone())
+    println!(
+        "native rail: {} native faces, volume {:.6}, area {:.6}, {} mesh faces",
+        sweep.body().faces().len(),
+        sweep.volume(),
+        sweep.surface_area(),
+        output.mesh.faces().count()
+    );
+    Ok(output.mesh)
 }
 
 fn verify_typed_refusal() -> Result<()> {
@@ -217,7 +233,22 @@ fn write_scene(path: &str, names: &[&str], sources: &[PartSource]) -> Result<()>
         node.geometry = Some(mesh.into());
         nodes.push(node);
     }
-    let materials = |key: &str| {
+    let exported = export_glb_with_materials(
+        &GltfScene {
+            nodes,
+            ..GltfScene::default()
+        },
+        &compiled,
+        &Materials,
+        GltfExportOptions::z_up_to_y_up(),
+    )?;
+    std::fs::write(path, exported.bytes)?;
+    Ok(())
+}
+
+struct Materials;
+impl MaterialResolver for Materials {
+    fn resolve(&self, key: &str) -> Option<Value> {
         let (color, metal) = match key {
             "part-0" => ([0.18, 0.42, 0.66, 1.0], 0.25),
             "part-1" => ([0.75, 0.59, 0.29, 1.0], 0.65),
@@ -226,18 +257,18 @@ fn write_scene(path: &str, names: &[&str], sources: &[PartSource]) -> Result<()>
             "bore" => ([0.16, 0.2, 0.24, 1.0], 0.85),
             _ => return None,
         };
-        Some(json!({"name":key,"pbrMetallicRoughness":{
-            "baseColorFactor":color,"metallicFactor":metal,"roughnessFactor":0.35}}))
-    };
-    let exported = export_glb_with_materials(
-        &GltfScene {
-            nodes,
-            ..GltfScene::default()
-        },
-        &compiled,
-        &materials,
-        GltfExportOptions::z_up_to_y_up(),
-    )?;
-    std::fs::write(path, exported.bytes)?;
-    Ok(())
+        let mut material = json!({"name":key,"pbrMetallicRoughness":{
+            "baseColorFactor":color,"metallicFactor":metal,"roughnessFactor":0.35}});
+        if key == "part-3" {
+            material["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index": 0});
+        }
+        Some(material)
+    }
+    fn resolve_texture(&self, index: u32) -> Option<Texture<'_>> {
+        (index == 0).then_some(Texture {
+            image: include_bytes!("../../material_gallery/assets/unit-grid.png"),
+            mime_type: "image/png",
+            sampler: Some(json!({"wrapS":10497,"wrapT":10497,"magFilter":9729,"minFilter":9987})),
+        })
+    }
 }

@@ -481,7 +481,7 @@ fn push_line(
         },
     ))
 }
-fn wall(
+pub(crate) fn wall(
     a: [f64; 2],
     b: [f64; 2],
     sweep: f64,
