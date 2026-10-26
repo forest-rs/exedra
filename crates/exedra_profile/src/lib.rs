@@ -40,6 +40,9 @@ mod profile;
 mod region;
 mod sampling;
 
+mod input;
+pub use input::IntoProfile;
+
 pub use arc::Arc;
 pub use corner::{
     Corner, CornerError, CornerKind, CornerResult, CornerSegment, CornerShape, CornerSource,

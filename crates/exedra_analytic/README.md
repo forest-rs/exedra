@@ -134,3 +134,15 @@ disable defaults and enable `libm`. Realization trig always uses `libm`.
 
 Licensed under either of Apache License 2.0 or MIT license at your option. See
 the workspace root for license files.
+
+## Authored profile inputs
+
+`Extrusion::from_profile(input, frame, length, &policy)` and
+`Workplane::extrude_profile(input, length, &policy)` accept any checked
+`exedra_profile::IntoProfile` input, including constructive `Profile2` values or
+references. Callers no longer need an explicit conversion helper. Profile
+conversion errors remain typed inside `ProfileExtrusionError::Profile`; native
+construction errors use its `Extrusion` variant. Cubics are refused rather than
+flattened. `Extrusion::new` still accepts an already checked shared profile
+without repeating validation. The analytic crate does not depend on a profile
+authoring frontend.
