@@ -44,9 +44,9 @@ pub struct ExtractionLimits {
     /// Faces in any generated mesh. The triangle count is checked before
     /// creating the intermediate polygon mesh as well.
     pub faces: Option<usize>,
-    /// Sum of interval and gradient-interval queries, scalar/gradient rows,
-    /// provenance queries and projection requests made to the supplied field
-    /// through public methods.
+    /// Sum of interval, gradient-interval and crease queries, scalar/gradient
+    /// rows, provenance queries and projection requests made to the supplied
+    /// field through public methods.
     pub field_evaluations: Option<usize>,
     /// Balancing and transition-completion passes, including their final
     /// no-refinement passes.
@@ -89,6 +89,8 @@ pub struct ExtractionWork {
     pub interval_queries: usize,
     /// Spatial requests for value and gradient bounds.
     pub gradient_interval_queries: usize,
+    /// Point requests for the nearest crease.
+    pub crease_queries: usize,
     /// Scalar point rows.
     pub point_evaluations: usize,
     /// Value/gradient rows.
@@ -355,6 +357,12 @@ pub struct ExtractionReport {
     /// inside, to a point the rest of the mesh encloses. A component no such
     /// path is found for is kept.
     pub dropped_islands: usize,
+    /// Vertices moved onto a crease where two of the field's pieces meet;
+    /// see [`crate::ScalarField::eval_crease`].
+    pub crease_vertices: usize,
+    /// Edges split where they crossed such a crease, their faces divided
+    /// along it.
+    pub crease_splits: usize,
     /// Folded slivers repaired by flipping their long edge: near-collinear
     /// triangles that faced backwards where cells of different sizes meet.
     pub repaired_slivers: usize,
@@ -621,6 +629,7 @@ impl RunContext {
         let mut work = self.work.get();
         let used = work.interval_queries
             + work.gradient_interval_queries
+            + work.crease_queries
             + work.point_evaluations
             + work.gradient_evaluations
             + work.provenance_queries
@@ -637,6 +646,7 @@ impl RunContext {
         match kind {
             Evaluation::Interval => work.interval_queries += count,
             Evaluation::GradientInterval => work.gradient_interval_queries += count,
+            Evaluation::Crease => work.crease_queries += count,
             Evaluation::Point => work.point_evaluations += count,
             Evaluation::Gradient => work.gradient_evaluations += count,
             Evaluation::Provenance => work.provenance_queries += count,
@@ -651,6 +661,7 @@ impl RunContext {
 pub(crate) enum Evaluation {
     Interval,
     GradientInterval,
+    Crease,
     Point,
     Gradient,
     Provenance,
@@ -699,6 +710,19 @@ impl<F: ScalarField> ScalarField for CheckedField<'_, F> {
         self.field
             .eval_gradient_interval(bounds)
             .filter(|rows| rows.iter().all(|[low, high]| low <= high))
+    }
+
+    fn eval_crease(&self, point: [f32; 3]) -> Option<[[f32; 4]; 2]> {
+        if let Err(error) = self.run.evaluate(Evaluation::Crease, 1) {
+            self.run.fail(error.with_witness(ExtractionWitness::Query {
+                bounds: query_bounds(core::iter::once(point)),
+            }));
+            return None;
+        }
+        // A non-finite answer only forgoes a projection.
+        self.field
+            .eval_crease(point)
+            .filter(|rows| rows.iter().flatten().all(|value| value.is_finite()))
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {

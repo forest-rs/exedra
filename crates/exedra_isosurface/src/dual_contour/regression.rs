@@ -543,3 +543,62 @@ fn gradient_bounds_prove_cells_beside_a_surface_empty() {
     assert_eq!(sampled.report.gradient_excluded_cells, 0);
     assert!(proven.report.unresolved_cells < sampled.report.unresolved_cells);
 }
+
+#[test]
+fn creases_cut_short_by_sampling_are_restored() {
+    // Where the gyroid's band meets the ball at an acute angle, sampling
+    // stops short of the edge, and the mesh bridges straight from the band
+    // to the ball. Moving vertices onto the edge, and splitting bridges
+    // where they cross it, removes most bridges.
+    struct NoCreases<F>(F);
+    impl<F: ScalarField> ScalarField for NoCreases<F> {
+        fn capabilities(&self) -> crate::FieldCapabilities {
+            self.0.capabilities()
+        }
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.0.eval_interval(bounds)
+        }
+        fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+            self.0.eval_gradient_interval(bounds)
+        }
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.0.eval_points(points, out);
+        }
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.0.eval_gradients(points, out);
+        }
+    }
+    let bridges = |mesh: &Mesh| {
+        use exedra_math::Real;
+        let pieces = |p: [f32; 3]| {
+            let [x, y, z] = p.map(|v| 7.0 * f64::from(v));
+            let sheet = (x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos()) / 7.0;
+            let radius = p.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>();
+            (Real::abs(sheet) - 0.15, Real::sqrt(radius) - 0.95)
+        };
+        let tolerance = 0.05 * 2.02 / 64.0;
+        let on_band = |(sheet, ball): (f64, f64)| sheet.abs() < tolerance && ball < -tolerance;
+        let on_ball = |(sheet, ball): (f64, f64)| ball.abs() < tolerance && sheet < -tolerance;
+        mesh.faces()
+            .flat_map(|face| mesh.face_loop(face).collect::<alloc::vec::Vec<_>>())
+            .filter(|&edge| {
+                let ends = [mesh.from_vertex(edge), mesh.to_vertex(edge)]
+                    .map(|vertex| pieces(*mesh.vertex_position(vertex.unwrap()).unwrap()));
+                (on_band(ends[0]) && on_ball(ends[1])) || (on_ball(ends[0]) && on_band(ends[1]))
+            })
+            .count()
+    };
+    let params = gyroid_params(6, 0);
+    let projected = dual_contour(&gyroid_ball(0.15), &params).unwrap();
+    let sampled = dual_contour(&NoCreases(gyroid_ball(0.15)), &params).unwrap();
+    assert!(projected.mesh.validate_deep().is_empty());
+    assert!(projected.report.crease_vertices > 0);
+    assert!(projected.report.crease_splits > 0);
+    assert_eq!(sampled.report.crease_vertices, 0);
+    assert!(
+        2 * bridges(&projected.mesh) < bridges(&sampled.mesh),
+        "{} bridges left of {}",
+        bridges(&projected.mesh),
+        bridges(&sampled.mesh)
+    );
+}

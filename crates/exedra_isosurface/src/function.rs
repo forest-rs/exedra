@@ -60,7 +60,7 @@
 use exedra_math::Real;
 
 use crate::capability::{Capabilities, FieldCapabilities, Metric, Support};
-use crate::number::{Dual, Interval, Number};
+use crate::number::{Creased, Dual, Interval, Number};
 use crate::spatial::Aabb;
 use crate::{FieldError, ScalarField};
 
@@ -147,6 +147,21 @@ impl<F: Formula> ScalarField for FormulaField<F> {
             outward(gradient[2]),
         ];
         rows.iter().flatten().all(|v| !v.is_nan()).then_some(rows)
+    }
+
+    /// The tie nearest `point` among the formula's `min`, `max` and `abs`,
+    /// following only the sides they choose there.
+    fn eval_crease(&self, point: [f32; 3]) -> Option<[[f32; 4]; 2]> {
+        let Creased { value, tie } = self.formula.eval(Creased::point(widen(point)));
+        let row = |dual: Dual| {
+            [
+                narrow(dual.value),
+                narrow(dual.gradient[0]),
+                narrow(dual.gradient[1]),
+                narrow(dual.gradient[2]),
+            ]
+        };
+        Some([row(value), row(tie?)])
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {

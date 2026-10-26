@@ -258,6 +258,21 @@ pub trait ScalarField {
         None
     }
 
+    /// Evaluates the field and the nearest crease at `point`: rows
+    /// `[value, dx, dy, dz]` of the field and of a tie between two of the
+    /// field's pieces, which is zero where they meet.
+    ///
+    /// Where both are zero the surface has a crease, as where a `max` of two
+    /// surfaces switches from one to the other. Sampling cuts such creases
+    /// short where the surfaces meet at an acute angle; extraction moves
+    /// vertices near one onto it.
+    ///
+    /// The default returns `None`: no creases known.
+    fn eval_crease(&self, point: [f32; 3]) -> Option<[[f32; 4]; 2]> {
+        let _ = point;
+        None
+    }
+
     /// The field's metric and support claims; see [`capability`].
     ///
     /// The default claims nothing, which is always truthful. Override it only
@@ -317,6 +332,10 @@ impl<F: ScalarField + ?Sized> ScalarField for &F {
     fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
         (**self).eval_gradient_interval(bounds)
     }
+
+    fn eval_crease(&self, point: [f32; 3]) -> Option<[[f32; 4]; 2]> {
+        (**self).eval_crease(point)
+    }
 }
 
 impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
@@ -338,6 +357,10 @@ impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
 
     fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
         (**self).eval_gradient_interval(bounds)
+    }
+
+    fn eval_crease(&self, point: [f32; 3]) -> Option<[[f32; 4]; 2]> {
+        (**self).eval_crease(point)
     }
 }
 

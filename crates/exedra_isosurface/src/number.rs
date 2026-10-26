@@ -30,6 +30,7 @@ pub mod sealed {
     pub trait Sealed {}
     impl Sealed for f64 {}
     impl Sealed for super::Interval {}
+    impl Sealed for super::Creased {}
     impl<T: DualBranch> Sealed for Dual<T> {}
 
     /// How a dual over this number chooses at the kinks of `min`, `max`
@@ -617,6 +618,170 @@ fn either(value: Interval, a: Dual<Interval>, b: Dual<Interval>) -> Dual<Interva
     }
 }
 
+/// A dual that also carries the nearest tie between the two sides of a
+/// `min`, `max` or `abs` it passed through: a function, with its gradient,
+/// that is zero where they meet. Where the field is zero too, the surface
+/// has a crease.
+///
+/// A side a `min` or `max` does not choose takes its own ties with it, since
+/// they do not shape the field there.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct Creased {
+    pub(crate) value: Dual,
+    pub(crate) tie: Option<Dual>,
+}
+
+impl Creased {
+    pub(crate) fn point(point: [f64; 3]) -> [Self; 3] {
+        Dual::point(point).map(|value| Self { value, tie: None })
+    }
+
+    fn with(self, value: Dual) -> Self {
+        Self {
+            value,
+            tie: self.tie,
+        }
+    }
+
+    fn joined(self, other: Self, value: Dual) -> Self {
+        Self {
+            value,
+            tie: nearer(self.tie, other.tie),
+        }
+    }
+
+    /// The side `choose` picks of `self` and `other`, tied where they meet.
+    fn kink(self, other: Self, choose: fn(Dual, Dual) -> Dual) -> Self {
+        let value = choose(self.value, other.value);
+        let kept = if value == self.value { self } else { other };
+        Self {
+            value,
+            tie: nearer(kept.tie, Some(self.value - other.value)),
+        }
+    }
+}
+
+/// The tie nearer by its first-order distance, `|value| / |gradient|`.
+fn nearer(a: Option<Dual>, b: Option<Dual>) -> Option<Dual> {
+    let distance = |tie: &Dual| {
+        let slope = Real::sqrt(tie.gradient.iter().map(|g| g * g).sum::<f64>());
+        Real::abs(tie.value) / slope
+    };
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if distance(&b) < distance(&a) { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+impl Add for Creased {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        self.joined(other, self.value + other.value)
+    }
+}
+
+impl Sub for Creased {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        self.joined(other, self.value - other.value)
+    }
+}
+
+impl Mul for Creased {
+    type Output = Self;
+
+    fn mul(self, other: Self) -> Self {
+        self.joined(other, self.value * other.value)
+    }
+}
+
+impl Div for Creased {
+    type Output = Self;
+
+    fn div(self, other: Self) -> Self {
+        self.joined(other, self.value / other.value)
+    }
+}
+
+impl Neg for Creased {
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        self.with(-self.value)
+    }
+}
+
+impl Add<f64> for Creased {
+    type Output = Self;
+
+    fn add(self, other: f64) -> Self {
+        self.with(self.value + other)
+    }
+}
+
+impl Sub<f64> for Creased {
+    type Output = Self;
+
+    fn sub(self, other: f64) -> Self {
+        self.with(self.value - other)
+    }
+}
+
+impl Mul<f64> for Creased {
+    type Output = Self;
+
+    fn mul(self, other: f64) -> Self {
+        self.with(self.value * other)
+    }
+}
+
+impl Div<f64> for Creased {
+    type Output = Self;
+
+    fn div(self, other: f64) -> Self {
+        self.with(self.value / other)
+    }
+}
+
+impl Number for Creased {
+    fn constant(value: f64) -> Self {
+        Self {
+            value: Dual::constant(value),
+            tie: None,
+        }
+    }
+
+    fn abs(self) -> Self {
+        Self {
+            value: self.value.abs(),
+            tie: nearer(self.tie, Some(self.value)),
+        }
+    }
+
+    fn sqrt(self) -> Self {
+        self.with(self.value.sqrt())
+    }
+
+    fn sin_cos(self) -> (Self, Self) {
+        let (sin, cos) = self.value.sin_cos();
+        (self.with(sin), self.with(cos))
+    }
+
+    fn min(self, other: Self) -> Self {
+        self.kink(other, Number::min)
+    }
+
+    fn max(self, other: Self) -> Self {
+        self.kink(other, Number::max)
+    }
+
+    fn square(self) -> Self {
+        self.with(self.value.square())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Dual, Interval, Number};
@@ -724,5 +889,24 @@ mod tests {
             Interval::ENTIRE
         );
         assert!((Interval::new(1.0, 2.0) * Interval::ENTIRE).contains(0.0));
+    }
+
+    #[test]
+    fn creases_follow_the_chosen_side() {
+        use super::Creased;
+        // A slab cut by a ball: near the rim, the tie is the slab's face
+        // against the ball; deep inside, the slab's mid-plane, from `abs`.
+        let formula = |[x, y, z]: [Creased; 3]| {
+            let slab = z.abs() - 0.1;
+            let ball = (x.square() + y.square() + z.square()).sqrt() - 1.0;
+            slab.max(ball)
+        };
+        let rim = formula(Creased::point([0.99, 0.0, 0.1])).tie.unwrap();
+        // |z| - 0.1 - (r - 1) at the rim.
+        assert!(rim.value.abs() < 0.02);
+        assert!(rim.gradient[0] < 0.0 && rim.gradient[2] > 0.0);
+        let middle = formula(Creased::point([0.0, 0.0, 0.01])).tie.unwrap();
+        assert_eq!(middle.value, 0.01);
+        assert_eq!(middle.gradient, [0.0, 0.0, 1.0]);
     }
 }

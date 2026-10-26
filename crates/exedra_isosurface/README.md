@@ -97,7 +97,21 @@ is a sample, not a proof: a feature missing those corners stays lost and counts 
 surface of its own. Descending the field from inside it, along a path the field's
 interval bounds show inside, shows whether the rest of the mesh already encloses the
 region it samples: if so it is a stray sample and is dropped, counted in
-`report.dropped_islands`; otherwise it is kept, however small. Dropping one loses at
+`report.dropped_islands`; otherwise it is kept, however small.
+
+Sampling also stops short of a crease where two surfaces meet at an acute angle,
+and the mesh bridges from one surface to the other in a sawtooth. A field that
+knows its pieces says, through `ScalarField::eval_crease`, where the nearest two
+meet: every `FormulaField` follows its `min`, `max` and `abs` to the tie between
+the sides they choose. Vertices within two finest cells of such a crease move onto
+it by Newton steps on the field, the tie and the plane across the crease together,
+unless that would turn a face around them over; `report.crease_vertices` counts
+them. Edges still bridging from one side to the other are then split where they
+cross the tie, the new vertex moves onto the crease, and the faces either side are
+divided along it, so the crease runs through vertices and every face keeps to one
+piece; `report.crease_splits` counts them. Where a division would turn a triangle
+against the field at its corners, as where the pieces just touch and the crease
+ends, the bridges stay. Dropping one loses at
 most a finest cell or two of a tip the grid already truncates; recovering where the
 two surfaces of such a tip meet needs those surfaces from the field, not one value.
 Existing parameter literals must add `vertex_merge_tolerance`. Use `0.0` for

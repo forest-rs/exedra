@@ -35,6 +35,7 @@ const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
 mod arcs;
 pub(crate) mod control;
+mod crease;
 mod islands;
 mod joining;
 mod relax;
@@ -561,6 +562,15 @@ fn dual_contour_run<F: ScalarField>(
         finest.into_iter().fold(0.0, f32::max),
         run,
     )?;
+    // Two finest cells: as far as sampling falls short of an acute crease.
+    let creases = crease::restore_creases(
+        field,
+        &mut mesh,
+        2.0 * finest.into_iter().fold(0.0, f32::max),
+        run,
+    )?;
+    report.crease_vertices = creases.moved;
+    report.crease_splits = creases.split;
     report.repaired_slivers = repair::flip_folded_slivers(&mut mesh);
     run.stats.set(DualContourStats {
         octree_cells,
