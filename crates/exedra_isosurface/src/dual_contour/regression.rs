@@ -396,18 +396,21 @@ fn assert_junction_geometry(mesh: &Mesh, field: &Junction, depth: u8) {
 /// below any cell.
 fn gyroid_ball(half: f64) -> impl ScalarField {
     use crate::Metric;
-    use crate::function::FnField;
-    use exedra_math::Real;
-    let f = 7.0_f64;
-    let gyroid = move |p: [f64; 3]| {
-        let [x, y, z] = p.map(|v| Real::sin_cos(v * f));
-        (x.0 * y.1 + y.0 * z.1 + z.0 * x.1) / f
-    };
-    FnField::new(
-        move |p: [f64; 3]| {
-            let radius = Real::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-            (gyroid(p).abs() - half).max(radius - 0.95)
-        },
+    use crate::function::{Formula, FormulaField};
+    use crate::number::Number;
+    struct GyroidBall {
+        half: f64,
+    }
+    impl Formula for GyroidBall {
+        fn eval<N: Number>(&self, p: [N; 3]) -> N {
+            let [x, y, z] = p.map(|v| v * 7.0);
+            let sheet = (x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos()) / 7.0;
+            let radius = (p[0].square() + p[1].square() + p[2].square()).sqrt();
+            (sheet.abs() - self.half).max(radius - 0.95)
+        }
+    }
+    FormulaField::new(
+        GyroidBall { half },
         // Each gradient component of the sheet is bounded by Cauchy-Schwarz,
         // as `cos(7y)^2 + sin(7z)^2` and its cyclic siblings, which sum to 3.
         Metric::Lipschitz(1.732_051),

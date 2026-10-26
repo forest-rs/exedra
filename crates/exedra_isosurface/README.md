@@ -52,8 +52,12 @@ Current scope:
 - field-construction wrappers (`Translate`, `UniformScale`, `Transform3`,
   `ScaleValue`, `Offset`, `Shell`),
 - domain operators (`Elongate`, `Twist`, `Repeat`),
-- `FnField`, which makes a field from a caller's distance function and
-  Lipschitz claim, deriving intervals and gradients,
+- `FormulaField`, which makes a field from a caller's `Formula`, a distance
+  function written once over any `Number`: evaluating it on `Dual` numbers
+  gives exact gradients in one pass, and on `Interval`s bounds over a cell
+  that tighten as cells shrink,
+- `FnField`, which makes a field from a caller's distance closure and
+  Lipschitz claim, deriving intervals, and gradients by central differences,
 - simple CSG combinators and provenance tagging wrappers for tests,
 - opt-in semi-analytic projection for tagged box/cylinder CSG fields,
 - a first dual-contouring extractor over an interval-culled adaptive octree.

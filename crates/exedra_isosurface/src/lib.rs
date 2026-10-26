@@ -69,6 +69,7 @@ pub mod dual_contour;
 pub mod function;
 pub mod hermite;
 pub mod lift;
+pub mod number;
 pub mod primitives;
 pub mod provenance;
 pub mod qef;
@@ -91,12 +92,13 @@ pub use dual_contour::{
     ExtractionWork, SemiAnalyticContourResult, SemiAnalyticContourStats, TransitionWitness,
     dual_contour, dual_contour_semi_analytic, dual_contour_with_regions,
 };
-pub use function::FnField;
+pub use function::{FnField, Formula, FormulaField};
 pub use hermite::{
     CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
     HermiteIntersection, locate_edge_intersection,
 };
 pub use lift::{Extrude, Revolve};
+pub use number::{Dual, Interval, Number};
 pub use primitives::{
     BoxFrameField, CappedConeField, HexPrismField, LinkField, OctahedronField, PyramidField,
 };

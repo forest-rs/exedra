@@ -3,11 +3,40 @@
 
 //! Fields from caller functions.
 //!
-//! [`FnField`] turns a distance function into a [`ScalarField`] without
-//! writing interval or gradient code. Its Lipschitz claim, which the caller
-//! vouches for, does the rest: no value in a box differs from the value at
-//! its center by more than the factor times the half diagonal, which bounds
-//! every interval, and gradients are central differences of the function.
+//! [`FormulaField`] and [`FnField`] turn a distance function into a
+//! [`ScalarField`] without writing interval or gradient code. A
+//! [`Formula`] is written once over any [`Number`], so one definition yields
+//! values, exact gradients by evaluating it on [`Dual`] numbers, and bounds
+//! over a box by evaluating it on [`Interval`]s. A closure is quicker to
+//! write; [`FnField`] takes its gradients as central differences, seven
+//! evaluations for each, and its bounds from the Lipschitz claim alone.
+//!
+//! The Lipschitz claim, which the caller vouches for, says no value in a box
+//! differs from the value at its center by more than the factor times the
+//! half diagonal. A formula's own bounds tighten as boxes shrink, where the
+//! claim's stay proportional to the box; on a gyroid they halve the cells an
+//! extraction visits.
+//!
+//! ```
+//! use exedra_isosurface::function::{Formula, FormulaField};
+//! use exedra_isosurface::number::Number;
+//! use exedra_isosurface::{Aabb, Metric, ScalarField};
+//!
+//! // A gyroid sheet: each gradient component is at most sqrt(2), and
+//! // together at most sqrt(3).
+//! struct Gyroid;
+//!
+//! impl Formula for Gyroid {
+//!     fn eval<N: Number>(&self, [x, y, z]: [N; 3]) -> N {
+//!         x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos()
+//!     }
+//! }
+//!
+//! let field = FormulaField::new(Gyroid, Metric::Lipschitz(1.732_051), None).unwrap();
+//! let mut row = [[0.0; 4]];
+//! field.eval_gradients(&[[0.0; 3]], &mut row);
+//! assert_eq!(row[0], [0.0, 1.0, 1.0, 1.0]);
+//! ```
 //!
 //! ```
 //! use exedra_isosurface::function::FnField;
@@ -31,10 +60,122 @@
 use exedra_math::Real;
 
 use crate::capability::{Capabilities, FieldCapabilities, Metric, Support};
+use crate::number::{Dual, Interval, Number};
 use crate::spatial::Aabb;
 use crate::{FieldError, ScalarField};
 
-/// A field evaluating a caller's distance function in `f64`.
+/// A distance function written once over any [`Number`].
+///
+/// See [`crate::number`] for what a formula may use: arithmetic,
+/// `min`, `max`, `abs`, `sqrt`, `sin` and `cos`, and no branches on values.
+pub trait Formula {
+    /// The function's value at `p`, negative inside.
+    fn eval<N: Number>(&self, p: [N; 3]) -> N;
+}
+
+/// A field evaluating a caller's [`Formula`] in `f64`, with exact gradients
+/// and interval bounds from the formula itself.
+#[derive(Copy, Clone, Debug)]
+pub struct FormulaField<F> {
+    formula: F,
+    metric: Metric,
+    support: Option<Aabb>,
+}
+
+impl<F: Formula> FormulaField<F> {
+    /// Creates a field from `formula`, negative inside, with the caller's
+    /// `metric` claim and, if known, a box containing the interior.
+    ///
+    /// The claims are trusted as for [`FnField::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FieldError`] when a Lipschitz factor is not finite and
+    /// positive.
+    pub fn new(formula: F, metric: Metric, support: Option<Aabb>) -> Result<Self, FieldError> {
+        if let Metric::Lipschitz(factor) = metric {
+            crate::check_positive("lipschitz", factor)?;
+        }
+        Ok(Self {
+            formula,
+            metric,
+            support,
+        })
+    }
+
+    /// The formula this field evaluates.
+    pub const fn formula(&self) -> &F {
+        &self.formula
+    }
+
+    /// Interval bounds of the formula over `bounds`, natural and mean-value
+    /// forms intersected.
+    fn bounds(&self, bounds: &Aabb) -> Interval {
+        let boxed = core::array::from_fn(|axis| {
+            Interval::new(f64::from(bounds.min[axis]), f64::from(bounds.max[axis]))
+        });
+        let Dual { value, gradient } = self.formula.eval(Dual::point(boxed));
+        let center = widen(bounds.center());
+        let at_center = self.formula.eval(center.map(Interval::constant));
+        let mean_value = (0..3).fold(at_center, |sum, axis| {
+            let reach = f64::from(bounds.max[axis]) - center[axis];
+            let lag = center[axis] - f64::from(bounds.min[axis]);
+            sum + gradient[axis] * Interval::new(-lag, reach)
+        });
+        value.intersect(mean_value).unwrap_or(value)
+    }
+}
+
+impl<F: Formula> ScalarField for FormulaField<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        Capabilities {
+            metric: self.metric,
+            support: self.support.map_or(Support::Unknown, Support::Asserted),
+        }
+    }
+
+    /// The tightest of three sound bounds: the formula evaluated on
+    /// intervals, the mean-value form `F(c) + ∇F(box)·(box - c)` about the
+    /// center `c`, and the Lipschitz claim.
+    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+        let interval = self.bounds(bounds);
+        let lipschitz = self
+            .metric
+            .lipschitz()
+            .and_then(|lipschitz| {
+                lipschitz_interval(|p| self.formula.eval(p), [0.0; 3], lipschitz, bounds)
+            })
+            .map(|[low, high]| Interval::new(f64::from(low), f64::from(high)));
+        let interval =
+            lipschitz.map_or(Some(interval), |lipschitz| interval.intersect(lipschitz))?;
+        let interval = [round_down(interval.low()), round_up(interval.high())];
+        interval.iter().all(|v| !v.is_nan()).then_some(interval)
+    }
+
+    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+        eval_points(|p| self.formula.eval(p), [0.0; 3], points, out);
+    }
+
+    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+        assert_eq!(
+            points.len(),
+            out.len(),
+            "point/gradient slice lengths must match"
+        );
+        for (point, row) in points.iter().zip(out) {
+            let Dual { value, gradient } = self.formula.eval(Dual::point(widen(*point)));
+            *row = [
+                narrow(value),
+                narrow(gradient[0]),
+                narrow(gradient[1]),
+                narrow(gradient[2]),
+            ];
+        }
+    }
+}
+
+/// A field evaluating a caller's distance function in `f64`, with gradients
+/// by central differences.
 #[derive(Copy, Clone, Debug)]
 pub struct FnField<D> {
     distance: D,
