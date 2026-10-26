@@ -12,6 +12,8 @@
 //! - [`Offset`] subtracts a distance from values, moving the surface along
 //!   the field. It is a physical offset only as far as the values are
 //!   distances, so its support claim depends on the metric claim.
+//! - [`Shell`] hollows a shape into a skin around its surface, with the
+//!   same dependence on distances.
 
 use crate::spatial::Aabb;
 
@@ -56,6 +58,17 @@ pub struct ScaleValue<F> {
 pub struct Offset<F> {
     field: F,
     distance: f32,
+}
+
+/// Wrapper hollowing a field into a shell `thickness` either side of its
+/// surface: `|value| - thickness`.
+///
+/// Like [`Offset`], the shell's extent follows from the values only as far
+/// as they are distances.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Shell<F> {
+    field: F,
+    thickness: f32,
 }
 
 /// Rigid local-to-world transform for field wrappers.
@@ -164,6 +177,30 @@ impl<F> Offset<F> {
     #[must_use]
     pub const fn distance(&self) -> f32 {
         self.distance
+    }
+}
+
+impl<F> Shell<F> {
+    /// Creates a shell wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FieldError`] unless `thickness` is finite and positive.
+    pub fn new(field: F, thickness: f32) -> Result<Self, FieldError> {
+        check_positive("thickness", thickness)?;
+        Ok(Self { field, thickness })
+    }
+
+    /// Returns the wrapped field.
+    #[must_use]
+    pub const fn field(&self) -> &F {
+        &self.field
+    }
+
+    /// Returns the half thickness of the shell.
+    #[must_use]
+    pub const fn thickness(&self) -> f32 {
+        self.thickness
     }
 }
 
@@ -511,6 +548,57 @@ impl<F: ScalarField> ScalarField for Offset<F> {
     }
 }
 
+impl<F: ScalarField> ScalarField for Shell<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let inner = self.field.capabilities();
+        // The shell lies within `thickness` of the surface, which an exact
+        // distance keeps within its support; folding by `|.|` keeps any
+        // Lipschitz bound but not exactness.
+        let support = match (inner.metric, inner.support) {
+            (Metric::ExactDistance, Support::Unbounded) => Support::Unknown,
+            (Metric::ExactDistance, support) => support.grown(self.thickness),
+            _ => Support::Unknown,
+        };
+        Capabilities {
+            metric: inner
+                .metric
+                .lipschitz()
+                .map_or(Metric::Unknown, Metric::Lipschitz),
+            support,
+        }
+    }
+
+    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+        let [low, high] = self.field.eval_interval(bounds)?;
+        let near = if low <= 0.0 && high >= 0.0 {
+            0.0
+        } else {
+            low.abs().min(high.abs())
+        };
+        Some([
+            near - self.thickness,
+            low.abs().max(high.abs()) - self.thickness,
+        ])
+    }
+
+    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+        self.field.eval_points(points, out);
+        for value in out {
+            *value = value.abs() - self.thickness;
+        }
+    }
+
+    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+        self.field.eval_gradients(points, out);
+        for row in out {
+            if row[0] < 0.0 {
+                *row = row.map(|v| -v);
+            }
+            row[0] -= self.thickness;
+        }
+    }
+}
+
 impl<F: ScalarField> ScalarField for Transform3<F> {
     fn capabilities(&self) -> FieldCapabilities {
         let inner = self.field.capabilities();
@@ -669,6 +757,19 @@ impl<F: ProvenanceField> ProvenanceField for Offset<F> {
             .map(|([low, high], provenance)| {
                 ([low - self.distance, high - self.distance], provenance)
             })
+    }
+
+    fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
+        self.field.point_provenance(point)
+    }
+}
+
+impl<F: ProvenanceField> ProvenanceField for Shell<F> {
+    type Provenance = F::Provenance;
+
+    fn eval_interval_with_provenance(&self, bounds: &Aabb) -> Option<([f32; 2], Self::Provenance)> {
+        let interval = self.eval_interval(bounds)?;
+        Some((interval, self.field.point_provenance(bounds.center())))
     }
 
     fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {

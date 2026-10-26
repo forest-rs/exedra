@@ -70,7 +70,12 @@ fn check_claims<F: ScalarField>(name: &str, field: &F) -> FieldCapabilities {
             );
         }
         if let Some(lipschitz) = claims.metric.lipschitz() {
-            let other = sequence.point(6.0);
+            // Near pairs catch jumps that far pairs average over.
+            let other = if sequence.next() < 0.5 {
+                sequence.point(6.0)
+            } else {
+                exedra_math::add(point, sequence.point(0.02))
+            };
             let distance = exedra_math::norm(exedra_math::sub(point, other));
             let change = (v - value(field, other)).abs();
             assert!(
@@ -384,6 +389,192 @@ fn self_overlapping_and_vanishing_shapes_drop_claims() {
     );
 }
 
+/// For an exact distance, stepping from a point by its value against the
+/// gradient lands on the surface.
+fn check_projection<F: ScalarField>(name: &str, field: &F) {
+    let mut sequence = Sequence(29);
+    let mut landed = 0;
+    for _ in 0..2000 {
+        let point = sequence.point(3.0);
+        let mut row = [[0.0; 4]];
+        field.eval_gradients(&[point], &mut row);
+        let [v, gx, gy, gz] = row[0];
+        if !(gx.is_finite() && gy.is_finite() && gz.is_finite()) {
+            continue;
+        }
+        let foot = [point[0] - v * gx, point[1] - v * gy, point[2] - v * gz];
+        let residual = value(field, foot).abs();
+        assert!(
+            residual < 2e-3 * (1.0 + v.abs()),
+            "{name}: {point:?} lands {residual} off"
+        );
+        landed += 1;
+    }
+    assert!(landed > 1000, "{name}: only {landed} usable gradients");
+}
+
+#[test]
+fn quilez_primitives_claim_exact_distances() {
+    use crate::primitives::{
+        BoxFrameField, CappedConeField, HexPrismField, LinkField, OctahedronField, PyramidField,
+    };
+    let frame = BoxFrameField::new([0.2, -0.1, 0.3], [1.5, 1.0, 1.25], 0.2).unwrap();
+    let link = LinkField::new([0.0, 0.3, -0.2], 0.8, 0.9, 0.3).unwrap();
+    let octahedron = OctahedronField::new([0.1, 0.2, -0.1], 1.6).unwrap();
+    let pyramid = PyramidField::new([0.0, 0.0, -1.0], 1.2, 2.2).unwrap();
+    let prism = HexPrismField::new([-0.2, 0.1, 0.0], 1.1, 1.4).unwrap();
+    let cone = CappedConeField::new([0.0, 0.0, 0.2], 1.3, 1.4, 0.5).unwrap();
+    macro_rules! check {
+        ($($name:literal => $field:expr),*) => {$(
+            let claims = check_claims($name, &$field);
+            assert_eq!(claims.metric, Metric::ExactDistance, $name);
+            check_projection($name, &$field);
+            check_intervals($name, &$field);
+        )*};
+    }
+    check!(
+        "box frame" => frame,
+        "link" => link,
+        "octahedron" => octahedron,
+        "pyramid" => pyramid,
+        "hex prism" => prism,
+        "capped cone" => cone
+    );
+    // A bar thicker than its bend overlaps itself.
+    let fat = LinkField::new([0.0; 3], 0.5, 0.4, 0.6).unwrap();
+    assert_eq!(
+        check_claims("fat link", &fat).metric,
+        Metric::Lipschitz(1.0)
+    );
+    assert!(BoxFrameField::new([0.0; 3], [1.0, 0.1, 1.0], 0.2).is_err());
+    assert!(CappedConeField::new([0.0; 3], 1.0, 0.0, 0.0).is_err());
+}
+
+fn gradient_matches_differences<F: ScalarField>(name: &str, field: &F) {
+    let mut sequence = Sequence(41);
+    for _ in 0..400 {
+        let p = sequence.point(2.5);
+        let mut row = [[0.0; 4]];
+        field.eval_gradients(&[p], &mut row);
+        let step = 1e-3;
+        for axis in 0..3 {
+            let (mut ahead, mut behind) = (p, p);
+            ahead[axis] += step;
+            behind[axis] -= step;
+            let slope = (value(field, ahead) - value(field, behind)) / (2.0 * step);
+            // Creases make differences straddle; they are rare in samples.
+            if (slope - row[0][axis + 1]).abs() > 0.05 {
+                let curvature =
+                    (value(field, ahead) + value(field, behind) - 2.0 * row[0][0]).abs();
+                assert!(
+                    curvature > 1e-4,
+                    "{name}: axis {axis} at {p:?}: {slope} vs {:?}",
+                    row[0]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn domain_operators_keep_only_their_claims() {
+    use crate::domain::{Elongate, Repeat, Twist};
+    use crate::primitives::HexPrismField;
+    use crate::transform::Shell;
+
+    // Elongating a sphere makes a capsule-like run; bounds survive.
+    let ball = sphere([0.1, 0.0, 0.0], 0.8);
+    let long = Elongate::new(ball, [0.1, 0.0, 0.0], [0.0, 1.2, 0.0]).unwrap();
+    let claims = check_claims("elongate", &long);
+    assert_eq!(claims.metric, Metric::Lipschitz(1.0));
+    let capsule = CapsuleField::new([0.1, -1.2, 0.0], [0.1, 1.2, 0.0], 0.8).unwrap();
+    for point in [[0.5, 0.3, 0.2], [0.1, 2.5, -0.3], [-1.0, -0.4, 0.6]] {
+        assert!((value(&long, point) - value(&capsule, point)).abs() < 1e-5);
+    }
+    gradient_matches_differences("elongate", &long);
+
+    // Twisting stretches space without bound: no metric, bounded support.
+    let prism = HexPrismField::new([0.0; 3], 0.7, 1.8).unwrap();
+    let twisted = Twist::new(prism, [0.0; 3], 0.9).unwrap();
+    let claims = check_claims("twist", &twisted);
+    assert_eq!(claims.metric, Metric::Unknown);
+    assert!(matches!(claims.support, Support::Bounded(_)));
+    gradient_matches_differences("twist", &twisted);
+    check_intervals("twist", &twisted);
+
+    // Copies within their cells keep an exact distance exact.
+    let pebble = sphere([0.0; 3], 1.4);
+    let grid = Repeat::new(pebble, [3.0, 3.6, 1.0], [3, 2, 1]).unwrap();
+    assert_eq!(check_claims("repeat", &grid).metric, Metric::ExactDistance);
+    check_projection("repeat", &grid);
+    let mut sequence = Sequence(77);
+    for _ in 0..500 {
+        let p = sequence.point(8.0);
+        let brute = (0..3)
+            .flat_map(|i| (0..2).map(move |j| [i as f32 * 3.0, j as f32 * 3.6, 0.0]))
+            .map(|offset| value(&pebble, exedra_math::sub(p, offset)))
+            .fold(f32::INFINITY, f32::min);
+        assert!((value(&grid, p) - brute).abs() < 1e-6, "{p:?}");
+    }
+    // Copies spilling into neighbors' cells may hide a nearer copy.
+    let crowded = Repeat::new(sphere([0.0; 3], 0.7), [1.0; 3], [3, 1, 1]).unwrap();
+    assert_eq!(check_claims("crowded", &crowded).metric, Metric::Unknown);
+    assert!(Repeat::new(pebble, [0.0, 1.0, 1.0], [2, 1, 1]).is_err());
+
+    // A shell of an exact distance stays within thickness of the surface.
+    let skin = Shell::new(ball, 0.1).unwrap();
+    let claims = check_claims("shell", &skin);
+    assert_eq!(claims.metric, Metric::Lipschitz(1.0));
+    assert!(value(&skin, [0.1, 0.0, 0.0]) > 0.0, "hollow at the center");
+    let half = ScaleValue::new(ball, 0.5).unwrap();
+    assert_eq!(
+        Shell::new(half, 0.1).unwrap().capabilities().support,
+        Support::Unknown
+    );
+}
+
+/// Sampled values in random boxes lie within the field's intervals.
+fn check_intervals<F: ScalarField>(name: &str, field: &F) {
+    let mut sequence = Sequence(5);
+    for _ in 0..500 {
+        let size = 0.05 + sequence.next();
+        let a = sequence.point(2.5);
+        let bounds = Aabb::new(a, a.map(|v| v + size)).unwrap();
+        let [low, high] = field.eval_interval(&bounds).unwrap();
+        for _ in 0..8 {
+            let p: [f32; 3] = core::array::from_fn(|i| bounds.min[i] + size * sequence.next());
+            let v = value(field, p);
+            assert!(low <= v && v <= high, "{name}: {v} outside [{low}, {high}]");
+        }
+    }
+}
+
+#[test]
+fn function_fields_bound_intervals_by_their_lipschitz_claim() {
+    use crate::function::FnField;
+    let wobble = |[x, y, z]: [f64; 3]| {
+        exedra_math::Real::sqrt(x * x + y * y + z * z) - 1.0
+            + 0.1 * exedra_math::Real::sin_cos(6.0 * x).0
+    };
+    let field = FnField::new(
+        wobble,
+        Metric::Lipschitz(1.6),
+        Some(Aabb::new([-1.2; 3], [1.2; 3]).unwrap()),
+    )
+    .unwrap();
+    let claims = check_claims("wobble", &field);
+    assert!(matches!(claims.support, Support::Asserted(_)));
+    check_intervals("wobble", &field);
+    gradient_matches_differences("wobble", &field);
+    // Without a bound there is nothing to cull with.
+    let blind = FnField::new(wobble, Metric::Unknown, None).unwrap();
+    assert_eq!(
+        blind.eval_interval(&Aabb::new([0.0; 3], [1.0; 3]).unwrap()),
+        None
+    );
+    assert!(FnField::new(wobble, Metric::Lipschitz(0.0), None).is_err());
+}
+
 /// A caller field that states nothing.
 struct Opaque;
 
@@ -426,4 +617,12 @@ fn unknown_fields_poison_claims_that_depend_on_them() {
         profile.capabilities().support,
         Support::Bounded(Aabb2 { .. })
     ));
+}
+#[test]
+#[should_panic(expected = "lands")]
+fn projection_oracle_rejects_a_scaled_distance() {
+    check_projection(
+        "scaled",
+        &ScaleValue::new(sphere([0.0; 3], 1.0), 2.0).unwrap(),
+    );
 }

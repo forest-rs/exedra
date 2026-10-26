@@ -63,9 +63,12 @@ pub mod capability;
 #[cfg(test)]
 mod capability_tests;
 mod cell_topology;
+pub mod domain;
 pub mod dual_contour;
+pub mod function;
 pub mod hermite;
 pub mod lift;
+pub mod primitives;
 pub mod qef;
 pub mod semi_analytic;
 pub mod skeletal;
@@ -77,6 +80,7 @@ pub use spatial::Aabb;
 
 pub use bounds2::Aabb2;
 pub use capability::{Capabilities, FieldCapabilities, Metric, ProfileCapabilities, Support};
+pub use domain::{Elongate, Repeat, Twist};
 pub use dual_contour::{
     DualContourError, DualContourErrorKind, DualContourParameter, DualContourParams,
     DualContourResult, DualContourStats, ExtractionCandidate, ExtractionCell, ExtractionCellIssue,
@@ -85,11 +89,15 @@ pub use dual_contour::{
     SemiAnalyticContourResult, SemiAnalyticContourStats, TransitionWitness, dual_contour,
     dual_contour_semi_analytic, dual_contour_with_regions,
 };
+pub use function::FnField;
 pub use hermite::{
     CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
     HermiteIntersection, locate_edge_intersection,
 };
 pub use lift::{Extrude, Revolve};
+pub use primitives::{
+    BoxFrameField, CappedConeField, HexPrismField, LinkField, OctahedronField, PyramidField,
+};
 pub use semi_analytic::{
     AnalyticBox, AnalyticCylinder, AnalyticPrimitive, SemiAnalyticFeature, SemiAnalyticField,
     SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
@@ -97,7 +105,9 @@ pub use semi_analytic::{
 pub use skeletal::{
     BoundedField, CapsuleField, DistanceBound, RoundConeField, SmoothUnionN, SmoothUnionStats,
 };
-pub use transform::{Offset, RigidTransform3, ScaleValue, Transform3, Translate, UniformScale};
+pub use transform::{
+    Offset, RigidTransform3, ScaleValue, Shell, Transform3, Translate, UniformScale,
+};
 
 /// Why a built-in field's parameters are invalid.
 ///

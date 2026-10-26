@@ -45,8 +45,14 @@ Current scope:
 - analytic 2D reference profiles (`CircleField2d`, `RectField2d`,
   `HalfPlaneField2d`),
 - lifting operators (`Extrude`, `Revolve`) for profile-based 3D fields,
+- further exact primitives after Íñigo Quilez's distance functions
+  (`BoxFrameField`, `LinkField`, `OctahedronField`, `PyramidField`,
+  `HexPrismField`, `CappedConeField`),
 - field-construction wrappers (`Translate`, `UniformScale`, `Transform3`,
-  `ScaleValue`, `Offset`),
+  `ScaleValue`, `Offset`, `Shell`),
+- domain operators (`Elongate`, `Twist`, `Repeat`),
+- `FnField`, which makes a field from a caller's distance function and
+  Lipschitz claim, deriving intervals and gradients,
 - simple CSG combinators and provenance tagging wrappers for tests,
 - opt-in semi-analytic projection for tagged box/cylinder CSG fields,
 - a first dual-contouring extractor over an interval-culled adaptive octree.
@@ -88,6 +94,13 @@ operand; a smooth blend grows the support by its largest dip only when both
 operands are exact distances, and otherwise its support is unknown.
 Translations, uniform and rigid transforms carry claims with widened bounds,
 and extrusion and revolution lift profile claims.
+
+Domain operators claim what survives them. `Elongate` keeps any Lipschitz
+bound, though not exactness. `Twist` stretches space more the farther from its
+axis, without bound, so it claims no metric, only support. `Repeat` checks the
+two nearest copies on each axis, which finds the nearest copy only when the
+original lies within half a spacing of the origin; then an exact distance stays
+exact, and otherwise it claims no metric.
 
 Three scalings are kept apart. `UniformScale` resizes the geometry, so
 distances stay distances. `ScaleValue` multiplies values by a positive factor:
