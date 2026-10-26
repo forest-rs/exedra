@@ -137,7 +137,9 @@ without crossing any root edge, and `Unbounded` or `Unknown` otherwise.
 The report also counts root-boundary crossings, unresolved finest cells and
 finest cells using compatibility evidence. `witness_limit` bounds only the detail
 list; counts remain exact, including `unreported_witnesses`. It counts
-`inverted_faces` whose winding opposes the field gradients at their corners,
+`repaired_slivers`, near-collinear triangles that faced backwards where cells
+of different sizes meet and were flipped into two well-shaped ones, and
+`inverted_faces` whose winding still opposes the field gradients at their corners,
 and, for region extraction, `region_attribution`: how many patches took their
 region from a sole source, a hard combinator's winner, or the larger
 contributor to a smooth blend, where the surface belongs to both.

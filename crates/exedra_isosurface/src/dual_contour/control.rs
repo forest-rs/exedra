@@ -331,6 +331,9 @@ pub struct ExtractionReport {
     /// samples are the ones that set corner normals, so counting costs no
     /// extra field evaluations.
     pub inverted_faces: usize,
+    /// Folded slivers repaired by flipping their long edge: near-collinear
+    /// triangles that faced backwards where cells of different sizes meet.
+    pub repaired_slivers: usize,
     /// How firmly each patch's region was decided, for region extraction.
     pub region_attribution: RegionAttribution,
     /// Whether the root bounds contain the field's claimed support.

@@ -33,6 +33,7 @@ const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
 pub(crate) mod control;
 mod joining;
+mod repair;
 use control::{CheckedField, Evaluation, RunContext};
 pub use control::{
     DualContourError, DualContourErrorKind, Enclosure, ExtractionCandidate, ExtractionCell,
@@ -525,6 +526,7 @@ fn dual_contour_run<F: ScalarField>(
     } else {
         (0, 0.0)
     };
+    report.repaired_slivers = repair::flip_folded_slivers(&mut mesh);
     run.stats.set(DualContourStats {
         octree_cells,
         active_cells: active_cells.len(),
@@ -4845,6 +4847,25 @@ mod tests {
 
         assert_eq!(result.report.inverted_faces, 0);
         assert!(result.stats.faces > 1_000);
+    }
+
+    #[test]
+    fn tapered_cone_extracts_without_folded_slivers() {
+        // Along a cone, transitions between cell sizes join vertices that
+        // lie almost on one generator line; the repair flips those slivers.
+        let field =
+            crate::skeletal::RoundConeField::new([0.0, 0.0, -0.7], [0.0, 0.0, 0.7], 0.36, 0.27)
+                .unwrap();
+        let bounds = Aabb::new([-0.5, -0.5, -1.1], [0.5, 0.5, 1.1]).unwrap();
+        let params = DualContourParams {
+            edge_search: EdgeSearchParams::default(),
+            ..params(bounds, 7)
+        };
+        let result = dual_contour(&field, &params).unwrap();
+
+        assert!(result.report.repaired_slivers > 0);
+        assert_eq!(result.report.inverted_faces, 0);
+        assert!(result.mesh.validate_deep().is_empty());
     }
 
     #[test]
