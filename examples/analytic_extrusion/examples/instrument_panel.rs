@@ -7,7 +7,7 @@
 //! A bezel surrounds an inset faceplate with a 1.5 mm reveal: the bezel's
 //! opening is the faceplate outline offset outward, so its corners stay
 //! concentric arcs. The faceplate has a recessed display window holding a
-//! lens, a knob bore, vent slots drawn with a cursor, indicator holes, and
+//! lens, a knob bore, reusable vent slots, indicator holes, and
 //! four blind bores in its back for threaded inserts.
 //!
 //! The vent slots' segments carry a tag. Realization groups every wall with
@@ -35,10 +35,70 @@ const POLICY: ProfilePolicy = ProfilePolicy::new(1e-6);
 const VENT: SegTag = SegTag(0x5645_4e54);
 const WINDOW: SegTag = SegTag(0x5749_4e44);
 
-/// Faceplate regions: the plate, the vents' walls, and the window recess.
-const PLATE: u32 = 0;
-const VENTS: u32 = 1;
-const RECESS: u32 = 2;
+/// An authored surface finish. Its mesh-region value carries this choice
+/// through compilation; export resolves the same choice to a material key.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum Finish {
+    Aluminum,
+    OrangePaint,
+    DarkMetal,
+    BlackAnodized,
+    Glass,
+    BlackPolymer,
+}
+
+impl Finish {
+    const ALL: [Self; 6] = [
+        Self::Aluminum,
+        Self::OrangePaint,
+        Self::DarkMetal,
+        Self::BlackAnodized,
+        Self::Glass,
+        Self::BlackPolymer,
+    ];
+
+    fn properties(self) -> (&'static str, [f64; 4], f64, f64) {
+        match self {
+            Self::Aluminum => ("aluminum", [0.80, 0.81, 0.83, 1.0], 0.9, 0.35),
+            Self::OrangePaint => ("orange_paint", [0.95, 0.42, 0.10, 1.0], 0.2, 0.5),
+            Self::DarkMetal => ("dark_metal", [0.35, 0.36, 0.38, 1.0], 0.8, 0.5),
+            Self::BlackAnodized => ("black_anodized", [0.08, 0.09, 0.10, 1.0], 0.6, 0.45),
+            Self::Glass => ("glass", [0.05, 0.16, 0.22, 1.0], 0.0, 0.05),
+            Self::BlackPolymer => ("black_polymer", [0.04, 0.04, 0.05, 1.0], 0.1, 0.6),
+        }
+    }
+
+    const fn region(self) -> u32 {
+        self as u32
+    }
+
+    fn from_region(region: u32) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|finish| finish.region() == region)
+            .expect("every region was assigned an authored finish")
+    }
+
+    fn material_key(self) -> &'static str {
+        self.properties().0
+    }
+
+    fn resolve(key: &str) -> Option<serde_json::Value> {
+        let finish = Self::ALL
+            .into_iter()
+            .find(|finish| finish.material_key() == key)?;
+        let (_, color, metallic, roughness) = finish.properties();
+        Some(serde_json::json!({
+            "name": key,
+            "pbrMetallicRoughness": {
+                "baseColorFactor": color,
+                "metallicFactor": metallic,
+                "roughnessFactor": roughness,
+            }
+        }))
+    }
+}
 
 fn shared(profile: &Profile2) -> exedra::profile::Profile {
     profile.to_line_arc(&POLICY).expect("line and arc profile")
@@ -52,13 +112,12 @@ fn solid(profile: &Profile2, z: f64, length: f64) -> Result<Extrusion, Box<dyn s
     )?)
 }
 
-/// The faceplate's region for a native face: vent walls and the window's
-/// recess are features; everything else is plate.
-fn faceplate_region(solid: &Extrusion, face: FaceId) -> u32 {
+/// Apply feature finishes over a part's default finish.
+fn face_finish(solid: &Extrusion, face: FaceId, default: Finish) -> Finish {
     match solid.face_tag(face) {
-        Some(VENT) => VENTS,
-        Some(WINDOW) => RECESS,
-        _ => PLATE,
+        Some(VENT) => Finish::OrangePaint,
+        Some(WINDOW) => Finish::DarkMetal,
+        _ => default,
     }
 }
 
@@ -110,25 +169,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let knob_stem = builders::circle(6.0)?.translated(knob_at)?;
     let knob = builders::circle(14.0)?.translated(knob_at)?;
 
-    // Each part, with the material key of each of its regions.
-    let parts: [(&str, Extrusion, &[&str]); 5] = [
-        ("bezel", solid(&bezel, -2.0, 12.0)?, &["anodized"]),
-        ("faceplate", panel, &["aluminum", "vent", "recess"]),
-        ("lens", lens_solid, &["glass"]),
-        ("knob_stem", solid(&knob_stem, thickness, 8.0)?, &["knob"]),
-        ("knob", solid(&knob, thickness + 8.0, 12.0)?, &["knob"]),
+    // Each part has a default finish; feature tags override it above.
+    let parts = [
+        ("bezel", solid(&bezel, -2.0, 12.0)?, Finish::BlackAnodized),
+        ("faceplate", panel, Finish::Aluminum),
+        ("lens", lens_solid, Finish::Glass),
+        (
+            "knob_stem",
+            solid(&knob_stem, thickness, 8.0)?,
+            Finish::BlackPolymer,
+        ),
+        (
+            "knob",
+            solid(&knob, thickness + 8.0, 12.0)?,
+            Finish::BlackPolymer,
+        ),
     ];
     let policy = TessellationPolicy {
         chord_tolerance: 0.02,
         ..TessellationPolicy::default()
     };
     let mut sources = Vec::with_capacity(parts.len());
-    for (name, part, _) in &parts {
-        let realized = if *name == "faceplate" {
-            part.tessellate_with_regions(&policy, |id, _| faceplate_region(part, id))?
-        } else {
-            part.tessellate_with_regions(&policy, |_, _| PLATE)?
-        };
+    for (name, part, default_finish) in &parts {
+        let realized = part.tessellate_with_regions(&policy, |id, _| {
+            face_finish(part, id, *default_finish).region()
+        })?;
         println!(
             "{name:>9}: {:>3} native faces, volume {:>10.1} mm3, {:>4} mesh faces, \
              deviation {:.4} mm, closed {}",
@@ -139,19 +204,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             realized.mesh.boundary_loops()?.is_empty(),
         );
         if *name == "faceplate" {
-            let vents = part
-                .faces()
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| {
-                    faceplate_region(part, FaceId(u32::try_from(*index).expect("few faces")))
-                        == VENTS
-                })
-                .count();
+            let vents = part.faces_tagged(VENT).count();
             let vent_faces = realized
-                .mesh_faces
-                .iter()
-                .filter(|(_, native)| faceplate_region(part, *native) == VENTS)
+                .mesh
+                .faces_in_region(Finish::OrangePaint.region())
                 .count();
             println!(
                 "           vent walls: {vents} native faces, {vent_faces} mesh faces, one region"
@@ -176,7 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [0.0; 3],
     );
     let mut nodes = vec![root];
-    for (index, (name, _, keys)) in parts.iter().enumerate() {
+    for (index, (name, ..)) in parts.iter().enumerate() {
         let part = PartId(u32::try_from(index)?);
         let mut mesh = GltfMesh::new(part, *name, &compiled)?;
         mesh.materials = compiled
@@ -187,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|body| {
                 body.regions
                     .iter()
-                    .map(|range| Some(keys[range.region as usize].to_owned()))
+                    .map(|range| Some(Finish::from_region(range.region).material_key().to_owned()))
                     .collect()
             })
             .collect();
@@ -200,29 +256,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nodes,
         ..GltfScene::default()
     };
-    let resolve = |key: &str| {
-        let (color, metallic, roughness) = match key {
-            "aluminum" => ([0.80, 0.81, 0.83, 1.0], 0.9, 0.35),
-            "anodized" => ([0.08, 0.09, 0.10, 1.0], 0.6, 0.45),
-            "vent" => ([0.95, 0.42, 0.10, 1.0], 0.2, 0.5),
-            "recess" => ([0.35, 0.36, 0.38, 1.0], 0.8, 0.5),
-            "glass" => ([0.05, 0.16, 0.22, 1.0], 0.0, 0.05),
-            "knob" => ([0.04, 0.04, 0.05, 1.0], 0.1, 0.6),
-            _ => return None,
-        };
-        Some(serde_json::json!({
-            "name": key,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": color,
-                "metallicFactor": metallic,
-                "roughnessFactor": roughness,
-            }
-        }))
-    };
     let export = export_glb_with_materials(
         &scene,
         &compiled,
-        &resolve,
+        &Finish::resolve,
         GltfExportOptions::z_up_to_y_up(),
     )?;
     println!(
