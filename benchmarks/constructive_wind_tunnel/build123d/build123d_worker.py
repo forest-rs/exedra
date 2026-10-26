@@ -1,7 +1,7 @@
 # Copyright 2026 the Exedra Authors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""Matched build123d workloads; no viewer or export framework is imported."""
+"""Matched build123d workloads; no viewer is launched or file export benchmarked."""
 
 import argparse
 import importlib.metadata

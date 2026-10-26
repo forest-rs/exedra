@@ -184,3 +184,11 @@ from realization stacks; exclude them when comparing allocation histories.
 For CPU sampling, also set `EXEDRA_REVOLVE_SECONDS=12`. Start `sample <pid> 6 1`
 while paused, then press Enter to run repeated realizations for that duration.
 Profile each mode separately, without allocation logging or concurrent workloads.
+
+### Matched build123d / OCCT comparison
+
+[Reproduce the eight matched workflows and read the reference measurements](build123d/README.md).
+The comparison separates authoring, prepared construction, exact queries, fresh
+meshing, indexed output and end-to-end work, with independent geometric checks
+and explicit angular/tolerance/cache policies. It includes both public build123d
+extraction and indexed OCCT extraction through Python bindings.

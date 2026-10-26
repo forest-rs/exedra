@@ -1,0 +1,3689 @@
+{
+  "standard": {
+    "environment": {
+      "timestamp_utc": "2026-10-26T03:41:16.475005+00:00",
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "python": "3.13.17",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "exedra_revision": "d942d8507ea25a683684d1df55af1a0a3a2aa0c3",
+      "worktree_status": "",
+      "fixtures_sha256": "4df4c00b914790cdbc118c37345793e64c814e6dbd2af41994e808097654351d",
+      "rust_binary_sha256": "f82dae5e37f59902285d2be256dee4188468382730a79fed8595e6bfa555960b",
+      "python_worker_sha256": "a3e5b4e62e5624cea63a2041c97455806f446ff74297ecfce3b28d1eb3a7b316",
+      "tolerance_mm": 0.02,
+      "occt_angular_tolerance_radians": 0.1,
+      "creation_timers_exclude_output_destruction": true,
+      "workers_execute_sequentially": true,
+      "warmup_calls_per_phase": 2
+    },
+    "backend_versions": {
+      "exedra": {
+        "backend": "exedra",
+        "debug_assertions": false,
+        "runner_version": "0.0.0"
+      },
+      "build123d": {
+        "backend": "build123d",
+        "version": "0.13.0",
+        "ocp": "8.0.1.1.0",
+        "python": "3.13.17",
+        "absolute_deflection": true,
+        "occt_parallel_meshing": true,
+        "angular_tolerance": 0.1,
+        "packages": {
+          "narwhals": "2.27.1",
+          "svgpathtools": "1.8.0",
+          "scikit-learn": "1.9.1",
+          "pexpect": "4.9.0",
+          "cloudpickle": "3.1.2",
+          "ptyprocess": "0.7.0",
+          "packaging": "26.3",
+          "joblib": "1.6.0",
+          "marshmallow": "3.26.2",
+          "svgelements": "1.9.6",
+          "Pygments": "2.21.0",
+          "prompt_toolkit": "3.0.53",
+          "threejs-materials": "1.2.5",
+          "requests": "2.34.2",
+          "certifi": "2026.10.23",
+          "svgwrite": "1.4.3",
+          "anytree": "2.13.0",
+          "matplotlib-inline": "0.2.2",
+          "typing-inspect": "0.9.0",
+          "wcwidth": "0.9.4",
+          "Deprecated": "3.0.0",
+          "traitlets": "5.16.1",
+          "jedi": "0.20.1",
+          "build123d": "0.13.0",
+          "lib3mf": "2.5.0",
+          "ipython_pygments_lexers": "1.1.1",
+          "numpy": "2.5.4",
+          "wrapt": "2.5.1",
+          "stack-data": "0.6.3",
+          "pillow": "13.0.0",
+          "sympy": "1.14.0",
+          "dataclasses-json": "0.6.7",
+          "urllib3": "2.8.0",
+          "bd_materials": "0.2.5",
+          "mpmath": "1.3.0",
+          "ocp_gordon": "0.3.1",
+          "cadquery-ocp-proxy": "8.0.1.1.0",
+          "pure_eval": "0.2.4",
+          "ocpsvg": "0.7.0",
+          "threadpoolctl": "3.7.0",
+          "executing": "2.3.0",
+          "pygltflib": "1.16.5",
+          "typing_extensions": "4.16.0",
+          "asttokens": "3.0.2",
+          "cadquery-ocp-novtk": "8.0.1.1.0",
+          "psutil": "7.2.2",
+          "fonttools": "4.67.0",
+          "trianglesolver": "1.2",
+          "parso": "0.8.7",
+          "ezdxf": "1.4.5",
+          "charset-normalizer": "3.5.2",
+          "webcolors": "24.8.0",
+          "pyparsing": "3.3.3",
+          "mypy_extensions": "1.1.0",
+          "scipy": "1.18.1",
+          "platformdirs": "4.13.5",
+          "idna": "3.20",
+          "ipython": "9.17.1"
+        }
+      }
+    },
+    "startup_samples": {
+      "exedra": [
+        {
+          "process_wall_seconds": 0.00993929198011756,
+          "peak_process_rss_bytes": 2211840
+        },
+        {
+          "process_wall_seconds": 0.006072584073990583,
+          "peak_process_rss_bytes": 2211840
+        },
+        {
+          "process_wall_seconds": 0.005851333029568195,
+          "peak_process_rss_bytes": 2211840
+        }
+      ],
+      "build123d": [
+        {
+          "import_ns": 2368358959,
+          "process_wall_seconds": 2.741011874983087,
+          "peak_process_rss_bytes": 418119680
+        },
+        {
+          "import_ns": 1701575542,
+          "process_wall_seconds": 2.0500839999876916,
+          "peak_process_rss_bytes": 419135488
+        },
+        {
+          "import_ns": 1708770375,
+          "process_wall_seconds": 2.0492737921886146,
+          "peak_process_rss_bytes": 418480128
+        }
+      ]
+    },
+    "whole_benchmark_process_resources": {
+      "exedra": [
+        {
+          "process_wall_seconds": 1.4457244169898331,
+          "peak_process_rss_bytes": 16728064
+        },
+        {
+          "process_wall_seconds": 1.4426224171184003,
+          "peak_process_rss_bytes": 15368192
+        },
+        {
+          "process_wall_seconds": 1.4439676669426262,
+          "peak_process_rss_bytes": 16564224
+        }
+      ],
+      "build123d": [
+        {
+          "process_wall_seconds": 25.80182799999602,
+          "peak_process_rss_bytes": 634667008
+        },
+        {
+          "process_wall_seconds": 25.842273165937513,
+          "peak_process_rss_bytes": 639008768
+        },
+        {
+          "process_wall_seconds": 25.992397000081837,
+          "peak_process_rss_bytes": 636256256
+        }
+      ]
+    },
+    "cases": [
+      {
+        "id": "plate_0",
+        "expected_measures": [
+          3161.371669411541,
+          1798.79644737231
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 64,
+              "welded_vertices": 64,
+              "triangles": 124,
+              "native_faces": 10,
+              "mesh_volume_mm3": 3160.188186252972,
+              "mesh_volume_error_mm3": 1.1834831585688335,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.01886384156131715,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 64,
+                  "welded_vertices": 64,
+                  "triangles": 124,
+                  "native_faces": 10,
+                  "mesh_volume_mm3": 3160.188186252972,
+                  "mesh_volume_error_mm3": 1.1834831585688335,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.01886384156131715
+                },
+                {
+                  "output_vertices": 64,
+                  "welded_vertices": 64,
+                  "triangles": 124,
+                  "native_faces": 10,
+                  "mesh_volume_mm3": 3160.188186252972,
+                  "mesh_volume_error_mm3": 1.1834831585688335,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.01886384156131715
+                },
+                {
+                  "output_vertices": 64,
+                  "welded_vertices": 64,
+                  "triangles": 124,
+                  "native_faces": 10,
+                  "mesh_volume_mm3": 3160.188186252972,
+                  "mesh_volume_error_mm3": 1.1834831585688335,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.01886384156131715
+                }
+              ],
+              "survey_points": 234,
+              "sampled_max_boundary_distance_mm": 0.018863841558265572,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 13375.0,
+                "p10_ns": 13125.0,
+                "p90_ns": 14042.0,
+                "samples_ns": [
+                  13334.0,
+                  13125.0,
+                  14042.0,
+                  13375.0,
+                  14333.0,
+                  13875.0,
+                  13250.0,
+                  13167.0,
+                  13958.0
+                ]
+              },
+              "construct": {
+                "median_ns": 3125.0,
+                "p10_ns": 2833.0,
+                "p90_ns": 3708.0,
+                "samples_ns": [
+                  3125.0,
+                  3083.0,
+                  3708.0,
+                  2958.0,
+                  2916.0,
+                  4208.0,
+                  3208.0,
+                  3167.0,
+                  2833.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 66291.0,
+                "p10_ns": 57458.0,
+                "p90_ns": 70167.0,
+                "samples_ns": [
+                  57458.0,
+                  70125.0,
+                  65500.00000000001,
+                  64417.0,
+                  70167.0,
+                  66917.0,
+                  63708.99999999999,
+                  66291.0,
+                  72584.0
+                ]
+              },
+              "extract": {
+                "median_ns": 1792.0,
+                "p10_ns": 1666.0,
+                "p90_ns": 1833.0,
+                "samples_ns": [
+                  1792.0,
+                  1708.0,
+                  1666.0,
+                  1792.0,
+                  1791.0,
+                  2500.0,
+                  1833.0,
+                  1833.0,
+                  1833.0
+                ]
+              },
+              "measures": {
+                "median_ns": 423.6650390625,
+                "p10_ns": 385.294921875,
+                "p90_ns": 428.263671875,
+                "samples_ns": [
+                  385.294921875,
+                  410.888671875,
+                  420.61328125,
+                  423.6650390625,
+                  427.65234375,
+                  422.404296875,
+                  428.263671875,
+                  434.8544921875,
+                  427.1240234375
+                ]
+              },
+              "mesh": {
+                "median_ns": 47750.0,
+                "p10_ns": 42125.0,
+                "p90_ns": 49333.0,
+                "samples_ns": [
+                  49333.0,
+                  47750.0,
+                  46417.0,
+                  48708.0,
+                  47000.0,
+                  42500.0,
+                  48458.0,
+                  51042.0,
+                  42125.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 544,
+              "welded_vertices": 264,
+              "triangles": 524,
+              "native_faces": 10,
+              "mesh_volume_mm3": 3161.314902062965,
+              "mesh_volume_error_mm3": 0.05676734857615884,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 544,
+                  "welded_vertices": 264,
+                  "triangles": 524,
+                  "native_faces": 10,
+                  "mesh_volume_mm3": 3161.314902062965,
+                  "mesh_volume_error_mm3": 0.05676734857615884,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 544,
+                  "welded_vertices": 264,
+                  "triangles": 524,
+                  "native_faces": 10,
+                  "mesh_volume_mm3": 3161.314902062965,
+                  "mesh_volume_error_mm3": 0.05676734857615884,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 544,
+                  "welded_vertices": 264,
+                  "triangles": 524,
+                  "native_faces": 10,
+                  "mesh_volume_mm3": 3161.314902062965,
+                  "mesh_volume_error_mm3": 0.05676734857615884,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 252,
+              "sampled_max_boundary_distance_mm": 0.0009035439113895948,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 5240792,
+                "p10_ns": 5218958,
+                "p90_ns": 5492875,
+                "samples_ns": [
+                  5231250,
+                  5398125,
+                  5265208,
+                  5240792,
+                  5222166,
+                  5233167,
+                  5508208,
+                  5492875,
+                  5218958
+                ]
+              },
+              "construct": {
+                "median_ns": 494959,
+                "p10_ns": 476375,
+                "p90_ns": 518292,
+                "samples_ns": [
+                  518292,
+                  503875,
+                  494959,
+                  516916,
+                  519750,
+                  490250,
+                  476375,
+                  483833,
+                  479916
+                ]
+              },
+              "measures": {
+                "median_ns": 600750,
+                "p10_ns": 587792,
+                "p90_ns": 609125,
+                "samples_ns": [
+                  615708,
+                  600000,
+                  599834,
+                  599792,
+                  587792,
+                  600750,
+                  606708,
+                  603750,
+                  609125
+                ]
+              },
+              "mesh": {
+                "median_ns": 1004167,
+                "p10_ns": 962750,
+                "p90_ns": 1032041,
+                "samples_ns": [
+                  1120084,
+                  1019875,
+                  962750,
+                  979000,
+                  988750,
+                  967292,
+                  1032041,
+                  1004167,
+                  1013375
+                ]
+              },
+              "extract": {
+                "median_ns": 37913792,
+                "p10_ns": 37759334,
+                "p90_ns": 38173375,
+                "samples_ns": [
+                  38408833,
+                  37913792,
+                  37917250,
+                  38173375,
+                  37795375,
+                  37954208,
+                  37823417,
+                  37772041,
+                  37759334
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 993875,
+                "p10_ns": 985750,
+                "p90_ns": 1020875,
+                "samples_ns": [
+                  990541,
+                  1026708,
+                  1020875,
+                  985750,
+                  994333,
+                  988041,
+                  997792,
+                  993875,
+                  988792
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 45252916,
+                "p10_ns": 44872375,
+                "p90_ns": 45491500,
+                "samples_ns": [
+                  44872375,
+                  45459500,
+                  45120125,
+                  45374917,
+                  45125375,
+                  44961583,
+                  45512167,
+                  45252916,
+                  45491500
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 7661291,
+                "p10_ns": 7379875,
+                "p90_ns": 8433334,
+                "samples_ns": [
+                  7612792,
+                  7428208,
+                  7379875,
+                  8435167,
+                  7606667,
+                  7901917,
+                  8433334,
+                  7661291,
+                  7707500
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "plate_16",
+        "expected_measures": [
+          7395.884991765378,
+          4486.584013175396
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 704,
+              "welded_vertices": 704,
+              "triangles": 1468,
+              "native_faces": 42,
+              "mesh_volume_mm3": 7403.957524163126,
+              "mesh_volume_error_mm3": 8.072532397748546,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.018863920305343562,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 704,
+                  "welded_vertices": 704,
+                  "triangles": 1468,
+                  "native_faces": 42,
+                  "mesh_volume_mm3": 7403.957524163126,
+                  "mesh_volume_error_mm3": 8.072532397748546,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018863920305343562
+                },
+                {
+                  "output_vertices": 704,
+                  "welded_vertices": 704,
+                  "triangles": 1468,
+                  "native_faces": 42,
+                  "mesh_volume_mm3": 7403.957524163126,
+                  "mesh_volume_error_mm3": 8.072532397748546,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018863920305343562
+                },
+                {
+                  "output_vertices": 704,
+                  "welded_vertices": 704,
+                  "triangles": 1468,
+                  "native_faces": 42,
+                  "mesh_volume_mm3": 7403.957524163126,
+                  "mesh_volume_error_mm3": 8.072532397748546,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018863920305343562
+                }
+              ],
+              "survey_points": 253,
+              "sampled_max_boundary_distance_mm": 0.01886392030293314,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 642584.0,
+                "p10_ns": 636417.0,
+                "p90_ns": 706875.0,
+                "samples_ns": [
+                  798917.0,
+                  706875.0,
+                  670708.0,
+                  640833.0,
+                  636417.0,
+                  642584.0,
+                  654375.0,
+                  636667.0,
+                  641250.0
+                ]
+              },
+              "construct": {
+                "median_ns": 14292.0,
+                "p10_ns": 13875.0,
+                "p90_ns": 15208.0,
+                "samples_ns": [
+                  14709.0,
+                  16042.0,
+                  14416.0,
+                  14292.0,
+                  15208.0,
+                  14042.0,
+                  14083.0,
+                  13958.0,
+                  13875.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 5477167.0,
+                "p10_ns": 5371500.0,
+                "p90_ns": 5574250.0,
+                "samples_ns": [
+                  5430125.0,
+                  5371500.0,
+                  5430042.0,
+                  5511917.0,
+                  5574250.0,
+                  5477167.0,
+                  5607125.0,
+                  5458583.0,
+                  5483958.0
+                ]
+              },
+              "extract": {
+                "median_ns": 19792.0,
+                "p10_ns": 19042.0,
+                "p90_ns": 20166.0,
+                "samples_ns": [
+                  19042.0,
+                  19250.0,
+                  19125.0,
+                  20000.0,
+                  19792.0,
+                  19792.0,
+                  29208.0,
+                  20166.0,
+                  19708.0
+                ]
+              },
+              "measures": {
+                "median_ns": 3762.451171875,
+                "p10_ns": 3651.9375,
+                "p90_ns": 4045.1249999999995,
+                "samples_ns": [
+                  3762.451171875,
+                  3651.9375,
+                  3817.5449218750005,
+                  4045.1249999999995,
+                  4052.3271484375,
+                  3775.1865234375,
+                  3733.8046875,
+                  3659.505859375,
+                  3657.470703125
+                ]
+              },
+              "mesh": {
+                "median_ns": 4788750.0,
+                "p10_ns": 4696917.0,
+                "p90_ns": 4813125.0,
+                "samples_ns": [
+                  4813125.0,
+                  4812875.0,
+                  4708791.0,
+                  4696917.0,
+                  4837458.0,
+                  4797625.0,
+                  4735708.0,
+                  4748584.0,
+                  4788750.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 8640,
+              "welded_vertices": 4296,
+              "triangles": 8652,
+              "native_faces": 26,
+              "mesh_volume_mm3": 7396.0625586707,
+              "mesh_volume_error_mm3": 0.1775669053222373,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 8640,
+                  "welded_vertices": 4296,
+                  "triangles": 8652,
+                  "native_faces": 26,
+                  "mesh_volume_mm3": 7396.0625586707,
+                  "mesh_volume_error_mm3": 0.1775669053222373,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 8640,
+                  "welded_vertices": 4296,
+                  "triangles": 8652,
+                  "native_faces": 26,
+                  "mesh_volume_mm3": 7396.0625586707,
+                  "mesh_volume_error_mm3": 0.1775669053222373,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 8640,
+                  "welded_vertices": 4296,
+                  "triangles": 8652,
+                  "native_faces": 26,
+                  "mesh_volume_mm3": 7396.0625586707,
+                  "mesh_volume_error_mm3": 0.1775669053222373,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 255,
+              "sampled_max_boundary_distance_mm": 0.0009035439113882297,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 9184750,
+                "p10_ns": 9094292,
+                "p90_ns": 9283000,
+                "samples_ns": [
+                  9283000,
+                  9384833,
+                  9229750,
+                  9184750,
+                  9194333,
+                  9149584,
+                  9146875,
+                  9116459,
+                  9094292
+                ]
+              },
+              "construct": {
+                "median_ns": 1258041,
+                "p10_ns": 1211625,
+                "p90_ns": 1279125,
+                "samples_ns": [
+                  1242042,
+                  1258041,
+                  1266916,
+                  1262459,
+                  1279125,
+                  1318666,
+                  1211625,
+                  1229667,
+                  1249000
+                ]
+              },
+              "measures": {
+                "median_ns": 2222750,
+                "p10_ns": 2182917,
+                "p90_ns": 2237042,
+                "samples_ns": [
+                  2182917,
+                  2214666,
+                  2222750,
+                  2237042,
+                  2230667,
+                  2202959,
+                  2322542,
+                  2236333,
+                  2194792
+                ]
+              },
+              "mesh": {
+                "median_ns": 24632666,
+                "p10_ns": 22858958,
+                "p90_ns": 24838750,
+                "samples_ns": [
+                  24632666,
+                  23692375,
+                  24433541,
+                  24262334,
+                  25124500,
+                  24838750,
+                  22858958,
+                  24756459,
+                  24812583
+                ]
+              },
+              "extract": {
+                "median_ns": 123637000,
+                "p10_ns": 122147250,
+                "p90_ns": 129536042,
+                "samples_ns": [
+                  124753292,
+                  124277250,
+                  123585000,
+                  122779959,
+                  122147250,
+                  122641541,
+                  123637000,
+                  130065750,
+                  129536042
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 15233083,
+                "p10_ns": 14952708,
+                "p90_ns": 15314708,
+                "samples_ns": [
+                  14952708,
+                  15056041,
+                  15233083,
+                  15083708,
+                  15484209,
+                  15265625,
+                  15248625,
+                  15314708,
+                  15173541
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 158539083,
+                "p10_ns": 156792375,
+                "p90_ns": 161747833,
+                "samples_ns": [
+                  157198833,
+                  157743500,
+                  156792375,
+                  158539083,
+                  160725167,
+                  162950125,
+                  161747833,
+                  158571916,
+                  157170000
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 49831750,
+                "p10_ns": 48756167,
+                "p90_ns": 86270125,
+                "samples_ns": [
+                  49831750,
+                  48756167,
+                  86270125,
+                  49561833,
+                  51629750,
+                  90306375,
+                  49150375,
+                  49461292,
+                  50634750
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "plate_64",
+        "expected_measures": [
+          24899.42495882689,
+          14709.94671058465
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 2624,
+              "welded_vertices": 2624,
+              "triangles": 5500,
+              "native_faces": 138,
+              "mesh_volume_mm3": 24935.265519118744,
+              "mesh_volume_error_mm3": 35.84056029185376,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.018865720619140713,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 2624,
+                  "welded_vertices": 2624,
+                  "triangles": 5500,
+                  "native_faces": 138,
+                  "mesh_volume_mm3": 24935.265519118744,
+                  "mesh_volume_error_mm3": 35.84056029185376,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018865720619140713
+                },
+                {
+                  "output_vertices": 2624,
+                  "welded_vertices": 2624,
+                  "triangles": 5500,
+                  "native_faces": 138,
+                  "mesh_volume_mm3": 24935.265519118744,
+                  "mesh_volume_error_mm3": 35.84056029185376,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018865720619140713
+                },
+                {
+                  "output_vertices": 2624,
+                  "welded_vertices": 2624,
+                  "triangles": 5500,
+                  "native_faces": 138,
+                  "mesh_volume_mm3": 24935.265519118744,
+                  "mesh_volume_error_mm3": 35.84056029185376,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018865720619140713
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.018863605324162258,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 8390958.0,
+                "p10_ns": 8261542.0,
+                "p90_ns": 8400542.0,
+                "samples_ns": [
+                  8377832.999999999,
+                  8400542.0,
+                  8393459.0,
+                  8492834.0,
+                  8390958.0,
+                  8293292.000000001,
+                  8355292.0,
+                  8394917.0,
+                  8261542.0
+                ]
+              },
+              "construct": {
+                "median_ns": 46375.0,
+                "p10_ns": 45500.0,
+                "p90_ns": 47125.0,
+                "samples_ns": [
+                  46584.0,
+                  46334.0,
+                  46333.0,
+                  46833.0,
+                  46375.0,
+                  50833.0,
+                  47125.0,
+                  46125.0,
+                  45500.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 90008917.0,
+                "p10_ns": 89459459.0,
+                "p90_ns": 90559416.0,
+                "samples_ns": [
+                  89768916.0,
+                  90559416.0,
+                  90346917.0,
+                  89804500.0,
+                  89459459.0,
+                  90754666.0,
+                  89967500.0,
+                  90008917.0,
+                  90212416.0
+                ]
+              },
+              "extract": {
+                "median_ns": 70667.0,
+                "p10_ns": 69958.0,
+                "p90_ns": 71583.0,
+                "samples_ns": [
+                  70166.0,
+                  70167.0,
+                  70042.0,
+                  71583.0,
+                  81875.0,
+                  70667.0,
+                  71250.0,
+                  69958.0,
+                  71208.0
+                ]
+              },
+              "measures": {
+                "median_ns": 17728.2314453125,
+                "p10_ns": 17421.345703125,
+                "p90_ns": 17975.3017578125,
+                "samples_ns": [
+                  17816.203125,
+                  17975.3017578125,
+                  17728.2314453125,
+                  17818.1962890625,
+                  17614.74609375,
+                  18135.7421875,
+                  17439.37109375,
+                  17500.814453125,
+                  17421.345703125
+                ]
+              },
+              "mesh": {
+                "median_ns": 81696334.0,
+                "p10_ns": 81182667.0,
+                "p90_ns": 82042333.0,
+                "samples_ns": [
+                  82321042.0,
+                  81696334.0,
+                  81389750.0,
+                  82042333.0,
+                  81888208.0,
+                  81220834.0,
+                  81182667.0,
+                  81414458.0,
+                  81875042.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 32928,
+              "welded_vertices": 16392,
+              "triangles": 33036,
+              "native_faces": 74,
+              "mesh_volume_mm3": 24900.305528493434,
+              "mesh_volume_error_mm3": 0.8805696665440337,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 32928,
+                  "welded_vertices": 16392,
+                  "triangles": 33036,
+                  "native_faces": 74,
+                  "mesh_volume_mm3": 24900.305528493434,
+                  "mesh_volume_error_mm3": 0.8805696665440337,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 32928,
+                  "welded_vertices": 16392,
+                  "triangles": 33036,
+                  "native_faces": 74,
+                  "mesh_volume_mm3": 24900.305528493434,
+                  "mesh_volume_error_mm3": 0.8805696665440337,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 32928,
+                  "welded_vertices": 16392,
+                  "triangles": 33036,
+                  "native_faces": 74,
+                  "mesh_volume_mm3": 24900.305528493434,
+                  "mesh_volume_error_mm3": 0.8805696665440337,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.00046622699878220834,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 21061542,
+                "p10_ns": 20723625,
+                "p90_ns": 21174500,
+                "samples_ns": [
+                  21125458,
+                  21084125,
+                  21174500,
+                  21061542,
+                  21643416,
+                  21060125,
+                  20723625,
+                  20727291,
+                  20758542
+                ]
+              },
+              "construct": {
+                "median_ns": 3554958,
+                "p10_ns": 3425417,
+                "p90_ns": 3585292,
+                "samples_ns": [
+                  3425417,
+                  3585292,
+                  3691000,
+                  3494375,
+                  3503458,
+                  3583167,
+                  3455083,
+                  3559292,
+                  3554958
+                ]
+              },
+              "measures": {
+                "median_ns": 7021750,
+                "p10_ns": 6947375,
+                "p90_ns": 7076750,
+                "samples_ns": [
+                  6947375,
+                  7314792,
+                  7073709,
+                  7049500,
+                  7016209,
+                  7076750,
+                  7021750,
+                  6977500,
+                  6996834
+                ]
+              },
+              "mesh": {
+                "median_ns": 166202833,
+                "p10_ns": 163116375,
+                "p90_ns": 174728708,
+                "samples_ns": [
+                  166493958,
+                  167404125,
+                  164508333,
+                  174728708,
+                  163116375,
+                  165634959,
+                  166202833,
+                  163299833,
+                  181156916
+                ]
+              },
+              "extract": {
+                "median_ns": 386780833,
+                "p10_ns": 382899208,
+                "p90_ns": 426707709,
+                "samples_ns": [
+                  383138625,
+                  426707709,
+                  391308208,
+                  385143500,
+                  431266875,
+                  382899208,
+                  383666083,
+                  386780833,
+                  423069791
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 59603833,
+                "p10_ns": 57127917,
+                "p90_ns": 100204583,
+                "samples_ns": [
+                  100204583,
+                  57127917,
+                  57817375,
+                  100317875,
+                  60725208,
+                  59603833,
+                  100058667,
+                  57895958,
+                  58939292
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 583874208,
+                "p10_ns": 570530000,
+                "p90_ns": 622515875,
+                "samples_ns": [
+                  570530000,
+                  616682666,
+                  578603167,
+                  587751542,
+                  622515875,
+                  574419084,
+                  583874208,
+                  580018375,
+                  669465708
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 263943875,
+                "p10_ns": 248324541,
+                "p90_ns": 288633458,
+                "samples_ns": [
+                  286272417,
+                  279806042,
+                  263943875,
+                  288633458,
+                  251211000,
+                  248324541,
+                  289492875,
+                  254733291,
+                  259739875
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "panel",
+        "expected_measures": [
+          129214.10627738717,
+          53287.044166691296
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 764,
+              "welded_vertices": 764,
+              "triangles": 1556,
+              "native_faces": 57,
+              "mesh_volume_mm3": 129224.48438307922,
+              "mesh_volume_error_mm3": 10.378105692056124,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.019261315517134836,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 764,
+                  "welded_vertices": 764,
+                  "triangles": 1556,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 129224.48438307922,
+                  "mesh_volume_error_mm3": 10.378105692056124,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                },
+                {
+                  "output_vertices": 764,
+                  "welded_vertices": 764,
+                  "triangles": 1556,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 129224.48438307922,
+                  "mesh_volume_error_mm3": 10.378105692056124,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                },
+                {
+                  "output_vertices": 764,
+                  "welded_vertices": 764,
+                  "triangles": 1556,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 129224.48438307922,
+                  "mesh_volume_error_mm3": 10.378105692056124,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                }
+              ],
+              "survey_points": 252,
+              "sampled_max_boundary_distance_mm": 0.019260733794753685,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 243375.0,
+                "p10_ns": 239875.0,
+                "p90_ns": 257791.0,
+                "samples_ns": [
+                  247749.99999999997,
+                  241959.0,
+                  242250.0,
+                  245917.0,
+                  243375.0,
+                  239875.0,
+                  240000.0,
+                  257791.0,
+                  267000.0
+                ]
+              },
+              "construct": {
+                "median_ns": 255542.0,
+                "p10_ns": 253000.00000000003,
+                "p90_ns": 259624.99999999997,
+                "samples_ns": [
+                  259750.0,
+                  253416.0,
+                  254541.0,
+                  255542.0,
+                  253000.00000000003,
+                  254541.0,
+                  257582.99999999997,
+                  259624.99999999997,
+                  255667.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 4723041.0,
+                "p10_ns": 4689542.0,
+                "p90_ns": 4809250.0,
+                "samples_ns": [
+                  4695334.0,
+                  4783792.0,
+                  5064917.0,
+                  4809250.0,
+                  4723041.0,
+                  4689542.0,
+                  4695500.0,
+                  4697625.0,
+                  4734291.0
+                ]
+              },
+              "extract": {
+                "median_ns": 21125.0,
+                "p10_ns": 20708.0,
+                "p90_ns": 21166.0,
+                "samples_ns": [
+                  21000.0,
+                  21042.0,
+                  20708.0,
+                  21333.0,
+                  21166.0,
+                  21125.0,
+                  21125.0,
+                  20875.0,
+                  21125.0
+                ]
+              },
+              "measures": {
+                "median_ns": 3485.43359375,
+                "p10_ns": 3394.8564453125,
+                "p90_ns": 3513.712890625,
+                "samples_ns": [
+                  3394.8564453125,
+                  3509.724609375,
+                  3399.5771484375,
+                  3513.712890625,
+                  3575.5205078125,
+                  3505.57421875,
+                  3485.43359375,
+                  3459.716796875,
+                  3442.0166015625
+                ]
+              },
+              "mesh": {
+                "median_ns": 4219917.0,
+                "p10_ns": 4149583.0,
+                "p90_ns": 4226667.0,
+                "samples_ns": [
+                  4218083.0,
+                  4186915.9999999995,
+                  4221625.0,
+                  4227208.0,
+                  4226667.0,
+                  4162250.0,
+                  4219917.0,
+                  4220709.0,
+                  4149583.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 7230,
+              "welded_vertices": 3572,
+              "triangles": 7172,
+              "native_faces": 50,
+              "mesh_volume_mm3": 129214.51300115186,
+              "mesh_volume_error_mm3": 0.40672376469592564,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 7230,
+                  "welded_vertices": 3572,
+                  "triangles": 7172,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 129214.51300115186,
+                  "mesh_volume_error_mm3": 0.40672376469592564,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 7230,
+                  "welded_vertices": 3572,
+                  "triangles": 7172,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 129214.51300115186,
+                  "mesh_volume_error_mm3": 0.40672376469592564,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 7230,
+                  "welded_vertices": 3572,
+                  "triangles": 7172,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 129214.51300115186,
+                  "mesh_volume_error_mm3": 0.40672376469592564,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 255,
+              "sampled_max_boundary_distance_mm": 0.0012047252151936067,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 13110917,
+                "p10_ns": 12883792,
+                "p90_ns": 13552541,
+                "samples_ns": [
+                  13110917,
+                  14044291,
+                  13454000,
+                  13552541,
+                  13147625,
+                  13092917,
+                  13049708,
+                  12903084,
+                  12883792
+                ]
+              },
+              "construct": {
+                "median_ns": 16008000,
+                "p10_ns": 15241042,
+                "p90_ns": 16376417,
+                "samples_ns": [
+                  15241042,
+                  15656000,
+                  16128292,
+                  16138583,
+                  16376417,
+                  16841583,
+                  15296833,
+                  15429292,
+                  16008000
+                ]
+              },
+              "measures": {
+                "median_ns": 2818209,
+                "p10_ns": 2799208,
+                "p90_ns": 2843042,
+                "samples_ns": [
+                  2816083,
+                  2818209,
+                  2843042,
+                  2849334,
+                  2809584,
+                  2799208,
+                  2837042,
+                  2799709,
+                  2820542
+                ]
+              },
+              "mesh": {
+                "median_ns": 22639750,
+                "p10_ns": 21222708,
+                "p90_ns": 23756666,
+                "samples_ns": [
+                  21222708,
+                  24133959,
+                  22530541,
+                  23756666,
+                  22639750,
+                  22449958,
+                  22699083,
+                  23323625,
+                  21824208
+                ]
+              },
+              "extract": {
+                "median_ns": 205143959,
+                "p10_ns": 204279834,
+                "p90_ns": 206097250,
+                "samples_ns": [
+                  204939292,
+                  205251958,
+                  205789500,
+                  206136291,
+                  204423083,
+                  205143959,
+                  206097250,
+                  204572000,
+                  204279834
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 12917125,
+                "p10_ns": 12580917,
+                "p90_ns": 13176250,
+                "samples_ns": [
+                  12580917,
+                  12978417,
+                  12817459,
+                  13068959,
+                  12913416,
+                  12593208,
+                  13176250,
+                  12917125,
+                  52131000
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 258790958,
+                "p10_ns": 256089916,
+                "p90_ns": 259054334,
+                "samples_ns": [
+                  258790958,
+                  258807375,
+                  258190292,
+                  256089916,
+                  256701666,
+                  259054334,
+                  259664083,
+                  259043500,
+                  258597375
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 64620542,
+                "p10_ns": 63675375,
+                "p90_ns": 66370667,
+                "samples_ns": [
+                  64645375,
+                  64255583,
+                  63675375,
+                  63996667,
+                  64836875,
+                  64620542,
+                  66370667,
+                  64494750,
+                  66952542
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "panel_seven_vents",
+        "expected_measures": [
+          126548.48682836797,
+          53558.99990956694
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 876,
+              "welded_vertices": 876,
+              "triangles": 1788,
+              "native_faces": 65,
+              "mesh_volume_mm3": 126561.15163575727,
+              "mesh_volume_error_mm3": 12.664807389301131,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.019261315517134836,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 876,
+                  "welded_vertices": 876,
+                  "triangles": 1788,
+                  "native_faces": 65,
+                  "mesh_volume_mm3": 126561.15163575727,
+                  "mesh_volume_error_mm3": 12.664807389301131,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                },
+                {
+                  "output_vertices": 876,
+                  "welded_vertices": 876,
+                  "triangles": 1788,
+                  "native_faces": 65,
+                  "mesh_volume_mm3": 126561.15163575727,
+                  "mesh_volume_error_mm3": 12.664807389301131,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                },
+                {
+                  "output_vertices": 876,
+                  "welded_vertices": 876,
+                  "triangles": 1788,
+                  "native_faces": 65,
+                  "mesh_volume_mm3": 126561.15163575727,
+                  "mesh_volume_error_mm3": 12.664807389301131,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                }
+              ],
+              "survey_points": 255,
+              "sampled_max_boundary_distance_mm": 0.01926092074802878,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 322500.0,
+                "p10_ns": 320375.0,
+                "p90_ns": 328292.0,
+                "samples_ns": [
+                  321125.0,
+                  320375.0,
+                  327708.0,
+                  322125.0,
+                  330542.0,
+                  327792.0,
+                  322500.0,
+                  321875.0,
+                  328292.0
+                ]
+              },
+              "construct": {
+                "median_ns": 333792.0,
+                "p10_ns": 326875.0,
+                "p90_ns": 337542.0,
+                "samples_ns": [
+                  337542.0,
+                  334333.0,
+                  333792.0,
+                  330291.0,
+                  330125.0,
+                  334167.0,
+                  327417.0,
+                  344583.0,
+                  326875.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 7991666.999999999,
+                "p10_ns": 7928792.000000001,
+                "p90_ns": 8038750.000000001,
+                "samples_ns": [
+                  8043625.0,
+                  8021667.0,
+                  8038750.000000001,
+                  7928792.000000001,
+                  7939000.0,
+                  7948583.0,
+                  7977625.0,
+                  7991666.999999999,
+                  8004000.000000001
+                ]
+              },
+              "extract": {
+                "median_ns": 24083.0,
+                "p10_ns": 23959.0,
+                "p90_ns": 27167.0,
+                "samples_ns": [
+                  23959.0,
+                  24083.0,
+                  24042.0,
+                  24042.0,
+                  24000.0,
+                  24500.0,
+                  27167.0,
+                  30834.000000000004,
+                  24875.0
+                ]
+              },
+              "measures": {
+                "median_ns": 3984.5380859375,
+                "p10_ns": 3869.7099609375005,
+                "p90_ns": 4046.5498046875,
+                "samples_ns": [
+                  3902.4658203124995,
+                  3984.9033203125,
+                  3869.7099609375005,
+                  3984.5380859375,
+                  3914.4287109375,
+                  3941.365234375,
+                  4167.806640625,
+                  4046.5498046875,
+                  4011.0273437500005
+                ]
+              },
+              "mesh": {
+                "median_ns": 7327792.0,
+                "p10_ns": 7254375.0,
+                "p90_ns": 7561375.0,
+                "samples_ns": [
+                  7327792.0,
+                  7344125.0,
+                  7321042.0,
+                  7254375.0,
+                  7268791.0,
+                  7274292.0,
+                  7626750.0,
+                  7401667.0,
+                  7561375.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 8270,
+              "welded_vertices": 4084,
+              "triangles": 8204,
+              "native_faces": 58,
+              "mesh_volume_mm3": 126548.99119140489,
+              "mesh_volume_error_mm3": 0.504363036918221,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 8270,
+                  "welded_vertices": 4084,
+                  "triangles": 8204,
+                  "native_faces": 58,
+                  "mesh_volume_mm3": 126548.99119140489,
+                  "mesh_volume_error_mm3": 0.504363036918221,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 8270,
+                  "welded_vertices": 4084,
+                  "triangles": 8204,
+                  "native_faces": 58,
+                  "mesh_volume_mm3": 126548.99119140489,
+                  "mesh_volume_error_mm3": 0.504363036918221,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 8270,
+                  "welded_vertices": 4084,
+                  "triangles": 8204,
+                  "native_faces": 58,
+                  "mesh_volume_mm3": 126548.99119140489,
+                  "mesh_volume_error_mm3": 0.504363036918221,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.0012047252151849458,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 13666958,
+                "p10_ns": 13486583,
+                "p90_ns": 13821584,
+                "samples_ns": [
+                  13821584,
+                  13585292,
+                  14179166,
+                  13778125,
+                  13635459,
+                  13666958,
+                  13486583,
+                  13723709,
+                  13559625
+                ]
+              },
+              "construct": {
+                "median_ns": 21319459,
+                "p10_ns": 18854959,
+                "p90_ns": 22558833,
+                "samples_ns": [
+                  18854959,
+                  19977416,
+                  21319459,
+                  21281459,
+                  21989042,
+                  22558833,
+                  20860500,
+                  21419000,
+                  23187792
+                ]
+              },
+              "measures": {
+                "median_ns": 3349333,
+                "p10_ns": 3281166,
+                "p90_ns": 3354791,
+                "samples_ns": [
+                  3349333,
+                  3311958,
+                  3366708,
+                  3336584,
+                  3281166,
+                  3351500,
+                  3352541,
+                  3354791,
+                  3305500
+                ]
+              },
+              "mesh": {
+                "median_ns": 25519667,
+                "p10_ns": 24550542,
+                "p90_ns": 26370000,
+                "samples_ns": [
+                  26038417,
+                  25067833,
+                  25301375,
+                  25706583,
+                  25519667,
+                  25130167,
+                  26370000,
+                  26555500,
+                  24550542
+                ]
+              },
+              "extract": {
+                "median_ns": 238091583,
+                "p10_ns": 235729875,
+                "p90_ns": 240477583,
+                "samples_ns": [
+                  236282584,
+                  242168000,
+                  238978500,
+                  240477583,
+                  236582916,
+                  235729875,
+                  237081000,
+                  238091583,
+                  239562875
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 14584000,
+                "p10_ns": 14110000,
+                "p90_ns": 14679458,
+                "samples_ns": [
+                  14688042,
+                  14584000,
+                  14110000,
+                  14679458,
+                  14609833,
+                  14507125,
+                  14678667,
+                  14336125,
+                  14557042
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 299410208,
+                "p10_ns": 295830458,
+                "p90_ns": 302481583,
+                "samples_ns": [
+                  298709625,
+                  302374333,
+                  298341875,
+                  295830458,
+                  302481583,
+                  304459208,
+                  298905709,
+                  299488083,
+                  299410208
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 73251042,
+                "p10_ns": 72984000,
+                "p90_ns": 74142917,
+                "samples_ns": [
+                  73251042,
+                  73144500,
+                  74142917,
+                  73730417,
+                  73049625,
+                  73406959,
+                  73202458,
+                  72984000,
+                  78418000
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "panel_larger",
+        "expected_measures": [
+          229647.69917213178,
+          69570.26536188001
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 780,
+              "welded_vertices": 780,
+              "triangles": 1588,
+              "native_faces": 57,
+              "mesh_volume_mm3": 229659.22498991736,
+              "mesh_volume_error_mm3": 11.525817785586696,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.019174059905593843,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 780,
+                  "welded_vertices": 780,
+                  "triangles": 1588,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 229659.22498991736,
+                  "mesh_volume_error_mm3": 11.525817785586696,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019174059905593843
+                },
+                {
+                  "output_vertices": 780,
+                  "welded_vertices": 780,
+                  "triangles": 1588,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 229659.22498991736,
+                  "mesh_volume_error_mm3": 11.525817785586696,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019174059905593843
+                },
+                {
+                  "output_vertices": 780,
+                  "welded_vertices": 780,
+                  "triangles": 1588,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 229659.22498991736,
+                  "mesh_volume_error_mm3": 11.525817785586696,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019174059905593843
+                }
+              ],
+              "survey_points": 253,
+              "sampled_max_boundary_distance_mm": 0.01917401562760572,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 246458.00000000003,
+                "p10_ns": 240000.0,
+                "p90_ns": 253708.0,
+                "samples_ns": [
+                  253708.0,
+                  247832.99999999997,
+                  248500.00000000003,
+                  246458.00000000003,
+                  240000.0,
+                  240000.0,
+                  244874.99999999997,
+                  245083.0,
+                  272458.0
+                ]
+              },
+              "construct": {
+                "median_ns": 259792.0,
+                "p10_ns": 252332.99999999997,
+                "p90_ns": 265458.0,
+                "samples_ns": [
+                  252624.99999999997,
+                  252332.99999999997,
+                  259792.0,
+                  263500.0,
+                  253625.0,
+                  252833.0,
+                  265125.0,
+                  265458.0,
+                  272125.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 5262916.0,
+                "p10_ns": 5198833.0,
+                "p90_ns": 5320042.0,
+                "samples_ns": [
+                  5320042.0,
+                  5272666.0,
+                  5275875.0,
+                  5226209.0,
+                  5198833.0,
+                  5236750.0,
+                  5262916.0,
+                  5228875.0,
+                  5350542.0
+                ]
+              },
+              "extract": {
+                "median_ns": 21417.0,
+                "p10_ns": 20584.0,
+                "p90_ns": 22000.0,
+                "samples_ns": [
+                  21958.0,
+                  21916.0,
+                  22000.0,
+                  21417.0,
+                  21334.0,
+                  23958.0,
+                  20875.0,
+                  20792.0,
+                  20584.0
+                ]
+              },
+              "measures": {
+                "median_ns": 3461.2626953125,
+                "p10_ns": 3394.775390625,
+                "p90_ns": 3537.1904296875,
+                "samples_ns": [
+                  3466.349609375,
+                  3448.2421875,
+                  3421.0205078125,
+                  3461.2626953125,
+                  3394.775390625,
+                  3550.048828125,
+                  3502.5224609375,
+                  3405.720703125,
+                  3537.1904296875
+                ]
+              },
+              "mesh": {
+                "median_ns": 4737959.0,
+                "p10_ns": 4687000.0,
+                "p90_ns": 4807917.0,
+                "samples_ns": [
+                  4725417.0,
+                  4807917.0,
+                  4831791.0,
+                  4737959.0,
+                  4774834.0,
+                  4784667.0,
+                  4736917.0,
+                  4729083.0,
+                  4687000.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 7230,
+              "welded_vertices": 3572,
+              "triangles": 7172,
+              "native_faces": 50,
+              "mesh_volume_mm3": 229647.98866681237,
+              "mesh_volume_error_mm3": 0.2894946805899963,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 7230,
+                  "welded_vertices": 3572,
+                  "triangles": 7172,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 229647.98866681237,
+                  "mesh_volume_error_mm3": 0.2894946805899963,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 7230,
+                  "welded_vertices": 3572,
+                  "triangles": 7172,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 229647.98866681237,
+                  "mesh_volume_error_mm3": 0.2894946805899963,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 7230,
+                  "welded_vertices": 3572,
+                  "triangles": 7172,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 229647.98866681237,
+                  "mesh_volume_error_mm3": 0.2894946805899963,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.0018070878227839145,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 13008667,
+                "p10_ns": 12806291,
+                "p90_ns": 13139083,
+                "samples_ns": [
+                  13037000,
+                  13008667,
+                  12964500,
+                  13044041,
+                  13979791,
+                  13139083,
+                  12969042,
+                  12918917,
+                  12806291
+                ]
+              },
+              "construct": {
+                "median_ns": 16800000,
+                "p10_ns": 15927583,
+                "p90_ns": 17095000,
+                "samples_ns": [
+                  15927583,
+                  16800000,
+                  17095000,
+                  16241958,
+                  16452917,
+                  17229708,
+                  15982250,
+                  16813459,
+                  16946333
+                ]
+              },
+              "measures": {
+                "median_ns": 2822958,
+                "p10_ns": 2814583,
+                "p90_ns": 2849292,
+                "samples_ns": [
+                  2818208,
+                  2814583,
+                  2819416,
+                  2822709,
+                  2853375,
+                  2825625,
+                  2849292,
+                  2822958,
+                  2832833
+                ]
+              },
+              "mesh": {
+                "median_ns": 22373292,
+                "p10_ns": 21426125,
+                "p90_ns": 22571792,
+                "samples_ns": [
+                  22159833,
+                  22300417,
+                  22571792,
+                  21426125,
+                  22555917,
+                  22634167,
+                  22498917,
+                  22373292,
+                  22153417
+                ]
+              },
+              "extract": {
+                "median_ns": 205500958,
+                "p10_ns": 203821500,
+                "p90_ns": 206822500,
+                "samples_ns": [
+                  205064750,
+                  204456417,
+                  203821500,
+                  205145708,
+                  205500958,
+                  207213959,
+                  206822500,
+                  205787708,
+                  206333375
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 12679250,
+                "p10_ns": 12211542,
+                "p90_ns": 12763667,
+                "samples_ns": [
+                  12211542,
+                  12679250,
+                  12580334,
+                  12453291,
+                  12758292,
+                  12756292,
+                  13211208,
+                  12763667,
+                  12572916
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 259190083,
+                "p10_ns": 255600625,
+                "p90_ns": 263479500,
+                "samples_ns": [
+                  264942875,
+                  256743125,
+                  255600625,
+                  261795625,
+                  260848125,
+                  257835792,
+                  256411250,
+                  263479500,
+                  259190083
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 64882084,
+                "p10_ns": 63463000,
+                "p90_ns": 65629875,
+                "samples_ns": [
+                  63880333,
+                  63463000,
+                  64198125,
+                  65062250,
+                  64913916,
+                  64845209,
+                  64882084,
+                  65811750,
+                  65629875
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "turned_full",
+        "expected_measures": [
+          35505.23297332064,
+          10354.303106397982
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 1258,
+              "welded_vertices": 1258,
+              "triangles": 2516,
+              "native_faces": 17,
+              "mesh_volume_mm3": 35462.58678345992,
+              "mesh_volume_error_mm3": 42.6461898607231,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.01982520889718709,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 1258,
+                  "welded_vertices": 1258,
+                  "triangles": 2516,
+                  "native_faces": 17,
+                  "mesh_volume_mm3": 35462.58678345992,
+                  "mesh_volume_error_mm3": 42.6461898607231,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.01982520889718709
+                },
+                {
+                  "output_vertices": 1258,
+                  "welded_vertices": 1258,
+                  "triangles": 2516,
+                  "native_faces": 17,
+                  "mesh_volume_mm3": 35462.58678345992,
+                  "mesh_volume_error_mm3": 42.6461898607231,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.01982520889718709
+                },
+                {
+                  "output_vertices": 1258,
+                  "welded_vertices": 1258,
+                  "triangles": 2516,
+                  "native_faces": 17,
+                  "mesh_volume_mm3": 35462.58678345992,
+                  "mesh_volume_error_mm3": 42.6461898607231,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.01982520889718709
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.01982278243426214,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 2667.0,
+                "p10_ns": 2625.0,
+                "p90_ns": 2750.0,
+                "samples_ns": [
+                  2750.0,
+                  2625.0,
+                  2625.0,
+                  2708.0,
+                  2625.0,
+                  2667.0,
+                  2750.0,
+                  2667.0,
+                  2666.0
+                ]
+              },
+              "construct": {
+                "median_ns": 3417.0,
+                "p10_ns": 3375.0,
+                "p90_ns": 4333.0,
+                "samples_ns": [
+                  3458.0,
+                  3375.0,
+                  3375.0,
+                  3417.0,
+                  3375.0,
+                  3375.0,
+                  4333.0,
+                  4334.0,
+                  3709.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 555750.0,
+                "p10_ns": 544833.0,
+                "p90_ns": 570792.0,
+                "samples_ns": [
+                  561041.0,
+                  570792.0,
+                  587917.0,
+                  550625.0,
+                  544833.0,
+                  556000.0,
+                  549542.0,
+                  551583.0,
+                  555750.0
+                ]
+              },
+              "extract": {
+                "median_ns": 39833.0,
+                "p10_ns": 38334.0,
+                "p90_ns": 43959.0,
+                "samples_ns": [
+                  39500.0,
+                  38334.0,
+                  38959.0,
+                  51792.0,
+                  43959.0,
+                  40542.0,
+                  38750.0,
+                  43041.0,
+                  39833.0
+                ]
+              },
+              "measures": {
+                "median_ns": 0.6103515625,
+                "p10_ns": 0.6103515625,
+                "p90_ns": 0.6513671875,
+                "samples_ns": [
+                  0.6513671875,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.650390625,
+                  0.6513671875
+                ]
+              },
+              "mesh": {
+                "median_ns": 504125.0,
+                "p10_ns": 487709.0,
+                "p90_ns": 524708.0,
+                "samples_ns": [
+                  526125.0,
+                  511209.0,
+                  497833.00000000006,
+                  487709.0,
+                  503458.00000000006,
+                  507666.99999999994,
+                  524708.0,
+                  501291.99999999994,
+                  504125.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 5088,
+              "welded_vertices": 2910,
+              "triangles": 5820,
+              "native_faces": 17,
+              "mesh_volume_mm3": 35487.32556605053,
+              "mesh_volume_error_mm3": 17.907407270111435,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 5088,
+                  "welded_vertices": 2910,
+                  "triangles": 5820,
+                  "native_faces": 17,
+                  "mesh_volume_mm3": 35487.32556605053,
+                  "mesh_volume_error_mm3": 17.907407270111435,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 5088,
+                  "welded_vertices": 2910,
+                  "triangles": 5820,
+                  "native_faces": 17,
+                  "mesh_volume_mm3": 35487.32556605053,
+                  "mesh_volume_error_mm3": 17.907407270111435,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 5088,
+                  "welded_vertices": 2910,
+                  "triangles": 5820,
+                  "native_faces": 17,
+                  "mesh_volume_mm3": 35487.32556605053,
+                  "mesh_volume_error_mm3": 17.907407270111435,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 255,
+              "sampled_max_boundary_distance_mm": 0.016712233197666328,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 861917,
+                "p10_ns": 842541,
+                "p90_ns": 869209,
+                "samples_ns": [
+                  856292,
+                  846709,
+                  849459,
+                  866375,
+                  869209,
+                  878959,
+                  861917,
+                  862375,
+                  842541
+                ]
+              },
+              "construct": {
+                "median_ns": 372792,
+                "p10_ns": 368667,
+                "p90_ns": 387292,
+                "samples_ns": [
+                  377041,
+                  379375,
+                  368667,
+                  392541,
+                  372375,
+                  371542,
+                  387292,
+                  372792,
+                  371167
+                ]
+              },
+              "measures": {
+                "median_ns": 1021500,
+                "p10_ns": 1002333,
+                "p90_ns": 1053500,
+                "samples_ns": [
+                  1037000,
+                  1031958,
+                  1017500,
+                  1108209,
+                  1053500,
+                  1021500,
+                  1004459,
+                  1002333,
+                  1013375
+                ]
+              },
+              "mesh": {
+                "median_ns": 3671583,
+                "p10_ns": 3555042,
+                "p90_ns": 3764667,
+                "samples_ns": [
+                  3764542,
+                  3718375,
+                  3671583,
+                  3646250,
+                  3598042,
+                  3764667,
+                  3580709,
+                  3825583,
+                  3555042
+                ]
+              },
+              "extract": {
+                "median_ns": 79387209,
+                "p10_ns": 78578833,
+                "p90_ns": 80536125,
+                "samples_ns": [
+                  79955208,
+                  79124667,
+                  78578833,
+                  81155167,
+                  79334750,
+                  79371875,
+                  79387209,
+                  79763834,
+                  80536125
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 9489833,
+                "p10_ns": 9280875,
+                "p90_ns": 9647291,
+                "samples_ns": [
+                  9344917,
+                  9280875,
+                  9489833,
+                  9644541,
+                  9714791,
+                  9647291,
+                  9421125,
+                  9517458,
+                  9343458
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 85032375,
+                "p10_ns": 84581541,
+                "p90_ns": 85826958,
+                "samples_ns": [
+                  85147208,
+                  84980875,
+                  85435167,
+                  85032375,
+                  85826958,
+                  86816500,
+                  84850166,
+                  84655041,
+                  84581541
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 14991542,
+                "p10_ns": 14668416,
+                "p90_ns": 15206416,
+                "samples_ns": [
+                  15620000,
+                  15206416,
+                  14696750,
+                  14991542,
+                  14851750,
+                  15037666,
+                  15101875,
+                  14864000,
+                  14668416
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "turned_cutaway",
+        "expected_measures": [
+          26628.924729990482,
+          8636.727329798487
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 969,
+              "welded_vertices": 969,
+              "triangles": 1934,
+              "native_faces": 19,
+              "mesh_volume_mm3": 26597.508568705693,
+              "mesh_volume_error_mm3": 31.41616128478927,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.019472920499523996,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 969,
+                  "welded_vertices": 969,
+                  "triangles": 1934,
+                  "native_faces": 19,
+                  "mesh_volume_mm3": 26597.508568705693,
+                  "mesh_volume_error_mm3": 31.41616128478927,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019472920499523996
+                },
+                {
+                  "output_vertices": 969,
+                  "welded_vertices": 969,
+                  "triangles": 1934,
+                  "native_faces": 19,
+                  "mesh_volume_mm3": 26597.508568705693,
+                  "mesh_volume_error_mm3": 31.41616128478927,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019472920499523996
+                },
+                {
+                  "output_vertices": 969,
+                  "welded_vertices": 969,
+                  "triangles": 1934,
+                  "native_faces": 19,
+                  "mesh_volume_mm3": 26597.508568705693,
+                  "mesh_volume_error_mm3": 31.41616128478927,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019472920499523996
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.01947061085851946,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 2625.0,
+                "p10_ns": 2542.0,
+                "p90_ns": 2709.0,
+                "samples_ns": [
+                  2583.0,
+                  2583.0,
+                  2542.0,
+                  2625.0,
+                  2625.0,
+                  2625.0,
+                  2750.0,
+                  2709.0,
+                  2667.0
+                ]
+              },
+              "construct": {
+                "median_ns": 4833.0,
+                "p10_ns": 4750.0,
+                "p90_ns": 4917.0,
+                "samples_ns": [
+                  4833.0,
+                  4750.0,
+                  4750.0,
+                  4792.0,
+                  4750.0,
+                  4917.0,
+                  4958.0,
+                  4833.0,
+                  4834.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 422875.0,
+                "p10_ns": 415000.0,
+                "p90_ns": 439208.0,
+                "samples_ns": [
+                  423708.0,
+                  416208.0,
+                  421875.0,
+                  429750.0,
+                  422875.0,
+                  444333.0,
+                  439208.0,
+                  416083.0,
+                  415000.0
+                ]
+              },
+              "extract": {
+                "median_ns": 30084.0,
+                "p10_ns": 29291.0,
+                "p90_ns": 30917.000000000004,
+                "samples_ns": [
+                  29875.0,
+                  29458.0,
+                  29291.0,
+                  30917.000000000004,
+                  30000.0,
+                  30375.0,
+                  30957.999999999996,
+                  30084.0,
+                  30750.000000000004
+                ]
+              },
+              "measures": {
+                "median_ns": 0.6103515625,
+                "p10_ns": 0.6103515625,
+                "p90_ns": 0.6103515625,
+                "samples_ns": [
+                  0.6513671875,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625,
+                  0.6103515625
+                ]
+              },
+              "mesh": {
+                "median_ns": 391625.0,
+                "p10_ns": 385459.0,
+                "p90_ns": 414125.0,
+                "samples_ns": [
+                  388958.0,
+                  421875.0,
+                  388625.0,
+                  390334.0,
+                  414125.0,
+                  392209.0,
+                  391625.0,
+                  391792.0,
+                  385459.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 3868,
+              "welded_vertices": 2202,
+              "triangles": 4400,
+              "native_faces": 19,
+              "mesh_volume_mm3": 26615.47733818664,
+              "mesh_volume_error_mm3": 13.447391803842038,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 3868,
+                  "welded_vertices": 2202,
+                  "triangles": 4400,
+                  "native_faces": 19,
+                  "mesh_volume_mm3": 26615.47733818664,
+                  "mesh_volume_error_mm3": 13.447391803842038,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 3868,
+                  "welded_vertices": 2202,
+                  "triangles": 4400,
+                  "native_faces": 19,
+                  "mesh_volume_mm3": 26615.47733818664,
+                  "mesh_volume_error_mm3": 13.447391803842038,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 3868,
+                  "welded_vertices": 2202,
+                  "triangles": 4400,
+                  "native_faces": 19,
+                  "mesh_volume_mm3": 26615.47733818664,
+                  "mesh_volume_error_mm3": 13.447391803842038,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.015886816310780164,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 857833,
+                "p10_ns": 835416,
+                "p90_ns": 884833,
+                "samples_ns": [
+                  871833,
+                  890542,
+                  844167,
+                  857833,
+                  846417,
+                  845084,
+                  884833,
+                  835416,
+                  874500
+                ]
+              },
+              "construct": {
+                "median_ns": 528667,
+                "p10_ns": 517209,
+                "p90_ns": 530292,
+                "samples_ns": [
+                  529167,
+                  534666,
+                  521833,
+                  529125,
+                  530292,
+                  521917,
+                  528667,
+                  528375,
+                  517209
+                ]
+              },
+              "measures": {
+                "median_ns": 1124083,
+                "p10_ns": 1117125,
+                "p90_ns": 1129833,
+                "samples_ns": [
+                  1119750,
+                  1123208,
+                  1160208,
+                  1127334,
+                  1124083,
+                  1117125,
+                  1126125,
+                  1124083,
+                  1129833
+                ]
+              },
+              "mesh": {
+                "median_ns": 3081625,
+                "p10_ns": 2983792,
+                "p90_ns": 3140959,
+                "samples_ns": [
+                  3081625,
+                  3074833,
+                  3072542,
+                  3127750,
+                  2983792,
+                  3041125,
+                  3135708,
+                  3140959,
+                  3185958
+                ]
+              },
+              "extract": {
+                "median_ns": 82592417,
+                "p10_ns": 82066333,
+                "p90_ns": 83301042,
+                "samples_ns": [
+                  83301042,
+                  82305917,
+                  82731083,
+                  84142334,
+                  82259500,
+                  82459500,
+                  82592417,
+                  82066333,
+                  82841792
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 7310500,
+                "p10_ns": 7231208,
+                "p90_ns": 7435042,
+                "samples_ns": [
+                  7332000,
+                  7231208,
+                  7240209,
+                  7294042,
+                  7310500,
+                  7235542,
+                  7351375,
+                  7479167,
+                  7435042
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 87577166,
+                "p10_ns": 86904916,
+                "p90_ns": 88541791,
+                "samples_ns": [
+                  88541791,
+                  87797292,
+                  89586417,
+                  88197167,
+                  86904916,
+                  87577166,
+                  87025083,
+                  87171041,
+                  87417125
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 12145125,
+                "p10_ns": 11982125,
+                "p90_ns": 12431750,
+                "samples_ns": [
+                  12044583,
+                  12431750,
+                  12395084,
+                  12145125,
+                  12365541,
+                  12118875,
+                  12763958,
+                  12124084,
+                  11982125
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "linear-plate": {
+    "environment": {
+      "timestamp_utc": "2026-10-26T03:42:49.707004+00:00",
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "python": "3.13.17",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "exedra_revision": "d942d8507ea25a683684d1df55af1a0a3a2aa0c3",
+      "worktree_status": "",
+      "fixtures_sha256": "4df4c00b914790cdbc118c37345793e64c814e6dbd2af41994e808097654351d",
+      "rust_binary_sha256": "f82dae5e37f59902285d2be256dee4188468382730a79fed8595e6bfa555960b",
+      "python_worker_sha256": "a3e5b4e62e5624cea63a2041c97455806f446ff74297ecfce3b28d1eb3a7b316",
+      "tolerance_mm": 0.02,
+      "occt_angular_tolerance_radians": 3.0,
+      "creation_timers_exclude_output_destruction": true,
+      "workers_execute_sequentially": true,
+      "warmup_calls_per_phase": 2
+    },
+    "backend_versions": {
+      "exedra": {
+        "backend": "exedra",
+        "debug_assertions": false,
+        "runner_version": "0.0.0"
+      },
+      "build123d": {
+        "backend": "build123d",
+        "version": "0.13.0",
+        "ocp": "8.0.1.1.0",
+        "python": "3.13.17",
+        "absolute_deflection": true,
+        "occt_parallel_meshing": true,
+        "angular_tolerance": 3.0,
+        "packages": {
+          "narwhals": "2.27.1",
+          "svgpathtools": "1.8.0",
+          "scikit-learn": "1.9.1",
+          "pexpect": "4.9.0",
+          "cloudpickle": "3.1.2",
+          "ptyprocess": "0.7.0",
+          "packaging": "26.3",
+          "joblib": "1.6.0",
+          "marshmallow": "3.26.2",
+          "svgelements": "1.9.6",
+          "Pygments": "2.21.0",
+          "prompt_toolkit": "3.0.53",
+          "threejs-materials": "1.2.5",
+          "requests": "2.34.2",
+          "certifi": "2026.10.23",
+          "svgwrite": "1.4.3",
+          "anytree": "2.13.0",
+          "matplotlib-inline": "0.2.2",
+          "typing-inspect": "0.9.0",
+          "wcwidth": "0.9.4",
+          "Deprecated": "3.0.0",
+          "traitlets": "5.16.1",
+          "jedi": "0.20.1",
+          "build123d": "0.13.0",
+          "lib3mf": "2.5.0",
+          "ipython_pygments_lexers": "1.1.1",
+          "numpy": "2.5.4",
+          "wrapt": "2.5.1",
+          "stack-data": "0.6.3",
+          "pillow": "13.0.0",
+          "sympy": "1.14.0",
+          "dataclasses-json": "0.6.7",
+          "urllib3": "2.8.0",
+          "bd_materials": "0.2.5",
+          "mpmath": "1.3.0",
+          "ocp_gordon": "0.3.1",
+          "cadquery-ocp-proxy": "8.0.1.1.0",
+          "pure_eval": "0.2.4",
+          "ocpsvg": "0.7.0",
+          "threadpoolctl": "3.7.0",
+          "executing": "2.3.0",
+          "pygltflib": "1.16.5",
+          "typing_extensions": "4.16.0",
+          "asttokens": "3.0.2",
+          "cadquery-ocp-novtk": "8.0.1.1.0",
+          "psutil": "7.2.2",
+          "fonttools": "4.67.0",
+          "trianglesolver": "1.2",
+          "parso": "0.8.7",
+          "ezdxf": "1.4.5",
+          "charset-normalizer": "3.5.2",
+          "webcolors": "24.8.0",
+          "pyparsing": "3.3.3",
+          "mypy_extensions": "1.1.0",
+          "scipy": "1.18.1",
+          "platformdirs": "4.13.5",
+          "idna": "3.20",
+          "ipython": "9.17.1"
+        }
+      }
+    },
+    "startup_samples": {
+      "exedra": [
+        {
+          "process_wall_seconds": 0.005723957903683186,
+          "peak_process_rss_bytes": 2211840
+        },
+        {
+          "process_wall_seconds": 0.005700208013877273,
+          "peak_process_rss_bytes": 2211840
+        }
+      ],
+      "build123d": [
+        {
+          "import_ns": 1721136292,
+          "process_wall_seconds": 2.063763791928068,
+          "peak_process_rss_bytes": 418529280
+        },
+        {
+          "import_ns": 1755520958,
+          "process_wall_seconds": 2.1265144168864936,
+          "peak_process_rss_bytes": 419463168
+        }
+      ]
+    },
+    "whole_benchmark_process_resources": {
+      "exedra": [
+        {
+          "process_wall_seconds": 1.1107880419585854,
+          "peak_process_rss_bytes": 10895360
+        },
+        {
+          "process_wall_seconds": 1.1053798340726644,
+          "peak_process_rss_bytes": 10911744
+        }
+      ],
+      "build123d": [
+        {
+          "process_wall_seconds": 6.348542083054781,
+          "peak_process_rss_bytes": 491143168
+        },
+        {
+          "process_wall_seconds": 6.323123707901686,
+          "peak_process_rss_bytes": 483033088
+        }
+      ]
+    },
+    "cases": [
+      {
+        "id": "plate_64",
+        "expected_measures": [
+          24899.42495882689,
+          14709.94671058465
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 2624,
+              "welded_vertices": 2624,
+              "triangles": 5500,
+              "native_faces": 138,
+              "mesh_volume_mm3": 24935.265519118744,
+              "mesh_volume_error_mm3": 35.84056029185376,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.018865720619140713,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 2624,
+                  "welded_vertices": 2624,
+                  "triangles": 5500,
+                  "native_faces": 138,
+                  "mesh_volume_mm3": 24935.265519118744,
+                  "mesh_volume_error_mm3": 35.84056029185376,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018865720619140713
+                },
+                {
+                  "output_vertices": 2624,
+                  "welded_vertices": 2624,
+                  "triangles": 5500,
+                  "native_faces": 138,
+                  "mesh_volume_mm3": 24935.265519118744,
+                  "mesh_volume_error_mm3": 35.84056029185376,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.018865720619140713
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.018863605324162258,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 8493958.5,
+                "p10_ns": 8421500.0,
+                "p90_ns": 8742250.0,
+                "samples_ns": [
+                  8837333.0,
+                  8443084.0,
+                  8742250.0,
+                  8511375.0,
+                  8476542.0,
+                  8421500.0
+                ]
+              },
+              "construct": {
+                "median_ns": 48917.0,
+                "p10_ns": 47792.0,
+                "p90_ns": 49458.0,
+                "samples_ns": [
+                  49750.0,
+                  48959.0,
+                  48875.0,
+                  48625.0,
+                  47792.0,
+                  49458.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 90960479.0,
+                "p10_ns": 89724708.0,
+                "p90_ns": 91801291.0,
+                "samples_ns": [
+                  92825792.0,
+                  90213417.0,
+                  89724708.0,
+                  91098375.0,
+                  91801291.0,
+                  90822583.0
+                ]
+              },
+              "extract": {
+                "median_ns": 81833.5,
+                "p10_ns": 70791.0,
+                "p90_ns": 91375.0,
+                "samples_ns": [
+                  105458.0,
+                  91375.0,
+                  89875.0,
+                  70791.0,
+                  73792.0,
+                  71292.0
+                ]
+              },
+              "measures": {
+                "median_ns": 17828.328125,
+                "p10_ns": 17526.4892578125,
+                "p90_ns": 17853.6376953125,
+                "samples_ns": [
+                  17526.4892578125,
+                  18039.794921875,
+                  17662.80078125,
+                  17853.6376953125,
+                  17830.76953125,
+                  17825.88671875
+                ]
+              },
+              "mesh": {
+                "median_ns": 82896167.0,
+                "p10_ns": 82340083.0,
+                "p90_ns": 83331750.0,
+                "samples_ns": [
+                  83331750.0,
+                  83122167.0,
+                  84408292.0,
+                  82670167.0,
+                  82340083.0,
+                  82638291.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 7488,
+              "welded_vertices": 3672,
+              "triangles": 7596,
+              "native_faces": 74,
+              "mesh_volume_mm3": 24917.780004256227,
+              "mesh_volume_error_mm3": 18.355045429336315,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 7488,
+                  "welded_vertices": 3672,
+                  "triangles": 7596,
+                  "native_faces": 74,
+                  "mesh_volume_mm3": 24917.780004256227,
+                  "mesh_volume_error_mm3": 18.355045429336315,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 7488,
+                  "welded_vertices": 3672,
+                  "triangles": 7596,
+                  "native_faces": 74,
+                  "mesh_volume_mm3": 24917.780004256227,
+                  "mesh_volume_error_mm3": 18.355045429336315,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.009431685160140113,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 22146249.5,
+                "p10_ns": 21395167,
+                "p90_ns": 22186666,
+                "samples_ns": [
+                  22168958,
+                  21858333,
+                  22236084,
+                  22123541,
+                  22186666,
+                  21395167
+                ]
+              },
+              "construct": {
+                "median_ns": 3568083.0,
+                "p10_ns": 3459459,
+                "p90_ns": 3624083,
+                "samples_ns": [
+                  3586333,
+                  3624083,
+                  3823917,
+                  3459459,
+                  3490958,
+                  3549833
+                ]
+              },
+              "measures": {
+                "median_ns": 7009729.0,
+                "p10_ns": 6946083,
+                "p90_ns": 7128916,
+                "samples_ns": [
+                  7128916,
+                  7029125,
+                  7180417,
+                  6946708,
+                  6990333,
+                  6946083
+                ]
+              },
+              "mesh": {
+                "median_ns": 18066021.5,
+                "p10_ns": 17605833,
+                "p90_ns": 18744625,
+                "samples_ns": [
+                  20282708,
+                  18046959,
+                  17986417,
+                  18744625,
+                  18085084,
+                  17605833
+                ]
+              },
+              "extract": {
+                "median_ns": 294421604.0,
+                "p10_ns": 292749167,
+                "p90_ns": 294712584,
+                "samples_ns": [
+                  294712584,
+                  294624166,
+                  292995084,
+                  294874959,
+                  294219042,
+                  292749167
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 13951875.5,
+                "p10_ns": 13585333,
+                "p90_ns": 14540750,
+                "samples_ns": [
+                  13720834,
+                  13585333,
+                  13607375,
+                  14540750,
+                  14182917,
+                  14901250
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 346612771.0,
+                "p10_ns": 337084875,
+                "p90_ns": 347586292,
+                "samples_ns": [
+                  337084875,
+                  339676291,
+                  347765709,
+                  347586292,
+                  346550959,
+                  346674583
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 60227854.5,
+                "p10_ns": 58713750,
+                "p90_ns": 60296000,
+                "samples_ns": [
+                  60252167,
+                  60675000,
+                  60203542,
+                  60296000,
+                  58713750,
+                  59800500
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "linear-panel": {
+    "environment": {
+      "timestamp_utc": "2026-10-26T03:43:11.471728+00:00",
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "python": "3.13.17",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "exedra_revision": "d942d8507ea25a683684d1df55af1a0a3a2aa0c3",
+      "worktree_status": "",
+      "fixtures_sha256": "4df4c00b914790cdbc118c37345793e64c814e6dbd2af41994e808097654351d",
+      "rust_binary_sha256": "f82dae5e37f59902285d2be256dee4188468382730a79fed8595e6bfa555960b",
+      "python_worker_sha256": "a3e5b4e62e5624cea63a2041c97455806f446ff74297ecfce3b28d1eb3a7b316",
+      "tolerance_mm": 0.02,
+      "occt_angular_tolerance_radians": 3.0,
+      "creation_timers_exclude_output_destruction": true,
+      "workers_execute_sequentially": true,
+      "warmup_calls_per_phase": 2
+    },
+    "backend_versions": {
+      "exedra": {
+        "backend": "exedra",
+        "debug_assertions": false,
+        "runner_version": "0.0.0"
+      },
+      "build123d": {
+        "backend": "build123d",
+        "version": "0.13.0",
+        "ocp": "8.0.1.1.0",
+        "python": "3.13.17",
+        "absolute_deflection": true,
+        "occt_parallel_meshing": true,
+        "angular_tolerance": 3.0,
+        "packages": {
+          "narwhals": "2.27.1",
+          "svgpathtools": "1.8.0",
+          "scikit-learn": "1.9.1",
+          "pexpect": "4.9.0",
+          "cloudpickle": "3.1.2",
+          "ptyprocess": "0.7.0",
+          "packaging": "26.3",
+          "joblib": "1.6.0",
+          "marshmallow": "3.26.2",
+          "svgelements": "1.9.6",
+          "Pygments": "2.21.0",
+          "prompt_toolkit": "3.0.53",
+          "threejs-materials": "1.2.5",
+          "requests": "2.34.2",
+          "certifi": "2026.10.23",
+          "svgwrite": "1.4.3",
+          "anytree": "2.13.0",
+          "matplotlib-inline": "0.2.2",
+          "typing-inspect": "0.9.0",
+          "wcwidth": "0.9.4",
+          "Deprecated": "3.0.0",
+          "traitlets": "5.16.1",
+          "jedi": "0.20.1",
+          "build123d": "0.13.0",
+          "lib3mf": "2.5.0",
+          "ipython_pygments_lexers": "1.1.1",
+          "numpy": "2.5.4",
+          "wrapt": "2.5.1",
+          "stack-data": "0.6.3",
+          "pillow": "13.0.0",
+          "sympy": "1.14.0",
+          "dataclasses-json": "0.6.7",
+          "urllib3": "2.8.0",
+          "bd_materials": "0.2.5",
+          "mpmath": "1.3.0",
+          "ocp_gordon": "0.3.1",
+          "cadquery-ocp-proxy": "8.0.1.1.0",
+          "pure_eval": "0.2.4",
+          "ocpsvg": "0.7.0",
+          "threadpoolctl": "3.7.0",
+          "executing": "2.3.0",
+          "pygltflib": "1.16.5",
+          "typing_extensions": "4.16.0",
+          "asttokens": "3.0.2",
+          "cadquery-ocp-novtk": "8.0.1.1.0",
+          "psutil": "7.2.2",
+          "fonttools": "4.67.0",
+          "trianglesolver": "1.2",
+          "parso": "0.8.7",
+          "ezdxf": "1.4.5",
+          "charset-normalizer": "3.5.2",
+          "webcolors": "24.8.0",
+          "pyparsing": "3.3.3",
+          "mypy_extensions": "1.1.0",
+          "scipy": "1.18.1",
+          "platformdirs": "4.13.5",
+          "idna": "3.20",
+          "ipython": "9.17.1"
+        }
+      }
+    },
+    "startup_samples": {
+      "exedra": [
+        {
+          "process_wall_seconds": 0.004643124993890524,
+          "peak_process_rss_bytes": 2211840
+        },
+        {
+          "process_wall_seconds": 0.006975749973207712,
+          "peak_process_rss_bytes": 2211840
+        }
+      ],
+      "build123d": [
+        {
+          "import_ns": 1692020792,
+          "process_wall_seconds": 2.0429172089789063,
+          "peak_process_rss_bytes": 418234368
+        },
+        {
+          "import_ns": 1721459041,
+          "process_wall_seconds": 2.0822314999531955,
+          "peak_process_rss_bytes": 418873344
+        }
+      ]
+    },
+    "whole_benchmark_process_resources": {
+      "exedra": [
+        {
+          "process_wall_seconds": 0.07737545808777213,
+          "peak_process_rss_bytes": 6504448
+        },
+        {
+          "process_wall_seconds": 0.08277316601015627,
+          "peak_process_rss_bytes": 6946816
+        }
+      ],
+      "build123d": [
+        {
+          "process_wall_seconds": 4.8902228330262005,
+          "peak_process_rss_bytes": 460046336
+        },
+        {
+          "process_wall_seconds": 4.914472332922742,
+          "peak_process_rss_bytes": 465027072
+        }
+      ]
+    },
+    "cases": [
+      {
+        "id": "panel",
+        "expected_measures": [
+          129214.10627738717,
+          53287.044166691296
+        ],
+        "backends": {
+          "exedra": {
+            "geometry": {
+              "output_vertices": 764,
+              "welded_vertices": 764,
+              "triangles": 1556,
+              "native_faces": 57,
+              "mesh_volume_mm3": 129224.48438307922,
+              "mesh_volume_error_mm3": 10.378105692056124,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": 0.019261315517134836,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 764,
+                  "welded_vertices": 764,
+                  "triangles": 1556,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 129224.48438307922,
+                  "mesh_volume_error_mm3": 10.378105692056124,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                },
+                {
+                  "output_vertices": 764,
+                  "welded_vertices": 764,
+                  "triangles": 1556,
+                  "native_faces": 57,
+                  "mesh_volume_mm3": 129224.48438307922,
+                  "mesh_volume_error_mm3": 10.378105692056124,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": 0.019261315517134836
+                }
+              ],
+              "survey_points": 252,
+              "sampled_max_boundary_distance_mm": 0.019260733794753685,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 253062.5,
+                "p10_ns": 243250.0,
+                "p90_ns": 259916.0,
+                "samples_ns": [
+                  247958.0,
+                  243250.0,
+                  246499.99999999997,
+                  259916.0,
+                  260583.0,
+                  258167.0
+                ]
+              },
+              "construct": {
+                "median_ns": 268583.5,
+                "p10_ns": 259458.0,
+                "p90_ns": 273666.0,
+                "samples_ns": [
+                  263875.0,
+                  259833.0,
+                  259458.0,
+                  279041.0,
+                  273666.0,
+                  273292.0
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 4895166.5,
+                "p10_ns": 4769125.0,
+                "p90_ns": 5050042.0,
+                "samples_ns": [
+                  4769125.0,
+                  4772375.0,
+                  4776500.0,
+                  5204292.0,
+                  5050042.0,
+                  5013833.0
+                ]
+              },
+              "extract": {
+                "median_ns": 21167.0,
+                "p10_ns": 20584.0,
+                "p90_ns": 22083.0,
+                "samples_ns": [
+                  22083.0,
+                  21584.0,
+                  22708.0,
+                  20584.0,
+                  20709.0,
+                  20750.0
+                ]
+              },
+              "measures": {
+                "median_ns": 3512.064453125,
+                "p10_ns": 3486.04296875,
+                "p90_ns": 3643.1884765625,
+                "samples_ns": [
+                  3504.9638671875,
+                  3519.1650390625,
+                  3492.7978515625,
+                  3643.1884765625,
+                  3657.064453125,
+                  3486.04296875
+                ]
+              },
+              "mesh": {
+                "median_ns": 4507791.5,
+                "p10_ns": 4221542.0,
+                "p90_ns": 4574250.0,
+                "samples_ns": [
+                  4221542.0,
+                  4541917.0,
+                  4814625.0,
+                  4473666.0,
+                  4574250.0,
+                  4386000.0
+                ]
+              }
+            }
+          },
+          "build123d": {
+            "geometry": {
+              "output_vertices": 2198,
+              "welded_vertices": 1056,
+              "triangles": 2140,
+              "native_faces": 50,
+              "mesh_volume_mm3": 129219.62696915668,
+              "mesh_volume_error_mm3": 5.520691769517725,
+              "geometrically_closed_after_coordinate_weld": true,
+              "reported_deviation_mm": null,
+              "all_rounds_geometry": [
+                {
+                  "output_vertices": 2198,
+                  "welded_vertices": 1056,
+                  "triangles": 2140,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 129219.62696915668,
+                  "mesh_volume_error_mm3": 5.520691769517725,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                },
+                {
+                  "output_vertices": 2198,
+                  "welded_vertices": 1056,
+                  "triangles": 2140,
+                  "native_faces": 50,
+                  "mesh_volume_mm3": 129219.62696915668,
+                  "mesh_volume_error_mm3": 5.520691769517725,
+                  "geometrically_closed_after_coordinate_weld": true,
+                  "reported_deviation_mm": null
+                }
+              ],
+              "survey_points": 256,
+              "sampled_max_boundary_distance_mm": 0.009786709865874857,
+              "certificate": false,
+              "method": "deterministic triangle midpoints/centroids against the exact OCCT boundary shells",
+              "sampled_tolerance_met": true
+            },
+            "timings": {
+              "author": {
+                "median_ns": 13784708.5,
+                "p10_ns": 13460542,
+                "p90_ns": 14108500,
+                "samples_ns": [
+                  14108500,
+                  13950500,
+                  13618917,
+                  13460542,
+                  14235459,
+                  13617042
+                ]
+              },
+              "construct": {
+                "median_ns": 16318063.0,
+                "p10_ns": 15814042,
+                "p90_ns": 16619125,
+                "samples_ns": [
+                  15845917,
+                  16385542,
+                  16619125,
+                  16250584,
+                  15814042,
+                  17090709
+                ]
+              },
+              "measures": {
+                "median_ns": 2857103.5,
+                "p10_ns": 2826042,
+                "p90_ns": 2863208,
+                "samples_ns": [
+                  2856416,
+                  2863208,
+                  2857791,
+                  2826042,
+                  2868667,
+                  2826834
+                ]
+              },
+              "mesh": {
+                "median_ns": 5057333.5,
+                "p10_ns": 4917834,
+                "p90_ns": 5152250,
+                "samples_ns": [
+                  5182917,
+                  5152250,
+                  5020750,
+                  5093917,
+                  4917834,
+                  5016542
+                ]
+              },
+              "extract": {
+                "median_ns": 188244854.0,
+                "p10_ns": 186746167,
+                "p90_ns": 189830167,
+                "samples_ns": [
+                  191023042,
+                  189338500,
+                  186941791,
+                  189830167,
+                  187151208,
+                  186746167
+                ]
+              },
+              "extract_direct": {
+                "median_ns": 4042000.0,
+                "p10_ns": 4005375,
+                "p90_ns": 4139625,
+                "samples_ns": [
+                  4019708,
+                  4005375,
+                  4059250,
+                  4278042,
+                  4139625,
+                  4024750
+                ]
+              },
+              "end_to_end": {
+                "median_ns": 224827646.0,
+                "p10_ns": 220021417,
+                "p90_ns": 233997458,
+                "samples_ns": [
+                  220021417,
+                  220507208,
+                  220167958,
+                  229148084,
+                  235848042,
+                  233997458
+                ]
+              },
+              "end_to_end_direct": {
+                "median_ns": 38364604.0,
+                "p10_ns": 36829125,
+                "p90_ns": 39373333,
+                "samples_ns": [
+                  37681041,
+                  37207917,
+                  36829125,
+                  39048167,
+                  39373333,
+                  40349625
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "profiling": {
+    "native_plate_64": {
+      "duration_seconds": 6,
+      "main_thread_samples": 3395,
+      "orient2d_self_samples": 1886,
+      "earclip_self_samples": 701,
+      "scope": "sampled multi-phase plate_64 worker; cap triangulation dominates"
+    },
+    "ocp_iterator": {
+      "duration_seconds": 6,
+      "main_thread_samples": 3519,
+      "iterator_chain_samples": 3350,
+      "finding": "C++ binding iterator/exception dispatch; indexed Triangle(i) avoids it and preserves exact output buffers"
+    }
+  }
+}
