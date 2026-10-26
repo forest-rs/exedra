@@ -114,47 +114,74 @@ pub(super) fn separate_doubled_edges<F: ScalarField>(
 /// The two arcs of an ambiguous face whose four sides generated `users`, as
 /// patch pairs with the middle of each arc, or `None` for anything else.
 ///
-/// The arcs are paired by the asymptotic decider over the face's canonical
-/// corner cycle, the same rule cell classification applies, so the arcs
-/// here are the ones the cells' components contain.
+/// The face is the square the four segments bound. Where finer cells meet
+/// it, a segment may be only part of its side, so each side must hold
+/// exactly one of them. The arcs are paired by the asymptotic decider over
+/// the face's canonical corner cycle, the same rule cell classification
+/// applies, so the arcs here are the ones the cells' components contain.
 fn face_arcs<F: ScalarField>(
     users: &[usize],
     segments: &[EdgeSegmentKey],
     grid: &AdaptiveGrid<'_, F>,
 ) -> Option<[([usize; 2], [f32; 3]); 2]> {
     let sides = users.iter().map(|&user| segments[user]).collect::<Vec<_>>();
-    let length = sides[0].length;
-    if sides.iter().any(|side| side.length != length) {
-        return None;
-    }
-    let mut axes = sides.iter().map(|side| side.axis).collect::<Vec<_>>();
+    let mut axes = sides
+        .iter()
+        .map(|side| usize::from(side.axis))
+        .collect::<Vec<_>>();
     axes.sort_unstable();
     let (u, v) = match axes.as_slice() {
-        [a, b, c, d] if a == b && c == d && b != c => (usize::from(*a), usize::from(*c)),
+        [a, b, c, d] if a == b && c == d && b != c => (*a, *c),
         _ => return None,
     };
+    let w = 3 - u - v;
     let coordinate = |key: CornerKey, axis: usize| [key.x, key.y, key.z][axis];
-    let low = sides
+    let ends = sides
         .iter()
-        .flat_map(|side| [side.start, segment_end(*side)]);
-    let origin = low
-        .clone()
-        .min_by_key(|key| (coordinate(*key, u), coordinate(*key, v)))?;
-    let step = |key: CornerKey, axis: usize| {
-        let mut shifted = [key.x, key.y, key.z];
-        shifted[axis] += length;
-        CornerKey::new(shifted[0], shifted[1], shifted[2])
-    };
-    // The canonical cycle: origin, along `u`, along both, along `v`.
-    let corners = [
-        origin,
-        step(origin, u),
-        step(step(origin, u), v),
-        step(origin, v),
-    ];
-    if low.clone().any(|key| !corners.contains(&key)) {
+        .flat_map(|side| [side.start, segment_end(*side)])
+        .collect::<Vec<_>>();
+    let plane = coordinate(ends[0], w);
+    if ends.iter().any(|&key| coordinate(key, w) != plane) {
         return None;
     }
+    let range = |axis: usize| {
+        let values = ends.iter().map(|&key| coordinate(key, axis));
+        Some((values.clone().min()?, values.max()?))
+    };
+    let ((low_u, high_u), (low_v, high_v)) = (range(u)?, range(v)?);
+    if high_u == low_u || high_u - low_u != high_v - low_v {
+        return None;
+    }
+    let corner = |at_u: u32, at_v: u32| {
+        let mut key = [0; 3];
+        (key[u], key[v], key[w]) = (at_u, at_v, plane);
+        CornerKey::new(key[0], key[1], key[2])
+    };
+    // The canonical cycle: origin, along `u`, along both, along `v`. Side
+    // `i` runs from corner `i` to corner `i + 1`.
+    let corners = [
+        corner(low_u, low_v),
+        corner(high_u, low_v),
+        corner(high_u, high_v),
+        corner(low_u, high_v),
+    ];
+    let side_of = |side: EdgeSegmentKey| {
+        let start = side.start;
+        if usize::from(side.axis) == u {
+            let at = coordinate(start, v);
+            (at == low_v).then_some(0).or((at == high_v).then_some(2))
+        } else {
+            let at = coordinate(start, u);
+            (at == high_u).then_some(1).or((at == low_u).then_some(3))
+        }
+    };
+    let mut on_side = [None; 4];
+    for (&user, &side) in users.iter().zip(&sides) {
+        if on_side[side_of(side)?].replace((user, side)).is_some() {
+            return None;
+        }
+    }
+    let on_side = on_side.map(|entry| entry.expect("four segments on four sides"));
     let values = corners.map(|corner| grid.value(corner));
     let [Some(f0), Some(f1), Some(f2), Some(f3)] = values else {
         return None;
@@ -165,23 +192,18 @@ fn face_arcs<F: ScalarField>(
     }
     let determinant = f0 * f2 - f1 * f3;
     let isolated = if determinant.is_finite() && determinant > 0.0 {
-        [corners[1], corners[3]]
+        [1, 3]
     } else {
-        [corners[0], corners[2]]
+        [0, 2]
     };
     let mut arcs = [([0; 2], [0.0; 3]); 2];
     for (arc, corner) in arcs.iter_mut().zip(isolated) {
-        let touching = users
-            .iter()
-            .zip(&sides)
-            .filter(|(_, side)| side.start == corner || segment_end(**side) == corner)
-            .map(|(&user, side)| Some((user, crossing(grid, *side)?)))
-            .collect::<Option<Vec<_>>>()?;
-        let [(first, p), (second, q)] = touching.as_slice() else {
-            return None;
-        };
+        // The arc around a corner crosses the two sides that meet there.
+        let (first, p) = on_side[(corner + 3) % 4];
+        let (second, q) = on_side[corner];
+        let (p, q) = (crossing(grid, p)?, crossing(grid, q)?);
         *arc = (
-            [*first, *second],
+            [first, second],
             core::array::from_fn(|axis| 0.5 * (p[axis] + q[axis])),
         );
     }

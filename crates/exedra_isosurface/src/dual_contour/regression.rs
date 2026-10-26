@@ -23,6 +23,7 @@ fn small_aligned_sphere_remains_closed() {
         &DualContourParams {
             root_bounds: Aabb::new([-0.032; 3], [0.032; 3]).unwrap(),
             max_depth: 5,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: ExtractionLimits::default(),
             witness_limit: 16,
@@ -130,6 +131,7 @@ fn junction_aligned_domain_remains_closed() {
                             Aabb::new([-0.38, -0.05, -0.03], [0.38, 0.29, 0.49]).unwrap()
                         },
                         max_depth: depth,
+                        thin_feature_depth: 0,
                         cell_budget: None,
                         limits: ExtractionLimits::default(),
                         witness_limit: 16,
@@ -171,6 +173,7 @@ fn extraction_params() -> DualContourParams {
     DualContourParams {
         root_bounds: Aabb::new([-0.38, -0.05, -0.03], [0.38, 0.29, 0.49]).unwrap(),
         max_depth: 5,
+        thin_feature_depth: 0,
         cell_budget: None,
         limits: ExtractionLimits::default(),
         witness_limit: 16,
@@ -257,6 +260,7 @@ fn invalid_policies_fail_before_field_evaluation() {
     for depth in [32, 255] {
         let params = DualContourParams {
             max_depth: depth,
+            thin_feature_depth: 0,
             ..base
         };
         assert_eq!(
@@ -393,11 +397,10 @@ fn assert_junction_geometry(mesh: &Mesh, field: &Junction, depth: u8) {
     assert!(cusp_error < maximum_error, "cusp error={cusp_error}");
 }
 
-#[test]
-fn gyroid_sheet_cut_by_a_ball_stays_manifold() {
-    // Where the sheet meets the ball, the solid is a thin wedge that two
-    // neighboring cells each cross in two arcs of their shared face; their
-    // one-vertex components doubled the dual edge between them.
+/// A gyroid sheet of half-thickness `half` cut by a ball: where the sheet
+/// meets the sphere at an acute angle, the solid is a wedge that tapers
+/// below any cell.
+fn gyroid_ball(half: f64) -> impl ScalarField {
     use crate::Metric;
     use crate::function::FnField;
     use exedra_math::Real;
@@ -406,23 +409,112 @@ fn gyroid_sheet_cut_by_a_ball_stays_manifold() {
         let [x, y, z] = p.map(|v| Real::sin_cos(v * f));
         (x.0 * y.1 + y.0 * z.1 + z.0 * x.1) / f
     };
-    let field = FnField::new(
+    FnField::new(
         move |p: [f64; 3]| {
             let radius = Real::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-            (gyroid(p).abs() - 0.15).max(radius - 0.95)
+            (gyroid(p).abs() - half).max(radius - 0.95)
         },
-        Metric::Lipschitz(2.45),
+        // Each gradient component of the sheet is bounded by Cauchy-Schwarz,
+        // as `cos(7y)^2 + sin(7z)^2` and its cyclic siblings, which sum to 3.
+        Metric::Lipschitz(1.732_051),
+        Aabb::new([-1.0; 3], [1.0; 3]),
+    )
+    .unwrap()
+}
+
+fn gyroid_params(max_depth: u8, thin_feature_depth: u8) -> DualContourParams {
+    DualContourParams {
+        root_bounds: Aabb::new([-1.0137, -0.9871, -1.0213], [1.0049, 1.0311, 0.9917]).unwrap(),
+        max_depth,
+        thin_feature_depth,
+        edge_search: EdgeSearchParams::default(),
+        ..extraction_params()
+    }
+}
+
+#[test]
+fn gyroid_sheet_cut_by_a_ball_stays_manifold() {
+    // Where the sheet meets the ball, the solid is a thin wedge that two
+    // neighboring cells each cross in two arcs of their shared face; their
+    // one-vertex components doubled the dual edge between them.
+    let field = gyroid_ball(0.15);
+    for depth in [5, 6] {
+        let result = dual_contour(&field, &gyroid_params(depth, 0)).unwrap();
+        assert!(result.mesh.validate_deep().is_empty(), "depth {depth}");
+    }
+}
+
+#[test]
+fn thin_wedges_refine_below_max_depth_and_stay_manifold() {
+    // A thinner sheet leaves cells whose corners all lie outside although
+    // the wedge passes through them. Below `max_depth`, those cells' faces
+    // are split by finer neighbors, and a doubly crossed face still gets a
+    // vertex per arc.
+    let field = gyroid_ball(0.05);
+    let plain = dual_contour(&field, &gyroid_params(5, 0)).unwrap();
+    assert_eq!(plain.report.thin_feature_cells, 0);
+    for thin in [1, 2] {
+        let result = dual_contour(&field, &gyroid_params(5, thin)).unwrap();
+        assert!(result.mesh.validate_deep().is_empty(), "thin {thin}");
+        assert!(result.report.thin_feature_cells > 0, "thin {thin}");
+        assert!(result.stats.faces > plain.stats.faces, "thin {thin}");
+    }
+}
+
+#[test]
+fn thin_feature_depth_must_fit_the_grid() {
+    let params = DualContourParams {
+        max_depth: 20,
+        thin_feature_depth: 5,
+        ..extraction_params()
+    };
+    assert_eq!(
+        dual_contour(&gyroid_ball(0.05), &params).unwrap_err(),
+        DualContourError::invalid(DualContourParameter::ThinFeatureDepth)
+    );
+}
+
+#[test]
+fn stray_samples_of_a_thin_wedge_are_dropped() {
+    // A lone grid node inside a wedge tip closes a tiny surface of its own,
+    // cut off from the sheet it samples.
+    let result = dual_contour(&gyroid_ball(0.05), &gyroid_params(6, 0)).unwrap();
+    assert!(result.report.dropped_islands > 0);
+    assert!(result.mesh.validate_deep().is_empty());
+}
+
+#[test]
+fn a_component_smaller_than_a_cell_is_kept() {
+    use crate::Metric;
+    use crate::function::FnField;
+    use exedra_math::Real;
+    // A ball much smaller than a cell around a grid node, far from a large
+    // one: only that node is inside, and nothing else encloses it.
+    let distance = |p: [f64; 3], c: [f64; 3], r: f64| {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        Real::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - r
+    };
+    let field = FnField::new(
+        move |p: [f64; 3]| distance(p, [-0.4; 3], 0.4).min(distance(p, [0.5; 3], 0.03)),
+        Metric::Lipschitz(1.0),
         Aabb::new([-1.0; 3], [1.0; 3]),
     )
     .unwrap();
-    for depth in [5, 6] {
-        let params = DualContourParams {
-            root_bounds: Aabb::new([-1.0137, -0.9871, -1.0213], [1.0049, 1.0311, 0.9917]).unwrap(),
-            max_depth: depth,
-            edge_search: EdgeSearchParams::default(),
-            ..extraction_params()
-        };
-        let result = dual_contour(&field, &params).unwrap();
-        assert!(result.mesh.validate_deep().is_empty(), "depth {depth}");
-    }
+    let params = DualContourParams {
+        root_bounds: Aabb::new([-1.0; 3], [1.0; 3]).unwrap(),
+        max_depth: 5,
+        thin_feature_depth: 0,
+        ..extraction_params()
+    };
+    let result = dual_contour(&field, &params).unwrap();
+    assert_eq!(result.report.dropped_islands, 0);
+    let tiny = result
+        .mesh
+        .vertices()
+        .filter(|&v| {
+            let p = result.mesh.vertex_position(v).unwrap();
+            p.iter().all(|&c| (c - 0.5).abs() < 0.07)
+        })
+        .count();
+    assert_eq!(tiny, 8, "the lone node keeps its eight cell vertices");
 }

@@ -120,6 +120,7 @@ mod tests {
         let params = DualContourParams {
             root_bounds: Aabb::new([-2.5, -1.5, -1.5], [2.5, 1.5, 1.5]).unwrap(),
             max_depth: 5,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: ExtractionLimits::default(),
             witness_limit: 0,

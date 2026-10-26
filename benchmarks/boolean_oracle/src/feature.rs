@@ -490,6 +490,7 @@ fn params(root_bounds: Aabb, max_depth: u8) -> DualContourParams {
     DualContourParams {
         root_bounds,
         max_depth,
+        thin_feature_depth: 0,
         cell_budget: None,
         limits: ExtractionLimits::default(),
         witness_limit: 16,

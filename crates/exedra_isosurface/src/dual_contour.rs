@@ -16,8 +16,9 @@ use exedra_mesh::{
 use hashbrown::{HashMap, HashSet};
 
 use crate::adaptive_transition::{
-    AdaptiveGrid, BalanceContext, Balancer, CellKey, ComponentRoute, EdgeSegmentKey, LeafChanges,
-    LeafLocator, LeafSet, enumerate_segments, leaf_keys, refine_into_leaves, segment_end,
+    AdaptiveGrid, BalanceContext, Balancer, CellKey, ComponentRoute, CornerKey, EdgeSegmentKey,
+    LeafChanges, LeafLocator, LeafSet, enumerate_segments, leaf_keys, refine_into_leaves,
+    segment_end,
 };
 use crate::cell_topology::{CUBE_EDGES, CellTopology, classify_cell};
 use crate::hermite::locate_edge_zero;
@@ -35,6 +36,7 @@ const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
 mod arcs;
 pub(crate) mod control;
+mod islands;
 mod joining;
 mod relax;
 mod repair;
@@ -58,8 +60,24 @@ pub struct DualContourParams {
     /// Root domain bounds, preserved exactly at integer-grid coordinates `0`
     /// and `2^max_depth`.
     pub root_bounds: Aabb,
-    /// Maximum octree depth and finest integer-grid resolution.
+    /// Depth at which error-driven refinement stops.
     pub max_depth: u8,
+    /// Further levels allowed below `max_depth` for features thinner than a
+    /// `max_depth` cell.
+    ///
+    /// A cell whose corners all agree may still hold surface, as at the tip
+    /// of an acute wedge. At `max_depth`, such a cell whose interval bounds
+    /// allow surface is sampled at the corners its children would have, and
+    /// refined when those disagree, down to `max_depth + thin_feature_depth`.
+    /// The finest integer grid has resolution
+    /// `2^(max_depth + thin_feature_depth)`. `0` stops at `max_depth`.
+    ///
+    /// The probe is a sample, not a proof: a feature that misses the
+    /// children's corners is still lost, and its cells count in
+    /// [`ExtractionReport::unresolved_cells`]. Cells whose corners already
+    /// disagree are not probed: a second feature passing through one is not
+    /// found.
+    pub thin_feature_depth: u8,
     /// Optional cap on contributing leaves emitted into the dual mesh.
     ///
     /// The cap does not bound interval analysis, balancing, or sparse corner
@@ -165,6 +183,9 @@ pub enum DualContourParameter {
     RootBounds,
     /// Depth must fit the integer grid and yield distinct `f32` grid positions.
     MaxDepth,
+    /// `max_depth + thin_feature_depth` must fit the integer grid and yield
+    /// distinct `f32` grid positions.
+    ThinFeatureDepth,
     /// Join tolerance must be finite and nonnegative.
     VertexMergeTolerance,
     /// QEF parameters must satisfy [`QefParams::is_valid`].
@@ -323,6 +344,7 @@ enum RefinementReason {
     PartialHermite,
     NonFinite,
     TopologyUnsafe,
+    ThinFeature,
     Clamped,
     Residual,
     Curvature,
@@ -407,11 +429,12 @@ fn dual_contour_run<F: ScalarField>(
         refinement_mode,
         grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
         pending: None,
+        thin_feature_cells: 0,
         run,
     };
     let mut tree = Octree::build(
         params.root_bounds,
-        params.max_depth,
+        depth_limit(params),
         params.limits.octree_cells,
         &mut visitor,
     )
@@ -431,6 +454,7 @@ fn dual_contour_run<F: ScalarField>(
     let locator = LeafLocator::new(&leaf_keys, resolution);
     let mut report = extraction_report(params, &tree, &visitor.grid, &omitted_by_budget);
     report.eligible_cells = active_cells.len() + omitted_by_budget.len();
+    report.thin_feature_cells = visitor.thin_feature_cells;
     report.enclosure = Enclosure::of(field.capabilities().support, &params.root_bounds);
     for &segment in &segments {
         if !edge_has_crossing(
@@ -530,6 +554,13 @@ fn dual_contour_run<F: ScalarField>(
     } else {
         (0, 0.0)
     };
+    let finest = step_size(params.root_bounds, 1 << depth_limit(params));
+    report.dropped_islands = islands::drop_sampling_islands(
+        field,
+        &mut mesh,
+        finest.into_iter().fold(0.0, f32::max),
+        run,
+    )?;
     report.repaired_slivers = repair::flip_folded_slivers(&mut mesh);
     run.stats.set(DualContourStats {
         octree_cells,
@@ -595,20 +626,27 @@ fn validate_params(params: &DualContourParams) -> Result<u32, DualContourError> 
     {
         return Err(DualContourError::invalid(DualContourParameter::RootBounds));
     }
-    let resolution = 1_u32
-        .checked_shl(u32::from(params.max_depth))
-        .ok_or(DualContourError::invalid(DualContourParameter::MaxDepth))?;
-    if params.max_depth > 24
-        || (0..3).any(|axis| {
-            let step =
-                (f64::from(bounds.max[axis]) - f64::from(bounds.min[axis])) / f64::from(resolution);
-            let magnitude = bounds.min[axis].abs().max(bounds.max[axis].abs());
-            let ulp = magnitude.next_up() - magnitude;
-            !step.is_finite() || step <= 0.0 || step < f64::from(ulp)
-        })
-    {
+    let resolvable = |depth: u8| {
+        depth <= 24
+            && (0..3).all(|axis| {
+                let resolution = f64::from(1_u32 << depth);
+                let step = (f64::from(bounds.max[axis]) - f64::from(bounds.min[axis])) / resolution;
+                let magnitude = bounds.min[axis].abs().max(bounds.max[axis].abs());
+                let ulp = magnitude.next_up() - magnitude;
+                step.is_finite() && step > 0.0 && step >= f64::from(ulp)
+            })
+    };
+    if !resolvable(params.max_depth) {
         return Err(DualContourError::invalid(DualContourParameter::MaxDepth));
     }
+    let depth_limit = params
+        .max_depth
+        .checked_add(params.thin_feature_depth)
+        .filter(|&depth| resolvable(depth))
+        .ok_or(DualContourError::invalid(
+            DualContourParameter::ThinFeatureDepth,
+        ))?;
+    let resolution = 1_u32 << depth_limit;
     if !params.vertex_merge_tolerance.is_finite() || params.vertex_merge_tolerance < 0.0 {
         return Err(DualContourError::invalid(
             DualContourParameter::VertexMergeTolerance,
@@ -1484,7 +1522,7 @@ fn prepare_transitions<F: ScalarField>(
                         tree,
                         &locator,
                         leaf,
-                        visitor.params.max_depth,
+                        depth_limit(visitor.params),
                         &mut refine,
                     )
                 {
@@ -1499,7 +1537,7 @@ fn prepare_transitions<F: ScalarField>(
                             tree,
                             &locator,
                             leaf,
-                            visitor.params.max_depth,
+                            depth_limit(visitor.params),
                             &mut refine,
                         ) {
                             unresolved.get_or_insert(segment);
@@ -1555,7 +1593,7 @@ fn prepare_transitions<F: ScalarField>(
         let mut pending = Vec::new();
         for (key, id) in refine {
             let limit = visitor.params.limits.octree_cells;
-            let created = refine_into_leaves(tree, visitor, id, visitor.params.max_depth, limit)
+            let created = refine_into_leaves(tree, visitor, id, depth_limit(visitor.params), limit)
                 .map_err(|error| visitor.spatial_error(error))?;
             visitor.run.record_tree(tree.len())?;
             balancer.replace(key, &created);
@@ -1964,6 +2002,8 @@ struct IntervalVisitor<'a, F> {
     refinement_mode: RefinementMode,
     grid: AdaptiveGrid<'a, F>,
     pending: Option<(CellId, LeafMarker)>,
+    /// Cells at `max_depth` refined for a thin feature.
+    thin_feature_cells: usize,
     run: &'a RunContext,
 }
 
@@ -2022,11 +2062,46 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         error.with_witness(ExtractionWitness::Cell(witness))
     }
 
+    /// Whether surface passes between the agreeing corners of `cell`: some
+    /// corner its children would have disagrees with them. The samples are
+    /// cached, so refinement reuses them.
+    fn hides_thin_feature(
+        &mut self,
+        cell: CellKey,
+        corners: &[f32; 8],
+    ) -> Result<bool, DualContourError> {
+        if cell.span < 2 || corners.iter().any(|value| !value.is_finite()) {
+            return Ok(false);
+        }
+        let half = cell.span / 2;
+        let keys = (0..27)
+            .filter(|&index| [1, 3, 9].iter().any(|&step| index / step % 3 == 1))
+            .map(|index| {
+                let offset = |step: u32| index / step % 3 * half;
+                CornerKey::new(
+                    cell.origin.x + offset(1),
+                    cell.origin.y + offset(3),
+                    cell.origin.z + offset(9),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.grid.sample_keys(&keys, self.run)?;
+        let inside = corners[0] < 0.0;
+        Ok(keys.iter().any(|&key| {
+            self.grid
+                .value(key)
+                .is_some_and(|value| !value.is_nan() && (value < 0.0) != inside)
+        }))
+    }
+
     fn inspect_cell(
         &mut self,
         cell: CellRef,
         at_max_depth: bool,
     ) -> Result<LeafMarker, DualContourError> {
+        // Error-driven refinement stops at `max_depth`; only thin features
+        // refine below it, down to the octree's own limit.
+        let at_resolution = at_max_depth || cell.depth >= self.params.max_depth;
         let cell_key = self.grid.locate_cell(cell);
         let cell_bounds = self.grid.cell_bounds(cell_key);
         let intersects = self
@@ -2042,7 +2117,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         }
 
         #[cfg(test)]
-        if self.refinement_mode == RefinementMode::ForcedUniform && !at_max_depth {
+        if self.refinement_mode == RefinementMode::ForcedUniform && !at_resolution {
             return Ok(LeafMarker {
                 decision: RefinementDecision::Refine(RefinementReason::ForcedUniform),
                 analysis: None,
@@ -2050,7 +2125,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         }
 
         if self.refinement_mode == RefinementMode::Legacy
-            && !at_max_depth
+            && !at_resolution
             && cell.depth < MIN_EMITTER_DEPTH
         {
             return Ok(LeafMarker {
@@ -2063,8 +2138,13 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         let expected_crossings = crossing_edge_count(&corner_values);
 
         if expected_crossings == 0 {
-            let decision = if at_max_depth {
-                RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
+            let decision = if at_resolution {
+                if !at_max_depth && self.hides_thin_feature(cell_key, &corner_values)? {
+                    self.thin_feature_cells += 1;
+                    RefinementDecision::Refine(RefinementReason::ThinFeature)
+                } else {
+                    RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
+                }
             } else if self.refinement_mode == RefinementMode::Legacy {
                 RefinementDecision::Inactive(InactiveReason::LegacyHomogeneous)
             } else if corner_values.iter().all(|value| value.is_finite()) {
@@ -2078,7 +2158,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
             });
         }
 
-        if !at_max_depth
+        if !at_resolution
             && self.refinement_mode == RefinementMode::ErrorDriven
             && cell.depth < MIN_EMITTER_DEPTH
         {
@@ -2089,7 +2169,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         }
 
         if self.refinement_mode == RefinementMode::Legacy
-            && !at_max_depth
+            && !at_resolution
             && expected_crossings > LEGACY_SIMPLE_CELL_MAX_CROSSINGS
         {
             return Ok(LeafMarker {
@@ -2100,7 +2180,7 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
 
         let analysis = analyze_crossing_cell(self.field, self.params, corner_values, cell_bounds)?;
         self.run.check()?;
-        let decision = if at_max_depth {
+        let decision = if at_resolution {
             if analysis.hermite.intersections.is_empty() {
                 RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
             } else {
@@ -2254,7 +2334,7 @@ impl<F: ScalarField> BalanceContext for IntervalVisitor<'_, F> {
     }
 
     fn global_max_depth(&self) -> u8 {
-        self.params.max_depth
+        depth_limit(self.params)
     }
 
     fn cell_limit(&self) -> Option<usize> {
@@ -2304,6 +2384,11 @@ fn refinement_decision(evidence: &RefinementEvidence, target: f32) -> Refinement
         return RefinementDecision::Refine(RefinementReason::Curvature);
     }
     RefinementDecision::Retain
+}
+
+/// The deepest octree level: `max_depth` plus the thin-feature levels.
+fn depth_limit(params: &DualContourParams) -> u8 {
+    params.max_depth + params.thin_feature_depth
 }
 
 fn adaptive_error_target(params: &DualContourParams) -> f32 {
@@ -2609,6 +2694,7 @@ mod tests {
         DualContourParams {
             root_bounds: bounds,
             max_depth,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: ExtractionLimits::default(),
             witness_limit: 16,
@@ -3314,6 +3400,7 @@ mod tests {
             refinement_mode: RefinementMode::Legacy,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         let mut tree =
@@ -3673,6 +3760,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
@@ -4285,6 +4373,7 @@ mod tests {
             refinement_mode: RefinementMode::ForcedUniform,
             grid: AdaptiveGrid::new(&field, bounds, 1 << extraction_params.max_depth),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
 
@@ -4485,6 +4574,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, extraction_params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         let mut tree = Octree::build(
@@ -4671,6 +4761,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
 
@@ -4703,6 +4794,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         visitor
@@ -4741,6 +4833,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
@@ -4792,6 +4885,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();
@@ -4893,6 +4987,7 @@ mod tests {
             refinement_mode: RefinementMode::ErrorDriven,
             grid: AdaptiveGrid::new(&field, params.root_bounds, resolution),
             pending: None,
+            thin_feature_cells: 0,
             run: &RunContext::new(ExtractionLimits::default()),
         };
         let tree = Octree::build(params.root_bounds, params.max_depth, None, &mut visitor).unwrap();

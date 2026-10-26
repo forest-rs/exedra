@@ -35,6 +35,7 @@
 //! let params = DualContourParams {
 //!     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
 //!     max_depth: 4,
+//!     thin_feature_depth: 0,
 //!     cell_budget: None,
 //!     limits: Default::default(),
 //!     witness_limit: 16,

@@ -84,6 +84,7 @@ fn params() -> DualContourParams {
     DualContourParams {
         root_bounds: Aabb::new([-1.4; 3], [1.4; 3]).unwrap(),
         max_depth: 3,
+        thin_feature_depth: 0,
         cell_budget: None,
         vertex_merge_tolerance: 0.0,
         edge_search: EdgeSearchParams::default(),
@@ -498,6 +499,7 @@ fn analysis_limits_cover_later_balancing_and_completion() {
         refinement_mode: RefinementMode::ErrorDriven,
         grid: AdaptiveGrid::new(&field, p.root_bounds, 1 << p.max_depth),
         pending: None,
+        thin_feature_cells: 0,
         run: &run,
     };
     let initial = Octree::build(p.root_bounds, p.max_depth, None, &mut visitor).unwrap();

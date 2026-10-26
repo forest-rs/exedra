@@ -279,6 +279,7 @@ mod tests {
         DualContourParams {
             root_bounds: bounds,
             max_depth,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: ExtractionLimits::default(),
             witness_limit: 16,

@@ -208,6 +208,7 @@ fn surface<F: ScalarField>(field: &F) -> Vec<[f32; 3]> {
     let params = DualContourParams {
         root_bounds: Aabb::new([-2.0; 3], [2.0; 3]).unwrap(),
         max_depth: 5,
+        thin_feature_depth: 0,
         cell_budget: None,
         limits: crate::ExtractionLimits::default(),
         witness_limit: 0,

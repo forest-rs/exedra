@@ -319,6 +319,10 @@ pub struct ExtractionReport {
     pub unresolved_cells: usize,
     /// Finest cells retained using compatibility evidence.
     pub compatibility_cells: usize,
+    /// Cells at or below `max_depth` refined because their children's
+    /// corners show surface between corners that all agree; see
+    /// [`super::DualContourParams::thin_feature_depth`].
+    pub thin_feature_cells: usize,
     /// Bounding box of omitted contributing cells, or `None` when none were omitted.
     pub omitted_bounds: Option<Aabb>,
     /// Deterministic spatial witnesses, capped by the caller. Counts above
@@ -332,6 +336,12 @@ pub struct ExtractionReport {
     /// not counted. These samples are the ones that set corner normals, so
     /// counting costs no extra field evaluations.
     pub inverted_faces: usize,
+    /// Small closed components dropped as stray samples of a thinner
+    /// feature: a lone grid node inside a feature that tapers below a cell,
+    /// from which the field descends, along a path its interval bounds show
+    /// inside, to a point the rest of the mesh encloses. A component no such
+    /// path is found for is kept.
+    pub dropped_islands: usize,
     /// Folded slivers repaired by flipping their long edge: near-collinear
     /// triangles that faced backwards where cells of different sizes meet.
     pub repaired_slivers: usize,

@@ -809,6 +809,7 @@ mod tests {
         let params = DualContourParams {
             root_bounds: Aabb::new([-1.3; 3], [1.4; 3]).expect("root"),
             max_depth: 4,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: ExtractionLimits::default(),
             witness_limit: 16,

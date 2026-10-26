@@ -57,6 +57,7 @@ fn main() {
             root_bounds: Aabb::new([-1.15, -1.15, -0.55], [1.15, 1.15, 0.55])
                 .expect("valid bounds"),
             max_depth: 6,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: ExtractionLimits::default(),
             witness_limit: 16,

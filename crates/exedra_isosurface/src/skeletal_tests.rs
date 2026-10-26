@@ -471,6 +471,7 @@ fn a_three_branch_fork_extracts_a_closed_mesh() {
         let params = DualContourParams {
             root_bounds: Aabb::new([-0.7, -0.5, -1.1], [0.8, 0.5, 0.9]).expect("ordered"),
             max_depth: 6,
+            thin_feature_depth: 0,
             cell_budget: None,
             limits: crate::ExtractionLimits::default(),
             witness_limit: 16,

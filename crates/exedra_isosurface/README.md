@@ -12,6 +12,7 @@ let field = SphereField::new([0.0, 0.0, 0.0], 1.0).expect("valid sphere");
 let params = DualContourParams {
     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
     max_depth: 4,
+    thin_feature_depth: 0,
     cell_budget: None,
     limits: Default::default(),
     witness_limit: 16,
@@ -73,10 +74,24 @@ The current mesher is intentionally phase-1:
 
 Where a cell's component meets a face in two arcs, as at a thin wedge, and
 the neighboring cell's does too, each arc gets a vertex of its own on the face,
-so the dual edge between the two cells is not doubled and the mesh stays
-manifold. A sample exactly on the surface counts as outside: inside means strictly
+also where finer neighbors split the face's sides, so the dual edge between the
+two cells is not doubled and the mesh stays manifold. A sample exactly on the surface counts as outside: inside means strictly
 negative. Vertices keep a thousandth of a cell off its faces, so distinct cells never
 yield coincident vertices, even where a crease runs through grid nodes.
+
+A feature thinner than a `max_depth` cell, such as the tip of an acute wedge where
+two surfaces meet, can pass between a cell's corners without changing any of their
+signs. With `thin_feature_depth` above zero, such a cell is sampled at the corners
+its children would have and refined below `max_depth` where those disagree, down to
+`max_depth + thin_feature_depth`; `report.thin_feature_cells` counts them. The probe
+is a sample, not a proof: a feature missing those corners stays lost and counts in
+`report.unresolved_cells`, and cells whose corners already disagree are not probed. A lone grid node inside such a feature still closes a tiny
+surface of its own. Descending the field from inside it, along a path the field's
+interval bounds show inside, shows whether the rest of the mesh already encloses the
+region it samples: if so it is a stray sample and is dropped, counted in
+`report.dropped_islands`; otherwise it is kept, however small. Dropping one loses at
+most a finest cell or two of a tip the grid already truncates; recovering where the
+two surfaces of such a tip meet needs those surfaces from the field, not one value.
 Existing parameter literals must add `vertex_merge_tolerance`. Use `0.0` for
 exact coincidences only. A positive tolerance allows bounded joins on degenerate
 transition patches; it does not certify surface accuracy or feature retention.

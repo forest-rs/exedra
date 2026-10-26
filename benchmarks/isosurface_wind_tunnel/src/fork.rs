@@ -105,6 +105,7 @@ fn params(depth: u8) -> DualContourParams {
     DualContourParams {
         root_bounds: Aabb::new([-0.6, -0.6, -0.6], [0.6, 0.6, 0.6]).expect("ordered fork box"),
         max_depth: depth,
+        thin_feature_depth: 0,
         cell_budget: None,
         limits: ExtractionLimits::default(),
         witness_limit: 16,
