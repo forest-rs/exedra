@@ -5,7 +5,7 @@
 //!
 //! [`geometry`] owns checked curves, surfaces and parameter domains. [`body`]
 //! owns bounded edges and oriented face loops independently of construction
-//! history. [`extrusion::Extrusion`], [`revolve::Revolution`] and [`AnalyticShell`] construct that model
+//! history. [`extrusion::Extrusion`], [`revolve::Revolution`], [`sweep::Sweep`] and [`AnalyticShell`] construct that model
 //! while preserving source roles and explicit mesh realization correspondence.
 //! Geometry, surface parameters and texture coordinates remain distinct.
 //!
@@ -26,6 +26,7 @@ pub mod geometry;
 mod planar;
 pub mod realize;
 pub mod revolve;
+pub mod sweep;
 pub use planar::{
     AnalyticFaceId, AnalyticLoopId, AnalyticShell, AnalyticShellBuilder, AnalyticVertexId,
     BuildError, EditError, PlanarFace, RectFrameParams, RectOpeningParams, RegionId,

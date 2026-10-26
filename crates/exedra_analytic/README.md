@@ -20,7 +20,7 @@ curve/vertex/support agreement against an explicit gap tolerance. It does not
 heal geometry or certify trim nesting, global self-intersection, shell containment
 or regular-solid validity. `is_closed` checks oriented edge incidence.
 
-The extrusion and revolution constructors and planar shell builder own this shared
+The extrusion, revolution and sweep constructors and planar shell builder own this shared
 model and expose it through `body()`. A cloned body can outlive its construction
 record. `Body::realize` handles planar trims and four-edge cylindrical/conical
 strips, including full periodic walls. Coaxial planar annuli and sectors use
@@ -54,6 +54,23 @@ distinct texture coordinates on either side of the seam. The existing constructi
 `map_revolve_wall_triangle` and `map_cap_triangle`; no geometry crate owns texture
 scale or material policy. Mapping errors name the native face, and non-finite
 UVs are refused before any UV mutation.
+
+`sweep::Sweep` transports a checked polygonal section along a smooth open path
+of lines and circular arcs. It accepts the same borrowed curve path authored by
+constructive `PathCursor3`; shared mathematical descriptors live in
+`exedra_math::path`, without coupling either geometry head to the other.
+Section boundaries and rails are shared native edges. Planar, cylindrical and
+conical walls retain path-span and profile-segment identity, feature tags,
+exact enclosed volume and surface area, independently of sampling density.
+The section datum and initial direction are explicit. Sharp corners, closed
+paths, cubic spans, curved profile segments and local bend-axis contact are
+typed refusals. Distant self-intersection remains the caller's responsibility.
+
+`Sweep::realize_with_uvs` supplies `(profile_distance, centerline_distance)` on
+walls and source profile coordinates on caps. Distances are measured on the
+authored curves. The constructive `SurfaceChart::Sweep` applies texture scale
+through `map_sweep_wall_triangle` and `map_cap_triangle`. The geometry seam is
+shared while corner UVs remain distinct. Uncharted realization has no UV scratch.
 
 `extrusion::Extrusion` extrudes an `exedra_profile::Profile` of lines and
 circular arcs along local +Z under a checked rigid frame. The result is a closed

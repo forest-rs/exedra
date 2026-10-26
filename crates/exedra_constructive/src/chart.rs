@@ -300,6 +300,23 @@ impl SurfaceChart {
         };
         wall.map_triangle(points.map(|[theta, s]| [reference_radius * theta, s]))
     }
+    /// Maps native sweep wall coordinates `(profile_distance, path_distance)`.
+    ///
+    /// Native construction supplies exact source distances; recipe evaluation
+    /// supplies sampled distances. This method preserves the supplied rest metric.
+    ///
+    /// # Errors
+    /// Refuses another chart operation or invalid mapping/storage conditions.
+    pub fn map_sweep_wall_triangle(
+        &self,
+        points: [[f64; 2]; 3],
+    ) -> Result<[[f32; 2]; 3], ChartError> {
+        self.validate()?;
+        let Self::Sweep { wall, .. } = self else {
+            return Err(ChartError::WrongOperation);
+        };
+        wall.map_triangle(points)
+    }
     /// Maps a cap triangle in its generating profile coordinates.
     ///
     /// # Errors

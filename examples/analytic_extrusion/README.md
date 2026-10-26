@@ -102,7 +102,7 @@ cargo run --release -p analytic_extrusion --example authoring -- /tmp/authoring.
 blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/authoring.glb /tmp/authoring.png
 ```
 
-The sample builds three native solids and one constructive sweep. A cursor draws
+The sample builds four native solids, including a swept rail. A cursor draws
 an arched profile; one tagged circle supplies four placed cutouts; an open
 half-outline closes against its mirror line; and a spatial path carries its
 endpoint/tangent through two radius/sweep arcs and a relative line. The native
@@ -111,6 +111,9 @@ and bind the dark wall material with the same feature identity.
 
 Every output mesh must be deeply valid and closed; native realization must meet
 its reported tolerance. A cubic input also exercises the typed native refusal,
-which retains the authored segment index. Sweeps still use the ordinary recipe
-and evaluation policies; radius/tangent authoring does not conceal sharp-corner
-foldovers or promise new geometric capabilities.
+which retains the authored segment index. The rail uses `Sweep::from_profile`
+with that same authored path. Its native walls retain planes and cylinders,
+and its exact measures precede meshing. An embedded grid uses construction-aware
+sweep charts with a 20 mm repeat, making texture stretch through the bends visible.
+Native sweeping currently accepts polygonal sections on smooth open line/arc
+paths; sharp corners, cubic spans and local bend-axis contact are refused.
