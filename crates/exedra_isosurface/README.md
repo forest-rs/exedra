@@ -71,7 +71,10 @@ The current mesher is intentionally phase-1:
 - topology-checked joining of coincident transition vertices, with an explicit
   field-coordinate tolerance for near-coincident solves and measured displacement.
 
-A sample exactly on the surface counts as outside: inside means strictly
+Where a cell's component meets a face in two arcs, as at a thin wedge, and
+the neighboring cell's does too, each arc gets a vertex of its own on the face,
+so the dual edge between the two cells is not doubled and the mesh stays
+manifold. A sample exactly on the surface counts as outside: inside means strictly
 negative. Vertices keep a thousandth of a cell off its faces, so distinct cells never
 yield coincident vertices, even where a crease runs through grid nodes.
 Existing parameter literals must add `vertex_merge_tolerance`. Use `0.0` for

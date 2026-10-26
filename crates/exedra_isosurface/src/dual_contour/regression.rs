@@ -392,3 +392,37 @@ fn assert_junction_geometry(mesh: &Mesh, field: &Junction, depth: u8) {
     let cusp_error = (hit(0.0, f64::from(0.332_f32)) - expected(0.0, 0.332)).abs();
     assert!(cusp_error < maximum_error, "cusp error={cusp_error}");
 }
+
+#[test]
+fn gyroid_sheet_cut_by_a_ball_stays_manifold() {
+    // Where the sheet meets the ball, the solid is a thin wedge that two
+    // neighboring cells each cross in two arcs of their shared face; their
+    // one-vertex components doubled the dual edge between them.
+    use crate::Metric;
+    use crate::function::FnField;
+    use exedra_math::Real;
+    let f = 7.0_f64;
+    let gyroid = move |p: [f64; 3]| {
+        let [x, y, z] = p.map(|v| Real::sin_cos(v * f));
+        (x.0 * y.1 + y.0 * z.1 + z.0 * x.1) / f
+    };
+    let field = FnField::new(
+        move |p: [f64; 3]| {
+            let radius = Real::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+            (gyroid(p).abs() - 0.15).max(radius - 0.95)
+        },
+        Metric::Lipschitz(2.45),
+        Aabb::new([-1.0; 3], [1.0; 3]),
+    )
+    .unwrap();
+    for depth in [5, 6] {
+        let params = DualContourParams {
+            root_bounds: Aabb::new([-1.0137, -0.9871, -1.0213], [1.0049, 1.0311, 0.9917]).unwrap(),
+            max_depth: depth,
+            edge_search: EdgeSearchParams::default(),
+            ..extraction_params()
+        };
+        let result = dual_contour(&field, &params).unwrap();
+        assert!(result.mesh.validate_deep().is_empty(), "depth {depth}");
+    }
+}

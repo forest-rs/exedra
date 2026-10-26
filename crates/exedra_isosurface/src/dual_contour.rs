@@ -31,6 +31,7 @@ const MIN_EMITTER_DEPTH: u8 = 2;
 const LEGACY_SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
 const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 
+mod arcs;
 pub(crate) mod control;
 mod joining;
 mod repair;
@@ -704,6 +705,7 @@ where
     run.stats.set(progress);
     let mut face_count = 0_usize;
     let mut patches = Vec::new();
+    let mut patch_segments = Vec::new();
     let mut needs_joining = false;
     for &segment in segments {
         let start_value = grid
@@ -809,7 +811,16 @@ where
         face_count = reserve()
             .map_err(|error| error.with_witness(ExtractionWitness::Transition(witness)))?;
         patches.push((face, region));
+        patch_segments.push(segment);
     }
+    let (patches, _) = arcs::separate_doubled_edges(
+        patches,
+        &patch_segments,
+        grid,
+        &mut builder,
+        run,
+        (&mut vertex_count, &mut face_count),
+    )?;
     face_count = 0;
     for (face, region) in &patches {
         if needs_joining {
