@@ -52,6 +52,11 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Reserves storage for additional slots without changing IDs or occupancy.
+    pub(crate) fn reserve_slots(&mut self, additional: usize) {
+        self.slots.reserve_exact(additional);
+    }
+
     /// Returns the number of occupied slots.
     #[must_use]
     pub const fn len(&self) -> usize {
