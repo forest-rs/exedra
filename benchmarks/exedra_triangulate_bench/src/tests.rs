@@ -91,7 +91,8 @@ const DELAUNAY_PINS: [(&str, u64, usize); 13] = [
     ("sparse_rect_dense_hole_64", 0xc1b6_ec9a_ceb5_fc37, 11),
     ("sparse_rect_dense_hole_120", 0xec57_fe5b_ca27_46fd, 21),
     ("drill_like_collinear_midpoints", 0x0fb3_38c6_3e40_b363, 1),
-    ("three_hole_bridge_stress", 0xdcff_9d39_e6f3_51fc, 27),
+    // Short visible bridges reach the same canonical mesh with 14 fewer flips.
+    ("three_hole_bridge_stress", 0xdcff_9d39_e6f3_51fc, 13),
     ("small_angle_wedge", 0x9210_97b6_21ea_dcdd, 0),
     ("choice_scale_down_2p-200", 0xd62d_e155_79a9_bce6, 1),
     ("choice_scale_up_2p200", 0xd83f_5bbf_fecc_9fd4, 1),

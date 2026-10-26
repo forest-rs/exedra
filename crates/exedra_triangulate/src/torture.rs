@@ -364,6 +364,14 @@ fn check_constrained_delaunay(
     );
 
     let triangles = &first.triangulation.triangles;
+    // Changing the bridge seed may reduce legalization work, but must reach
+    // the same canonical fixed-vertex cover as the historical EarClip seed.
+    let mut from_reference = reference.triangles.clone();
+    legalize_edges(points, &mut from_reference);
+    assert_eq!(
+        triangles, &from_reference,
+        "{label}: bridge seed changed the canonical Delaunay cover"
+    );
     assert_eq!(
         triangles.len(),
         reference.len(),
