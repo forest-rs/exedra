@@ -131,6 +131,8 @@ fn main() -> Result<(), exedra_mesh::BuildError> {
 
 - `Mesh`, `MeshBuilder`, `BuildParams`: construction and ownership.
 - `VertexId`, `HalfEdgeId`, `CornerId`, `FaceId`: stable handles.
+- `Mesh::faces_in_region`: allocation-free selection of live faces by authored
+  region, including disconnected faces; unassigned faces use region zero.
 - `attr` and `attributes`: built-in and custom typed attribute layers.
 - `op`: public kernel mutation surface.
 - `EditSession`, `ChangeSet`, `DirtySet`, `PropagatePolicy`: edit hosting and

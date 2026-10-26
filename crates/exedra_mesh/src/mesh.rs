@@ -1194,6 +1194,22 @@ impl Mesh {
         self.faces.iter().map(|(id, _)| FaceId::from(id))
     }
 
+    /// Iterates live faces whose [`attr::FACE_REGION`] equals `region`.
+    ///
+    /// Includes disconnected faces in deterministic face-slot order. Region
+    /// zero is the default when no value is authored. This scans live faces
+    /// without allocating; it does not traverse a connected component.
+    pub fn faces_in_region(&self, region: u32) -> impl Iterator<Item = FaceId> + '_ {
+        let values = self.attrs.dense(attr::FACE_REGION);
+        self.faces().filter(move |face| {
+            values
+                .and_then(|layer| layer.get(face.as_id()))
+                .copied()
+                .unwrap_or(0)
+                == region
+        })
+    }
+
     /// Returns one loop half-edge for an interior face.
     ///
     /// Returns `None` for [`FaceId::OUTSIDE`].
@@ -2987,6 +3003,38 @@ mod tests {
         ChangeSetBuilder, DeletePolicy, Face, FaceId, HalfEdge, HalfEdgeId, Id, VertexId, op,
         op::set_face_region,
     };
+
+    #[test]
+    fn region_query_includes_disconnected_faces_and_tracks_authored_updates() {
+        let mut mesh = Mesh::from_indexed_triangles(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [3, 4, 5]],
+            &BuildParams::default(),
+        )
+        .unwrap();
+        let faces: Vec<_> = mesh.faces().collect();
+        assert_eq!(mesh.faces_in_region(0).collect::<Vec<_>>(), faces);
+        assert_eq!(mesh.faces_in_region(7).count(), 0);
+        let mut edit = mesh.edit();
+        for &face in &faces {
+            set_face_region(&mut edit, face, 7).unwrap();
+        }
+        let _: () = edit.finish();
+        assert_eq!(mesh.faces_in_region(7).collect::<Vec<_>>(), faces);
+        assert_eq!(mesh.faces_in_region(0).count(), 0);
+        let mut edit = mesh.edit();
+        set_face_region(&mut edit, faces[0], 9).unwrap();
+        let _: () = edit.finish();
+        assert_eq!(mesh.faces_in_region(7).collect::<Vec<_>>(), vec![faces[1]]);
+        assert_eq!(mesh.faces_in_region(9).collect::<Vec<_>>(), vec![faces[0]]);
+    }
 
     fn triangle_mesh() -> Mesh {
         let mut mesh = Mesh::new();
