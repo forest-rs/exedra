@@ -17,6 +17,11 @@ Current scope:
 - `Quat` rotation quaternions (Hamilton, `x, y, z, w`), with composition,
   vector rotation, rotation-matrix and rigid-`Placement3` conversions, and
   shortest-arc slerp,
+- `path`: owned `Path3`, framing/connectivity intent and line/arc/cubic spans,
+  plus an allocation-free borrowed curve view shared by geometry heads;
+  cursor authoring, sampling, recipe encoding and mesh evaluation stay in
+  their consuming crates. `Path3::xy_circle` validates a radius independently
+  of sampling policy. Owned paths use `alloc` and remain `no_std`,
 - `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,
   `tag`, `Key`), a frozen cross-repository contract
   ([ADR-0001](docs/adr-0001-keyed-hash-contract.md)).
