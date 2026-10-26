@@ -330,6 +330,7 @@ enum RefinementDecision {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum InactiveReason {
     IntervalExcluded,
+    GradientExcluded,
     NoCrossingAtMaxDepth,
     LegacyHomogeneous,
 }
@@ -1812,6 +1813,9 @@ fn extraction_report<F: ScalarField>(
             }));
         }
         match payload.decision {
+            RefinementDecision::Inactive(InactiveReason::GradientExcluded) => {
+                report.gradient_excluded_cells += 1;
+            }
             RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth) => {
                 record(if payload.analysis.is_some() {
                     ExtractionCellIssue::NoHermiteAtMaxDepth
@@ -2096,6 +2100,47 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         }))
     }
 
+    /// Whether the field's gradient bounds prove that `bounds`, whose
+    /// corners are all inside or all outside, holds no surface.
+    ///
+    /// Along an axis whose derivative keeps one sign over the cell, the
+    /// field's least value outside, or greatest inside, lies on one face.
+    /// Following such axes down to a corner, whose sample agrees, shows the
+    /// whole cell does too; so does a value bound on the way that excludes
+    /// zero.
+    fn proves_no_surface(&self, bounds: Aabb, inside: bool) -> Result<bool, DualContourError> {
+        let mut region = bounds;
+        let mut free = [true; 3];
+        loop {
+            let rows = self.field.eval_gradient_interval(&region);
+            self.run.check()?;
+            let Some([value, x, y, z]) = rows else {
+                return Ok(false);
+            };
+            if (inside && value[1] < 0.0) || (!inside && value[0] >= 0.0) {
+                return Ok(true);
+            }
+            let gradient = [x, y, z];
+            let Some(axis) = (0..3)
+                .find(|&axis| free[axis] && (gradient[axis][0] > 0.0 || gradient[axis][1] < 0.0))
+            else {
+                return Ok(false);
+            };
+            let rising = gradient[axis][0] > 0.0;
+            let end = if rising == inside {
+                region.max[axis]
+            } else {
+                region.min[axis]
+            };
+            region.min[axis] = end;
+            region.max[axis] = end;
+            free[axis] = false;
+            if free == [false; 3] {
+                return Ok(true);
+            }
+        }
+    }
+
     fn inspect_cell(
         &mut self,
         cell: CellRef,
@@ -2140,6 +2185,14 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
         let expected_crossings = crossing_edge_count(&corner_values);
 
         if expected_crossings == 0 {
+            if corner_values.iter().all(|value| value.is_finite())
+                && self.proves_no_surface(cell_bounds, corner_values[0] < 0.0)?
+            {
+                return Ok(LeafMarker {
+                    decision: RefinementDecision::Inactive(InactiveReason::GradientExcluded),
+                    analysis: None,
+                });
+            }
             let decision = if at_resolution {
                 if !at_max_depth && self.hides_thin_feature(cell_key, &corner_values)? {
                     self.thin_feature_cells += 1;

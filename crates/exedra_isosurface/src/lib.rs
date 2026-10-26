@@ -244,6 +244,20 @@ pub trait ScalarField {
     /// NaN gradients are permitted at non-differentiable points.
     fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]);
 
+    /// Evaluates conservative bounds on the value and the gradient over
+    /// `bounds`, as `[value, dx, dy, dz]`, each `[low, high]`.
+    ///
+    /// Where a derivative's bounds exclude zero, the field is monotone along
+    /// that axis throughout `bounds`, which lets extraction prove that a
+    /// cell whose corners agree holds no surface even when the value's
+    /// bounds alone allow one. `bounds` may be flat along some axes.
+    ///
+    /// The default returns `None`: no gradient bounds, so no such proofs.
+    fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+        let _ = bounds;
+        None
+    }
+
     /// The field's metric and support claims; see [`capability`].
     ///
     /// The default claims nothing, which is always truthful. Override it only
@@ -299,6 +313,10 @@ impl<F: ScalarField + ?Sized> ScalarField for &F {
     fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
         (**self).eval_gradients(points, out);
     }
+
+    fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+        (**self).eval_gradient_interval(bounds)
+    }
 }
 
 impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
@@ -316,6 +334,10 @@ impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
 
     fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
         (**self).eval_gradients(points, out);
+    }
+
+    fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+        (**self).eval_gradient_interval(bounds)
     }
 }
 

@@ -515,3 +515,31 @@ fn a_component_smaller_than_a_cell_is_kept() {
         .count();
     assert_eq!(tiny, 8, "the lone node keeps its eight cell vertices");
 }
+
+#[test]
+fn gradient_bounds_prove_cells_beside_a_surface_empty() {
+    // Value bounds alone cannot exclude many cells just beside the gyroid's
+    // sheets; bounds on its gradient show the field rising away from them.
+    struct ValueBoundsOnly<F>(F);
+    impl<F: ScalarField> ScalarField for ValueBoundsOnly<F> {
+        fn capabilities(&self) -> crate::FieldCapabilities {
+            self.0.capabilities()
+        }
+        fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+            self.0.eval_interval(bounds)
+        }
+        fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+            self.0.eval_points(points, out);
+        }
+        fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+            self.0.eval_gradients(points, out);
+        }
+    }
+    let params = gyroid_params(5, 0);
+    let proven = dual_contour(&gyroid_ball(0.15), &params).unwrap();
+    let sampled = dual_contour(&ValueBoundsOnly(gyroid_ball(0.15)), &params).unwrap();
+    assert!(proven.mesh.validate_deep().is_empty());
+    assert!(proven.report.gradient_excluded_cells > 0);
+    assert_eq!(sampled.report.gradient_excluded_cells, 0);
+    assert!(proven.report.unresolved_cells < sampled.report.unresolved_cells);
+}

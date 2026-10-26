@@ -28,6 +28,10 @@ impl Measured {
     fn assert_calls(&self, work: ExtractionWork) {
         let actual = self.work.get();
         assert_eq!(actual.interval_queries, work.interval_queries);
+        assert_eq!(
+            actual.gradient_interval_queries,
+            work.gradient_interval_queries
+        );
         assert_eq!(actual.point_evaluations, work.point_evaluations);
         assert_eq!(actual.gradient_evaluations, work.gradient_evaluations);
         assert_eq!(actual.provenance_queries, work.provenance_queries);
@@ -41,6 +45,12 @@ impl ScalarField for Measured {
         work.interval_queries += 1;
         self.work.set(work);
         self.field.eval_interval(bounds)
+    }
+    fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+        let mut work = self.work.get();
+        work.gradient_interval_queries += 1;
+        self.work.set(work);
+        self.field.eval_gradient_interval(bounds)
     }
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
         let mut work = self.work.get();
@@ -95,6 +105,7 @@ fn params() -> DualContourParams {
 }
 fn evaluations(work: ExtractionWork) -> usize {
     work.interval_queries
+        + work.gradient_interval_queries
         + work.point_evaluations
         + work.gradient_evaluations
         + work.provenance_queries

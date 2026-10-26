@@ -164,7 +164,13 @@ root bounds: `Established` or `Asserted` when the claimed interior fits,
 `Exceeded` when it reaches outside, as a component wholly beyond the root does
 without crossing any root edge, and `Unbounded` or `Unknown` otherwise.
 The report also counts root-boundary crossings, unresolved finest cells and
-finest cells using compatibility evidence. `witness_limit` bounds only the detail
+finest cells using compatibility evidence. A field that bounds its gradient over a
+box, through `ScalarField::eval_gradient_interval` as every `FormulaField` does,
+lets extraction prove a cell whose corners agree holds no surface even where its
+value bounds allow one: along an axis whose derivative keeps one sign, the field's
+extreme lies on one face, and following such axes down to a corner settles it.
+Such cells are neither refined nor reported unresolved; `gradient_excluded_cells`
+counts them. `witness_limit` bounds only the detail
 list; counts remain exact, including `unreported_witnesses`.
 
 Faces that oppose the field at every corner are unfolded where possible: first

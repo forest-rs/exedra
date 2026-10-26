@@ -109,12 +109,9 @@ impl<F: Formula> FormulaField<F> {
     }
 
     /// Interval bounds of the formula over `bounds`, natural and mean-value
-    /// forms intersected.
-    fn bounds(&self, bounds: &Aabb) -> Interval {
-        let boxed = core::array::from_fn(|axis| {
-            Interval::new(f64::from(bounds.min[axis]), f64::from(bounds.max[axis]))
-        });
-        let Dual { value, gradient } = self.formula.eval(Dual::point(boxed));
+    /// forms intersected, and of its gradient.
+    fn bounds(&self, bounds: &Aabb) -> (Interval, [Interval; 3]) {
+        let Dual { value, gradient } = self.formula.eval(Dual::point(boxed(bounds)));
         let center = widen(bounds.center());
         let at_center = self.formula.eval(center.map(Interval::constant));
         let mean_value = (0..3).fold(at_center, |sum, axis| {
@@ -122,7 +119,7 @@ impl<F: Formula> FormulaField<F> {
             let lag = center[axis] - f64::from(bounds.min[axis]);
             sum + gradient[axis] * Interval::new(-lag, reach)
         });
-        value.intersect(mean_value).unwrap_or(value)
+        (value.intersect(mean_value).unwrap_or(value), gradient)
     }
 }
 
@@ -138,18 +135,18 @@ impl<F: Formula> ScalarField for FormulaField<F> {
     /// intervals, the mean-value form `F(c) + ∇F(box)·(box - c)` about the
     /// center `c`, and the Lipschitz claim.
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        let interval = self.bounds(bounds);
-        let lipschitz = self
-            .metric
-            .lipschitz()
-            .and_then(|lipschitz| {
-                lipschitz_interval(|p| self.formula.eval(p), [0.0; 3], lipschitz, bounds)
-            })
-            .map(|[low, high]| Interval::new(f64::from(low), f64::from(high)));
-        let interval =
-            lipschitz.map_or(Some(interval), |lipschitz| interval.intersect(lipschitz))?;
-        let interval = [round_down(interval.low()), round_up(interval.high())];
-        interval.iter().all(|v| !v.is_nan()).then_some(interval)
+        self.value_bounds(bounds, self.bounds(bounds).0)
+    }
+
+    fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+        let (value, gradient) = self.bounds(bounds);
+        let rows = [
+            self.value_bounds(bounds, value)?,
+            outward(gradient[0]),
+            outward(gradient[1]),
+            outward(gradient[2]),
+        ];
+        rows.iter().flatten().all(|v| !v.is_nan()).then_some(rows)
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
@@ -171,6 +168,24 @@ impl<F: Formula> ScalarField for FormulaField<F> {
                 narrow(gradient[2]),
             ];
         }
+    }
+}
+
+impl<F: Formula> FormulaField<F> {
+    /// `interval`, from the formula, narrowed by the Lipschitz claim and
+    /// rounded outward to `f32`.
+    fn value_bounds(&self, bounds: &Aabb, interval: Interval) -> Option<[f32; 2]> {
+        let lipschitz = self
+            .metric
+            .lipschitz()
+            .and_then(|lipschitz| {
+                lipschitz_interval(|p| self.formula.eval(p), [0.0; 3], lipschitz, bounds)
+            })
+            .map(|[low, high]| Interval::new(f64::from(low), f64::from(high)));
+        let interval =
+            lipschitz.map_or(Some(interval), |lipschitz| interval.intersect(lipschitz))?;
+        let interval = [round_down(interval.low()), round_up(interval.high())];
+        interval.iter().all(|v| !v.is_nan()).then_some(interval)
     }
 }
 
@@ -304,6 +319,18 @@ fn differences(distance: impl Fn([f64; 3]) -> f64, p: [f64; 3]) -> [f64; 3] {
         behind[axis] -= step;
         (distance(ahead) - distance(behind)) / (2.0 * step)
     })
+}
+
+/// The coordinates of `bounds` as intervals.
+fn boxed(bounds: &Aabb) -> [Interval; 3] {
+    core::array::from_fn(|axis| {
+        Interval::new(f64::from(bounds.min[axis]), f64::from(bounds.max[axis]))
+    })
+}
+
+/// `interval` narrowed to `f32`, rounded outward.
+fn outward(interval: Interval) -> [f32; 2] {
+    [round_down(interval.low()), round_up(interval.high())]
 }
 
 fn local(origin: [f32; 3], p: [f64; 3]) -> [f64; 3] {

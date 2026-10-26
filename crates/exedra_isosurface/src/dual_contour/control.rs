@@ -44,8 +44,9 @@ pub struct ExtractionLimits {
     /// Faces in any generated mesh. The triangle count is checked before
     /// creating the intermediate polygon mesh as well.
     pub faces: Option<usize>,
-    /// Sum of interval queries, scalar/gradient rows, provenance queries and
-    /// projection requests made to the supplied field through public methods.
+    /// Sum of interval and gradient-interval queries, scalar/gradient rows,
+    /// provenance queries and projection requests made to the supplied field
+    /// through public methods.
     pub field_evaluations: Option<usize>,
     /// Balancing and transition-completion passes, including their final
     /// no-refinement passes.
@@ -86,6 +87,8 @@ pub enum ExtractionResource {
 pub struct ExtractionWork {
     /// Spatial interval requests.
     pub interval_queries: usize,
+    /// Spatial requests for value and gradient bounds.
+    pub gradient_interval_queries: usize,
     /// Scalar point rows.
     pub point_evaluations: usize,
     /// Value/gradient rows.
@@ -323,6 +326,10 @@ pub struct ExtractionReport {
     /// Finest cells with no resolved crossing: no corner-sign crossing or no
     /// usable Hermite samples, despite interval evidence permitting a boundary.
     pub unresolved_cells: usize,
+    /// Cells whose corners agree, whose value bounds allow surface, and
+    /// whose gradient bounds prove they hold none; see
+    /// [`crate::ScalarField::eval_gradient_interval`].
+    pub gradient_excluded_cells: usize,
     /// Finest cells retained using compatibility evidence.
     pub compatibility_cells: usize,
     /// Cells at or below `max_depth` refined because their children's
@@ -613,6 +620,7 @@ impl RunContext {
     pub(crate) fn evaluate(&self, kind: Evaluation, count: usize) -> Result<(), DualContourError> {
         let mut work = self.work.get();
         let used = work.interval_queries
+            + work.gradient_interval_queries
             + work.point_evaluations
             + work.gradient_evaluations
             + work.provenance_queries
@@ -628,6 +636,7 @@ impl RunContext {
         self.reserve(ExtractionResource::FieldEvaluations, used, requested)?;
         match kind {
             Evaluation::Interval => work.interval_queries += count,
+            Evaluation::GradientInterval => work.gradient_interval_queries += count,
             Evaluation::Point => work.point_evaluations += count,
             Evaluation::Gradient => work.gradient_evaluations += count,
             Evaluation::Provenance => work.provenance_queries += count,
@@ -641,6 +650,7 @@ impl RunContext {
 #[derive(Copy, Clone)]
 pub(crate) enum Evaluation {
     Interval,
+    GradientInterval,
     Point,
     Gradient,
     Provenance,
@@ -677,6 +687,18 @@ impl<F: ScalarField> ScalarField for CheckedField<'_, F> {
             );
         }
         result
+    }
+
+    fn eval_gradient_interval(&self, bounds: &Aabb) -> Option<[[f32; 2]; 4]> {
+        if let Err(error) = self.run.evaluate(Evaluation::GradientInterval, 1) {
+            self.run
+                .fail(error.with_witness(ExtractionWitness::Query { bounds: *bounds }));
+            return None;
+        }
+        // Malformed gradient bounds only forgo a proof.
+        self.field
+            .eval_gradient_interval(bounds)
+            .filter(|rows| rows.iter().all(|[low, high]| low <= high))
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
