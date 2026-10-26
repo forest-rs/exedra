@@ -13,6 +13,7 @@ use crate::spatial::RefineError;
 use exedra_mesh::{BuildError, op::CollapseEdgeError};
 
 use super::{DualContourParameter, DualContourStats};
+use crate::capability::{FieldCapabilities, Support};
 use crate::provenance::RegionAttribution;
 use crate::{Aabb, ScalarField};
 
@@ -224,13 +225,53 @@ pub enum ExtractionWitness {
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum ExtractionCompletion {
     /// Every eligible interior patch from this finite extraction was included.
-    /// This does not certify closedness, topology, error, domain enclosure, or
-    /// the discovery of features smaller than the sampling grid.
+    /// This does not certify closedness, topology, error, domain enclosure
+    /// (see [`Enclosure`]), or the discovery of features smaller than the
+    /// sampling grid.
     #[default]
     Complete,
     /// One or more contributing cells were deliberately omitted. The mesh may
     /// be empty or open, even when the source field describes a closed object.
     TruncatedByCellBudget,
+}
+
+/// Whether the root bounds contain everything the field could contribute,
+/// judged from the field's support claim.
+///
+/// Root-boundary crossings reveal a surface cut by the root bounds, but not
+/// a component lying wholly outside them; only the support claim does.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub enum Enclosure {
+    /// The field's own parameters place its interior within the root bounds.
+    Established,
+    /// The field's provider asserts an interior within the root bounds.
+    Asserted,
+    /// The claimed support reaches outside the root bounds, so surface there
+    /// may be cut off or missing entirely.
+    Exceeded {
+        /// The claimed support.
+        support: Aabb,
+    },
+    /// The interior is unbounded, so the root bounds necessarily clip it.
+    Unbounded,
+    /// The field states no support, so nothing is known.
+    #[default]
+    Unknown,
+}
+
+impl Enclosure {
+    /// Judges a support claim against `root`.
+    pub(crate) fn of(support: Support<Aabb>, root: &Aabb) -> Self {
+        let within = |b: &Aabb| root.contains(b.min) && root.contains(b.max);
+        match support {
+            Support::Empty => Self::Established,
+            Support::Bounded(b) if within(&b) => Self::Established,
+            Support::Asserted(b) if within(&b) => Self::Asserted,
+            Support::Bounded(support) | Support::Asserted(support) => Self::Exceeded { support },
+            Support::Unbounded => Self::Unbounded,
+            Support::Unknown => Self::Unknown,
+        }
+    }
 }
 
 /// A reason to inspect a reported cell.
@@ -292,6 +333,8 @@ pub struct ExtractionReport {
     pub inverted_faces: usize,
     /// How firmly each patch's region was decided, for region extraction.
     pub region_attribution: RegionAttribution,
+    /// Whether the root bounds contain the field's claimed support.
+    pub enclosure: Enclosure,
 }
 
 /// Machine-readable extraction failure category.
@@ -581,6 +624,10 @@ pub(crate) struct CheckedField<'a, F> {
 }
 
 impl<F: ScalarField> ScalarField for CheckedField<'_, F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        self.field.capabilities()
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         if let Err(error) = self.run.evaluate(Evaluation::Interval, 1) {
             self.run

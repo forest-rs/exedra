@@ -35,7 +35,7 @@ pub(crate) mod control;
 mod joining;
 use control::{CheckedField, Evaluation, RunContext};
 pub use control::{
-    DualContourError, DualContourErrorKind, ExtractionCandidate, ExtractionCell,
+    DualContourError, DualContourErrorKind, Enclosure, ExtractionCandidate, ExtractionCell,
     ExtractionCellIssue, ExtractionCellWitness, ExtractionCompletion, ExtractionFailureContext,
     ExtractionLimits, ExtractionReport, ExtractionResource, ExtractionStage, ExtractionWitness,
     ExtractionWork, TransitionWitness,
@@ -426,6 +426,7 @@ fn dual_contour_run<F: ScalarField>(
     let locator = LeafLocator::new(&leaf_keys, resolution);
     let mut report = extraction_report(params, &tree, &visitor.grid, &omitted_by_budget);
     report.eligible_cells = active_cells.len() + omitted_by_budget.len();
+    report.enclosure = Enclosure::of(field.capabilities().support, &params.root_bounds);
     for &segment in &segments {
         if !edge_has_crossing(
             visitor.grid.value(segment.start).unwrap(),

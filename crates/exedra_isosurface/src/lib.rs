@@ -84,11 +84,11 @@ pub use capability::{Capabilities, FieldCapabilities, Metric, ProfileCapabilitie
 pub use domain::{Elongate, Repeat, Twist};
 pub use dual_contour::{
     DualContourError, DualContourErrorKind, DualContourParameter, DualContourParams,
-    DualContourResult, DualContourStats, ExtractionCandidate, ExtractionCell, ExtractionCellIssue,
-    ExtractionCellWitness, ExtractionCompletion, ExtractionFailureContext, ExtractionLimits,
-    ExtractionReport, ExtractionResource, ExtractionStage, ExtractionWitness, ExtractionWork,
-    SemiAnalyticContourResult, SemiAnalyticContourStats, TransitionWitness, dual_contour,
-    dual_contour_semi_analytic, dual_contour_with_regions,
+    DualContourResult, DualContourStats, Enclosure, ExtractionCandidate, ExtractionCell,
+    ExtractionCellIssue, ExtractionCellWitness, ExtractionCompletion, ExtractionFailureContext,
+    ExtractionLimits, ExtractionReport, ExtractionResource, ExtractionStage, ExtractionWitness,
+    ExtractionWork, SemiAnalyticContourResult, SemiAnalyticContourStats, TransitionWitness,
+    dual_contour, dual_contour_semi_analytic, dual_contour_with_regions,
 };
 pub use function::FnField;
 pub use hermite::{

@@ -441,6 +441,38 @@ fn completion_does_not_hide_domain_boundary_crossings() {
 }
 
 #[test]
+fn enclosure_reveals_a_component_outside_the_root() {
+    use crate::analytic::{HalfSpaceField, Union};
+    let inside = SphereField::new([0.0; 3], 0.8).unwrap();
+    let full = dual_contour(&inside, &params()).unwrap();
+    assert_eq!(full.report.enclosure, Enclosure::Established);
+
+    // A second sphere wholly outside the root crosses no root edge, so the
+    // extraction looks complete; only the support claim shows what is missing.
+    let beyond = SphereField::new([3.0, 0.0, 0.0], 0.5).unwrap();
+    let pair = dual_contour(&Union::new(inside, beyond), &params()).unwrap();
+    assert_eq!(pair.report.completion, ExtractionCompletion::Complete);
+    assert_eq!(pair.report.boundary_crossings, 0);
+    assert_eq!(pair.stats.faces, full.stats.faces);
+    let Enclosure::Exceeded { support } = pair.report.enclosure else {
+        panic!("{:?}", pair.report.enclosure);
+    };
+    assert!(support.max[0] >= 3.5);
+
+    let ground = HalfSpaceField::new([0.0; 3], [0.0, 0.0, 1.0]).unwrap();
+    let cut = dual_contour(&ground, &params()).unwrap();
+    assert_eq!(cut.report.enclosure, Enclosure::Unbounded);
+    // A field that states nothing proves nothing.
+    assert_eq!(
+        dual_contour(&Measured::new(), &params())
+            .unwrap()
+            .report
+            .enclosure,
+        Enclosure::Unknown
+    );
+}
+
+#[test]
 fn gradient_scalar_is_checked_but_undefined_directions_are_allowed() {
     let field = InvalidField {
         interval: None,

@@ -130,6 +130,10 @@ analysis, and may return an empty or open mesh. Inspect `result.report.completio
 bounds, and bounded cell witnesses. `Complete` means no eligible interior patches
 were omitted by that budget. It does **not** certify a closed surface, feature
 retention, geometric accuracy, or enclosure within the caller's root domain.
+For enclosure, `report.enclosure` judges the field's support claim against the
+root bounds: `Established` or `Asserted` when the claimed interior fits,
+`Exceeded` when it reaches outside, as a component wholly beyond the root does
+without crossing any root edge, and `Unbounded` or `Unknown` otherwise.
 The report also counts root-boundary crossings, unresolved finest cells and
 finest cells using compatibility evidence. `witness_limit` bounds only the detail
 list; counts remain exact, including `unreported_witnesses`. It counts
