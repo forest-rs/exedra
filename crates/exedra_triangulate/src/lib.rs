@@ -59,6 +59,7 @@ mod delaunay;
 mod earclip;
 pub mod predicates;
 mod refine;
+mod spatial;
 #[cfg(test)]
 mod torture;
 
@@ -158,9 +159,11 @@ fn validate_loop(points: &[[f64; 2]], hole: Option<usize>) -> Result<(), TriErro
 /// [`TriError::HoleOutsideOuter`], and [`TriError::NonSimple`].
 /// [`TriError::UnbridgeableHole`] and [`TriError::TriangulationFailed`] report
 /// construction failures without claiming the original boundary is invalid.
-/// After cover construction fails, a failure-only scan of at most N(N-1)/2
-/// original nonadjacent edge pairs can replace the failure with a witnessed
-/// [`TriError::BoundaryContact`]. No extra scan occurs for successful input.
+/// Original boundary contacts are checked before cover construction using a
+/// spatial broad phase and exact predicates. A contact reports its original
+/// edge pair as [`TriError::BoundaryContact`]. Consecutive coincident samples
+/// are ignored for effective adjacency; shared endpoints are allowed, while
+/// adjacent backtracking overlaps are refused.
 pub fn triangulate(
     input: &PolygonInput<'_>,
     params: &TriParams,
@@ -380,6 +383,8 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
         }
     }
 
+    boundary::validate(input)?;
+
     // Preserve the historical hole and candidate ordering first. Aligned
     // holes can make that traversal weakly simple in area yet topologically
     // wrong; bounded fallbacks reverse the exact-x hole tie and prefer short
@@ -433,7 +438,7 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
             edge_flips,
         });
     }
-    Err(boundary::diagnose(input).unwrap_or(last_error))
+    Err(last_error)
 }
 
 /// Checks that triangle edge incidence reproduces exactly the simplified

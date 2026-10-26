@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::predicates::{Orientation, orient2d};
+use crate::spatial::{Bounds, Index};
 use crate::{PolygonInput, TriError};
+use alloc::vec::Vec;
 
 /// One original cyclic polygon edge, before pruning or hole bridging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,9 +33,107 @@ pub enum BoundaryContactKind {
     Touching,
 }
 
-// Failure-only diagnosis: inspect original edges, never synthesized bridges.
+struct InputEdge {
+    ring: usize,
+    original: usize,
+    rank: usize,
+    count: usize,
+}
+
+/// Validates original boundaries before any cover is accepted. Box queries
+/// avoid testing disjoint edge pairs; exact predicates decide each survivor.
+pub(crate) fn validate(input: &PolygonInput<'_>) -> Result<(), TriError> {
+    let rings: Vec<_> = core::iter::once(input.outer)
+        .chain(input.holes.iter().copied())
+        .collect();
+    let mut edges = Vec::with_capacity(input.vertex_count());
+    let mut bounds = Vec::with_capacity(input.vertex_count());
+    for (ring, points) in rings.iter().enumerate() {
+        let start = edges.len();
+        for original in 0..points.len() {
+            let a = points[original];
+            let b = points[(original + 1) % points.len()];
+            if a == b {
+                continue;
+            }
+            edges.push(InputEdge {
+                ring,
+                original,
+                rank: 0,
+                count: 0,
+            });
+            bounds.push(Bounds::segment(a, b));
+        }
+        let count = edges.len() - start;
+        if count < 3 {
+            return Err(TriError::NonSimple);
+        }
+        for (rank, edge) in edges[start..].iter_mut().enumerate() {
+            edge.rank = rank;
+            edge.count = count;
+        }
+    }
+    let index = Index::new(&bounds);
+    let mut first_contact = None;
+    for (first, a) in edges.iter().enumerate() {
+        let query = bounds[first];
+        index.any_matching(
+            |bounds| bounds.overlaps(query),
+            |second| {
+                if second <= first {
+                    return false;
+                }
+                let b = &edges[second];
+                let first_points = rings[a.ring];
+                let second_points = rings[b.ring];
+                let a0 = first_points[a.original];
+                let a1 = first_points[(a.original + 1) % first_points.len()];
+                let b0 = second_points[b.original];
+                let b1 = second_points[(b.original + 1) % second_points.len()];
+                let kind = if a.ring == b.ring && a.rank + 1 == b.rank {
+                    adjacent_overlap(a0, a1, b1)
+                } else if a.ring == b.ring && a.rank == 0 && b.rank + 1 == b.count {
+                    adjacent_overlap(b0, b1, a1)
+                } else {
+                    contact(a0, a1, b0, b1)
+                };
+                if let Some(kind) = kind {
+                    // Match the original loop-pair/edge-pair diagnosis order;
+                    // tree shape and traversal order do not choose the witness.
+                    let key = (a.ring, b.ring, a.original, b.original);
+                    if first_contact.is_none_or(|(previous, _)| key < previous) {
+                        first_contact = Some((key, kind));
+                    }
+                }
+                false
+            },
+        );
+    }
+    if let Some(((first_ring, second_ring, a, b), kind)) = first_contact {
+        return Err(TriError::BoundaryContact {
+            first: BoundaryEdge {
+                hole: first_ring.checked_sub(1),
+                edge: a,
+            },
+            second: BoundaryEdge {
+                hole: second_ring.checked_sub(1),
+                edge: b,
+            },
+            kind,
+        });
+    }
+    Ok(())
+}
+
+fn adjacent_overlap(a: [f64; 2], shared: [f64; 2], b: [f64; 2]) -> Option<BoundaryContactKind> {
+    (orient2d(a, shared, b) == Orientation::Collinear && !between(a, b, shared))
+        .then_some(BoundaryContactKind::Touching)
+}
+
+// Full-scan reference: inspect original edges, never synthesized bridges.
 // At most N*(N-1)/2 edge pairs, with an allocation-free bounding-box rejection.
 // Adjacent same-loop edges are omitted because their shared endpoint is normal.
+#[cfg(test)]
 pub(crate) fn diagnose(input: &PolygonInput<'_>) -> Option<TriError> {
     let rings = || core::iter::once(input.outer).chain(input.holes.iter().copied());
     for (first_loop, first) in rings().enumerate() {
@@ -111,6 +211,132 @@ pub(crate) fn between(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> bool {
 mod tests {
     use super::*;
     use crate::{TriParams, triangulate};
+
+    #[test]
+    fn crossed_input_is_refused_even_when_ear_clipping_can_build_a_cover() {
+        let outer = [
+            [0.0, 6.0],
+            [-1.0, 2.0],
+            [8.0, 6.0],
+            [2.0, 8.0],
+            [0.0, 0.0],
+            [6.0, 0.0],
+            [8.0, 2.0],
+            [6.0, 8.0],
+        ];
+        let hole = [[3.75, 3.75], [3.75, 4.25], [4.25, 4.25], [4.25, 3.75]];
+        let input = PolygonInput {
+            outer: &outer,
+            holes: &[&hole],
+        };
+        let expected = TriError::BoundaryContact {
+            first: BoundaryEdge {
+                hole: None,
+                edge: 1,
+            },
+            second: BoundaryEdge {
+                hole: None,
+                edge: 3,
+            },
+            kind: BoundaryContactKind::Crossing,
+        };
+        for params in [TriParams::ear_clip(), TriParams::constrained_delaunay()] {
+            assert_eq!(triangulate(&input, &params), Err(expected));
+            assert_eq!(
+                crate::triangulate_preserving_boundary(&input, &params),
+                Err(expected)
+            );
+        }
+        assert_eq!(
+            crate::refine(&input, &crate::RefineParams::default()),
+            Err(expected)
+        );
+    }
+
+    #[test]
+    fn indexed_contact_witness_matches_the_full_original_edge_oracle() {
+        let original = [
+            [0.0, 0.0],
+            [6.0, 0.0],
+            [8.0, 2.0],
+            [8.0, 6.0],
+            [6.0, 8.0],
+            [2.0, 8.0],
+            [0.0, 6.0],
+            [-1.0, 2.0],
+        ];
+        let hole = [[3.75, 3.75], [3.75, 4.25], [4.25, 4.25], [4.25, 3.75]];
+        let mut random = 0x51c2_81db_145e_6aa7_u64;
+        let mut contacts = 0;
+        for _ in 0..512 {
+            let mut outer = original;
+            for i in 0..outer.len() {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                outer.swap(i, usize::try_from(random % 8).unwrap());
+            }
+            let input = PolygonInput {
+                outer: &outer,
+                holes: &[&hole],
+            };
+            let expected = diagnose(&input);
+            assert_eq!(validate(&input).err(), expected, "{outer:?}");
+            if expected.is_some() {
+                contacts += 1;
+                for params in [TriParams::ear_clip(), TriParams::constrained_delaunay()] {
+                    assert!(triangulate(&input, &params).is_err());
+                }
+            }
+        }
+        assert!(contacts > 400);
+    }
+
+    #[test]
+    fn coincident_runs_keep_effective_adjacency_but_backtracking_is_refused() {
+        let valid = [
+            [-0.0, 0.0],
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+            [-0.0, 0.0],
+        ];
+        let input = PolygonInput {
+            outer: &valid,
+            holes: &[],
+        };
+        assert_eq!(validate(&input), Ok(()));
+        for params in [TriParams::ear_clip(), TriParams::constrained_delaunay()] {
+            assert!(triangulate(&input, &params).is_ok());
+        }
+        let backtracking = [
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 1.0],
+            [3.0, 3.0],
+            [0.0, 3.0],
+        ];
+        assert_eq!(
+            validate(&PolygonInput {
+                outer: &backtracking,
+                holes: &[]
+            }),
+            Err(TriError::BoundaryContact {
+                first: BoundaryEdge {
+                    hole: None,
+                    edge: 0
+                },
+                second: BoundaryEdge {
+                    hole: None,
+                    edge: 1
+                },
+                kind: BoundaryContactKind::Touching,
+            })
+        );
+    }
 
     #[test]
     fn ground_reaching_hole_names_original_boundary_edges() {
