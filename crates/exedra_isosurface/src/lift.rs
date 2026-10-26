@@ -5,7 +5,19 @@
 
 use crate::spatial::Aabb;
 
+use crate::capability::{Capabilities, FieldCapabilities, Metric, Support, outward};
 use crate::{Aabb2, ScalarField, ScalarField2d};
+
+/// Carries a profile's support into three dimensions through `map`.
+fn lift_support(support: Support<Aabb2>, map: impl Fn(Aabb2) -> Option<Aabb>) -> Support<Aabb> {
+    match support {
+        Support::Empty => Support::Empty,
+        Support::Bounded(b) => map(b).map_or(Support::Unknown, Support::Bounded),
+        Support::Asserted(b) => map(b).map_or(Support::Unknown, Support::Asserted),
+        Support::Unbounded => Support::Unbounded,
+        Support::Unknown => Support::Unknown,
+    }
+}
 use exedra_math::{add, scale};
 
 /// Finite extrusion of a 2D profile field along the world-space z axis.
@@ -71,6 +83,24 @@ impl<F> Revolve<F> {
 }
 
 impl<F: ScalarField2d> ScalarField for Extrude<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        // The cap composition is an exact distance of the profile value and
+        // the axial overshoot, so it keeps an exact profile exact and turns
+        // a Lipschitz factor `L` into `max(L, 1)`.
+        let profile = self.profile.capabilities();
+        let metric = match profile.metric {
+            Metric::ExactDistance => Metric::ExactDistance,
+            other => other.combined(Metric::ExactDistance),
+        };
+        let h = self.half_height;
+        Capabilities {
+            metric,
+            support: lift_support(profile.support, |b| {
+                outward([b.min[0], b.min[1], -h], [b.max[0], b.max[1], h])
+            }),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let profile_bounds = Aabb2::new(
             [bounds.min[0], bounds.min[1]],
@@ -129,6 +159,26 @@ impl<F: ScalarField2d> ScalarField for Extrude<F> {
 }
 
 impl<F: ScalarField2d> ScalarField for Revolve<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        // Radius is a distance from the axis, so the profile's Lipschitz
+        // factor carries over. Its distances stay exact only when the
+        // profile's interior lies at nonnegative radius.
+        let profile = self.profile.capabilities();
+        let metric = match (profile.metric, profile.support) {
+            (Metric::ExactDistance, Support::Bounded(b)) if b.min[0] >= 0.0 => {
+                Metric::ExactDistance
+            }
+            (metric, _) => metric.combined(metric),
+        };
+        Capabilities {
+            metric,
+            support: lift_support(profile.support, |b| {
+                let reach = b.min[0].abs().max(b.max[0].abs());
+                outward([-reach, b.min[1], -reach], [reach, b.max[1], reach])
+            }),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let x = absolute_interval(bounds.min[0], bounds.max[0]);
         let z = absolute_interval(bounds.min[2], bounds.max[2]);

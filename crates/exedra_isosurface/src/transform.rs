@@ -1,11 +1,24 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Reusable transform wrappers for [`crate::ScalarField`] implementations.
+//! Wrappers that move a field in space or adjust its values.
+//!
+//! Three operations that look alike differ in what they promise:
+//!
+//! - [`UniformScale`] scales the geometry. Values scale with it, so distances
+//!   stay distances and the support scales about the origin.
+//! - [`ScaleValue`] multiplies values by a positive factor. The surface does
+//!   not move; only the metric claim changes, by the same factor.
+//! - [`Offset`] subtracts a distance from values, moving the surface along
+//!   the field. It is a physical offset only as far as the values are
+//!   distances, so its support claim depends on the metric claim.
 
 use crate::spatial::Aabb;
 
-use crate::{ProvenanceField, ScalarField, SpecializableField};
+use crate::capability::{Capabilities, FieldCapabilities, Metric, Support, outward};
+use crate::{
+    FieldError, ProvenanceField, ScalarField, SpecializableField, check_finite, check_positive,
+};
 use exedra_math::{add, dot, normalize, scale, sub};
 
 /// Translation wrapper for any scalar field.
@@ -20,6 +33,29 @@ pub struct Translate<F> {
 pub struct UniformScale<F> {
     field: F,
     factor: f32,
+}
+
+/// Wrapper multiplying a field's values by a positive factor.
+///
+/// The zero set, and so the extracted surface, is unchanged. Use it to bring
+/// a field's values into a distance-like range, or to weight it within a
+/// blend; use [`UniformScale`] to resize the shape.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ScaleValue<F> {
+    field: F,
+    factor: f32,
+}
+
+/// Wrapper subtracting a distance from a field's values.
+///
+/// A positive distance grows the shape and a negative one shrinks it. With
+/// exact distances the surface moves by exactly that distance; with a
+/// Lipschitz bound `L` it moves outward by at least `distance / L`, but how
+/// far beyond is not known, so a grown shape claims no support.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Offset<F> {
+    field: F,
+    distance: f32,
 }
 
 /// Rigid local-to-world transform for field wrappers.
@@ -61,14 +97,12 @@ impl<F> Translate<F> {
 impl<F> UniformScale<F> {
     /// Creates a uniformly scaled field wrapper.
     ///
-    /// `factor` must be finite and strictly positive.
-    #[must_use]
-    pub fn new(field: F, factor: f32) -> Option<Self> {
-        if factor.is_finite() && factor > 0.0 {
-            Some(Self { field, factor })
-        } else {
-            None
-        }
+    /// # Errors
+    ///
+    /// Returns [`FieldError`] unless `factor` is finite and positive.
+    pub fn new(field: F, factor: f32) -> Result<Self, FieldError> {
+        check_positive("factor", factor)?;
+        Ok(Self { field, factor })
     }
 
     /// Returns the wrapped field.
@@ -81,6 +115,55 @@ impl<F> UniformScale<F> {
     #[must_use]
     pub const fn factor(&self) -> f32 {
         self.factor
+    }
+}
+
+impl<F> ScaleValue<F> {
+    /// Creates a value-scaling wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FieldError`] unless `factor` is finite and positive; a
+    /// negative factor would swap inside and outside.
+    pub fn new(field: F, factor: f32) -> Result<Self, FieldError> {
+        check_positive("factor", factor)?;
+        Ok(Self { field, factor })
+    }
+
+    /// Returns the wrapped field.
+    #[must_use]
+    pub const fn field(&self) -> &F {
+        &self.field
+    }
+
+    /// Returns the value factor.
+    #[must_use]
+    pub const fn factor(&self) -> f32 {
+        self.factor
+    }
+}
+
+impl<F> Offset<F> {
+    /// Creates an offset wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FieldError`] unless `distance` is finite.
+    pub fn new(field: F, distance: f32) -> Result<Self, FieldError> {
+        check_finite("distance", [distance])?;
+        Ok(Self { field, distance })
+    }
+
+    /// Returns the wrapped field.
+    #[must_use]
+    pub const fn field(&self) -> &F {
+        &self.field
+    }
+
+    /// Returns the offset distance: positive grows the shape.
+    #[must_use]
+    pub const fn distance(&self) -> f32 {
+        self.distance
     }
 }
 
@@ -107,25 +190,34 @@ impl RigidTransform3 {
 
     /// Creates a rigid transform from orthonormal local axes and an origin.
     ///
-    /// The provided axes are normalized internally. Construction fails when the
-    /// axes are degenerate, non-finite, or not mutually orthogonal.
-    #[must_use]
+    /// The provided axes are normalized internally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FieldError`] when the origin or an axis is not finite, an
+    /// axis is too short to normalize, or two axes are not perpendicular
+    /// within `1e-4` in cosine.
     pub fn new(
         origin: [f32; 3],
         x_axis: [f32; 3],
         y_axis: [f32; 3],
         z_axis: [f32; 3],
-    ) -> Option<Self> {
-        let x_axis = normalize(x_axis)?;
-        let y_axis = normalize(y_axis)?;
-        let z_axis = normalize(z_axis)?;
+    ) -> Result<Self, FieldError> {
+        check_finite("origin", origin)?;
+        let axis = |parameter, axis: [f32; 3]| {
+            check_finite(parameter, axis)?;
+            normalize(axis).ok_or(FieldError::DegenerateDirection { parameter })
+        };
+        let x_axis = axis("x_axis", x_axis)?;
+        let y_axis = axis("y_axis", y_axis)?;
+        let z_axis = axis("z_axis", z_axis)?;
         if abs(dot(x_axis, y_axis)) > 1.0e-4
             || abs(dot(x_axis, z_axis)) > 1.0e-4
             || abs(dot(y_axis, z_axis)) > 1.0e-4
         {
-            return None;
+            return Err(FieldError::NotOrthogonal { parameter: "axes" });
         }
-        Some(Self {
+        Ok(Self {
             origin,
             x_axis,
             y_axis,
@@ -177,6 +269,44 @@ impl RigidTransform3 {
         )
     }
 
+    /// A world box containing every point that evaluation maps into
+    /// `local`.
+    ///
+    /// Evaluation maps a world point `p` to `M (p - origin)`, where the rows
+    /// of `M` are the axes. The axes are orthogonal only to `1e-4`, so `M` is
+    /// not quite a rotation and its transpose not quite its inverse; far from
+    /// the origin that difference is large. The corners go through the true
+    /// inverse in `f64`, and the box widens by the `f32` rounding of the
+    /// forward map.
+    fn world_bounds(&self, local: &Aabb) -> Option<Aabb> {
+        let rows = [self.x_axis, self.y_axis, self.z_axis].map(|row| row.map(f64::from));
+        let inverse = inverse3(rows)?;
+        let origin = self.origin.map(f64::from);
+        let mut minimum = [f64::INFINITY; 3];
+        let mut maximum = [f64::NEG_INFINITY; 3];
+        let mut magnitude = origin.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        for corner in corners(local) {
+            let corner = corner.map(f64::from);
+            let world: [f64; 3] = core::array::from_fn(|i| origin[i] + dot(inverse[i], corner));
+            for i in 0..3 {
+                minimum[i] = minimum[i].min(world[i]);
+                maximum[i] = maximum[i].max(world[i]);
+            }
+            magnitude = world.iter().fold(magnitude, |m, v| m.max(v.abs()));
+        }
+        // Forming `p - origin` and each dot product rounds a few times, each
+        // by at most an ulp of the coordinates involved; mapped back through
+        // the inverse, whose rows are within a few percent of unit length,
+        // that is a few ulps of the largest coordinate.
+        let margin = 16.0 * f64::from(f32::EPSILON) * magnitude;
+        #[expect(clippy::cast_possible_truncation, reason = "outward rounding follows")]
+        let narrow = |v: f64| v as f32;
+        outward(
+            minimum.map(|v| narrow(v - margin)),
+            maximum.map(|v| narrow(v + margin)),
+        )
+    }
+
     fn local_bounds_for_world_aabb(&self, bounds: &Aabb) -> Option<Aabb> {
         let mut minimum = [f32::INFINITY; 3];
         let mut maximum = [f32::NEG_INFINITY; 3];
@@ -210,6 +340,14 @@ impl<F> Transform3<F> {
 }
 
 impl<F: ScalarField> ScalarField for Translate<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let inner = self.field.capabilities();
+        Capabilities {
+            metric: inner.metric,
+            support: inner.support.translated(self.offset),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         self.field
             .eval_interval(&translate_bounds(bounds, neg3(self.offset))?)
@@ -241,6 +379,15 @@ impl<F: ScalarField> ScalarField for Translate<F> {
 }
 
 impl<F: ScalarField> ScalarField for UniformScale<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        // Values scale with the geometry, so distances stay distances.
+        let inner = self.field.capabilities();
+        Capabilities {
+            metric: inner.metric,
+            support: inner.support.scaled(self.factor),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let scaled = scale_bounds(bounds, 1.0 / self.factor)?;
         self.field
@@ -279,7 +426,102 @@ impl<F: ScalarField> ScalarField for UniformScale<F> {
     }
 }
 
+impl<F: ScalarField> ScalarField for ScaleValue<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let inner = self.field.capabilities();
+        let metric = match inner.metric {
+            #[expect(clippy::float_cmp, reason = "only an exact identity keeps exactness")]
+            Metric::ExactDistance if self.factor == 1.0 => Metric::ExactDistance,
+            metric => metric.scaled(self.factor),
+        };
+        Capabilities {
+            metric,
+            support: inner.support,
+        }
+    }
+
+    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+        self.field
+            .eval_interval(bounds)
+            .map(|[low, high]| [low * self.factor, high * self.factor])
+    }
+
+    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+        self.field.eval_points(points, out);
+        for value in out {
+            *value *= self.factor;
+        }
+    }
+
+    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+        self.field.eval_gradients(points, out);
+        for row in out {
+            *row = row.map(|v| v * self.factor);
+        }
+    }
+}
+
+impl<F: ScalarField> ScalarField for Offset<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let inner = self.field.capabilities();
+        let distance = self.distance;
+        // Subtracting a constant keeps every Lipschitz bound. Exactness
+        // survives only outside the shape: inside a grown concave shape, or
+        // anywhere near a shrunk one's corners, the nearest surface point is
+        // no longer `distance` farther away.
+        let metric = match inner.metric {
+            Metric::ExactDistance if distance == 0.0 => Metric::ExactDistance,
+            metric => metric
+                .lipschitz()
+                .map_or(Metric::Unknown, Metric::Lipschitz),
+        };
+        let support = if distance <= 0.0 {
+            // Values below a nonpositive distance are already negative.
+            inner.support.shrunk()
+        } else {
+            match (inner.metric, inner.support) {
+                (Metric::ExactDistance, support) => support.grown(distance),
+                (_, support @ (Support::Unbounded | Support::Unknown)) => support,
+                // Without exact distances, values may stay below `distance`
+                // arbitrarily far out, and an empty interior may gain one.
+                _ => Support::Unknown,
+            }
+        };
+        Capabilities { metric, support }
+    }
+
+    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+        self.field
+            .eval_interval(bounds)
+            .map(|[low, high]| [low - self.distance, high - self.distance])
+    }
+
+    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+        self.field.eval_points(points, out);
+        for value in out {
+            *value -= self.distance;
+        }
+    }
+
+    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+        self.field.eval_gradients(points, out);
+        for row in out {
+            row[0] -= self.distance;
+        }
+    }
+}
+
 impl<F: ScalarField> ScalarField for Transform3<F> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let inner = self.field.capabilities();
+        let transform = self.transform;
+        let support = inner.support.map(|local| transform.world_bounds(&local));
+        Capabilities {
+            metric: inner.metric,
+            support,
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let local_bounds = self.transform.local_bounds_for_world_aabb(bounds)?;
         self.field.eval_interval(&local_bounds)
@@ -331,9 +573,32 @@ impl<F: SpecializableField> SpecializableField for UniformScale<F> {
 
     fn specialize(&self, bounds: &Aabb) -> Option<Self::Specialized> {
         let scaled = scale_bounds(bounds, 1.0 / self.factor)?;
-        self.field
-            .specialize(&scaled)
-            .and_then(|field| UniformScale::new(field, self.factor))
+        self.field.specialize(&scaled).map(|field| UniformScale {
+            field,
+            factor: self.factor,
+        })
+    }
+}
+
+impl<F: SpecializableField> SpecializableField for ScaleValue<F> {
+    type Specialized = ScaleValue<F::Specialized>;
+
+    fn specialize(&self, bounds: &Aabb) -> Option<Self::Specialized> {
+        self.field.specialize(bounds).map(|field| ScaleValue {
+            field,
+            factor: self.factor,
+        })
+    }
+}
+
+impl<F: SpecializableField> SpecializableField for Offset<F> {
+    type Specialized = Offset<F::Specialized>;
+
+    fn specialize(&self, bounds: &Aabb) -> Option<Self::Specialized> {
+        self.field.specialize(bounds).map(|field| Offset {
+            field,
+            distance: self.distance,
+        })
     }
 }
 
@@ -381,6 +646,36 @@ impl<F: ProvenanceField> ProvenanceField for UniformScale<F> {
     }
 }
 
+impl<F: ProvenanceField> ProvenanceField for ScaleValue<F> {
+    type Provenance = F::Provenance;
+
+    fn eval_interval_with_provenance(&self, bounds: &Aabb) -> Option<([f32; 2], Self::Provenance)> {
+        self.field
+            .eval_interval_with_provenance(bounds)
+            .map(|([low, high], provenance)| ([low * self.factor, high * self.factor], provenance))
+    }
+
+    fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
+        self.field.point_provenance(point)
+    }
+}
+
+impl<F: ProvenanceField> ProvenanceField for Offset<F> {
+    type Provenance = F::Provenance;
+
+    fn eval_interval_with_provenance(&self, bounds: &Aabb) -> Option<([f32; 2], Self::Provenance)> {
+        self.field
+            .eval_interval_with_provenance(bounds)
+            .map(|([low, high], provenance)| {
+                ([low - self.distance, high - self.distance], provenance)
+            })
+    }
+
+    fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance {
+        self.field.point_provenance(point)
+    }
+}
+
 impl<F: ProvenanceField> ProvenanceField for Transform3<F> {
     type Provenance = F::Provenance;
 
@@ -393,6 +688,23 @@ impl<F: ProvenanceField> ProvenanceField for Transform3<F> {
         self.field
             .point_provenance(self.transform.world_to_local_point(point))
     }
+}
+
+/// The inverse of a 3x3 matrix by cofactors, or `None` when singular.
+fn inverse3(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let cofactor = |r: usize, c: usize| {
+        let (r0, r1) = ((r + 1) % 3, (r + 2) % 3);
+        let (c0, c1) = ((c + 1) % 3, (c + 2) % 3);
+        m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0]
+    };
+    let determinant = (0..3).map(|c| m[0][c] * cofactor(0, c)).sum::<f64>();
+    if !determinant.is_normal() {
+        return None;
+    }
+    // The inverse is the transposed cofactor matrix over the determinant.
+    Some(core::array::from_fn(|r| {
+        core::array::from_fn(|c| cofactor(c, r) / determinant)
+    }))
 }
 
 fn points_to_local<'a>(points: &[[f32; 3]], local_points: &'a [[f32; 3]; 16]) -> &'a [[f32; 3]] {

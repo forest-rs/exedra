@@ -45,7 +45,8 @@ Current scope:
 - analytic 2D reference profiles (`CircleField2d`, `RectField2d`,
   `HalfPlaneField2d`),
 - lifting operators (`Extrude`, `Revolve`) for profile-based 3D fields,
-- field-construction wrappers (`Translate`, `UniformScale`, `Transform3`),
+- field-construction wrappers (`Translate`, `UniformScale`, `Transform3`,
+  `ScaleValue`, `Offset`),
 - simple CSG combinators and provenance tagging wrappers for tests,
 - opt-in semi-analytic projection for tagged box/cylinder CSG fields,
 - a first dual-contouring extractor over an interval-culled adaptive octree.
@@ -70,6 +71,30 @@ Remaining degeneracies and topology refusals return errors. Invalid bounds,
 unrepresentable grid depths, QEF policies and join tolerances fail before field
 evaluation. `DualContourStats` gains join counts and displacement and implements
 `PartialEq` rather than `Eq`.
+
+## Field claims
+
+`ScalarField` fixes only the sign convention. `ScalarField::capabilities`
+states what a field's values additionally promise: a `Metric` (an exact
+distance, a Lipschitz bound, or nothing) and a `Support` for its interior
+(empty, a box established from its parameters with outward rounding, a box the
+provider asserts, unbounded, or unknown). The default claims nothing, so caller
+fields stay truthful without opting in.
+
+Built-in primitives claim exact distances within their bounds. Combinators
+keep only what their arithmetic justifies: a union or difference of distances
+is a Lipschitz bound, not a distance; an intersection is bounded by either
+operand; a smooth blend grows the support by its largest dip only when both
+operands are exact distances, and otherwise its support is unknown.
+Translations, uniform and rigid transforms carry claims with widened bounds,
+and extrusion and revolution lift profile claims.
+
+Three scalings are kept apart. `UniformScale` resizes the geometry, so
+distances stay distances. `ScaleValue` multiplies values by a positive factor:
+the surface stays put and only the Lipschitz claim changes. `Offset` subtracts
+a distance, moving the surface along the field; it grows the support only from
+exact distances, since a merely Lipschitz field may stay below the offset
+arbitrarily far out, while shrinking keeps any support.
 
 ## Octree and QEF modules
 

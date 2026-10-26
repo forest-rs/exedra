@@ -4,7 +4,8 @@
 //! Implicit-field seams and extraction-facing data types for Exedra.
 //!
 //! Current scope:
-//! - [`ScalarField`] as the base field-evaluation contract,
+//! - [`ScalarField`] as the base field-evaluation contract, with metric and
+//!   support claims in [`capability`],
 //! - [`ScalarField2d`] for profile-space field construction,
 //! - [`SpecializableField`] for region-local simplification,
 //! - [`ProvenanceField`] for extraction-time semantic tagging,
@@ -58,6 +59,9 @@ mod adaptive_transition;
 pub mod analytic;
 pub mod analytic2d;
 pub mod bounds2;
+pub mod capability;
+#[cfg(test)]
+mod capability_tests;
 mod cell_topology;
 pub mod dual_contour;
 pub mod hermite;
@@ -72,6 +76,7 @@ pub use qef::QefParams;
 pub use spatial::Aabb;
 
 pub use bounds2::Aabb2;
+pub use capability::{Capabilities, FieldCapabilities, Metric, ProfileCapabilities, Support};
 pub use dual_contour::{
     DualContourError, DualContourErrorKind, DualContourParameter, DualContourParams,
     DualContourResult, DualContourStats, ExtractionCandidate, ExtractionCell, ExtractionCellIssue,
@@ -92,7 +97,7 @@ pub use semi_analytic::{
 pub use skeletal::{
     BoundedField, CapsuleField, DistanceBound, RoundConeField, SmoothUnionN, SmoothUnionStats,
 };
-pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
+pub use transform::{Offset, RigidTransform3, ScaleValue, Transform3, Translate, UniformScale};
 
 /// Why a built-in field's parameters are invalid.
 ///
@@ -122,6 +127,11 @@ pub enum FieldError {
         /// The parameter's field name.
         parameter: &'static str,
     },
+    /// Axes that must be mutually perpendicular are not.
+    NotOrthogonal {
+        /// The parameter's field name.
+        parameter: &'static str,
+    },
 }
 
 impl core::fmt::Display for FieldError {
@@ -138,6 +148,12 @@ impl core::fmt::Display for FieldError {
             }
             Self::DegenerateDirection { parameter } => {
                 write!(f, "field parameter `{parameter}` is not a usable direction")
+            }
+            Self::NotOrthogonal { parameter } => {
+                write!(
+                    f,
+                    "field parameter `{parameter}` has axes that are not perpendicular"
+                )
             }
         }
     }
@@ -212,6 +228,14 @@ pub trait ScalarField {
     ///
     /// NaN gradients are permitted at non-differentiable points.
     fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]);
+
+    /// The field's metric and support claims; see [`capability`].
+    ///
+    /// The default claims nothing, which is always truthful. Override it only
+    /// with claims that hold for every point.
+    fn capabilities(&self) -> FieldCapabilities {
+        FieldCapabilities::UNKNOWN
+    }
 }
 
 /// A two-dimensional scalar field used for profile-based construction.
@@ -235,11 +259,22 @@ pub trait ScalarField2d {
     ///
     /// Each output row is `[value, dx, dy]`.
     fn eval_gradients(&self, points: &[[f32; 2]], out: &mut [[f32; 3]]);
+
+    /// The profile's metric and support claims; see [`capability`].
+    ///
+    /// The default claims nothing.
+    fn capabilities(&self) -> ProfileCapabilities {
+        ProfileCapabilities::UNKNOWN
+    }
 }
 
 impl<F: ScalarField + ?Sized> ScalarField for &F {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         (**self).eval_interval(bounds)
+    }
+
+    fn capabilities(&self) -> FieldCapabilities {
+        (**self).capabilities()
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
@@ -254,6 +289,10 @@ impl<F: ScalarField + ?Sized> ScalarField for &F {
 impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         (**self).eval_interval(bounds)
+    }
+
+    fn capabilities(&self) -> FieldCapabilities {
+        (**self).capabilities()
     }
 
     fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {

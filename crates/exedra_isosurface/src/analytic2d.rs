@@ -3,7 +3,15 @@
 
 //! Analytic 2D profile fields used by lifting operators and tests.
 
+use crate::capability::{Capabilities, Metric, ProfileCapabilities, Support, outward2};
 use crate::{Aabb2, FieldError, ScalarField2d, check_direction, check_finite, check_positive};
+
+/// Exact-distance claims for a profile bounded by `center` and `extent`.
+fn exact_about2(center: [f32; 2], extent: [f32; 2]) -> ProfileCapabilities {
+    let min = core::array::from_fn(|i| center[i] - extent[i]);
+    let max = core::array::from_fn(|i| center[i] + extent[i]);
+    outward2(min, max).map_or(ProfileCapabilities::UNKNOWN, Capabilities::exact)
+}
 
 /// Analytic circle signed-distance field.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -77,6 +85,10 @@ impl HalfPlaneField2d {
 }
 
 impl ScalarField2d for CircleField2d {
+    fn capabilities(&self) -> ProfileCapabilities {
+        exact_about2(self.center, [self.radius; 2])
+    }
+
     fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]> {
         let nearest = [
             clamp(self.center[0], bounds.min[0], bounds.max[0]),
@@ -111,6 +123,10 @@ impl ScalarField2d for CircleField2d {
 }
 
 impl ScalarField2d for RectField2d {
+    fn capabilities(&self) -> ProfileCapabilities {
+        exact_about2(self.center, self.half_extents)
+    }
+
     fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]> {
         Some(conservative_sampled_interval(self, bounds))
     }
@@ -142,6 +158,19 @@ impl ScalarField2d for RectField2d {
 }
 
 impl ScalarField2d for HalfPlaneField2d {
+    fn capabilities(&self) -> ProfileCapabilities {
+        let usable = self.point.iter().chain(&self.normal).all(|v| v.is_finite())
+            && (self.normal[0] != 0.0 || self.normal[1] != 0.0);
+        if usable {
+            Capabilities {
+                metric: Metric::ExactDistance,
+                support: Support::Unbounded,
+            }
+        } else {
+            ProfileCapabilities::UNKNOWN
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]> {
         let normal = normalize2(self.normal)?;
         let mut minimum = dot2(normal, sub2(bounds.min, self.point));

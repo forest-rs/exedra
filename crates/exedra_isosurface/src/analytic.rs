@@ -5,6 +5,7 @@
 
 use crate::spatial::Aabb;
 
+use crate::capability::{Capabilities, FieldCapabilities, Metric, Support, exact_about};
 use crate::{
     FieldError, ProvenanceField, ScalarField, check_direction, check_finite, check_nonnegative,
     check_positive,
@@ -264,6 +265,10 @@ impl<A, B> SmoothUnion<A, B> {
 }
 
 impl ScalarField for SphereField {
+    fn capabilities(&self) -> FieldCapabilities {
+        exact_about(self.center, [self.radius; 3])
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let nearest = [
             clamp(self.center[0], bounds.min[0], bounds.max[0]),
@@ -300,6 +305,10 @@ impl ScalarField for SphereField {
 }
 
 impl ScalarField for BoxField {
+    fn capabilities(&self) -> FieldCapabilities {
+        exact_about(self.center, self.half_extents)
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         exact_box_interval(self, bounds)
     }
@@ -328,6 +337,20 @@ impl ScalarField for BoxField {
 }
 
 impl ScalarField for CylinderField {
+    fn capabilities(&self) -> FieldCapabilities {
+        let Some(axis) = normalize(self.axis) else {
+            return FieldCapabilities::UNKNOWN;
+        };
+        // Along each world axis the cylinder reaches its half height times
+        // the axis component, plus its radius times the rest.
+        let extent =
+            axis.map(|a| self.half_height * a.abs() + self.radius * sqrt((1.0 - a * a).max(0.0)));
+        if self.radius < 0.0 || self.half_height < 0.0 {
+            return FieldCapabilities::UNKNOWN;
+        }
+        exact_about(self.center, extent)
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         Some(conservative_sampled_interval(self, bounds))
     }
@@ -351,6 +374,25 @@ impl ScalarField for CylinderField {
 }
 
 impl ScalarField for TorusField {
+    fn capabilities(&self) -> FieldCapabilities {
+        if normalize(self.axis).is_none() || self.major_radius < 0.0 || self.minor_radius < 0.0 {
+            return FieldCapabilities::UNKNOWN;
+        }
+        let claims = exact_about(self.center, [self.major_radius + self.minor_radius; 3]);
+        if self.minor_radius > self.major_radius {
+            // A spindle torus overlaps itself across the axis, where inside
+            // values undercount the distance to the surface.
+            return Capabilities {
+                metric: claims
+                    .metric
+                    .lipschitz()
+                    .map_or(Metric::Unknown, Metric::Lipschitz),
+                ..claims
+            };
+        }
+        claims
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         Some(conservative_sampled_interval(self, bounds))
     }
@@ -374,6 +416,17 @@ impl ScalarField for TorusField {
 }
 
 impl ScalarField for HalfSpaceField {
+    fn capabilities(&self) -> FieldCapabilities {
+        if normalize(self.normal).is_some() && self.point.iter().all(|v| v.is_finite()) {
+            Capabilities {
+                metric: Metric::ExactDistance,
+                support: Support::Unbounded,
+            }
+        } else {
+            FieldCapabilities::UNKNOWN
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let normal = normalize(self.normal)?;
         let mut minimum = dot(normal, sub(bounds.min, self.point));
@@ -405,6 +458,10 @@ impl ScalarField for HalfSpaceField {
 }
 
 impl<F: ScalarField, P: Copy> ScalarField for TaggedField<F, P> {
+    fn capabilities(&self) -> FieldCapabilities {
+        self.field.capabilities()
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         self.field.eval_interval(bounds)
     }
@@ -433,6 +490,14 @@ impl<F: ScalarField, P: Copy> ProvenanceField for TaggedField<F, P> {
 }
 
 impl<A: ScalarField, B: ScalarField> ScalarField for Union<A, B> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let (left, right) = (self.left.capabilities(), self.right.capabilities());
+        Capabilities {
+            metric: left.metric.combined(right.metric),
+            support: left.support.union(right.support),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let left = self.left.eval_interval(bounds)?;
         let right = self.right.eval_interval(bounds)?;
@@ -464,6 +529,14 @@ impl<A: ScalarField, B: ScalarField> ScalarField for Union<A, B> {
 }
 
 impl<A: ScalarField, B: ScalarField> ScalarField for Intersection<A, B> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let (left, right) = (self.left.capabilities(), self.right.capabilities());
+        Capabilities {
+            metric: left.metric.combined(right.metric),
+            support: left.support.intersection(right.support),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let left = self.left.eval_interval(bounds)?;
         let right = self.right.eval_interval(bounds)?;
@@ -495,6 +568,15 @@ impl<A: ScalarField, B: ScalarField> ScalarField for Intersection<A, B> {
 }
 
 impl<A: ScalarField, B: ScalarField> ScalarField for Difference<A, B> {
+    fn capabilities(&self) -> FieldCapabilities {
+        // The result's interior lies inside the left operand's.
+        let (left, right) = (self.left.capabilities(), self.right.capabilities());
+        Capabilities {
+            metric: left.metric.combined(right.metric),
+            support: left.support.without(right.support),
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let left = self.left.eval_interval(bounds)?;
         let right = self.right.eval_interval(bounds)?;
@@ -531,6 +613,26 @@ impl<A: ScalarField, B: ScalarField> ScalarField for Difference<A, B> {
 }
 
 impl<A: ScalarField, B: ScalarField> ScalarField for SmoothUnion<A, B> {
+    fn capabilities(&self) -> FieldCapabilities {
+        // The blend lowers values by at most a quarter of `k`. Where both
+        // operands are exact distances, a point that far from both supports
+        // cannot be inside; otherwise the growth is unbounded.
+        let (left, right) = (self.left.capabilities(), self.right.capabilities());
+        let dip = 0.25 * self.k.max(0.0);
+        let exact = left.metric == Metric::ExactDistance && right.metric == Metric::ExactDistance;
+        let support = if dip == 0.0 {
+            left.support.union(right.support)
+        } else if exact && dip.is_finite() {
+            left.support.union(right.support).grown(dip)
+        } else {
+            Support::Unknown
+        };
+        Capabilities {
+            metric: left.metric.combined(right.metric),
+            support,
+        }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let left = self.left.eval_interval(bounds)?;
         let right = self.right.eval_interval(bounds)?;

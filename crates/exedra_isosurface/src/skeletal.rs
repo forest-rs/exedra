@@ -21,6 +21,7 @@ use core::cell::Cell;
 use crate::spatial::Aabb;
 use exedra_math::{add, dot, norm, scale, sub};
 
+use crate::capability::{Capabilities, FieldCapabilities, Metric, Support, outward};
 use crate::{FieldError, ScalarField, check_finite, check_positive};
 
 /// Capsule signed-distance field: all points within `radius` of the segment
@@ -358,6 +359,38 @@ impl<C: ScalarField> SmoothUnionN<C> {
 }
 
 impl<C: ScalarField> ScalarField for SmoothUnionN<C> {
+    fn capabilities(&self) -> FieldCapabilities {
+        let mut children = self.children.iter().map(ScalarField::capabilities);
+        let Some(first) = children.next() else {
+            return Capabilities {
+                metric: Metric::Unknown,
+                support: Support::Empty,
+            };
+        };
+        let (metric, support, exact) = children.fold(
+            (
+                first.metric,
+                first.support,
+                first.metric == Metric::ExactDistance,
+            ),
+            |(metric, support, exact), child| {
+                (
+                    metric.combined(child.metric),
+                    support.union(child.support),
+                    exact && child.metric == Metric::ExactDistance,
+                )
+            },
+        );
+        // A blend lowers the minimum by less than `2k`; exact-distance
+        // children bound how far that can reach beyond their supports.
+        let support = match self.blend() {
+            None => support,
+            Some(_) if exact && (2.0 * self.k).is_finite() => support.grown(2.0 * self.k),
+            Some(_) => Support::Unknown,
+        };
+        Capabilities { metric, support }
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let k = self.blend();
         let band = k.map_or(0.0, |k| 2.0 * k);
@@ -666,6 +699,15 @@ impl<C> SmoothUnionN<C> {
 }
 
 impl ScalarField for CapsuleField {
+    fn capabilities(&self) -> FieldCapabilities {
+        if self.radius < 0.0 {
+            return FieldCapabilities::UNKNOWN;
+        }
+        let min = core::array::from_fn(|i| self.a[i].min(self.b[i]) - self.radius);
+        let max = core::array::from_fn(|i| self.a[i].max(self.b[i]) + self.radius);
+        outward(min, max).map_or(FieldCapabilities::UNKNOWN, Capabilities::exact)
+    }
+
     // Intervals go through the round-cone path with equal radii, which is the
     // same distance with different rounding; the interval margin covers the
     // difference from `eval_points`.
@@ -702,6 +744,17 @@ impl BoundedField for CapsuleField {
 }
 
 impl ScalarField for RoundConeField {
+    fn capabilities(&self) -> FieldCapabilities {
+        if self.radius_a < 0.0 || self.radius_b < 0.0 {
+            return FieldCapabilities::UNKNOWN;
+        }
+        let min =
+            core::array::from_fn(|i| (self.a[i] - self.radius_a).min(self.b[i] - self.radius_b));
+        let max =
+            core::array::from_fn(|i| (self.a[i] + self.radius_a).max(self.b[i] + self.radius_b));
+        outward(min, max).map_or(FieldCapabilities::UNKNOWN, Capabilities::exact)
+    }
+
     fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
         let shape = Segment::new(self.a, self.b, self.radius_a, self.radius_b)?;
         shape.interval(bounds)
