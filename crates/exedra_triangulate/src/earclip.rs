@@ -52,7 +52,7 @@ pub(crate) fn earclip_ring(
         let mut clipped = false;
         let mut collinear = None;
         for &pos in &scan {
-            if !live.alive[pos as usize] {
+            if !live.vertices[pos as usize].alive {
                 continue;
             }
             match live.classify(pos) {
@@ -86,8 +86,8 @@ pub(crate) fn earclip_ring(
     }
 
     if live.len == 3 {
-        let pos = (0..len_u32(live.alive.len()))
-            .find(|&p| live.alive[p as usize])
+        let pos = (0..len_u32(live.vertices.len()))
+            .find(|&p| live.vertices[p as usize].alive)
             .expect("live.len == 3 implies a live position exists");
         match live.classify(pos) {
             VertexClass::Convex => live.emit(pos, out),
@@ -132,26 +132,59 @@ enum VertexClass {
     Spike,
 }
 
+struct RingVertex {
+    next: u32,
+    prev: u32,
+    alive: bool,
+    class: Option<VertexClass>,
+    /// A live witness blocks this ear until either neighbor changes.
+    blocked_by: Option<u32>,
+}
+
 struct RingState<'a> {
     points: &'a [[f64; 2]],
     ring: &'a [u32],
-    next: Vec<u32>,
-    prev: Vec<u32>,
-    alive: Vec<bool>,
+    vertices: Vec<RingVertex>,
+    /// Static spatial order; dead positions are skipped at query time.
+    spatial: Vec<u32>,
+    spatial_axis: usize,
     len: usize,
 }
 
 impl<'a> RingState<'a> {
     fn new(points: &'a [[f64; 2]], ring: &'a [u32]) -> Self {
         let n = len_u32(ring.len());
-        let next = (0..n).map(|i| (i + 1) % n).collect();
-        let prev = (0..n).map(|i| (i + n - 1) % n).collect();
+        let vertices = (0..n)
+            .map(|i| RingVertex {
+                next: (i + 1) % n,
+                prev: (i + n - 1) % n,
+                alive: true,
+                class: None,
+                blocked_by: None,
+            })
+            .collect();
+        let mut min = [f64::INFINITY; 2];
+        let mut max = [f64::NEG_INFINITY; 2];
+        for &index in ring {
+            let point = points[index as usize];
+            for axis in 0..2 {
+                min[axis] = min[axis].min(point[axis]);
+                max[axis] = max[axis].max(point[axis]);
+            }
+        }
+        let spatial_axis = usize::from(max[1] - min[1] > max[0] - min[0]);
+        let mut spatial: Vec<_> = (0..n).collect();
+        spatial.sort_unstable_by(|&a, &b| {
+            points[ring[a as usize] as usize][spatial_axis]
+                .total_cmp(&points[ring[b as usize] as usize][spatial_axis])
+                .then_with(|| a.cmp(&b))
+        });
         Self {
             points,
             ring,
-            next,
-            prev,
-            alive: alloc::vec![true; ring.len()],
+            vertices,
+            spatial,
+            spatial_axis,
             len: ring.len(),
         }
     }
@@ -160,19 +193,18 @@ impl<'a> RingState<'a> {
         self.points[self.ring[pos as usize] as usize]
     }
 
-    /// Removes exactly coincident consecutive vertices so the classifier
-    /// never sees zero-length edges.
+    /// Removes exactly coincident consecutive vertices before selecting ears.
     fn prune_consecutive_duplicates(&mut self) {
         let n = len_u32(self.ring.len());
         let mut pos = 0_u32;
         let mut steps = 0;
         while steps < 2 * n as usize && self.len > 3 {
-            if !self.alive[pos as usize] {
+            if !self.vertices[pos as usize].alive {
                 pos = (pos + 1) % n;
                 steps += 1;
                 continue;
             }
-            let nxt = self.next[pos as usize];
+            let nxt = self.vertices[pos as usize].next;
             if nxt != pos && self.coords(pos) == self.coords(nxt) {
                 // Keep the earlier ring position for stability.
                 self.remove(nxt);
@@ -184,10 +216,19 @@ impl<'a> RingState<'a> {
         }
     }
 
-    fn classify(&self, pos: u32) -> VertexClass {
-        let p = self.coords(self.prev[pos as usize]);
+    fn classify(&mut self, pos: u32) -> VertexClass {
+        if let Some(class) = self.vertices[pos as usize].class {
+            return class;
+        }
+        let class = self.compute_class(pos);
+        self.vertices[pos as usize].class = Some(class);
+        class
+    }
+
+    fn compute_class(&self, pos: u32) -> VertexClass {
+        let p = self.coords(self.vertices[pos as usize].prev);
         let v = self.coords(pos);
-        let n = self.coords(self.next[pos as usize]);
+        let n = self.coords(self.vertices[pos as usize].next);
         match orient2d(p, v, n) {
             Orientation::Ccw => VertexClass::Convex,
             Orientation::Cw => VertexClass::Reflex,
@@ -209,38 +250,73 @@ impl<'a> RingState<'a> {
     /// Vertices whose coordinates exactly equal a triangle corner are
     /// skipped — bridged rings visit bridge endpoints twice, and a
     /// coincident copy must not block the ear its twin participates in.
-    fn is_ear(&self, pos: u32) -> bool {
-        let p_pos = self.prev[pos as usize];
-        let n_pos = self.next[pos as usize];
+    fn is_ear(&mut self, pos: u32) -> bool {
+        if let Some(blocker) = self.vertices[pos as usize].blocked_by
+            && self.vertices[blocker as usize].alive
+        {
+            return false;
+        }
+        let p_pos = self.vertices[pos as usize].prev;
+        let n_pos = self.vertices[pos as usize].next;
         let p = self.coords(p_pos);
         let v = self.coords(pos);
         let n = self.coords(n_pos);
 
-        let mut q_pos = self.next[n_pos as usize];
-        while q_pos != p_pos {
+        // A point outside these inclusive bounds cannot lie in the triangle.
+        // Use comparisons only: no rounded geometric predicate or tolerance
+        // can discard a point on an edge, even at extreme coordinate scales.
+        let min = [p[0].min(v[0]).min(n[0]), p[1].min(v[1]).min(n[1])];
+        let max = [p[0].max(v[0]).max(n[0]), p[1].max(v[1]).max(n[1])];
+
+        let axis = self.spatial_axis;
+        let start = self
+            .spatial
+            .partition_point(|&q| self.coords(q)[axis] < min[axis]);
+        for &q_pos in &self.spatial[start..] {
             let q = self.coords(q_pos);
-            if q != p && q != v && q != n && triangle_contains(p, v, n, q) {
+            if q[axis] > max[axis] {
+                break;
+            }
+            if !self.vertices[q_pos as usize].alive {
+                continue;
+            }
+            if q[0] >= min[0]
+                && q[0] <= max[0]
+                && q[1] >= min[1]
+                && q[1] <= max[1]
+                && q != p
+                && q != v
+                && q != n
+                && triangle_contains(p, v, n, q)
+            {
+                self.vertices[pos as usize].blocked_by = Some(q_pos);
                 return false;
             }
-            q_pos = self.next[q_pos as usize];
         }
+        self.vertices[pos as usize].blocked_by = None;
         true
     }
 
     fn emit(&self, pos: u32, out: &mut Vec<[u32; 3]>) {
-        let p = self.ring[self.prev[pos as usize] as usize];
+        let p = self.ring[self.vertices[pos as usize].prev as usize];
         let v = self.ring[pos as usize];
-        let n = self.ring[self.next[pos as usize] as usize];
+        let n = self.ring[self.vertices[pos as usize].next as usize];
         out.push([p, v, n]);
     }
 
     fn remove(&mut self, pos: u32) {
-        let p = self.prev[pos as usize];
-        let n = self.next[pos as usize];
-        self.next[p as usize] = n;
-        self.prev[n as usize] = p;
-        self.alive[pos as usize] = false;
+        let p = self.vertices[pos as usize].prev;
+        let n = self.vertices[pos as usize].next;
+        self.vertices[p as usize].next = n;
+        self.vertices[n as usize].prev = p;
+        self.vertices[pos as usize].alive = false;
         self.len -= 1;
+        // Only these two turns changed. An unchanged triangle's live blocker
+        // remains inside it, independent of edits elsewhere in the ring.
+        for neighbor in [p, n] {
+            self.vertices[neighbor as usize].blocked_by = None;
+            self.vertices[neighbor as usize].class = None;
+        }
     }
 }
 
@@ -249,4 +325,125 @@ fn triangle_contains(a: [f64; 2], b: [f64; 2], c: [f64; 2], q: [f64; 2]) -> bool
     orient2d(a, b, q) != Orientation::Cw
         && orient2d(b, c, q) != Orientation::Cw
         && orient2d(c, a, q) != Orientation::Cw
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Full traversal without spatial rejection or a cached blocking witness.
+    fn linear_is_ear(state: &RingState<'_>, pos: u32) -> bool {
+        let previous = state.vertices[pos as usize].prev;
+        let next = state.vertices[pos as usize].next;
+        let [a, b, c] = [
+            state.coords(previous),
+            state.coords(pos),
+            state.coords(next),
+        ];
+        let mut q = state.vertices[next as usize].next;
+        while q != previous {
+            let point = state.coords(q);
+            if point != a && point != b && point != c && triangle_contains(a, b, c, point) {
+                return false;
+            }
+            q = state.vertices[q as usize].next;
+        }
+        true
+    }
+
+    fn check_each_removal(points: &[[f64; 2]], ring: &[u32]) {
+        let mut state = RingState::new(points, ring);
+        state.prune_consecutive_duplicates();
+        let mut order: Vec<_> = (0..len_u32(ring.len())).collect();
+        order.sort_unstable_by_key(|&pos| (ring[pos as usize], pos));
+        while state.len > 3 {
+            let mut ear = None;
+            let mut collinear = None;
+            for &pos in &order {
+                if !state.vertices[pos as usize].alive {
+                    continue;
+                }
+                assert_eq!(state.classify(pos), state.compute_class(pos));
+                match state.classify(pos) {
+                    VertexClass::Convex => {
+                        let expected = linear_is_ear(&state, pos);
+                        assert_eq!(state.is_ear(pos), expected);
+                        // Repeating the query exercises the witness cache.
+                        assert_eq!(state.is_ear(pos), expected);
+                        if expected && ear.is_none() {
+                            ear = Some(pos);
+                        }
+                    }
+                    VertexClass::CollinearBetween => {
+                        collinear.get_or_insert(pos);
+                    }
+                    VertexClass::Reflex => {}
+                    VertexClass::Spike => panic!("valid test ring developed a spike"),
+                }
+            }
+            state.remove(ear.or(collinear).expect("ring must have an ear"));
+        }
+    }
+
+    #[test]
+    fn spatial_queries_match_full_traversal_through_bridged_ring_removals() {
+        let original = [
+            [-0.0, 0.0],
+            [12.0, 0.0],
+            [12.0, 12.0],
+            [0.0, 12.0],
+            [2.0, 2.0],
+            [2.0, 4.0],
+            [4.0, 4.0],
+            [4.0, 2.0],
+            [7.0, 5.0],
+            [7.0, 9.0],
+            [10.0, 9.0],
+            [10.0, 5.0],
+        ];
+        for scale in [1e-300, 1e-90, 1.0, 1e90] {
+            for transpose in [false, true] {
+                let points: Vec<_> = original
+                    .iter()
+                    .map(|&[x, y]| {
+                        if transpose {
+                            [-y * scale, x * scale]
+                        } else {
+                            [x * scale, y * scale]
+                        }
+                    })
+                    .collect();
+                let ring = crate::bridge::bridge_holes(
+                    &points,
+                    alloc::vec![0, 1, 2, 3],
+                    &[(4, 4), (8, 4)],
+                    false,
+                    false,
+                )
+                .expect("two separated holes");
+                check_each_removal(&points, &ring);
+            }
+        }
+    }
+
+    #[test]
+    fn cached_ear_is_reconsidered_when_its_blocker_is_removed() {
+        let points = [[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [3.0, 2.0], [0.0, 6.0]];
+        let mut state = RingState::new(&points, &[0, 1, 2, 3, 4]);
+        assert!(!state.is_ear(0));
+        assert_eq!(state.vertices[0].blocked_by, Some(3));
+        state.remove(3);
+        assert!(state.is_ear(0));
+    }
+
+    #[test]
+    fn changing_an_ear_neighbor_invalidates_its_live_blocker() {
+        let points = [[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [3.0, 2.0], [0.0, 6.0]];
+        let mut state = RingState::new(&points, &[0, 1, 2, 3, 4]);
+        assert!(!state.is_ear(0));
+        state.remove(1);
+        assert!(state.vertices[3].alive);
+        assert_eq!(state.vertices[0].blocked_by, None);
+        assert!(state.is_ear(0));
+    }
 }
