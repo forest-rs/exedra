@@ -67,6 +67,56 @@ retained. These checks add work; the
 preceding tables remain frozen measurements of `be1da85` rather than being
 silently rewritten. Raw native samples are in `post_validation_fix`.
 
+### Index hole boundaries and prepare shorter bridges
+
+The follow-up at `2bf4d03` indexes immutable source-loop bounds and coordinate
+incidences once, then keeps added bridges separately. Exact predicates still
+decide visibility. Hole splicing reserves its final traversal once and reuses
+candidate-order scratch. Delaunay first tries short visible bridges and
+canonicalizes the accepted cover; EarClip retains its historical label order.
+Distance keys are computed once per anchor in a contiguous reusable buffer.
+No production dependencies, unsafe code or public API changes are involved.
+
+Four alternating rounds of nine warmed samples compare against `09427da`,
+including its unconditional input validation:
+
+| Workload | Before mesh, ms | After mesh, ms |
+| --- | ---: | ---: |
+| Plain plate | 0.077 | 0.081 |
+| 16-hole plate | 2.093 | 1.728 |
+| 64-hole plate | 13.604 | 11.990 |
+| Panel | 1.800 | 1.634 |
+| Seven-vent panel | 2.139 | 1.950 |
+| Larger panel | 1.862 | 1.697 |
+| Full fitting | 0.510 | 0.534 |
+| Cutaway fitting | 0.399 | 0.404 |
+
+The 64-hole solid improves about 12%; the panel about 9%. Small inputs and
+revolutions show small increases in this capture; they are not claimed as wins.
+The final baseline standard round and the initial tighter-target capture were
+noisy. A separate tighter-target repeat, six alternating rounds of nine samples,
+is stable: at native 0.01 mm, realization improves from 21.792 to 17.917 ms and
+end-to-end work from 30.587 to 26.601 ms. The earlier OCCT reference remains
+20.022 ms realization and 59.426 ms indexed-OCP end-to-end work; it was not
+rerun for this follow-up.
+
+All eight solids, every recorded round, and the tighter-target plate retain
+identical positions, triangles, exact measures and reported deviations. The
+generated polygon corpus also reaches the same canonical Delaunay cover when
+starting from the historical EarClip result. Tests include aligned co-circular
+holes, collinear boundary restoration, crossed input and full-scan query oracles
+at extreme scales and signed zero.
+
+On the recovered cap fixture, six alternating rounds of eleven samples reduce
+cap-only Delaunay time from 12.489 to 5.719 ms, with identical mesh hashes. This
+is a different loop labeling and scope from whole-solid realization. A fresh
+crate survey measures i_triangle Delaunay at 0.219 ms with the same rounded
+worst-angle metric on this fixture: the remaining performance gap is substantial.
+Three warmed cap calls allocate 2,005 blocks / 2,695,872 bytes versus
+2,377 blocks / 3,634,896 bytes before (16% fewer blocks, 26% fewer bytes).
+Peak live bytes remain 336,816. Raw paired samples, source identities, quality
+checks and the initial noisy capture are in `post_cover_optimization`.
+
 ### Match accuracy as well as nominal settings
 
 OCCT's relaxed-angle mesh has lower surface error than the native 0.02 mm mesh.
