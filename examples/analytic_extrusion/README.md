@@ -27,6 +27,11 @@ another. The parts compile as baked geometry, and the GLB binds one material
 per region: the vents and the recess get their own finish without listing
 faces.
 
+The example maps feature tags directly to named `Finish` values and gives every
+part a default finish. That same finish identifies the mesh region and resolves
+to a material at export, without relying on a material array's position. Native
+feature counts use `faces_tagged`; mesh finish counts use `faces_in_region`.
+
 ```sh
 cargo run -p analytic_extrusion --example instrument_panel -- panel.glb
 ```
