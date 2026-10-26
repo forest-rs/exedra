@@ -3,7 +3,7 @@
 
 //! Deterministic constrained-Delaunay edge legalization.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 
 use crate::predicates::{InCircle, Orientation, incircle, orient2d};
 
@@ -56,7 +56,146 @@ impl Incident {
     }
 }
 
-type Adjacency = BTreeMap<Edge, Incident>;
+const NOT_QUEUED: usize = usize::MAX;
+
+struct EdgeRecord {
+    key: Edge,
+    incident: Incident,
+    queued_at: usize,
+}
+
+/// Flat adjacency is prepared once. Flips reuse the old diagonal's slot;
+/// perimeter edge slots and triangle identities remain stable.
+struct Adjacency {
+    edges: Vec<EdgeRecord>,
+    triangle_edges: Vec<[usize; 3]>,
+}
+
+impl Adjacency {
+    fn new(triangles: &[[u32; 3]]) -> Self {
+        let mut entries = Vec::with_capacity(triangles.len() * 3);
+        for (triangle, &vertices) in triangles.iter().enumerate() {
+            for (slot, [a, b]) in triangle_edges(vertices).into_iter().enumerate() {
+                entries.push((Edge::new(a, b), triangle, slot));
+            }
+        }
+        entries.sort_unstable();
+        let edge_count = usize::from(!entries.is_empty())
+            + entries
+                .windows(2)
+                .filter(|pair| pair[0].0 != pair[1].0)
+                .count();
+        let mut edges: Vec<EdgeRecord> = Vec::with_capacity(edge_count);
+        let mut triangle_edges = alloc::vec![[0; 3]; triangles.len()];
+        for (key, triangle, slot) in entries {
+            if edges.last().is_none_or(|record| record.key != key) {
+                edges.push(EdgeRecord {
+                    key,
+                    incident: Incident::default(),
+                    queued_at: NOT_QUEUED,
+                });
+            }
+            let edge = edges.len() - 1;
+            edges[edge].incident.insert(triangle);
+            triangle_edges[triangle][slot] = edge;
+        }
+        Self {
+            edges,
+            triangle_edges,
+        }
+    }
+}
+
+/// Indexed minimum heap. Each edge has at most one queued occurrence, so
+/// storage is bounded by the original edge count and flips never allocate.
+struct Worklist {
+    heap: Vec<usize>,
+}
+
+impl Worklist {
+    fn new(adjacency: &mut Adjacency) -> Self {
+        let mut work = Self {
+            heap: Vec::with_capacity(adjacency.edges.len()),
+        };
+        for edge in 0..adjacency.edges.len() {
+            if adjacency.edges[edge].incident.len() == 2 {
+                work.insert(edge, &mut adjacency.edges);
+            }
+        }
+        work
+    }
+
+    fn swap(&mut self, a: usize, b: usize, edges: &mut [EdgeRecord]) {
+        self.heap.swap(a, b);
+        edges[self.heap[a]].queued_at = a;
+        edges[self.heap[b]].queued_at = b;
+    }
+
+    fn up(&mut self, mut at: usize, edges: &mut [EdgeRecord]) -> usize {
+        while at > 0 {
+            let parent = (at - 1) / 2;
+            if edges[self.heap[parent]].key <= edges[self.heap[at]].key {
+                break;
+            }
+            self.swap(parent, at, edges);
+            at = parent;
+        }
+        at
+    }
+
+    fn down(&mut self, mut at: usize, edges: &mut [EdgeRecord]) {
+        loop {
+            let left = 2 * at + 1;
+            if left >= self.heap.len() {
+                break;
+            }
+            let right = left + 1;
+            let child = if right < self.heap.len()
+                && edges[self.heap[right]].key < edges[self.heap[left]].key
+            {
+                right
+            } else {
+                left
+            };
+            if edges[self.heap[at]].key <= edges[self.heap[child]].key {
+                break;
+            }
+            self.swap(at, child, edges);
+            at = child;
+        }
+    }
+
+    fn insert(&mut self, edge: usize, edges: &mut [EdgeRecord]) {
+        if edges[edge].queued_at != NOT_QUEUED {
+            return;
+        }
+        edges[edge].queued_at = self.heap.len();
+        self.heap.push(edge);
+        self.up(self.heap.len() - 1, edges);
+    }
+
+    fn remove(&mut self, edge: usize, edges: &mut [EdgeRecord]) {
+        let at = edges[edge].queued_at;
+        if at == NOT_QUEUED {
+            return;
+        }
+        edges[edge].queued_at = NOT_QUEUED;
+        let last = self.heap.pop().expect("queued edge has a heap entry");
+        if at < self.heap.len() {
+            self.heap[at] = last;
+            edges[last].queued_at = at;
+            if self.up(at, edges) == at {
+                self.down(at, edges);
+            }
+        }
+    }
+
+    fn pop(&mut self, edges: &mut [EdgeRecord]) -> Option<usize> {
+        let edge = *self.heap.first()?;
+        self.remove(edge, edges);
+        Some(edge)
+    }
+}
 
 /// Legalizes unconstrained interior edges and returns the number of flips.
 ///
@@ -80,22 +219,15 @@ type Adjacency = BTreeMap<Edge, Incident>;
 /// position, so the resulting triangle set does not depend on the ear-clipped
 /// cover it started from.
 pub(crate) fn legalize_edges(points: &[[f64; 2]], triangles: &mut [[u32; 3]]) -> usize {
-    let mut adjacency = Adjacency::new();
-    for (triangle_index, &triangle) in triangles.iter().enumerate() {
-        add_triangle(&mut adjacency, triangle_index, triangle);
-    }
-    let mut worklist: BTreeSet<Edge> = adjacency
-        .iter()
-        .filter_map(|(&edge, incident)| (incident.len() == 2).then_some(edge))
-        .collect();
+    let mut adjacency = Adjacency::new(triangles);
+    let mut worklist = Worklist::new(&mut adjacency);
 
     let mut flips = 0;
-    while let Some(edge) = worklist.iter().next().copied() {
-        worklist.remove(&edge);
+    while let Some(edge) = worklist.pop(&mut adjacency.edges) {
         let Some(candidate) = flip_candidate(&adjacency, triangles, edge) else {
             continue;
         };
-        if !is_illegal(points, triangles, candidate) {
+        if !is_illegal(points, triangles, adjacency.edges[edge].key, candidate) {
             continue;
         }
         replace_edge(points, triangles, &mut adjacency, &mut worklist, candidate);
@@ -110,15 +242,16 @@ pub(crate) fn legalize_edges(points: &[[f64; 2]], triangles: &mut [[u32; 3]]) ->
 
 #[derive(Copy, Clone, Debug)]
 struct Flip {
-    edge: Edge,
+    edge: usize,
     first_triangle: usize,
     second_triangle: usize,
     first_opposite: u32,
     second_opposite: u32,
 }
 
-fn flip_candidate(adjacency: &Adjacency, triangles: &[[u32; 3]], edge: Edge) -> Option<Flip> {
-    let incident = adjacency.get(&edge)?;
+fn flip_candidate(adjacency: &Adjacency, triangles: &[[u32; 3]], edge: usize) -> Option<Flip> {
+    let record = &adjacency.edges[edge];
+    let incident = &record.incident;
     let [first_triangle, second_triangle] = *incident.as_slice() else {
         return None;
     };
@@ -126,8 +259,8 @@ fn flip_candidate(adjacency: &Adjacency, triangles: &[[u32; 3]], edge: Edge) -> 
         edge,
         first_triangle,
         second_triangle,
-        first_opposite: opposite_vertex(triangles[first_triangle], edge)?,
-        second_opposite: opposite_vertex(triangles[second_triangle], edge)?,
+        first_opposite: opposite_vertex(triangles[first_triangle], record.key)?,
+        second_opposite: opposite_vertex(triangles[second_triangle], record.key)?,
     })
 }
 
@@ -139,8 +272,8 @@ fn flip_candidate(adjacency: &Adjacency, triangles: &[[u32; 3]], edge: Edge) -> 
 /// prefer the diagonal containing the lowest index of the four corners, which
 /// the lexicographic edge comparison expresses because the four indices are
 /// distinct.
-fn is_illegal(points: &[[f64; 2]], triangles: &[[u32; 3]], candidate: Flip) -> bool {
-    let [u, v] = candidate.edge.vertices;
+fn is_illegal(points: &[[f64; 2]], triangles: &[[u32; 3]], edge: Edge, candidate: Flip) -> bool {
+    let [u, v] = edge.vertices;
     let a = candidate.first_opposite;
     let b = candidate.second_opposite;
     if a == b
@@ -164,7 +297,7 @@ fn is_illegal(points: &[[f64; 2]], triangles: &[[u32; 3]], candidate: Flip) -> b
     match position {
         InCircle::Inside => true,
         InCircle::Outside => false,
-        InCircle::Cocircular => Edge::new(a, b) < candidate.edge,
+        InCircle::Cocircular => Edge::new(a, b) < edge,
     }
 }
 
@@ -179,65 +312,57 @@ fn replace_edge(
     points: &[[f64; 2]],
     triangles: &mut [[u32; 3]],
     adjacency: &mut Adjacency,
-    worklist: &mut BTreeSet<Edge>,
+    worklist: &mut Worklist,
     candidate: Flip,
 ) {
-    let [u, v] = candidate.edge.vertices;
+    let [u, v] = adjacency.edges[candidate.edge].key.vertices;
     let a = candidate.first_opposite;
     let b = candidate.second_opposite;
     let first = ccw_triangle(points, [a, b, u]);
     let second = ccw_triangle(points, [b, a, v]);
-    let old_first = triangles[candidate.first_triangle];
-    let old_second = triangles[candidate.second_triangle];
-    // The quadrilateral's four sides and its two diagonals are the complete
-    // affected set. Keep the historical sorted update order without a heap
-    // allocation on every flip.
-    let mut affected = [
-        Edge::new(u, v),
-        Edge::new(a, b),
-        Edge::new(a, u),
-        Edge::new(a, v),
-        Edge::new(b, u),
-        Edge::new(b, v),
+    let old_first = adjacency.triangle_edges[candidate.first_triangle];
+    let old_second = adjacency.triangle_edges[candidate.second_triangle];
+    let affected = [
+        old_first[0],
+        old_first[1],
+        old_first[2],
+        old_second[0],
+        old_second[1],
+        old_second[2],
     ];
-    affected.sort_unstable();
 
-    remove_triangle(adjacency, candidate.first_triangle, old_first);
-    remove_triangle(adjacency, candidate.second_triangle, old_second);
-    triangles[candidate.first_triangle] = first;
-    triangles[candidate.second_triangle] = second;
-    add_triangle(adjacency, candidate.first_triangle, first);
-    add_triangle(adjacency, candidate.second_triangle, second);
-
+    // Remove queued keys before changing the diagonal. Its slot is reused,
+    // so neither adjacency nor the priority queue grows during a flip.
     for edge in affected {
-        worklist.remove(&edge);
-        if adjacency
-            .get(&edge)
-            .is_some_and(|incident| incident.len() == 2)
-        {
-            worklist.insert(edge);
+        worklist.remove(edge, &mut adjacency.edges);
+    }
+    for (triangle, edges) in [
+        (candidate.first_triangle, old_first),
+        (candidate.second_triangle, old_second),
+    ] {
+        for edge in edges {
+            adjacency.edges[edge].incident.remove(triangle);
         }
     }
-}
-
-fn add_triangle(adjacency: &mut Adjacency, triangle_index: usize, triangle: [u32; 3]) {
-    for [a, b] in triangle_edges(triangle) {
-        let incident = adjacency.entry(Edge::new(a, b)).or_default();
-        incident.insert(triangle_index);
+    adjacency.edges[candidate.edge].key = Edge::new(a, b);
+    for (index, vertices) in [
+        (candidate.first_triangle, first),
+        (candidate.second_triangle, second),
+    ] {
+        triangles[index] = vertices;
+        for (slot, [left, right]) in triangle_edges(vertices).into_iter().enumerate() {
+            let key = Edge::new(left, right);
+            let edge = *affected
+                .iter()
+                .find(|&&edge| adjacency.edges[edge].key == key)
+                .expect("flipped triangle uses only its diagonal and perimeter");
+            adjacency.edges[edge].incident.insert(index);
+            adjacency.triangle_edges[index][slot] = edge;
+        }
     }
-}
-
-fn remove_triangle(adjacency: &mut Adjacency, triangle_index: usize, triangle: [u32; 3]) {
-    for [a, b] in triangle_edges(triangle) {
-        let edge = Edge::new(a, b);
-        let remove_edge = if let Some(incident) = adjacency.get_mut(&edge) {
-            incident.remove(triangle_index);
-            incident.len() == 0
-        } else {
-            false
-        };
-        if remove_edge {
-            adjacency.remove(&edge);
+    for edge in affected {
+        if adjacency.edges[edge].incident.len() == 2 {
+            worklist.insert(edge, &mut adjacency.edges);
         }
     }
 }
@@ -290,15 +415,14 @@ const fn canonical_triangle([a, b, c]: [u32; 3]) -> [u32; 3] {
 /// [`legalize_edges`] claims to establish.
 #[cfg(test)]
 pub(crate) fn illegal_edge_count(points: &[[f64; 2]], triangles: &[[u32; 3]]) -> usize {
-    let mut adjacency = Adjacency::new();
-    for (triangle_index, &triangle) in triangles.iter().enumerate() {
-        add_triangle(&mut adjacency, triangle_index, triangle);
-    }
+    let adjacency = Adjacency::new(triangles);
     adjacency
-        .keys()
-        .filter(|&&edge| {
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|&(edge, record)| {
             flip_candidate(&adjacency, triangles, edge)
-                .is_some_and(|candidate| is_illegal(points, triangles, candidate))
+                .is_some_and(|candidate| is_illegal(points, triangles, record.key, candidate))
         })
         .count()
 }
@@ -306,6 +430,59 @@ pub(crate) fn illegal_edge_count(points: &[[f64; 2]], triangles: &[[u32; 3]]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::collections::BTreeSet;
+
+    #[test]
+    fn worklist_matches_ordered_set_through_removal_and_key_changes() {
+        let mut edges: Vec<_> = (0..32)
+            .map(|i| EdgeRecord {
+                key: Edge::new(i, 100 + i),
+                incident: Incident::default(),
+                queued_at: NOT_QUEUED,
+            })
+            .collect();
+        let mut queue = Worklist {
+            heap: Vec::with_capacity(edges.len()),
+        };
+        let capacity = queue.heap.capacity();
+        let mut expected = BTreeSet::new();
+        let mut random = 0x8b1c_8d4f_29a1_7f03_u64;
+        for _ in 0..4096 {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            let index = (random % 32) as usize;
+            if random & 3 == 0 {
+                let wanted = expected.pop_first().map(|(_, index)| index);
+                assert_eq!(queue.pop(&mut edges), wanted);
+            } else {
+                queue.remove(index, &mut edges);
+                expected.remove(&(edges[index].key, index));
+                edges[index].key = Edge::new(
+                    (random % 1000) as u32 * 32 + u32::try_from(index).expect("small queue index"),
+                    100_000 + u32::try_from(index).expect("small queue index"),
+                );
+                if random & 3 != 1 {
+                    queue.insert(index, &mut edges);
+                    expected.insert((edges[index].key, index));
+                }
+            }
+            assert_eq!(queue.heap.len(), expected.len());
+            assert_eq!(
+                queue.heap.capacity(),
+                capacity,
+                "updates never grow the queue"
+            );
+            for (position, &edge) in queue.heap.iter().enumerate() {
+                assert_eq!(edges[edge].queued_at, position);
+                assert!(expected.contains(&(edges[edge].key, edge)));
+            }
+        }
+        while let Some((_, wanted)) = expected.pop_first() {
+            assert_eq!(queue.pop(&mut edges), Some(wanted));
+        }
+        assert_eq!(queue.pop(&mut edges), None);
+    }
     use alloc::vec::Vec;
 
     /// Rational-rotation near-circle: convex, no exactly cocircular quadruple
