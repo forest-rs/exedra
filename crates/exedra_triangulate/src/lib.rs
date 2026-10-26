@@ -177,8 +177,9 @@ pub fn triangulate(
 /// still be omitted; callers that attach attributes to such samples must choose
 /// their cleanup policy before calling this function.
 ///
-/// With [`TriStrategy::ConstrainedDelaunay`], the restored cover is legalized
-/// again so the selected strategy also applies to its restored diagonals.
+/// With [`TriStrategy::ConstrainedDelaunay`], legalization runs after restoring
+/// the boundary samples, so every emitted diagonal receives the chosen policy
+/// without first legalizing a cover that restoration would change.
 ///
 /// # Errors
 ///
@@ -187,12 +188,9 @@ pub fn triangulate_preserving_boundary(
     input: &PolygonInput<'_>,
     params: &TriParams,
 ) -> Result<Triangulation, TriError> {
-    let mut cover = build_cover(input, params.strategy)?;
-    let original_count = cover.triangles.len();
+    let mut cover = build_cover(input, TriStrategy::EarClip)?;
     restore_boundary_samples(input, &mut cover.triangles);
-    if cover.triangles.len() != original_count
-        && params.strategy == TriStrategy::ConstrainedDelaunay
-    {
+    if params.strategy == TriStrategy::ConstrainedDelaunay {
         legalize_edges(&cover.points, &mut cover.triangles);
     }
     Ok(Triangulation {
@@ -267,14 +265,11 @@ pub fn refine(
     if !params.max_radius_edge_ratio.is_finite() || params.max_radius_edge_ratio <= 0.0 {
         return Err(TriError::InvalidParams);
     }
-    let mut cover = build_cover(input, TriStrategy::ConstrainedDelaunay)?;
+    let mut cover = build_cover(input, TriStrategy::EarClip)?;
     if params.boundary_splits == BoundarySplits::Forbidden {
-        let original_count = cover.triangles.len();
         restore_boundary_samples(input, &mut cover.triangles);
-        if cover.triangles.len() != original_count {
-            cover.edge_flips += legalize_edges(&cover.points, &mut cover.triangles);
-        }
     }
+    cover.edge_flips = legalize_edges(&cover.points, &mut cover.triangles);
     let mut points = cover.points;
     let refined = refine_cover(&mut points, cover.triangles, params, cover.edge_flips);
     Ok(RefinedTriangulation {
