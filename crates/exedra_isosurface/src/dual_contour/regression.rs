@@ -28,9 +28,7 @@ fn small_aligned_sphere_remains_closed() {
             limits: ExtractionLimits::default(),
             witness_limit: 16,
             vertex_merge_tolerance: 0.0,
-            edge_search: EdgeSearchParams {
-                bisection_steps: 14,
-            },
+            edge_search: EdgeSearchParams { precision_bits: 14 },
             qef: QefParams::default(),
         },
     )
@@ -136,9 +134,7 @@ fn junction_aligned_domain_remains_closed() {
                         limits: ExtractionLimits::default(),
                         witness_limit: 16,
                         vertex_merge_tolerance: 0.000002,
-                        edge_search: EdgeSearchParams {
-                            bisection_steps: 14,
-                        },
+                        edge_search: EdgeSearchParams { precision_bits: 14 },
                         qef: QefParams::default(),
                     },
                 )
@@ -178,9 +174,7 @@ fn extraction_params() -> DualContourParams {
         limits: ExtractionLimits::default(),
         witness_limit: 16,
         vertex_merge_tolerance: 0.0,
-        edge_search: EdgeSearchParams {
-            bisection_steps: 14,
-        },
+        edge_search: EdgeSearchParams { precision_bits: 14 },
         qef: QefParams::default(),
     }
 }

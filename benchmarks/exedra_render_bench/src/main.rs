@@ -140,9 +140,7 @@ fn implicit_toothed_torus_mesh() -> Mesh {
         limits: ExtractionLimits::default(),
         witness_limit: 16,
         vertex_merge_tolerance: 0.0,
-        edge_search: EdgeSearchParams {
-            bisection_steps: 10,
-        },
+        edge_search: EdgeSearchParams { precision_bits: 10 },
         qef: QefParams::default(),
     };
 

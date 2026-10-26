@@ -63,13 +63,14 @@ impl CellHermiteData {
 /// Parameters controlling edge intersection search.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct EdgeSearchParams {
-    /// Number of bisection refinement rounds.
-    pub bisection_steps: u8,
+    /// Precision of each crossing: the search stops once the crossing is
+    /// bracketed within `2^-precision_bits` of the edge's length.
+    pub precision_bits: u8,
 }
 
 impl Default for EdgeSearchParams {
     fn default() -> Self {
-        Self { bisection_steps: 8 }
+        Self { precision_bits: 8 }
     }
 }
 
@@ -82,16 +83,19 @@ pub enum EdgeIntersectionError {
 
 /// Locates a zero-crossing along one sampled edge.
 ///
-/// The search uses the bulk [`ScalarField::eval_points`] boundary to perform
-/// deterministic bisection, then uses [`ScalarField::eval_gradients`] once at
-/// the final point to gather the Hermite normal.
+/// The search samples both endpoints, brackets the crossing by false
+/// position through the bulk [`ScalarField::eval_points`] boundary, then uses
+/// [`ScalarField::eval_gradients`] once at the final point to gather the
+/// Hermite normal.
 pub fn locate_edge_intersection<F: ScalarField>(
     field: &F,
     start: [f32; 3],
     end: [f32; 3],
     params: &EdgeSearchParams,
 ) -> Result<HermiteIntersection, EdgeIntersectionError> {
-    let (point, t) = locate_edge_zero(field, start, end, params)?;
+    let mut values = [0.0; 2];
+    field.eval_points(&[start, end], &mut values);
+    let (point, t) = search_edge_zero(field, [start, end], values, params)?;
     sample_gradient(field, point, t)
 }
 
@@ -104,41 +108,102 @@ pub(crate) fn locate_edge_zero<F: ScalarField>(
 ) -> Result<([f32; 3], f32), EdgeIntersectionError> {
     let mut values = [0.0; 2];
     field.eval_points(&[start, end], &mut values);
-    let [mut a_value, b_value] = values;
+    search_edge_zero(field, [start, end], values, params)
+}
 
-    if a_value == 0.0 {
+/// Locates the zero-crossing between `ends`, whose field values are
+/// `values`, and its gradient.
+pub(crate) fn search_edge_intersection<F: ScalarField>(
+    field: &F,
+    ends: [[f32; 3]; 2],
+    values: [f32; 2],
+    params: &EdgeSearchParams,
+) -> Result<HermiteIntersection, EdgeIntersectionError> {
+    let (point, t) = search_edge_zero(field, ends, values, params)?;
+    sample_gradient(field, point, t)
+}
+
+/// Brackets the zero-crossing between `ends`, whose field values are
+/// `values`, to one of `2^precision_bits` equal steps along the edge, and
+/// returns that step's midpoint.
+///
+/// Steps are chosen by false position, rounded to the step grid; the
+/// Illinois rule halves the weight of an end kept twice in a row, so both
+/// ends close in, and a bracket that fails to halve twice in a row is
+/// bisected. A smooth crossing takes a few samples where bisection takes
+/// `precision_bits`. The step found depends only on signs, as with
+/// bisection, so edges crossing one plane at the same place agree exactly.
+fn search_edge_zero<F: ScalarField>(
+    field: &F,
+    [start, end]: [[f32; 3]; 2],
+    [start_value, end_value]: [f32; 2],
+    params: &EdgeSearchParams,
+) -> Result<([f32; 3], f32), EdgeIntersectionError> {
+    if start_value == 0.0 {
         return Ok((start, 0.0));
     }
-    if b_value == 0.0 {
+    if end_value == 0.0 {
         return Ok((end, 1.0));
     }
-    if same_sign(a_value, b_value) {
+    if !same_sign(start_value, -end_value) {
         return Err(EdgeIntersectionError::NoSignChange);
     }
-
-    let mut a_t = 0.0_f32;
-    let mut b_t = 1.0_f32;
-    let mut point_value = a_value;
-    let mut point_t = a_t;
-    let mut point = start;
-
-    for _ in 0..params.bisection_steps {
-        point_t = 0.5 * (a_t + b_t);
-        point = lerp(start, end, point_t);
-        field.eval_points(&[point], core::slice::from_mut(&mut point_value));
-
-        if point_value == 0.0 {
-            break;
-        }
-        if same_sign(a_value, point_value) {
-            a_t = point_t;
-            a_value = point_value;
+    // Step indices stay exact in `f32` up to 2^24.
+    let steps = 1_u32 << params.precision_bits.min(24);
+    #[expect(clippy::cast_precision_loss, reason = "step indices are below 2^24")]
+    let at = |index: u32| index as f32 / steps as f32;
+    let (mut low, mut high) = ((0_u32, start_value), (steps, end_value));
+    // Weights for false position: the values, halved per the Illinois rule.
+    let (mut low_weight, mut high_weight) = (start_value, end_value);
+    let mut kept: Option<bool> = None;
+    let mut slow_steps = 0;
+    while high.0 - low.0 > 1 {
+        let span = high.0 - low.0;
+        let guess = f64::from(low.0)
+            + f64::from(span) * f64::from(low_weight)
+                / (f64::from(low_weight) - f64::from(high_weight));
+        let index = if slow_steps >= 2 || !guess.is_finite() {
+            low.0 + span / 2
         } else {
-            b_t = point_t;
+            // Rounds to the nearest step inside the bracket.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to the bracket's interior first"
+            )]
+            let nearest = (guess.clamp(f64::from(low.0 + 1), f64::from(high.0 - 1)) + 0.5) as u32;
+            nearest
+        };
+        let t = at(index);
+        let point = lerp(start, end, t);
+        let mut value = 0.0;
+        field.eval_points(&[point], core::slice::from_mut(&mut value));
+        if value == 0.0 {
+            return Ok((point, t));
         }
+        if same_sign(low.1, value) {
+            low = (index, value);
+            low_weight = value;
+            if kept == Some(true) {
+                high_weight *= 0.5;
+            }
+            kept = Some(true);
+        } else {
+            high = (index, value);
+            high_weight = value;
+            if kept == Some(false) {
+                low_weight *= 0.5;
+            }
+            kept = Some(false);
+        }
+        slow_steps = if 2 * (high.0 - low.0) > span {
+            slow_steps + 1
+        } else {
+            0
+        };
     }
-
-    Ok((point, point_t))
+    let t = 0.5 * (at(low.0) + at(high.0));
+    Ok((lerp(start, end, t), t))
 }
 
 fn sample_gradient<F: ScalarField>(
@@ -233,9 +298,7 @@ mod tests {
             &sphere,
             [0.0, 0.0, 0.0],
             [2.0, 0.0, 0.0],
-            &EdgeSearchParams {
-                bisection_steps: 12,
-            },
+            &EdgeSearchParams { precision_bits: 12 },
         )
         .expect("sphere edge should cross once");
 

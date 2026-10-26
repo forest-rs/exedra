@@ -125,6 +125,7 @@ fn finite_limits_preserve_output_and_exact_callback_counts() {
     p.limits = ExtractionLimits {
         octree_cells: Some(w.peak_octree_cells),
         cached_corners: Some(w.peak_cached_corners),
+        cached_crossings: Some(w.peak_cached_crossings),
         transition_records: Some(w.peak_transition_records),
         vertices: Some(w.peak_vertices),
         faces: Some(w.peak_faces),

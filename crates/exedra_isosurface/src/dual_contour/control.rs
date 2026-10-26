@@ -34,6 +34,8 @@ pub struct ExtractionLimits {
     pub octree_cells: Option<usize>,
     /// Cached integer-grid corner samples.
     pub cached_corners: Option<usize>,
+    /// Cached surface crossings on integer-grid edges.
+    pub cached_crossings: Option<usize>,
     /// Entries in any transition worklist, including intervals, endpoints,
     /// minimal segments and pending output patches. This is a per-list limit.
     pub transition_records: Option<usize>,
@@ -59,6 +61,8 @@ pub enum ExtractionResource {
     OctreeCells,
     /// Cached grid samples.
     CachedCorners,
+    /// Cached grid-edge crossings.
+    CachedCrossings,
     /// Entries in a transition worklist.
     TransitionRecords,
     /// Vertices in a generated mesh.
@@ -98,6 +102,8 @@ pub struct ExtractionWork {
     pub peak_octree_cells: usize,
     /// Greatest number of cached grid sample slots reserved.
     pub peak_cached_corners: usize,
+    /// Greatest number of cached grid-edge crossings reserved.
+    pub peak_cached_crossings: usize,
     /// Greatest number of entries reserved for a transition worklist.
     pub peak_transition_records: usize,
     /// Greatest number of vertex slots reserved for any generated mesh.
@@ -529,6 +535,7 @@ impl RunContext {
         let limit = match resource {
             ExtractionResource::OctreeCells => self.limits.octree_cells,
             ExtractionResource::CachedCorners => self.limits.cached_corners,
+            ExtractionResource::CachedCrossings => self.limits.cached_crossings,
             ExtractionResource::TransitionRecords => self.limits.transition_records,
             ExtractionResource::Vertices => self.limits.vertices,
             ExtractionResource::Faces => self.limits.faces,
@@ -551,6 +558,7 @@ impl RunContext {
         let peak = match resource {
             ExtractionResource::OctreeCells => &mut work.peak_octree_cells,
             ExtractionResource::CachedCorners => &mut work.peak_cached_corners,
+            ExtractionResource::CachedCrossings => &mut work.peak_cached_crossings,
             ExtractionResource::TransitionRecords => &mut work.peak_transition_records,
             ExtractionResource::Vertices => &mut work.peak_vertices,
             ExtractionResource::Faces => &mut work.peak_faces,

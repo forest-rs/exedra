@@ -15,6 +15,7 @@ use crate::ScalarField;
 use crate::dual_contour::control::{
     DualContourError, ExtractionResource, ExtractionWitness, RunContext, query_bounds,
 };
+use crate::hermite::{EdgeSearchParams, HermiteIntersection, search_edge_intersection};
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct CornerKey {
@@ -95,6 +96,7 @@ pub(super) struct AdaptiveGrid<'a, F> {
     root_bounds: Aabb,
     resolution: u32,
     samples: HashMap<CornerKey, f32>,
+    crossings: HashMap<(CornerKey, CornerKey), Option<HermiteIntersection>>,
     locations: Vec<Option<LocatedCell>>,
 }
 
@@ -105,6 +107,7 @@ impl<'a, F: ScalarField> AdaptiveGrid<'a, F> {
             root_bounds,
             resolution,
             samples: HashMap::new(),
+            crossings: HashMap::new(),
             locations: Vec::new(),
         }
     }
@@ -241,6 +244,39 @@ impl<'a, F: ScalarField> AdaptiveGrid<'a, F> {
             self.samples.insert(key, value);
         }
         Ok(())
+    }
+
+    /// The surface crossing on the grid edge from `start` to `end`, whose
+    /// samples are cached and disagree; `None` where the search finds none.
+    /// Located once from the cached samples, then shared by every cell with
+    /// that edge.
+    pub(super) fn edge_crossing(
+        &mut self,
+        start: CornerKey,
+        end: CornerKey,
+        params: &EdgeSearchParams,
+        run: &RunContext,
+    ) -> Result<Option<HermiteIntersection>, DualContourError> {
+        if let Some(&crossing) = self.crossings.get(&(start, end)) {
+            return Ok(crossing);
+        }
+        run.grow(ExtractionResource::CachedCrossings, self.crossings.len(), 1)?;
+        let values = [start, end].map(|key| {
+            *self
+                .samples
+                .get(&key)
+                .expect("edge ends must be sampled before their crossing")
+        });
+        let crossing = search_edge_intersection(
+            self.field,
+            [self.point(start), self.point(end)],
+            values,
+            params,
+        )
+        .ok();
+        run.check()?;
+        self.crossings.insert((start, end), crossing);
+        Ok(crossing)
     }
 
     pub(super) fn value(&self, key: CornerKey) -> Option<f32> {
@@ -803,7 +839,7 @@ fn local_edge_index(axis: u8, first: Option<u8>, second: Option<u8>) -> Option<u
     })
 }
 
-fn cell_corner_keys(cell: CellKey) -> [CornerKey; 8] {
+pub(super) fn cell_corner_keys(cell: CellKey) -> [CornerKey; 8] {
     core::array::from_fn(|corner| CornerKey {
         x: cell.origin.x + bit(corner, 0) * cell.span,
         y: cell.origin.y + bit(corner, 1) * cell.span,

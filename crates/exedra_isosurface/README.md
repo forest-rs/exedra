@@ -61,6 +61,10 @@ Current scope:
 The current mesher is intentionally phase-1:
 
 - interval-driven octree culling with conservative mixed-depth leaf retention,
+- one search per crossed grid edge, shared by every cell with that edge, starting
+  from the cached corner samples: false position rounded to a grid of
+  `2^precision_bits` steps, so the step found depends only on signs, as with
+  bisection, in a few samples instead of `precision_bits`,
 - one dual vertex per classified surface component in each active octree leaf,
 - explicit triangle emission from primal-edge patches with deterministic diagonal choice,
 - QEF placement with edge-sharpness tagging and Hermite mass-point anchoring,
@@ -173,8 +177,8 @@ region from a sole source, a hard combinator's winner, or the larger
 contributor to a smooth blend, where the surface belongs to both.
 
 Use `limits: ExtractionLimits { ... }` to stop analysis and generation. Independent
-caps cover octree cells (including later refinements), cached corners, transition
-worklists, mesh vertices/faces, field evaluations, topology passes and attempted
+caps cover octree cells (including later refinements), cached corners, cached edge
+crossings, transition worklists, mesh vertices/faces, field evaluations, topology passes and attempted
 vertex joins. A hard limit returns an error and no mesh. `None` leaves a resource
 unrestricted; use finite caps for all relevant resources to bound a run. Storage
 counts are logical entries, including reserved worklist bounds, not allocator

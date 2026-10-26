@@ -17,8 +17,8 @@ use hashbrown::{HashMap, HashSet};
 
 use crate::adaptive_transition::{
     AdaptiveGrid, BalanceContext, Balancer, CellKey, ComponentRoute, CornerKey, EdgeSegmentKey,
-    LeafChanges, LeafLocator, LeafSet, enumerate_segments, leaf_keys, refine_into_leaves,
-    segment_end,
+    LeafChanges, LeafLocator, LeafSet, cell_corner_keys, enumerate_segments, leaf_keys,
+    refine_into_leaves, segment_end,
 };
 use crate::cell_topology::{CUBE_EDGES, CellTopology, classify_cell};
 use crate::hermite::locate_edge_zero;
@@ -26,7 +26,6 @@ use crate::provenance::{Attribution, ProjectRegion, RegionAttribution, RegionSam
 use crate::{
     Aabb, CellHermiteData, EdgeSearchParams, ProvenanceField, QefParams, ScalarField,
     SemiAnalyticFeature, SemiAnalyticField, SemiAnalyticProjectionOutcome,
-    locate_edge_intersection,
 };
 use exedra_math::{cross, distance_squared, dot, norm, normalize, sub};
 
@@ -1236,12 +1235,15 @@ fn triangle_is_nondegenerate(points: [[f32; 3]; 3]) -> bool {
 }
 
 fn analyze_crossing_cell<F: ScalarField>(
-    field: &F,
+    grid: &mut AdaptiveGrid<'_, F>,
     params: &DualContourParams,
+    cell: CellKey,
     corner_values: [f32; 8],
-    bounds: Aabb,
+    run: &RunContext,
 ) -> Result<CellAnalysis, DualContourError> {
+    let bounds = grid.cell_bounds(cell);
     let corner_signs = corner_sign_mask(&corner_values);
+    let corner_keys = cell_corner_keys(cell);
     let corner_positions = cube_corner_positions(bounds);
     let mut hermite = CellHermiteData::new(corner_signs);
     for (edge_index, &(start_corner, end_corner)) in CUBE_EDGES.iter().enumerate() {
@@ -1250,13 +1252,13 @@ fn analyze_crossing_cell<F: ScalarField>(
         if !edge_has_crossing(start_value, end_value) {
             continue;
         }
-        let intersection = locate_edge_intersection(
-            field,
-            corner_positions[start_corner],
-            corner_positions[end_corner],
+        let crossing = grid.edge_crossing(
+            corner_keys[start_corner],
+            corner_keys[end_corner],
             &params.edge_search,
-        );
-        let Ok(mut intersection) = intersection else {
+            run,
+        )?;
+        let Some(mut intersection) = crossing else {
             continue;
         };
         repair_endpoint_normal(
@@ -2178,7 +2180,13 @@ impl<F: ScalarField> IntervalVisitor<'_, F> {
             });
         }
 
-        let analysis = analyze_crossing_cell(self.field, self.params, corner_values, cell_bounds)?;
+        let analysis = analyze_crossing_cell(
+            &mut self.grid,
+            self.params,
+            cell_key,
+            corner_values,
+            self.run,
+        )?;
         self.run.check()?;
         let decision = if at_resolution {
             if analysis.hermite.intersections.is_empty() {
@@ -2667,12 +2675,11 @@ mod tests {
         RedundantHermitePlanesEvidence, RefinementDecision, RefinementEvidence, RefinementMode,
         RefinementReason, SemiAnalyticContourStats, VertexEntry, adaptive_error_target,
         analyze_crossing_cell, apply_projection, classify_redundant_hermite_planes,
-        collect_active_cells, constraintless_component, cube_corner_positions, cyclic_distinct,
-        dual_contour, dual_contour_projected_impl, dual_contour_semi_analytic,
-        dual_contour_with_regions, emit_transition_polygon, hermite_rms, normal_turn_error,
-        prepare_transitions, project_active_cell, refinement_decision, repair_endpoint_normal,
-        select_quad_diagonal, solve_cell_vertices, transition_component_token,
-        triangle_is_nondegenerate,
+        collect_active_cells, constraintless_component, cyclic_distinct, dual_contour,
+        dual_contour_projected_impl, dual_contour_semi_analytic, dual_contour_with_regions,
+        emit_transition_polygon, hermite_rms, normal_turn_error, prepare_transitions,
+        project_active_cell, refinement_decision, repair_endpoint_normal, select_quad_diagonal,
+        solve_cell_vertices, transition_component_token, triangle_is_nondegenerate,
     };
     use crate::ProjectRegion;
     use crate::analytic::{
@@ -2687,7 +2694,7 @@ mod tests {
         HermiteIntersection, ProvenanceField, ScalarField, SemiAnalyticField,
         SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
     };
-    use exedra_mesh::{BuildError, ExtractParams, FaceLoopErrorKind, attr};
+    use exedra_mesh::{BuildError, ExtractParams, attr};
     use hashbrown::HashSet;
 
     fn params(bounds: Aabb, max_depth: u8) -> DualContourParams {
@@ -2699,9 +2706,7 @@ mod tests {
             limits: ExtractionLimits::default(),
             witness_limit: 16,
             vertex_merge_tolerance: 0.0,
-            edge_search: EdgeSearchParams {
-                bisection_steps: 10,
-            },
+            edge_search: EdgeSearchParams { precision_bits: 10 },
             qef: QefParams::default(),
         }
     }
@@ -2782,9 +2787,9 @@ mod tests {
 
     struct PartiallyNonFinitePlane;
 
-    struct SliceSensitivePlane {
-        retain_some_edge_hits: bool,
-    }
+    /// A plane whose batch queries see it and whose single-point queries
+    /// see only outside.
+    struct InconsistentPointQueries;
 
     struct UnknownIntervalBox {
         field: BoxField,
@@ -2923,17 +2928,15 @@ mod tests {
         }
     }
 
-    impl ScalarField for SliceSensitivePlane {
+    impl ScalarField for InconsistentPointQueries {
         fn eval_interval(&self, _bounds: &Aabb) -> Option<[f32; 2]> {
             Some([-1.0, 1.0])
         }
 
         fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
-            let expose_crossing = points.len() > 2
-                || (self.retain_some_edge_hits
-                    && points.first().is_some_and(|point| point[1] < 0.0));
+            let batch = points.len() > 2;
             for (point, value) in points.iter().zip(out) {
-                *value = if expose_crossing { point[0] } else { 1.0 };
+                *value = if batch { point[0] } else { 1.0 };
             }
         }
 
@@ -3439,28 +3442,6 @@ mod tests {
             expected_selected
         );
         assert_eq!(selection.omitted_by_budget, expected_omitted);
-    }
-
-    #[test]
-    fn unresolved_max_depth_transition_is_not_hidden_by_nonbinding_budget() {
-        let field = SliceSensitivePlane {
-            retain_some_edge_hits: false,
-        };
-        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
-        for budget in [None, Some(usize::MAX)] {
-            let mut params = params(bounds, 2);
-            params.cell_budget = budget;
-            assert!(matches!(
-                dual_contour(&field, &params),
-                Err(super::DualContourError {
-                    kind: super::DualContourErrorKind::Build(BuildError::InvalidFaceLoop {
-                        face: 0,
-                        kind: FaceLoopErrorKind::TooShort,
-                    }),
-                    ..
-                })
-            ));
-        }
     }
 
     #[test]
@@ -4292,11 +4273,16 @@ mod tests {
         let field = PartiallyNonFinitePlane;
         let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
         let params = params(bounds, 5);
-        let corners = cube_corner_positions(bounds);
-        let mut corner_values = [0.0_f32; 8];
-        field.eval_points(&corners, &mut corner_values);
+        let run = RunContext::new(ExtractionLimits::default());
+        let mut grid = AdaptiveGrid::new(&field, bounds, 1);
+        let cell = CellKey {
+            origin: super::CornerKey::new(0, 0, 0),
+            span: 1,
+            depth: 0,
+        };
+        let corner_values = grid.sample_cell_corners(cell, &run).unwrap();
 
-        let analysis = analyze_crossing_cell(&field, &params, corner_values, bounds)
+        let analysis = analyze_crossing_cell(&mut grid, &params, cell, corner_values, &run)
             .expect("the two finite constraints keep the compatibility QEF solvable");
 
         assert_eq!(analysis.evidence.expected_crossings, 4);
@@ -4397,49 +4383,17 @@ mod tests {
     }
 
     #[test]
-    fn max_depth_decision_is_authoritative_for_partial_hermite_payloads() {
+    fn crossings_are_searched_from_cached_samples() {
+        // Single-point queries contradict the batch that sampled the corners.
+        // Searching from the cached samples still finds a crossing on every
+        // edge whose corners disagree.
         let bounds = Aabb::new([-1.0; 3], [1.0; 3]).expect("bounds");
         let params = params(bounds, 0);
-        let no_hits = SliceSensitivePlane {
-            retain_some_edge_hits: false,
-        };
-        let inactive = inspect_root(&no_hits, &params, true);
-        assert_eq!(
-            inactive.decision,
-            RefinementDecision::Inactive(InactiveReason::NoCrossingAtMaxDepth)
-        );
-        assert!(
-            inactive.analysis.is_some(),
-            "the regression requires an analyzed but inactive payload"
-        );
-        assert_eq!(
-            dual_contour(&no_hits, &params)
-                .expect("inconsistent no-hit extraction")
-                .stats
-                .active_cells,
-            0,
-            "inactive analysis must not leak through collection"
-        );
-
-        let some_hits = SliceSensitivePlane {
-            retain_some_edge_hits: true,
-        };
-        let compatible = inspect_root(&some_hits, &params, true);
-        assert_eq!(
-            compatible.decision,
-            RefinementDecision::MaxDepthCompatibility
-        );
-        let evidence = compatible.analysis.expect("partial analysis").evidence;
-        assert!(evidence.hermite_hits > 0);
-        assert!(evidence.hermite_hits < evidence.expected_crossings);
-        assert_eq!(
-            dual_contour(&some_hits, &params)
-                .expect("inconsistent partial extraction")
-                .stats
-                .active_cells,
-            1,
-            "a partial cell with some Hermite data preserves compatibility at max depth"
-        );
+        let marker = inspect_root(&InconsistentPointQueries, &params, true);
+        assert_eq!(marker.decision, RefinementDecision::MaxDepthCompatibility);
+        let evidence = marker.analysis.expect("crossing analysis").evidence;
+        assert_eq!(evidence.hermite_hits, evidence.expected_crossings);
+        assert!(evidence.complete_hermite);
     }
 
     #[test]
@@ -5569,16 +5523,11 @@ mod tests {
                 span: cell.span,
                 depth: cell.depth,
             };
-            let corner_values = grid
-                .sample_cell_corners(key, &RunContext::new(ExtractionLimits::default()))
-                .unwrap();
-            let analysis = analyze_crossing_cell(
-                field,
-                extraction_params,
-                corner_values,
-                grid.cell_bounds(key),
-            )
-            .expect("forced-uniform H1 cell analysis");
+            let run = RunContext::new(ExtractionLimits::default());
+            let corner_values = grid.sample_cell_corners(key, &run).unwrap();
+            let analysis =
+                analyze_crossing_cell(&mut grid, extraction_params, key, corner_values, &run)
+                    .expect("forced-uniform H1 cell analysis");
             assert_eq!(analysis.vertices.components.len(), 1);
             assert!(!analysis.topology.has_ambiguous_face());
             assert_eq!(
