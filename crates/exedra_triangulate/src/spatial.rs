@@ -3,6 +3,7 @@
 
 //! Flat, immutable bounding hierarchy for geometry broad phases.
 
+use crate::predicates::{Orientation, orient2d};
 use alloc::vec::Vec;
 
 #[derive(Copy, Clone, Debug)]
@@ -21,6 +22,28 @@ impl Bounds {
 
     pub(crate) fn overlaps(self, other: Self) -> bool {
         (0..2).all(|axis| self.min[axis] <= other.max[axis] && other.min[axis] <= self.max[axis])
+    }
+    pub(crate) fn may_intersect_segment(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        for axis in 0..2 {
+            if a[axis].max(b[axis]) < self.min[axis] || a[axis].min(b[axis]) > self.max[axis] {
+                return false;
+            }
+        }
+        // These corners minimize/maximize orientation over the entire box.
+        // Strict same-sidedness rules it out; exact touches always continue.
+        // Corner selection uses comparisons only, not rounded line arithmetic.
+        let (low_x, high_x) = if b[1] > a[1] {
+            (self.max[0], self.min[0])
+        } else {
+            (self.min[0], self.max[0])
+        };
+        let (low_y, high_y) = if b[0] > a[0] {
+            (self.min[1], self.max[1])
+        } else {
+            (self.max[1], self.min[1])
+        };
+        orient2d(a, b, [low_x, low_y]) != Orientation::Ccw
+            && orient2d(a, b, [high_x, high_y]) != Orientation::Cw
     }
 }
 

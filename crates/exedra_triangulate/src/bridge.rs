@@ -19,6 +19,11 @@
 
 use alloc::vec::Vec;
 
+mod candidates;
+use candidates::Candidates;
+mod index;
+use index::BoundaryIndex;
+
 use crate::TriError;
 use crate::boundary::{between, contact};
 use crate::predicates::{Orientation, orient2d};
@@ -55,6 +60,9 @@ pub(crate) fn bridge_holes(
             return Err(TriError::NonSimple);
         }
     }
+    if hole_rings.is_empty() {
+        return Ok(ring);
+    }
     // Rightmost anchors go first. The normal deterministic order uses lower
     // y first; the caller may reverse only this exact-x tie as a validated
     // fallback when aligned holes otherwise create a zero-width corridor.
@@ -89,7 +97,20 @@ pub(crate) fn bridge_holes(
         }
     }
 
+    let capacity = points
+        .len()
+        .checked_add(
+            hole_rings
+                .len()
+                .checked_mul(2)
+                .ok_or(TriError::TooManyVertices)?,
+        )
+        .filter(|&count| u32::try_from(count).is_ok())
+        .ok_or(TriError::TooManyVertices)?;
+    let mut boundary_index = BoundaryIndex::new(points, &ring, &hole_rings);
+    let mut candidates = Candidates::new(points.len(), capacity);
     let mut composite = ring;
+    composite.reserve(capacity - composite.len());
     for &hole_index in &order {
         composite = bridge_one(
             points,
@@ -97,9 +118,9 @@ pub(crate) fn bridge_holes(
             &hole_rings[hole_index],
             anchors[hole_index],
             hole_index,
-            &hole_rings,
-            &order,
             nearest_candidates,
+            &mut boundary_index,
+            &mut candidates,
         )?;
     }
     Ok(composite)
@@ -129,9 +150,9 @@ fn bridge_one(
     hole: &[u32],
     anchor: u32,
     hole_index: usize,
-    holes: &[Vec<u32>],
-    order: &[usize],
     nearest_candidates: bool,
+    boundary_index: &mut BoundaryIndex<'_>,
+    candidate_scratch: &mut Candidates,
 ) -> Result<Vec<u32>, TriError> {
     let h = points[anchor as usize];
 
@@ -140,36 +161,15 @@ fn bridge_one(
     // caller can retry nearest-first: aligned holes can make a far, low-label
     // bridge create a weakly-simple corridor that ear clipping cannot cover
     // without changing an input boundary.
-    let mut candidates: Vec<u32> = (0..).take(ring.len()).collect();
-    if nearest_candidates {
-        candidates.sort_unstable_by(|&a, &b| {
-            let pa = points[ring[a as usize] as usize];
-            let pb = points[ring[b as usize] as usize];
-            let distance_a = (pa[0] - h[0]) * (pa[0] - h[0]) + (pa[1] - h[1]) * (pa[1] - h[1]);
-            let distance_b = (pb[0] - h[0]) * (pb[0] - h[0]) + (pb[1] - h[1]) * (pb[1] - h[1]);
-            distance_a
-                .partial_cmp(&distance_b)
-                .expect("coordinates validated finite")
-                .then(ring[a as usize].cmp(&ring[b as usize]))
-                .then(a.cmp(&b))
-        });
-    } else {
-        candidates.sort_unstable_by_key(|&pos| (ring[pos as usize], pos));
-    }
+    let candidates = candidate_scratch.ordered(points, &ring, h, nearest_candidates);
 
-    // Holes not yet spliced (processed after this one) still stand as
-    // independent rings the bridge must not cross.
-    let position = order
-        .iter()
-        .position(|&o| o == hole_index)
-        .expect("hole_index comes from order");
     let anchor_position = hole
         .iter()
         .position(|&index| index == anchor)
         .expect("anchor belongs to hole");
     let hole_previous = points[hole[(anchor_position + hole.len() - 1) % hole.len()] as usize];
     let hole_next = points[hole[(anchor_position + 1) % hole.len()] as usize];
-    'candidate: for &pos in &candidates {
+    'candidate: for &pos in candidates {
         let pos = pos as usize;
         let o = points[ring[pos] as usize];
         if o == h {
@@ -193,55 +193,19 @@ fn bridge_one(
         // that edge as a zero-width corridor. A composite ring can contain
         // the same target coordinate more than once after earlier bridges,
         // so all incident edges must clear this collinearity check. The
-        // material-cone test below selects the correct occurrence to splice.
+        // material-cone test above selects the correct occurrence to splice.
         if [hole_previous, hole_next]
             .into_iter()
             .any(|neighbor| orient2d(h, o, neighbor) == Orientation::Collinear)
         {
             continue;
         }
-        for ring_pos in 0..ring.len() {
-            if points[ring[ring_pos] as usize] != o {
-                continue;
-            }
-            let previous = points[ring[(ring_pos + ring.len() - 1) % ring.len()] as usize];
-            let next = points[ring[(ring_pos + 1) % ring.len()] as usize];
-            if [previous, next]
-                .into_iter()
-                .any(|neighbor| orient2d(h, o, neighbor) == Orientation::Collinear)
-            {
-                continue 'candidate;
-            }
+        if boundary_index.collinear_incident(h, o) || boundary_index.blocks(h, o) {
+            continue 'candidate;
         }
-        // The bridge must clear every edge of the current composite ring…
-        for i in 0..ring.len() {
-            let a = points[ring[i] as usize];
-            let b = points[ring[(i + 1) % ring.len()] as usize];
-            if blocks_bridge(h, o, a, b) {
-                continue 'candidate;
-            }
-        }
-        // …every edge of this hole…
-        for i in 0..hole.len() {
-            let a = points[hole[i] as usize];
-            let b = points[hole[(i + 1) % hole.len()] as usize];
-            if blocks_bridge(h, o, a, b) {
-                continue 'candidate;
-            }
-        }
-        // …and every edge of the holes still waiting to be spliced.
-        for &pending_index in &order[position + 1..] {
-            let pending = &holes[pending_index];
-            for i in 0..pending.len() {
-                let a = points[pending[i] as usize];
-                let b = points[pending[(i + 1) % pending.len()] as usize];
-                if blocks_bridge(h, o, a, b) {
-                    continue 'candidate;
-                }
-            }
-        }
+        boundary_index.add_bridge(anchor, ring[pos]);
         return Ok(splice(
-            &ring,
+            ring,
             u32::try_from(pos).expect("ring position originated as u32"),
             hole,
             anchor,
@@ -278,20 +242,22 @@ fn blocks_bridge(h: [f64; 2], o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> bool {
 
 /// Builds the composite ring: `ring[..=pos], hole cycle from the anchor,
 /// anchor again, ring[pos..]`.
-fn splice(ring: &[u32], pos: u32, hole: &[u32], anchor: u32) -> Vec<u32> {
+fn splice(mut ring: Vec<u32>, pos: u32, hole: &[u32], anchor: u32) -> Vec<u32> {
     let pos = pos as usize;
     let anchor_position = hole
         .iter()
         .position(|&index| index == anchor)
         .expect("anchor belongs to hole");
-    let mut out = Vec::with_capacity(ring.len() + hole.len() + 2);
-    out.extend_from_slice(&ring[..=pos]);
+    let previous_len = ring.len();
+    ring.resize(previous_len + hole.len() + 2, 0);
+    // Shift the tail, including the selected endpoint's duplicate, into its
+    // final position. The caller reserves the complete composite budget once.
+    ring.copy_within(pos..previous_len, pos + hole.len() + 2);
     for i in 0..hole.len() {
-        out.push(hole[(anchor_position + i) % hole.len()]);
+        ring[pos + 1 + i] = hole[(anchor_position + i) % hole.len()];
     }
-    out.push(anchor);
-    out.extend_from_slice(&ring[pos..]);
-    out
+    ring[pos + 1 + hole.len()] = anchor;
+    ring
 }
 
 /// Removes vertices that lie exactly between their neighbors. Repeats until
