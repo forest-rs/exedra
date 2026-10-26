@@ -18,6 +18,11 @@ use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, circular_ed
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
 
 /// Explicit accuracy and storage bounds for one body realization.
+///
+/// Planar faces use boundary-preserving constrained Delaunay triangulation.
+/// It improves interior diagonals without adding vertices; a minimum triangle
+/// angle is not guaranteed. Geometric deviation is controlled by
+/// [`Self::tolerance`] independently of triangle shape.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct RealizationPolicy {
     /// Requested geometric deviation in model units, including emitted precision.
@@ -631,7 +636,7 @@ impl<F, E> Body<F, E> {
                     holes: &holes,
                 };
                 let triangulated =
-                    triangulate_preserving_boundary(&input, &TriParams::default())
+                    triangulate_preserving_boundary(&input, &TriParams::constrained_delaunay())
                         .map_err(|error| RealizationError::Arrangement { face: id, error })?;
                 for triangle in triangulated.triangles {
                     emit(

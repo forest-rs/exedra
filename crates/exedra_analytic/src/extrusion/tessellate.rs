@@ -23,6 +23,11 @@ use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preservi
 use super::{Boundary, BoundarySegment, EdgeId, End, Extrusion, Face, FaceId, Level, VertexId};
 
 /// Accuracy and work limits for [`Extrusion::tessellate`].
+///
+/// Caps and pocket floors use constrained Delaunay triangulation while keeping
+/// their shared boundary samples fixed. This improves diagonal choices without
+/// adding interior vertices or promising a minimum triangle angle. Curve
+/// accuracy is controlled independently by [`Self::chord_tolerance`].
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TessellationPolicy {
     /// Largest chord-to-arc deviation in local model units, before `f32`
@@ -462,7 +467,7 @@ impl Extrusion {
                 outer: &points[0],
                 holes: &holes,
             };
-            match triangulate_preserving_boundary(&input, &TriParams::default()) {
+            match triangulate_preserving_boundary(&input, &TriParams::constrained_delaunay()) {
                 Ok(triangulation) => planar.push((plane, vertices, triangulation.triangles)),
                 Err(error) => {
                     let witness = |ring: usize, edge: usize| {

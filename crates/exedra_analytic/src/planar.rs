@@ -895,9 +895,11 @@ fn triangulate_face_with_openings(
         outer: &outer_points,
         holes: &holes,
     };
-    let triangulation =
-        exedra_triangulate::triangulate(&input, &exedra_triangulate::TriParams::default())
-            .map_err(|error| map_triangulate_error(shell, face, error))?;
+    let triangulation = exedra_triangulate::triangulate(
+        &input,
+        &exedra_triangulate::TriParams::constrained_delaunay(),
+    )
+    .map_err(|error| map_triangulate_error(shell, face, error))?;
 
     // Triangle indices address `outer ++ openings...` in order; map back to
     // analytic vertex ids through the same concatenation.

@@ -134,6 +134,70 @@ fn sampled_area(profile: &Profile, report: &TessellationReport) -> f64 {
 }
 
 #[test]
+fn caps_choose_well_shaped_diagonals_without_adding_vertices() {
+    // The lowest-index ear would create a triangle with a roughly one-degree
+    // corner. The alternative diagonal gives four cap triangles above 40°.
+    let outline = Loop::new(vec![
+        Segment::line([4.9, 4.9]),
+        Segment::line([10.0, 0.0]),
+        Segment::line([10.0, 10.0]),
+        Segment::line([0.0, 10.0]),
+    ])
+    .unwrap();
+    let profile = Profile::new(outline, vec![], &SEPARATION).unwrap();
+    let solid = Extrusion::new(profile, Placement3::IDENTITY, 3.0).unwrap();
+    let realized = solid.tessellate(&TessellationPolicy::default()).unwrap();
+    let native = solid
+        .body()
+        .realize(
+            Placement3::IDENTITY,
+            &crate::realize::RealizationPolicy::default(),
+        )
+        .unwrap();
+    for (mesh, faces) in [
+        (realized.mesh, realized.mesh_faces),
+        (native.mesh, native.mesh_faces),
+    ] {
+        assert_eq!(mesh.vertices().count(), 8);
+        let mut cap_triangles = 0;
+        for &(mesh_face, native_face) in &faces {
+            if !matches!(
+                solid.body().face(native_face).unwrap().role,
+                FaceRole::Cap(_)
+            ) {
+                continue;
+            }
+            let points: Vec<_> = mesh
+                .face_loop(mesh_face)
+                .map(|corner| {
+                    mesh.vertex_position(mesh.to_vertex(corner).unwrap())
+                        .unwrap()
+                        .map(f64::from)
+                })
+                .collect();
+            assert_eq!(points.len(), 3);
+            for i in 0..3 {
+                let vertex = points[i];
+                let a = exedra_math::sub(points[(i + 1) % 3], vertex);
+                let b = exedra_math::sub(points[(i + 2) % 3], vertex);
+                let angle = libm::atan2(
+                    exedra_math::norm(exedra_math::cross(a, b)),
+                    exedra_math::dot(a, b),
+                );
+                assert!(
+                    angle.to_degrees() > 40.0,
+                    "cap corner angle: {}",
+                    angle.to_degrees()
+                );
+            }
+            cap_triangles += 1;
+        }
+        assert_eq!(cap_triangles, 4);
+        assert!(mesh.validate_deep().is_empty());
+    }
+}
+
+#[test]
 fn required_fixtures_realize_closed_valid_meshes_with_independent_volumes() {
     for (name, profile) in fixtures() {
         let solid = Extrusion::new(profile.clone(), Placement3::IDENTITY, 3.0).unwrap();
