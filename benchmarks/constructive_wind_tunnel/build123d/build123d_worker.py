@@ -129,7 +129,9 @@ def extract_direct(part):
         for i in range(1, poly.NbNodes() + 1):
             point = poly.Node(i).Transformed(transform)
             vertices.append([point.X(), point.Y(), point.Z()])
-        for triangle in poly.Triangles():
+        # Indexed access avoids the binding's exception-heavy iterator path.
+        for i in range(1, poly.NbTriangles() + 1):
+            triangle = poly.Triangle(i)
             a, c, d = (triangle.Value(i) + offset - 1 for i in (1, 2, 3))
             triangles.append((a, d, c) if reverse else (a, c, d))
         faces.Next()
