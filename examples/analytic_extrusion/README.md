@@ -94,3 +94,23 @@ requested chord tolerance.
 The example keeps the region operation, validation policy, disconnected-result
 handling, selected corners, transition labels and workplane placements explicit.
 It introduces no mesh approximation into the line/arc composition itself.
+
+## Profile and path authoring
+
+```sh
+cargo run --release -p analytic_extrusion --example authoring -- /tmp/authoring.glb
+blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/authoring.glb /tmp/authoring.png
+```
+
+The sample builds three native solids and one constructive sweep. A cursor draws
+an arched profile; one tagged circle supplies four placed cutouts; an open
+half-outline closes against its mirror line; and a spatial path carries its
+endpoint/tangent through two radius/sweep arcs and a relative line. The native
+solids use `Workplane::extrude_profile` directly. Bore tags become mesh regions
+and bind the dark wall material with the same feature identity.
+
+Every output mesh must be deeply valid and closed; native realization must meet
+its reported tolerance. A cubic input also exercises the typed native refusal,
+which retains the authored segment index. Sweeps still use the ordinary recipe
+and evaluation policies; radius/tangent authoring does not conceal sharp-corner
+foldovers or promise new geometric capabilities.
