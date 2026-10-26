@@ -4,7 +4,6 @@
 //! Deterministic constrained-Delaunay edge legalization.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
 
 use crate::predicates::{InCircle, Orientation, incircle, orient2d};
 
@@ -23,7 +22,41 @@ impl Edge {
     }
 }
 
-type Adjacency = BTreeMap<Edge, Vec<usize>>;
+/// A checked cover has at most two triangles incident to an edge. Keeping
+/// these inline avoids allocating a tiny vector for every edge and flip.
+#[derive(Default)]
+struct Incident {
+    triangles: [usize; 2],
+    len: usize,
+}
+
+impl Incident {
+    fn as_slice(&self) -> &[usize] {
+        &self.triangles[..self.len]
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn insert(&mut self, triangle: usize) {
+        if let Err(position) = self.as_slice().binary_search(&triangle) {
+            assert!(self.len < 2, "legalization requires a manifold cover");
+            self.triangles.copy_within(position..self.len, position + 1);
+            self.triangles[position] = triangle;
+            self.len += 1;
+        }
+    }
+
+    fn remove(&mut self, triangle: usize) {
+        if let Ok(position) = self.as_slice().binary_search(&triangle) {
+            self.triangles.copy_within(position + 1..self.len, position);
+            self.len -= 1;
+        }
+    }
+}
+
+type Adjacency = BTreeMap<Edge, Incident>;
 
 /// Legalizes unconstrained interior edges and returns the number of flips.
 ///
@@ -156,15 +189,18 @@ fn replace_edge(
     let second = ccw_triangle(points, [b, a, v]);
     let old_first = triangles[candidate.first_triangle];
     let old_second = triangles[candidate.second_triangle];
-    let mut affected = BTreeSet::new();
-    for [left, right] in triangle_edges(old_first)
-        .into_iter()
-        .chain(triangle_edges(old_second))
-        .chain(triangle_edges(first))
-        .chain(triangle_edges(second))
-    {
-        affected.insert(Edge::new(left, right));
-    }
+    // The quadrilateral's four sides and its two diagonals are the complete
+    // affected set. Keep the historical sorted update order without a heap
+    // allocation on every flip.
+    let mut affected = [
+        Edge::new(u, v),
+        Edge::new(a, b),
+        Edge::new(a, u),
+        Edge::new(a, v),
+        Edge::new(b, u),
+        Edge::new(b, v),
+    ];
+    affected.sort_unstable();
 
     remove_triangle(adjacency, candidate.first_triangle, old_first);
     remove_triangle(adjacency, candidate.second_triangle, old_second);
@@ -187,9 +223,7 @@ fn replace_edge(
 fn add_triangle(adjacency: &mut Adjacency, triangle_index: usize, triangle: [u32; 3]) {
     for [a, b] in triangle_edges(triangle) {
         let incident = adjacency.entry(Edge::new(a, b)).or_default();
-        if let Err(position) = incident.binary_search(&triangle_index) {
-            incident.insert(position, triangle_index);
-        }
+        incident.insert(triangle_index);
     }
 }
 
@@ -197,10 +231,8 @@ fn remove_triangle(adjacency: &mut Adjacency, triangle_index: usize, triangle: [
     for [a, b] in triangle_edges(triangle) {
         let edge = Edge::new(a, b);
         let remove_edge = if let Some(incident) = adjacency.get_mut(&edge) {
-            if let Ok(position) = incident.binary_search(&triangle_index) {
-                incident.remove(position);
-            }
-            incident.is_empty()
+            incident.remove(triangle_index);
+            incident.len() == 0
         } else {
             false
         };
@@ -274,6 +306,7 @@ pub(crate) fn illegal_edge_count(points: &[[f64; 2]], triangles: &[[u32; 3]]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     /// Rational-rotation near-circle: convex, no exactly cocircular quadruple
     /// is guaranteed, but many near-ties exercise the exact incircle path.
