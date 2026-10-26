@@ -20,7 +20,9 @@ def main():
     parser.add_argument("after", type=Path)
     parser.add_argument("occt", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--case", default="plate_64")
+    parser.add_argument("--case", choices=["plate_64"], default="plate_64")
+    parser.add_argument("--native-tolerance", type=float, choices=[0.01, 0.02], default=0.02,
+                        help="after-capture tolerance, used to label accuracy sensitivity figures")
     parser.add_argument("--font", type=Path, default=Path("/System/Library/Fonts/Helvetica.ttc"))
     args = parser.parse_args()
     scale = 3
@@ -37,7 +39,9 @@ def main():
                   fill=fill, width=max(1, round(weight*scale)))
 
     text(62, 38, "64-hole plate  /  cap triangulation", 43)
-    text(64, 99, "Actual mesh edges · 136 × 40 × 5 mm · shared 0.02 mm linear target · OCCT angular limit 3 rad", 23)
+    targets = "shared 0.02 mm linear target" if args.native_tolerance == 0.02 else (
+        f"native before 0.02 mm · native after {args.native_tolerance:g} mm · OCCT 0.02 mm")
+    text(64, 99, f"Actual mesh edges · 136 × 40 × 5 mm · {targets} · OCCT angle 3 rad", 23)
     titles = ["Native before", "Native after", "build123d / OCCT"]
     colors = ["#a45b4a", "#176c70", "#466692"]
     inputs = [args.before, args.after, args.occt]
@@ -76,8 +80,12 @@ def main():
         panel((-70, 70, -23, 23), (left, 307, 620, 218))
         text(left, 561, "Matching detail", 26)
         panel((-10, 14, -16, 8), (left, 610, 620, 620))
-    text(63, 1270, "The native update preserves boundary samples and surface error; the cap diagonals improve.", 25)
-    text(63, 1310, "OCCT uses more boundary samples and has lower sampled surface error at the same nominal tolerance.", 23)
+    if args.native_tolerance == 0.02:
+        text(63, 1270, "The native update preserves boundary samples and surface error; the cap diagonals improve.", 25)
+        text(63, 1310, "OCCT uses more boundary samples and has lower sampled surface error at the same nominal tolerance.", 23)
+    else:
+        text(63, 1270, "With the tighter native target, both updated meshes have 7,596 triangles and a 0.281° worst angle.", 25)
+        text(63, 1310, "Both have approximately 0.00943 mm sampled surface error. This is a survey, not a global error certificate.", 23)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     image.resize((width, height), Image.Resampling.LANCZOS).save(args.output)
     print(args.output)
