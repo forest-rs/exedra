@@ -142,10 +142,17 @@ root bounds: `Established` or `Asserted` when the claimed interior fits,
 without crossing any root edge, and `Unbounded` or `Unknown` otherwise.
 The report also counts root-boundary crossings, unresolved finest cells and
 finest cells using compatibility evidence. `witness_limit` bounds only the detail
-list; counts remain exact, including `unreported_witnesses`. It counts
+list; counts remain exact, including `unreported_witnesses`.
+
+Faces that oppose the field at every corner are unfolded where possible: first
+by flipping an edge when both new triangles then agree with the gradient, as
+across a crease split along the wrong diagonal, then by moving a vertex to the
+middle of its neighbors and back onto the surface, as for fins at corners where
+several cells solved onto one feature; features round slightly there. The
+report counts `unfolded_flips` and `relaxed_vertices`, and also
 `repaired_slivers`, near-collinear triangles that faced backwards where cells
 of different sizes meet and were flipped into two well-shaped ones, and
-`inverted_faces` whose winding still opposes the field gradients at their corners,
+`inverted_faces` whose winding still opposes the field gradient at every corner,
 and, for region extraction, `region_attribution`: how many patches took their
 region from a sole source, a hard combinator's winner, or the larger
 contributor to a smooth blend, where the surface belongs to both.

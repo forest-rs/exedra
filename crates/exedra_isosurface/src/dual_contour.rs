@@ -10,8 +10,10 @@ use alloc::vec::Vec;
 
 use crate::qef::{PlaneConstraint, QefBounds, QefResult, QefSolver, SharpnessClass};
 use crate::spatial::{CellId, CellRef, Octree, OctreeError, OctreeVisitor};
-use exedra_mesh::{BuildError, FaceBuildAttrs, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op};
-use hashbrown::HashMap;
+use exedra_mesh::{
+    BuildError, FaceBuildAttrs, FaceId, FaceLoopErrorKind, Mesh, MeshBuilder, attr, op,
+};
+use hashbrown::{HashMap, HashSet};
 
 use crate::adaptive_transition::{
     AdaptiveGrid, BalanceContext, CellKey, ComponentRoute, EdgeSegmentKey, LeafLocator, LeafSet,
@@ -34,6 +36,7 @@ const ADAPTIVE_ERROR_FRACTION: f32 = 0.25;
 mod arcs;
 pub(crate) mod control;
 mod joining;
+mod relax;
 mod repair;
 use control::{CheckedField, Evaluation, RunContext};
 pub use control::{
@@ -537,7 +540,32 @@ fn dual_contour_run<F: ScalarField>(
         max_vertex_merge_displacement,
     });
     run.stage.set(ExtractionStage::Normals);
-    report.inverted_faces = populate_corner_normals(field, &mut mesh, run)?;
+    let inverted = populate_corner_normals(field, &mut mesh, None, run)?;
+    let (rewired, still) = relax::flip_folds(field, &mut mesh, &inverted, run)?;
+    let moved = relax::relax_folds(field, &mut mesh, &still, run)?;
+    report.unfolded_flips = rewired.len() / 2;
+    report.relaxed_vertices = moved.len();
+    report.inverted_faces = if moved.is_empty() && rewired.is_empty() {
+        inverted.len()
+    } else {
+        // Rewired faces, and faces around moved vertices, take fresh normals
+        // and a fresh count.
+        let moved = moved.into_iter().collect::<HashSet<_>>();
+        let mut touched = mesh
+            .faces()
+            .filter(|&face| {
+                mesh.face_loop(face)
+                    .filter_map(|corner| mesh.to_vertex(corner))
+                    .any(|vertex| moved.contains(&vertex))
+            })
+            .collect::<HashSet<_>>();
+        touched.extend(rewired);
+        let untouched = inverted
+            .iter()
+            .filter(|&&face| !touched.contains(&face))
+            .count();
+        untouched + populate_corner_normals(field, &mut mesh, Some(&touched), run)?.len()
+    };
     run.check()?;
     run.stage.set(ExtractionStage::RegionSeams);
     populate_region_boundary_seams(&mut mesh);
@@ -2229,16 +2257,26 @@ fn interval_crosses_zero(interval: [f32; 2]) -> bool {
 }
 
 /// Sets each corner's normal from the field gradient just inside its face,
-/// and returns how many faces turn against the gradients at their corners.
+/// for every face or only `only`, and returns the inverted faces: those
+/// whose winding opposes the gradient at every corner.
+///
+/// A face bridging an acute crease agrees with one side and opposes the
+/// other; only a face that agrees with no surface it touches is backwards.
 fn populate_corner_normals<F: ScalarField>(
     field: &F,
     mesh: &mut Mesh,
+    only: Option<&HashSet<FaceId>>,
     run: &RunContext,
-) -> Result<usize, DualContourError> {
+) -> Result<Vec<FaceId>, DualContourError> {
     let mut corners = Vec::new();
     let mut sample_points = Vec::new();
     let mut face_normals = Vec::new();
+    let mut face_ids = Vec::new();
     for face in mesh.faces() {
+        if only.is_some_and(|only| !only.contains(&face)) {
+            continue;
+        }
+        face_ids.push(face);
         let loop_corners = mesh.face_loop(face).collect::<Vec<_>>();
         let face_center = face_centroid(mesh, &loop_corners);
         let positions = loop_corners
@@ -2255,7 +2293,7 @@ fn populate_corner_normals<F: ScalarField>(
             corners.push((corner, face_normals.len()));
             sample_points.push(inset_corner_sample(position, face_center));
         }
-        face_normals.push((newell_normal(&positions), [0.0_f64; 3]));
+        face_normals.push((newell_normal(&positions), false));
     }
 
     let mut session = mesh.edit();
@@ -2267,22 +2305,22 @@ fn populate_corner_normals<F: ScalarField>(
             if let Some(normal) = normalize([gradient[1], gradient[2], gradient[3]]) {
                 op::set_corner_normal_override(&mut session, corner, Some(normal))
                     .expect("collected corner must stay live during normal population");
-                let sum = &mut face_normals[face].1;
-                for (sum, value) in sum.iter_mut().zip(normal) {
-                    *sum += f64::from(value);
-                }
+                let (winding, agrees) = &mut face_normals[face];
+                *agrees |= dot(*winding, normal.map(f64::from)) > 0.0;
             }
         }
     }
     let _: () = session.finish();
-    Ok(face_normals
-        .iter()
-        .filter(|(face, gradients)| dot(*face, *gradients) < 0.0)
-        .count())
+    Ok(face_ids
+        .into_iter()
+        .zip(&face_normals)
+        .filter(|(_, (_, agrees))| !agrees)
+        .map(|(face, _)| face)
+        .collect())
 }
 
 /// The Newell area vector of a polygon loop, in `f64`.
-fn newell_normal(points: &[[f32; 3]]) -> [f64; 3] {
+pub(super) fn newell_normal(points: &[[f32; 3]]) -> [f64; 3] {
     let mut area = [0.0; 3];
     for (index, a) in points.iter().enumerate() {
         let [a, b] = [*a, points[(index + 1) % points.len()]].map(|p| p.map(f64::from));
@@ -2313,7 +2351,7 @@ fn populate_region_boundary_seams(mesh: &mut Mesh) {
             let Some(other_face) = mesh.face(twin) else {
                 continue;
             };
-            if other_face == exedra_mesh::FaceId::OUTSIDE {
+            if other_face == FaceId::OUTSIDE {
                 continue;
             }
             let Some(other_region) = region_layer.get(other_face.as_id()).copied() else {
@@ -4932,6 +4970,27 @@ mod tests {
         };
         let result = dual_contour(&field, &params).unwrap();
         assert!(result.mesh.validate_deep().is_empty());
+        assert_eq!(result.report.inverted_faces, 0);
+    }
+
+    #[test]
+    fn corner_fins_unfold() {
+        // Cells around an apex where four faces meet solve their vertices
+        // onto the creases through it; the faces between them stood edge-on
+        // in the plane of two creases, against the field.
+        let field = crate::primitives::OctahedronField::new([0.3, 1.9, 1.0], 0.75).unwrap();
+        let bounds = Aabb::new(
+            [-0.525_975, 1.075_975, 0.173_425],
+            [1.124_325, 2.726_275, 1.823_425],
+        )
+        .unwrap();
+        let params = DualContourParams {
+            edge_search: EdgeSearchParams::default(),
+            ..params(bounds, 7)
+        };
+        let result = dual_contour(&field, &params).unwrap();
+        assert!(result.mesh.validate_deep().is_empty());
+        assert!(result.report.relaxed_vertices + result.report.unfolded_flips > 0);
         assert_eq!(result.report.inverted_faces, 0);
     }
 

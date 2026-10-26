@@ -326,14 +326,22 @@ pub struct ExtractionReport {
     pub witnesses: Vec<ExtractionCellWitness>,
     /// Witness records not retained because the detail cap was reached.
     pub unreported_witnesses: usize,
-    /// Emitted faces whose winding opposes the field gradients sampled at
-    /// their corners: folds where vertices slid past their neighbors. These
-    /// samples are the ones that set corner normals, so counting costs no
-    /// extra field evaluations.
+    /// Emitted faces whose winding opposes the field gradient sampled at
+    /// every one of their corners: folds that agree with no surface they
+    /// touch. A face bridging an acute crease, agreeing with one side, is
+    /// not counted. These samples are the ones that set corner normals, so
+    /// counting costs no extra field evaluations.
     pub inverted_faces: usize,
     /// Folded slivers repaired by flipping their long edge: near-collinear
     /// triangles that faced backwards where cells of different sizes meet.
     pub repaired_slivers: usize,
+    /// Edges flipped so that two triangles across a crease, folded against
+    /// the field, both agree with it.
+    pub unfolded_flips: usize,
+    /// Vertices moved to the middle of their neighbors, back on the surface,
+    /// to unfold faces turned against the field; features round slightly
+    /// there.
+    pub relaxed_vertices: usize,
     /// How firmly each patch's region was decided, for region extraction.
     pub region_attribution: RegionAttribution,
     /// Whether the root bounds contain the field's claimed support.
