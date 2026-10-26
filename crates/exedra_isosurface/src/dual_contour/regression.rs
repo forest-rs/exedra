@@ -35,8 +35,10 @@ fn small_aligned_sphere_remains_closed() {
     )
     .unwrap();
     assert_closed_sphere_topology(&result.mesh);
-    assert!(result.stats.coincident_edge_collapses > 0);
-    assert_eq!(result.stats.max_vertex_merge_displacement, 0.0);
+    // Vertices keep off cell faces, so cells meeting at the sphere's
+    // grid-aligned extremes no longer produce coincident vertices to join.
+    assert_eq!(result.stats.coincident_edge_collapses, 0);
+    assert_eq!(result.work.vertex_joins, 0);
 }
 
 struct Junction {
@@ -181,32 +183,17 @@ fn extraction_params() -> DualContourParams {
 }
 
 #[test]
-fn insufficient_join_tolerance_preserves_patch_and_source_evidence() {
-    use crate::{DualContourErrorKind, ExtractionStage, ExtractionWitness};
+fn blended_junction_extracts_without_joining() {
+    // With vertices on cell faces, this junction once produced coincident
+    // vertices that no zero-tolerance join could resolve.
     let field = TaggedField {
         field: Junction { finish: false },
         provenance: 37,
     };
-    let error = dual_contour_with_regions(&field, &extraction_params()).unwrap_err();
-    assert!(matches!(
-        error.kind,
-        DualContourErrorKind::Build(exedra_mesh::BuildError::DegenerateTriangle { .. })
-    ));
-    assert_eq!(error.context.stage, ExtractionStage::Joining);
-    let Some(ExtractionWitness::MeshPatch { positions, source }) = error.context.witness else {
-        panic!("missing joining evidence")
-    };
-    assert_eq!(source, Some(37));
-    assert!((3..=4).contains(&positions.len()));
-    assert!(
-        positions
-            .iter()
-            .all(|&position| extraction_params().root_bounds.contains(position))
-    );
-    assert!(error.context.work.vertex_joins > 0);
-    assert_eq!(error.context.stats.max_vertex_merge_displacement, 0.0);
-    assert!(error.context.work.point_evaluations > 0);
-    assert!(error.context.stats.octree_cells > 0);
+    let result = dual_contour_with_regions(&field, &extraction_params()).unwrap();
+    assert_eq!(result.work.vertex_joins, 0);
+    assert!(result.mesh.validate_deep().is_empty());
+    assert!(result.mesh.faces().count() > 0);
 }
 
 #[test]

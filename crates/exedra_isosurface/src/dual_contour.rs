@@ -768,7 +768,7 @@ where
         }
         let mut face = cyclic_vertex_entries(entries, face_count)
             .map_err(|error| error.with_witness(ExtractionWitness::Transition(witness.clone())))?;
-        if start_value > 0.0 {
+        if start_value >= 0.0 {
             face.reverse();
         }
         let region = if let Some(region_at) = region_at {
@@ -1321,11 +1321,7 @@ fn solve_hermite_vertex(
         });
     }
     let result = solver
-        .solve_with_anchor(
-            QefBounds::new(bounds.min, bounds.max).expect("cell bounds are valid"),
-            hermite_mass_point(hermite),
-            params,
-        )
+        .solve_with_anchor(vertex_bounds(bounds), hermite_mass_point(hermite), params)
         .map_err(DualContourError::solve)?;
 
     Ok(ComponentVertex {
@@ -1334,6 +1330,26 @@ fn solve_hermite_vertex(
         constraint_count: solver.constraint_count(),
         qef: Some(result),
     })
+}
+
+/// Fraction of a cell's size by which vertices keep off its faces.
+const VERTEX_INSET: f32 = 1.0e-3;
+
+/// The box a cell's vertex is clamped to: the cell, inset on every side.
+///
+/// A feature lying in a cell face, such as a crease through grid nodes,
+/// would otherwise pull the vertices of cells on both sides onto the same
+/// face, even the same point, and the patch between them would have no area.
+/// Kept strictly inside, vertices of different cells never coincide, and
+/// they part on either side of such a crease.
+fn vertex_bounds(bounds: Aabb) -> QefBounds {
+    let inset: [f32; 3] =
+        core::array::from_fn(|axis| VERTEX_INSET * (bounds.max[axis] - bounds.min[axis]));
+    QefBounds::new(
+        core::array::from_fn(|axis| bounds.min[axis] + inset[axis]),
+        core::array::from_fn(|axis| bounds.max[axis] - inset[axis]),
+    )
+    .expect("an inset cell stays ordered")
 }
 
 fn prepare_transitions<F: ScalarField>(
@@ -1690,7 +1706,7 @@ fn corner_sign_mask(corner_values: &[f32; 8]) -> u8 {
         .iter()
         .enumerate()
         .fold(0_u8, |mask, (corner, value)| {
-            if *value <= 0.0 {
+            if *value < 0.0 {
                 mask | (1_u8 << corner)
             } else {
                 mask
@@ -1834,8 +1850,14 @@ fn average_points(points: &[VertexEntry]) -> [f32; 3] {
     [sum[0] * inv, sum[1] * inv, sum[2] * inv]
 }
 
+/// Whether an edge joins an inside sample to one that is not.
+///
+/// Inside means strictly negative: a sample exactly on the surface counts as
+/// outside. Where a face lies in a grid plane, its nodes are then outside
+/// with the space beyond the face, and a node at a thin, acute edge does not
+/// see the outside on both of its sides.
 fn edge_has_crossing(start: f32, end: f32) -> bool {
-    (start <= 0.0 && end > 0.0) || (start > 0.0 && end <= 0.0)
+    (start < 0.0 && end >= 0.0) || (start >= 0.0 && end < 0.0)
 }
 
 struct IntervalVisitor<'a, F> {
@@ -4866,6 +4888,40 @@ mod tests {
         assert!(result.report.repaired_slivers > 0);
         assert_eq!(result.report.inverted_faces, 0);
         assert!(result.mesh.validate_deep().is_empty());
+    }
+
+    #[test]
+    fn crease_through_grid_nodes_extracts() {
+        // Centered in its root, the octahedron's edges run through grid
+        // nodes; vertices clamped onto shared cell faces made patches with
+        // no area.
+        let field = crate::primitives::OctahedronField::new([0.0; 3], 0.75).unwrap();
+        let bounds = Aabb::new([-1.0; 3], [1.0; 3]).unwrap();
+        for depth in [6, 7] {
+            let params = DualContourParams {
+                edge_search: EdgeSearchParams::default(),
+                ..params(bounds, depth)
+            };
+            let result = dual_contour(&field, &params).unwrap();
+            assert!(result.mesh.validate_deep().is_empty());
+            assert_eq!(result.report.inverted_faces, 0);
+        }
+    }
+
+    #[test]
+    fn face_in_a_grid_plane_extracts_without_folds() {
+        // The base lies in a grid plane. Counted inside, its rim nodes sat
+        // within the thin wedge at the acute base edge, outside both above
+        // and below, and two opposed sheets met at each.
+        let field = crate::primitives::PyramidField::new([0.0; 3], 0.8, 1.5).unwrap();
+        let bounds = Aabb::new([-1.0, -1.0, -0.25], [1.0, 1.0, 1.75]).unwrap();
+        let params = DualContourParams {
+            edge_search: EdgeSearchParams::default(),
+            ..params(bounds, 7)
+        };
+        let result = dual_contour(&field, &params).unwrap();
+        assert!(result.mesh.validate_deep().is_empty());
+        assert_eq!(result.report.inverted_faces, 0);
     }
 
     #[test]

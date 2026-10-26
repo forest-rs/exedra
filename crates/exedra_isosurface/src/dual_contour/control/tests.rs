@@ -380,35 +380,6 @@ fn invalid_field_values_are_failures_and_unknown_intervals_stay_unknown() {
 }
 
 #[test]
-fn joining_budget_is_checked_before_the_first_kernel_edit() {
-    let field = SphereField {
-        center: [0.0; 3],
-        radius: 0.02,
-    };
-    let mut p = params();
-    p.root_bounds = Aabb::new([-0.032; 3], [0.032; 3]).unwrap();
-    p.max_depth = 5;
-    p.edge_search.bisection_steps = 14;
-    let full = dual_contour(&field, &p).unwrap();
-    assert!(full.work.vertex_joins > 0);
-    for limit in [0, full.work.vertex_joins - 1] {
-        p.limits.vertex_joins = Some(limit);
-        let error = dual_contour(&field, &p).unwrap_err();
-        assert_limit(&error, ExtractionResource::VertexJoins);
-        assert_eq!(error.context.stage, ExtractionStage::Joining);
-        assert_eq!(error.context.work.vertex_joins, limit);
-        assert_eq!(error.context.stats.coincident_edge_collapses, limit);
-        assert!(matches!(
-            error.context.witness,
-            Some(ExtractionWitness::MeshPatch { source: None, .. })
-        ));
-    }
-    p.limits.vertex_joins = Some(full.work.vertex_joins);
-    let bounded = dual_contour(&field, &p).unwrap();
-    assert_eq!(bounded.stats, full.stats);
-}
-
-#[test]
 fn completion_does_not_hide_domain_boundary_crossings() {
     struct Plane;
     impl ScalarField for Plane {

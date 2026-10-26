@@ -212,8 +212,10 @@ fn checkerboard_connections(values: [f32; 4]) -> [(u8, u8); 2] {
     }
 }
 
+/// Whether one value is inside, strictly negative, and the other not; a
+/// NaN crosses nothing.
 fn signs_differ(a: f32, b: f32) -> bool {
-    (a <= 0.0 && b > 0.0) || (a > 0.0 && b <= 0.0)
+    (a < 0.0 && b >= 0.0) || (a >= 0.0 && b < 0.0)
 }
 
 fn find(parents: &[u8; 12], mut edge: u8) -> u8 {
@@ -443,9 +445,7 @@ mod tests {
             .iter()
             .enumerate()
             .fold(0_u16, |mask, (edge, &(start, end))| {
-                if (values[start] <= 0.0 && values[end] > 0.0)
-                    || (values[start] > 0.0 && values[end] <= 0.0)
-                {
+                if super::signs_differ(values[start], values[end]) {
                     mask | (1_u16 << edge)
                 } else {
                     mask
