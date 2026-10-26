@@ -185,6 +185,31 @@ For CPU sampling, also set `EXEDRA_REVOLVE_SECONDS=12`. Start `sample <pid> 6 1`
 while paused, then press Enter to run repeated realizations for that duration.
 Profile each mode separately, without allocation logging or concurrent workloads.
 
+### Native sweep realization
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_sweep
+```
+
+The smooth S rail uses the same 20 mm square section and radius/tangent path
+through native and constructive realization. The native tolerance is 0.01 mm;
+the recipe's centerline tolerance is 0.008 mm to match the outer radius 50 mm
+to the centerline radius 40 mm. Both produce 484 vertices and 964 triangles.
+Native closure, deep mesh validity and the native deviation report are checked.
+Prepared inputs stay outside timing; outputs remain alive at the stop time and
+are destroyed afterward. Four rounds alternate backend order, each with three
+warmups and 21 individual samples. JSON retains every sample.
+
+Pass `native` or `constructive` to the built executable for a 20 second CPU
+sampling loop. Capture each backend separately, without concurrent builds.
+An external DHAT capture over three fresh realizations measured 218 allocation
+events and 365,732 allocated bytes per native call, with a 272,892 byte peak.
+Before reserving known triangle-import sizes and eliminating duplicate incidence
+records, the same native call used 244 events, 674,788 bytes and a 410,188 byte
+peak. The exported sample GLB is byte-identical through that importer change.
+Alternating before/after executables on Apple Silicon measured native medians
+of 0.201/0.179 ms; the constructive control measured 0.171/0.167 ms.
+
 ### Matched build123d / OCCT comparison
 
 [Reproduce the eight matched workflows and read the reference measurements](build123d/README.md).

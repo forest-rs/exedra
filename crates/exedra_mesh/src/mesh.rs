@@ -1972,13 +1972,18 @@ impl Mesh {
         let (canonical_positions, remap) = weld_positions(positions, params.weld_tolerance);
 
         let mut mesh = Self::new();
+        mesh.vertices.reserve_slots(canonical_positions.len());
+        mesh.faces.reserve_slots(indices.len());
+        mesh.half_edges.reserve_slots(indices.len() * 3);
         let mut vertex_ids = Vec::with_capacity(canonical_positions.len());
         for position in &canonical_positions {
             vertex_ids.push(mesh.add_vertex(*position));
         }
 
-        let mut edge_records: Vec<(u32, u32, HalfEdgeId)> = Vec::with_capacity(indices.len() * 3);
-        let mut endpoints: Vec<(u32, u32)> = Vec::with_capacity(indices.len() * 6);
+        // Build the sortable incidence table directly. Keeping an intermediate
+        // directed-edge table duplicates every edge until the mesh is complete.
+        let mut grouped: Vec<(u32, u32, HalfEdgeId)> = Vec::with_capacity(indices.len() * 3);
+        let mut endpoints: Vec<(u32, u32)> = Vec::with_capacity(indices.len() * 3);
 
         for (triangle, tri) in indices.iter().enumerate() {
             let i0 = remap_index(tri[0], &remap, triangle)?;
@@ -2035,26 +2040,22 @@ impl Mesh {
             mesh.half_edges.get_mut(h2.as_id()).expect("h2 live").next = h0;
             mesh.faces.get_mut(face.as_id()).expect("face live").edge = h0;
 
-            edge_records.push((i0, i1, h0));
-            edge_records.push((i1, i2, h1));
-            edge_records.push((i2, i0, h2));
+            for (from, to, hid) in [(i0, i1, h0), (i1, i2, h1), (i2, i0, h2)] {
+                grouped.push((u32::min(from, to), u32::max(from, to), hid));
+            }
             set_endpoint(&mut endpoints, h0, i0, i1);
             set_endpoint(&mut endpoints, h1, i1, i2);
             set_endpoint(&mut endpoints, h2, i2, i0);
         }
 
-        let mut grouped: Vec<(u32, u32, u32, u32, HalfEdgeId)> = edge_records
-            .iter()
-            .map(|(from, to, hid)| (u32::min(*from, *to), u32::max(*from, *to), *from, *to, *hid))
-            .collect();
         // The live half-edge ID makes this a total, unique key. Stability
         // cannot affect the result, so sorting needs no auxiliary allocation.
-        grouped.sort_unstable_by_key(|(a, b, from, to, hid)| (*a, *b, *from, *to, hid.index()));
+        grouped.sort_unstable_by_key(|(a, b, hid)| (*a, *b, hid.index()));
 
         let mut boundary_interior: Vec<HalfEdgeId> = Vec::new();
         let mut cursor = 0_usize;
         while cursor < grouped.len() {
-            let (a, b, _, _, _) = grouped[cursor];
+            let (a, b, _) = grouped[cursor];
             let mut end = cursor + 1;
             while end < grouped.len() && grouped[end].0 == a && grouped[end].1 == b {
                 end += 1;
@@ -2062,10 +2063,12 @@ impl Mesh {
 
             let group = &grouped[cursor..end];
             if group.len() == 1 {
-                boundary_interior.push(group[0].4);
+                boundary_interior.push(group[0].2);
             } else if group.len() == 2 {
-                let (_, _, from0, to0, h0) = group[0];
-                let (_, _, from1, to1, h1) = group[1];
+                let (_, _, h0) = group[0];
+                let (_, _, h1) = group[1];
+                let (from0, to0) = get_endpoint(&endpoints, h0);
+                let (from1, to1) = get_endpoint(&endpoints, h1);
                 if from0 == from1 || to0 == to1 {
                     return Err(BuildError::NonManifoldEdge {
                         a,
@@ -2086,6 +2089,8 @@ impl Mesh {
         }
 
         boundary_interior.sort_unstable_by_key(|id| id.index());
+        mesh.half_edges.reserve_slots(boundary_interior.len());
+        endpoints.reserve_exact(boundary_interior.len());
         let mut boundary_ids = Vec::with_capacity(boundary_interior.len());
         for interior in &boundary_interior {
             let (from, to) = get_endpoint(&endpoints, *interior);
