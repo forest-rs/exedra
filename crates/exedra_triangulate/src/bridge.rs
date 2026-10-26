@@ -108,7 +108,7 @@ pub(crate) fn bridge_holes(
         .filter(|&count| u32::try_from(count).is_ok())
         .ok_or(TriError::TooManyVertices)?;
     let mut boundary_index = BoundaryIndex::new(points, &ring, &hole_rings);
-    let mut candidates = Candidates::new(points.len(), capacity);
+    let mut candidates = Candidates::new(points.len(), capacity, nearest_candidates);
     let mut composite = ring;
     composite.reserve(capacity - composite.len());
     for &hole_index in &order {
@@ -118,7 +118,6 @@ pub(crate) fn bridge_holes(
             &hole_rings[hole_index],
             anchors[hole_index],
             hole_index,
-            nearest_candidates,
             &mut boundary_index,
             &mut candidates,
         )?;
@@ -140,28 +139,21 @@ fn anchor_vertex(points: &[[f64; 2]], ring: &[u32]) -> u32 {
 }
 
 /// Splices one hole into `ring` via the first valid bridge.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal helper threading fixed evaluation context"
-)]
 fn bridge_one(
     points: &[[f64; 2]],
     ring: Vec<u32>,
     hole: &[u32],
     anchor: u32,
     hole_index: usize,
-    nearest_candidates: bool,
     boundary_index: &mut BoundaryIndex<'_>,
     candidate_scratch: &mut Candidates,
 ) -> Result<Vec<u32>, TriError> {
     let h = points[anchor as usize];
 
-    // Geometry decides whether a bridge is admissible. The historical label
-    // order is tried first to preserve existing deterministic output. The
-    // caller can retry nearest-first: aligned holes can make a far, low-label
-    // bridge create a weakly-simple corridor that ear clipping cannot cover
-    // without changing an input boundary.
-    let candidates = candidate_scratch.ordered(points, &ring, h, nearest_candidates);
+    // Geometry decides whether a bridge is admissible. Candidate priority is
+    // supplied by the caller: EarClip preserves historical label order, while
+    // Delaunay prefers short visible bridges before canonical legalization.
+    let candidates = candidate_scratch.ordered(points, &ring, h);
 
     let anchor_position = hole
         .iter()

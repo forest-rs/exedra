@@ -191,7 +191,7 @@ pub fn triangulate_preserving_boundary(
     input: &PolygonInput<'_>,
     params: &TriParams,
 ) -> Result<Triangulation, TriError> {
-    let mut cover = build_cover(input, TriStrategy::EarClip)?;
+    let mut cover = build_ear_cover(input, BridgeOrder::for_strategy(params.strategy))?;
     restore_boundary_samples(input, &mut cover.triangles);
     if params.strategy == TriStrategy::ConstrainedDelaunay {
         legalize_edges(&cover.points, &mut cover.triangles);
@@ -268,7 +268,7 @@ pub fn refine(
     if !params.max_radius_edge_ratio.is_finite() || params.max_radius_edge_ratio <= 0.0 {
         return Err(TriError::InvalidParams);
     }
-    let mut cover = build_cover(input, TriStrategy::EarClip)?;
+    let mut cover = build_ear_cover(input, BridgeOrder::ShortFirst)?;
     if params.boundary_splits == BoundarySplits::Forbidden {
         restore_boundary_samples(input, &mut cover.triangles);
     }
@@ -359,7 +359,30 @@ struct Cover {
     edge_flips: usize,
 }
 
+#[derive(Copy, Clone)]
+enum BridgeOrder {
+    StableLabels,
+    ShortFirst,
+}
+
+impl BridgeOrder {
+    fn for_strategy(strategy: TriStrategy) -> Self {
+        match strategy {
+            TriStrategy::EarClip => Self::StableLabels,
+            TriStrategy::ConstrainedDelaunay => Self::ShortFirst,
+        }
+    }
+}
+
 fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover, TriError> {
+    let mut cover = build_ear_cover(input, BridgeOrder::for_strategy(strategy))?;
+    if strategy == TriStrategy::ConstrainedDelaunay {
+        cover.edge_flips = legalize_edges(&cover.points, &mut cover.triangles);
+    }
+    Ok(cover)
+}
+
+fn build_ear_cover(input: &PolygonInput<'_>, order: BridgeOrder) -> Result<Cover, TriError> {
     input.validate()?;
 
     // Materialize the virtual concatenation the output indices address.
@@ -385,17 +408,32 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
 
     boundary::validate(input)?;
 
-    // Preserve the historical hole and candidate ordering first. Aligned
-    // holes can make that traversal weakly simple in area yet topologically
-    // wrong; bounded fallbacks reverse the exact-x hole tie and prefer short
-    // visible bridges. The incidence check below, not successful ear clipping
-    // alone, decides whether an attempt represents these exact input rings.
+    // EarClip keeps its historical label-first cover. Delaunay's canonical
+    // result does not depend on its accepted starting cover, so it can prefer
+    // short visible bridges and avoid expensive long initial diagonals.
+    let mut attempts = [
+        (0, false, false),
+        (1, true, false),
+        (2, false, true),
+        (3, true, true),
+    ];
+    if matches!(order, BridgeOrder::ShortFirst) {
+        attempts.swap(0, 2);
+        attempts.swap(1, 3);
+    }
     let mut last_error = TriError::TriangulationFailed {
         stage: TriangulationStage::BoundaryIncidence,
     };
-    for (descending_y_ties, nearest_candidates) in
-        [(false, false), (true, false), (false, true), (true, true)]
-    {
+    let mut last_rank = 0;
+    let mut record_error = |rank, error| {
+        // Complete refusal keeps the historical final diagnosis even when
+        // successful covers are tried in a different priority order.
+        if rank >= last_rank {
+            last_rank = rank;
+            last_error = error;
+        }
+    };
+    for (rank, descending_y_ties, nearest_candidates) in attempts {
         let composite = match bridge_holes(
             &points,
             ring.clone(),
@@ -405,13 +443,13 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
         ) {
             Ok(composite) => composite,
             Err(error) => {
-                last_error = error;
+                record_error(rank, error);
                 continue;
             }
         };
         let mut triangles = Vec::with_capacity(points.len().saturating_sub(2));
         if let Err(error) = earclip_ring(&points, &composite, &mut triangles) {
-            last_error = error;
+            record_error(rank, error);
             continue;
         }
         if !triangulation_preserves_boundaries(
@@ -420,22 +458,18 @@ fn build_cover(input: &PolygonInput<'_>, strategy: TriStrategy) -> Result<Cover,
             &hole_ranges,
             &triangles,
         ) {
-            last_error = TriError::TriangulationFailed {
-                stage: TriangulationStage::BoundaryIncidence,
-            };
+            record_error(
+                rank,
+                TriError::TriangulationFailed {
+                    stage: TriangulationStage::BoundaryIncidence,
+                },
+            );
             continue;
         }
-        // Legalize only an accepted cover: boundary incidence is already
-        // verified, so every edge with two incident triangles is a bridge or
-        // interior edge that flipping may legitimately replace.
-        let edge_flips = match strategy {
-            TriStrategy::EarClip => 0,
-            TriStrategy::ConstrainedDelaunay => legalize_edges(&points, &mut triangles),
-        };
         return Ok(Cover {
             points,
             triangles,
-            edge_flips,
+            edge_flips: 0,
         });
     }
     Err(last_error)
@@ -1449,6 +1483,101 @@ mod tests {
             input.validate(),
             Err(TriError::CoordinateOutOfRange { hole: None })
         );
+    }
+
+    #[test]
+    fn short_bridge_seed_preserves_the_canonical_cover_after_boundary_restoration() {
+        let outer = [
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 20.0],
+            [40.0, 40.0],
+            [0.0, 40.0],
+        ];
+        let mut holes = Vec::new();
+        for x in 0..4 {
+            for y in 0..4 {
+                let center = [5.0 + 10.0 * f64::from(x), 5.0 + 10.0 * f64::from(y)];
+                holes.push(
+                    [
+                        [-1.0, -2.0],
+                        [-2.0, -1.0],
+                        [-2.0, 1.0],
+                        [-1.0, 2.0],
+                        [1.0, 2.0],
+                        [2.0, 1.0],
+                        [2.0, -1.0],
+                        [1.0, -2.0],
+                    ]
+                    .map(|p| [p[0] + center[0], p[1] + center[1]]),
+                );
+            }
+        }
+        let holes: Vec<_> = holes.iter().map(|hole| hole.as_slice()).collect();
+        let input = PolygonInput {
+            outer: &outer,
+            holes: &holes,
+        };
+        let canonical = |order| {
+            let mut cover = build_ear_cover(&input, order).unwrap();
+            restore_boundary_samples(&input, &mut cover.triangles);
+            legalize_edges(&cover.points, &mut cover.triangles);
+            assert_eq!(
+                delaunay::illegal_edge_count(&cover.points, &cover.triangles),
+                0
+            );
+            cover.triangles
+        };
+        assert_eq!(
+            canonical(BridgeOrder::ShortFirst),
+            canonical(BridgeOrder::StableLabels)
+        );
+    }
+
+    #[test]
+    fn changing_bridge_priority_does_not_accept_crossed_input_boundaries() {
+        let original = [
+            [0.0, 0.0],
+            [6.0, 0.0],
+            [8.0, 2.0],
+            [8.0, 6.0],
+            [6.0, 8.0],
+            [2.0, 8.0],
+            [0.0, 6.0],
+            [-1.0, 2.0],
+        ];
+        let hole = [[3.75, 3.75], [3.75, 4.25], [4.25, 4.25], [4.25, 3.75]];
+        let mut random = 0x51c2_81db_145e_6aa7_u64;
+        let mut checked = 0;
+        for _ in 0..512 {
+            let mut outer = original;
+            for i in 0..outer.len() {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                outer.swap(i, usize::try_from(random % 8).unwrap());
+            }
+            let holes = [hole.as_slice()];
+            let input = PolygonInput {
+                outer: &outer,
+                holes: &holes,
+            };
+            if boundary::diagnose(&input).is_none() {
+                continue;
+            }
+            checked += 1;
+            for (label, order) in [
+                ("historical", BridgeOrder::StableLabels),
+                ("short", BridgeOrder::ShortFirst),
+            ] {
+                assert!(
+                    build_ear_cover(&input, order).is_err(),
+                    "{label} crossed boundary accepted: {outer:?}"
+                );
+            }
+        }
+        assert!(checked > 400);
     }
 
     #[test]
