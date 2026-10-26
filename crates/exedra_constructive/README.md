@@ -620,3 +620,14 @@ Lengths use body units and areas use squared body units. Coordinates use the
 owner's frame; retain the patch or section for that frame and source evidence.
 Results describe evaluated polygons, not analytic curved-surface measurements.
 See [the measurement contract](docs/adr-0017-planar-measurements.md).
+
+## Reusable profile authoring
+
+`Profile2::with_cutouts_at(&template, offsets)` places one reusable filled
+cutout, preserving its tags and reporting an invalid translation by its iterator
+position. It builds the combined profile without a temporary collection of
+placed profiles. `LoopCursor::close_mirrored(MirrorLine::Vertical(x))` (or
+`Horizontal(y)`) joins an open outline to its reversed reflection. Seam
+endpoints must lie exactly on the line; curves, handles and tags survive.
+`Profile2` implements the shared `IntoProfile` input seam, so native geometry
+can accept it directly while keeping validation and unsupported-curve errors.

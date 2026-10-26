@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use kurbo::{Point, Vec2};
 
-use super::{Loop2, ProfileError, Seg2, SegKind, SegTag};
+use super::{Loop2, MirrorLine, ProfileError, Seg2, SegKind, SegTag, reverse_kind};
 
 /// Draws a [`Loop2`] one segment at a time from an explicit start point.
 ///
@@ -222,6 +222,67 @@ impl LoopCursor {
             Some(error) => Err(error),
             None => Loop2::new(cursor.segs),
         }
+    }
+
+    /// Joins this open outline to its reversed reflection, making one loop.
+    ///
+    /// Both endpoints must lie exactly on `line` and must differ. No seam
+    /// segment is inserted and no endpoint is snapped. Arcs, cubics and segment
+    /// tags retain their reflected geometry; final winding follows the drawn
+    /// half. Use [`super::Profile2::simple`] to require positive winding.
+    ///
+    /// ```
+    /// use exedra_constructive::profile::{LoopCursor, MirrorLine, Profile2};
+    /// let outline = LoopCursor::new((0.0, 0.0))
+    ///     .line_by((4.0, 0.0)).line_by((0.0, 2.0)).line_to((0.0, 2.0))
+    ///     .close_mirrored(MirrorLine::Vertical(0.0))?;
+    /// let profile = Profile2::simple(outline)?;
+    /// assert_eq!(profile.outer().segs().len(), 6);
+    /// # Ok::<(), exedra_constructive::profile::ProfileError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the first recorded drawing error, an invalid mirror line,
+    /// off-axis/coincident endpoints, or the closed loop's structural error.
+    pub fn close_mirrored(mut self, line: MirrorLine) -> Result<Loop2, ProfileError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if !line.coordinate().is_finite() {
+            return Err(ProfileError::InvalidMirrorLine { line });
+        }
+        for (endpoint, point) in [self.start, self.current].into_iter().enumerate() {
+            if !line.contains(point) {
+                return Err(ProfileError::MirrorEndpointOffAxis {
+                    endpoint,
+                    point: [point.x, point.y],
+                    line,
+                });
+            }
+        }
+        if self.start == self.current {
+            return Err(ProfileError::MirrorEndpointsCoincide);
+        }
+        let n = self.segs.len();
+        if n > u32::MAX as usize / 2 {
+            return Err(ProfileError::TooManySegments);
+        }
+        self.segs.reserve(n);
+        for i in (0..n).rev() {
+            let from = if i == 0 {
+                self.start
+            } else {
+                self.segs[i - 1].to
+            };
+            let source = &self.segs[i];
+            self.segs.push(Seg2 {
+                to: line.reflect(from),
+                kind: line.reflect_kind(&reverse_kind(&source.kind)),
+                tag: source.tag,
+            });
+        }
+        Loop2::new(self.segs)
     }
 
     fn fail(mut self, error: ProfileError) -> Self {

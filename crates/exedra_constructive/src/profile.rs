@@ -32,6 +32,10 @@ use kurbo::{BezPath, PathEl, Point, Shape};
 
 mod cursor;
 pub use cursor::LoopCursor;
+mod mirror;
+pub use mirror::MirrorLine;
+mod placement;
+pub use placement::CutoutPatternError;
 
 /// Shared opaque segment tag, carried through profiles, source maps and
 /// analytic face roles without conversion or interpretation.
@@ -713,6 +717,28 @@ impl Profile2 {
     }
 }
 
+impl exedra_profile::IntoProfile for &Profile2 {
+    type Error = LineArcError;
+
+    fn into_profile(
+        self,
+        policy: &exedra_profile::ProfilePolicy,
+    ) -> Result<exedra_profile::Profile, Self::Error> {
+        self.to_line_arc(policy)
+    }
+}
+
+impl exedra_profile::IntoProfile for Profile2 {
+    type Error = LineArcError;
+
+    fn into_profile(
+        self,
+        policy: &exedra_profile::ProfilePolicy,
+    ) -> Result<exedra_profile::Profile, Self::Error> {
+        self.to_line_arc(policy)
+    }
+}
+
 /// Why a [`Profile2`] has no line and arc form.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1038,6 +1064,22 @@ pub enum ProfileError {
         /// Index of the offending cutout.
         cutout: usize,
     },
+    /// A mirror line's coordinate is non-finite.
+    InvalidMirrorLine {
+        /// Requested mirror line.
+        line: MirrorLine,
+    },
+    /// An open outline's start/end does not lie exactly on its mirror line.
+    MirrorEndpointOffAxis {
+        /// Zero for the start; one for the current endpoint.
+        endpoint: usize,
+        /// Endpoint that would need moving to close the seam.
+        point: [f64; 2],
+        /// Requested mirror line.
+        line: MirrorLine,
+    },
+    /// A closed outline cannot be joined to its reflection as one simple loop.
+    MirrorEndpointsCoincide,
 }
 
 impl core::fmt::Display for ProfileError {
@@ -1143,6 +1185,20 @@ impl core::fmt::Display for ProfileError {
             Self::DegenerateArc { seg } => write!(f, "segment {seg}: arc has no circle"),
             Self::NoSegmentToTag => write!(f, "no segment to tag before the first one"),
             Self::CutoutHasHoles { cutout } => write!(f, "cutout {cutout} has holes"),
+            Self::InvalidMirrorLine { line } => {
+                write!(f, "mirror line {line:?} must have a finite coordinate")
+            }
+            Self::MirrorEndpointOffAxis {
+                endpoint,
+                point,
+                line,
+            } => write!(
+                f,
+                "outline endpoint {endpoint} at {point:?} must lie on {line:?}"
+            ),
+            Self::MirrorEndpointsCoincide => {
+                write!(f, "mirror closure requires distinct open endpoints")
+            }
         }
     }
 }

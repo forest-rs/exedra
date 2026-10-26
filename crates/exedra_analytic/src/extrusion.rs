@@ -47,12 +47,14 @@ use crate::geometry::{ParameterDomain, ParameterRange};
 use exedra_math::{FrameError, Placement3};
 use exedra_profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 
+mod authoring;
 mod boundary;
 mod query;
 mod selection;
 mod tessellate;
 mod workplane;
 
+pub use authoring::ProfileExtrusionError;
 pub use query::SurfacePoint;
 pub use workplane::{FaceSelectionError, Workplane, WorkplaneError};
 

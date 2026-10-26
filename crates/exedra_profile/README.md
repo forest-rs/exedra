@@ -33,6 +33,12 @@ assert!((profile.area() - (8.0 - core::f64::consts::PI / 4.0)).abs() < 1e-12);
 # Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
+`IntoProfile` is the checked input seam for geometry heads. Authoring crates
+implement it without the shared profile or native head depending on them.
+Conversion preserves endpoints and tags and refuses unsupported curves. Owned
+shared profiles retain their loop storage; every input honors the supplied
+validation policy.
+
 It owns deterministic circular sampling: `circular_edge_count` returns the
 smallest edge count that keeps every chord within a tolerance of its arc,
 under explicit `CircularEdgeConstraints` for minimum topology, maximum work and
