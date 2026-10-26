@@ -56,10 +56,12 @@
 //! ```
 
 #![no_std]
+extern crate alloc;
 
 mod frame;
 mod geometry;
 pub mod keyed;
+pub mod path;
 mod quat;
 mod trig;
 pub use frame::FrameError;

@@ -15,70 +15,7 @@ use exedra_math::{add, cross, dot, scale, sub};
 mod cursor;
 pub use cursor::PathCursor3;
 
-/// Authored endpoint connectivity of a controlled sweep path.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum PathClosure {
-    /// A spatial rail with distinct endpoints and optional caps.
-    #[default]
-    Open,
-    /// A cyclic path in the plane through its first station.
-    ///
-    /// Polyline stations omit the repeated endpoint; curved segments explicitly
-    /// terminate at the exact starting point. The closing run and corner
-    /// are explicit; caps must be [`crate::ir::CapMode::None`]. Only f64 rounding-scale
-    /// deviation from the plane is accepted, without projecting the points.
-    ClosedPlanar {
-        /// Finite nonzero plane normal in path-local coordinates.
-        /// Its magnitude and sign do not change section orientation, which
-        /// remains controlled by `section_x` and traversal direction.
-        normal: [f64; 3],
-    },
-}
-
-/// Join behavior at authored curve segment boundaries, including a closed seam.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum PathJoin {
-    /// Require analytic tangent continuity; no corner is inferred or repaired.
-    #[default]
-    Smooth,
-    /// Join sections on the tangent-bisector plane at an authored corner.
-    Miter {
-        /// Maximum section-plane stretch, `1 / cos(turn / 2)`, finite and >= 1.
-        /// Evaluation refuses larger corners instead of beveling them.
-        limit: f64,
-    },
-}
-
-/// One authored segment, starting at the preceding endpoint (or path start).
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub enum PathSegment3 {
-    /// Straight segment.
-    Line {
-        /// Endpoint in path-local coordinates.
-        to: [f64; 3],
-    },
-    /// Circular arc obtained by rotating the start about an authored axis.
-    /// The axis need not pass through the circle's center plane: its origin
-    /// is any point on the rotation axis. No projection onto a world plane.
-    Arc {
-        /// Any point on the rotation axis, in path-local coordinates.
-        axis_origin: [f64; 3],
-        /// Nonzero finite axis direction; magnitude is irrelevant.
-        axis: [f64; 3],
-        /// Signed right-handed rotation in radians, `0 < abs(sweep) <= tau`.
-        sweep: f64,
-    },
-    /// Spatial cubic Bezier segment.
-    Cubic {
-        /// First control point, in path-local coordinates.
-        control1: [f64; 3],
-        /// Second control point, in path-local coordinates.
-        control2: [f64; 3],
-        /// Endpoint in path-local coordinates.
-        to: [f64; 3],
-    },
-}
+pub use exedra_math::path::{PathClosure, PathJoin, PathSegment3};
 
 /// Accuracy and finite work budgets for a curved sweep path.
 #[derive(Copy, Clone, Debug, PartialEq)]
