@@ -21,7 +21,7 @@ use core::cell::Cell;
 use crate::spatial::Aabb;
 use exedra_math::{add, dot, norm, scale, sub};
 
-use crate::ScalarField;
+use crate::{FieldError, ScalarField, check_finite, check_positive};
 
 /// Capsule signed-distance field: all points within `radius` of the segment
 /// from `a` to `b`.
@@ -55,6 +55,42 @@ pub struct RoundConeField {
     pub radius_a: f32,
     /// Radius at `b`.
     pub radius_b: f32,
+}
+
+impl CapsuleField {
+    /// A capsule around the segment from `a` to `b`, with finite endpoints
+    /// and a finite positive radius. Equal endpoints make a sphere.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(a: [f32; 3], b: [f32; 3], radius: f32) -> Result<Self, FieldError> {
+        check_finite("a", a)?;
+        check_finite("b", b)?;
+        check_positive("radius", radius)?;
+        Ok(Self { a, b, radius })
+    }
+}
+
+impl RoundConeField {
+    /// The hull of spheres of `radius_a` at `a` and `radius_b` at `b`, with
+    /// finite endpoints and finite positive radii.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(a: [f32; 3], b: [f32; 3], radius_a: f32, radius_b: f32) -> Result<Self, FieldError> {
+        check_finite("a", a)?;
+        check_finite("b", b)?;
+        check_positive("radius_a", radius_a)?;
+        check_positive("radius_b", radius_b)?;
+        Ok(Self {
+            a,
+            b,
+            radius_a,
+            radius_b,
+        })
+    }
 }
 
 /// A conservative lower bound on a field's values by distance to a box.

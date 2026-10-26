@@ -640,3 +640,22 @@ fn hard_minimum_zero_sign_does_not_depend_on_child_order() {
         gradient(&b, point).map(f32::to_bits)
     );
 }
+
+#[test]
+fn checked_skeletal_constructors_refuse_invalid_parameters() {
+    use crate::FieldError;
+    assert!(
+        CapsuleField::new([0.0; 3], [0.0; 3], 1.0).is_ok(),
+        "a sphere"
+    );
+    assert_eq!(
+        CapsuleField::new([0.0; 3], [f32::NAN; 3], 1.0),
+        Err(FieldError::NonFinite { parameter: "b" })
+    );
+    assert_eq!(
+        RoundConeField::new([0.0; 3], [1.0, 0.0, 0.0], 1.0, 0.0),
+        Err(FieldError::NonPositive {
+            parameter: "radius_b"
+        })
+    );
+}

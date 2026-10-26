@@ -8,10 +8,7 @@ use exedra_isosurface::{
     analytic::SphereField, dual_contour,
 };
 
-let field = SphereField {
-    center: [0.0, 0.0, 0.0],
-    radius: 1.0,
-};
+let field = SphereField::new([0.0, 0.0, 0.0], 1.0).expect("valid sphere");
 let params = DualContourParams {
     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
     max_depth: 4,
@@ -27,6 +24,11 @@ let result = dual_contour(&field, &params).expect("sphere extraction");
 assert!(result.stats.faces > 0);
 assert!(result.mesh.validate_deep().is_empty());
 ```
+
+Built-in fields have checked `new` constructors that refuse non-finite
+coordinates, nonpositive dimensions and unusable directions with a typed
+`FieldError` naming the parameter. Struct literals remain available and skip
+the checks.
 
 Implement `ScalarField` to supply interval, point, and gradient evaluation;
 then call `dual_contour`. `Aabb` and `QefParams` are re-exported because they

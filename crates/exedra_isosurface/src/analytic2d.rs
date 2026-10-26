@@ -3,7 +3,7 @@
 
 //! Analytic 2D profile fields used by lifting operators and tests.
 
-use crate::{Aabb2, ScalarField2d};
+use crate::{Aabb2, FieldError, ScalarField2d, check_direction, check_finite, check_positive};
 
 /// Analytic circle signed-distance field.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -30,6 +30,50 @@ pub struct HalfPlaneField2d {
     pub point: [f32; 2],
     /// Outward normal.
     pub normal: [f32; 2],
+}
+
+impl CircleField2d {
+    /// A circle with a finite center and a finite positive radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(center: [f32; 2], radius: f32) -> Result<Self, FieldError> {
+        check_finite("center", center)?;
+        check_positive("radius", radius)?;
+        Ok(Self { center, radius })
+    }
+}
+
+impl RectField2d {
+    /// A rectangle with a finite center and finite positive half extents.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(center: [f32; 2], half_extents: [f32; 2]) -> Result<Self, FieldError> {
+        check_finite("center", center)?;
+        for extent in half_extents {
+            check_positive("half_extents", extent)?;
+        }
+        Ok(Self {
+            center,
+            half_extents,
+        })
+    }
+}
+
+impl HalfPlaneField2d {
+    /// The half plane behind the line through `point` with outward `normal`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(point: [f32; 2], normal: [f32; 2]) -> Result<Self, FieldError> {
+        check_finite("point", point)?;
+        check_direction("normal", [normal[0], normal[1], 0.0])?;
+        Ok(Self { point, normal })
+    }
 }
 
 impl ScalarField2d for CircleField2d {
@@ -280,9 +324,32 @@ fn sqrt(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Aabb2, ScalarField2d};
+    use crate::{Aabb2, FieldError, ScalarField2d};
 
     use super::{CircleField2d, HalfPlaneField2d, RectField2d};
+
+    #[test]
+    fn checked_profile_constructors_refuse_invalid_parameters() {
+        assert!(CircleField2d::new([0.0; 2], 1.0).is_ok());
+        assert_eq!(
+            CircleField2d::new([0.0; 2], -1.0),
+            Err(FieldError::NonPositive {
+                parameter: "radius"
+            })
+        );
+        assert_eq!(
+            RectField2d::new([0.0, f32::NAN], [1.0; 2]),
+            Err(FieldError::NonFinite {
+                parameter: "center"
+            })
+        );
+        assert_eq!(
+            HalfPlaneField2d::new([0.0; 2], [0.0; 2]),
+            Err(FieldError::DegenerateDirection {
+                parameter: "normal"
+            })
+        );
+    }
 
     fn finite_difference_gradient<F: ScalarField2d>(field: &F, point: [f32; 2]) -> [f32; 2] {
         let epsilon = 1.0e-3;

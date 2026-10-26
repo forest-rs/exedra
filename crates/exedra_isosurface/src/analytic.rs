@@ -5,7 +5,10 @@
 
 use crate::spatial::Aabb;
 
-use crate::{ProvenanceField, ScalarField};
+use crate::{
+    FieldError, ProvenanceField, ScalarField, check_direction, check_finite, check_nonnegative,
+    check_positive,
+};
 use exedra_math::{add, dot, norm, normalize, scale, sub};
 
 /// Analytic sphere signed-distance field.
@@ -129,6 +132,103 @@ pub struct SmoothUnion<A, B> {
     pub right: B,
     /// Blend radius.
     pub k: f32,
+}
+
+impl SphereField {
+    /// A sphere with a finite center and a finite positive radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(center: [f32; 3], radius: f32) -> Result<Self, FieldError> {
+        check_finite("center", center)?;
+        check_positive("radius", radius)?;
+        Ok(Self { center, radius })
+    }
+}
+
+impl BoxField {
+    /// A box with a finite center and finite positive half extents.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(center: [f32; 3], half_extents: [f32; 3]) -> Result<Self, FieldError> {
+        check_finite("center", center)?;
+        for extent in half_extents {
+            check_positive("half_extents", extent)?;
+        }
+        Ok(Self {
+            center,
+            half_extents,
+        })
+    }
+}
+
+impl CylinderField {
+    /// A finite cylinder with a normalizable axis and positive radius and
+    /// half height. The axis is kept as given; evaluation normalizes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(
+        center: [f32; 3],
+        axis: [f32; 3],
+        radius: f32,
+        half_height: f32,
+    ) -> Result<Self, FieldError> {
+        check_finite("center", center)?;
+        check_direction("axis", axis)?;
+        check_positive("radius", radius)?;
+        check_positive("half_height", half_height)?;
+        Ok(Self {
+            center,
+            axis,
+            radius,
+            half_height,
+        })
+    }
+}
+
+impl TorusField {
+    /// A torus with a normalizable axis, a nonnegative major radius and a
+    /// positive minor radius. A minor radius at least the major radius gives
+    /// a self-intersecting spindle torus, which is still a valid field.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(
+        center: [f32; 3],
+        axis: [f32; 3],
+        major_radius: f32,
+        minor_radius: f32,
+    ) -> Result<Self, FieldError> {
+        check_finite("center", center)?;
+        check_direction("axis", axis)?;
+        check_nonnegative("major_radius", major_radius)?;
+        check_positive("minor_radius", minor_radius)?;
+        Ok(Self {
+            center,
+            axis,
+            major_radius,
+            minor_radius,
+        })
+    }
+}
+
+impl HalfSpaceField {
+    /// The half space behind the plane through `point` with outward `normal`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid parameter.
+    pub fn new(point: [f32; 3], normal: [f32; 3]) -> Result<Self, FieldError> {
+        check_finite("point", point)?;
+        check_direction("normal", normal)?;
+        Ok(Self { point, normal })
+    }
 }
 
 impl<A, B> Union<A, B> {
@@ -969,7 +1069,63 @@ mod tests {
     };
     use crate::spatial::Aabb;
     use crate::transform::{RigidTransform3, Transform3, Translate, UniformScale};
-    use crate::{ProvenanceField, ScalarField};
+    use crate::{FieldError, ProvenanceField, ScalarField};
+
+    #[test]
+    fn checked_constructors_refuse_invalid_parameters_by_name() {
+        let up = [0.0, 0.0, 1.0];
+        assert_eq!(
+            SphereField::new([0.0; 3], 1.0),
+            Ok(SphereField {
+                center: [0.0; 3],
+                radius: 1.0
+            })
+        );
+        assert_eq!(
+            SphereField::new([f32::NAN, 0.0, 0.0], 1.0),
+            Err(FieldError::NonFinite {
+                parameter: "center"
+            })
+        );
+        assert_eq!(
+            SphereField::new([0.0; 3], 0.0),
+            Err(FieldError::NonPositive {
+                parameter: "radius"
+            })
+        );
+        assert_eq!(
+            BoxField::new([0.0; 3], [1.0, -1.0, 1.0]),
+            Err(FieldError::NonPositive {
+                parameter: "half_extents"
+            })
+        );
+        assert_eq!(
+            CylinderField::new([0.0; 3], [0.0; 3], 1.0, 1.0),
+            Err(FieldError::DegenerateDirection { parameter: "axis" })
+        );
+        assert_eq!(
+            CylinderField::new([0.0; 3], up, 1.0, f32::INFINITY),
+            Err(FieldError::NonFinite {
+                parameter: "half_height"
+            })
+        );
+        assert_eq!(
+            TorusField::new([0.0; 3], up, -1.0, 0.5),
+            Err(FieldError::Negative {
+                parameter: "major_radius"
+            })
+        );
+        assert!(
+            TorusField::new([0.0; 3], up, 0.0, 0.5).is_ok(),
+            "a spindle torus is valid"
+        );
+        assert_eq!(
+            HalfSpaceField::new([0.0; 3], [0.0, f32::MIN_POSITIVE, 0.0]),
+            Err(FieldError::DegenerateDirection {
+                parameter: "normal"
+            })
+        );
+    }
 
     fn finite_difference_gradient<F: ScalarField>(field: &F, point: [f32; 3]) -> [f32; 3] {
         let epsilon = 1.0e-3;

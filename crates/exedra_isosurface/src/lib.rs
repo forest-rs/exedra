@@ -30,10 +30,7 @@
 //!     analytic::SphereField, dual_contour,
 //! };
 //!
-//! let field = SphereField {
-//!     center: [0.0, 0.0, 0.0],
-//!     radius: 1.0,
-//! };
+//! let field = SphereField::new([0.0, 0.0, 0.0], 1.0).expect("valid sphere");
 //! let params = DualContourParams {
 //!     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
 //!     max_depth: 4,
@@ -96,6 +93,97 @@ pub use skeletal::{
     BoundedField, CapsuleField, DistanceBound, RoundConeField, SmoothUnionN, SmoothUnionStats,
 };
 pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
+
+/// Why a built-in field's parameters are invalid.
+///
+/// Checked constructors such as [`analytic::SphereField::new`] return this.
+/// Struct literals bypass the checks; their evaluation of invalid parameters
+/// is documented per field.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FieldError {
+    /// A coordinate or dimension is NaN or infinite.
+    NonFinite {
+        /// The parameter's field name.
+        parameter: &'static str,
+    },
+    /// A dimension that must be positive is zero or negative.
+    NonPositive {
+        /// The parameter's field name.
+        parameter: &'static str,
+    },
+    /// A dimension that must not be negative is.
+    Negative {
+        /// The parameter's field name.
+        parameter: &'static str,
+    },
+    /// A direction is too short to normalize.
+    DegenerateDirection {
+        /// The parameter's field name.
+        parameter: &'static str,
+    },
+}
+
+impl core::fmt::Display for FieldError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NonFinite { parameter } => {
+                write!(f, "field parameter `{parameter}` is not finite")
+            }
+            Self::NonPositive { parameter } => {
+                write!(f, "field parameter `{parameter}` must be positive")
+            }
+            Self::Negative { parameter } => {
+                write!(f, "field parameter `{parameter}` must not be negative")
+            }
+            Self::DegenerateDirection { parameter } => {
+                write!(f, "field parameter `{parameter}` is not a usable direction")
+            }
+        }
+    }
+}
+
+impl core::error::Error for FieldError {}
+
+/// Checks that every component is finite.
+pub(crate) fn check_finite<const N: usize>(
+    parameter: &'static str,
+    values: [f32; N],
+) -> Result<(), FieldError> {
+    if values.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err(FieldError::NonFinite { parameter })
+    }
+}
+
+/// Checks that a dimension is finite and positive.
+pub(crate) fn check_positive(parameter: &'static str, value: f32) -> Result<(), FieldError> {
+    check_finite(parameter, [value])?;
+    if value > 0.0 {
+        Ok(())
+    } else {
+        Err(FieldError::NonPositive { parameter })
+    }
+}
+
+/// Checks that a dimension is finite and not negative.
+pub(crate) fn check_nonnegative(parameter: &'static str, value: f32) -> Result<(), FieldError> {
+    check_finite(parameter, [value])?;
+    if value >= 0.0 {
+        Ok(())
+    } else {
+        Err(FieldError::Negative { parameter })
+    }
+}
+
+/// Checks that a 3D direction is finite and normalizable.
+pub(crate) fn check_direction(parameter: &'static str, value: [f32; 3]) -> Result<(), FieldError> {
+    check_finite(parameter, value)?;
+    exedra_math::normalize(value)
+        .map(|_| ())
+        .ok_or(FieldError::DegenerateDirection { parameter })
+}
 
 /// A scalar field that can be evaluated for isosurface extraction.
 ///
