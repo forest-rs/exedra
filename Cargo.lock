@@ -193,6 +193,7 @@ dependencies = [
  "exedra_mesh_ops",
  "exedra_profile",
  "exedra_testkit",
+ "serde_json",
 ]
 
 [[package]]

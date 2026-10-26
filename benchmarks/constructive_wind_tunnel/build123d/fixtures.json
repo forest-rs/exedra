@@ -1,0 +1,10 @@
+[
+  {"id":"plate_0","kind":"plate","width":16,"height":40,"radius":3,"thickness":5,"holes":0},
+  {"id":"plate_16","kind":"plate","width":40,"height":40,"radius":3,"thickness":5,"holes":16},
+  {"id":"plate_64","kind":"plate","width":136,"height":40,"radius":3,"thickness":5,"holes":64},
+  {"id":"panel","kind":"panel","width":200,"height":120,"radius":4,"thickness":6,"vents":5,"slot_length":35,"pitch":12},
+  {"id":"panel_seven_vents","kind":"panel","width":200,"height":120,"radius":4,"thickness":6,"vents":7,"slot_length":38,"pitch":9},
+  {"id":"panel_larger","kind":"panel","width":220,"height":140,"radius":6,"thickness":8,"vents":5,"slot_length":35,"pitch":12},
+  {"id":"turned_full","kind":"revolve","sweep_degrees":360,"points":[[22,0],[22,5],[18,5],[18,10],[20,10],[20,13],[18,13],[18,30],[14,38],[14,44],[11,47],[7,47],[7,26],[10,19],[10,8],[7,3],[7,0]]},
+  {"id":"turned_cutaway","kind":"revolve","sweep_degrees":270,"points":[[22,0],[22,5],[18,5],[18,10],[20,10],[20,13],[18,13],[18,30],[14,38],[14,44],[11,47],[7,47],[7,26],[10,19],[10,8],[7,3],[7,0]]}
+]
