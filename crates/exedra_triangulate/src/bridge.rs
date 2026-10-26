@@ -163,10 +163,28 @@ fn bridge_one(
         .iter()
         .position(|&o| o == hole_index)
         .expect("hole_index comes from order");
+    let anchor_position = hole
+        .iter()
+        .position(|&index| index == anchor)
+        .expect("anchor belongs to hole");
+    let hole_previous = points[hole[(anchor_position + hole.len() - 1) % hole.len()] as usize];
+    let hole_next = points[hole[(anchor_position + 1) % hole.len()] as usize];
     'candidate: for &pos in &candidates {
         let pos = pos as usize;
         let o = points[ring[pos] as usize];
         if o == h {
+            continue;
+        }
+        // Visibility of the segment alone does not select its topological
+        // endpoint. Earlier bridges can visit `o` several times, each with a
+        // different material wedge. Splice only into the occurrence whose
+        // wedge contains this direction, or the traversal crosses itself at
+        // `o` even though no open edge segments cross.
+        let previous = points[ring[(pos + ring.len() - 1) % ring.len()] as usize];
+        let next = points[ring[(pos + 1) % ring.len()] as usize];
+        if !in_material_cone(previous, o, next, h)
+            || !in_material_cone(hole_previous, h, hole_next, o)
+        {
             continue;
         }
         // `blocks_bridge` intentionally ignores edges that share a bridge
@@ -176,12 +194,6 @@ fn bridge_one(
         // the same target coordinate more than once after earlier bridges,
         // so all incident edges must clear this collinearity check. The
         // material-cone test below selects the correct occurrence to splice.
-        let anchor_position = hole
-            .iter()
-            .position(|&index| index == anchor)
-            .expect("anchor belongs to hole");
-        let hole_previous = points[hole[(anchor_position + hole.len() - 1) % hole.len()] as usize];
-        let hole_next = points[hole[(anchor_position + 1) % hole.len()] as usize];
         if [hole_previous, hole_next]
             .into_iter()
             .any(|neighbor| orient2d(h, o, neighbor) == Orientation::Collinear)
@@ -200,18 +212,6 @@ fn bridge_one(
             {
                 continue 'candidate;
             }
-        }
-        // Visibility of the segment alone does not select its topological
-        // endpoint. Earlier bridges can visit `o` several times, each with a
-        // different material wedge. Splice only into the occurrence whose
-        // wedge contains this direction, or the traversal crosses itself at
-        // `o` even though no open edge segments cross.
-        let previous = points[ring[(pos + ring.len() - 1) % ring.len()] as usize];
-        let next = points[ring[(pos + 1) % ring.len()] as usize];
-        if !in_material_cone(previous, o, next, h)
-            || !in_material_cone(hole_previous, h, hole_next, o)
-        {
-            continue;
         }
         // The bridge must clear every edge of the current composite ring…
         for i in 0..ring.len() {

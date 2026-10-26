@@ -43,18 +43,14 @@ pub(crate) fn earclip_ring(
     let mut live = RingState::new(points, ring);
     live.prune_consecutive_duplicates();
 
-    // Scan order: ring positions sorted by (point index, position). Each
-    // round clips the first live valid ear in this order.
-    let mut scan: Vec<u32> = (0..len_u32(ring.len())).collect();
-    scan.sort_unstable_by_key(|&pos| (ring[pos as usize], pos));
-
+    // The live candidate list retains (point index, ring position) order.
+    // Removing a vertex unlinks it, so later rounds never scan dead slots.
     while live.len > 3 {
         let mut clipped = false;
         let mut collinear = None;
-        for &pos in &scan {
-            if !live.vertices[pos as usize].alive {
-                continue;
-            }
+        let mut pos = live.scan_head;
+        for _ in 0..live.len {
+            let next_candidate = live.vertices[pos as usize].scan_next;
             match live.classify(pos) {
                 VertexClass::CollinearBetween => {
                     // Prefer genuine ears. In a bridged polygon, vertices
@@ -75,6 +71,7 @@ pub(crate) fn earclip_ring(
                     }
                 }
             }
+            pos = next_candidate;
         }
         if !clipped && let Some(pos) = collinear {
             live.remove(pos);
@@ -135,6 +132,8 @@ enum VertexClass {
 struct RingVertex {
     next: u32,
     prev: u32,
+    scan_next: u32,
+    scan_prev: u32,
     alive: bool,
     class: Option<VertexClass>,
     /// A live witness blocks this ear until either neighbor changes.
@@ -148,16 +147,19 @@ struct RingState<'a> {
     /// Static spatial order; dead positions are skipped at query time.
     spatial: Vec<u32>,
     spatial_axis: usize,
+    scan_head: u32,
     len: usize,
 }
 
 impl<'a> RingState<'a> {
     fn new(points: &'a [[f64; 2]], ring: &'a [u32]) -> Self {
         let n = len_u32(ring.len());
-        let vertices = (0..n)
+        let mut vertices: Vec<_> = (0..n)
             .map(|i| RingVertex {
                 next: (i + 1) % n,
                 prev: (i + n - 1) % n,
+                scan_next: 0,
+                scan_prev: 0,
                 alive: true,
                 class: None,
                 blocked_by: None,
@@ -174,6 +176,14 @@ impl<'a> RingState<'a> {
         }
         let spatial_axis = usize::from(max[1] - min[1] > max[0] - min[0]);
         let mut spatial: Vec<_> = (0..n).collect();
+        // Link the stable candidate list, then reuse this allocation for
+        // spatial queries. Neither index is rebuilt while clipping.
+        spatial.sort_unstable_by_key(|&pos| (ring[pos as usize], pos));
+        let scan_head = spatial.first().copied().unwrap_or(0);
+        for (i, &pos) in spatial.iter().enumerate() {
+            vertices[pos as usize].scan_next = spatial[(i + 1) % spatial.len()];
+            vertices[pos as usize].scan_prev = spatial[(i + spatial.len() - 1) % spatial.len()];
+        }
         spatial.sort_unstable_by(|&a, &b| {
             points[ring[a as usize] as usize][spatial_axis]
                 .total_cmp(&points[ring[b as usize] as usize][spatial_axis])
@@ -185,6 +195,7 @@ impl<'a> RingState<'a> {
             vertices,
             spatial,
             spatial_axis,
+            scan_head,
             len: ring.len(),
         }
     }
@@ -271,7 +282,7 @@ impl<'a> RingState<'a> {
         let axis = self.spatial_axis;
         let start = self
             .spatial
-            .partition_point(|&q| self.coords(q)[axis] < min[axis]);
+            .partition_point(|&pos| self.coords(pos)[axis] < min[axis]);
         for &q_pos in &self.spatial[start..] {
             let q = self.coords(q_pos);
             if q[axis] > max[axis] {
@@ -310,6 +321,13 @@ impl<'a> RingState<'a> {
         self.vertices[p as usize].next = n;
         self.vertices[n as usize].prev = p;
         self.vertices[pos as usize].alive = false;
+        let scan_previous = self.vertices[pos as usize].scan_prev;
+        let scan_next = self.vertices[pos as usize].scan_next;
+        self.vertices[scan_previous as usize].scan_next = scan_next;
+        self.vertices[scan_next as usize].scan_prev = scan_previous;
+        if self.scan_head == pos {
+            self.scan_head = scan_next;
+        }
         self.len -= 1;
         // Only these two turns changed. An unchanged triangle's live blocker
         // remains inside it, independent of edits elsewhere in the ring.
@@ -357,6 +375,19 @@ mod tests {
         let mut order: Vec<_> = (0..len_u32(ring.len())).collect();
         order.sort_unstable_by_key(|&pos| (ring[pos as usize], pos));
         while state.len > 3 {
+            let expected_order: Vec<_> = order
+                .iter()
+                .copied()
+                .filter(|&pos| state.vertices[pos as usize].alive)
+                .collect();
+            let mut actual_order = Vec::new();
+            let mut candidate = state.scan_head;
+            for _ in 0..state.len {
+                actual_order.push(candidate);
+                candidate = state.vertices[candidate as usize].scan_next;
+            }
+            assert_eq!(candidate, state.scan_head);
+            assert_eq!(actual_order, expected_order);
             let mut ear = None;
             let mut collinear = None;
             for &pos in &order {
