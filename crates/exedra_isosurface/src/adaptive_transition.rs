@@ -309,6 +309,56 @@ impl LeafLocator {
         self.keys[&id]
     }
 
+    /// Replaces refined leaves with the leaves created under them.
+    pub(super) fn apply(&mut self, changes: &LeafChanges) {
+        for &(id, key) in &changes.created {
+            self.leaves.insert(key, id);
+            self.keys.insert(id, key);
+        }
+        for &(id, key) in &changes.refined {
+            self.leaves.remove(&key);
+            self.keys.remove(&id);
+        }
+    }
+
+    /// The leaves touching `cell` across a face, an edge or a corner.
+    ///
+    /// Balanced neighbors are at most one level finer, so probing the shell
+    /// of half-span cells around `cell` finds every one of them.
+    pub(super) fn touching(&self, cell: CellKey) -> Vec<CellId> {
+        let step = (cell.span / 2).max(1);
+        let count = i64::from(cell.span / step);
+        let mut found = Vec::new();
+        for i in -1..=count {
+            for j in -1..=count {
+                for k in -1..=count {
+                    let outside = [i, j, k].iter().any(|&c| c < 0 || c >= count);
+                    if !outside {
+                        continue;
+                    }
+                    let coordinate = |origin: u32, offset: i64| {
+                        u32::try_from(i64::from(origin) + offset * i64::from(step))
+                            .ok()
+                            .filter(|&c| c < self.resolution)
+                    };
+                    let (Some(x), Some(y), Some(z)) = (
+                        coordinate(cell.origin.x, i),
+                        coordinate(cell.origin.y, j),
+                        coordinate(cell.origin.z, k),
+                    ) else {
+                        continue;
+                    };
+                    if let Some(id) = self.find_covering(CornerKey::new(x, y, z)) {
+                        found.push(id);
+                    }
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
     pub(super) fn incident_leaves(
         &self,
         segment: EdgeSegmentKey,
@@ -396,6 +446,173 @@ pub(super) trait BalanceContext: OctreeVisitor {
     fn begin_balance_pass(&self, leaves: usize) -> Result<(), Self::Error>;
 }
 
+/// Leaves refined, and leaves created, by refinement passes.
+#[derive(Debug, Default)]
+pub(super) struct LeafChanges {
+    /// Leaves that became interior cells.
+    pub(super) refined: Vec<(CellId, CellKey)>,
+    /// Leaves created; a later refinement may have refined some of them.
+    pub(super) created: Vec<(CellId, CellKey)>,
+}
+
+/// Refines `id` and returns the leaves created under it.
+pub(super) fn refine_into_leaves<V>(
+    tree: &mut Octree<V::Payload>,
+    visitor: &mut V,
+    id: CellId,
+    max_depth: u8,
+    cell_limit: Option<usize>,
+) -> Result<Vec<(CellId, CellKey)>, OctreeError<V::Error>>
+where
+    V: BalanceContext,
+{
+    let mut stack = tree
+        .refine_leaf(id, max_depth, cell_limit, visitor)?
+        .to_vec();
+    let mut leaves = Vec::new();
+    while let Some(cell) = stack.pop() {
+        match tree.cell(cell).and_then(|cell| cell.children()) {
+            Some(children) => stack.extend(children),
+            None => leaves.push((cell, visitor.transition_grid().cell_key(cell))),
+        }
+    }
+    Ok(leaves)
+}
+
+/// The face patches of an octree's leaves, kept current across balancing
+/// passes so that each pass looks only at what changed.
+pub(super) struct Balancer {
+    faces: HashMap<FacePatchKey, [Option<CellId>; 2]>,
+}
+
+impl Balancer {
+    pub(super) fn new(leaves: &[(CellId, CellKey)]) -> Self {
+        let mut balancer = Self {
+            faces: HashMap::with_capacity(leaves.len() * 6),
+        };
+        for &(id, key) in leaves {
+            balancer.insert(id, key);
+        }
+        balancer
+    }
+
+    /// Records that the leaf `key` was refined into `created`.
+    pub(super) fn replace(&mut self, key: CellKey, created: &[(CellId, CellKey)]) {
+        for axis in 0_u8..3 {
+            for side in 0_u8..2 {
+                let (patch, owner_side) = face_patch(key, axis, side);
+                if let Some(owners) = self.faces.get_mut(&patch) {
+                    owners[owner_side] = None;
+                }
+            }
+        }
+        for &(id, key) in created {
+            self.insert(id, key);
+        }
+    }
+
+    fn insert(&mut self, id: CellId, key: CellKey) {
+        for axis in 0_u8..3 {
+            for side in 0_u8..2 {
+                let (patch, owner_side) = face_patch(key, axis, side);
+                let owners = self.faces.entry(patch).or_insert([None; 2]);
+                debug_assert!(
+                    owners[owner_side].is_none(),
+                    "one leaf must own each side of an exact face patch"
+                );
+                owners[owner_side] = Some(id);
+            }
+        }
+    }
+
+    /// Refines leaves until face neighbors differ by at most one level,
+    /// starting from the imbalances next to `pending`.
+    ///
+    /// Only a refinement can create a new imbalance, and only next to the
+    /// leaves it creates, so each later pass checks just those, and the
+    /// finer leaves whose neighbor it refined.
+    pub(super) fn balance<V>(
+        &mut self,
+        tree: &mut Octree<V::Payload>,
+        visitor: &mut V,
+        mut pending: Vec<(CellId, CellKey)>,
+        changes: &mut LeafChanges,
+    ) -> Result<(), OctreeError<V::Error>>
+    where
+        V: BalanceContext,
+    {
+        loop {
+            visitor
+                .begin_balance_pass(pending.len())
+                .map_err(|source| OctreeError::Visitor {
+                    cell: CellRef {
+                        id: tree.root_id(),
+                        bounds: tree.root().bounds,
+                        depth: 0,
+                        parent: None,
+                    },
+                    stored_cells: tree.len(),
+                    source,
+                })?;
+            let mut refine = Vec::new();
+            // Refining a neighbor one level may leave it still too coarse;
+            // only the finer side sees that, so it looks again.
+            let mut unsettled = Vec::new();
+            for &(id, key) in &pending {
+                for axis in 0_u8..3 {
+                    for side in 0_u8..2 {
+                        let (patch, owner_side) = face_patch(key, axis, side);
+                        let opposite = 1 - owner_side;
+                        let mut query_span = patch.span;
+                        loop {
+                            let query = FacePatchKey {
+                                span: query_span,
+                                u: align_down(patch.u, query_span),
+                                v: align_down(patch.v, query_span),
+                                ..patch
+                            };
+                            if let Some(neighbor) =
+                                self.faces.get(&query).and_then(|owners| owners[opposite])
+                            {
+                                let neighbor_key = visitor.transition_grid().cell_key(neighbor);
+                                if key.depth > neighbor_key.depth + 1 {
+                                    refine.push((neighbor_key, neighbor));
+                                    unsettled.push((id, key));
+                                }
+                                break;
+                            }
+                            if query_span >= visitor.transition_grid().resolution() {
+                                break;
+                            }
+                            query_span *= 2;
+                        }
+                    }
+                }
+            }
+
+            refine.sort_unstable_by_key(|&(key, id)| (key, id));
+            refine.dedup_by_key(|entry| entry.1);
+            if refine.is_empty() {
+                return Ok(());
+            }
+            let max_depth = visitor.global_max_depth();
+            pending = unsettled;
+            for (key, id) in refine {
+                let limit = visitor.cell_limit();
+                let created = refine_into_leaves(tree, visitor, id, max_depth, limit)?;
+                self.replace(key, &created);
+                changes.refined.push((id, key));
+                changes.created.extend_from_slice(&created);
+                pending.extend(created);
+            }
+            pending.sort_unstable_by_key(|&(id, key)| (key, id));
+            pending.dedup();
+        }
+    }
+}
+
+/// Refines leaves until face neighbors differ by at most one level.
+#[cfg(test)]
 pub(super) fn balance_tree<V>(
     tree: &mut Octree<V::Payload>,
     visitor: &mut V,
@@ -403,77 +620,8 @@ pub(super) fn balance_tree<V>(
 where
     V: BalanceContext,
 {
-    loop {
-        visitor
-            .begin_balance_pass(tree.leaf_ids().count())
-            .map_err(|source| OctreeError::Visitor {
-                cell: CellRef {
-                    id: tree.root_id(),
-                    bounds: tree.root().bounds,
-                    depth: 0,
-                    parent: None,
-                },
-                stored_cells: tree.len(),
-                source,
-            })?;
-        let leaves = sorted_leaf_keys(tree, visitor.transition_grid());
-        let mut faces = HashMap::<FacePatchKey, [Option<CellId>; 2]>::new();
-        for &(id, key) in &leaves {
-            for axis in 0_u8..3 {
-                for side in 0_u8..2 {
-                    let (patch, owner_side) = face_patch(key, axis, side);
-                    let owners = faces.entry(patch).or_insert([None; 2]);
-                    debug_assert!(
-                        owners[owner_side].is_none(),
-                        "one leaf must own each side of an exact face patch"
-                    );
-                    owners[owner_side] = Some(id);
-                }
-            }
-        }
-
-        let mut refine = Vec::new();
-        for &(_, key) in &leaves {
-            for axis in 0_u8..3 {
-                for side in 0_u8..2 {
-                    let (patch, owner_side) = face_patch(key, axis, side);
-                    let opposite = 1 - owner_side;
-                    let mut query_span = patch.span;
-                    loop {
-                        let query = FacePatchKey {
-                            span: query_span,
-                            u: align_down(patch.u, query_span),
-                            v: align_down(patch.v, query_span),
-                            ..patch
-                        };
-                        if let Some(neighbor) =
-                            faces.get(&query).and_then(|owners| owners[opposite])
-                        {
-                            let neighbor_key = visitor.transition_grid().cell_key(neighbor);
-                            if key.depth > neighbor_key.depth + 1 {
-                                refine.push((neighbor_key, neighbor));
-                            }
-                            break;
-                        }
-                        if query_span >= visitor.transition_grid().resolution() {
-                            break;
-                        }
-                        query_span *= 2;
-                    }
-                }
-            }
-        }
-
-        refine.sort_unstable_by_key(|&(key, id)| (key, id));
-        refine.dedup_by_key(|entry| entry.1);
-        if refine.is_empty() {
-            return Ok(());
-        }
-        let max_depth = visitor.global_max_depth();
-        for (_, id) in refine {
-            tree.refine_leaf(id, max_depth, visitor.cell_limit(), visitor)?;
-        }
-    }
+    let leaves = sorted_leaf_keys(tree, visitor.transition_grid());
+    Balancer::new(&leaves).balance(tree, visitor, leaves, &mut LeafChanges::default())
 }
 
 pub(super) fn leaf_keys<P, F: ScalarField>(

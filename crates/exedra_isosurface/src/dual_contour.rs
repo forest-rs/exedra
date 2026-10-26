@@ -16,8 +16,8 @@ use exedra_mesh::{
 use hashbrown::{HashMap, HashSet};
 
 use crate::adaptive_transition::{
-    AdaptiveGrid, BalanceContext, CellKey, ComponentRoute, EdgeSegmentKey, LeafLocator, LeafSet,
-    balance_tree, enumerate_segments, leaf_keys, segment_end,
+    AdaptiveGrid, BalanceContext, Balancer, CellKey, ComponentRoute, EdgeSegmentKey, LeafChanges,
+    LeafLocator, LeafSet, enumerate_segments, leaf_keys, refine_into_leaves, segment_end,
 };
 use crate::cell_topology::{CUBE_EDGES, CellTopology, classify_cell};
 use crate::hermite::locate_edge_zero;
@@ -1395,17 +1395,45 @@ fn prepare_transitions<F: ScalarField>(
     tree: &mut Octree<LeafMarker>,
     visitor: &mut IntervalVisitor<'_, F>,
 ) -> Result<(LeafSet, Vec<EdgeSegmentKey>), DualContourError> {
+    let leaves = leaf_keys(tree, &visitor.grid);
+    let mut balancer = Balancer::new(&leaves);
+    balancer
+        .balance(tree, visitor, leaves, &mut LeafChanges::default())
+        .map_err(|error| visitor.spatial_error(error))?;
+    visitor.run.record_tree(tree.len())?;
+    let mut locator = LeafLocator::new(&leaf_keys(tree, &visitor.grid), visitor.grid.resolution());
+    // Leaves created since the last pass. Only segments next to them can
+    // change, so a pass checks just those; `None` checks every segment,
+    // which the first pass does and the last pass repeats as a guarantee.
+    let mut fresh: Option<HashSet<CellId>> = None;
     loop {
-        balance_tree(tree, visitor).map_err(|error| visitor.spatial_error(error))?;
-        visitor.run.record_tree(tree.len())?;
         visitor.run.stage.set(ExtractionStage::TransitionCompletion);
         visitor.run.grow(
             ExtractionResource::TopologyPasses,
             visitor.run.work.get().topology_passes,
             1,
         )?;
-        let leaves = leaf_keys(tree, &visitor.grid);
-        let segments = enumerate_segments(&leaves, visitor.run)?;
+        let (leaves, segments) = match &fresh {
+            None => {
+                let leaves = leaf_keys(tree, &visitor.grid);
+                let segments = enumerate_segments(&leaves, visitor.run)?;
+                (Some(leaves), segments)
+            }
+            Some(fresh) => {
+                let mut near = fresh
+                    .iter()
+                    .flat_map(|&id| locator.touching(locator.key(id)))
+                    .chain(fresh.iter().copied())
+                    .collect::<Vec<_>>();
+                near.sort_unstable();
+                near.dedup();
+                let near = near
+                    .into_iter()
+                    .map(|id| (id, locator.key(id)))
+                    .collect::<Vec<_>>();
+                (None, enumerate_segments(&near, visitor.run)?)
+            }
+        };
         let mut endpoints = Vec::with_capacity(visitor.run.records(segments.len(), 2)?);
         for &segment in &segments {
             endpoints.push(segment.start);
@@ -1413,7 +1441,6 @@ fn prepare_transitions<F: ScalarField>(
         }
         visitor.grid.sample_keys(&endpoints, visitor.run)?;
 
-        let locator = LeafLocator::new(&leaves, visitor.grid.resolution());
         visitor.run.records(segments.len(), 4)?;
         let mut refine = Vec::new();
         let mut unresolved = None;
@@ -1431,8 +1458,15 @@ fn prepare_transitions<F: ScalarField>(
             }
             let incident =
                 match locator.incident_leaves(segment) {
-                    Ok(Some(incident)) => incident,
-                    Ok(None) => continue,
+                    Ok(Some(incident))
+                        if fresh
+                            .as_ref()
+                            .is_none_or(|fresh| incident.iter().any(|id| fresh.contains(id))) =>
+                    {
+                        incident
+                    }
+                    Ok(_) => continue,
+                    Err(()) if fresh.is_some() => continue,
                     Err(()) => {
                         return Err(invalid_transition(0, FaceLoopErrorKind::TooShort)
                             .with_witness(ExtractionWitness::Transition(transition_witness(
@@ -1478,6 +1512,10 @@ fn prepare_transitions<F: ScalarField>(
         refine.sort_unstable_by_key(|&(key, id)| (key, id));
         refine.dedup_by_key(|entry| entry.1);
         if refine.is_empty() {
+            let Some(leaves) = leaves else {
+                fresh = None;
+                continue;
+            };
             if let Some(segment) = unresolved {
                 let mut witness = transition_witness(&visitor.grid, segment);
                 if let Ok(Some(incident)) = locator.incident_leaves(segment) {
@@ -1513,16 +1551,37 @@ fn prepare_transitions<F: ScalarField>(
             }
             return Ok((leaves, segments));
         }
-        for (_, id) in refine {
-            tree.refine_leaf(
-                id,
-                visitor.params.max_depth,
-                visitor.params.limits.octree_cells,
-                visitor,
-            )
-            .map_err(|error| visitor.spatial_error(error))?;
+        let mut changes = LeafChanges::default();
+        let mut pending = Vec::new();
+        for (key, id) in refine {
+            let limit = visitor.params.limits.octree_cells;
+            let created = refine_into_leaves(tree, visitor, id, visitor.params.max_depth, limit)
+                .map_err(|error| visitor.spatial_error(error))?;
             visitor.run.record_tree(tree.len())?;
+            balancer.replace(key, &created);
+            changes.refined.push((id, key));
+            changes.created.extend_from_slice(&created);
+            pending.extend(created);
         }
+        pending.sort_unstable_by_key(|&(id, key)| (key, id));
+        balancer
+            .balance(tree, visitor, pending, &mut changes)
+            .map_err(|error| visitor.spatial_error(error))?;
+        visitor.run.record_tree(tree.len())?;
+        locator.apply(&changes);
+        let refined = changes
+            .refined
+            .iter()
+            .map(|&(id, _)| id)
+            .collect::<HashSet<_>>();
+        fresh = Some(
+            changes
+                .created
+                .iter()
+                .map(|&(id, _)| id)
+                .filter(|id| !refined.contains(id))
+                .collect(),
+        );
     }
 }
 
