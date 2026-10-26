@@ -116,7 +116,43 @@ def mesh_evidence(case, expected, tolerance):
         "mesh_volume_mm3": volume, "mesh_volume_error_mm3": error,
         "geometrically_closed_after_coordinate_weld": True,
         "reported_deviation_mm": case.get("reported_deviation"),
+        "triangle_shape": triangle_shape(case),
     }
+
+
+def triangle_shape(case, planar_xy_only=False):
+    """Angle distribution and longest edge / shortest altitude; outside timers."""
+    angles = []
+    worst_aspect = 0.0
+    for triangle in case["triangles"]:
+        a, b, c = [case["positions"][i] for i in triangle]
+        if planar_xy_only and not a[2] == b[2] == c[2]:
+            continue
+        edges = [[q[i] - p[i] for i in range(3)] for p, q in [(a, b), (b, c), (c, a)]]
+        lengths2 = [sum(x*x for x in edge) for edge in edges]
+        u, v = edges[:2]
+        cross = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]]
+        area2 = math.hypot(*cross)
+        if area2 == 0:
+            raise ValueError("zero-area triangle")
+        corners = [math.atan2(area2, -sum(x*y for x, y in zip(edges[i], edges[(i+1)%3])))
+                   for i in range(3)]
+        angles.append(math.degrees(min(corners)))
+        worst_aspect = max(worst_aspect, max(lengths2) / area2)
+    if not angles:
+        return None
+    angles.sort()
+    result = {
+        "triangles": len(angles), "minimum_angle_degrees": angles[0],
+        "p01_minimum_angle_degrees": angles[max(0, math.ceil(len(angles) / 100) - 1)],
+        "triangles_below_1_degree": sum(a < 1 for a in angles),
+        "triangles_below_5_degrees": sum(a < 5 for a in angles),
+        "triangles_below_10_degrees": sum(a < 10 for a in angles),
+        "worst_longest_edge_to_altitude": worst_aspect,
+    }
+    if not planar_xy_only:
+        result["constant_z_triangles"] = triangle_shape(case, planar_xy_only=True)
+    return result
 
 
 def quality_survey(case, boundary, triangle_budget):
@@ -144,6 +180,8 @@ def main():
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--repetitions", type=int, default=9)
     parser.add_argument("--tolerance", type=float, default=0.02)
+    parser.add_argument("--native-tolerance", type=float,
+                        help="optional distinct native target for an accuracy sensitivity study")
     parser.add_argument("--quality-triangles", type=int, default=64)
     parser.add_argument("--angular-tolerance", type=float, default=0.1)
     parser.add_argument("--case")
@@ -152,6 +190,10 @@ def main():
         parser.error("positive rounds, repetitions and quality budget required")
     if not math.isfinite(args.tolerance) or args.tolerance <= 0:
         parser.error("finite positive tolerance required")
+    if args.native_tolerance is not None and (
+            not math.isfinite(args.native_tolerance) or args.native_tolerance <= 0):
+        parser.error("finite positive native tolerance required")
+    tolerance = {"exedra": args.native_tolerance or args.tolerance, "build123d": args.tolerance}
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     rust = str(args.rust_bin.resolve())
@@ -171,6 +213,7 @@ def main():
         "rust_binary_sha256": hashlib.sha256(Path(rust).read_bytes()).hexdigest(),
         "python_worker_sha256": hashlib.sha256((ROOT / "build123d_worker.py").read_bytes()).hexdigest(),
         "tolerance_mm": args.tolerance,
+        "native_tolerance_mm": tolerance["exedra"],
         "occt_angular_tolerance_radians": args.angular_tolerance,
         "creation_timers_exclude_output_destruction": True,
         "workers_execute_sequentially": True,
@@ -189,7 +232,7 @@ def main():
             startup[backend].append({**metadata, **metric})
             case_args = ["--case", args.case] if args.case else []
             data, metric = capture(commands[backend] + [
-                "--repetitions", str(args.repetitions), "--tolerance", str(args.tolerance),
+                "--repetitions", str(args.repetitions), "--tolerance", str(tolerance[backend]),
             ] + case_args, output / f"{backend}-round-{round_index}.json")
             captures[backend].append(data)
             resources[backend].append(metric)
@@ -212,10 +255,10 @@ def main():
             for measured, wanted in zip(first["measures"], expected):
                 if abs(measured - wanted) > max(1e-7, abs(wanted) * 1e-10):
                     raise ValueError(f"{backend} {spec['id']}: exact measures disagree")
-            evidence = mesh_evidence(first, expected, args.tolerance)
-            evidence["all_rounds_geometry"] = [mesh_evidence(c, expected, args.tolerance) for c in matching]
+            evidence = mesh_evidence(first, expected, tolerance[backend])
+            evidence["all_rounds_geometry"] = [mesh_evidence(c, expected, tolerance[backend]) for c in matching]
             evidence.update(quality_survey(first, boundary, args.quality_triangles))
-            evidence["sampled_tolerance_met"] = evidence["sampled_max_boundary_distance_mm"] <= args.tolerance + 1e-5
+            evidence["sampled_tolerance_met"] = evidence["sampled_max_boundary_distance_mm"] <= tolerance[backend] + 1e-5
             if not evidence["sampled_tolerance_met"]:
                 raise ValueError(f"{backend} {spec['id']}: sampled distance exceeds requested tolerance")
             timings = {}

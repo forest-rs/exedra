@@ -15,7 +15,7 @@ use exedra_profile::{Profile, ProfilePolicy, SegTag};
 use serde_json::{Value, json};
 use std::error::Error;
 use std::hint::black_box;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-6);
@@ -276,12 +276,20 @@ fn main() -> Result<()> {
     let mut repetitions = 9;
     let mut tolerance: f64 = 0.02;
     let mut only = None;
+    let mut mesh_profile = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--repetitions" => repetitions = args.next().ok_or("missing repetitions")?.parse()?,
             "--tolerance" => tolerance = args.next().ok_or("missing tolerance")?.parse()?,
             "--case" => only = Some(args.next().ok_or("missing case")?),
+            "--profile-mesh-seconds" => {
+                let seconds: f64 = args.next().ok_or("missing profile duration")?.parse()?;
+                if !(seconds.is_finite() && seconds > 0.0 && seconds <= 3600.0) {
+                    return Err("profile duration must be finite and in (0, 3600]".into());
+                }
+                mesh_profile = Some(Duration::from_secs_f64(seconds));
+            }
             "--info" => {
                 println!(
                     "{}",
@@ -297,6 +305,30 @@ fn main() -> Result<()> {
         return Err("positive repetitions and finite tolerance required".into());
     }
     let specs: Vec<Value> = serde_json::from_str(include_str!("../../build123d/fixtures.json"))?;
+    if let Some(duration) = mesh_profile {
+        let id = only.as_ref().ok_or("mesh profiling requires --case")?;
+        let spec = specs
+            .iter()
+            .find(|spec| spec["id"].as_str() == Some(id))
+            .ok_or("no matching case")?;
+        let prepared = prepare(spec)?;
+        let model = Model::new(&prepared)?;
+        black_box(model.realize(tolerance)?);
+        eprintln!("mesh profile pid={} case={id}", std::process::id());
+        let start = Instant::now();
+        let mut realizations = 0_u64;
+        while start.elapsed() < duration {
+            black_box(model.realize(tolerance)?);
+            realizations += 1;
+        }
+        println!(
+            "{}",
+            json!({"backend":"exedra", "case":id,
+            "profile":"mesh", "realizations":realizations,
+            "elapsed_seconds":start.elapsed().as_secs_f64()})
+        );
+        return Ok(());
+    }
     let mut cases = Vec::new();
     for spec in specs {
         if only
