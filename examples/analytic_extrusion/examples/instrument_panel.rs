@@ -105,10 +105,11 @@ fn shared(profile: &Profile2) -> exedra::profile::Profile {
 }
 
 fn solid(profile: &Profile2, z: f64, length: f64) -> Result<Extrusion, Box<dyn std::error::Error>> {
-    Ok(Extrusion::new(
-        shared(profile),
+    Ok(Extrusion::from_profile(
+        profile,
         Placement3::translate(0.0, 0.0, z),
         length,
+        &POLICY,
     )?)
 }
 
@@ -165,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lens = window.offset(-0.3, CornerPolicy::Round)?;
     let lens_solid = panel
         .workplane(panel.floor_tagged(WINDOW)?)?
-        .extrude(shared(&lens), 1.5)?;
+        .extrude_profile(&lens, 1.5, &POLICY)?;
     let knob_stem = builders::circle(6.0)?.translated(knob_at)?;
     let knob = builders::circle(14.0)?.translated(knob_at)?;
 

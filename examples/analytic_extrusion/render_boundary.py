@@ -28,6 +28,9 @@ def prepare_scene(path):
     cam = bpy.context.object
     cam.rotation_euler = (target - cam.location).to_track_quat('-Z', 'Y').to_euler()
     cam.data.type = 'ORTHO'
+    # Model units are meters after GLB import; Blender's 0.1 m default clips
+    # the foreground of small studies and exposes the black world background.
+    cam.data.clip_start = max((upper - lower).length * 1e-5, 1e-6)
     bpy.context.view_layer.update()
     projected = [cam.matrix_world.inverted() @ p for p in bounds]
     left, right = min(p.x for p in projected), max(p.x for p in projected)
