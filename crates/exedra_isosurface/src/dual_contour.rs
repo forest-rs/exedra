@@ -24,7 +24,7 @@ use crate::{
     SemiAnalyticFeature, SemiAnalyticField, SemiAnalyticProjectionOutcome,
     locate_edge_intersection,
 };
-use exedra_math::{distance_squared, dot, norm, normalize, sub};
+use exedra_math::{cross, distance_squared, dot, norm, normalize, sub};
 
 const MIN_EMITTER_DEPTH: u8 = 2;
 const LEGACY_SIMPLE_CELL_MAX_CROSSINGS: usize = 3;
@@ -518,7 +518,7 @@ fn dual_contour_run<F: ScalarField>(
         max_vertex_merge_displacement,
     });
     run.stage.set(ExtractionStage::Normals);
-    populate_corner_normals(field, &mut mesh, run)?;
+    report.inverted_faces = populate_corner_normals(field, &mut mesh, run)?;
     run.check()?;
     run.stage.set(ExtractionStage::RegionSeams);
     populate_region_boundary_seams(&mut mesh);
@@ -1078,6 +1078,24 @@ fn select_quad_diagonal(points: [[f32; 3]; 4]) -> Option<QuadDiagonal> {
         (false, true) => return Some(QuadDiagonal::OneThree),
         (false, false) => return None,
         (true, true) => {}
+    }
+
+    // A quad's loop is oriented outward, so its area vector points the way
+    // the surface faces. A diagonal that folds one triangle against it would
+    // emit an inverted face; prefer the one that keeps both triangles facing
+    // with the quad, and only then the shorter.
+    let facing = newell_normal(&points);
+    let agrees = |a: usize, b: usize, c: usize| {
+        let [a, b, c] = [points[a], points[b], points[c]].map(|p| p.map(f64::from));
+        let normal = cross(sub(b, a), sub(c, a));
+        dot(normal, facing) > 0.0
+    };
+    let zero_two_faces = agrees(0, 1, 2) && agrees(0, 2, 3);
+    let one_three_faces = agrees(0, 1, 3) && agrees(1, 2, 3);
+    match (zero_two_faces, one_three_faces) {
+        (true, false) => return Some(QuadDiagonal::ZeroTwo),
+        (false, true) => return Some(QuadDiagonal::OneThree),
+        _ => {}
     }
 
     let zero_two = distance_squared(points[0], points[2]);
@@ -2156,16 +2174,23 @@ fn interval_crosses_zero(interval: [f32; 2]) -> bool {
     interval[0] <= 0.0 && interval[1] >= 0.0
 }
 
+/// Sets each corner's normal from the field gradient just inside its face,
+/// and returns how many faces turn against the gradients at their corners.
 fn populate_corner_normals<F: ScalarField>(
     field: &F,
     mesh: &mut Mesh,
     run: &RunContext,
-) -> Result<(), DualContourError> {
+) -> Result<usize, DualContourError> {
     let mut corners = Vec::new();
     let mut sample_points = Vec::new();
+    let mut face_normals = Vec::new();
     for face in mesh.faces() {
         let loop_corners = mesh.face_loop(face).collect::<Vec<_>>();
         let face_center = face_centroid(mesh, &loop_corners);
+        let positions = loop_corners
+            .iter()
+            .filter_map(|&corner| mesh.vertex_position(mesh.to_vertex(corner)?).copied())
+            .collect::<Vec<_>>();
         for corner in loop_corners {
             let Some(vertex) = mesh.to_vertex(corner) else {
                 continue;
@@ -2173,9 +2198,10 @@ fn populate_corner_normals<F: ScalarField>(
             let Some(position) = mesh.vertex_position(vertex).copied() else {
                 continue;
             };
-            corners.push(corner);
+            corners.push((corner, face_normals.len()));
             sample_points.push(inset_corner_sample(position, face_center));
         }
+        face_normals.push((newell_normal(&positions), [0.0_f64; 3]));
     }
 
     let mut session = mesh.edit();
@@ -2183,15 +2209,34 @@ fn populate_corner_normals<F: ScalarField>(
         let mut gradients = [[0.0_f32; 4]; 256];
         field.eval_gradients(points, &mut gradients[..points.len()]);
         run.check()?;
-        for (&corner, gradient) in corners.iter().zip(gradients) {
+        for (&(corner, face), gradient) in corners.iter().zip(gradients) {
             if let Some(normal) = normalize([gradient[1], gradient[2], gradient[3]]) {
                 op::set_corner_normal_override(&mut session, corner, Some(normal))
                     .expect("collected corner must stay live during normal population");
+                let sum = &mut face_normals[face].1;
+                for (sum, value) in sum.iter_mut().zip(normal) {
+                    *sum += f64::from(value);
+                }
             }
         }
     }
     let _: () = session.finish();
-    Ok(())
+    Ok(face_normals
+        .iter()
+        .filter(|(face, gradients)| dot(*face, *gradients) < 0.0)
+        .count())
+}
+
+/// The Newell area vector of a polygon loop, in `f64`.
+fn newell_normal(points: &[[f32; 3]]) -> [f64; 3] {
+    let mut area = [0.0; 3];
+    for (index, a) in points.iter().enumerate() {
+        let [a, b] = [*a, points[(index + 1) % points.len()]].map(|p| p.map(f64::from));
+        area[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        area[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        area[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    area
 }
 
 fn populate_region_boundary_seams(mesh: &mut Mesh) {
@@ -2394,7 +2439,8 @@ mod tests {
         triangle_is_nondegenerate,
     };
     use crate::analytic::{
-        BoxField, CylinderField, Difference, HalfSpaceField, SphereField, TaggedField, Union,
+        BoxField, CylinderField, Difference, HalfSpaceField, SmoothUnion, SphereField, TaggedField,
+        Union,
     };
     use crate::cell_topology::classify_cell;
     use crate::qef::{QefParams, QefResult};
@@ -4739,6 +4785,46 @@ mod tests {
             Some(QuadDiagonal::ZeroTwo),
             "reversing winding must preserve the physical diagonal"
         );
+    }
+
+    #[test]
+    fn select_quad_diagonal_refuses_the_split_that_folds() {
+        // Vertex 2 is reflex, so the short diagonal 1-3 runs outside the
+        // quad and would emit triangle (1, 2, 3) facing backwards.
+        let dart = [
+            [-10.0, 0.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+
+        assert_eq!(select_quad_diagonal(dart), Some(QuadDiagonal::ZeroTwo));
+        assert_eq!(
+            select_quad_diagonal([dart[1], dart[2], dart[3], dart[0]]),
+            Some(QuadDiagonal::OneThree),
+            "a cyclic shift must preserve the physical diagonal"
+        );
+    }
+
+    #[test]
+    fn smooth_blend_extracts_without_folds() {
+        // With too small an eigenvalue cutoff, the QEF reads the gentle
+        // curvature of a blend as a crease and slides vertices past their
+        // neighbors.
+        let field = SmoothUnion::new(
+            SphereField::new([0.0, 0.0, -3.1], 1.3).unwrap(),
+            SphereField::new([0.9, 0.4, -3.3], 0.9).unwrap(),
+            0.5,
+        );
+        let bounds = Aabb::new([-1.5925, -1.5925, -4.6925], [2.0925, 1.5925, -1.5075]).unwrap();
+        let params = DualContourParams {
+            edge_search: EdgeSearchParams::default(),
+            ..params(bounds, 6)
+        };
+        let result = dual_contour(&field, &params).unwrap();
+
+        assert_eq!(result.report.inverted_faces, 0);
+        assert!(result.stats.faces > 1_000);
     }
 
     #[test]

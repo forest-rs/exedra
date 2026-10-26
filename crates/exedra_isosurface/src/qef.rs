@@ -110,7 +110,14 @@ pub enum SharpnessClass {
 /// Parameters controlling eigenvalue rank selection and the Jacobi solve.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct QefParams {
-    /// Finite, nonnegative cutoff applied against the largest eigenvalue.
+    /// Finite, nonnegative cutoff applied against the largest eigenvalue:
+    /// smaller eigenvalues are treated as zero, lowering the rank.
+    ///
+    /// For two planes meeting at angle `theta`, the eigenvalue ratio is about
+    /// `tan(theta / 2)^2`, so the cutoff sets the sharpest crease treated as
+    /// smooth. The default `0.03` keeps creases above about 20 degrees as
+    /// features; much smaller values read the curvature of smooth blends as
+    /// features and pull vertices into folds.
     pub relative_eigenvalue_cutoff: f32,
     /// Positive maximum Jacobi sweeps used for the symmetric eigensolve.
     pub jacobi_sweeps: u8,
@@ -119,7 +126,7 @@ pub struct QefParams {
 impl Default for QefParams {
     fn default() -> Self {
         Self {
-            relative_eigenvalue_cutoff: 1.0e-3,
+            relative_eigenvalue_cutoff: 3.0e-2,
             jacobi_sweeps: 12,
         }
     }
@@ -777,8 +784,15 @@ mod tests {
             for normal in normals {
                 assert!(solver.add(expected, normal));
             }
+            // Pin a small cutoff: this checks full-rank solve accuracy, and
+            // a determinant of 0.2 can leave the smallest eigenvalue below
+            // the mesher's crease-angle default.
+            let params = QefParams {
+                relative_eigenvalue_cutoff: 1.0e-3,
+                ..QefParams::default()
+            };
             let result = solver
-                .solve(solve_bounds, &QefParams::default())
+                .solve(solve_bounds, &params)
                 .expect("three usable planes must solve");
 
             assert_eq!(result.rank, 3);

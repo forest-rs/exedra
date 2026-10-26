@@ -284,6 +284,11 @@ pub struct ExtractionReport {
     pub witnesses: Vec<ExtractionCellWitness>,
     /// Witness records not retained because the detail cap was reached.
     pub unreported_witnesses: usize,
+    /// Emitted faces whose winding opposes the field gradients sampled at
+    /// their corners: folds where vertices slid past their neighbors. These
+    /// samples are the ones that set corner normals, so counting costs no
+    /// extra field evaluations.
+    pub inverted_faces: usize,
 }
 
 /// Machine-readable extraction failure category.
