@@ -631,3 +631,12 @@ placed profiles. `LoopCursor::close_mirrored(MirrorLine::Vertical(x))` (or
 endpoints must lie exactly on the line; curves, handles and tags survive.
 `Profile2` implements the shared `IntoProfile` input seam, so native geometry
 can accept it directly while keeping validation and unsupported-curve errors.
+
+`path::PathCursor3` authors an ordinary `Path3::Curves` by endpoint and tangent.
+For example, start at `[0, 0, 0]` heading +Y, call
+`tangent_arc(40.0, PI, [0, 0, 1])`, continue with another radius/sweep or
+`line_by`, then `finish(section_x)`. Centers and intermediate endpoints are
+carried by the cursor. It shares analytic arc evaluation with sampling,
+including exact full-turn closure. Smooth joins remain the default; sharp
+corners require an explicit miter policy. This improves authoring without
+changing the sweep's geometric capabilities or hiding its foldover refusals.

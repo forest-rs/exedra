@@ -12,6 +12,9 @@
 use alloc::vec::Vec;
 use exedra_math::{add, cross, dot, scale, sub};
 
+mod cursor;
+pub use cursor::PathCursor3;
+
 /// Authored endpoint connectivity of a controlled sweep path.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum PathClosure {
@@ -681,6 +684,82 @@ pub fn discretize_path(
     Ok(sampler.output)
 }
 
+struct ArcGeometry {
+    from: [f64; 3],
+    center: [f64; 3],
+    radial: [f64; 3],
+    side: [f64; 3],
+    radius: f64,
+    sweep: f64,
+    first_t: [f64; 3],
+    segment: usize,
+}
+
+impl ArcGeometry {
+    fn new(
+        from: [f64; 3],
+        axis_origin: [f64; 3],
+        axis: [f64; 3],
+        sweep: f64,
+        segment: usize,
+    ) -> Result<Self, PathDiscretizeError> {
+        if axis_origin.iter().any(|v| !v.is_finite())
+            || !sweep.is_finite()
+            || sweep == 0.0
+            || sweep.abs() > core::f64::consts::TAU
+        {
+            return Err(PathDiscretizeError::InvalidSegment { segment });
+        }
+        let axis = unit(axis).ok_or(PathDiscretizeError::InvalidSegment { segment })?;
+        let delta = sub(from, axis_origin);
+        let radial = sub(delta, scale(axis, dot(delta, axis)));
+        let radius = norm(radial);
+        if !radius.is_finite() || radius == 0.0 {
+            return Err(PathDiscretizeError::InvalidSegment { segment });
+        }
+        let center = sub(from, radial);
+        let side = cross(axis, radial);
+        let sign = sweep.signum();
+        let first_t = tangent(scale(side, sign), segment, 0.0)?;
+        Ok(Self {
+            from,
+            center,
+            radial,
+            side,
+            radius,
+            sweep,
+            first_t,
+            segment,
+        })
+    }
+
+    fn station(&self, t: f64) -> Result<PathStation, PathDiscretizeError> {
+        if t == 0.0 || (t == 1.0 && self.sweep.abs() == core::f64::consts::TAU) {
+            return Ok(PathStation {
+                point: self.from,
+                tangent: self.first_t,
+                incoming_tangent: self.first_t,
+            });
+        }
+        let angle = self.sweep * t;
+        let (s, c) = (libm::sin(angle), libm::cos(angle));
+        let point = add(self.center, add(scale(self.radial, c), scale(self.side, s)));
+        let direction = tangent(
+            scale(
+                add(scale(self.radial, -s), scale(self.side, c)),
+                self.sweep.signum(),
+            ),
+            self.segment,
+            t,
+        )?;
+        Ok(PathStation {
+            point,
+            tangent: direction,
+            incoming_tangent: direction,
+        })
+    }
+}
+
 fn sample_arc(
     sampler: &mut Sampler,
     from: [f64; 3],
@@ -691,24 +770,9 @@ fn sample_arc(
     policy: &PathDiscretizePolicy,
     remaining: u32,
 ) -> Result<(), PathDiscretizeError> {
-    if axis_origin.iter().any(|v| !v.is_finite())
-        || !sweep.is_finite()
-        || sweep == 0.0
-        || sweep.abs() > core::f64::consts::TAU
-    {
-        return Err(PathDiscretizeError::InvalidSegment { segment });
-    }
-    let axis = unit(axis).ok_or(PathDiscretizeError::InvalidSegment { segment })?;
-    let delta = sub(from, axis_origin);
-    let radial = sub(delta, scale(axis, dot(delta, axis)));
-    let radius = norm(radial);
-    if !radius.is_finite() || radius == 0.0 {
-        return Err(PathDiscretizeError::InvalidSegment { segment });
-    }
-    let center = sub(from, radial);
-    let side = cross(axis, radial);
-    let sign = sweep.signum();
-    let first_t = tangent(scale(side, sign), segment, 0.0)?;
+    let arc = ArcGeometry::new(from, axis_origin, axis, sweep, segment)?;
+    let radius = arc.radius;
+    let center = arc.center;
     let extrema = [
         from,
         axis_origin,
@@ -744,38 +808,11 @@ fn sample_arc(
         }
         count += 1;
     };
-    sampler.begin(
-        PathStation {
-            point: from,
-            tangent: first_t,
-            incoming_tangent: first_t,
-        },
-        segment,
-    )?;
+    sampler.begin(arc.station(0.0)?, segment)?;
     for i in 1..=count {
         let t = f64::from(i) / f64::from(count);
-        let angle = sweep * t;
-        let (s, c) = (libm::sin(angle), libm::cos(angle));
-        let point = if i == count && sweep.abs() == core::f64::consts::TAU {
-            from
-        } else {
-            add(center, add(scale(radial, c), scale(side, s)))
-        };
-        let direction = if i == count && sweep.abs() == core::f64::consts::TAU {
-            first_t
-        } else {
-            tangent(
-                scale(add(scale(radial, -s), scale(side, c)), sign),
-                segment,
-                t,
-            )?
-        };
         sampler.emit(
-            PathStation {
-                point,
-                tangent: direction,
-                incoming_tangent: direction,
-            },
+            arc.station(t)?,
             PathSpan {
                 segment: crate::len_u32(segment),
                 parameter: [f64::from(i - 1) / f64::from(count), t],
