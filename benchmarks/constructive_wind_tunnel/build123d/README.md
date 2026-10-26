@@ -45,6 +45,28 @@ small input. The holed plate improves about 6.4× while its worst cap angle
 improves from 0.003° to 0.558° at the same 5,500 total triangles. Panel realization
 improves about 2.5×. Revolution timings are effectively unchanged.
 
+### Validate original geometry before accepting a cover
+
+A follow-up invalid-input probe found an existing validation gap on main: a
+crossed eight-vertex outline with a central hole could yield an accepted cover.
+Combinatorial edge incidence alone did not prove that the original boundaries
+were geometrically valid. Original contacts are now checked before construction
+using a flat bounding hierarchy and exact predicates. The error names the
+original edge pair. Effective adjacency skips zero-length runs while rejecting
+backtracking overlaps.
+
+The fix at `85543dd` adds a concrete EarClip/Delaunay/refinement regression,
+512 comparisons with the full original-edge oracle, and duplicate/overlap tests.
+The eight valid fixture meshes are byte-identical to their pre-validation
+outputs. A nine-sample native rerun measures the 64-hole realization at 14.185 ms
+and the panel at 1.900 ms. At the tighter 0.01 mm target, four alternating rounds of five samples give
+21.713 ms realization and 30.468 ms end-to-end work, versus
+20.623 ms and 29.271 ms before validation. The initial unpaired
+capture was an outlier; both captures and the controlled paired samples are
+retained. These checks add work; the
+preceding tables remain frozen measurements of `be1da85` rather than being
+silently rewritten. Raw native samples are in `post_validation_fix`.
+
 ### Match accuracy as well as nominal settings
 
 OCCT's relaxed-angle mesh has lower surface error than the native 0.02 mm mesh.
