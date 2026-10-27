@@ -64,6 +64,7 @@ impl<E: core::error::Error + 'static> core::error::Error for RevolutionUvError<E
 #[derive(Copy, Clone)]
 struct RestPoint {
     vertex: SegmentRef,
+    fraction: f64,
     theta: f64,
 }
 
@@ -102,7 +103,11 @@ impl Revolution {
             distances.push(0.0);
             let mut total = 0.0;
             for (i, (a, segment)) in ring.iter_with_starts().enumerate() {
-                let next = total + libm::hypot(segment.to[0] - a[0], segment.to[1] - a[1]);
+                let next = total
+                    + ring.arc(i).map_or_else(
+                        || libm::hypot(segment.to[0] - a[0], segment.to[1] - a[1]),
+                        |a| a.length(),
+                    );
                 if !next.is_finite() || next <= total {
                     return Err(RevolutionUvError::Metric {
                         segment: SegmentRef {
@@ -118,10 +123,15 @@ impl Revolution {
         let mut vertices = alloc::vec![None;self.body.vertices().len()];
         for edge in self.body.edges() {
             if let EdgeRole::Orbit { vertex } = edge.role {
-                vertices[edge.start.index()] = Some(RestPoint { vertex, theta: 0.0 });
+                vertices[edge.start.index()] = Some(RestPoint {
+                    vertex,
+                    fraction: 0.0,
+                    theta: 0.0,
+                });
                 if edge.end != edge.start {
                     vertices[edge.end.index()] = Some(RestPoint {
                         vertex,
+                        fraction: 0.0,
                         theta: self.sweep,
                     });
                 }
@@ -130,22 +140,51 @@ impl Revolution {
         let rest: Vec<_> = result
             .mesh_vertices
             .iter()
-            .map(|(_, source)| match *source {
-                VertexSource::Vertex(id) => {
-                    vertices[id.index()].expect("revolution vertices belong to orbits")
-                }
-                VertexSource::Edge { edge, parameter } => {
-                    let edge = &self.body.edges()[edge.index()];
-                    let EdgeRole::Orbit { vertex } = edge.role else {
-                        unreachable!("straight meridians have no interior samples")
-                    };
-                    RestPoint {
-                        vertex,
-                        theta: edge.range.at(parameter).expect("bounded native sample"),
+            .map(|(_, source)| {
+                Ok(match *source {
+                    VertexSource::Vertex(id) => {
+                        vertices[id.index()].expect("revolution vertices belong to orbits")
                     }
-                }
+                    VertexSource::Edge { edge, parameter } => {
+                        let edge = &self.body.edges()[edge.index()];
+                        match edge.role {
+                            EdgeRole::Orbit { vertex } => RestPoint {
+                                vertex,
+                                fraction: 0.0,
+                                theta: edge.range.at(parameter).expect("bounded native sample"),
+                            },
+                            EdgeRole::Meridian { segment, end } => RestPoint {
+                                vertex: segment,
+                                fraction: parameter,
+                                theta: if end == End::Start { 0.0 } else { self.sweep },
+                            },
+                        }
+                    }
+                    VertexSource::Face { face, uv } => {
+                        let FaceRole::Wall { segment, .. } = self.body.faces()[face.index()].role
+                        else {
+                            return Err(RevolutionUvError::Coordinates { face });
+                        };
+                        let ring = match segment.loop_ref {
+                            LoopRef::Outer => self.profile.outer(),
+                            LoopRef::Hole(i) => &self.profile.holes()[i],
+                        };
+                        let arc = ring
+                            .arc(segment.segment)
+                            .ok_or(RevolutionUvError::Coordinates { face })?;
+                        let fraction = (uv[1] - arc.start_angle) / arc.sweep;
+                        if !(0.0..=1.0).contains(&fraction) {
+                            return Err(RevolutionUvError::Coordinates { face });
+                        }
+                        RestPoint {
+                            vertex: segment,
+                            fraction,
+                            theta: uv[0],
+                        }
+                    }
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let mut mapped = Vec::with_capacity(result.mesh.half_edge_count());
         for &(mesh_face, face) in &result.mesh_faces {
             let role = self.body.faces()[face.index()].role;
@@ -171,25 +210,36 @@ impl Revolution {
                     [(point.vertex.segment + ring.segments().len() - 1) % ring.segments().len()]
                 .to;
                 coordinates[i] = match role {
-                    FaceRole::Cap { .. } => from,
+                    FaceRole::Cap { .. } => ring.arc(point.vertex.segment).map_or_else(
+                        || {
+                            core::array::from_fn(|k| {
+                                from[k]
+                                    + point.fraction
+                                        * (ring.segments()[point.vertex.segment].to[k] - from[k])
+                            })
+                        },
+                        |a| a.point_at(point.fraction),
+                    ),
                     FaceRole::Wall { segment, .. } => {
                         let ring_index = match segment.loop_ref {
                             LoopRef::Outer => 0,
                             LoopRef::Hole(i) => i + 1,
                         };
-                        let local = if point.vertex == segment {
-                            segment.segment
+                        let base = offsets[ring_index] + segment.segment;
+                        let distance = if point.vertex == segment {
+                            distances[base]
+                                + point.fraction * (distances[base + 1] - distances[base])
+                        } else if point.vertex.loop_ref == segment.loop_ref
+                            && point.vertex.segment == (segment.segment + 1) % ring.segments().len()
+                            && point.fraction == 0.0
+                        {
+                            // The final segment ends at loop length while its
+                            // endpoint shares the authored start vertex.
+                            distances[base + 1]
                         } else {
-                            (segment.segment + 1) % ring.segments().len()
+                            return Err(RevolutionUvError::Coordinates { face });
                         };
-                        // The final segment ends at loop length, although its
-                        // endpoint reuses the authored start vertex.
-                        let index = if local == segment.segment {
-                            segment.segment
-                        } else {
-                            segment.segment + 1
-                        };
-                        [point.theta, distances[offsets[ring_index] + index]]
+                        [point.theta, distance]
                     }
                 };
             }
@@ -342,5 +392,57 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, RevolutionUvError::NonFiniteUv { .. }));
+    }
+
+    #[test]
+    fn curved_profile_charts_cover_meridians_and_face_interiors() {
+        for sweep in [core::f64::consts::TAU, 1.8] {
+            let ring = Loop::new(vec![
+                Segment::arc([8.0, 0.0], 1.0),
+                Segment::arc([12.0, 0.0], 1.0),
+            ])
+            .unwrap();
+            let solid = Revolution::new(
+                Profile::new(ring, vec![], &ProfilePolicy::new(1e-9)).unwrap(),
+                Placement3::IDENTITY,
+                sweep,
+            )
+            .unwrap();
+            let policy = RealizationPolicy {
+                tolerance: 0.05,
+                ..RealizationPolicy::default()
+            };
+            let output = solid
+                .realize_with_uvs(
+                    &policy,
+                    |_, _| 0,
+                    |_, p| -> Result<_, core::convert::Infallible> {
+                        Ok(p.map(|v| {
+                            let n = exedra_math::narrow([v[0], v[1], 0.0]);
+                            [n[0], n[1]]
+                        }))
+                    },
+                )
+                .unwrap();
+            assert!(output.report.within_tolerance());
+            assert!(output.mesh.boundary_loops().unwrap().is_empty());
+            let uvs = output
+                .mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_UV)
+                .unwrap();
+            assert!(
+                output
+                    .mesh
+                    .half_edges()
+                    .all(|c| uvs.get(c.as_id()).is_some())
+            );
+            let max = output
+                .mesh
+                .half_edges()
+                .map(|c| uvs.get(c.as_id()).unwrap()[1])
+                .fold(0.0_f32, f32::max);
+            assert!((f64::from(max) - 4.0 * core::f64::consts::PI).abs() < 1e-5);
+        }
     }
 }

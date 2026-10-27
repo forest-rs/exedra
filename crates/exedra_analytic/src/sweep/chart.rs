@@ -152,34 +152,69 @@ impl Sweep {
         let rest: Vec<_> = result
             .mesh_vertices
             .iter()
-            .map(|(_, source)| match *source {
-                VertexSource::Vertex(id) => RestPoint {
-                    profile: id.index() % count,
-                    profile_fraction: 0.0,
-                    station: id.index() / count,
-                    path_fraction: 0.0,
-                },
-                VertexSource::Edge { edge, parameter } => {
-                    match self.body.edges()[edge.index()].role {
-                        EdgeRole::Section { station, segment } => RestPoint {
-                            profile: index(segment),
-                            profile_fraction: parameter,
-                            station,
-                            path_fraction: 0.0,
-                        },
-                        EdgeRole::Rail {
+            .map(|(_, source)| {
+                Ok(match *source {
+                    VertexSource::Face { face, uv } => {
+                        let record = &self.body.faces()[face.index()];
+                        let FaceRole::Wall {
                             path_segment,
-                            vertex,
-                        } => RestPoint {
-                            profile: index(vertex),
-                            profile_fraction: 0.0,
+                            segment,
+                            ..
+                        } = record.role
+                        else {
+                            return Err(SweepUvError::Coordinates { face });
+                        };
+                        let ring = match segment.loop_ref {
+                            LoopRef::Outer => self.profile.outer(),
+                            LoopRef::Hole(i) => &self.profile.holes()[i],
+                        };
+                        let arc = ring
+                            .arc(segment.segment)
+                            .ok_or(SweepUvError::Coordinates { face })?;
+                        let start = record.domain.v.bounds()[usize::from(arc.sweep > 0.0)];
+                        let profile_fraction = (uv[1] - start) / (-arc.sweep);
+                        let path_fraction =
+                            (uv[0] - record.domain.u.bounds()[0]) / record.domain.u.span();
+                        if !(0.0..=1.0).contains(&profile_fraction)
+                            || !(0.0..=1.0).contains(&path_fraction)
+                        {
+                            return Err(SweepUvError::Coordinates { face });
+                        }
+                        RestPoint {
+                            profile: index(segment),
+                            profile_fraction,
                             station: path_segment,
-                            path_fraction: parameter,
-                        },
+                            path_fraction,
+                        }
                     }
-                }
+                    VertexSource::Vertex(id) => RestPoint {
+                        profile: id.index() % count,
+                        profile_fraction: 0.0,
+                        station: id.index() / count,
+                        path_fraction: 0.0,
+                    },
+                    VertexSource::Edge { edge, parameter } => {
+                        match self.body.edges()[edge.index()].role {
+                            EdgeRole::Section { station, segment } => RestPoint {
+                                profile: index(segment),
+                                profile_fraction: parameter,
+                                station,
+                                path_fraction: 0.0,
+                            },
+                            EdgeRole::Rail {
+                                path_segment,
+                                vertex,
+                            } => RestPoint {
+                                profile: index(vertex),
+                                profile_fraction: 0.0,
+                                station: path_segment,
+                                path_fraction: parameter,
+                            },
+                        }
+                    }
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let mut mapped = Vec::with_capacity(result.mesh.half_edge_count());
         for &(mesh_face, face) in &result.mesh_faces {
             let role = self.body.faces()[face.index()].role;

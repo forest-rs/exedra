@@ -3,7 +3,7 @@
 
 //! Retained constant-section sweeps with shared native section boundaries.
 //!
-//! Polygonal profiles follow smooth open line/circular-arc paths. Section
+//! Line/arc profiles follow smooth open line/circular-arc paths. Section
 //! orientation is transported analytically, without sampling the path first.
 //! Local bend-axis contact and authored sharp corners are refused. Boundary
 //! validation does not certify absence of distant self-intersections.
@@ -94,23 +94,29 @@ pub enum SweepError {
     SectionDirection,
     /// The profile-space section datum is non-finite.
     SectionOrigin,
-    /// This native construction currently requires straight profile segments.
-    CurvedProfile {
-        /// Unsupported source segment.
+    /// A curved wall would require a nonregular torus.
+    NonRegularArc {
+        /// Authored path span.
+        path_segment: usize,
+        /// Unsupported profile arc.
         segment: SegmentRef,
+        /// Generating circle's distance from the bend axis.
+        major_radius: f64,
+        /// Generating circle radius.
+        minor_radius: f64,
     },
     /// An authored tangent discontinuity needs a different corner construction.
     Corner {
         /// Span beginning at the corner.
         segment: usize,
     },
-    /// A swept vertex touches or passes a bend axis.
+    /// A swept profile piece touches or passes a bend axis.
     AxisContact {
         /// Authored path span.
         path_segment: usize,
-        /// Profile segment starting at the offending vertex.
-        vertex: SegmentRef,
-        /// Signed radius in the bend's meridian plane.
+        /// Offending source segment, including its interior arc extrema.
+        segment: SegmentRef,
+        /// Minimum signed radius in the bend's meridian plane.
         radius: f64,
     },
     /// Construction exceeds finite arithmetic or local table capacity.
@@ -529,5 +535,65 @@ mod tests {
             Sweep::new(profile(), &invalid, Placement3::IDENTITY),
             Err(SweepError::Join)
         ));
+    }
+
+    #[test]
+    fn rounded_sections_share_toroidal_bends_cylindrical_runs_and_hole_boundaries() {
+        let disk = |r: f64| {
+            Loop::new(vec![
+                Segment::arc([-r, 0.0], 1.0),
+                Segment::arc([r, 0.0], 1.0),
+            ])
+            .unwrap()
+        };
+        let path = rail();
+        for holes in [vec![], vec![disk(3.0).reversed()]] {
+            let profile = Profile::new(disk(10.0), holes, &ProfilePolicy::new(1e-9)).unwrap();
+            let area = profile.area();
+            let sweep = Sweep::new(profile, &view(&path), Placement3::IDENTITY).unwrap();
+            assert!((sweep.volume() - area * sweep.path_length()).abs() < 1e-8);
+            assert!(
+                sweep
+                    .body()
+                    .faces()
+                    .iter()
+                    .any(|f| matches!(f.surface, crate::geometry::Surface::Torus(_)))
+            );
+            assert_realizes(&sweep);
+            let mapped = sweep
+                .realize_with_uvs(
+                    &RealizationPolicy {
+                        tolerance: 0.05,
+                        ..RealizationPolicy::default()
+                    },
+                    |_, _| 0,
+                    |_, p| -> Result<_, core::convert::Infallible> {
+                        Ok(p.map(|p| {
+                            let n = exedra_math::narrow([p[0], p[1], 0.0]);
+                            [n[0], n[1]]
+                        }))
+                    },
+                )
+                .unwrap();
+            assert!(mapped.report.within_tolerance());
+        }
+        let p = Profile::new(
+            Loop::new(vec![
+                Segment::arc([0.0, -10.0], 1.0),
+                Segment::arc([0.0, 10.0], 1.0),
+            ])
+            .unwrap(),
+            vec![],
+            &ProfilePolicy::new(1e-9),
+        )
+        .unwrap();
+        let tight = [PathSegment3::Arc {
+            axis_origin: [-5.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            sweep: 1.0,
+        }];
+        assert!(
+            matches!(Sweep::new(p,&view(&tight),Placement3::IDENTITY),Err(SweepError::AxisContact {radius,..}) if radius < 0.0)
+        );
     }
 }

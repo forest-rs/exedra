@@ -1,12 +1,12 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Retained revolution of a line profile about local +Y.
+//! Retained revolution of a line/arc profile about local +Y.
 //!
 //! Profile X is positive radius and Y is height. Positive right-handed angles
 //! carry +X toward -Z, matching constructive revolution. Full turns share one
 //! meridian seam; partial turns have planar start/end caps. This first slice
-//! explicitly refuses curved profile segments and contact with the axis.
+//! accepts regular toroidal arc walls and refuses contact with the axis.
 
 pub use crate::End;
 use crate::body::{
@@ -17,7 +17,7 @@ use crate::geometry::{Curve, GeometryError, ParameterDomain, ParameterRange, Sur
 use crate::realize::{RealizationError, RealizationPolicy, RealizedBody};
 use alloc::vec::Vec;
 use exedra_math::Placement3;
-use exedra_profile::{Curve as ProfileCurve, Loop, LoopRef, Profile, SegTag, SegmentRef};
+use exedra_profile::{IntoProfile, Loop, LoopRef, Profile, ProfilePolicy, SegTag, SegmentRef};
 
 mod chart;
 pub use chart::RevolutionUvError;
@@ -46,7 +46,7 @@ pub enum EdgeRole {
         /// Segment whose start vertex generates this orbit.
         vertex: SegmentRef,
     },
-    /// A generating line at the start or end angle.
+    /// A generating profile segment at the start or end angle.
     /// Full-turn walls reuse the start meridian in both directions.
     Meridian {
         /// Generating segment.
@@ -56,7 +56,7 @@ pub enum EdgeRole {
     },
 }
 
-/// A checked, closed line-profile revolution retaining independent boundary geometry.
+/// A checked, closed line/arc-profile revolution retaining independent boundary geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Revolution {
     profile: Profile,
@@ -77,10 +77,14 @@ pub enum RevolutionError {
         /// Requested radians.
         sweep: f64,
     },
-    /// This constructor currently accepts only line segments.
-    CurvedSegment {
+    /// The arc's supporting circle would generate a horn or spindle torus.
+    NonRegularArc {
         /// Unsupported source segment.
         segment: SegmentRef,
+        /// Circle-center radius from the revolution axis.
+        major_radius: f64,
+        /// Generating circle radius.
+        minor_radius: f64,
     },
     /// A source vertex touches or crosses the axis.
     AxisContact {
@@ -104,14 +108,47 @@ impl core::fmt::Display for RevolutionError {
 }
 impl core::error::Error for RevolutionError {}
 
+/// Profile conversion and native revolution construction retain separate errors.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProfileRevolutionError<E> {
+    /// Original profile authoring/conversion failure.
+    Profile(E),
+    /// Native construction failure.
+    Revolution(RevolutionError),
+}
+impl<E: core::fmt::Display> core::fmt::Display for ProfileRevolutionError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Profile(e) => write!(f, "revolution profile: {e}"),
+            Self::Revolution(e) => e.fmt(f),
+        }
+    }
+}
+impl<E: core::error::Error + 'static> core::error::Error for ProfileRevolutionError<E> {}
+
 impl Revolution {
+    /// Converts an authored profile under `policy`, then constructs a revolution.
+    ///
+    /// # Errors
+    /// Preserves the original conversion error or the native [`RevolutionError`].
+    pub fn from_profile<P: IntoProfile>(
+        profile: P,
+        frame: Placement3,
+        sweep: f64,
+        policy: &ProfilePolicy,
+    ) -> Result<Self, ProfileRevolutionError<P::Error>> {
+        let profile = profile
+            .into_profile(policy)
+            .map_err(ProfileRevolutionError::Profile)?;
+        Self::new(profile, frame, sweep).map_err(ProfileRevolutionError::Revolution)
+    }
     /// Constructs a full or partial revolution with both partial-turn caps.
     ///
     /// The checked profile's X coordinates must all be strictly positive.
     /// Placement is rigid and separate from the body's local geometry.
     ///
     /// # Errors
-    /// Returns a typed refusal for invalid sweep/placement, unsupported arcs,
+    /// Returns a typed refusal for invalid sweep/placement, nonregular toroidal arcs,
     /// axis contact, numerical limits or generated boundary disagreement.
     pub fn new(profile: Profile, frame: Placement3, sweep: f64) -> Result<Self, RevolutionError> {
         crate::geometry::rigid(frame).map_err(RevolutionError::Geometry)?;
@@ -123,8 +160,6 @@ impl Revolution {
         let mut start_loops = Vec::new();
         let mut end_loops = Vec::new();
         let mut wall_area = 0.0;
-        let mut area2 = 0.0;
-        let mut moment6 = 0.0;
         let origin = profile.outer().segments()[0].to;
         for (loop_ref, ring) in loops(&profile) {
             let mut orbits = Vec::with_capacity(ring.segments().len());
@@ -135,13 +170,21 @@ impl Revolution {
                     loop_ref,
                     segment: i,
                 };
-                if !matches!(segment.curve, ProfileCurve::Line) {
-                    return Err(RevolutionError::CurvedSegment { segment: source });
-                }
-                if from[0] <= 0.0 {
+                let arc = ring.arc(i);
+                let min_radius = arc.map_or(from[0], |a| a.bounds()[0][0]);
+                if min_radius <= 0.0 {
                     return Err(RevolutionError::AxisContact {
                         segment: source,
-                        radius: from[0],
+                        radius: min_radius,
+                    });
+                }
+                if let Some(arc) = arc
+                    && arc.center[0] <= arc.radius
+                {
+                    return Err(RevolutionError::NonRegularArc {
+                        segment: source,
+                        major_radius: arc.center[0],
+                        minor_radius: arc.radius,
                     });
                 }
                 let start = push_vertex(&mut parts, point(from, 0.0));
@@ -164,14 +207,14 @@ impl Revolution {
                 );
                 orbits.push(orbit);
                 let to = segment.to;
-                let (x, y) = (from[0] - origin[0], from[1] - origin[1]);
-                let (xx, yy) = (to[0] - origin[0], to[1] - origin[1]);
-                let cross = x * yy - xx * y;
-                area2 += cross;
-                moment6 += (x + xx) * cross;
                 wall_area += sweep
-                    * (0.5 * from[0] + 0.5 * to[0])
-                    * libm::hypot(to[0] - from[0], to[1] - from[1]);
+                    * arc.map_or_else(
+                        || {
+                            (0.5 * from[0] + 0.5 * to[0])
+                                * libm::hypot(to[0] - from[0], to[1] - from[1])
+                        },
+                        crate::profile_geometry::radial_integral,
+                    );
             }
             for (i, (from, segment)) in ring.iter_with_starts().enumerate() {
                 let source = SegmentRef {
@@ -183,14 +226,17 @@ impl Revolution {
                 let b = parts.edges[orbits[next].index()].start;
                 let c = parts.edges[orbits[i].index()].end;
                 let d = parts.edges[orbits[next].index()].end;
-                let radial = from[1] == segment.to[1];
+                let arc = ring.arc(i);
+                let radial = arc.is_none() && from[1] == segment.to[1];
                 let start = if full && radial {
                     None
                 } else {
-                    Some(push_line(
+                    Some(push_meridian(
                         &mut parts,
                         a,
                         b,
+                        arc,
+                        0.0,
                         EdgeRole::Meridian {
                             segment: source,
                             end: End::Start,
@@ -200,10 +246,12 @@ impl Revolution {
                 let end = if full {
                     start
                 } else {
-                    Some(push_line(
+                    Some(push_meridian(
                         &mut parts,
                         c,
                         d,
+                        arc,
+                        sweep,
                         EdgeRole::Meridian {
                             segment: source,
                             end: End::End,
@@ -272,8 +320,9 @@ impl Revolution {
                         ]
                     )]
                 };
-                let (surface, domain, sense) =
-                    wall(from, segment.to, sweep).map_err(|_| RevolutionError::NumericLimit {
+                let (surface, domain, sense) = arc
+                    .map_or_else(|| wall(from, segment.to, sweep), |a| arc_wall(a, sweep))
+                    .map_err(|_| RevolutionError::NumericLimit {
                         segment: Some(source),
                     })?;
                 parts.faces.push(Face {
@@ -293,8 +342,11 @@ impl Revolution {
                 end_loops.push(push_loop(&mut parts, end_meridians));
             }
         }
-        let area = 0.5 * area2;
-        let volume = sweep * (origin[0] * area + moment6 / 6.0);
+        let area = profile.area();
+        let moment = profile
+            .first_moments(origin)
+            .ok_or(RevolutionError::NumericLimit { segment: None })?;
+        let volume = sweep * (origin[0] * area + moment[0]);
         if ![area, volume, wall_area]
             .iter()
             .all(|v| v.is_finite() && *v > 0.0)
@@ -462,22 +514,57 @@ fn push_loop(parts: &mut BodyParts<FaceRole, EdgeRole>, coedges: Vec<Coedge>) ->
     parts.loops.push(BoundaryLoop { coedges });
     id
 }
-fn push_line(
+fn push_meridian(
     parts: &mut BodyParts<FaceRole, EdgeRole>,
     start: VertexId,
     end: VertexId,
+    arc: Option<exedra_profile::Arc>,
+    angle: f64,
     role: EdgeRole,
 ) -> Result<EdgeId, RevolutionError> {
     let origin = parts.vertices[start.index()];
     let direction = exedra_math::sub(parts.vertices[end.index()], origin);
+    let (curve, range) = if let Some(a) = arc {
+        (
+            crate::profile_geometry::circle(
+                a,
+                Placement3::rotate_y_then_translate(angle, 0.0, 0.0, 0.0),
+            )
+            .map_err(RevolutionError::Geometry)?,
+            ParameterRange::new(0.0, a.sweep.abs()).map_err(RevolutionError::Geometry)?,
+        )
+    } else {
+        (
+            Curve::line(origin, direction).map_err(RevolutionError::Geometry)?,
+            ParameterRange::UNIT,
+        )
+    };
     Ok(push_edge(
         parts,
         Edge {
-            curve: Curve::line(origin, direction).map_err(RevolutionError::Geometry)?,
-            range: ParameterRange::UNIT,
+            curve,
+            range,
             start,
             end,
             role,
+        },
+    ))
+}
+fn arc_wall(
+    a: exedra_profile::Arc,
+    sweep: f64,
+) -> Result<(Surface, ParameterDomain, Sense), GeometryError> {
+    let end = a.start_angle + a.sweep;
+    Ok((
+        Surface::torus(orbit_frame(a.center[1]), a.center[0], a.radius)?,
+        ParameterDomain {
+            u: ParameterRange::new(0.0, sweep)?,
+            v: ParameterRange::new(a.start_angle.min(end), a.start_angle.max(end))?,
+        },
+        if a.sweep > 0.0 {
+            Sense::Forward
+        } else {
+            Sense::Reverse
         },
     ))
 }
@@ -706,8 +793,8 @@ mod tests {
         ));
         let profile = Profile::new(
             Loop::new(vec![
-                Segment::arc([2.0, 0.0], 1.0),
-                Segment::arc([4.0, 0.0], 1.0),
+                Segment::arc([1.0, 1.0], libm::tan(core::f64::consts::PI / 8.0)),
+                Segment::line([2.0, 0.0]),
             ])
             .unwrap(),
             vec![],
@@ -716,7 +803,203 @@ mod tests {
         .unwrap();
         assert!(matches!(
             Revolution::new(profile, Placement3::IDENTITY, 1.0),
-            Err(RevolutionError::CurvedSegment { .. })
+            Err(RevolutionError::NonRegularArc { .. })
         ));
+    }
+
+    #[test]
+    fn full_and_partial_tori_retain_shared_curves_and_converge_on_exact_measures() {
+        let profile = || {
+            Profile::new(
+                Loop::new(vec![
+                    Segment::arc([8.0, 0.0], 1.0),
+                    Segment::arc([12.0, 0.0], 1.0),
+                ])
+                .unwrap(),
+                vec![],
+                &ProfilePolicy::new(1e-9),
+            )
+            .unwrap()
+        };
+        for sweep in [core::f64::consts::TAU, 1.8] {
+            let solid = Revolution::new(profile(), Placement3::IDENTITY, sweep).unwrap();
+            let expected_volume = sweep * core::f64::consts::PI * 10.0 * 4.0;
+            close(solid.volume(), expected_volume);
+            close(
+                solid.surface_area(),
+                sweep * 2.0 * core::f64::consts::PI * 10.0 * 2.0
+                    + if sweep == core::f64::consts::TAU {
+                        0.0
+                    } else {
+                        8.0 * core::f64::consts::PI
+                    },
+            );
+            assert!(solid.body().is_closed());
+            assert_eq!(
+                solid
+                    .body()
+                    .faces()
+                    .iter()
+                    .filter(|f| matches!(f.surface, Surface::Torus(_)))
+                    .count(),
+                2
+            );
+            let mut previous = f64::INFINITY;
+            for tolerance in [0.1, 0.02] {
+                let output = solid
+                    .realize(&RealizationPolicy {
+                        tolerance,
+                        ..RealizationPolicy::default()
+                    })
+                    .unwrap();
+                assert!(output.report.within_tolerance(), "{:?}", output.report);
+                assert!(output.mesh.validate_deep().is_empty());
+                assert!(output.mesh.boundary_loops().unwrap().is_empty());
+                for &(mesh_face, native_face) in &output.mesh_faces {
+                    if !matches!(
+                        solid.body().faces()[native_face.index()].surface,
+                        Surface::Torus(_)
+                    ) {
+                        continue;
+                    }
+                    let p: Vec<_> = output
+                        .mesh
+                        .face_loop(mesh_face)
+                        .map(|c| {
+                            output
+                                .mesh
+                                .vertex_position(output.mesh.from_vertex(c).unwrap())
+                                .unwrap()
+                                .map(f64::from)
+                        })
+                        .collect();
+                    for weights in [
+                        [1.0 / 3.0; 3],
+                        [0.5, 0.5, 0.0],
+                        [0.0, 0.5, 0.5],
+                        [0.5, 0.0, 0.5],
+                    ] {
+                        let q = core::array::from_fn::<_, 3, _>(|k| {
+                            (0..3).map(|i| weights[i] * p[i][k]).sum::<f64>()
+                        });
+                        let gap = (libm::hypot(libm::hypot(q[0], q[2]) - 10.0, q[1]) - 2.0).abs();
+                        assert!(
+                            gap <= output.report.max_deviation,
+                            "independent torus gap {gap} exceeds {:?}",
+                            output.report
+                        );
+                    }
+                }
+                assert!(
+                    output
+                        .mesh_vertices
+                        .iter()
+                        .any(|(_, s)| matches!(s, crate::realize::VertexSource::Face { .. }))
+                );
+                let error = (mesh_volume(&output.mesh) - expected_volume).abs();
+                assert!(
+                    error < previous,
+                    "volume must converge {error} < {previous}"
+                );
+                assert!(error < expected_volume * 0.03);
+                previous = error;
+            }
+            let too_small = RealizationPolicy {
+                tolerance: 0.01,
+                min_arc_segments: 4,
+                max_edge_segments: if sweep == core::f64::consts::TAU {
+                    80
+                } else {
+                    32
+                },
+                ..RealizationPolicy::default()
+            };
+            assert!(matches!(
+                solid.realize(&too_small),
+                Err(RealizationError::SurfaceSampling { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn torus_grid_refuses_trim_mismatch_and_reports_face_sample_narrowing() {
+        let p = Profile::new(
+            Loop::new(vec![
+                Segment::arc([8.0, 0.0], 1.0),
+                Segment::arc([12.0, 0.0], 1.0),
+            ])
+            .unwrap(),
+            vec![],
+            &ProfilePolicy::new(1e-9),
+        )
+        .unwrap();
+        let solid = Revolution::new(p, Placement3::IDENTITY, 1.8).unwrap();
+        let full = Revolution::new(
+            solid.profile().clone(),
+            Placement3::IDENTITY,
+            core::f64::consts::TAU,
+        )
+        .unwrap();
+        let huge = RealizationPolicy {
+            tolerance: 1.0,
+            min_arc_segments: 46_000,
+            max_edge_segments: 46_000,
+            max_vertices: u32::MAX,
+            max_boundary_samples: u32::MAX,
+            geometry_gap: 1e-9,
+        };
+        assert!(
+            matches!(
+                full.realize(&huge),
+                Err(RealizationError::Budget {
+                    storage: "triangles",
+                    ..
+                })
+            ),
+            "triangle cardinality must be refused before allocating billions of vertices"
+        );
+        let mut parts = solid.body().clone().into_parts();
+        parts.faces[0].domain.u = ParameterRange::new(0.1, 1.9).unwrap();
+        let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap();
+        assert!(matches!(
+            body.realize(
+                Placement3::IDENTITY,
+                &RealizationPolicy {
+                    geometry_gap: 1.0,
+                    ..RealizationPolicy::default()
+                }
+            ),
+            Err(RealizationError::UnsupportedSurfaceTrim { face: FaceId(0) })
+        ));
+        let placement = Placement3::translate(1_000_000.03, 1_000_000.03, 1_000_000.03);
+        let output = solid
+            .body()
+            .realize(
+                placement,
+                &RealizationPolicy {
+                    tolerance: 0.02,
+                    ..RealizationPolicy::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            !output.report.within_tolerance(),
+            "more surface samples cannot remove f32 displacement"
+        );
+        for &(vertex, source) in &output.mesh_vertices {
+            if let crate::realize::VertexSource::Face { face, uv } = source {
+                let exact = placement
+                    .transform_point(solid.body().evaluate_support(face, uv).unwrap().point);
+                let emitted = output.mesh.vertex_position(vertex).unwrap().map(f64::from);
+                assert_eq!(
+                    emitted,
+                    exedra_math::narrow(exact).map(f64::from),
+                    "phase reuse preserves independent surface evaluation bits"
+                );
+                let d = exedra_math::sub(exact, emitted);
+                let error = libm::hypot(libm::hypot(d[0], d[1]), d[2]);
+                assert!(error <= output.report.max_vertex_displacement);
+            }
+        }
     }
 }
