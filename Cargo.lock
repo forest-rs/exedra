@@ -333,6 +333,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_authoring_web_bridge"
+version = "0.0.0"
+dependencies = [
+ "exedra_analytic",
+ "exedra_compile",
+ "exedra_constructive",
+ "exedra_math",
+ "exedra_profile",
+ "exedra_step",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "exedra_compile"
 version = "0.1.0"
 dependencies = [
