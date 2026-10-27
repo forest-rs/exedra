@@ -85,6 +85,31 @@ can instead fill `RecipeParts` and freeze it with `Recipe::try_from_parts`.
 Table positions are ids and repeated names are refused; every node passes the
 same checks as `add_node`, and errors name the refused table and item.
 
+## Loft correspondence
+
+`loft::correspond_profiles` prepares different line/arc profiles for the ordinary
+loft APIs. A circle can meet a rectangle without manually splitting either into
+the same segment count. The preparation subdivides exact source curves, retains
+tags, and returns an original segment/parameter interval for every output piece.
+Inputs remain unchanged. Add the resulting profiles to a recipe or pass them
+directly to `tessellate_loft`.
+
+Default correspondence follows each authored seam and normalized perimeter.
+`CorrespondenceProfile::with_landmarks` instead pairs explicit boundary points:
+use these to align a circle's quarters with rectangle corners, for example.
+Loops and holes retain their authored order; this does not infer hole pairing,
+repair profiles, or choose the intended corners. Input/output validation and
+segment budgets are explicit. Refusals identify the original section, loop and
+source pieces where available, including cuts too close to a corner.
+
+Ruled and smooth lofts subdivide twisted walls under `EvalPolicy::loft`, sharing
+rows around all loops to avoid cracks. Planar tapers retain a single band;
+refinement rows add no shading creases. `loft_sampling` retains authored band
+intervals, trajectory and side-surface bounds, and measured f32 displacement.
+`within_surface_tolerance()` checks emitted side walls against the requested
+bound for already-discretized profiles. Profile chord error is separate, and
+this local evidence does not certify absence of distant self-intersections.
+
 ## Construction UV charts
 
 Bind a chart with `Node::with_surface_chart` on an ordinary `Extrude`, `Revolve`,

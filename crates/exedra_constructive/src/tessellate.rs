@@ -57,7 +57,7 @@ pub struct EvalPolicy {
     /// Maximum mesh vertices in a controlled mitered or curved sweep.
     /// Checked before allocating mesh vertices, including caps' shared rims.
     pub max_sweep_vertices: u32,
-    /// Point-trajectory accuracy and work budgets for smooth lofts.
+    /// Side-surface accuracy and work budgets for ruled and smooth lofts.
     pub loft: crate::loft::LoftSamplingPolicy,
     /// Accuracy and per-body work budgets for retained plane operations, in
     /// operation-local units before ancestor transforms.
@@ -242,8 +242,8 @@ pub struct TessellatedBody {
     /// These bounds do not describe the placed mesh's world-space accuracy
     /// or certify its winding. See [`Self::sweep_checks`] for realization checks.
     pub path_sampling: Option<Arc<crate::path::PathSampling>>,
-    /// Original smooth-loft sampling and local realization evidence.
-    /// `None` for ruled lofts and geometry derived by other operations.
+    /// Original loft side-surface sampling and local realization evidence.
+    /// Includes ruled-wall diagonal error; `None` for other operations.
     /// Retained as source evidence by instances; not a solid certificate.
     pub loft_sampling: Option<crate::loft::LoftSampling>,
 }
@@ -383,7 +383,7 @@ pub enum TessellateError {
     },
     /// All loft sections are coplanar, so the loft has no volumetric span.
     DegenerateLoft,
-    /// Smooth-loft interpolation or sampling could not honor its contract.
+    /// Loft interpolation or sampling could not honor its contract.
     Loft(crate::loft::LoftError),
     /// A sweep path reverses onto itself at this point (anti-parallel
     /// adjacent segments give no miter tangent).
@@ -2224,6 +2224,8 @@ fn revolve_impl(
 /// discretized with the largest edge count any of its members needs, so
 /// two circles of different radius, or an arc facing a line, loft without
 /// either falling short of the chord tolerance.
+/// [`crate::loft::correspond_profiles`] prepares different source structures
+/// through exact subdivisions and optional seam/corner landmarks.
 /// The start cap closes section 0 (reversed), the end cap the last section;
 /// sections must be ordered so counter-clockwise outer loops yield
 /// outward-facing walls (the extrude convention generalized).
@@ -2231,9 +2233,11 @@ fn revolve_impl(
 /// [`LoftPolicy::Ruled`] creases intermediate section rings. [`LoftPolicy::Smooth`]
 /// uses uniform C1 cubic trajectories and keeps intermediate rings smooth.
 /// Lateral edges crease at authored sharp profile corners; cap rims crease
-/// when capped. Smooth lofts retain every authored section and carry
-/// [`crate::loft::LoftSampling`] evidence. Accuracy and local checks apply to
-/// sampled profile trajectories, not a general solid-validity certificate.
+/// when capped. Both policies retain every authored section, refine twisted
+/// walls within the side-surface budget, and carry [`crate::loft::LoftSampling`]
+/// evidence. Added rows remain smooth. Accuracy applies to already-discretized
+/// profiles and includes f32 emission in the report; profile chord error is
+/// separate. Local checks do not establish general solid validity.
 ///
 /// # Errors
 ///
@@ -2330,9 +2334,7 @@ fn loft_impl(
         ));
     }
     let smooth = interpolation == LoftPolicy::Smooth;
-    if smooth {
-        policy.loft.validate().map_err(TessellateError::Loft)?;
-    }
+    policy.loft.validate().map_err(TessellateError::Loft)?;
     let flip = det3(&sections[0].0) < 0.0;
 
     // Correspondence: identical segment structure across sections.
@@ -2360,7 +2362,7 @@ fn loft_impl(
             }
         }
     }
-    if smooth {
+    {
         let points: u64 = counts.iter().flatten().map(|&n| u64::from(n)).sum();
         if points.saturating_mul(sections.len() as u64) > u64::from(policy.loft.max_vertices) {
             return Err(TessellateError::Loft(
@@ -2400,8 +2402,9 @@ fn loft_impl(
                 .collect()
         })
         .collect();
-    let (placed, loft_sampling) = if smooth {
-        let sampled = crate::loft::sample(&placed, policy.loft).map_err(|mut error| {
+    let ring_sizes: Vec<_> = reference.rings().map(|r| r.points.len()).collect();
+    let sampled = crate::loft::sample_surface(placed, &ring_sizes, smooth, policy.loft).map_err(
+        |mut error| {
             if let crate::loft::LoftError::Foldover {
                 band,
                 vertex,
@@ -2417,11 +2420,9 @@ fn loft_impl(
                 }));
             }
             TessellateError::Loft(error)
-        })?;
-        (sampled.rings, Some(sampled.evidence))
-    } else {
-        (placed, None)
-    };
+        },
+    )?;
+    let (placed, loft_sampling) = (sampled.rings, Some(sampled.evidence));
     let mut builder = OrientedBuilder::new(flip);
     if let Some(chart) = chart {
         let SurfaceChart::Loft {
@@ -2520,15 +2521,27 @@ fn loft_impl(
                         && corner_sharp[ring_index][ring.edge_seg[point as usize] as usize]
                 };
                 // Cap rims crease; only ruled lofts crease intermediate rings.
-                let bottom_crease = if band == 0 { start_cap } else { !smooth };
-                let top_crease = if band + 1 == bands { end_cap } else { !smooth };
+                let span = &loft_sampling
+                    .as_ref()
+                    .expect("all lofts retain sampling")
+                    .spans[band];
+                let bottom_crease = if band == 0 {
+                    start_cap
+                } else {
+                    !smooth && span.parameter[0] == 0.0
+                };
+                let top_crease = if band + 1 == bands {
+                    end_cap
+                } else {
+                    !smooth && span.parameter[1] == 1.0
+                };
                 let sharp = [
                     if bottom_crease { 1.0 } else { 0.0 },
                     if sharp_at(j) { 1.0 } else { 0.0 },
                     if top_crease { 1.0 } else { 0.0 },
                     if sharp_at(i) { 1.0 } else { 0.0 },
                 ];
-                if smooth {
+                {
                     check_loft_wall([
                         placed[band][(base + i) as usize],
                         placed[band][(base + j) as usize],
@@ -6289,8 +6302,32 @@ mod tests {
             .points
             .len();
         assert!(arc_edges > 3);
-        // Both rings carry arc_edges points: vertices are 2 rings.
-        assert_eq!(body.mesh.vertices().count(), 2 * arc_edges);
+        // Every ring carries arc_edges points; twisted walls also need shared
+        // longitudinal rows to bound diagonal triangulation error.
+        let sampling = body.loft_sampling.as_ref().unwrap();
+        assert!(sampling.spans.len() > 1);
+        assert_eq!(
+            body.mesh.vertices().count(),
+            (sampling.spans.len() + 1) * arc_edges
+        );
+        assert!(sampling.within_surface_tolerance());
+        for edge in body.mesh.half_edges() {
+            let a = body
+                .mesh
+                .vertex_position(body.mesh.from_vertex(edge).unwrap())
+                .unwrap();
+            let b = body
+                .mesh
+                .vertex_position(body.mesh.to_vertex(edge).unwrap())
+                .unwrap();
+            if a[2] == b[2] && a[2] > 0.0 && a[2] < 5.0 {
+                assert_eq!(
+                    body.mesh.edge_sharpness(edge),
+                    Some(0.0),
+                    "sampling rows do not add authored creases"
+                );
+            }
+        }
         // Reversing the sections lofts too: lines subdivide regardless of
         // which section they sit in.
         let reversed = [
@@ -6300,7 +6337,11 @@ mod tests {
         let body =
             tessellate_loft(&reversed, LoftPolicy::Ruled, CapMode::Both, &policy).expect("lofts");
         assert_clean(&body);
-        assert_eq!(body.mesh.vertices().count(), 2 * arc_edges);
+        let sampling = body.loft_sampling.as_ref().unwrap();
+        assert_eq!(
+            body.mesh.vertices().count(),
+            (sampling.spans.len() + 1) * arc_edges
+        );
     }
 
     #[test]
