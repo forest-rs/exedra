@@ -52,9 +52,11 @@ env:
   # Host auxiliary targets exclude the Wasm-only bridge.
   RUST_AUX_EXCLUDES:
     --exclude exedra_edit_web_bridge
+    --exclude exedra_authoring_web_bridge
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS:
     --exclude exedra_edit_web_bridge
+    --exclude exedra_authoring_web_bridge
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS:
   # List of features that depend on the standard library and will be excluded from no_std checks.

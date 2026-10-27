@@ -89,6 +89,9 @@ Workspace-only construction, test, benchmark, and app crates:
 - **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for Exedra
   kernel scenarios, QEF solves, render extraction, and Fidget-backed
   field/extraction paths.
+- **[packages/exedra](packages/exedra/)** - Typed TypeScript native authoring SDK.
+- **[apps/exedra_authoring_demo](apps/exedra_authoring_demo/)** - Interactive browser
+  authoring, native queries, source-aware picking and per-part STEP downloads.
 - **[apps/exedra_edit_web_bridge](apps/exedra_edit_web_bridge/)** - Wasm bridge
   for deterministic Exedra Edit scenario execution.
 - **[apps/exedra_edit_web_viewer](apps/exedra_edit_web_viewer/)** - Three.js

@@ -1,0 +1,97 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, profiles, type NativeTransport } from "../src/index.ts";
+
+function host() {
+  let next = 0, released = 0, freed = 0, transfers = 0;
+  const requests: any[] = [];
+  const native: NativeTransport = {
+    build_document(text) {
+      const graph = JSON.parse(text); requests.push(graph);
+      if (graph.nodes.some((n: any) => n.depth === 99)) throw JSON.stringify({code:"pocket.invalid",operation:"solid.pocket",message:"Depth exceeds panel thickness",node:1});
+      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",measurements:{volume:10,surfaceArea:20,bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess"},{id:1,role:"wall",surface:"cylinder",feature:"vents"}]}))});
+    },
+    release_document() { released++; },
+    stats_json() { return JSON.stringify({documents:next-released,nativeParts:next-released,cacheEntries:0}); },
+    workplane_json() { return JSON.stringify({origin:[0,0,7],xAxis:[1,0,0],yAxis:[0,1,0],zAxis:[0,0,1]}); },
+    realize() {
+      return {
+        take_positions() { transfers++; return new Float32Array(9); },
+        take_normals() { transfers++; return new Float32Array(9); },
+        take_indices() { transfers++; return new Uint32Array([0,1,2]); },
+        take_native_faces() { transfers++; return new Uint32Array([1]); },
+        report_json() { return JSON.stringify({tolerance:.1,maxDeviation:.01,triangles:1,vertices:3}); },
+        free() { freed++; },
+      };
+    },
+    export_step() { throw new Error("unused"); },
+    free() { freed++; },
+  };
+  return {native,requests,counters:() => ({released,freed,transfers})};
+}
+function sample() {
+  const vent = profiles.slot({length:22,radius:3}).tagged("vents");
+  const panel = extrude(profiles.rectangle({width:120,height:80}).withCutoutsAt(vent, [[-12,20],[12,20]]),{height:12})
+    .pocket(profiles.circle({radius:8}).tagged("recess"), {end:"end",depth:5});
+  return {panel,pin:panel.floor("recess").workplane().offset(.5).extrude(profiles.circle({radius:3}),{height:7})};
+}
+function code(code: string) { return (error: unknown) => error instanceof ExedraError && error.diagnostic.code === code; }
+
+test("reusable descriptors lower once and all shared native dependencies are explicit", () => {
+  const h = host(), session = new AuthoringSession(h.native,{units:"mm"});
+  const doc = session.build(sample()), graph = h.requests[0];
+  assert.equal(graph.profiles.filter((p: any) => p.kind === "slot").length,1);
+  assert.equal(graph.nodes.length,3);
+  assert.equal(graph.nodes[2].host,graph.roots[0].node);
+  assert.equal(doc.parts.panel.fingerprint,"f123456789abcdef123456789abcdef0");
+  doc.dispose(); session.dispose();
+});
+test("quality retains face scope; a fresh authored revision rejects old selections", () => {
+  const h = host(), session = new AuthoringSession(h.native,{units:"mm"});
+  const first = session.build(sample()), selection = first.parts.panel.floor("recess");
+  const coarse = first.parts.panel.realize({tolerance:.45}), fine = first.parts.panel.realize({tolerance:.035});
+  assert.equal(coarse.pickTriangle(0).partId,fine.pickTriangle(0).partId);
+  assert.equal(first.parts.panel.requireSelection(selection).nativeId,0);
+  assert.deepEqual(selection.workplane().origin,[0,0,7]);
+  const second = session.build(sample());
+  assert.throws(() => second.parts.panel.requireSelection(selection),code("selection.stale"));
+  first.dispose();
+  assert.throws(() => fine.pickTriangle(0),code("lifecycle.documentDisposed"));
+  session.dispose();
+  assert.deepEqual(h.counters(),{released:2,freed:3,transfers:8});
+});
+test("failed authoring leaves existing documents usable and preserves typed diagnostics", () => {
+  const h = host(), session = new AuthoringSession(h.native,{units:"mm"});
+  const first = session.build(sample());
+  const bad = extrude(profiles.rectangle({width:20,height:20}),{height:12}).pocket(profiles.circle({radius:3}),{end:"end",depth:99});
+  assert.throws(() => session.build({bad}),code("pocket.invalid"));
+  assert.equal(first.parts.panel.floor("recess").nativeId,0);
+  first.dispose(); first.dispose(); session.dispose(); session.dispose();
+  assert.equal(h.counters().released,1);
+  assert.throws(() => session.build(sample()),code("lifecycle.sessionDisposed"));
+});
+test("unbounded placement iterators are refused before reaching the native host", () => {
+  function* endless() { while (true) yield [0,0] as const; }
+  assert.throws(() => profiles.rectangle({width:10,height:10}).withCutoutsAt(profiles.circle({radius:1}), endless()),code("budget.cutouts"));
+});
+
+test("public workplane seams snapshot mutable caller arrays and selectors", () => {
+  const h = host(), session = new AuthoringSession(h.native,{units:"mm"});
+  const hostSolid = extrude(profiles.rectangle({width:20,height:20}),{height:12});
+  const at: [number,number] = [1,2], face: {kind:"cap";end:"start"|"end"} = {kind:"cap",end:"end"};
+  const pin = new AuthoringWorkplane(hostSolid,face,0,at).extrude(profiles.circle({radius:1}),{height:1});
+  const direct = Solid.onFace(hostSolid,face,profiles.circle({radius:1}),1,0,at);
+  session.build({pin,direct}).dispose();
+  at[0]=99; face.end="start";
+  session.build({pin,direct}).dispose();
+  assert.deepEqual(h.requests[0],h.requests[1]);
+  session.dispose();
+});
+
+test("native measurement bounds are immutable nested query values", () => {
+  const h = host(), session = new AuthoringSession(h.native,{units:"mm"});
+  const doc = session.build(sample()), bounds = doc.parts.panel.measurements.bounds;
+  assert.throws(() => { (bounds[0] as number[])[0]=123; },TypeError);
+  assert.deepEqual(bounds,[[0,0,0],[2,3,4]]);
+  session.dispose();
+});

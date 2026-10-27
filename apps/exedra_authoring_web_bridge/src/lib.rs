@@ -190,6 +190,13 @@ impl Session {
                 "The native part is outside this document",
             )
         })?;
+        if !options.tolerance.is_finite() || options.tolerance <= 0.0 {
+            return Err(Error::new(
+                "policy.tolerance",
+                "part.realize",
+                "Display tolerance must be finite and positive",
+            ));
+        }
         if options.max_vertices == 0 || options.max_vertices > 250000 {
             return Err(Error::new(
                 "budget.vertices",
@@ -220,6 +227,22 @@ impl Session {
             .bodies[0]
             .tri;
         let report = &realization.report;
+        if [
+            report.tolerance,
+            report.max_deviation,
+            report.max_curve_deviation,
+            report.max_surface_deviation,
+            report.max_vertex_displacement,
+        ]
+        .iter()
+        .any(|v| !v.is_finite())
+        {
+            return Err(Error::new(
+                "realization.numericLimit",
+                "part.realize",
+                "Display accuracy evidence exceeds finite f64 values",
+            ));
+        }
         let data = serde_json::json!({"tolerance":report.tolerance,"maxDeviation":report.max_deviation,
             "maxCurveDeviation":report.max_curve_deviation,"maxSurfaceDeviation":report.max_surface_deviation,
             "maxVertexDisplacement":report.max_vertex_displacement,"withinTolerance":report.within_tolerance(),
@@ -268,15 +291,15 @@ impl Session {
         let file = exedra_step::export_body(native.body(), native.frame(), &options)
             .map_err(|e| Error::new("exchange.step", "part.exportStep", e.to_string()))?;
         let report = serde_json::json!({"schema":file.report.schema,"units":doc.units,"declaredUncertainty":file.report.declared_uncertainty,
-            "maxDeviation":file.report.max_deviation,"maxNativeSupportGap":file.report.max_native_support_gap,
-            "frameRoundoffBound":file.report.frame_roundoff_bound,
-            "entities":file.report.counts.entities,"faces":file.report.counts.faces,"edges":file.report.counts.edges,
-            "correspondence":{
-                "vertices":file.report.correspondence.vertices.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
-                "edges":file.report.correspondence.edges.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
-                "loops":file.report.correspondence.loops.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
-                "faces":file.report.correspondence.faces.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>()
-            }});
+        "maxDeviation":file.report.max_deviation,"maxNativeSupportGap":file.report.max_native_support_gap,
+        "frameRoundoffBound":file.report.frame_roundoff_bound,
+        "entities":file.report.counts.entities,"faces":file.report.counts.faces,"edges":file.report.counts.edges,
+        "correspondence":{
+            "vertices":file.report.correspondence.vertices.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
+            "edges":file.report.correspondence.edges.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
+            "loops":file.report.correspondence.loops.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
+            "faces":file.report.correspondence.faces.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>()
+        }});
         Ok(NativeStepFile {
             text: file.text,
             report: json(&report),
@@ -321,10 +344,13 @@ impl Document {
         for (index, part) in self.parts.iter().enumerate() {
             let solid = part.solid();
             let bounds = placed_bounds(solid.local_bounds(), solid.frame());
-            if !solid.volume().is_finite()
-                || !solid.surface_area().is_finite()
-                || bounds.iter().flatten().any(|v| !v.is_finite())
-            {
+            let volume = part.native().volume().map_err(|e| {
+                Error::new("measurement.numericLimit", "part.measure", e.to_string())
+            })?;
+            let area = part.native().surface_area().map_err(|e| {
+                Error::new("measurement.numericLimit", "part.measure", e.to_string())
+            })?;
+            if bounds.iter().flatten().any(|v| !v.is_finite()) {
                 return Err(Error::new(
                     "measurement.unrepresentable",
                     "document.inspect",
@@ -354,7 +380,7 @@ impl Document {
                 })
                 .collect();
             parts.push(serde_json::json!({"name":part.name,"index":index,"fingerprint":format!("{:032x}",part.source.fingerprint().0),
-                "measurements":{"volume":solid.volume(),"surfaceArea":solid.surface_area(),"bounds":bounds,
+                "measurements":{"volume":volume,"surfaceArea":area,"bounds":bounds,
                     "faces":solid.faces().len(),"edges":solid.edges().len(),"vertices":solid.vertices().len()},"faces":faces}));
         }
         Ok(json(
@@ -503,6 +529,135 @@ impl NativeStepFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn panel_request(width: f64, depth: f64) -> Request {
+        decode(&json(&serde_json::json!({
+            "units":"mm","separation":1e-6,
+            "profiles":[
+                {"kind":"roundedRectangle","width":width,"height":80,"radius":6},
+                {"kind":"tagged","profile":0,"name":"panel"},
+                {"kind":"slot","length":22,"radius":3},
+                {"kind":"tagged","profile":2,"name":"vents"},
+                {"kind":"cutouts","profile":1,"template":3,"positions":[[-36,22],[-12,22],[12,22],[36,22]]},
+                {"kind":"slot","length":48,"radius":8},
+                {"kind":"tagged","profile":5,"name":"recess"},
+                {"kind":"circle","radius":3},
+                {"kind":"tagged","profile":7,"name":"pin"}
+            ],
+            "nodes":[
+                {"kind":"extrude","profile":4,"height":12},
+                {"kind":"pocket","base":0,"profile":6,"end":"end","depth":depth,"at":[0,-10]},
+                {"kind":"onFace","host":1,"face":{"kind":"floor","feature":"recess"},"profile":8,"height":7,"offset":0.5,"at":[0,-10]}
+            ],"roots":[{"name":"panel","node":1},{"name":"pin","node":2}]
+        }))).unwrap()
+    }
+    fn value(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).unwrap()
+    }
+    fn display(session: &mut Session, id: u32, tolerance: f64) -> NativeBuffers {
+        session
+            .realize(
+                id,
+                0,
+                DisplayOptions {
+                    tolerance,
+                    max_vertices: 250000,
+                },
+            )
+            .unwrap()
+    }
+    #[test]
+    fn native_panel_attachment_identity_and_realization_are_end_to_end() {
+        let mut session = Session::new();
+        let metadata = value(&session.build(panel_request(120.0, 5.0)).unwrap());
+        let panel = &metadata["parts"][0];
+        assert_eq!(
+            panel["measurements"]["bounds"],
+            serde_json::json!([[-60.0, -40.0, 0.0], [60.0, 40.0, 12.0]])
+        );
+        assert_eq!(metadata["parts"][1]["measurements"]["bounds"][0][2], 7.5);
+        let volume = panel["measurements"]["volume"].as_f64().unwrap();
+        let expected = 108864.0 - 5.0 * (512.0 + 64.0 * core::f64::consts::PI);
+        assert!((volume - expected).abs() < 1e-8);
+        let coarse = display(&mut session, 1, 0.45);
+        let fine = display(&mut session, 1, 0.035);
+        assert!(fine.indices.len() > coarse.indices.len());
+        assert_eq!(fine.native_faces.len() * 3, fine.indices.len());
+        let faces = panel["faces"].as_array().unwrap();
+        for face in fine.native_faces {
+            assert!(
+                faces
+                    .iter()
+                    .any(|entry| entry["id"].as_u64() == Some(u64::from(face)))
+            );
+        }
+        let floor = u32::try_from(
+            faces
+                .iter()
+                .find(|f| f["feature"] == "recess" && f["role"] == "floor")
+                .unwrap()["id"]
+                .as_u64()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value(&session.workplane(1, 0, floor).unwrap())["origin"][2],
+            7.0
+        );
+        let again = value(&session.documents[&1].metadata(1).unwrap());
+        assert_eq!(again["parts"][0]["fingerprint"], panel["fingerprint"]);
+        assert_eq!(again["parts"][0]["measurements"]["volume"], volume);
+        let step = session
+            .step(
+                1,
+                0,
+                ExchangeOptions {
+                    name: Some("panel".into()),
+                    timestamp: "2026-10-27T00:00:00Z".into(),
+                    tolerance: None,
+                },
+            )
+            .unwrap();
+        let report = value(&step.report);
+        assert_eq!(report["units"], "mm");
+        assert!(report["correspondence"]["faces"][floor as usize].is_u64());
+        assert!(step.text.contains("ADVANCED_FACE"));
+    }
+    #[test]
+    fn failed_edits_are_atomic_and_repeated_release_bounds_native_owners() {
+        let mut session = Session::new();
+        let baseline = session.build(panel_request(120.0, 5.0)).unwrap();
+        let initial = value(&session.stats());
+        let before = session.next;
+        let error = session.build(panel_request(120.0, 18.0)).unwrap_err();
+        assert_eq!(error.code, "pocket.invalid");
+        assert_eq!(session.next, before);
+        assert_eq!(session.documents[&1].metadata(1).unwrap(), baseline);
+        for i in 0..12 {
+            let metadata = value(
+                &session
+                    .build(panel_request(120.01 + f64::from(i) * 0.01, 5.0))
+                    .unwrap(),
+            );
+            let id = u32::try_from(metadata["id"].as_u64().unwrap()).unwrap();
+            display(&mut session, id, 0.12);
+            session.release(id);
+            let stats = value(&session.stats());
+            for key in [
+                "documents",
+                "nativeParts",
+                "documentNativeSources",
+                "documentBoundaryBytes",
+            ] {
+                assert_eq!(stats[key], initial[key]);
+            }
+            assert!(stats["cacheEntries"].as_u64().unwrap() <= 8);
+        }
+        session.release(1);
+        let stats = value(&session.stats());
+        assert_eq!(stats["documents"], 0);
+        assert_eq!(stats["cacheEntries"], 0);
+        assert_eq!(stats["cacheNativeSources"], 0);
+    }
     #[test]
     fn unknown_documents_fail_without_work() {
         let mut session = Session::new();
