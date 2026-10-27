@@ -317,6 +317,24 @@ impl SurfaceChart {
         };
         wall.map_triangle(points)
     }
+    /// Maps native loft coordinates `(reference_profile_distance, station_distance)`.
+    ///
+    /// The native caller supplies the chart's selected reference section and
+    /// station rest distances, including its authored rest length. Exact source
+    /// distances preserve the metric supplied by the geometry head.
+    ///
+    /// # Errors
+    /// Refuses another chart operation or invalid mapping/storage conditions.
+    pub fn map_loft_wall_triangle(
+        &self,
+        points: [[f64; 2]; 3],
+    ) -> Result<[[f32; 2]; 3], ChartError> {
+        self.validate()?;
+        let Self::Loft { wall, .. } = self else {
+            return Err(ChartError::WrongOperation);
+        };
+        wall.map_triangle(points)
+    }
     /// Maps a cap triangle in its generating profile coordinates.
     ///
     /// # Errors
