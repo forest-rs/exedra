@@ -233,3 +233,17 @@ outward-rounded products and sums, including large-coordinate cancellation.
 The query returns a typed numeric limit instead of non-finite bounds. These
 support enclosures are independent of display quality and are not tight extrema
 or a solid-interior test.
+`geometry::Curve::Ellipse` retains a rigid frame, ordered positive finite
+semiaxes and a radian parameter. `geometry::intersection::plane_cylinder`
+constructs a complete nonparallel section with explicit ellipse-angle/cylinder-
+azimuth phase and orientation, an axial harmonic trim function and whole-curve
+support-gap evidence. Near-parallel, non-finite and unmet-gap cases are typed
+refusals. These are geometric surface coordinates; texture charts remain separate.
+Ellipse edge length is currently unavailable; it is never replaced by a sampled
+perimeter. Realization samples exact edges with an affine-circle chord bound.
+The section calculation retains accepted near-rigid input bases: it solves the
+plane equation in native cylinder parameters and diagonalizes the resulting
+world-space harmonics. Parameter-map error uses complete forward coefficients.
+Angular maps are bounded to one turn around zero so large floating-point phase
+addition cannot silently erase correspondence. Axial harmonic enclosures round
+outward and include arithmetic headroom.

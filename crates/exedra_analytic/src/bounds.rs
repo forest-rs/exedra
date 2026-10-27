@@ -97,6 +97,9 @@ fn transformed(frame: Placement3, point: [f64; 3]) -> Result<[[f64; 3]; 2], Boun
     Ok(result)
 }
 fn circle(frame: Placement3, radius: f64, height: f64) -> Result<[[f64; 3]; 2], BoundsError> {
+    elliptic(frame, [radius; 2], height)
+}
+fn elliptic(frame: Placement3, radii: [f64; 2], height: f64) -> Result<[[f64; 3]; 2], BoundsError> {
     let center = transformed(frame, [0.0, 0.0, height])?;
     let mut bounds = Bounds::new();
     let mut extrema = [[0.0; 3]; 2];
@@ -104,8 +107,8 @@ fn circle(frame: Placement3, radius: f64, height: f64) -> Result<[[f64; 3]; 2], 
         // |a cos(t)+b sin(t)| <= |a|+|b|. Outward basic arithmetic
         // makes this an enclosure even after large-coordinate cancellation.
         let extent = sum(
-            product(radius, row[0].abs())?,
-            product(radius, row[1].abs())?,
+            product(radii[0], row[0].abs())?,
+            product(radii[1], row[1].abs())?,
         )?[1];
         extrema[0][k] = (center[0][k] - extent).next_down();
         extrema[1][k] = (center[1][k] + extent).next_up();
@@ -127,14 +130,15 @@ fn placed(bounds: [[f64; 3]; 2], frame: Placement3) -> Result<[[f64; 3]; 2], Bou
 impl Curve {
     /// Conservative enclosure of a bounded curve in its coordinate system.
     ///
-    /// Lines use their range endpoints. Circular arcs use the entire supporting
-    /// circle, so short arcs may have deliberately loose bounds. No sampling or
+    /// Lines use their range endpoints. Circular/elliptic arcs use their entire
+    /// supporting curve, so short arcs may have deliberately loose bounds. No sampling or
     /// display-tolerance dependence is introduced.
     /// # Errors
     /// Returns [`BoundsError::NumericLimit`] on unrepresentable positions/extents.
     pub fn conservative_bounds(&self, range: ParameterRange) -> Result<[[f64; 3]; 2], BoundsError> {
         match self {
             Self::Circle(c) => circle(c.frame(), c.radius(), 0.0),
+            Self::Ellipse(e) => elliptic(e.frame(), [e.semi_major(), e.semi_minor()], 0.0),
             Self::Line(line) => {
                 let mut bounds = Bounds::new();
                 for t in range.bounds() {
@@ -344,6 +348,32 @@ mod tests {
                         .enumerate()
                         .all(|(k, v)| v >= bounds[0][k] && v <= bounds[1][k])
                 );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ellipse_tests {
+    use super::*;
+    #[test]
+    fn ellipse_bounds_use_actual_frame_coefficients_and_outward_arithmetic() {
+        let mut frame = Placement3::translate(-1e16, 0.0, 0.0);
+        frame.rows[0][0] = 1.0 + f64::EPSILON;
+        let curve = Curve::ellipse(frame, 1e16, 2.0).unwrap();
+        let bounds = curve.conservative_bounds(ParameterRange::UNIT).unwrap();
+        let exact_axis_endpoint = 1e16 * f64::EPSILON;
+        assert!(
+            bounds[1][0] >= exact_axis_endpoint,
+            "enclosure must include actual affine coefficient endpoint"
+        );
+        for i in 0..65 {
+            let point = curve
+                .evaluate(f64::from(i) / 64.0 * core::f64::consts::TAU)
+                .unwrap()
+                .point;
+            for axis in 0..3 {
+                assert!(bounds[0][axis] <= point[axis] && point[axis] <= bounds[1][axis]);
             }
         }
     }

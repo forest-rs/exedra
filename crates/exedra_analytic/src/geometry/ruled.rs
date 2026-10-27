@@ -59,6 +59,7 @@ impl CurveSpan {
                 super::vector(frame, l.direction()),
             )?,
             Curve::Circle(c) => Curve::circle(frame * c.frame(), c.radius())?,
+            Curve::Ellipse(e) => Curve::ellipse(frame * e.frame(), e.semi_major(), e.semi_minor())?,
         };
         Self::new(curve, self.range, self.reversed)
     }
@@ -83,16 +84,18 @@ impl CurveSpan {
     fn speed(&self) -> f64 {
         match &self.curve {
             Curve::Line(l) => norm(l.direction()) * self.range.span(),
-            Curve::Circle(c) => {
-                c.radius() * self.range.span() * (1.0 + 4.0 * super::FRAME_TOLERANCE)
+            curve => {
+                curve.harmonic().expect("harmonic curve").1[0]
+                    * self.range.span()
+                    * (1.0 + 4.0 * super::FRAME_TOLERANCE)
             }
         }
     }
     fn second_bound(&self) -> f64 {
         match &self.curve {
             Curve::Line(_) => 0.0,
-            Curve::Circle(c) => {
-                c.radius()
+            curve => {
+                curve.harmonic().expect("harmonic curve").1[0]
                     * self.range.span()
                     * self.range.span()
                     * (1.0 + 4.0 * super::FRAME_TOLERANCE)
@@ -100,16 +103,16 @@ impl CurveSpan {
         }
     }
     pub(crate) fn magnitude(&self) -> f64 {
-        match &self.curve {
-            Curve::Circle(c) => {
-                c.frame()
+        match self.curve.harmonic() {
+            Some((frame, radii)) => {
+                frame
                     .rows
                     .iter()
                     .map(|r| r[3].abs())
-                    .fold(c.radius(), f64::max)
-                    + c.radius() * (1.0 + 4.0 * super::FRAME_TOLERANCE)
+                    .fold(radii[0], f64::max)
+                    + radii[0] * (1.0 + 4.0 * super::FRAME_TOLERANCE)
             }
-            Curve::Line(_) => [0.0, 1.0]
+            None => [0.0, 1.0]
                 .into_iter()
                 .flat_map(|t| self.evaluate(t).expect("checked").point)
                 .map(f64::abs)
@@ -128,45 +131,41 @@ impl CurveSpan {
                     ))
                 })
                 .fold(0.0, f64::max),
-            (Curve::Circle(a), Curve::Circle(b)) => {
-                let coefficients = |span: &Self, circle: &super::Circle| {
+            (a, b) if a.harmonic().is_some() && b.harmonic().is_some() => {
+                let coefficients = |span: &Self, curve: &Curve| {
+                    let (frame, [major, minor]) = curve.harmonic().expect("harmonic curve");
                     let phase = span.range.bounds()[usize::from(span.reversed)];
                     let (s, c) = (libm::sin(phase), libm::cos(phase));
                     let sign = if span.reversed { -1.0 } else { 1.0 };
                     [
-                        circle.frame().rows.map(|r| r[3]),
-                        super::vector(
-                            circle.frame(),
-                            [circle.radius() * c, circle.radius() * s, 0.0],
-                        ),
-                        super::vector(
-                            circle.frame(),
-                            [-sign * circle.radius() * s, sign * circle.radius() * c, 0.0],
-                        ),
+                        frame.rows.map(|r| r[3]),
+                        super::vector(frame, [major * c, minor * s, 0.0]),
+                        super::vector(frame, [-sign * major * s, sign * minor * c, 0.0]),
                     ]
                 };
+                let ar = a.harmonic().expect("harmonic").1[0];
+                let br = b.harmonic().expect("harmonic").1[0];
                 coefficients(self, a)
                     .into_iter()
                     .zip(coefficients(other, b))
                     .map(|(a, b)| norm(sub(a, b)))
                     .sum::<f64>()
-                    + b.radius() * (self.range.span() - other.range.span()).abs()
+                    + br * (self.range.span() - other.range.span()).abs()
                     + 8.0
                         * f64::EPSILON
-                        * (a.radius()
+                        * (ar
                             * self
                                 .range
                                 .bounds()
                                 .into_iter()
                                 .map(f64::abs)
                                 .fold(self.range.span(), f64::max)
-                            + b.radius()
-                                * other
-                                    .range
-                                    .bounds()
-                                    .into_iter()
-                                    .map(f64::abs)
-                                    .fold(other.range.span(), f64::max))
+                            + br * other
+                                .range
+                                .bounds()
+                                .into_iter()
+                                .map(f64::abs)
+                                .fold(other.range.span(), f64::max))
             }
             _ => f64::INFINITY,
         }

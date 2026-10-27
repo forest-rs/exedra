@@ -399,8 +399,8 @@ impl<F, E> Body<F, E> {
             } else {
                 match &edge.curve {
                     Curve::Line(_) => 1,
-                    Curve::Circle(circle) => circular_edge_count(
-                        circle.radius(),
+                    curve => circular_edge_count(
+                        curve.sampling_radius().expect("periodic curve"),
                         edge.range.span(),
                         policy.tolerance,
                         CircularEdgeConstraints::new(
@@ -543,7 +543,7 @@ impl<F, E> Body<F, E> {
             let [min, max] = edge.range.bounds();
             let key = (min.to_bits(), max.to_bits(), n);
             let reuse_phases = phase_key == Some(key);
-            if matches!(edge.curve, Curve::Circle(_)) && !reuse_phases {
+            if edge.curve.harmonic().is_some() && !reuse_phases {
                 phases.clear();
                 phases.reserve(n as usize - 1);
                 phase_key = Some(key);
@@ -556,7 +556,7 @@ impl<F, E> Body<F, E> {
                 max_parameter_step = max_parameter_step.max((parameter - previous_parameter).abs());
                 previous_parameter = parameter;
                 let point = match &edge.curve {
-                    Curve::Circle(circle) => {
+                    curve if curve.harmonic().is_some() => {
                         let [sin, cos] = if reuse_phases {
                             phases[k as usize - 1]
                         } else {
@@ -564,10 +564,10 @@ impl<F, E> Body<F, E> {
                             phases.push(phase);
                             phase
                         };
-                        let r = circle.radius();
-                        circle.frame().transform_point([r * cos, r * sin, 0.0])
+                        let (frame, [a, b]) = curve.harmonic().expect("harmonic curve");
+                        frame.transform_point([a * cos, b * sin, 0.0])
                     }
-                    Curve::Line(_) => {
+                    _ => {
                         edge.curve
                             .evaluate(parameter)
                             .ok_or(RealizationError::CollapsedEdge { edge: id })?
@@ -597,12 +597,12 @@ impl<F, E> Body<F, E> {
             {
                 return Err(RealizationError::CollapsedEdge { edge: id });
             }
-            if let Curve::Circle(circle) = &edge.curve {
+            if let Some(radius) = edge.curve.sampling_radius() {
                 // Absolute parameter origins can make nominally equal steps
                 // round differently. Bound the intervals actually evaluated.
                 max_parameter_step = max_parameter_step.max((max - previous_parameter).abs());
                 let sin = libm::sin(max_parameter_step / 4.0);
-                curve_deviation = curve_deviation.max(2.0 * circle.radius() * sin * sin);
+                curve_deviation = curve_deviation.max(2.0 * radius * sin * sin);
             }
         }
         chains.offsets.push(chains.vertices.len());
