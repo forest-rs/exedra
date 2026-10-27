@@ -35,10 +35,34 @@ struct Error {
     #[serde(flatten)]
     context: Option<Box<ErrorContext>>,
 }
+#[derive(Debug, Serialize)]
+struct CornerLocation {
+    boundary: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hole: Option<usize>,
+    segment: usize,
+    point: [f64; 2],
+}
 #[derive(Debug, Default, Serialize)]
 struct ErrorContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     node: Option<usize>,
+    #[serde(rename = "cornerPoint", skip_serializing_if = "Option::is_none")]
+    corner_point: Option<[f64; 2]>,
+    #[serde(rename = "cornerTolerance", skip_serializing_if = "Option::is_none")]
+    corner_tolerance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corner: Option<CornerLocation>,
+    #[serde(rename = "cornerCandidates", skip_serializing_if = "Option::is_none")]
+    corner_candidates: Option<Vec<CornerLocation>>,
+    #[serde(rename = "requestedSize", skip_serializing_if = "Option::is_none")]
+    requested_size: Option<f64>,
+    #[serde(rename = "segmentLength", skip_serializing_if = "Option::is_none")]
+    segment_length: Option<f64>,
+    #[serde(rename = "requestedTrim", skip_serializing_if = "Option::is_none")]
+    requested_trim: Option<f64>,
+    #[serde(rename = "minimumSeparation", skip_serializing_if = "Option::is_none")]
+    minimum_separation: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
