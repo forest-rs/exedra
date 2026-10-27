@@ -325,3 +325,37 @@ and prepared cache-hit snapshots. All raw timing samples are emitted, with three
 warmups and destruction outside timing. Native boundary-table payload and cache
 work counters are separate from mesh/render buffers; the payload is explicitly
 not total source memory. Cache-hit samples must perform no new native realization.
+
+## Browser authoring bridge workload
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin authoring_bridge
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --output /tmp/exedra-authoring-allocations
+```
+
+This runs the actual browser panel/vent/recess/pin graph through the public Rust
+bridge: JSON decode, native construction, metadata encoding, both part display
+realizations, buffer staging and transfer, report parsing and prior-document
+release. A new revision is installed before releasing the old one, preserving
+the browser's real cache lifecycle. Each quality has three warmups and 101 edit
+samples. Inputs are prepared outside timing. Output buffers stay alive at the
+stop time and are released afterward. The native-host JSON parsing and Vec
+moves are reported separately; they do not measure JavaScript parsing/copies,
+SDK graph encoding, UI scheduling, scene updates or GPU presentation.
+
+The allocation script reuses the existing isolated `dhat` profiling pattern;
+its dependency stays outside the workspace and production graph. It prepares
+requests and warms the session before counting exactly three edits. Counts
+include host metadata/report parsing, output staging and destruction. Separate
+checkpoints show allocations still retained by source/cache owners, then after
+releasing the final document/cache. The script accepts `--repo` for a matched
+baseline checkout, while keeping the same workload implementation. Inspect
+`dhat.json` by owning stack before attributing all traffic to the kernel.
+
+For CPU sampling, run the release binary with `sample`, attach
+`sample <pid> 4 1 -file authoring.sample.txt`, then press Enter. This executes
+repeated edits for 15 seconds. The `allocations` mode supports the repository's
+external macOS stack-logging workflow, with pauses before/after three edits and
+after release; exclude synthetic `flush_stack_log` stacks from that analysis.
+The benchmark is host-only so existing Wasm geometry CI does not pull a browser
+bridge into its dependency path.

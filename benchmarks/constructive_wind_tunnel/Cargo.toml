@@ -25,3 +25,6 @@ exedra_mesh_ops = { features = ["libm", "std"], workspace = true }
 exedra_profile.workspace = true
 exedra_testkit = { features = ["std"], workspace = true }
 serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+exedra_authoring_web_bridge = { path = "../../apps/exedra_authoring_web_bridge" }
