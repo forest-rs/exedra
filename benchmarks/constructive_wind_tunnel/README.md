@@ -189,6 +189,25 @@ shows the remaining work primarily in cap triangulation, mesh import and chart
 delivery. Source-curve evaluations are cached across rows; per-cell heap
 allocation is unnecessary.
 
+## Native axial finishes
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_axial_finish
+```
+
+The binary fillets four selected native edges on blocks with 0, 16 and 64
+existing blind pockets. Setup is outside timing. It checks native closure,
+transition count and repeatable complete results before 31 fresh timings after
+warmup; output destruction is excluded. A native-solid/provenance signature
+supports comparisons across implementations.
+
+Four alternating runs against a prefix-validation reference confirmed identical
+solid and provenance signatures. Validating each complete end once reduced the
+local median from about 0.19 to 0.044 ms with 16 pockets and from 6.48 to 0.34 ms
+with 64. The empty-pocket case remained about 0.007 ms. Depth and opposite-floor
+web checks remain active, and one native table build follows validation. These
+are local Apple Silicon measurements, not portable guarantees.
+
 ## License
 
 Apache-2.0 OR MIT
