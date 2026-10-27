@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     format,
     string::{String, ToString},
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 mod authoring;
+mod chart;
 mod inspect;
 use authoring::{Request, Units};
 
@@ -30,6 +32,11 @@ struct Error {
     code: &'static str,
     operation: &'static str,
     message: String,
+    #[serde(flatten)]
+    context: Option<Box<ErrorContext>>,
+}
+#[derive(Debug, Default, Serialize)]
+struct ErrorContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     node: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,6 +45,29 @@ struct Error {
     face: Option<u32>,
     #[serde(rename = "geometryFamily", skip_serializing_if = "Option::is_none")]
     geometry_family: Option<&'static str>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_family"
+    )]
+    family: Option<exedra_compile::NativeFamily>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clearance: Option<f64>,
+    #[serde(rename = "requiredClearance", skip_serializing_if = "Option::is_none")]
+    required_clearance: Option<f64>,
+    #[serde(rename = "axisDot", skip_serializing_if = "Option::is_none")]
+    axis_dot: Option<f64>,
+    #[serde(rename = "minimumAxisDot", skip_serializing_if = "Option::is_none")]
+    minimum_axis_dot: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<&'static str>,
+}
+fn serialize_family<S: serde::Serializer>(
+    family: &Option<exedra_compile::NativeFamily>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    family.map(inspect::family).serialize(serializer)
 }
 impl Error {
     fn new(code: &'static str, operation: &'static str, message: impl Into<String>) -> Self {
@@ -45,18 +75,18 @@ impl Error {
             code,
             operation,
             message: message.into(),
-            node: None,
-            profile: None,
-            face: None,
-            geometry_family: None,
+            context: None,
         }
     }
+    fn context_mut(&mut self) -> &mut ErrorContext {
+        self.context.get_or_insert_with(Box::default)
+    }
     fn node(mut self, node: usize) -> Self {
-        self.node = Some(node);
+        self.context_mut().node = Some(node);
         self
     }
     fn profile(mut self, profile: usize) -> Self {
-        self.profile = Some(profile);
+        self.context_mut().profile = Some(profile);
         self
     }
     fn step(operation: &'static str, error: exedra_step::StepError) -> Self {
@@ -67,8 +97,8 @@ impl Error {
         };
         let mut diagnostic = Self::new(code, operation, error.to_string());
         if let exedra_step::StepError::UnsupportedSurface { face, family } = &error {
-            diagnostic.face = Some(face.0);
-            diagnostic.geometry_family = Some(family);
+            diagnostic.context_mut().face = Some(face.0);
+            diagnostic.context_mut().geometry_family = Some(family);
         }
         diagnostic
     }
@@ -215,15 +245,29 @@ impl Session {
                 "Display maxVertices must be in 1..=250000",
             ));
         }
-        let mut policy = CompilePolicy::default();
-        policy.native.tolerance = options.tolerance;
-        policy.native.geometry_gap = doc.separation;
-        policy.native.max_vertices = options.max_vertices;
+        let policy = CompilePolicy {
+            native_chart: options.chart.map(Into::into),
+            native: exedra_analytic::realize::RealizationPolicy {
+                tolerance: options.tolerance,
+                geometry_gap: doc.separation,
+                max_vertices: options.max_vertices,
+                ..exedra_analytic::realize::RealizationPolicy::default()
+            },
+            ..CompilePolicy::default()
+        };
         let before = self.compiler.counters();
         let snapshot = self
             .compiler
             .compile_snapshot(&[PartInput::prepared(&part.name, &part.source)], &policy)
-            .map_err(|e| Error::new("realization.invalid", "part.realize", e.to_string()))?;
+            .map_err(|error| {
+                let message = error.to_string();
+                match &error {
+                    exedra_compile::CompileError::NativeChart { error, .. } => {
+                        chart::diagnostic(error, message)
+                    }
+                    _ => Error::new("realization.invalid", "part.realize", message),
+                }
+            })?;
         let after = self.compiler.counters();
         let body = snapshot
             .body(PartId(0), 0)
@@ -237,6 +281,17 @@ impl Session {
             .expect("one input")
             .bodies[0]
             .tri;
+        if tri.positions.len() > options.max_vertices as usize {
+            return Err(Error::new(
+                "budget.renderVertices",
+                "part.realize",
+                format!(
+                    "Display needs {} render vertices after attribute seams; maxVertices is {}",
+                    tri.positions.len(),
+                    options.max_vertices
+                ),
+            ));
+        }
         let report = &realization.report;
         if [
             report.tolerance,
@@ -254,15 +309,54 @@ impl Session {
                 "Display accuracy evidence exceeds finite f64 values",
             ));
         }
+        let curve_refinement=report.curve_refinement.as_ref().map(|refinement| {
+            use exedra_analytic::realize::CurveRefinementOutcome;
+            let (outcome,diagnostic)=match &refinement.outcome {
+                CurveRefinementOutcome::Improved=>("improved",None),
+                CurveRefinementOutcome::NotImproved=>("notImproved",None),
+                CurveRefinementOutcome::Refused(error)=>("refused",Some(Error::new("refinement.refused","part.realize",error.to_string()))),
+            };
+            serde_json::json!({"initialDeviation":refinement.initial_deviation,"curveTolerance":refinement.curve_tolerance,"outcome":outcome,"diagnostic":diagnostic})
+        });
+        if report
+            .curve_refinement
+            .as_ref()
+            .is_some_and(|r| !r.initial_deviation.is_finite() || !r.curve_tolerance.is_finite())
+        {
+            return Err(Error::new(
+                "realization.numericLimit",
+                "part.realize",
+                "Curve refinement evidence exceeds finite f64 values",
+            ));
+        }
+        let applied_chart = realization
+            .chart()
+            .map(chart::InputChart::try_from)
+            .transpose()?;
+        if applied_chart.is_some() && tri.uvs.len() != tri.positions.len() {
+            return Err(Error::new(
+                "realization.uvs",
+                "part.realize",
+                "Construction UV/render vertex correspondence is incomplete",
+            ));
+        }
         let data = serde_json::json!({"tolerance":report.tolerance,"maxDeviation":report.max_deviation,
             "maxCurveDeviation":report.max_curve_deviation,"maxSurfaceDeviation":report.max_surface_deviation,
             "maxVertexDisplacement":report.max_vertex_displacement,"withinTolerance":report.within_tolerance(),
             "triangles":tri.indices.len()/3,"vertices":tri.positions.len(),
             "cacheHits":u32::try_from(after.cache_hits-before.cache_hits).expect("one input"),
-            "nativeRealizations":u32::try_from(after.native_realizations-before.native_realizations).expect("one input")});
+            "nativeRealizations":u32::try_from(after.native_realizations-before.native_realizations).expect("one input"),
+            "hasUvs":applied_chart.is_some(),"chart":applied_chart,
+            "work":{"attempts":report.work.attempts,"completedBoundarySamples":report.work.completed_boundary_samples,"completedTriangles":report.work.completed_triangles},
+            "curveRefinement":curve_refinement});
         Ok(NativeBuffers {
             positions: tri.positions.iter().flatten().copied().collect(),
             normals: tri.normals.iter().flatten().copied().collect(),
+            uvs: if applied_chart.is_some() {
+                tri.uvs.iter().flatten().copied().collect()
+            } else {
+                Vec::new()
+            },
             indices: tri.indices.clone(),
             native_faces: realization.render_faces().iter().map(|f| f.0).collect(),
             report: json(&data),
@@ -369,6 +463,8 @@ impl Session {
 struct DisplayOptions {
     tolerance: f64,
     max_vertices: u32,
+    #[serde(default)]
+    chart: Option<chart::InputChart>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -472,12 +568,17 @@ impl AuthoringKernel {
 pub struct NativeBuffers {
     positions: Vec<f32>,
     normals: Vec<f32>,
+    uvs: Vec<f32>,
     indices: Vec<u32>,
     native_faces: Vec<u32>,
     report: String,
 }
 #[wasm_bindgen]
 impl NativeBuffers {
+    /// Takes primary construction UVs, or an empty buffer for uncharted output.
+    pub fn take_uvs(&mut self) -> Vec<f32> {
+        core::mem::take(&mut self.uvs)
+    }
     /// Takes packed xyz positions; repeated calls return an empty buffer.
     pub fn take_positions(&mut self) -> Vec<f32> {
         core::mem::take(&mut self.positions)
@@ -553,6 +654,7 @@ mod tests {
                 DisplayOptions {
                     tolerance,
                     max_vertices: 250000,
+                    chart: None,
                 },
             )
             .unwrap()
@@ -726,7 +828,8 @@ mod tests {
                     0,
                     DisplayOptions {
                         tolerance: 0.1,
-                        max_vertices: 1000
+                        max_vertices: 1000,
+                        chart: None,
                     }
                 )
                 .unwrap_err()
@@ -735,5 +838,283 @@ mod tests {
         );
         session.release(19);
         assert_eq!(session.documents.len(), 0);
+    }
+    #[test]
+    fn construction_uvs_are_real_typed_buffers_with_native_identity_and_policy_reports() {
+        let transform = serde_json::json!({"matrix":[[0.05,0],[0,0.05]],"offset":[0,0]});
+        for kind in ["revolve", "sweep", "loft"] {
+            let profile = if kind == "revolve" {
+                serde_json::json!({"kind":"translated","profile":0,"offset":[20,3]})
+            } else {
+                serde_json::json!({"kind":"circle","radius":3})
+            };
+            let node = match kind {
+                "revolve" => {
+                    serde_json::json!({"kind":"revolve","profile":1,"angle":core::f64::consts::TAU})
+                }
+                "sweep" => serde_json::json!({"kind":"sweep","profile":1,"path":0}),
+                _ => {
+                    serde_json::json!({"kind":"loft","sections":[{"profile":1,"placement":{}},{"profile":1,"placement":{"translation":[3,0,30]}}]})
+                }
+            };
+            let request=serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"circle","radius":3},profile],"paths":[{"start":[0,0,0],"tangent":[0,1,0],"sectionX":[1,0,0],"steps":[{"kind":"lineBy","offset":[0,20,0]},{"kind":"tangentArc","radius":40,"angle":core::f64::consts::FRAC_PI_2,"normal":[0,0,1]}]}],"nodes":[node],"roots":[{"name":"part","node":0}]})).unwrap();
+            let mut session = Session::new();
+            let metadata = session.build(request).unwrap();
+            assert_eq!(value(&metadata)["parts"][0]["chartKind"], kind);
+            let chart_value = match kind {
+                "revolve" => {
+                    serde_json::json!({"kind":kind,"referenceRadius":20,"wall":transform,"caps":transform})
+                }
+                "loft" => {
+                    serde_json::json!({"kind":kind,"referenceSection":0,"restLength":30,"stations":"datumDistance","wall":transform,"caps":transform})
+                }
+                _ => serde_json::json!({"kind":kind,"wall":transform,"caps":transform}),
+            };
+            let chart: chart::InputChart = serde_json::from_value(chart_value.clone()).unwrap();
+            let source_faces = value(&metadata)["parts"][0]["faces"]
+                .as_array()
+                .unwrap()
+                .clone();
+            if kind == "revolve" {
+                let native = session.documents[&1].parts[0].native();
+                let NativeGeometryRef::Revolution(source) = native.geometry() else {
+                    unreachable!()
+                };
+                let native_output = source
+                    .realize(&exedra_analytic::realize::RealizationPolicy {
+                        tolerance: 0.12,
+                        geometry_gap: 1e-6,
+                        ..exedra_analytic::realize::RealizationPolicy::default()
+                    })
+                    .unwrap();
+                let native_limit = u32::try_from(native_output.mesh.vertices().count()).unwrap();
+                let error = session
+                    .realize(
+                        1,
+                        0,
+                        DisplayOptions {
+                            tolerance: 0.12,
+                            max_vertices: native_limit,
+                            chart: Some(chart),
+                        },
+                    )
+                    .unwrap_err();
+                assert_eq!(error.code, "budget.renderVertices");
+            }
+            let mut original = session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance: 0.12,
+                        max_vertices: 250_000,
+                        chart: Some(chart),
+                    },
+                )
+                .unwrap();
+            let report = value(&original.report);
+            assert_eq!(report["hasUvs"], true);
+            assert_eq!(report["chart"], serde_json::to_value(chart).unwrap());
+            assert_eq!(report["withinTolerance"], true);
+            assert!(report["work"]["attempts"].as_u64().unwrap() >= 1);
+            assert_eq!(original.uvs.len() * 3, original.positions.len() * 2);
+            assert!(original.uvs.iter().all(|v| v.is_finite()));
+            assert_eq!(original.native_faces.len() * 3, original.indices.len());
+            assert!(original.native_faces.iter().all(|face| {
+                source_faces
+                    .iter()
+                    .any(|f| f["id"].as_u64() == Some(u64::from(*face)))
+            }));
+            let repeated = session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance: 0.12,
+                        max_vertices: 250_000,
+                        chart: Some(chart),
+                    },
+                )
+                .unwrap();
+            assert_eq!(value(&repeated.report)["cacheHits"], 1);
+            assert_eq!(repeated.positions, original.positions);
+            assert_eq!(repeated.uvs, original.uvs);
+            assert_eq!(repeated.native_faces, original.native_faces);
+            let taken = original.take_uvs();
+            assert!(!taken.is_empty());
+            assert!(original.take_uvs().is_empty());
+            session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance: 0.035,
+                        max_vertices: 250_000,
+                        chart: Some(chart),
+                    },
+                )
+                .unwrap();
+            assert_eq!(session.documents[&1].metadata(1).unwrap(), metadata);
+            let uncharted = session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance: 0.12,
+                        max_vertices: 250_000,
+                        chart: None,
+                    },
+                )
+                .unwrap();
+            assert!(uncharted.uvs.is_empty());
+            assert_eq!(value(&uncharted.report)["hasUvs"], false);
+            // Build an invalid transform without changing the source or relying on a cache miss.
+            let mut invalid: serde_json::Value = serde_json::to_value(chart).unwrap();
+            invalid["wall"]["matrix"] = serde_json::json!([[0, 0], [0, 0]]);
+            let invalid: chart::InputChart = serde_json::from_value(invalid).unwrap();
+            assert_eq!(
+                session
+                    .realize(
+                        1,
+                        0,
+                        DisplayOptions {
+                            tolerance: 0.12,
+                            max_vertices: 250_000,
+                            chart: Some(invalid)
+                        }
+                    )
+                    .unwrap_err()
+                    .code,
+                "chart.invalid"
+            );
+            let mut collapsed: serde_json::Value = serde_json::to_value(chart).unwrap();
+            collapsed["wall"]["offset"] = serde_json::json!([1e20, 1e20]);
+            let collapsed: chart::InputChart = serde_json::from_value(collapsed).unwrap();
+            let error = session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance: 0.12,
+                        max_vertices: 250_000,
+                        chart: Some(collapsed),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.code, "chart.numericLimit");
+            assert!(error.context.as_ref().is_some_and(|c| c.face.is_some()));
+            session.release(1);
+            assert_eq!(value(&session.stats())["documents"], 0);
+            assert_eq!(value(&session.stats())["cacheEntries"], 0);
+        }
+    }
+    fn bore_request(direction: [f64; 3], radius: f64, separation: f64, placed: bool) -> Request {
+        let placement = if placed {
+            serde_json::json!({"translation":[100,200,300],"rotationXYZ":[0.2,0.3,0.4]})
+        } else {
+            serde_json::json!({})
+        };
+        serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"rectangle","width":100,"height":70},{"kind":"tagged","profile":0,"name":"plate"}],
+            "nodes":[{"kind":"extrude","profile":1,"height":20,"placement":placement},{"kind":"throughBore","base":0,"point":[0,0,10],"direction":direction,"radius":radius,"separation":separation,"feature":"bore"}],"roots":[{"name":"plate","node":1}]
+        })).unwrap()
+    }
+    #[test]
+    fn exact_bore_metadata_step_and_placed_local_axis_are_end_to_end() {
+        for placed in [false, true] {
+            let mut session = Session::new();
+            let metadata = value(
+                &session
+                    .build(bore_request([1.0, 0.0, 1.0], 8.0, 2.0, placed))
+                    .unwrap(),
+            );
+            let part = &metadata["parts"][0];
+            assert_eq!(part["family"], "boredPlate");
+            assert_eq!(part["stepSupport"]["status"], "supported");
+            assert!(part["chartKind"].is_null());
+            let expected_volume =
+                140_000.0 - core::f64::consts::PI * 64.0 * 20.0 * core::f64::consts::SQRT_2;
+            assert!(
+                (part["measurements"]["volume"]["value"].as_f64().unwrap() - expected_volume).abs()
+                    < 1e-8
+            );
+            assert_eq!(part["bore"]["coordinateSpace"], "construction");
+            assert_eq!(part["bore"]["point"], serde_json::json!([0.0, 0.0, 10.0]));
+            for rim in part["bore"]["rims"].as_array().unwrap() {
+                assert!(
+                    (rim["semiMajor"].as_f64().unwrap() - 8.0 * core::f64::consts::SQRT_2).abs()
+                        < 1e-10
+                );
+                assert!((rim["semiMinor"].as_f64().unwrap() - 8.0).abs() < 1e-10);
+            }
+            let expected = if placed {
+                exedra_math::Placement3::euler_extrinsic_xyz_then_translate(
+                    0.2,
+                    0.3,
+                    0.4,
+                    [100.0, 200.0, 300.0],
+                )
+                .transform_point([0.0, 0.0, 10.0])
+            } else {
+                [0.0, 0.0, 10.0]
+            };
+            for (actual, expected) in part["bore"]["documentPoint"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(expected)
+            {
+                assert!((actual.as_f64().unwrap() - expected).abs() < 1e-10);
+            }
+            let mesh = session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance: 0.12,
+                        max_vertices: 250_000,
+                        chart: None,
+                    },
+                )
+                .unwrap();
+            assert_eq!(value(&mesh.report)["withinTolerance"], true);
+            assert!(
+                mesh.native_faces
+                    .contains(&u32::try_from(part["bore"]["wallFace"].as_u64().unwrap()).unwrap())
+            );
+            let file = session
+                .step(
+                    1,
+                    0,
+                    ExchangeOptions {
+                        name: None,
+                        timestamp: "2026-10-27T00:00:00Z".into(),
+                        tolerance: None,
+                    },
+                )
+                .unwrap();
+            assert!(file.text.contains("ELLIPSE("));
+            assert_eq!(value(&file.report)["faces"], 7);
+            session.release(1);
+            assert_eq!(value(&session.stats())["documents"], 0);
+        }
+        let mut session = Session::new();
+        let good = session
+            .build(bore_request([1.0, 0.0, 1.0], 8.0, 2.0, false))
+            .unwrap();
+        let clearance = session
+            .build(bore_request([1.0, 0.0, 1.0], 8.0, 40.0, false))
+            .unwrap_err();
+        assert_eq!(clearance.code, "bore.clearance");
+        assert_eq!(
+            clearance.context.as_ref().unwrap().required_clearance,
+            Some(40.0)
+        );
+        let parallel = session
+            .build(bore_request([1.0, 0.0, 0.01], 8.0, 2.0, false))
+            .unwrap_err();
+        assert_eq!(parallel.code, "bore.nearParallel");
+        assert!(parallel.context.as_ref().unwrap().axis_dot.unwrap() < 0.05);
+        assert_eq!(session.documents[&1].metadata(1).unwrap(), good);
+        assert_eq!(session.documents.len(), 1);
     }
 }

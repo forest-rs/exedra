@@ -21,6 +21,15 @@ pub(crate) fn family(value: NativeFamily) -> &'static str {
         NativeFamily::BoredPlate => "boredPlate",
     }
 }
+fn chart_kind(kind: exedra_constructive::chart::SurfaceChartKind) -> &'static str {
+    use exedra_constructive::chart::SurfaceChartKind;
+    match kind {
+        SurfaceChartKind::Extrude => "extrude",
+        SurfaceChartKind::Revolve => "revolve",
+        SurfaceChartKind::Sweep => "sweep",
+        SurfaceChartKind::Loft => "loft",
+    }
+}
 fn measure(value: Result<f64, NativeMeasureError>, measure: &'static str) -> Value {
     match value {
         Ok(value) => json!({"status":"available","value":value}),
@@ -43,6 +52,10 @@ fn faces<F, E>(
     native: &NativeSource,
     role: impl Fn(&F) -> &'static str,
 ) -> Vec<Value> {
+    let caps = [
+        native.cap(exedra_analytic::End::Start),
+        native.cap(exedra_analytic::End::End),
+    ];
     body.faces()
         .iter()
         .enumerate()
@@ -65,12 +78,54 @@ fn faces<F, E>(
             features.sort();
             features.dedup();
             let mut value = json!({"id":id,"role":role,"surface":surface,"features":features});
+            let face_id =
+                exedra_analytic::body::FaceId(u32::try_from(id).expect("native face IDs fit u32"));
+            if caps[0] == Some(face_id) {
+                value["end"] = json!("start");
+            } else if caps[1] == Some(face_id) {
+                value["end"] = json!("end");
+            }
             if features.len() == 1 {
                 value["feature"] = json!(features[0]);
             }
             value
         })
         .collect()
+}
+fn bore_info(source: &exedra_analytic::bore::BoredPlate) -> Result<Value, Error> {
+    use exedra_analytic::geometry::Curve;
+    let report = source.report();
+    let definition = source.bore();
+    let frame = source.frame();
+    let document_point = frame.transform_point(definition.point());
+    let document_direction = frame.transform_vector(definition.direction());
+    if document_point
+        .iter()
+        .chain(&document_direction)
+        .any(|v| !v.is_finite())
+    {
+        return Err(Error::new(
+            "bore.numericLimit",
+            "part.inspect",
+            "Placed bore-axis evidence exceeds finite f64 values",
+        ));
+    }
+    let rims=report.rims.iter().map(|id| {
+        let edge=source.body().edge(*id).ok_or_else(||Error::new("inspection.boreRim","part.inspect","Native bore rim edge is absent"))?;
+        let (major,minor,local_center)=match &edge.curve {
+            Curve::Ellipse(e)=>(e.semi_major(),e.semi_minor(),e.frame().transform_point([0.0;3])),
+            Curve::Circle(c)=>(c.radius(),c.radius(),c.frame().transform_point([0.0;3])),
+            Curve::Line(_)=>return Err(Error::new("inspection.boreRim","part.inspect","Native bore rim is not a conic")),
+        };
+        let document_center=frame.transform_point(local_center);
+        if document_center.iter().chain([&major,&minor]).any(|v|!v.is_finite()){return Err(Error::new("bore.numericLimit","part.inspect","Placed native rim evidence exceeds finite f64 values"));}
+        Ok(json!({"edge":id.0,"semiMajor":major,"semiMinor":minor,"documentCenter":document_center}))
+    }).collect::<Result<Vec<_>,Error>>()?;
+    Ok(
+        json!({"coordinateSpace":"construction","point":definition.point(),"direction":definition.direction(),"radius":definition.radius(),
+        "documentPoint":document_point,"documentDirection":document_direction,
+        "rims":rims,"wallFace":report.wall.0,"minimumClearance":report.min_clearance,"maxNativeGap":report.max_gap,"axisDot":report.axis_dot}),
+    )
 }
 pub(crate) fn metadata(
     native: &NativeSource,
@@ -116,12 +171,16 @@ pub(crate) fn metadata(
             json!({"status":"unsupported","diagnostic":Error::step("part.stepSupport",error)})
         }
     };
+    let bore = match native.geometry() {
+        NativeGeometryRef::BoredPlate(v) => bore_info(v)?,
+        _ => Value::Null,
+    };
     let storage = native.boundary_storage();
     let bounds = native
         .conservative_bounds()
         .map_err(|error| Error::new("bounds.numericLimit", "part.inspect", error.to_string()))?;
     Ok(
-        json!({"family":family(native.family()),"stepSupport":step_support,"faces":faces,"measurements":{
+        json!({"family":family(native.family()),"stepSupport":step_support,"chartKind":native.chart_kind().map(chart_kind),"bore":bore,"faces":faces,"measurements":{
             "volume":measure(native.volume(),"volume"),"surfaceArea":measure(native.surface_area(),"surfaceArea"),
             "bounds":bounds,"boundsKind":"conservativeNativeSupport","faces":storage.faces,"edges":storage.edges,"vertices":storage.vertices
         }}),

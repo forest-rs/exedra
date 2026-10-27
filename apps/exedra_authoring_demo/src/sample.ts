@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { ExedraError, extrude, profiles, revolve, sweep, loft, paths, placement } from "@exedra/authoring";
+import { ExedraError, extrude, profiles, revolve, sweep, loft, paths, placement, charts, uvTransform, type NativePart, type ConstructionChart } from "@exedra/authoring";
 
 export interface PanelParameters {
   width: number;
@@ -120,4 +120,25 @@ export function authorFinishedPlate(p:FinishParameters) {
   const edges=original.axialEdges(p.inner?"bore":"body");
   const finished=p.treatment === "fillet"?edges.fillet({radius:p.size,feature:"round"}):edges.chamfer({distance:p.size,feature:"chamfer"});
   return {plate:finished};
+}
+
+export interface ChartParameters {repeat:number;referenceRadius:number;restLength:number;referenceSection:number;stations:"sectionIndex"|"datumDistance";}
+/** Actual retained native capability chooses the chart; no projected fallback is painted. */
+export function constructionChart(part:NativePart,p:ChartParameters):ConstructionChart|undefined {
+  if(part.chartKind===null)return undefined;
+  const grid=uvTransform({matrix:[[1/p.repeat,0],[0,1/p.repeat]]});
+  switch(part.chartKind){
+    case "extrude":return charts.extrude({wall:grid,caps:grid});
+    case "revolve":return charts.revolve({referenceRadius:p.referenceRadius,wall:grid,caps:grid});
+    case "sweep":return charts.sweep({wall:grid,caps:grid});
+    case "loft":return charts.loft({referenceSection:p.referenceSection,restLength:p.restLength,stations:p.stations,wall:grid,caps:grid});
+  }
+}
+
+export interface BoreParameters {width:number;height:number;thickness:number;radius:number;angle:number;separation:number;}
+/** Exact cylinder/plate intersection: the complete rims are native ellipses. */
+export function authorAngledBore(p:BoreParameters){
+  const plate=extrude(profiles.rectangle({width:p.width,height:p.height}).tagged("plate"),{height:p.thickness});
+  const radians=p.angle*Math.PI/180;
+  return {plate:plate.throughBore({point:[0,0,p.thickness/2],direction:[Math.sin(radians),0,Math.cos(radians)],radius:p.radius,separation:p.separation,feature:"bore"})};
 }

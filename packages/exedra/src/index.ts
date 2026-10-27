@@ -16,6 +16,38 @@ function point3(value: XYZ): XYZ { return Object.freeze(value.map((v,i)=>finite(
 export function placement(options: { translation?: XYZ; rotationXYZ?: XYZ } = {}): Placement {
   return Object.freeze({ translation: point3(options.translation ?? [0,0,0]), rotationXYZ: point3(options.rotationXYZ ?? [0,0,0]) });
 }
+/** Row-major mapping from construction lengths to dimensionless texture repeats. */
+export interface UvTransform {readonly matrix:readonly [XY,XY];readonly offset:XY;}
+/** Copies a texture-space transform; geometric chart validation remains in Rust. */
+export function uvTransform(options:{matrix?:readonly [XY,XY];offset?:XY}={}):UvTransform {
+  const matrix=options.matrix??[[1,0],[0,1]];
+  return Object.freeze({matrix:Object.freeze([point(matrix[0]),point(matrix[1])]) as readonly [XY,XY],offset:point(options.offset??[0,0])});
+}
+interface ChartMaps {readonly wall:UvTransform;readonly caps:UvTransform;}
+export type ExtrudeChart=ChartMaps & {readonly kind:"extrude"};
+export type RevolveChart=ChartMaps & {readonly kind:"revolve";readonly referenceRadius:number};
+export type SweepChart=ChartMaps & {readonly kind:"sweep"};
+export type LoftChart=ChartMaps & {readonly kind:"loft";readonly referenceSection:number;readonly restLength:number;readonly stations:"sectionIndex"|"datumDistance"};
+export type ConstructionChart=ExtrudeChart|RevolveChart|SweepChart|LoftChart;
+function chartMaps(options:{wall?:UvTransform;caps?:UvTransform}):ChartMaps {return {wall:uvTransform(options.wall),caps:uvTransform(options.caps)};}
+/** Immutable display policy. It changes construction UVs, never native source identity. */
+export const charts=Object.freeze({
+  /** Availability is reported per installed source; retained extrusions may refuse this chart. */
+  extrude(options:{wall?:UvTransform;caps?:UvTransform}={}):ExtrudeChart {return Object.freeze({kind:"extrude",...chartMaps(options)});},
+  /** U uses referenceRadius × angle; other radii stretch this rest chart. */
+  revolve(options:{referenceRadius:number;wall?:UvTransform;caps?:UvTransform}):RevolveChart {return Object.freeze({kind:"revolve",referenceRadius:finite(options.referenceRadius,"reference radius"),...chartMaps(options)});},
+  /** Exact source profile distance and centerline distance; bends stretch inner/outer rails. */
+  sweep(options:{wall?:UvTransform;caps?:UvTransform}={}):SweepChart {return Object.freeze({kind:"sweep",...chartMaps(options)});},
+  /** Exact reference-profile distance and explicit rest length, divided by the station rule. */
+  loft(options:{restLength:number;referenceSection?:number;stations?:"sectionIndex"|"datumDistance";wall?:UvTransform;caps?:UvTransform}):LoftChart {
+    const section=options.referenceSection??0;
+    if(!Number.isInteger(section)||section<0||section>0xffff_ffff)fail("input.referenceSection","Reference section must be an unsigned 32-bit integer");
+    return Object.freeze({kind:"loft",referenceSection:section,restLength:finite(options.restLength,"rest length"),stations:options.stations??"datumDistance",...chartMaps(options)});
+  },
+});
+function snapshotChart(chart:ConstructionChart):ConstructionChart {
+  switch(chart.kind){case "extrude":return charts.extrude(chart);case "revolve":return charts.revolve(chart);case "sweep":return charts.sweep(chart);case "loft":return charts.loft(chart);default:fail("input.chart","Unknown construction chart kind");}
+}
 export type End = "start" | "end";
 
 export interface Diagnostic {
@@ -29,6 +61,11 @@ export interface Diagnostic {
   measure?: "volume" | "surfaceArea";
   face?: number;
   geometryFamily?: string;
+  clearance?:number;
+  requiredClearance?:number;
+  axisDot?:number;
+  minimumAxisDot?:number;
+  end?:End;
 }
 /** Host-observed elapsed milliseconds at the SDK/Wasm boundary; never GPU or presentation time. */
 export interface KernelCallTiming {
@@ -65,7 +102,7 @@ class CallTiming {
 }
 /** A structured authoring, native geometry, lifecycle or realization refusal. */
 export class ExedraError extends Error {
-  readonly diagnostic: Diagnostic;
+  readonly diagnostic: Readonly<Diagnostic>;
   readonly timing?: KernelCallTiming;
   constructor(diagnostic: Diagnostic, timing?: KernelCallTiming) {
     super(diagnostic.message);
@@ -181,6 +218,7 @@ export interface LoftSection {readonly profile:Profile;readonly placement:Placem
 
 type FaceSelector = { kind: "floor"; feature: string } | { kind: "cap"; end: End };
 type SolidNode =
+  | {kind:"throughBore";base:Solid;point:XYZ;direction:XYZ;radius:number;separation:number;feature?:string}
   | { kind:"sweep"; profile:Profile; path:CurvePath; placement:Placement }
   | { kind:"loft"; sections:readonly LoftSection[]; placement:Placement }
   | { kind:"axialFinish"; base:Solid; feature:string; treatment:"fillet"|"chamfer"; size:number; transition:string }
@@ -190,6 +228,15 @@ type SolidNode =
   | { kind: "onFace"; host: Solid; face: FaceSelector; profile: Profile; height: number; offset: number; at: XY };
 const solidNodes = new WeakMap<Solid, SolidNode>();
 
+/** An unoriented cylinder axis in the base extrusion's construction space, before placement. */
+export interface ThroughBoreOptions {
+  readonly point:XYZ;
+  readonly direction:XYZ;
+  readonly radius:number;
+  /** Minimum remaining material from each complete rim to plate sidewalls, in document units. Distinct from numeric separation/display tolerance. */
+  readonly separation:number;
+  readonly feature?:string;
+}
 /** Immutable native construction intent, distinct from an installed/queryable part. */
 export class Solid {
   private constructor(node: SolidNode) {
@@ -218,6 +265,10 @@ export class Solid {
   /** @internal Lowered by the named axial-edge selection. */
   static axialFinish(base:Solid,feature:string,treatment:"fillet"|"chamfer",size:number,transition:string):Solid {
     return new Solid({kind:"axialFinish",base,feature:name(feature),treatment,size:finite(size,"finish size"),transition:name(transition)});
+  }
+  /** Exact through bore on a plain rectangular extrusion. Point/direction are in the base's construction space, before placement. */
+  throughBore(options:ThroughBoreOptions):Solid {
+    return new Solid({kind:"throughBore",base:this,point:point3(options.point),direction:point3(options.direction),radius:finite(options.radius,"bore radius"),separation:finite(options.separation,"bore clearance"),feature:options.feature===undefined?undefined:name(options.feature)});
   }
   pocket(profile: Profile, options: { end: End; depth: number; at?: XY }): Solid {
     return new Solid({ kind: "pocket", base: this, profile, end: options.end, depth: finite(options.depth, "depth"), at: point(options.at ?? [0, 0]) });
@@ -299,10 +350,28 @@ export interface NativeFace {
   id: number;
   features: readonly string[];
   feature?: string;
+  end?:End;
   role: "cap" | "wall" | "floor";
   surface: "plane" | "cylinder" | "cone" | "torus" | "ruled";
 }
+/** Completed work that generated this output; retained on cache hits. Current-call counters are separate. */
+export interface RealizationWork {
+  readonly attempts:number;
+  readonly completedBoundarySamples:number;
+  readonly completedTriangles:number;
+}
+/** A bounded optional retry. Improved does not imply that the final tolerance was met. */
+export interface CurveRefinement {
+  readonly initialDeviation:number;
+  readonly curveTolerance:number;
+  readonly outcome:"improved"|"notImproved"|"refused";
+  readonly diagnostic?:Readonly<Diagnostic>;
+}
 export interface RealizationReport {
+  hasUvs:boolean;
+  chart:ConstructionChart|null;
+  work:RealizationWork;
+  curveRefinement:CurveRefinement|null;
   tolerance: number;
   maxDeviation: number;
   maxCurveDeviation: number;
@@ -336,7 +405,15 @@ export interface StepReport {
     faces: readonly (number | null)[];
   };
 }
-interface PartMetadata { family: NativeFamily; name: string; index: number; fingerprint: string; stepSupport: StepSupport; measurements: NativeMeasurements; faces: NativeFace[] }
+/** Native conic rims and axis evidence. Axis inputs are construction-space; document values include placement. */
+export interface NativeBore {
+  readonly coordinateSpace:"construction";
+  readonly point:XYZ;readonly direction:XYZ;readonly radius:number;
+  readonly documentPoint:XYZ;readonly documentDirection:XYZ;
+  readonly rims:readonly {readonly edge:number;readonly semiMajor:number;readonly semiMinor:number;readonly documentCenter:XYZ}[];
+  readonly wallFace:number;readonly minimumClearance:number;readonly maxNativeGap:number;readonly axisDot:number;
+}
+interface PartMetadata { bore:NativeBore|null; chartKind:ConstructionChart["kind"]|null; family: NativeFamily; name: string; index: number; fingerprint: string; stepSupport: StepSupport; measurements: NativeMeasurements; faces: NativeFace[] }
 interface DocumentMetadata { id: number; units: LengthUnit; parts: PartMetadata[] }
 
 /** Buffer-transfer surface implemented by the Wasm bridge. Each buffer is taken once. */
@@ -345,6 +422,7 @@ export interface NativeBuffers {
   take_normals(): Float32Array;
   take_indices(): Uint32Array;
   take_native_faces(): Uint32Array;
+  take_uvs():Float32Array;
   report_json(): string;
   free(): void;
 }
@@ -395,6 +473,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     let wire:unknown;
     switch(source.kind){
       case "loft":wire={...source,sections:source.sections.map(s=>({...s,profile:visitProfile(s.profile)}))};break;
+      case "throughBore":wire={...source,base:visit(source.base)};break;
       case "axialFinish":wire={...source,base:visit(source.base)};break;
       case "sweep": {
         let path=pathIds.get(source.path);
@@ -506,6 +585,9 @@ export class NativeDocument {
 /** A queryable immutable native part, scoped to one installed document. */
 export class NativePart {
   readonly family: NativeFamily;
+  /** Structural chart operation, or null when native chart realization is unavailable. */
+  readonly chartKind:ConstructionChart["kind"]|null;
+  readonly bore:NativeBore|null;
   readonly name: string;
   readonly id: string;
   readonly fingerprint: string;
@@ -515,6 +597,8 @@ export class NativePart {
   private readonly index: number;
   private readonly faceTable: readonly NativeFace[];
   constructor(document: NativeDocument, metadata: PartMetadata) {
+    this.chartKind=metadata.chartKind;
+    this.bore=metadata.bore?Object.freeze({...metadata.bore,point:point3(metadata.bore.point),direction:point3(metadata.bore.direction),documentPoint:point3(metadata.bore.documentPoint),documentDirection:point3(metadata.bore.documentDirection),rims:Object.freeze(metadata.bore.rims.map(r=>Object.freeze({...r,documentCenter:point3(r.documentCenter)})))}):null;
     this.family = metadata.family; this.document = document; this.index = metadata.index; this.name = metadata.name;
     this.id = `${document.id}/part-${metadata.index}`; this.fingerprint = metadata.fingerprint;
     this.stepSupport = metadata.stepSupport.status === "supported" ? Object.freeze({...metadata.stepSupport}) : Object.freeze({...metadata.stepSupport,diagnostic:Object.freeze({...metadata.stepSupport.diagnostic})});
@@ -527,6 +611,12 @@ export class NativePart {
     this.document.backend();
     return this.faceTable.filter(f => feature === undefined || f.features.includes(feature)).map(f => new FaceSelection(this, f));
   }
+  /** Exact construction cap; full revolutions have no end caps and are refused explicitly. */
+  cap(end:End):FaceSelection {
+    this.document.backend();const face=this.faceTable.find(face=>face.role==="cap"&&face.end===end);
+    if(!face)fail("selection.missingCap",`No ${end} cap exists in '${this.name}'`);
+    return new FaceSelection(this,face);
+  }
   /** Returns one labelled floor, with distinct missing and ambiguous diagnostics. */
   floor(feature: string): FaceSelection {
     const floors = this.faces(feature).filter(f => f.role === "floor");
@@ -534,16 +624,16 @@ export class NativePart {
     if (floors.length !== 1) fail("selection.ambiguous", `More than one floor is named '${feature}' in '${this.name}'`);
     return floors[0];
   }
-  realize(options: { tolerance: number; maxVertices?: number }): Realization {
+  realize(options: { tolerance: number; maxVertices?: number; chart?:ConstructionChart }): Realization {
     const call=this.document.beginCall("part.realize",this.id);
     try {
       const {transport,document}=this.document.backend();
-      const request=call.phase("sdkPrepareMs",()=>JSON.stringify({tolerance:finite(options.tolerance,"tolerance"),maxVertices:options.maxVertices ?? 250000}));
+      const request=call.phase("sdkPrepareMs",()=>JSON.stringify({tolerance:finite(options.tolerance,"tolerance"),maxVertices:options.maxVertices ?? 250000,...(options.chart?{chart:snapshotChart(options.chart)}:{})}));
       const raw=call.phase("kernelMs",()=>transport.realize(document,this.index,request));
       try {
-        const buffers=call.phase("transferMs",()=>({positions:raw.take_positions(),normals:raw.take_normals(),indices:raw.take_indices(),nativeFaces:raw.take_native_faces()}));
-        const report=call.phase("metadataMs",()=>JSON.parse(raw.report_json()));
-        return new Realization(this,buffers.positions,buffers.normals,buffers.indices,buffers.nativeFaces,report,call);
+        const report=call.phase("metadataMs",()=>JSON.parse(raw.report_json()) as RealizationReport);
+        const buffers=call.phase("transferMs",()=>({positions:raw.take_positions(),normals:raw.take_normals(),indices:raw.take_indices(),nativeFaces:raw.take_native_faces(),uvs:report.hasUvs?raw.take_uvs():null}));
+        return call.phase("metadataMs",()=>new Realization(this,buffers.positions,buffers.normals,buffers.indices,buffers.nativeFaces,buffers.uvs,report,call));
       } finally {call.phase("cleanupMs",()=>raw.free());}
     } catch(error){throw call.refusal(error)} finally{call.finish("success")}
   }
@@ -592,12 +682,13 @@ export class FaceSelection {
   readonly nativeId: number;
   readonly feature?: string;
   readonly features: readonly string[];
+  readonly end?:End;
   readonly role: NativeFace["role"];
   readonly surface: NativeFace["surface"];
   constructor(part: NativePart, face: NativeFace) {
     this.part = part;
     this.partId = part.id; this.nativeId = face.id; this.features = Object.freeze([...face.features]); this.feature = this.features.length === 1 ? this.features[0] : undefined;
-    this.role = face.role; this.surface = face.surface; Object.freeze(this);
+    this.end=face.end;this.role = face.role; this.surface = face.surface; Object.freeze(this);
   }
   workplane(): NativeWorkplane { return this.part.workplane(this); }
 }
@@ -617,13 +708,18 @@ export class Realization {
   readonly normals: Float32Array;
   readonly indices: Uint32Array;
   readonly nativeFaces: Uint32Array;
+  /** Primary construction UVs, or null when no chart was applied; caller-owned. */
+  readonly uvs:Float32Array|null;
   readonly report: Readonly<RealizationReport>;
   /** Host boundary timing including buffer transfer and handle release. */
   get timing():KernelCallTiming {return this.call.value;}
   private readonly part: NativePart;
   private readonly call:CallTiming;
-  constructor(part: NativePart, positions: Float32Array, normals: Float32Array, indices: Uint32Array, nativeFaces: Uint32Array, report: RealizationReport, call:CallTiming) {
-    this.call=call; this.part = part; this.positions = positions; this.normals = normals; this.indices = indices; this.nativeFaces = nativeFaces; this.report = Object.freeze(report);
+  constructor(part: NativePart, positions: Float32Array, normals: Float32Array, indices: Uint32Array, nativeFaces: Uint32Array, uvs:Float32Array|null, report: RealizationReport, call:CallTiming) {
+    this.call=call; this.part = part; this.positions = positions; this.normals = normals; this.indices = indices; this.nativeFaces = nativeFaces;this.uvs=uvs;
+    this.report = Object.freeze({...report,chart:report.chart?snapshotChart(report.chart):null,work:Object.freeze({...report.work}),curveRefinement:report.curveRefinement?Object.freeze({...report.curveRefinement,diagnostic:report.curveRefinement.diagnostic?Object.freeze({...report.curveRefinement.diagnostic}):undefined}):null});
+    if(uvs && uvs.length*3!==positions.length*2)fail("bridge.uvs","Construction UV/render vertex correspondence is incomplete");
+    if(Boolean(uvs)!==Boolean(report.hasUvs))fail("bridge.uvs","Construction chart availability does not match the transferred UV buffer");
     if (nativeFaces.length * 3 !== indices.length) fail("bridge.correspondence", "Display triangle/native-face correspondence is incomplete");
   }
   pickTriangle(triangle: number): FaceSelection {

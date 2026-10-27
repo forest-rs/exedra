@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, sweep, loft, paths, placement, profiles, type NativeTransport } from "../src/index.ts";
+import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, sweep, loft, paths, placement, profiles, charts, uvTransform, type NativeTransport } from "../src/index.ts";
 
 function host() {
   let next = 0, released = 0, freed = 0, transfers = 0;
@@ -9,7 +9,7 @@ function host() {
     build_document(text) {
       const graph = JSON.parse(text); requests.push(graph);
       if (graph.nodes.some((n: any) => n.depth === 99)) throw JSON.stringify({code:"pocket.invalid",operation:"solid.pocket",message:"Depth exceeds panel thickness",node:1});
-      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({family:"extrusion",name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",stepSupport:{status:"supported"},measurements:{volume:{status:"available",value:10},surfaceArea:{status:"available",value:20},boundsKind:"conservativeNativeSupport",bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess",features:["recess"]},{id:1,role:"wall",surface:"cylinder",feature:"vents",features:["vents"]}]}))});
+      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({chartKind:null,family:"extrusion",name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",stepSupport:{status:"supported"},measurements:{volume:{status:"available",value:10},surfaceArea:{status:"available",value:20},boundsKind:"conservativeNativeSupport",bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess",features:["recess"]},{id:1,role:"wall",surface:"cylinder",feature:"vents",features:["vents"]}]}))});
     },
     release_document() { released++; },
     stats_json() { return JSON.stringify({documents:next-released,nativeParts:next-released,cacheEntries:0}); },
@@ -20,7 +20,8 @@ function host() {
         take_normals() { transfers++; return new Float32Array(9); },
         take_indices() { transfers++; return new Uint32Array([0,1,2]); },
         take_native_faces() { transfers++; return new Uint32Array([1]); },
-        report_json() { return JSON.stringify({tolerance:.1,maxDeviation:.01,triangles:1,vertices:3}); },
+        take_uvs(){transfers++;return new Float32Array(6);},
+        report_json() { return JSON.stringify({hasUvs:false,chart:null,work:{attempts:1,completedBoundarySamples:3,completedTriangles:1},curveRefinement:null,tolerance:.1,maxDeviation:.01,triangles:1,vertices:3}); },
         free() { freed++; },
       };
     },
@@ -154,4 +155,45 @@ test("reusable paths, placed loft sections and named axial finishes preserve imm
   const finish=h.requests[0].nodes.find((n:any)=>n.kind==="axialFinish");assert.equal(finish.feature,"body");assert.equal(finish.transition,"round");
   function* endless(){while(true)yield {profile,placement:placement()};}
   assert.throws(()=>loft(endless()),code("budget.sections"));session.dispose();
+});
+
+test("construction chart descriptions snapshot caller transforms without changing model identity",()=>{
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+  const matrix:[[number,number],[number,number]]=[[.05,0],[0,.05]],offset:[number,number]=[.25,.5];
+  const chart=charts.revolve({referenceRadius:28,wall:uvTransform({matrix,offset})});
+  matrix[0][0]=999;offset[0]=999;
+  let captured:any;const original=h.native.realize;
+  h.native.realize=(document,part,request)=>{captured=JSON.parse(request);return original(document,part,request);};
+  const document=session.build(sample()),part=document.parts.panel;
+  part.realize({tolerance:.12,chart});
+  assert.equal(captured.chart.wall.matrix[0][0],.05);assert.equal(captured.chart.wall.offset[0],.25);
+  assert.equal(captured.chart.referenceRadius,28);assert.equal(document.parts.panel.id,part.id);
+  assert.ok(Object.isFrozen(chart));assert.ok(Object.isFrozen(chart.wall.matrix[0]));
+  assert.throws(()=>charts.loft({restLength:100,referenceSection:-1}),code("input.referenceSection"));
+  assert.throws(()=>uvTransform({offset:[Infinity,0]}),code("input.nonFinite"));
+  document.dispose();session.dispose();
+});
+
+test("charted buffer transfer is conditional, layout-checked and caller-owned after disposal",()=>{
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"});const original=h.native.realize;
+  let uvTakes=0,malformed=false;
+  h.native.realize=(...args)=>{
+    const raw=original(...args),report=JSON.parse(raw.report_json());
+    return {...raw,report_json:()=>JSON.stringify({...report,hasUvs:true,chart:charts.sweep()}),take_uvs(){uvTakes++;return new Float32Array(malformed?4:6);}};
+  };
+  const document=session.build(sample()),part=document.parts.panel;
+  const display=part.realize({tolerance:.12,chart:charts.sweep()});
+  assert.equal(uvTakes,1);assert.equal(display.uvs!.length,6);assert.ok(Object.isFrozen(display.report.chart));
+  malformed=true;
+  assert.throws(()=>part.realize({tolerance:.12,chart:charts.sweep()}),error=>error instanceof ExedraError&&error.diagnostic.code==="bridge.uvs"&&error.timing?.outcome==="refused");
+  assert.equal(uvTakes,2);assert.equal(h.counters().freed,2);
+  document.dispose();display.uvs![0]=9;assert.equal(display.uvs![0],9);
+  assert.throws(()=>display.pickTriangle(0),code("lifecycle.documentDisposed"));session.dispose();
+});
+
+test("bore point and direction snapshot construction-space inputs before a placed source is built",()=>{
+ const h=host(),session=new AuthoringSession(h.native,{units:"mm"});const point:[number,number,number]=[0,0,10],direction:[number,number,number]=[1,0,1];
+ const plate=extrude(profiles.rectangle({width:100,height:70}),{height:20,placement:placement({translation:[100,200,300],rotationXYZ:[.2,.3,.4]})}).throughBore({point,direction,radius:8,separation:2,feature:"bore"});
+ session.build({plate}).dispose();point[0]=999;direction[2]=0;session.build({plate}).dispose();
+ assert.deepEqual(h.requests[0],h.requests[1]);const bore=h.requests[0].nodes.find((n:any)=>n.kind==="throughBore");assert.deepEqual(bore.point,[0,0,10]);assert.deepEqual(bore.direction,[1,0,1]);assert.equal(bore.separation,2);session.dispose();
 });

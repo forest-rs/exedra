@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { AuthoringSession, ExedraError, extrude, placement, profiles } from "@exedra/authoring";
+import { AuthoringSession, ExedraError, extrude, placement, profiles, charts, uvTransform } from "@exedra/authoring";
 import { AuthoringKernel, default as initialize } from "../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge.js";
 import { authorPanel, authorFlangedSleeve } from "../src/sample.ts";
 import { galleryCases } from "./gallery-cases.mjs";
@@ -93,5 +93,30 @@ try {
  good.parts.sleeve.realize(policy);good.dispose();assert.equal(flangeSession.stats().documents,0);assert.equal(flangeSession.stats().cacheEntries,0);
  results.push({sample:"independent-flange-dimensions",outcome:"success",independentEdits:8,defaultVolume:flangeVolume(flangeBase)});
 }finally{flangeSession.dispose();}
+
+
+// Construction charts preserve exact source metadata and final native-face mapping.
+const chartSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const grid=uvTransform({matrix:[[.05,0],[0,.05]]});
+ for(const [id,chart] of [["collar",charts.revolve({referenceRadius:15.5,wall:grid,caps:grid})],["rail",charts.sweep({wall:grid,caps:grid})],["loft",charts.loft({restLength:120,wall:grid,caps:grid})]]) {
+  const sample=galleryCases.find(sample=>sample.id===id),document=chartSession.build(sample.make());
+  try {
+   const part=Object.values(document.parts)[0],metadata=part.measurements,plain=part.realize(policy),charted=part.realize({...policy,chart}),repeat=part.realize({...policy,chart});
+   within(charted);within(repeat);equalDisplay(charted,repeat);assert.deepEqual(charted.uvs,repeat.uvs);assert.equal(repeat.report.cacheHits,1);
+   assert.equal(charted.uvs.length,charted.positions.length/3*2);assert.ok(charted.uvs.every(Number.isFinite));assert.equal(charted.report.chart.kind,chart.kind);
+   assert.strictEqual(part.measurements,metadata);part.requireSelection(plain.pickTriangle(0));
+   const ids=new Set(part.faces().map(face=>face.nativeId));assert.ok(charted.nativeFaces.every(face=>ids.has(face)));
+   const saved=charted.uvs.slice();document.dispose();assert.deepEqual(charted.uvs,saved,"UV buffers did not remain caller-owned");
+  } finally {document.dispose();}
+ }
+ const document=chartSession.build(galleryCases.find(sample=>sample.id==="bore").make());
+ try {
+  const part=document.parts.plate;assert.equal(part.chartKind,null);assert.equal(part.bore.coordinateSpace,"construction");assert.ok(Math.abs(part.bore.rims[0].semiMajor-16)<1e-10);assert.equal(part.bore.rims[0].semiMinor,8);
+  assert.ok(part.exportStep({timestamp}).text.includes("ELLIPSE("));assert.throws(()=>part.realize({...policy,chart:charts.extrude()}),error=>error instanceof ExedraError&&error.diagnostic.code==="chart.unavailable");
+ } finally {document.dispose();}
+ assert.equal(chartSession.stats().documents,0);assert.equal(chartSession.stats().cacheEntries,0);
+ results.push({sample:"construction-charts-and-bore-evidence",outcome:"success",chartedFamilies:3});
+} finally {chartSession.dispose();}
 
 console.log(JSON.stringify({samples:results},null,2));
