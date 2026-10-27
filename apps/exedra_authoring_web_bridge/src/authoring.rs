@@ -12,15 +12,18 @@ use alloc::{
 };
 use exedra_analytic::{
     extrusion::{End, Extrusion, Pocket},
+    loft::{Loft, LoftPolicy},
     revolve::Revolution,
+    sweep::Sweep,
 };
 use exedra_compile::NativeSource;
 use exedra_constructive::{
     builders,
+    path::PathCursor3,
     profile::{Loop2, Profile2, Seg2},
 };
 use exedra_math::Placement3;
-use exedra_profile::{ProfilePolicy, SegTag};
+use exedra_profile::{CornerTreatment, ProfilePolicy, SegTag};
 use serde::Deserialize;
 
 const UNNAMED: SegTag = SegTag(u32::MAX);
@@ -110,6 +113,8 @@ impl InputPlacement {
 enum Model {
     Extrusion(Extrusion),
     Revolution(Revolution),
+    Sweep(Sweep),
+    Loft(Loft),
 }
 impl Model {
     fn extrusion(&self) -> Result<&Extrusion, Error> {
@@ -127,12 +132,67 @@ impl Model {
         match self {
             Self::Extrusion(v) => NativeSource::from(v),
             Self::Revolution(v) => NativeSource::from(v),
+            Self::Sweep(v) => NativeSource::from(v),
+            Self::Loft(v) => NativeSource::from(v),
         }
     }
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum PathStep {
+    LineTo {
+        to: [f64; 3],
+    },
+    LineBy {
+        offset: [f64; 3],
+    },
+    TangentArc {
+        radius: f64,
+        angle: f64,
+        normal: [f64; 3],
+    },
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InputPath {
+    start: [f64; 3],
+    tangent: [f64; 3],
+    section_x: [f64; 3],
+    steps: Vec<PathStep>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoftSection {
+    profile: u32,
+    placement: InputPlacement,
+}
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum FinishKind {
+    Fillet,
+    Chamfer,
+}
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum Node {
+    Sweep {
+        profile: u32,
+        path: u32,
+        #[serde(default)]
+        placement: InputPlacement,
+    },
+    Loft {
+        sections: Vec<LoftSection>,
+        #[serde(default)]
+        placement: InputPlacement,
+    },
+    AxialFinish {
+        base: u32,
+        feature: String,
+        treatment: FinishKind,
+        size: f64,
+        transition: String,
+    },
     Extrude {
         profile: u32,
         height: f64,
@@ -173,6 +233,8 @@ pub(crate) struct Request {
     units: Units,
     separation: f64,
     profiles: Vec<ProfileNode>,
+    #[serde(default)]
+    paths: Vec<InputPath>,
     nodes: Vec<Node>,
     roots: Vec<Root>,
 }
@@ -204,6 +266,18 @@ impl Request {
                 "budget.graph",
                 "document.validate",
                 "A document supports 256 profiles, 256 operations and 1–64 roots",
+            ));
+        }
+        if self.paths.len() > 256
+            || self
+                .paths
+                .iter()
+                .any(|p| p.steps.is_empty() || p.steps.len() > 128)
+        {
+            return Err(Error::new(
+                "budget.path",
+                "document.validate",
+                "A document supports 256 paths of 1–128 steps",
             ));
         }
         let mut labels = BTreeSet::new();
@@ -295,12 +369,56 @@ impl Request {
         let mut native_work = 0_usize;
         let mut depths: Vec<u16> = Vec::with_capacity(self.nodes.len());
         for (i, node) in self.nodes.iter().enumerate() {
-            let (profile, parent) = match node {
-                Node::Extrude { profile, .. } | Node::Revolve { profile, .. } => (*profile, None),
-                Node::Pocket { profile, base, .. } => (*profile, Some(*base)),
-                Node::OnFace { profile, host, .. } => (*profile, Some(*host)),
+            let (profile_ids, parent, multiplier): (Vec<u32>, Option<u32>, usize) = match node {
+                Node::Extrude { profile, .. } | Node::Revolve { profile, .. } => {
+                    (alloc::vec![*profile], None, 1)
+                }
+                Node::Sweep { profile, path, .. } => {
+                    let path = self.paths.get(*path as usize).ok_or_else(|| {
+                        Error::new(
+                            "graph.pathReference",
+                            "document.validate",
+                            "Sweep path is outside the path table",
+                        )
+                        .node(i)
+                    })?;
+                    (alloc::vec![*profile], None, path.steps.len())
+                }
+                Node::Loft { sections, .. } => {
+                    if !(2..=64).contains(&sections.len()) {
+                        return Err(Error::new(
+                            "budget.sections",
+                            "document.validate",
+                            "A loft needs 2–64 corresponding sections",
+                        )
+                        .node(i));
+                    }
+                    (sections.iter().map(|s| s.profile).collect(), None, 1)
+                }
+                Node::AxialFinish {
+                    base,
+                    feature,
+                    transition,
+                    ..
+                } => {
+                    if !label(feature) || !label(transition) {
+                        return Err(Error::new(
+                            "input.name",
+                            "document.validate",
+                            "Finish feature names must contain text and fit in 128 UTF-8 bytes",
+                        )
+                        .node(i));
+                    }
+                    labels.insert(transition.clone());
+                    (Vec::new(), Some(*base), 1)
+                }
+                Node::Pocket { profile, base, .. } => (alloc::vec![*profile], Some(*base), 1),
+                Node::OnFace { profile, host, .. } => (alloc::vec![*profile], Some(*host), 1),
             };
-            if profile as usize >= self.profiles.len() {
+            if profile_ids
+                .iter()
+                .any(|id| *id as usize >= self.profiles.len())
+            {
                 return Err(Error::new(
                     "graph.profileReference",
                     "document.validate",
@@ -329,12 +447,17 @@ impl Request {
                 )
                 .node(i));
             }
-            let count =
-                counts[profile as usize].saturating_add(if matches!(node, Node::Pocket { .. }) {
-                    body_counts[parent.expect("pocket parent") as usize]
-                } else {
-                    0
-                });
+            let count = profile_ids
+                .iter()
+                .fold(0_usize, |sum, id| sum.saturating_add(counts[*id as usize]))
+                .saturating_mul(multiplier)
+                .saturating_add(
+                    if matches!(node, Node::Pocket { .. } | Node::AxialFinish { .. }) {
+                        body_counts[parent.expect("feature parent") as usize]
+                    } else {
+                        0
+                    },
+                );
             native_work = native_work.saturating_add(count);
             if native_work > 8192 {
                 return Err(Error::new(
@@ -437,12 +560,102 @@ impl Request {
             };
             profiles.push(AuthoredProfile { geometry, feature });
         }
+        let paths = self
+            .paths
+            .into_iter()
+            .enumerate()
+            .map(|(i, path)| {
+                let mut cursor = PathCursor3::new(path.start, path.tangent);
+                for step in path.steps {
+                    cursor = match step {
+                        PathStep::LineTo { to } => cursor.line_to(to),
+                        PathStep::LineBy { offset } => cursor.line_by(offset),
+                        PathStep::TangentArc {
+                            radius,
+                            angle,
+                            normal,
+                        } => cursor.tangent_arc(radius, angle, normal),
+                    };
+                }
+                cursor
+                    .finish(path.section_x)
+                    .map_err(|e| Error::new("sweep.path", "path.build", format!("Path {i}: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut models: Vec<Model> = Vec::with_capacity(self.nodes.len());
         for (i, node) in self.nodes.into_iter().enumerate() {
             let failure = |code: &'static str, operation: &'static str, message: String| {
                 Error::new(code, operation, message).node(i)
             };
             let solid = match node {
+                Node::Sweep {
+                    profile,
+                    path,
+                    placement,
+                } => Model::Sweep(
+                    Sweep::from_profile(
+                        &profiles[profile as usize].geometry,
+                        &paths[path as usize],
+                        placement.frame(),
+                        &policy,
+                    )
+                    .map_err(|e| failure("sweep.invalid", "solid.sweep", e.to_string()))?,
+                ),
+                Node::Loft {
+                    sections,
+                    placement,
+                } => Model::Loft(
+                    Loft::from_profiles(
+                        sections
+                            .iter()
+                            .map(|s| (s.placement.frame(), &profiles[s.profile as usize].geometry)),
+                        placement.frame(),
+                        &LoftPolicy::new(policy),
+                    )
+                    .map_err(|e| failure("loft.invalid", "solid.loft", e.to_string()))?,
+                ),
+                Node::AxialFinish {
+                    base,
+                    feature,
+                    treatment,
+                    size,
+                    transition,
+                } => {
+                    let tag = labels.get(&feature).ok_or_else(|| {
+                        failure(
+                            "selection.missing",
+                            "solid.axialFinish",
+                            format!("No feature named '{feature}' was authored"),
+                        )
+                    })?;
+                    let source = models[base as usize]
+                        .extrusion()
+                        .map_err(|e| failure(e.code, "solid.axialFinish", e.message))?;
+                    let edges: Vec<_> = source
+                        .profile_axial_edges_tagged(*tag)
+                        .map(|(id, _)| id)
+                        .collect();
+                    if edges.is_empty() {
+                        return Err(failure(
+                            "selection.missing",
+                            "solid.axialFinish",
+                            format!("No profile axial edges named '{feature}' exist"),
+                        ));
+                    }
+                    let treatment = match treatment {
+                        FinishKind::Fillet => CornerTreatment::fillet(size),
+                        FinishKind::Chamfer => CornerTreatment::chamfer(size),
+                    }
+                    .tagged(labels[&transition]);
+                    Model::Extrusion(
+                        source
+                            .with_axial_corners(edges, treatment, &policy)
+                            .map_err(|e| {
+                                failure("finish.invalid", "solid.axialFinish", e.to_string())
+                            })?
+                            .solid,
+                    )
+                }
                 Node::Extrude {
                     profile,
                     height,
@@ -495,7 +708,8 @@ impl Request {
                     }
                     Model::Extrusion(
                         models[base as usize]
-                            .extrusion()?
+                            .extrusion()
+                            .map_err(|e| failure(e.code, "solid.pocket", e.message))?
                             .clone()
                             .with_pocket(pocket, &policy)
                             .map_err(|e| {
@@ -511,7 +725,9 @@ impl Request {
                     offset,
                     at,
                 } => {
-                    let host = models[host as usize].extrusion()?;
+                    let host = models[host as usize]
+                        .extrusion()
+                        .map_err(|e| failure(e.code, "workplane", e.message))?;
                     let face = match face {
                         FaceSelector::Cap { end } => host.cap(end.into()),
                         FaceSelector::Floor { feature } => {
@@ -598,5 +814,51 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(built.roots[0].1.as_extrusion().unwrap().volume(), 3600.0);
+    }
+    #[test]
+    fn sweep_loft_and_named_finishes_lower_to_existing_native_constructors() {
+        let value: Request=serde_json::from_value(serde_json::json!({
+            "units":"mm","separation":1e-6,
+            "profiles":[{"kind":"circle","radius":3},{"kind":"rectangle","width":20,"height":16},{"kind":"tagged","profile":1,"name":"body"}],
+            "paths":[{"start":[0,0,0],"tangent":[0,1,0],"sectionX":[1,0,0],"steps":[{"kind":"lineBy","offset":[0,30,0]},{"kind":"tangentArc","radius":20,"angle":core::f64::consts::FRAC_PI_2,"normal":[0,0,1]}]}],
+            "nodes":[
+                {"kind":"sweep","profile":0,"path":0},
+                {"kind":"loft","sections":[{"profile":2,"placement":{}},{"profile":2,"placement":{"translation":[3,0,30],"rotationXYZ":[0,0,0.15]}}]},
+                {"kind":"extrude","profile":2,"height":12},
+                {"kind":"axialFinish","base":2,"feature":"body","treatment":"fillet","size":2,"transition":"round"}
+            ],
+            "roots":[{"name":"rail","node":0},{"name":"loft","node":1},{"name":"finished","node":3}]
+        })).unwrap();
+        let built = value.build().unwrap();
+        assert!(matches!(
+            built.roots[0].1.geometry(),
+            exedra_compile::NativeGeometryRef::Sweep(_)
+        ));
+        assert!(matches!(
+            built.roots[1].1.geometry(),
+            exedra_compile::NativeGeometryRef::Loft(_)
+        ));
+        assert!(matches!(
+            built.roots[1].1.volume(),
+            Err(exedra_compile::NativeMeasureError::Unavailable { .. })
+        ));
+        let solid = built.roots[2].1.as_extrusion().unwrap();
+        let tag = built
+            .names
+            .iter()
+            .find(|(_, name)| name.as_str() == "round")
+            .unwrap()
+            .0;
+        assert_eq!(solid.faces_tagged(SegTag(*tag)).count(), 4);
+    }
+    #[test]
+    fn path_and_section_budgets_precede_native_construction() {
+        let mut value = request(serde_json::json!([{"kind":"sweep","profile":0,"path":9}]));
+        assert_eq!(value.validate().unwrap_err().code, "graph.pathReference");
+        value.nodes = alloc::vec![Node::Loft {
+            sections: Vec::new(),
+            placement: InputPlacement::default()
+        }];
+        assert_eq!(value.validate().unwrap_err().code, "budget.sections");
     }
 }

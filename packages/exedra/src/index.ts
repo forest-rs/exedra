@@ -153,8 +153,37 @@ export const profiles = Object.freeze({
   slot: Profile.slot,
 });
 
+type PathStep =
+  | { readonly kind:"lineTo"; readonly to:XYZ }
+  | { readonly kind:"lineBy"; readonly offset:XYZ }
+  | { readonly kind:"tangentArc"; readonly radius:number; readonly angle:number; readonly normal:XYZ };
+interface PathDescription { readonly start:XYZ; readonly tangent:XYZ; readonly sectionX:XYZ; readonly steps:readonly PathStep[] }
+const pathNodes=new WeakMap<CurvePath,PathDescription>();
+/** Immutable analytic line/arc path; Rust validates tangency and the section frame. */
+export class CurvePath {
+  private constructor(description:PathDescription) {pathNodes.set(this,Object.freeze(description));Object.freeze(this);}
+  static start(at:XYZ,options:{tangent:XYZ;sectionX:XYZ}):CurvePath {
+    return new CurvePath({start:point3(at),tangent:point3(options.tangent),sectionX:point3(options.sectionX),steps:Object.freeze([])});
+  }
+  private append(step:PathStep):CurvePath {
+    const source=pathNodes.get(this)!;
+    if(source.steps.length===128)fail("budget.path","A sweep path supports at most 128 steps");
+    return new CurvePath({...source,steps:Object.freeze([...source.steps,Object.freeze(step)])});
+  }
+  lineTo(to:XYZ):CurvePath {return this.append({kind:"lineTo",to:point3(to)});}
+  lineBy(offset:XYZ):CurvePath {return this.append({kind:"lineBy",offset:point3(offset)});}
+  /** Signed turn in radians around the supplied world-space normal. */
+  tangentArc(options:{radius:number;angle:number;normal:XYZ}):CurvePath {return this.append({kind:"tangentArc",radius:finite(options.radius,"radius"),angle:finite(options.angle,"angle"),normal:point3(options.normal)});}
+}
+export const paths=Object.freeze({start:CurvePath.start});
+/** Corresponding section intent; the constructor snapshots the placement. */
+export interface LoftSection {readonly profile:Profile;readonly placement:Placement;}
+
 type FaceSelector = { kind: "floor"; feature: string } | { kind: "cap"; end: End };
 type SolidNode =
+  | { kind:"sweep"; profile:Profile; path:CurvePath; placement:Placement }
+  | { kind:"loft"; sections:readonly LoftSection[]; placement:Placement }
+  | { kind:"axialFinish"; base:Solid; feature:string; treatment:"fillet"|"chamfer"; size:number; transition:string }
   | { kind: "extrude"; profile: Profile; height: number; placement: Placement }
   | { kind: "revolve"; profile: Profile; angle: number; placement: Placement }
   | { kind: "pocket"; base: Solid; profile: Profile; end: End; depth: number; at: XY }
@@ -174,6 +203,22 @@ export class Solid {
   static revolve(profile: Profile, options: { angle?: number; placement?: Placement } = {}): Solid {
     return new Solid({ kind: "revolve", profile, angle: finite(options.angle ?? 2*Math.PI,"angle"), placement: placement(options.placement) });
   }
+  /** Smooth open line/arc sweep; the native constructor checks supported section geometry. */
+  static sweep(profile:Profile,path:CurvePath,options:{placement?:Placement}={}):Solid {
+    return new Solid({kind:"sweep",profile,path,placement:placement(options.placement)});
+  }
+  /** Exact ruled loft through corresponding section segments; no automatic unwrapping/rematching. */
+  static loft(sections:Iterable<LoftSection>,options:{placement?:Placement}={}):Solid {
+    const values:LoftSection[]=[];
+    for(const section of sections){if(values.length===64)fail("budget.sections","A loft supports at most 64 sections");values.push(Object.freeze({profile:section.profile,placement:placement(section.placement)}));}
+    return new Solid({kind:"loft",sections:Object.freeze(values),placement:placement(options.placement)});
+  }
+  /** Selects profile axial edges by authored feature; rims and pocket edges are outside this operation. */
+  axialEdges(feature:string):AuthoredAxialEdges {return new AuthoredAxialEdges(this,name(feature));}
+  /** @internal Lowered by the named axial-edge selection. */
+  static axialFinish(base:Solid,feature:string,treatment:"fillet"|"chamfer",size:number,transition:string):Solid {
+    return new Solid({kind:"axialFinish",base,feature:name(feature),treatment,size:finite(size,"finish size"),transition:name(transition)});
+  }
   pocket(profile: Profile, options: { end: End; depth: number; at?: XY }): Solid {
     return new Solid({ kind: "pocket", base: this, profile, end: options.end, depth: finite(options.depth, "depth"), at: point(options.at ?? [0, 0]) });
   }
@@ -191,6 +236,16 @@ export class Solid {
 }
 export const extrude = Solid.extrude;
 export const revolve = Solid.revolve;
+export const sweep = Solid.sweep;
+export const loft = Solid.loft;
+/** Authored selection resolved against the native extrusion during build. */
+export class AuthoredAxialEdges {
+  private readonly host:Solid;
+  private readonly feature:string;
+  constructor(host:Solid,feature:string){this.host=host;this.feature=name(feature);Object.freeze(this);}
+  fillet(options:{radius:number;feature:string}):Solid{return Solid.axialFinish(this.host,this.feature,"fillet",options.radius,options.feature);}
+  chamfer(options:{distance:number;feature:string}):Solid{return Solid.axialFinish(this.host,this.feature,"chamfer",options.distance,options.feature);}
+}
 
 /** A selector in an authored graph, resolved against native geometry during build. */
 export class AuthoredFace {
@@ -313,8 +368,8 @@ function asExedraError(error:unknown):ExedraError {
 function nativeCall<T>(action: () => T): T {try{return action()}catch(error){throw asExedraError(error)}}
 
 function graph(parts: Record<string, Solid>, units: LengthUnit, separation: number): unknown {
-  const profileIds = new Map<Profile, number>(), nodeIds = new Map<Solid, number>();
-  const visiting = new Set<object>(), profileSpecs: unknown[] = [], nodes: unknown[] = [];
+  const profileIds = new Map<Profile, number>(), nodeIds = new Map<Solid, number>(), pathIds=new Map<CurvePath,number>();
+  const visiting = new Set<object>(), profileSpecs: unknown[] = [], nodes: unknown[] = [], pathSpecs:unknown[]=[];
   const visitProfile = (profile: Profile): number => {
     const known = profileIds.get(profile); if (known !== undefined) return known;
     if (visiting.has(profile)) fail("graph.cycle", "Profile graph contains a cycle");
@@ -337,15 +392,24 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     if (visiting.size >= 128) fail("budget.depth", "Authoring graph nesting exceeds the traversal budget");
     visiting.add(solid);
     const source = solidNodes.get(solid); if (!source) fail("graph.solid", "Expected an Exedra Solid");
-    const profile = visitProfile(source.profile);
-    const wire = source.kind === "extrude" || source.kind === "revolve" ? { ...source, profile }
-      : source.kind === "pocket" ? { ...source, profile, base: visit(source.base) }
-      : { ...source, profile, host: visit(source.host) };
+    let wire:unknown;
+    switch(source.kind){
+      case "loft":wire={...source,sections:source.sections.map(s=>({...s,profile:visitProfile(s.profile)}))};break;
+      case "axialFinish":wire={...source,base:visit(source.base)};break;
+      case "sweep": {
+        let path=pathIds.get(source.path);
+        if(path===undefined){const description=pathNodes.get(source.path);if(!description)fail("graph.path","Expected an Exedra CurvePath");if(pathSpecs.length===256)fail("budget.paths","At most 256 paths are allowed");path=pathSpecs.length;pathSpecs.push(description);pathIds.set(source.path,path);}
+        wire={...source,profile:visitProfile(source.profile),path};break;
+      }
+      case "extrude":case "revolve":wire={...source,profile:visitProfile(source.profile)};break;
+      case "pocket":wire={...source,profile:visitProfile(source.profile),base:visit(source.base)};break;
+      case "onFace":wire={...source,profile:visitProfile(source.profile),host:visit(source.host)};break;
+    }
     if (nodes.length === 256) fail("budget.nodes", "At most 256 construction nodes are allowed");
     const id = nodes.length; nodes.push(wire); nodeIds.set(solid, id); visiting.delete(solid); return id;
   };
   const roots = Object.entries(parts).map(([key, solid]) => ({ name: name(key), node: visit(solid) }));
-  return { units, separation, profiles: profileSpecs, nodes, roots };
+  return { units, separation, profiles: profileSpecs, paths:pathSpecs, nodes, roots };
 }
 /** Logical owners and payloads; document/cache payloads overlap and exclude render buffers and allocator overhead. */
 export interface OwnershipStats {

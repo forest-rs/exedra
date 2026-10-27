@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, placement, profiles, type NativeTransport } from "../src/index.ts";
+import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, sweep, loft, paths, placement, profiles, type NativeTransport } from "../src/index.ts";
 
 function host() {
   let next = 0, released = 0, freed = 0, transfers = 0;
@@ -134,4 +134,24 @@ test("transfer or metadata failures release raw buffers and retain refusal timin
   assert.throws(()=>doc.parts.panel.realize({tolerance:.1}),error=>error instanceof ExedraError&&error.timing?.outcome==="refused");
   assert.equal(h.counters().freed,1);assert.equal(session.lastOperation?.operation,"part.realize");
   assert.equal(doc.parts.panel.floor("recess").nativeId,0);session.dispose();
+});
+
+test("reusable paths, placed loft sections and named axial finishes preserve immutable intent",()=>{
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+  const start:[number,number,number]=[0,0,0],normal:[number,number,number]=[0,0,1];
+  const path=paths.start(start,{tangent:[0,1,0],sectionX:[1,0,0]}).lineBy([0,30,0]).tangentArc({radius:20,angle:Math.PI/2,normal});
+  const profile=profiles.circle({radius:3}).tagged("rail");
+  const translation:[number,number,number]=[0,0,30];
+  const sections=[{profile,placement:placement()},{profile,placement:placement({translation})}];
+  const ruled=loft(sections);
+  const finished=extrude(profiles.rectangle({width:20,height:16}).tagged("body"),{height:12}).axialEdges("body").fillet({radius:2,feature:"round"});
+  const parts={rail:sweep(profile,path),second:sweep(profile,path),ruled,finished};
+  const first=session.build(parts);first.dispose();
+  start[0]=99;normal[2]=0;translation[2]=999;sections.pop();
+  const second=session.build(parts);second.dispose();
+  assert.deepEqual(h.requests[0],h.requests[1]);assert.equal(h.requests[0].paths.length,1);
+  assert.equal(h.requests[0].nodes.filter((n:any)=>n.kind==="sweep").length,2);
+  const finish=h.requests[0].nodes.find((n:any)=>n.kind==="axialFinish");assert.equal(finish.feature,"body");assert.equal(finish.transition,"round");
+  function* endless(){while(true)yield {profile,placement:placement()};}
+  assert.throws(()=>loft(endless()),code("budget.sections"));session.dispose();
 });
