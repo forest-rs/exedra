@@ -68,6 +68,7 @@ export async function mountScene({ container, controls }: { container: HTMLEleme
   let stage: Stage;
   let layers: Layer[] = [];
   let overrides: Layer;
+  let inspectedLayer: Layer | null = null;
   let receipts: UndoReceipt[] = [];
   let disposed = false, active = true, frame = 0, busy = false, sourcePending = false, first = true;
   const released = new WeakSet<object>();
@@ -168,6 +169,7 @@ export async function mountScene({ container, controls }: { container: HTMLEleme
     kernel = created; lastStageCall = performance.now() - start;
     const connected = await Stage.connect({ request(raw) { const start = performance.now(); const response = created.request(raw); lastStageCall += performance.now() - start; return response; } });
     stage = connected;
+    inspectedLayer = null; value("layer-text").textContent = ""; value("layer-text").hidden = true;
     if (disposed) { await releaseNative(created, connected); throw new Error("Scene view was disposed while loading"); }
     layers = (await stage.inspect()).layers; overrides = layers.find(layer => layer.name === "overrides.usda")!;
     field<HTMLSelectElement>("layer").replaceChildren(...layers.map((layer, index) => new Option(layer.name, String(index))));
@@ -224,7 +226,10 @@ export async function mountScene({ container, controls }: { container: HTMLEleme
       case "noop": void action("No-op sync"); break;
       case "undo": void action("Undo", async () => { const receipt = receipts.at(-1); if (!receipt) return; const inverse = await stage.undo(receipt); receipts.pop(); await stage.releaseReceipt(inverse.receipt); await refreshInputs(); }); break;
       case "move": void action("Instance translation", async () => { const path = paths[Number(field("instance").value)]; if (!path) throw new Error("Select a current native instance"); const raw = ["x", "y", "z"].map(axis => Number(field(axis).value)) as [number, number, number]; const edit = await stage.transaction(overrides, [attribute(path, "xformOp:translate", { type: "double3", value: raw })]); await retain(edit.receipt); }); break;
-      case "inspect": case "download": void action("Layer inspection", async () => { const layer = layers[Number(field("layer").value)]; const saved = await stage.layerText(layer); if (button.dataset.action === "inspect") { value("layer-text").textContent = saved.text; value("layer-text").hidden = !value("layer-text").hidden; } else { const url = URL.createObjectURL(new Blob([saved.text], { type: "text/plain" })); const link = document.createElement("a"); link.href = url; link.download = saved.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } }); break;
+      case "inspect": case "download": void action("Layer inspection", async () => { const layer = layers[Number(field("layer").value)]; const saved = await stage.layerText(layer); if (button.dataset.action === "inspect") {
+          const panel = value("layer-text"), close = inspectedLayer === layer && !panel.hidden;
+          panel.textContent = saved.text; panel.hidden = close; inspectedLayer = layer;
+        } else { const url = URL.createObjectURL(new Blob([saved.text], { type: "text/plain" })); const link = document.createElement("a"); link.href = url; link.download = saved.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } }); break;
     }
   });
   const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
