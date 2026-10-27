@@ -161,7 +161,8 @@ pub enum RealizationError {
     Boundary(BodyError),
     /// No faces were supplied.
     EmptyBoundary,
-    /// A curved trim is not a supported rotational strip or toroidal rectangle.
+    /// A curved trim is not a supported rotational strip, toroidal rectangle
+    /// or complete ruled unit patch.
     UnsupportedSurfaceTrim {
         /// Offending native face.
         face: FaceId,
@@ -374,7 +375,7 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
-            let patch = if matches!(face.surface, Surface::Torus(_)) {
+            let patch = if matches!(face.surface, Surface::Torus(_) | Surface::Ruled(_)) {
                 Patch::Grid(GridPatch::prepare(self, id)?)
             } else if matches!(face.surface, Surface::Plane(_)) {
                 // Coaxial annuli/sectors retain angular rulings, which are
@@ -1058,9 +1059,42 @@ impl<F, E> Body<F, E> {
         let Some(point) = self.edge_point(id, 0.5) else {
             return 1.0;
         };
+        let id_edge = id;
         let normal = |id| {
             self.face(id)
-                .and_then(|f| f.surface.parameters(point))
+                .and_then(|f| {
+                    if let Surface::Ruled(ruled) = &f.surface {
+                        let edge = self.edge(id_edge)?;
+                        let slack = ruled
+                            .curves()
+                            .iter()
+                            .map(crate::geometry::CurveSpan::magnitude)
+                            .fold(0.0, f64::max)
+                            * 128.0
+                            * crate::geometry::FRAME_TOLERANCE;
+                        for reversed in [false, true] {
+                            let actual = crate::geometry::CurveSpan::new(
+                                edge.curve.clone(),
+                                edge.range,
+                                reversed,
+                            )
+                            .ok()?;
+                            for side in 0..4 {
+                                if ruled.boundary(side)?.alignment(&actual) <= slack {
+                                    return Some(match side {
+                                        0 => [0.5, 0.0],
+                                        1 => [1.0, 0.5],
+                                        2 => [0.5, 1.0],
+                                        _ => [0.0, 0.5],
+                                    });
+                                }
+                            }
+                        }
+                        None
+                    } else {
+                        f.surface.parameters(point)
+                    }
+                })
                 .and_then(|uv| self.evaluate_support(id, uv))
                 .map(|e| e.normal)
         };

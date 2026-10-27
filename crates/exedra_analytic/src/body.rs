@@ -447,6 +447,17 @@ impl<F, E> Body<F, E> {
             {
                 return Err(BodyError::NonRegularSurface { face: id });
             }
+            if matches!(face.surface, Surface::Ruled(_))
+                && face
+                    .domain
+                    .u
+                    .bounds()
+                    .into_iter()
+                    .chain(face.domain.v.bounds())
+                    .any(|t| !ParameterRange::UNIT.contains(t))
+            {
+                return Err(BodyError::NonRegularSurface { face: id });
+            }
             for &loop_id in &face.loops {
                 let loop_ = self
                     .boundary_loop(loop_id)
@@ -519,7 +530,7 @@ pub enum BodyError {
         /// Allowed distance.
         allowed: f64,
     },
-    /// A face domain meets a singularity or leaves the regular surface nappe.
+    /// A face domain meets a singularity or leaves the certified regular region.
     NonRegularSurface {
         /// Offending face.
         face: FaceId,
@@ -594,6 +605,21 @@ fn coordinates(frame: Placement3, p: [f64; 3]) -> [f64; 3] {
     core::array::from_fn(|i| dot(delta, frame.rows.map(|r| r[i])))
 }
 fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
+    if let Surface::Ruled(ruled) = surface {
+        // Full-curve comparison against the patch's exact four boundaries.
+        // This is sufficient, not complete for arbitrary interior trims.
+        return [false, true]
+            .into_iter()
+            .filter_map(|reverse| {
+                crate::geometry::CurveSpan::new(curve.clone(), range, reverse).ok()
+            })
+            .flat_map(|actual| {
+                (0..4)
+                    .filter_map(|side| ruled.boundary(side))
+                    .map(move |ideal| ideal.alignment(&actual))
+            })
+            .fold(f64::INFINITY, f64::min);
+    }
     let frame = surface.frame();
     match curve {
         Curve::Line(_) => {
@@ -605,6 +631,7 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             };
             let (a, b) = (coordinates(frame, a.point), coordinates(frame, b.point));
             match surface {
+                Surface::Ruled(_) => unreachable!(),
                 Surface::Torus(t) => {
                     // Distance to a closed set is 1-Lipschitz. Each point of
                     // this segment is at most half its length from an endpoint;
@@ -665,6 +692,7 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             let normal = frame.rows.map(|r| r[2]);
             let tilt = libm::hypot(dot(axis(0), normal), dot(axis(1), normal));
             match surface {
+                Surface::Ruled(_) => unreachable!(),
                 Surface::Torus(t) => {
                     // Bound the entire circle against either an orbit or a
                     // meridian circle, independently of its parameter trim.
