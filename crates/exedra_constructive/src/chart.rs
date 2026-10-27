@@ -212,20 +212,24 @@ pub enum SurfaceChartKind {
 
 /// Construction metric and texture mapping for one generating operation.
 ///
-/// Bind with [`crate::ir::Node::with_surface_chart`]. Other node kinds reject
-/// charts until they define an explicit rest metric. All loops have independent
+/// Recipes bind with [`crate::ir::Node::with_surface_chart`]; native generators
+/// supply construction coordinates through the checked triangle mapping methods.
+/// The generator defines the input distance metric: recipe sampling uses chords,
+/// while retained native curves supply exact source distances. All loops have independent
 /// distance origins at their authored starts; use [`crate::profile::Loop2::with_seam`]
 /// to choose these seams. Caps have independent planar charts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SurfaceChart {
-    /// Wall coordinates are `(sampled profile distance, extrusion distance)`.
+    /// Wall coordinates are `(profile_distance, extrusion_distance)`.
+    /// Recipe profile distances use sampled chords.
     Extrude {
         /// Wall mapping, shared by outer and hole loops in their authored winding.
         wall: ChartTransform,
         /// Cap mapping from local profile `(x, y)`, on both caps.
         caps: ChartTransform,
     },
-    /// Wall coordinates are `(reference_radius * theta, sampled profile distance)`.
+    /// Wall coordinates are `(reference_radius * theta, profile_distance)`.
+    /// Recipes use sampled profile chords; native generators use source-curve length.
     ///
     /// Theta grows by the right-handed revolution convention. Its seam is the
     /// authored theta-zero meridian, local +X; placement controls its pose.
@@ -241,8 +245,9 @@ pub enum SurfaceChart {
     },
     /// Loft walls use `(reference profile distance, authored longitudinal distance)`.
     ///
-    /// Profile distance is measured along the jointly sampled reference section,
-    /// in its own profile coordinates before placement. Corresponding points keep
+    /// Profile distance follows the reference section in its own coordinates
+    /// before placement: jointly sampled chords for recipes, exact source curves
+    /// for native lofts. Corresponding points keep
     /// this U coordinate throughout the loft. V runs from zero to `rest_length`,
     /// placing each authored section by `stations`; smooth intermediate samples
     /// interpolate between their bounding sections. Differing sections and
@@ -260,9 +265,10 @@ pub enum SurfaceChart {
         /// Mapping from each cap's own local profile `(x, y)` coordinates.
         caps: ChartTransform,
     },
-    /// Sweep walls use `(sampled profile distance, sampled path distance)`.
+    /// Sweep walls use `(profile_distance, path_distance)`.
     ///
-    /// Path distance is cumulative centerline chord length before placement,
+    /// Recipes use sampled profile/path chords; native sweeps use exact profile
+    /// and centerline source-curve lengths. Both metrics precede placement,
     /// independent of the section datum and transported frame. Inner and outer
     /// rails at bends intentionally stretch this rest metric; miter cuts do not
     /// reset it. Closed paths have their longitudinal seam at authored station
@@ -502,7 +508,7 @@ impl LoftStations {
     }
 }
 
-/// Original chart metric and profile sampling, retained as surface ancestry.
+/// Original recipe chart metric and profile sampling, retained as surface ancestry.
 ///
 /// This describes the generating operation, not the metric after nonuniform
 /// placement or deformation. It does not assert current UV coverage: operations
