@@ -250,6 +250,7 @@ struct Strip {
     translation: [f64; 3],
     center: [f64; 3],
     radius_scale: f64,
+    correspondence_gap: f64,
 }
 #[derive(Copy, Clone)]
 enum Patch {
@@ -741,7 +742,8 @@ impl<F, E> Body<F, E> {
                     if !residual.is_finite() {
                         return Err(RealizationError::DegenerateFace { face: id });
                     }
-                    ruling_displacement = ruling_displacement.max(residual);
+                    ruling_displacement =
+                        ruling_displacement.max(patch.correspondence_gap + residual);
                 }
                 // Check orientation once, at the first strip's midpoint. The
                 // midpoint of a full periodic edge faces the opposite direction.
@@ -890,6 +892,27 @@ impl<F, E> Body<F, E> {
     fn rotational_patch(&self, id: FaceId, gap: f64) -> Result<Strip, RealizationError> {
         let face = self.face(id).expect("known face");
         let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
+        if matches!(face.surface, Surface::Cylinder(_))
+            && face
+                .loops
+                .iter()
+                .filter_map(|&id| self.boundary_loop(id))
+                .flat_map(|loop_| &loop_.coedges)
+                .any(|c| matches!(self.edges()[c.edge.index()].curve, Curve::Ellipse(_)))
+        {
+            let band = self
+                .cylindrical_band(id, &ValidationPolicy { max_gap: gap })
+                .map_err(|_| refuse())?;
+            return Ok(Strip {
+                a: band.pair[0],
+                b: band.pair[1],
+                translation: band.translation,
+                center: band.center,
+                radius_scale: 1.0,
+                correspondence_gap: band.max_gap(),
+            });
+        }
+
         let (mut a, mut b) = if matches!(face.surface, Surface::Plane(_)) && face.loops.len() == 2 {
             let rings = [
                 self.boundary_loop(face.loops[0]).expect("validated loop"),
@@ -1046,6 +1069,7 @@ impl<F, E> Body<F, E> {
             translation,
             center: lower.frame().rows.map(|r| r[3]),
             radius_scale,
+            correspondence_gap: 0.0,
         })
     }
 
