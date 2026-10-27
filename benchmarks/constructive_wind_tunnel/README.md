@@ -386,3 +386,29 @@ corner rotation, while using stack records. Native ARM64 release assembly alread
 uses packed two-double arithmetic in Newell projection without a SIMD crate.
 These measurements establish the structural optimization, not a browser speedup
 or a claim that the Wasm bundle uses SIMD.
+
+
+## Bounded native accuracy refinement
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin accuracy_refinement
+python3 benchmarks/constructive_wind_tunnel/compare_accuracy.py --before /path/to/before --after /path/to/after --output /tmp/accuracy-comparison
+python3 examples/step_exchange/scripts/profile_bores.py --workload refinement --repo /path/to/before --output /tmp/accuracy-alloc-before
+python3 examples/step_exchange/scripts/profile_bores.py --workload refinement --repo /path/to/after --output /tmp/accuracy-alloc-after
+```
+
+The same public workload runs against both source trees through isolated Cargo
+packages. Three alternating rounds measure 101 release realizations per case,
+after warmup, with source construction, validity/hash checks, output destruction
+and file I/O outside timing. No compiler cache, JavaScript or GPU is involved.
+Source heads and an analytic patch hash accompany results when testing uncommitted
+changes. Optional target arguments reuse existing dedicated build directories.
+
+The ordinary 0°/30°/60° bores, revolution, sweep and solid/hollow loft must retain
+identical f32 positions, topology, native correspondence, sharpness and deviation.
+A translated small bore must achieve the original target after refinement; an
+edge-budget-capped variant must preserve its original unmet output. Reports
+separate delivered triangles from completed work across both attempts. The
+allocation window excludes native construction and warmup, includes retry work,
+holds only the delivered output at its retained checkpoint, then releases it.
+The isolated dhat package is a QA dependency outside the production graph.

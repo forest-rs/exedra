@@ -1,0 +1,327 @@
+{
+  "source": {
+    "before": {
+      "head": "5194ebb67764cef0dd9500519109def51a79211c",
+      "analytic_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "realize_rs_sha256": "907de34137b7ea5bc34326c1501c376779dd60974d1f88175e7f67bfeb115b6d"
+    },
+    "after": {
+      "head": "5194ebb67764cef0dd9500519109def51a79211c",
+      "analytic_patch_sha256": "14ab1aaa90fa9c0e58085b3f49a256f1b49a4b1abd2b9cf7e38134da2341b817",
+      "validated_core_commit": "95d160d0507bca2c4d4203f1d22e370baba28799",
+      "realize_rs_sha256": "9c560642d680eab4c98d9d7f6b18343c1bb85ae5754955e7ae107361ad9265e5"
+    }
+  },
+  "cases": [
+    {
+      "label": "bore 0",
+      "before": {
+        "geometry_fingerprint": "0x81a4bd21875291a8",
+        "label": "bore 0",
+        "max_deviation": 0.024154486592351962,
+        "report_debug": "RealizationReport { tolerance: 0.025, geometry_gap: 1.1368683772161603e-12, max_curve_deviation: 0.024154236028662554, max_surface_deviation: 0.0, max_vertex_displacement: 2.505601433989848e-7, max_ruling_displacement: 1.2722721036986686e-12, max_deviation: 0.024154486592351962, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 35, 35, 1] }",
+        "triangles": 156,
+        "vertices": 78,
+        "within_tolerance": true,
+        "p50_ns": 79583,
+        "p95_ns": 126875
+      },
+      "after": {
+        "geometry_fingerprint": "0x81a4bd21875291a8",
+        "label": "bore 0",
+        "max_deviation": 0.024154486592351962,
+        "report_debug": "RealizationReport { tolerance: 0.025, geometry_gap: 1.1368683772161603e-12, max_curve_deviation: 0.024154236028662554, max_surface_deviation: 0.0, max_vertex_displacement: 2.505601433989848e-7, max_ruling_displacement: 1.2722721036986686e-12, max_deviation: 0.024154486592351962, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 35, 35, 1], work: RealizationWork { attempts: 1, completed_boundary_samples: 98, completed_triangles: 156 }, curve_refinement: None }",
+        "triangles": 156,
+        "vertices": 78,
+        "within_tolerance": true,
+        "p50_ns": 79375,
+        "p95_ns": 111959
+      }
+    },
+    {
+      "label": "bore 30",
+      "before": {
+        "geometry_fingerprint": "0xab33d954db783604",
+        "label": "bore 30",
+        "max_deviation": 0.02495995207336492,
+        "report_debug": "RealizationReport { tolerance: 0.025, geometry_gap: 1.1368683772161603e-12, max_curve_deviation: 0.024958931516872368, max_surface_deviation: 0.0, max_vertex_displacement: 5.125455119079221e-7, max_ruling_displacement: 5.080087069047809e-7, max_deviation: 0.02495995207336492, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 37, 37, 1] }",
+        "triangles": 164,
+        "vertices": 82,
+        "within_tolerance": true,
+        "p50_ns": 85125,
+        "p95_ns": 113875
+      },
+      "after": {
+        "geometry_fingerprint": "0xab33d954db783604",
+        "label": "bore 30",
+        "max_deviation": 0.02495995207336492,
+        "report_debug": "RealizationReport { tolerance: 0.025, geometry_gap: 1.1368683772161603e-12, max_curve_deviation: 0.024958931516872368, max_surface_deviation: 0.0, max_vertex_displacement: 5.125455119079221e-7, max_ruling_displacement: 5.080087069047809e-7, max_deviation: 0.02495995207336492, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 37, 37, 1], work: RealizationWork { attempts: 1, completed_boundary_samples: 102, completed_triangles: 164 }, curve_refinement: None }",
+        "triangles": 164,
+        "vertices": 82,
+        "within_tolerance": true,
+        "p50_ns": 80625,
+        "p95_ns": 100958
+      }
+    },
+    {
+      "label": "bore 60",
+      "before": {
+        "geometry_fingerprint": "0xfd2280466ec1ae23",
+        "label": "bore 60",
+        "max_deviation": 0.02465728737763664,
+        "report_debug": "RealizationReport { tolerance: 0.025, geometry_gap: 1.1386447340555605e-12, max_curve_deviation: 0.024655286996062654, max_surface_deviation: 0.0, max_vertex_displacement: 9.017957656677165e-7, max_ruling_displacement: 1.098583531031752e-6, max_deviation: 0.02465728737763664, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 49, 49, 1] }",
+        "triangles": 212,
+        "vertices": 106,
+        "within_tolerance": true,
+        "p50_ns": 106583,
+        "p95_ns": 125292
+      },
+      "after": {
+        "geometry_fingerprint": "0xfd2280466ec1ae23",
+        "label": "bore 60",
+        "max_deviation": 0.02465728737763664,
+        "report_debug": "RealizationReport { tolerance: 0.025, geometry_gap: 1.1386447340555605e-12, max_curve_deviation: 0.024655286996062654, max_surface_deviation: 0.0, max_vertex_displacement: 9.017957656677165e-7, max_ruling_displacement: 1.098583531031752e-6, max_deviation: 0.02465728737763664, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 49, 49, 1], work: RealizationWork { attempts: 1, completed_boundary_samples: 126, completed_triangles: 212 }, curve_refinement: None }",
+        "triangles": 212,
+        "vertices": 106,
+        "within_tolerance": true,
+        "p50_ns": 100042,
+        "p95_ns": 119083
+      }
+    },
+    {
+      "label": "translated bore",
+      "before": {
+        "geometry_fingerprint": "0x4662bad358ae7245",
+        "label": "translated bore",
+        "max_deviation": 2.5130723278330933e-08,
+        "report_debug": "RealizationReport { tolerance: 2.5e-8, geometry_gap: 1.1368683772161602e-18, max_curve_deviation: 2.4958931516872365e-8, max_surface_deviation: 0.0, max_vertex_displacement: 6.386961837568497e-11, max_ruling_displacement: 1.0792214080914251e-10, max_deviation: 2.5130723278330933e-8, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 37, 37, 1] }",
+        "triangles": 164,
+        "vertices": 82,
+        "within_tolerance": false,
+        "p50_ns": 84875,
+        "p95_ns": 92584
+      },
+      "after": {
+        "geometry_fingerprint": "0x1908b12a8f3d7dbf",
+        "label": "translated bore",
+        "max_deviation": 1.2334017160205112e-08,
+        "report_debug": "RealizationReport { tolerance: 2.5e-8, geometry_gap: 1.1368683772161602e-18, max_curve_deviation: 1.2167783263707574e-8, max_surface_deviation: 0.0, max_vertex_displacement: 5.904565251761909e-11, max_ruling_displacement: 1.0718824170618046e-10, max_deviation: 1.2334017160205112e-8, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 53, 53, 1], work: RealizationWork { attempts: 2, completed_boundary_samples: 236, completed_triangles: 392 }, curve_refinement: Some(CurveRefinement { initial_deviation: 2.5130723278330933e-8, curve_tolerance: 1.25e-8, outcome: Improved }) }",
+        "triangles": 228,
+        "vertices": 114,
+        "within_tolerance": true,
+        "p50_ns": 194958,
+        "p95_ns": 209375
+      }
+    },
+    {
+      "label": "translated bore, capped edge budget",
+      "before": {
+        "geometry_fingerprint": "0x4662bad358ae7245",
+        "label": "translated bore, capped edge budget",
+        "max_deviation": 2.5130723278330933e-08,
+        "report_debug": "RealizationReport { tolerance: 2.5e-8, geometry_gap: 1.1368683772161602e-18, max_curve_deviation: 2.4958931516872365e-8, max_surface_deviation: 0.0, max_vertex_displacement: 6.386961837568497e-11, max_ruling_displacement: 1.0792214080914251e-10, max_deviation: 2.5130723278330933e-8, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 37, 37, 1] }",
+        "triangles": 164,
+        "vertices": 82,
+        "within_tolerance": false,
+        "p50_ns": 85875,
+        "p95_ns": 93041
+      },
+      "after": {
+        "geometry_fingerprint": "0x4662bad358ae7245",
+        "label": "translated bore, capped edge budget",
+        "max_deviation": 2.5130723278330933e-08,
+        "report_debug": "RealizationReport { tolerance: 2.5e-8, geometry_gap: 1.1368683772161602e-18, max_curve_deviation: 2.4958931516872365e-8, max_surface_deviation: 0.0, max_vertex_displacement: 6.386961837568497e-11, max_ruling_displacement: 1.0792214080914251e-10, max_deviation: 2.5130723278330933e-8, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 37, 37, 1], work: RealizationWork { attempts: 2, completed_boundary_samples: 102, completed_triangles: 164 }, curve_refinement: Some(CurveRefinement { initial_deviation: 2.5130723278330933e-8, curve_tolerance: 1.25e-8, outcome: Refused(Sampling { edge: EdgeId(12), error: ToleranceBudgetExceeded { required: 53, maximum: 37 } }) }) }",
+        "triangles": 164,
+        "vertices": 82,
+        "within_tolerance": false,
+        "p50_ns": 82042,
+        "p95_ns": 89625
+      }
+    },
+    {
+      "label": "revolution",
+      "before": {
+        "geometry_fingerprint": "0x0106b4d86d1dbd25",
+        "label": "revolution",
+        "max_deviation": 0.009788219707559364,
+        "report_debug": "RealizationReport { tolerance: 0.01, geometry_gap: 2.4492935982947065e-15, max_curve_deviation: 0.009787734800264075, max_surface_deviation: 0.0, max_vertex_displacement: 4.849072903901807e-7, max_ruling_displacement: 0.0, max_deviation: 0.009788219707559364, edge_segments: [71, 71, 71, 71, 1, 1] }",
+        "triangles": 568,
+        "vertices": 284,
+        "within_tolerance": true,
+        "p50_ns": 98833,
+        "p95_ns": 107583
+      },
+      "after": {
+        "geometry_fingerprint": "0x0106b4d86d1dbd25",
+        "label": "revolution",
+        "max_deviation": 0.009788219707559364,
+        "report_debug": "RealizationReport { tolerance: 0.01, geometry_gap: 2.4492935982947065e-15, max_curve_deviation: 0.009787734800264075, max_surface_deviation: 0.0, max_vertex_displacement: 4.849072903901807e-7, max_ruling_displacement: 0.0, max_deviation: 0.009788219707559364, edge_segments: [71, 71, 71, 71, 1, 1], work: RealizationWork { attempts: 1, completed_boundary_samples: 292, completed_triangles: 568 }, curve_refinement: None }",
+        "triangles": 568,
+        "vertices": 284,
+        "within_tolerance": true,
+        "p50_ns": 98916,
+        "p95_ns": 109833
+      }
+    },
+    {
+      "label": "sweep",
+      "before": {
+        "geometry_fingerprint": "0x59fdf1ba312dc441",
+        "label": "sweep",
+        "max_deviation": 0.009892333513321824,
+        "report_debug": "RealizationReport { tolerance: 0.01, geometry_gap: 3.552713678800501e-15, max_curve_deviation: 0.009883511496722055, max_surface_deviation: 0.0, max_vertex_displacement: 4.103496666231105e-6, max_ruling_displacement: 4.718519926433359e-6, max_deviation: 0.009892333513321824, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 79, 79, 79, 79, 40, 40, 40, 40, 1, 1, 1, 1] }",
+        "triangles": 964,
+        "vertices": 484,
+        "within_tolerance": true,
+        "p50_ns": 186334,
+        "p95_ns": 201958
+      },
+      "after": {
+        "geometry_fingerprint": "0x59fdf1ba312dc441",
+        "label": "sweep",
+        "max_deviation": 0.009892333513321824,
+        "report_debug": "RealizationReport { tolerance: 0.01, geometry_gap: 3.552713678800501e-15, max_curve_deviation: 0.009883511496722055, max_surface_deviation: 0.0, max_vertex_displacement: 4.103496666231105e-6, max_ruling_displacement: 4.718519926433359e-6, max_deviation: 0.009892333513321824, edge_segments: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 79, 79, 79, 79, 40, 40, 40, 40, 1, 1, 1, 1], work: RealizationWork { attempts: 1, completed_boundary_samples: 524, completed_triangles: 964 }, curve_refinement: None }",
+        "triangles": 964,
+        "vertices": 484,
+        "within_tolerance": true,
+        "p50_ns": 188625,
+        "p95_ns": 210084
+      }
+    },
+    {
+      "label": "solid loft",
+      "before": {
+        "geometry_fingerprint": "0xbd59c15432df045a",
+        "label": "solid loft",
+        "max_deviation": 0.03682769136545998,
+        "report_debug": "RealizationReport { tolerance: 0.05, geometry_gap: 1.9532063588848337e-13, max_curve_deviation: 0.011993625855495335, max_surface_deviation: 0.03682362202373121, max_vertex_displacement: 4.069341338124316e-6, max_ruling_displacement: 0.0, max_deviation: 0.03682769136545998, edge_segments: [30, 16, 16, 30, 16, 16, 30, 16, 16, 30, 16, 16, 19, 19, 19, 19, 19, 19] }",
+        "triangles": 4956,
+        "vertices": 2480,
+        "within_tolerance": true,
+        "p50_ns": 1017375,
+        "p95_ns": 1122625
+      },
+      "after": {
+        "geometry_fingerprint": "0xbd59c15432df045a",
+        "label": "solid loft",
+        "max_deviation": 0.03682769136545998,
+        "report_debug": "RealizationReport { tolerance: 0.05, geometry_gap: 1.9532063588848337e-13, max_curve_deviation: 0.011993625855495335, max_surface_deviation: 0.03682362202373121, max_vertex_displacement: 4.069341338124316e-6, max_ruling_displacement: 0.0, max_deviation: 0.03682769136545998, edge_segments: [30, 16, 16, 30, 16, 16, 30, 16, 16, 30, 16, 16, 19, 19, 19, 19, 19, 19], work: RealizationWork { attempts: 1, completed_boundary_samples: 380, completed_triangles: 4956 }, curve_refinement: None }",
+        "triangles": 4956,
+        "vertices": 2480,
+        "within_tolerance": true,
+        "p50_ns": 980625,
+        "p95_ns": 1045291
+      }
+    },
+    {
+      "label": "hollow loft",
+      "before": {
+        "geometry_fingerprint": "0x2f27a5300fabe78e",
+        "label": "hollow loft",
+        "max_deviation": 0.03726937358955631,
+        "report_debug": "RealizationReport { tolerance: 0.05, geometry_gap: 1.9532063588848337e-13, max_curve_deviation: 0.011993625855495335, max_surface_deviation: 0.03726530424782754, max_vertex_displacement: 4.069341338124316e-6, max_ruling_displacement: 0.0, max_deviation: 0.03726937358955631, edge_segments: [30, 16, 16, 30, 16, 16, 14, 14, 26, 14, 14, 26, 30, 16, 16, 30, 16, 16, 14, 14, 26, 14, 14, 26, 19, 19, 19, 19, 19, 19, 17, 17, 17, 17, 17, 17] }",
+        "triangles": 8848,
+        "vertices": 4424,
+        "within_tolerance": true,
+        "p50_ns": 2096750,
+        "p95_ns": 2163083
+      },
+      "after": {
+        "geometry_fingerprint": "0x2f27a5300fabe78e",
+        "label": "hollow loft",
+        "max_deviation": 0.03726937358955631,
+        "report_debug": "RealizationReport { tolerance: 0.05, geometry_gap: 1.9532063588848337e-13, max_curve_deviation: 0.011993625855495335, max_surface_deviation: 0.03726530424782754, max_vertex_displacement: 4.069341338124316e-6, max_ruling_displacement: 0.0, max_deviation: 0.03726937358955631, edge_segments: [30, 16, 16, 30, 16, 16, 14, 14, 26, 14, 14, 26, 30, 16, 16, 30, 16, 16, 14, 14, 26, 14, 14, 26, 19, 19, 19, 19, 19, 19, 17, 17, 17, 17, 17, 17], work: RealizationWork { attempts: 1, completed_boundary_samples: 716, completed_triangles: 8848 }, curve_refinement: None }",
+        "triangles": 8848,
+        "vertices": 4424,
+        "within_tolerance": true,
+        "p50_ns": 2100000,
+        "p95_ns": 2303208
+      }
+    }
+  ],
+  "scope": "preauthored native source, validity/hash checks, warmup, output destruction, mesh counterpart preparation and serialization excluded from timing; each timed realization retains all returned buffers at stop; no compiler cache, JS or GPU",
+  "method": "same public-API workload, release; three alternating process rounds; 101 measurements after warmup per case per round; geometry fingerprints include f32 positions, native face correspondence, triangle topology and edge sharpness",
+  "machine": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "allocation": {
+    "translated_before": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 31036,
+          "peak_blocks": 26,
+          "peak_bytes": 47853,
+          "phase": "retained",
+          "total_blocks": 300,
+          "total_bytes": 128531
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 26,
+          "peak_bytes": 47853,
+          "phase": "released",
+          "total_blocks": 300,
+          "total_bytes": 128531
+        }
+      ],
+      "scope": "one translated-bore display realization including optional refinement; native model construction and warmup excluded; retained holds delivered mesh only; released drops mesh; no compiler, JS or GPU"
+    },
+    "translated_after": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 41788,
+          "peak_blocks": 40,
+          "peak_bytes": 96353,
+          "phase": "retained",
+          "total_blocks": 613,
+          "total_bytes": 294974
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 40,
+          "peak_bytes": 96353,
+          "phase": "released",
+          "total_blocks": 613,
+          "total_bytes": 294974
+        }
+      ],
+      "scope": "one translated-bore display realization including optional refinement; native model construction and warmup excluded; retained holds delivered mesh only; released drops mesh; no compiler, JS or GPU"
+    },
+    "ordinary_after": {
+      "checkpoints": [
+        {
+          "current_blocks": 180,
+          "current_bytes": 197400,
+          "peak_blocks": 188,
+          "peak_bytes": 202497,
+          "phase": "retained",
+          "total_blocks": 1104,
+          "total_bytes": 562463
+        },
+        {
+          "current_blocks": 126,
+          "current_bytes": 47436,
+          "peak_blocks": 188,
+          "peak_bytes": 202497,
+          "phase": "native_only",
+          "total_blocks": 1104,
+          "total_bytes": 562463
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 188,
+          "peak_bytes": 202497,
+          "phase": "released",
+          "total_blocks": 1104,
+          "total_bytes": 562463
+        }
+      ],
+      "scope": "three bore constructions, realizations and STEP exports including retained original Extrusion records; original preauthored source, requests, containers and warmup excluded; native_only drops display/export outputs; released drops models; no compiler, JS or GPU"
+    }
+  },
+  "interpretation": "Ordinary geometry/evidence and allocation counts are unchanged; timing differences are treated as noise. The translated case achieves its original target with two attempts and higher CPU, traffic and peak storage. Capped refinement retains the original unmet mesh with a typed budget refusal. Native source and scope are unchanged."
+}
