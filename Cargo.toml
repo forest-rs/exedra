@@ -28,6 +28,7 @@ members = [
     "crates/exedra_mesh_ops",
     "crates/exedra_primitives",
     "crates/exedra_profile",
+    "crates/exedra_scene",
     "crates/exedra_step",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
@@ -47,6 +48,7 @@ members = [
     "examples/constructive_probe",
     "examples/geometry_queries",
     "examples/material_gallery",
+    "examples/native_scene",
     "examples/step_exchange",
     "examples/yingzao_fashi_pavilion",
 ]
@@ -127,6 +129,7 @@ exedra_mesh = { default-features = false, path = "crates/exedra_mesh", version =
 exedra_mesh_ops = { default-features = false, path = "crates/exedra_mesh_ops", version = "0.1.0" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives", version = "0.1.0" }
 exedra_profile = { path = "crates/exedra_profile", version = "0.1.0" }
+exedra_scene = { default-features = false, path = "crates/exedra_scene", version = "0.1.0" }
 exedra_step = { default-features = false, path = "crates/exedra_step", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate", version = "0.1.0" }
@@ -139,6 +142,8 @@ joiner_timber = { default-features = false, path = "crates/joiner_timber" }
 joto_constants = "0.2.0"
 joto_format = "0.1.0"
 joto_parse = "0.2.0"
+layerstack = { default-features = false, git = "https://github.com/forest-rs/layerstack", rev = "08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6" }
+layerstack_schemas = { default-features = false, features = ["usd-geom", "usd-proc", "usd-shade"], git = "https://github.com/forest-rs/layerstack", rev = "08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6" }
 # Pinned exactly: kurbo flattening output feeds content hashes and goldens in
 # the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
