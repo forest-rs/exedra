@@ -232,6 +232,15 @@ impl Sweep {
     pub const fn surface_area(&self) -> f64 {
         self.area
     }
+    /// Planar boundary at the requested construction end, independent of display quality.
+    #[must_use]
+    pub fn cap(&self, end: End) -> Option<FaceId> {
+        self.body
+            .faces()
+            .iter()
+            .position(|f| f.role == FaceRole::Cap { end })
+            .map(|i| FaceId(crate::usize_to_u32(i)))
+    }
     /// Original feature label on a wall; caps have none.
     #[must_use]
     pub fn face_tag(&self, face: FaceId) -> Option<SegTag> {
@@ -386,6 +395,11 @@ mod tests {
         assert_eq!(sweep.body().vertices().len(), 8);
         assert_eq!(sweep.body().edges().len(), 12);
         assert_eq!(sweep.body().faces().len(), 6);
+        for (end, expected) in [(End::Start, -1.0), (End::End, 1.0)] {
+            let face = sweep.cap(end).unwrap();
+            let plane = sweep.body().planar_frame(face, [0.0; 2]).unwrap();
+            assert_eq!(plane.rows[1][2], expected);
+        }
         assert_eq!(sweep.volume(), 8000.0);
         assert_eq!(sweep.surface_area(), 2400.0);
         assert_realizes(&sweep);
