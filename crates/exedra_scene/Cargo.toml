@@ -1,0 +1,25 @@
+[package]
+name = "exedra_scene"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional native LayerStack scenes over Exedra construction"
+readme = "README.md"
+keywords = ["geometry", "scene", "usd", "modeling", "no_std"]
+categories = ["graphics", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["exedra_compile/std", "exedra_constructive/std", "exedra_mesh/std", "layerstack/std", "layerstack_schemas/std"]
+
+[dependencies]
+exedra_compile.workspace = true
+exedra_constructive.workspace = true
+exedra_mesh = { features = ["libm"], workspace = true }
+layerstack.workspace = true
+layerstack_schemas.workspace = true
