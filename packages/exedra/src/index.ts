@@ -28,13 +28,48 @@ export interface Diagnostic {
   family?: NativeFamily;
   measure?: "volume" | "surfaceArea";
 }
+/** Host-observed elapsed milliseconds at the SDK/Wasm boundary; never GPU or presentation time. */
+export interface KernelCallTiming {
+  readonly operation: "document.build" | "part.realize" | "part.workplane" | "part.exportStep";
+  readonly outcome: "success" | "refused";
+  readonly sdkPrepareMs: number;
+  readonly kernelMs: number;
+  readonly transferMs: number;
+  readonly metadataMs: number;
+  readonly cleanupMs: number;
+  readonly totalMs: number;
+  readonly documentId?: string;
+  readonly partId?: string;
+  readonly diagnosticCode?: string;
+}
+type TimingPhase = "sdkPrepareMs" | "kernelMs" | "transferMs" | "metadataMs" | "cleanupMs";
+class CallTiming {
+  private readonly start=performance.now();
+  private readonly phases={sdkPrepareMs:0,kernelMs:0,transferMs:0,metadataMs:0,cleanupMs:0};
+  private completed: KernelCallTiming | null=null;
+  private documentId?: string;
+  private readonly partId?: string;
+  private readonly operation:KernelCallTiming["operation"];
+  private record:((timing:KernelCallTiming)=>void) | null;
+  constructor(operation:KernelCallTiming["operation"],record:(timing:KernelCallTiming)=>void,scope?:{documentId:string;partId?:string}) {this.operation=operation;this.record=record;this.documentId=scope?.documentId;this.partId=scope?.partId;}
+  phase<T>(phase:TimingPhase,action:()=>T):T {const start=performance.now();try{return action()}finally{this.phases[phase]+=Math.max(0,performance.now()-start)}}
+  scope(documentId:string):void {this.documentId=documentId;}
+  finish(outcome:KernelCallTiming["outcome"],diagnosticCode?:string):KernelCallTiming {
+    if(!this.completed){this.completed=Object.freeze({operation:this.operation,outcome,...this.phases,totalMs:Math.max(0,performance.now()-this.start),documentId:this.documentId,partId:this.partId,diagnosticCode});const record=this.record;this.record=null;record?.(this.completed);}
+    return this.completed;
+  }
+  refusal(error:unknown):ExedraError {const original=this.phase("metadataMs",()=>asExedraError(error));return new ExedraError(original.diagnostic,this.finish("refused",original.diagnostic.code));}
+  get value():KernelCallTiming {if(!this.completed)throw new Error("SDK call timing is read before the operation completed");return this.completed;}
+}
 /** A structured authoring, native geometry, lifecycle or realization refusal. */
 export class ExedraError extends Error {
   readonly diagnostic: Diagnostic;
-  constructor(diagnostic: Diagnostic) {
+  readonly timing?: KernelCallTiming;
+  constructor(diagnostic: Diagnostic, timing?: KernelCallTiming) {
     super(diagnostic.message);
     this.name = "ExedraError";
     this.diagnostic = Object.freeze({ ...diagnostic });
+    this.timing=timing && Object.freeze({...timing});
   }
 }
 function fail(code: string, message: string): never {
@@ -264,17 +299,12 @@ export interface NativeTransport {
   free(): void;
 }
 
-function nativeCall<T>(action: () => T): T {
-  try { return action(); }
-  catch (error) {
-    if (error instanceof ExedraError) throw error;
-    if (typeof error === "string") {
-      try { const d = JSON.parse(error) as Diagnostic; if (d.code && d.message) throw new ExedraError(d); }
-      catch (parsed) { if (parsed instanceof ExedraError) throw parsed; }
-    }
-    throw new ExedraError({ code: "bridge.failure", operation: "bridge", message: String(error) });
-  }
+function asExedraError(error:unknown):ExedraError {
+  if(error instanceof ExedraError)return error;
+  if(typeof error === "string") {try {const d=JSON.parse(error) as Diagnostic;if(d.code && d.message)return new ExedraError(d);}catch{/* A non-JSON host refusal is still diagnosed below. */}}
+  return new ExedraError({code:"bridge.failure",operation:"bridge",message:String(error)});
 }
+function nativeCall<T>(action: () => T): T {try{return action()}catch(error){throw asExedraError(error)}}
 
 function graph(parts: Record<string, Solid>, units: LengthUnit, separation: number): unknown {
   const profileIds = new Map<Profile, number>(), nodeIds = new Map<Solid, number>();
@@ -332,6 +362,11 @@ export class AuthoringSession {
   private readonly separation: number;
   private readonly scope = `session-${nextSession++}`;
   private readonly documents = new Set<NativeDocument>();
+  private latest: KernelCallTiming | null=null;
+  /** The last operation attempt only; reading this or stats does not record another operation. */
+  get lastOperation():KernelCallTiming | null {return this.latest;}
+  /** @internal */
+  beginCall(operation:KernelCallTiming["operation"],scope?:{documentId:string;partId?:string}):CallTiming {return new CallTiming(operation,timing=>{this.latest=timing},scope);}
   constructor(transport: NativeTransport, options: { units: LengthUnit; separation?: number }) {
     this.transport = transport;
     this.units = options.units;
@@ -339,13 +374,20 @@ export class AuthoringSession {
   }
   /** Builds the shared graph atomically; a refusal leaves earlier documents usable. */
   build<T extends Record<string, Solid>>(parts: T): NativeDocument & { readonly parts: { readonly [K in keyof T]: NativePart } } {
-    const transport = this.backend();
-    const result = nativeCall(() => transport.build_document(JSON.stringify(graph(parts, this.units, this.separation))));
-    const metadata = JSON.parse(result) as DocumentMetadata;
-    const document = new NativeDocument(this, metadata, `${this.scope}/document-${metadata.id}`);
-    this.documents.add(document);
-    return document as NativeDocument & { readonly parts: { readonly [K in keyof T]: NativePart } };
+    const call=this.beginCall("document.build");
+    try {
+      const transport=this.backend();
+      const request=call.phase("sdkPrepareMs",()=>JSON.stringify(graph(parts,this.units,this.separation)));
+      const result=call.phase("kernelMs",()=>transport.build_document(request));
+      const document=call.phase("metadataMs",()=>{
+        const metadata=JSON.parse(result) as DocumentMetadata;
+        const document=new NativeDocument(this,metadata,`${this.scope}/document-${metadata.id}`,call);
+        this.documents.add(document);call.scope(document.id);return document;
+      });
+      return document as NativeDocument & {readonly parts:{readonly [K in keyof T]:NativePart}};
+    } catch(error){throw call.refusal(error)} finally{call.finish("success")}
   }
+
   stats(): OwnershipStats {
     return JSON.parse(nativeCall(() => this.backend().stats_json()));
   }
@@ -374,10 +416,15 @@ export class NativeDocument {
   private readonly session: AuthoringSession;
   private readonly handle: number;
   private live = true;
-  constructor(session: AuthoringSession, metadata: DocumentMetadata, scope: string) {
-    this.session = session; this.handle = metadata.id; this.id = scope; this.units = metadata.units;
+  private readonly buildCall:CallTiming;
+  constructor(session: AuthoringSession, metadata: DocumentMetadata, scope: string, buildCall:CallTiming) {
+    this.buildCall=buildCall; this.session = session; this.handle = metadata.id; this.id = scope; this.units = metadata.units;
     this.parts = Object.freeze(Object.fromEntries(metadata.parts.map(part => [part.name, new NativePart(this, part)])));
   }
+  /** Build/validation boundary timing; remains a plain query after disposal. */
+  get buildTiming():KernelCallTiming {return this.buildCall.value;}
+  /** @internal */
+  beginCall(operation:KernelCallTiming["operation"],partId:string):CallTiming {return this.session.beginCall(operation,{documentId:this.id,partId});}
   dispose(): void { if (this.live) { this.session.release(this, this.handle); this.live = false; } }
   /** @internal */
   backend(): { transport: NativeTransport; document: number } {
@@ -416,17 +463,30 @@ export class NativePart {
     return floors[0];
   }
   realize(options: { tolerance: number; maxVertices?: number }): Realization {
-    const { transport, document } = this.document.backend();
-    const raw = nativeCall(() => transport.realize(document, this.index, JSON.stringify({ tolerance: finite(options.tolerance, "tolerance"), maxVertices: options.maxVertices ?? 250000 })));
+    const call=this.document.beginCall("part.realize",this.id);
     try {
-      return new Realization(this, raw.take_positions(), raw.take_normals(), raw.take_indices(), raw.take_native_faces(), JSON.parse(raw.report_json()));
-    } finally { raw.free(); }
+      const {transport,document}=this.document.backend();
+      const request=call.phase("sdkPrepareMs",()=>JSON.stringify({tolerance:finite(options.tolerance,"tolerance"),maxVertices:options.maxVertices ?? 250000}));
+      const raw=call.phase("kernelMs",()=>transport.realize(document,this.index,request));
+      try {
+        const buffers=call.phase("transferMs",()=>({positions:raw.take_positions(),normals:raw.take_normals(),indices:raw.take_indices(),nativeFaces:raw.take_native_faces()}));
+        const report=call.phase("metadataMs",()=>JSON.parse(raw.report_json()));
+        return new Realization(this,buffers.positions,buffers.normals,buffers.indices,buffers.nativeFaces,report,call);
+      } finally {call.phase("cleanupMs",()=>raw.free());}
+    } catch(error){throw call.refusal(error)} finally{call.finish("success")}
   }
-  exportStep(options: { name?: string; timestamp: string; tolerance?: number }): { text: string; report: StepReport } {
-    const { transport, document } = this.document.backend();
-    const raw = nativeCall(() => transport.export_step(document, this.index, JSON.stringify({ name: options.name ?? this.name, timestamp: options.timestamp, tolerance: options.tolerance })));
-    try { return { text: raw.take_text(), report: JSON.parse(raw.report_json()) }; }
-    finally { raw.free(); }
+  exportStep(options: { name?: string; timestamp: string; tolerance?: number }): StepFile {
+    const call=this.document.beginCall("part.exportStep",this.id);
+    try {
+      const {transport,document}=this.document.backend();
+      const request=call.phase("sdkPrepareMs",()=>JSON.stringify({name:options.name ?? this.name,timestamp:options.timestamp,tolerance:options.tolerance}));
+      const raw=call.phase("kernelMs",()=>transport.export_step(document,this.index,request));
+      try {
+        const text=call.phase("transferMs",()=>raw.take_text());
+        const report=call.phase("metadataMs",()=>JSON.parse(raw.report_json()));
+        return {text,report,get timing(){return call.value}};
+      } finally {call.phase("cleanupMs",()=>raw.free());}
+    } catch(error){throw call.refusal(error)} finally{call.finish("success")}
   }
   /** Rejects a selection from a different installed revision, even if face indices happen to agree. */
   requireSelection(selection: FaceSelection): FaceSelection {
@@ -436,10 +496,14 @@ export class NativePart {
   }
   /** Reads the exact native supporting plane; curved faces return a typed refusal. */
   workplane(selection: FaceSelection): NativeWorkplane {
-    const checked = this.requireSelection(selection);
-    const { transport, document } = this.document.backend();
-    const frame = JSON.parse(nativeCall(() => transport.workplane_json(document, this.index, checked.nativeId))) as NativeWorkplane;
-    return Object.freeze({ origin: Object.freeze(frame.origin), xAxis: Object.freeze(frame.xAxis), yAxis: Object.freeze(frame.yAxis), zAxis: Object.freeze(frame.zAxis) });
+    const call=this.document.beginCall("part.workplane",this.id);
+    try {
+      const checked=this.requireSelection(selection);
+      const {transport,document}=this.document.backend();
+      const result=call.phase("kernelMs",()=>transport.workplane_json(document,this.index,checked.nativeId));
+      const frame=call.phase("metadataMs",()=>JSON.parse(result) as Omit<NativeWorkplane,"timing">);
+      return Object.freeze({origin:Object.freeze(frame.origin),xAxis:Object.freeze(frame.xAxis),yAxis:Object.freeze(frame.yAxis),zAxis:Object.freeze(frame.zAxis),get timing(){return call.value}});
+    } catch(error){throw call.refusal(error)} finally{call.finish("success")}
   }
   /** @internal */
   face(id: number): FaceSelection {
@@ -467,11 +531,14 @@ export class FaceSelection {
 }
 /** An installed native supporting frame, expressed in document coordinates. */
 export interface NativeWorkplane {
+  readonly timing:KernelCallTiming;
   readonly origin: readonly [number, number, number];
   readonly xAxis: readonly [number, number, number];
   readonly yAxis: readonly [number, number, number];
   readonly zAxis: readonly [number, number, number];
 }
+/** One native part export, with caller-owned text, report and boundary timing. */
+export interface StepFile { readonly text:string; readonly report:StepReport; readonly timing:KernelCallTiming; }
 /** CPU display buffers owned by the caller. The originating native part remains unchanged. */
 export class Realization {
   readonly positions: Float32Array;
@@ -479,9 +546,12 @@ export class Realization {
   readonly indices: Uint32Array;
   readonly nativeFaces: Uint32Array;
   readonly report: Readonly<RealizationReport>;
+  /** Host boundary timing including buffer transfer and handle release. */
+  get timing():KernelCallTiming {return this.call.value;}
   private readonly part: NativePart;
-  constructor(part: NativePart, positions: Float32Array, normals: Float32Array, indices: Uint32Array, nativeFaces: Uint32Array, report: RealizationReport) {
-    this.part = part; this.positions = positions; this.normals = normals; this.indices = indices; this.nativeFaces = nativeFaces; this.report = Object.freeze(report);
+  private readonly call:CallTiming;
+  constructor(part: NativePart, positions: Float32Array, normals: Float32Array, indices: Uint32Array, nativeFaces: Uint32Array, report: RealizationReport, call:CallTiming) {
+    this.call=call; this.part = part; this.positions = positions; this.normals = normals; this.indices = indices; this.nativeFaces = nativeFaces; this.report = Object.freeze(report);
     if (nativeFaces.length * 3 !== indices.length) fail("bridge.correspondence", "Display triangle/native-face correspondence is incomplete");
   }
   pickTriangle(triangle: number): FaceSelection {

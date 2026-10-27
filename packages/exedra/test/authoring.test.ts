@@ -107,3 +107,31 @@ test("polygon and revolution placements snapshot caller-owned authoring inputs",
   assert.equal(h.requests[0].nodes[0].kind,"revolve");
   session.dispose();
 });
+
+test("call timing is scoped immutable evidence and diagnostic reads do not create events", () => {
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+  const doc=session.build(sample()),build=doc.buildTiming;
+  assert.equal(build.operation,"document.build");assert.equal(build.outcome,"success");
+  assert.equal(build.documentId,doc.id);assert.ok(Object.isFrozen(build));
+  assert.strictEqual(session.lastOperation,build);session.stats();assert.strictEqual(session.lastOperation,build);
+  const display=doc.parts.panel.realize({tolerance:.1}),timing=display.timing;
+  assert.equal(timing.operation,"part.realize");assert.equal(timing.partId,doc.parts.panel.id);
+  for(const key of ["kernelMs","sdkPrepareMs","transferMs","metadataMs","cleanupMs","totalMs"] as const) assert.ok(Number.isFinite(timing[key])&&timing[key]>=0);
+  assert.equal(h.counters().freed,1);
+  session.stats();assert.strictEqual(session.lastOperation,timing);assert.strictEqual(doc.buildTiming,build);
+  h.native.export_step=()=>{throw JSON.stringify({code:"exchange.unsupportedSurface",operation:"part.exportStep",message:"Torus faces are not supported"})};
+  assert.throws(()=>doc.parts.panel.exportStep({timestamp:"2026-10-27T00:00:00Z"}),error=>{
+    assert.ok(error instanceof ExedraError);assert.equal(error.timing?.outcome,"refused");assert.equal(error.timing?.operation,"part.exportStep");assert.equal(error.timing?.diagnosticCode,"exchange.unsupportedSurface");return true;
+  });
+  const refusal=session.lastOperation;session.stats();assert.strictEqual(session.lastOperation,refusal);
+  doc.dispose();assert.strictEqual(display.timing,timing);session.dispose();
+});
+
+test("transfer or metadata failures release raw buffers and retain refusal timing", () => {
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"}),doc=session.build(sample());
+  const realize=h.native.realize;
+  h.native.realize=(...args)=>{const raw=realize(...args);return {...raw,report_json(){throw new Error("malformed metadata")}}};
+  assert.throws(()=>doc.parts.panel.realize({tolerance:.1}),error=>error instanceof ExedraError&&error.timing?.outcome==="refused");
+  assert.equal(h.counters().freed,1);assert.equal(session.lastOperation?.operation,"part.realize");
+  assert.equal(doc.parts.panel.floor("recess").nativeId,0);session.dispose();
+});

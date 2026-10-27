@@ -41,7 +41,7 @@ app.innerHTML = `
   <div class="stat wide"><small>Volume · mm³</small><b id="volume">—</b></div><div class="stat wide"><small>Surface area · mm²</small><b id="area">—</b></div>
   <div class="stat"><small>Native faces</small><b id="native-faces">—</b></div><div class="stat"><small>Shared edges</small><b id="native-edges">—</b></div></div>
   <h2>Display data</h2><div class="metrics-line"><span>Triangles</span><code id="triangles">—</code></div><div class="metrics-line"><span>Render vertices</span><code id="vertices">—</code></div><div class="metrics-line"><span>Reported error</span><code id="deviation">—</code></div><div class="metrics-line"><span>CPU display buffers</span><code id="buffers">—</code></div><div class="metrics-line"><span>Compile / cache hits</span><code id="cache">—</code></div>
-  <div class="metrics-line"><span>Build / realize APIs</span><code id="timing">—</code></div><h2>Features</h2><div id="features"></div><p class="hint">Pick a face or feature.</p>
+  <h2>Timing</h2><div class="metrics-line"><span>Build / validation call</span><code id="build-kernel-time">—</code></div><div class="metrics-line"><span>Realize calls</span><code id="realize-kernel-time">—</code></div><div class="metrics-line"><span>STEP export call</span><code id="step-time">—</code></div><div class="metrics-line"><span>Last refused call</span><code id="refused-time">—</code></div><details><summary>SDK / transfer breakdown</summary><div class="metrics-line"><span>SDK prepare / transfer</span><code id="sdk-transfer-time">—</code></div><div class="metrics-line"><span>Workplane query</span><code id="workplane-time">—</code></div><p class="hint">Host-observed Wasm calls, in ms. SDK/transfer are separate; excludes rendering and GPU presentation.</p></details><h2>Features</h2><div id="features"></div><p class="hint">Pick a face or feature.</p>
   <h2>Selection</h2><div id="selection" class="selection">No selection.</div><p id="selection-notice" class="notice"></p>
   <h2>Construction</h2><div id="attachment" class="hint">The gold pin is placed from the tagged recess floor.</div>
   <h2>Export</h2><div class="downloads"></div><div id="step-result" class="step-result">STEP: one part per file.</div>
@@ -69,7 +69,6 @@ const authorCurrent = (delta=0) => {
 const tolerance = () => Number(element<HTMLSelectElement>("quality").value);
 const format = (n: number, digits = 2) => n.toLocaleString(undefined, { maximumFractionDigits: digits });
 const formatMeasure = (value: NativeMeasurement) => value.status === "available" ? format(value.value,3) : value.status === "unavailable" ? "Not available" : "Numeric limit";
-let lastBuildMs=0, lastRealizeMs=0;
 const featureColors: Record<string, string> = { panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -117,12 +116,10 @@ function materials(part: NativePart) {
   return { names, values };
 }
 function draw(document: NativeDocument): Drawn {
-  const group = new THREE.Group(); const entries: Entry[] = []; lastRealizeMs=0;
+  const group = new THREE.Group(); const entries: Entry[] = [];
   try {
     for (const part of Object.values(document.parts)) {
-      const started = performance.now();
       const display = part.realize({ tolerance: tolerance() });
-      lastRealizeMs += performance.now()-started;
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(display.positions, 3));
       geometry.setAttribute("normal", new THREE.BufferAttribute(display.normals, 3));
@@ -202,11 +199,16 @@ function evidence() {
   element("buffers").textContent = `${format(bytes / 1024, 1)} KiB`;
   element("cache").textContent = `${report.reduce((n, r) => n + r.nativeRealizations, 0)} / ${report.reduce((n, r) => n + r.cacheHits, 0)}`;
   element("revision").textContent = current.id.split("/").at(-1)!;
-  element("timing").textContent = `${format(lastBuildMs,2)} / ${format(lastRealizeMs,2)} ms`;
+  const calls=drawn.entries.map(e=>e.display.timing),build=current.buildTiming;
+  element("build-kernel-time").textContent=`${format(build.kernelMs,2)} ms`;
+  element("realize-kernel-time").textContent=`${format(calls.reduce((n,t)=>n+t.kernelMs,0),2)} ms`;
+  element("sdk-transfer-time").textContent=`${format(build.sdkPrepareMs+calls.reduce((n,t)=>n+t.sdkPrepareMs,0),2)} / ${format(calls.reduce((n,t)=>n+t.transferMs,0),2)} ms`;
   if (current.parts.pin && panel.family === "extrusion") {
     const plane = panel.floor("recess").workplane();
+    element("workplane-time").textContent=`${format(plane.timing.kernelMs,2)} ms`;
     element("attachment").textContent = `Native recess floor z = ${format(plane.origin[2])} mm. The pin begins at z = ${format(current.parts.pin.measurements.bounds[0][2])} mm, offset 0.5 mm along its normal.`;
   } else {
+    element("workplane-time").textContent="—";
     element("attachment").textContent = `${panel.family}. Bounds enclose native supporting patches and may include space outside trims.`;
   }
   const features = element("features"); features.replaceChildren();
@@ -226,9 +228,16 @@ function status(title: string, detail: string, error = false) {
   const box = element("status"); box.classList.toggle("invalid", error);
   box.querySelector("strong")!.textContent = title; box.querySelector(".detail")!.textContent = detail;
 }
+function showRefusalTiming(error:unknown) {
+  if(error instanceof ExedraError && error.timing) {
+    element("refused-time").textContent=`${format(error.timing.kernelMs,2)} ms`;
+    element("refused-time").title=`${error.timing.operation} · ${error.diagnostic.code} · SDK total ${format(error.timing.totalMs,2)} ms`;
+  }
+}
 function reportError(error: unknown) {
   const diagnostic = error instanceof ExedraError ? error.diagnostic : { code: "unexpected", operation: "demo", message: String(error) };
   status(current ? "Showing the last valid model" : "Model was refused", `${diagnostic.code} · ${diagnostic.operation}: ${diagnostic.message}`, true);
+  showRefusalTiming(error);
   setExportDisabled(true);
 }
 function accept(document: NativeDocument, view: Drawn, edited: boolean) {
@@ -250,7 +259,7 @@ function accept(document: NativeDocument, view: Drawn, edited: boolean) {
 function rebuild() {
   if (!session) return;
   let candidate: NativeDocument | undefined;
-  try { const start=performance.now(); candidate = session.build(authorCurrent()); lastBuildMs=performance.now()-start; const view = draw(candidate); accept(candidate, view, true); }
+  try { candidate = session.build(authorCurrent()); const view = draw(candidate); accept(candidate, view, true); }
   catch (error) { candidate?.dispose(); draftError = error; reportError(error); }
 }
 // One pending frame reads the latest controls; dragging never queues obsolete builds.
@@ -305,10 +314,16 @@ function downloadStep(part: string) {
   if (!current || draftError || displayError) return;
   try {
     const file = current.parts[part].exportStep({ name: part, timestamp: new Date().toISOString() });
+    element("step-time").textContent=`${format(file.timing.kernelMs,2)} ms`;
+    element("step-time").title=`Transfer ${format(file.timing.transferMs,2)} ms · SDK total ${format(file.timing.totalMs,2)} ms`;
     const url = URL.createObjectURL(new Blob([file.text], { type: "application/step" }));
     const link = document.createElement("a"); link.href = url; link.download = `exedra-${part}.step`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     element("step-result").textContent = `${part}: ${file.report.schema} · ${file.report.faces} native faces · ${file.report.entities} entities · ${file.report.units}. Exported directly from the native source.`;
-  } catch (error) { element("step-result").textContent = error instanceof Error ? error.message : String(error); }
+  } catch (error) {
+    element("step-result").textContent = error instanceof Error ? error.message : String(error);
+    showRefusalTiming(error);
+    if(error instanceof ExedraError && error.timing) {element("step-time").textContent=`${format(error.timing.kernelMs,2)} ms · refused`;element("step-time").title=`${error.diagnostic.code} · SDK total ${format(error.timing.totalMs,2)} ms`;}
+  }
 }
 element<HTMLButtonElement>("lifecycle").onclick = () => {
   const baseline = session.stats();
