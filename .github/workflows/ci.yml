@@ -534,6 +534,9 @@ jobs:
       - name: build release Wasm, SDK and browser
         working-directory: apps/exedra_authoring_demo
         run: npm run build
+      - name: inspect all native scene layers through generated Wasm
+        working-directory: apps/exedra_authoring_demo
+        run: npm run test:scene-wasm
       - name: verify generated Wasm gallery workflows
         working-directory: apps/exedra_authoring_demo
         run: npm run test:wasm

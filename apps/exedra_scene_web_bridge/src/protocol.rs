@@ -339,7 +339,8 @@ pub(crate) fn dispatch(b: &mut Backend, realm: &str, operation: &Json) -> Result
             )
         }
         "transaction" => {
-            let target = EditTarget::for_layer(layer_id(b, realm, text(operation, "target")?)?);
+            let target_layer = layer_id(b, realm, text(operation, "target")?)?;
+            let target = EditTarget::for_layer(target_layer);
             let edits = operation
                 .get("edits")
                 .and_then(Json::as_array)
@@ -380,9 +381,15 @@ pub(crate) fn dispatch(b: &mut Backend, realm: &str, operation: &Json) -> Result
                         membership = true;
                         let layer = layer_id(b, realm, text(edit, "layer")?)?;
                         let referenced = path(b, text(edit, "primPath")?)?;
+                        if layer != ROOT && layer != target_layer {
+                            return Err(refusal(
+                                "edit.referenceAsset",
+                                "this transport supports stage-internal references through the root or authoring layer; external references require an authored asset path",
+                            ));
+                        }
                         transaction.add_reference(
                             target.prim(prim),
-                            Reference::new(layer, referenced),
+                            Reference::new(target_layer, referenced),
                             ListPosition::BackOfPrepend,
                         );
                     }
