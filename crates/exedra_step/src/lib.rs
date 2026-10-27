@@ -6,7 +6,7 @@
 //! The exporter owns serialization, explicit exchange units and bounded output.
 //! The analytic head owns geometry and incidence; callers own scene hierarchy,
 //! feature metadata and occurrence placement. This first family exports one
-//! connected closed shell of planes/cylinders bounded by lines/circles.
+//! connected closed shell of planes/cylinders bounded by lines/circles/ellipses.
 //!
 //! Input incidence and conservative support agreement are checked. Those checks
 //! do not certify global solid validity, trim nesting or shell containment.
@@ -201,8 +201,8 @@ pub enum StepError {
         /// Surface family name.
         family: &'static str,
     },
-    /// Circle trims must span at most one period and have consistent closure.
-    CircleRange {
+    /// Periodic curve trims span at most one period and have consistent closure.
+    PeriodicCurveRange {
         /// Refused native edge.
         edge: EdgeId,
         /// Increasing source parameter bounds.
@@ -253,9 +253,9 @@ impl core::fmt::Display for StepError {
             Self::UnsupportedSurface { face, family } => {
                 write!(f, "STEP face {face:?} has unsupported {family} support")
             }
-            Self::CircleRange { edge, range } => write!(
+            Self::PeriodicCurveRange { edge, range } => write!(
                 f,
-                "STEP circle edge {edge:?} has unsupported range {range:?}"
+                "STEP periodic edge {edge:?} has unsupported range {range:?}"
             ),
             Self::CylinderDomain { face } => write!(
                 f,

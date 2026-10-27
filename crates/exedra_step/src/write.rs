@@ -184,6 +184,15 @@ pub(super) fn export<F, E>(
                     Real(circle.radius())
                 ))?
             }
+            Curve::Ellipse(ellipse) => {
+                let frame = out.frame(placement * ellipse.frame())?;
+                out.entity(format_args!(
+                    "ELLIPSE('',{},{},{})",
+                    Id(frame),
+                    Real(ellipse.semi_major()),
+                    Real(ellipse.semi_minor())
+                ))?
+            }
         };
         map.edges[i] = Some(out.entity(format_args!(
             "EDGE_CURVE('',{},{},{},.T.)",

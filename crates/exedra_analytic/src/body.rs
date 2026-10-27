@@ -245,12 +245,14 @@ impl<F, E> Body<F, E> {
     }
 
     /// Exact length of a line or circular edge, in model units.
+    /// Ellipse lengths require an elliptic integral and currently return `None`.
     #[must_use]
     pub fn edge_length(&self, edge: EdgeId) -> Option<f64> {
         let edge = self.edge(edge)?;
         let speed = match &edge.curve {
             Curve::Line(line) => length(line.direction()),
             Curve::Circle(circle) => circle.radius(),
+            Curve::Ellipse(_) => return None,
         };
         let result = speed * edge.range.span();
         result.is_finite().then_some(result)
@@ -685,6 +687,7 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
                 }
             }
         }
+        Curve::Ellipse(ellipse) => crate::geometry::ellipse_support_gap(ellipse, surface),
         Curve::Circle(circle) => {
             let cf = circle.frame();
             let center = coordinates(frame, cf.rows.map(|r| r[3]));

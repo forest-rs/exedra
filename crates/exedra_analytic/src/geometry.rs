@@ -13,6 +13,7 @@
 
 use exedra_math::{FrameError, Placement3};
 
+pub mod intersection;
 mod ruled;
 pub use ruled::{CurveSpan, Ruled};
 
@@ -131,6 +132,42 @@ impl Circle {
     }
 }
 
+/// A periodic ellipse in a rigid frame's XY plane.
+/// Its parameter is radians: `(a cos(t), b sin(t), 0)`, with `a >= b > 0`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ellipse {
+    frame: Placement3,
+    semi_major: f64,
+    semi_minor: f64,
+}
+impl Ellipse {
+    /// Rigid frame whose X/Y axes are the major/minor directions.
+    #[must_use]
+    pub const fn frame(&self) -> Placement3 {
+        self.frame
+    }
+    /// Positive finite major semiaxis, in model units.
+    #[must_use]
+    pub const fn semi_major(&self) -> f64 {
+        self.semi_major
+    }
+    /// Positive finite minor semiaxis, in model units.
+    #[must_use]
+    pub const fn semi_minor(&self) -> f64 {
+        self.semi_minor
+    }
+    /// Angle of a point's scaled projection onto the ellipse frame, in `[-PI, PI]`.
+    /// This does not classify the point against the ellipse or its plane.
+    /// Returns `None` for non-finite arithmetic or a zero radial projection.
+    #[must_use]
+    pub fn parameter(&self, point: [f64; 3]) -> Option<f64> {
+        let local = frame_coordinates(self.frame, point)?;
+        let x = local[0] / self.semi_major;
+        let y = local[1] / self.semi_minor;
+        (x.is_finite() && y.is_finite() && (x != 0.0 || y != 0.0)).then(|| libm::atan2(y, x))
+    }
+}
+
 /// An untrimmed, validated 3D curve independent of any construction operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
@@ -138,6 +175,8 @@ pub enum Curve {
     Line(Line),
     /// A periodic circle; its period is `TAU` radians.
     Circle(Circle),
+    /// A periodic ellipse; its period is `TAU` radians.
+    Ellipse(Ellipse),
 }
 
 /// Curve position and its first two parameter derivatives.
@@ -176,12 +215,55 @@ impl Curve {
         Ok(Self::Circle(Circle { frame, radius }))
     }
 
+    /// Creates an ellipse in a rigid frame, with ordered positive finite semiaxes.
+    /// Equality is allowed and represents a circle with ellipse parameterization.
+    /// # Errors
+    /// Returns a frame violation or [`GeometryError::EllipseAxes`].
+    pub fn ellipse(
+        frame: Placement3,
+        semi_major: f64,
+        semi_minor: f64,
+    ) -> Result<Self, GeometryError> {
+        rigid(frame)?;
+        if !semi_major.is_finite()
+            || !semi_minor.is_finite()
+            || semi_major < semi_minor
+            || semi_minor <= 0.0
+        {
+            return Err(GeometryError::EllipseAxes {
+                semi_major,
+                semi_minor,
+            });
+        }
+        Ok(Self::Ellipse(Ellipse {
+            frame,
+            semi_major,
+            semi_minor,
+        }))
+    }
+
+    pub(crate) fn harmonic(&self) -> Option<(Placement3, [f64; 2])> {
+        match self {
+            Self::Line(_) => None,
+            Self::Circle(c) => Some((c.frame(), [c.radius(); 2])),
+            Self::Ellipse(e) => Some((e.frame(), [e.semi_major(), e.semi_minor()])),
+        }
+    }
+
+    pub(crate) fn sampling_radius(&self) -> Option<f64> {
+        match self {
+            Self::Line(_) => None,
+            Self::Circle(c) => Some(c.radius()),
+            Self::Ellipse(e) => Some(e.semi_major() * (1.0 + 4.0 * FRAME_TOLERANCE)),
+        }
+    }
+
     /// The parameter period; lines are not periodic.
     #[must_use]
     pub fn period(&self) -> Option<f64> {
         match self {
             Self::Line(_) => None,
-            Self::Circle(_) => Some(core::f64::consts::TAU),
+            Self::Circle(_) | Self::Ellipse(_) => Some(core::f64::consts::TAU),
         }
     }
 
@@ -206,6 +288,15 @@ impl Curve {
                     point: circle.frame.transform_point([r * cos, r * sin, 0.0]),
                     first: vector(circle.frame, [-r * sin, r * cos, 0.0]),
                     second: vector(circle.frame, [-r * cos, -r * sin, 0.0]),
+                }
+            }
+            Self::Ellipse(ellipse) => {
+                let (sin, cos) = (libm::sin(parameter), libm::cos(parameter));
+                let (a, b) = (ellipse.semi_major, ellipse.semi_minor);
+                CurveEvaluation {
+                    point: ellipse.frame.transform_point([a * cos, b * sin, 0.0]),
+                    first: vector(ellipse.frame, [-a * sin, b * cos, 0.0]),
+                    second: vector(ellipse.frame, [-a * cos, -b * sin, 0.0]),
                 }
             }
         };
@@ -599,6 +690,13 @@ pub enum GeometryError {
         /// The supplied radius.
         radius: f64,
     },
+    /// An ellipse requires finite `semi_major >= semi_minor > 0`.
+    EllipseAxes {
+        /// Supplied major semiaxis.
+        semi_major: f64,
+        /// Supplied minor semiaxis.
+        semi_minor: f64,
+    },
     /// A regular torus needs `major_radius > minor_radius` and a finite sum.
     TorusRadii {
         /// Supplied major radius.
@@ -627,6 +725,13 @@ impl core::fmt::Display for GeometryError {
             Self::NonFinite => write!(f, "geometry coordinates must be finite"),
             Self::ZeroDirection => write!(f, "line direction must be nonzero"),
             Self::Radius { radius } => write!(f, "radius {radius} must be positive and finite"),
+            Self::EllipseAxes {
+                semi_major,
+                semi_minor,
+            } => write!(
+                f,
+                "ellipse semiaxes {semi_major}, {semi_minor} require finite major >= minor > 0"
+            ),
             Self::TorusRadii {
                 major_radius,
                 minor_radius,
@@ -643,6 +748,84 @@ impl core::fmt::Display for GeometryError {
     }
 }
 impl core::error::Error for GeometryError {}
+
+pub(crate) fn frame_coordinates(frame: Placement3, point: [f64; 3]) -> Option<[f64; 3]> {
+    let axis = |i| frame.rows.map(|r| r[i]);
+    let delta = exedra_math::sub(point, axis(3));
+    let yz = exedra_math::cross(axis(1), axis(2));
+    let zx = exedra_math::cross(axis(2), axis(0));
+    let xy = exedra_math::cross(axis(0), axis(1));
+    let det = exedra_math::dot(axis(0), yz);
+    let values = [yz, zx, xy].map(|v| exedra_math::dot(delta, v) / det);
+    (det.is_finite() && det != 0.0 && values.into_iter().all(f64::is_finite)).then_some(values)
+}
+
+pub(crate) fn ellipse_support_gap(ellipse: &Ellipse, surface: &Surface) -> f64 {
+    use exedra_math::{add, cross, dot, scale, sub};
+    let norm = |v: [f64; 3]| libm::hypot(libm::hypot(v[0], v[1]), v[2]);
+    let ef = ellipse.frame();
+    let sf = surface.frame();
+    let center = ef.rows.map(|r| r[3]);
+    let a = ef.rows.map(|r| r[0] * ellipse.semi_major());
+    let b = ef.rows.map(|r| r[1] * ellipse.semi_minor());
+    let bound = match surface {
+        Surface::Plane(_) => {
+            let normal = cross(sf.rows.map(|r| r[0]), sf.rows.map(|r| r[1]));
+            let length = norm(normal);
+            let normal = scale(normal, 1.0 / length);
+            dot(sub(center, sf.rows.map(|r| r[3])), normal).abs()
+                + libm::hypot(dot(a, normal), dot(b, normal))
+        }
+        Surface::Cylinder(c) => {
+            let Some(center) = frame_coordinates(sf, center) else {
+                return f64::INFINITY;
+            };
+            let zero = Placement3::from_axes(
+                sf.rows.map(|r| r[0]),
+                sf.rows.map(|r| r[1]),
+                sf.rows.map(|r| r[2]),
+                [0.0; 3],
+            );
+            let Some(a) = frame_coordinates(zero, a) else {
+                return f64::INFINITY;
+            };
+            let Some(b) = frame_coordinates(zero, b) else {
+                return f64::INFINITY;
+            };
+            let length = libm::hypot(a[0], a[1]);
+            if length == 0.0 || !length.is_finite() {
+                return f64::INFINITY;
+            }
+            let unit = [a[0] / length, a[1] / length];
+            let sign = if unit[0] * b[1] - unit[1] * b[0] < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            let ideal_a = [c.radius() * unit[0], c.radius() * unit[1]];
+            let ideal_b = [-sign * c.radius() * unit[1], sign * c.radius() * unit[0]];
+            let radial = |x: f64, y: f64| {
+                add(
+                    scale(sf.rows.map(|r| r[0]), x),
+                    scale(sf.rows.map(|r| r[1]), y),
+                )
+            };
+            // Compare whole forward coefficient triples in world coordinates.
+            // An approximate orthonormal transpose is not an inverse here.
+            norm(radial(center[0], center[1]))
+                + norm(radial(a[0] - ideal_a[0], a[1] - ideal_a[1]))
+                + norm(radial(b[0] - ideal_b[0], b[1] - ideal_b[1]))
+        }
+        Surface::Cone(_) | Surface::Torus(_) | Surface::Ruled(_) => f64::INFINITY,
+    };
+    let magnitude = ef
+        .rows
+        .iter()
+        .chain(&sf.rows)
+        .map(|r| r[3].abs())
+        .fold(ellipse.semi_major(), f64::max);
+    bound + 256.0 * f64::EPSILON * magnitude
+}
 
 pub(crate) fn rigid(frame: Placement3) -> Result<(), GeometryError> {
     let column = |axis: usize| frame.rows.map(|row| row[axis]);

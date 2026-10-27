@@ -166,19 +166,24 @@ pub(super) fn prepare<F, E>(
                 }
                 scale = scale.max(magnitude(l.origin()));
             }
-            Curve::Circle(c) => {
+            curve => {
+                let (frame, radius) = match curve {
+                    Curve::Circle(c) => (c.frame(), c.radius()),
+                    Curve::Ellipse(e) => (e.frame(), e.semi_major()),
+                    Curve::Line(_) => unreachable!(),
+                };
                 let span = edge.range.span();
                 let full = (span - core::f64::consts::TAU).abs()
                     <= 64.0 * f64::EPSILON * core::f64::consts::TAU;
                 if span > core::f64::consts::TAU * (1.0 + 64.0 * f64::EPSILON)
                     || (edge.start == edge.end) != full
                 {
-                    return Err(StepError::CircleRange {
+                    return Err(StepError::PeriodicCurveRange {
                         edge: id,
                         range: edge.range.bounds(),
                     });
                 }
-                scale = scale.max(magnitude(c.frame().rows.map(|r| r[3])) + c.radius());
+                scale = scale.max(magnitude(frame.rows.map(|r| r[3])) + radius);
             }
         }
     }
