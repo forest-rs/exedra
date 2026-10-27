@@ -288,7 +288,7 @@ fn chains_are_identity_and_survive_interchange_and_append() {
 
     #[cfg(feature = "serde")]
     {
-        let dto = crate::interchange::to_dto(&asm);
+        let dto = crate::interchange::to_dto(&asm).unwrap();
         assert_eq!(dto.version, crate::interchange::VERSION);
         assert_eq!(dto.parts[fine.0 as usize].lods.len(), 3);
         assert!(crate::interchange::round_trips(&asm));

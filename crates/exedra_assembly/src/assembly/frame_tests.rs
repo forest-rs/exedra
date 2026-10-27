@@ -198,7 +198,7 @@ fn frames_round_trip_without_accepting_material_bindings() {
     assembly
         .add_instance(Some(frame), "solid", part, Placement3::IDENTITY)
         .unwrap();
-    let mut dto = to_dto(&assembly);
+    let mut dto = to_dto(&assembly).unwrap();
     let json = serde_json::to_string(&dto).unwrap();
     let rebuilt = from_dto(&serde_json::from_str(&json).unwrap()).unwrap();
     assert_eq!(

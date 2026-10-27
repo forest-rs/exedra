@@ -333,9 +333,12 @@ dependencies = [
 name = "exedra_compile"
 version = "0.1.0"
 dependencies = [
+ "exedra_analytic",
  "exedra_constructive",
+ "exedra_math",
  "exedra_mesh",
  "exedra_mesh_ops",
+ "exedra_profile",
  "hashbrown",
 ]
 

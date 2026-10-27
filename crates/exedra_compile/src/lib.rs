@@ -6,7 +6,7 @@
 //! This crate owns content-addressed compilation and immutable geometry snapshots.
 //! It owns no scene hierarchy, placements, material bindings or authored identity.
 //! Supply an explicit borrowed input list; input-local handles are never persistent
-//! identity. Callers own names, structure and appearance. Recipes and baked meshes
+//! identity. Callers own names, structure and appearance. Recipes, baked meshes and native sources
 //! share extraction, reports, cache retention and geometric queries.
 //!
 //! Render-only compilation releases topology. Query snapshots retain it and
@@ -30,12 +30,17 @@ extern crate alloc;
 extern crate std;
 
 mod compile;
+mod native;
 pub use compile::{
     BodyLookupError, CompilationMismatch, CompileCounters, CompileError, CompilePolicy,
-    CompiledBody, CompiledPart, CompiledParts, GeometrySnapshot, PartCompiler, PartFingerprint,
-    PartSnapshot, PolicyFingerprint, RegionRange, SignedVolume, SnapshotBody,
+    CompiledBody, CompiledPart, CompiledParts, GeometrySnapshot, NativeCacheStorage, PartCompiler,
+    PartFingerprint, PartSnapshot, PolicyFingerprint, RegionRange, SignedVolume, SnapshotBody,
     SnapshotSurfaceInventory, SnapshotWorkplane, StaleSelection, VolumeError, part_fingerprint,
     policy_fingerprint,
+};
+pub use native::{
+    NativeBoundaryStorage, NativeFaceSelection, NativeFamily, NativeGeometryRef, NativeMeasure,
+    NativeMeasureError, NativeRealization, NativeSelectionError, NativeSource,
 };
 
 /// Index in one explicit compilation input list.
@@ -55,6 +60,8 @@ pub enum PartSource {
     Recipe(exedra_constructive::ir::Recipe),
     /// Existing topology with attributes, extracted without recipe evaluation.
     Baked(exedra_mesh::Mesh),
+    /// Immutable native construction with explicit, independently cached realization.
+    Native(NativeSource),
 }
 
 /// Immutable geometry source with content identity computed once on installation.
@@ -65,7 +72,7 @@ pub struct PreparedSource {
     fingerprint: PartFingerprint,
 }
 impl PreparedSource {
-    /// Installs recipe or baked geometry and captures its complete content identity.
+    /// Installs recipe, baked or native geometry and captures its content identity.
     #[must_use]
     pub fn new(source: PartSource) -> Self {
         let fingerprint = part_fingerprint(&source);
@@ -140,5 +147,7 @@ pub(crate) fn len_u32(n: usize) -> u32 {
     u32::try_from(n).expect("geometry input and extraction counts fit u32")
 }
 
+#[cfg(test)]
+mod native_tests;
 #[cfg(test)]
 mod tests;

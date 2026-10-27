@@ -15,10 +15,13 @@ workspace = true
 
 [features]
 default = ["std"]
-std = ["exedra_constructive/std", "exedra_mesh/std", "exedra_mesh_ops/std"]
+std = ["exedra_analytic/std", "exedra_constructive/std", "exedra_mesh/std", "exedra_mesh_ops/std"]
 
 [dependencies]
+exedra_analytic = { features = ["libm"], workspace = true }
 exedra_constructive.workspace = true
+exedra_math = { features = ["libm"], workspace = true }
 exedra_mesh = { features = ["libm"], workspace = true }
 exedra_mesh_ops.workspace = true
+exedra_profile.workspace = true
 hashbrown.workspace = true

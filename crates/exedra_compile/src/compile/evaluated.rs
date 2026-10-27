@@ -22,6 +22,7 @@ struct EvaluatedBody {
     source: Option<String>,
     material: Option<SlotId>,
     body: TessellatedBody,
+    native: Option<crate::NativeRealization>,
 }
 
 #[derive(Debug)]
@@ -38,6 +39,7 @@ impl EvaluatedPart {
                     node: Some(placed.node),
                     source: recipe.source_of(placed.node).map(String::from),
                     material: placed.material,
+                    native: None,
                     // Move unique meshes out of the single-threaded evaluator. A
                     // repeated occurrence may share its Rc, requiring a mesh copy,
                     // but never another evaluation or tessellation.
@@ -53,7 +55,19 @@ impl EvaluatedPart {
                 node: None,
                 source: None,
                 material: None,
+                native: None,
                 body: TessellatedBody::from_imported_mesh(mesh.clone()),
+            }],
+        }
+    }
+    pub(super) fn from_native(mesh: exedra_mesh::Mesh, native: crate::NativeRealization) -> Self {
+        Self {
+            bodies: alloc::vec![EvaluatedBody {
+                node: None,
+                source: None,
+                material: None,
+                body: TessellatedBody::from_imported_mesh(mesh),
+                native: Some(native)
             }],
         }
     }
@@ -72,14 +86,20 @@ pub struct GeometrySnapshot {
     compiled: Arc<CompiledParts>,
     evaluated: Arc<[Arc<EvaluatedPart>]>,
     scope: Arc<()>,
+    native_sources: Arc<[Option<crate::NativeSource>]>,
 }
 
 impl GeometrySnapshot {
-    pub(super) fn new(compiled: CompiledParts, evaluated: Vec<Arc<EvaluatedPart>>) -> Self {
+    pub(super) fn new(
+        compiled: CompiledParts,
+        evaluated: Vec<Arc<EvaluatedPart>>,
+        native_sources: Vec<Option<crate::NativeSource>>,
+    ) -> Self {
         Self {
             compiled: Arc::new(compiled),
             evaluated: evaluated.into(),
             scope: Arc::new(()),
+            native_sources: native_sources.into(),
         }
     }
 
@@ -104,6 +124,7 @@ impl GeometrySnapshot {
             evaluated: Arc::clone(self.evaluated.get(part.0 as usize)?),
             scope: Arc::clone(&self.scope),
             part,
+            native_source: self.native_sources.get(part.0 as usize)?.clone(),
         })
     }
 
@@ -137,6 +158,7 @@ pub struct PartSnapshot {
     evaluated: Arc<EvaluatedPart>,
     scope: Arc<()>,
     part: PartId,
+    native_source: Option<crate::NativeSource>,
 }
 impl PartSnapshot {
     /// Shared compiled buffers and content fingerprint.
@@ -195,6 +217,7 @@ impl PartSnapshot {
             scope: Arc::clone(&self.scope),
             part,
             body,
+            native_source: self.native_source.clone(),
         })
     }
 }
@@ -209,6 +232,7 @@ pub struct SnapshotBody {
     scope: Arc<()>,
     part: PartId,
     body: u32,
+    native_source: Option<crate::NativeSource>,
 }
 impl SnapshotBody {
     fn entry(&self) -> &EvaluatedBody {
@@ -231,6 +255,41 @@ impl SnapshotBody {
     #[must_use]
     pub fn geometry(&self) -> &TessellatedBody {
         &self.entry().body
+    }
+
+    /// Immutable native installation for this input, or `None` for recipes and
+    /// baked meshes. Equal-content cache hits retain this input's own source
+    /// scope rather than borrowing a previous installation's selection scope.
+    #[must_use]
+    pub fn native(&self) -> Option<&crate::NativeSource> {
+        self.native_source.as_ref()
+    }
+
+    /// Accuracy and native correspondence for the current display realization.
+    /// The legacy mesh source map describes mesh topology; native provenance is
+    /// explicitly supplied by this record.
+    #[must_use]
+    pub fn native_realization(&self) -> Option<&crate::NativeRealization> {
+        self.entry().native.as_ref()
+    }
+
+    /// Selects the native source of a topology face in this realization.
+    /// Returns `None` for nonnative bodies or an unknown mesh face.
+    #[must_use]
+    pub fn native_face(&self, face: exedra_mesh::FaceId) -> Option<crate::NativeFaceSelection> {
+        let mapping = &self.native_realization()?.mesh_faces;
+        let index = mapping.binary_search_by_key(&face, |(f, _)| *f).ok()?;
+        let id = mapping[index].1;
+        self.native()?.select_face(id).ok()
+    }
+
+    /// Selects the native source of one final render triangle ordinal.
+    /// This follows the compiler's actual regrouping and needs no region decoding.
+    /// Returns `None` for nonnative bodies or unknown triangle ordinals.
+    #[must_use]
+    pub fn native_render_face(&self, triangle: usize) -> Option<crate::NativeFaceSelection> {
+        let id = self.native_realization()?.render_face(triangle)?;
+        self.native()?.select_face(id).ok()
     }
 
     /// Producing node in the original recipe, or `None` for baked geometry.

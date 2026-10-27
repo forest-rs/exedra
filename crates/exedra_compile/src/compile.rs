@@ -42,6 +42,9 @@ pub use snapshot::CompilationMismatch;
 pub struct CompilePolicy {
     /// Constructive evaluation settings; baked parts skip evaluation.
     pub evaluation: EvalPolicy,
+    /// Explicit native body realization accuracy and work budgets. Recipes and
+    /// baked sources do not use these settings.
+    pub native: exedra_analytic::realize::RealizationPolicy,
     /// Normal selection for every emitted body, including imported meshes.
     ///
     /// [`NormalsSource::CustomOnly`] emits zero normals for missing overrides.
@@ -111,14 +114,24 @@ pub struct PolicyFingerprint(pub u64);
 /// Computes the policy fingerprint for `policy`.
 ///
 /// Combines the constructive policy fingerprint with the normal and UV
-/// sources, the carried attributes, and the tangent request. Constructive
+/// sources, the native realization policy, carried attributes, and the tangent request. Constructive
 /// evaluation owns fingerprinting its settings, including refinement budgets
 /// and [`EVAL_SCHEMA_VERSION`]. The prefix advanced to `v4` when tangents
-/// joined the identity, so fingerprints persisted from earlier versions never
+/// joined the identity; v5 includes native realization. Earlier versions never
 /// collide with current ones.
 #[must_use]
 pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v4"[..]);
+    let mut bytes = Vec::from(&b"assembly-compile-v5"[..]);
+    bytes.extend_from_slice(&policy.native.tolerance.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&policy.native.geometry_gap.to_bits().to_le_bytes());
+    for limit in [
+        policy.native.min_arc_segments,
+        policy.native.max_edge_segments,
+        policy.native.max_vertices,
+        policy.native.max_boundary_samples,
+    ] {
+        bytes.extend_from_slice(&limit.to_le_bytes());
+    }
     bytes.extend_from_slice(
         &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
     );
@@ -328,6 +341,8 @@ fn bounds_of_positions(positions: &[[f32; 3]]) -> Option<Aabb3> {
 pub struct CompileCounters {
     /// Parts tessellated (cache misses).
     pub parts_compiled: u64,
+    /// Explicit native body realizations performed on cache misses/upgrades.
+    pub native_realizations: u64,
     /// Cache hits (a compiled entry was reused).
     pub cache_hits: u64,
     /// Cache entries evicted explicitly or to satisfy the entry budget.
@@ -351,10 +366,34 @@ pub struct CompileCounters {
     pub missing_tangent_uv_sets: u64,
 }
 
+/// Native source retention owned by this compiler cache, independently of
+/// display buffers and native installations held by external snapshots.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeCacheStorage {
+    /// Distinct installed source allocations retained by query cache entries.
+    /// Multiple tolerances sharing one source count it once.
+    pub sources: usize,
+    /// Cached realizations retaining native mesh/source correspondence.
+    pub realizations: usize,
+    /// Combined live native boundary-table payload for distinct source allocations.
+    /// Excludes constructor records, spare capacity, allocator overhead and all
+    /// realization/render buffers; see [`crate::NativeBoundaryStorage`].
+    pub boundary_payload_bytes: usize,
+}
+
 /// Typed compilation failure.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// Native body realization was refused; the installed source is unchanged.
+    Native {
+        /// Failing input-local part.
+        part: PartId,
+        /// Owned caller diagnostic key.
+        part_key: String,
+        /// Original analytic realization diagnosis.
+        error: Box<exedra_analytic::realize::RealizationError>,
+    },
     /// A recipe part failed to evaluate.
     Evaluate {
         /// The failing part.
@@ -378,6 +417,14 @@ pub enum CompileError {
 impl core::fmt::Display for CompileError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Native {
+                part,
+                part_key,
+                error,
+            } => write!(
+                f,
+                "native part {part_key:?} ({part:?}) failed to realize: {error}"
+            ),
             Self::Evaluate {
                 part,
                 part_key,
@@ -464,6 +511,9 @@ struct CachedCompilation {
     evaluated: Option<Arc<EvaluatedPart>>,
     part: Arc<CompiledPart>,
     report: Option<Arc<GeometryReport>>,
+    // Keeps the original immutable native installation when retaining queries.
+    // Equal-content new installations bind their own scope in snapshots.
+    native_source: Option<crate::NativeSource>,
 }
 
 /// Memoizing compiler for explicit geometry inputs, independent of scene structure.
@@ -518,6 +568,24 @@ impl PartCompiler {
             .values()
             .filter(|entry| entry.evaluated.is_some())
             .count()
+    }
+
+    /// Surveys cache-owned native sources without counting externally held
+    /// snapshots or deduplicated source storage once per display tolerance.
+    #[must_use]
+    pub fn native_storage(&self) -> NativeCacheStorage {
+        let mut sources = hashbrown::HashSet::new();
+        let mut result = NativeCacheStorage::default();
+        for entry in self.cache.values() {
+            if let Some(source) = &entry.native_source {
+                result.realizations += 1;
+                if sources.insert(source.installation_key()) {
+                    result.sources += 1;
+                    result.boundary_payload_bytes += source.boundary_storage().payload_bytes;
+                }
+            }
+        }
+        result
     }
 
     /// Lifetime counters.
@@ -596,7 +664,17 @@ impl PartCompiler {
         policy: &CompilePolicy,
     ) -> Result<GeometrySnapshot, CompileError> {
         let (compiled, evaluated) = self.compile_parts_inner(inputs, policy, true)?;
-        Ok(GeometrySnapshot::new(compiled, evaluated))
+        Ok(GeometrySnapshot::new(
+            compiled,
+            evaluated,
+            inputs
+                .iter()
+                .map(|input| match input.source() {
+                    PartSource::Native(source) => Some(source.clone()),
+                    _ => None,
+                })
+                .collect(),
+        ))
     }
 
     fn compile_parts_inner(
@@ -649,8 +727,19 @@ impl PartCompiler {
                 evaluated: geometry.map(Arc::new),
                 part: Arc::new(part),
                 report: report.map(Arc::new),
+                native_source: if retain {
+                    match def.source() {
+                        PartSource::Native(source) => Some(source.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                },
             };
             self.counters.parts_compiled += 1;
+            if matches!(def.source(), PartSource::Native(_)) {
+                self.counters.native_realizations += 1;
+            }
             self.counters.triangles_emitted += compiled.part.triangle_count();
             for body in &compiled.part.bodies {
                 self.counters.attribute_fallbacks += body.extraction.attribute_fallback_count;
@@ -707,6 +796,7 @@ pub fn part_fingerprint(source: &PartSource) -> PartFingerprint {
         // Assemblies can be rebuilt with the same local ids and generation.
         // Recompute content identity; those counters cannot identify a mesh.
         PartSource::Baked(mesh) => baked_mesh_fingerprint(mesh),
+        PartSource::Native(source) => source.fingerprint(),
     }
 }
 
@@ -757,6 +847,36 @@ fn compile_source(
             None,
             retain.then(|| EvaluatedPart::from_baked(mesh)),
         ),
+        PartSource::Native(source) => {
+            let realized =
+                source
+                    .realize(&policy.native)
+                    .map_err(|error| CompileError::Native {
+                        part,
+                        part_key: String::from(part_key),
+                        error: Box::new(error),
+                    })?;
+            let (compiled, render_mesh_faces) =
+                compile_body_with_faces(&realized.mesh, |_| None, policy, retain);
+            let geometry = if retain {
+                let faces = render_mesh_faces
+                    .into_iter()
+                    .map(|face| {
+                        let at = realized
+                            .mesh_faces
+                            .binary_search_by_key(&face.index(), |(f, _)| f.index())
+                            .expect("native mesh-face correspondence is complete");
+                        realized.mesh_faces[at].1
+                    })
+                    .collect();
+                let (mesh, correspondence) =
+                    crate::NativeRealization::from_realized(realized, faces);
+                Some(EvaluatedPart::from_native(mesh, correspondence))
+            } else {
+                None
+            };
+            (alloc::vec![compiled], None, geometry)
+        }
     };
     Ok((
         CompiledPart {
@@ -775,6 +895,15 @@ fn compile_body(
     material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
     policy: &CompilePolicy,
 ) -> CompiledBody {
+    compile_body_with_faces(mesh, material_for_face, policy, false).0
+}
+
+fn compile_body_with_faces(
+    mesh: &exedra_mesh::Mesh,
+    material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
+    policy: &CompilePolicy,
+    retain_faces: bool,
+) -> (CompiledBody, Vec<exedra_mesh::FaceId>) {
     let params = policy.extraction_params();
     let (tri, extraction) = mesh.to_trimesh(&params);
     // Per-triangle regions in extraction order: to_trimesh emits faces in
@@ -783,6 +912,11 @@ fn compile_body(
     let triangle_count = tri.indices.len() / 3;
     let mut tri_regions = Vec::with_capacity(triangle_count);
     let mut tri_uvs = Vec::with_capacity(triangle_count);
+    let mut tri_faces = if retain_faces {
+        Vec::with_capacity(triangle_count)
+    } else {
+        Vec::new()
+    };
     let uv_layer = mesh.attrs().sparse(exedra_mesh::attr::CORNER_UV);
     // A corner counts as textured when the policy resolves a finite UV for
     // it. Authored values are checked at the source; a projected fallback is
@@ -810,6 +944,9 @@ fn compile_body(
         for triangle in &triangles {
             let base = tri_regions.len() * 3;
             tri_regions.push((region, slot));
+            if retain_faces {
+                tri_faces.push(face);
+            }
             tri_uvs.push(
                 triangle
                     .iter()
@@ -847,11 +984,19 @@ fn compile_body(
         let base = t as usize * 3;
         indices.extend_from_slice(&tri.indices[base..base + 3]);
     }
-    CompiledBody {
-        tri: TriMesh { indices, ..tri },
-        regions,
-        extraction,
-    }
+    let faces = if retain_faces {
+        order.iter().map(|&t| tri_faces[t as usize]).collect()
+    } else {
+        Vec::new()
+    };
+    (
+        CompiledBody {
+            tri: TriMesh { indices, ..tri },
+            regions,
+            extraction,
+        },
+        faces,
+    )
 }
 
 /// Canonical baked-mesh identity including the built-in render attributes.
@@ -996,5 +1141,64 @@ fn fnv128(bytes: &[u8]) -> u128 {
 impl AsRef<Self> for CompiledParts {
     fn as_ref(&self) -> &Self {
         self
+    }
+}
+
+#[cfg(test)]
+mod native_mapping_tests {
+    use super::*;
+    #[test]
+    fn retained_face_order_matches_actual_regrouped_render_triangles() {
+        let validation = exedra_profile::ProfilePolicy::new(1e-9);
+        let profile = exedra_constructive::builders::rect_centered(4.0, 3.0).unwrap();
+        let source: crate::NativeSource = exedra_analytic::extrusion::Extrusion::from_profile(
+            &profile,
+            exedra_math::Placement3::IDENTITY,
+            2.0,
+            &validation,
+        )
+        .unwrap()
+        .into();
+        let mut realized = source
+            .realize(&exedra_analytic::realize::RealizationPolicy::default())
+            .unwrap();
+        let original: Vec<_> = realized.mesh.faces().collect();
+        let mut edit = realized.mesh.edit();
+        for (i, &face) in original.iter().enumerate() {
+            exedra_mesh::op::set_face_region(
+                &mut edit,
+                face,
+                crate::len_u32((original.len() - i) % 3),
+            )
+            .unwrap();
+        }
+        let _: () = edit.finish();
+        let (compiled, faces) =
+            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), true);
+        assert_eq!(compiled.regions.len(), 3);
+        assert_ne!(faces, original);
+        for (ids, &face) in compiled.tri.indices.as_chunks::<3>().0.iter().zip(&faces) {
+            let mut actual: Vec<_> = ids
+                .iter()
+                .map(|&i| compiled.tri.positions[i as usize].map(f32::to_bits))
+                .collect();
+            let mut expected: Vec<_> = realized
+                .mesh
+                .face_loop(face)
+                .map(|c| {
+                    realized
+                        .mesh
+                        .vertex_position(realized.mesh.to_vertex(c).unwrap())
+                        .unwrap()
+                        .map(f32::to_bits)
+                })
+                .collect();
+            actual.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(actual, expected);
+        }
+        let (_, omitted) =
+            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), false);
+        assert!(omitted.is_empty());
     }
 }
