@@ -324,6 +324,9 @@ impl Session {
             }
             NativeGeometryRef::Sweep(v) => exedra_step::export_body(v.body(), v.frame(), &options),
             NativeGeometryRef::Loft(v) => exedra_step::export_body(v.body(), v.frame(), &options),
+            NativeGeometryRef::BoredPlate(v) => {
+                exedra_step::export_body(v.body(), v.frame(), &options)
+            }
         }
         .map_err(|error| Error::step("part.exportStep", error))?;
         let report = serde_json::json!({"schema":file.report.schema,"units":doc.units,"declaredUncertainty":file.report.declared_uncertainty,

@@ -385,3 +385,81 @@ fn native_support_bounds_and_planar_frames_are_independent_of_display_quality() 
     snapshot(&mut compiler, &native, 0.03);
     assert_eq!(native.conservative_bounds().unwrap(), bounds);
 }
+
+#[test]
+fn bored_plate_retains_new_scope_provenance_and_native_picking_across_display_policies() {
+    use exedra_analytic::bore::{Bore, BorePolicy, FaceRole};
+    let validation = ProfilePolicy::new(1e-9);
+    let profile = builders::rect_centered(40.0, 30.0)
+        .unwrap()
+        .to_line_arc(&validation)
+        .unwrap();
+    let plate = Extrusion::new(profile, Placement3::IDENTITY, 10.0).unwrap();
+    let old = NativeSource::from(plate.clone());
+    let old_cap = old.select_face(plate.cap(End::End)).unwrap();
+    let policy = BorePolicy {
+        separation: 1e-6,
+        geometry_gap: 1e-9,
+        min_axis_dot: 0.05,
+    };
+    let bore = Bore::new([0.0; 3], [0.5, 0.25, 1.0], 2.0)
+        .unwrap()
+        .tagged(SegTag(77));
+    let result = plate.with_through_bore(bore.clone(), &policy).unwrap();
+    let wall = result.report().wall;
+    assert!(
+        matches!(result.body().face(plate.cap(End::End)).unwrap().role,FaceRole::Plate{source,trimmed:true,..} if source==plate.cap(End::End))
+    );
+    let native = NativeSource::from(result);
+    assert_eq!(native.family(), NativeFamily::BoredPlate);
+    assert_eq!(
+        native.resolve_face(&old_cap),
+        Err(NativeSelectionError::SourceMismatch)
+    );
+    let selected = native.select_face(wall).unwrap();
+    let mut compiler = PartCompiler::new();
+    let coarse = snapshot(&mut compiler, &native, 0.2);
+    let fine = snapshot(&mut compiler, &native, 0.01);
+    assert_eq!(compiler.counters().native_realizations, 2);
+    assert_eq!(
+        fine.body(PartId(0), 0)
+            .unwrap()
+            .native()
+            .unwrap()
+            .resolve_face(&selected),
+        Ok(wall)
+    );
+    let mut picked_wall = false;
+    let body = fine.body(PartId(0), 0).unwrap();
+    for i in 0..body.native_realization().unwrap().render_faces().len() {
+        let selection = body.native_render_face(i).unwrap();
+        assert_eq!(native.resolve_face(&selection), Ok(selection.native_id()));
+        picked_wall |= selection.native_id() == wall;
+    }
+    assert!(picked_wall);
+    let fresh = NativeSource::from(plate.with_through_bore(bore, &policy).unwrap());
+    assert_eq!(fresh.fingerprint(), native.fingerprint());
+    let hit = snapshot(&mut compiler, &fresh, 0.01);
+    assert_eq!(compiler.counters().native_realizations, 2);
+    assert!(Arc::ptr_eq(
+        fine.compiled().part(PartId(0)).unwrap(),
+        hit.compiled().part(PartId(0)).unwrap()
+    ));
+    assert_eq!(
+        hit.body(PartId(0), 0)
+            .unwrap()
+            .native()
+            .unwrap()
+            .resolve_face(&selected),
+        Err(NativeSelectionError::SourceMismatch)
+    );
+    assert_eq!(
+        coarse
+            .body(PartId(0), 0)
+            .unwrap()
+            .native()
+            .unwrap()
+            .volume(),
+        native.volume()
+    );
+}

@@ -5,7 +5,7 @@
 export type LengthUnit = "mm" | "m";
 export type XY = readonly [number, number];
 export type XYZ = readonly [number, number, number];
-export type NativeFamily = "extrusion" | "revolution" | "sweep" | "loft";
+export type NativeFamily = "extrusion" | "revolution" | "sweep" | "loft" | "boredPlate";
 /** Rigid placement intent: fixed-axis X, Y, Z rotations in radians, then translation. */
 export interface Placement {
   readonly translation: XYZ;
