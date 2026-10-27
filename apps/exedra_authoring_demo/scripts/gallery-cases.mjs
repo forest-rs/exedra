@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting } from "../src/sample.ts";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate } from "../src/sample.ts";
 
 // Independent must-succeed inventory. Unsupported exports are specific expected
 // outcomes, not an allowance for arbitrary failures or all-export-refused runs.
@@ -13,4 +13,9 @@ export const galleryCases = [
   { id: "hollowTorus", step: "unsupported", make: (delta=0) => authorRoundedTurn({radius:35+delta,wall:7,collarHeight:30,angle:270,innerRadius:4},"hollowTorus") },
   { id: "sleeve", step: "supported", make: (delta=0) => authorFlangedSleeve({radius:12+delta,wall:10,collarHeight:35,angle:270}) },
   { id: "fitting", step: "unsupported", make: (delta=0) => authorTurnedFitting({radius:7+delta,wall:15,collarHeight:47,angle:270}) },
+  { id: "rail", step: "unsupported", make: (delta=0) => authorRail({radius:6+delta,bendRadius:40,angle:135,hollow:false}) },
+  { id: "hollowRail", step: "unsupported", make: (delta=0) => authorRail({radius:8+delta,bendRadius:40,angle:135,hollow:true}) },
+  { id: "loft", step: "unsupported", measures:"unavailable", make: (delta=0) => authorVariableLoft({height:120+delta,twist:14,offset:18}) },
+  { id: "fillet", step: "supported", make: (delta=0) => authorFinishedPlate({size:5+delta,height:30,treatment:"fillet",inner:false}) },
+  { id: "chamfer", step: "supported", make: (delta=0) => authorFinishedPlate({size:3+delta,height:30,treatment:"chamfer",inner:true}) },
 ];

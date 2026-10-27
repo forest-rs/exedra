@@ -5,14 +5,13 @@ import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createSession, ExedraError, type AuthoringSession, type NativeDocument, type NativePart, type Realization, type FaceSelection, type NativeMeasurement } from "@exedra/authoring";
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, type PanelParameters, type CollarParameters } from "./sample.js";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, type PanelParameters, type CollarParameters } from "./sample.js";
 import sampleSource from "./sample.ts?raw";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
-<header><div class="brand">exedra<span>geometry gallery</span></div><div class="pill">Units: mm</div></header>
 <main class="layout">
- <aside><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
+ <aside><div class="brand">exedra</div><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
   <div id="panel-controls"><div class="control"><label class="label" for="width">Panel width <span class="value" id="width-value"></span></label><input id="width" type="range" min="100" max="160" step="1" value="120"></div>
   <div class="control"><label class="label" for="height">Panel height <span class="value" id="height-value"></span></label><input id="height" type="range" min="70" max="110" step="1" value="80"></div>
   <div class="control"><label class="label" for="thickness">Panel thickness <span class="value" id="thickness-value"></span></label><input id="thickness" type="range" min="8" max="20" step="0.5" value="12"></div>
@@ -27,13 +26,28 @@ app.innerHTML = `
    <div class="control" id="rounding-control" hidden><label class="label" for="rounding">Corner radius <span class="value" id="rounding-value"></span></label><input id="rounding" type="range" min="0.5" max="12" step="0.5" value="2"></div>
    <div class="control" id="innerRadius-control" hidden><label class="label" for="innerRadius">Tube bore radius <span class="value" id="innerRadius-value"></span></label><input id="innerRadius" type="range" min="0.5" max="20" step="0.5" value="4"></div>
   </div>
+  <div id="rail-controls" hidden>
+    <div class="control"><label class="label" for="railRadius">Section radius <span class="value" id="railRadius-value"></span></label><input id="railRadius" type="range" min="2" max="12" step="0.5" value="6"></div>
+    <div class="control"><label class="label" for="bendRadius">Bend radius <span class="value" id="bendRadius-value"></span></label><input id="bendRadius" type="range" min="20" max="70" step="1" value="40"></div>
+    <div class="control"><label class="label" for="turnAngle">Bend angle <span class="value" id="turnAngle-value"></span></label><input id="turnAngle" type="range" min="30" max="200" step="5" value="135"></div>
+  </div>
+  <div id="loft-controls" hidden>
+    <div class="control"><label class="label" for="loftHeight">Height <span class="value" id="loftHeight-value"></span></label><input id="loftHeight" type="range" min="60" max="180" step="1" value="120"></div>
+    <div class="control"><label class="label" for="loftTwist">Section twist <span class="value" id="loftTwist-value"></span></label><input id="loftTwist" type="range" min="-25" max="25" step="1" value="14"></div>
+    <div class="control"><label class="label" for="loftOffset">Section offset <span class="value" id="loftOffset-value"></span></label><input id="loftOffset" type="range" min="0" max="25" step="1" value="18"></div>
+  </div>
+  <div id="finish-controls" hidden>
+    <div class="control"><label class="label" for="finishSize">Finish radius / distance <span class="value" id="finishSize-value"></span></label><input id="finishSize" type="range" min="0.5" max="12" step="0.5" value="5"></div>
+    <div class="control"><label class="label" for="finishHeight">Height <span class="value" id="finishHeight-value"></span></label><input id="finishHeight" type="range" min="8" max="60" step="1" value="30"></div>
+    <p class="hint">Selected profile axial edges. Rim and pocket edges are outside this operation.</p>
+  </div>
   <h2>Display</h2><label class="label" for="quality">Quality <select id="quality" class="quality"><option value="0.45">Coarse · 0.45 mm</option><option value="0.12" selected>Medium · 0.12 mm</option><option value="0.035">Fine · 0.035 mm</option></select></label>
   <label class="checkline"><input id="wireframe" type="checkbox"> Show mesh triangles</label>
 
   <div class="divider"></div><button id="lifecycle" disabled>Check rebuild / release</button><p id="lifecycle-result" class="hint">12 rebuilds; live owner counts.</p>
  </aside>
  <section id="viewport" class="viewport" aria-label="Interactive native model">
-  <div class="toolbar"><div><button id="fit">Fit model</button><button id="code-toggle" aria-expanded="false">View TypeScript</button></div><span class="pill" id="revision">Loading kernel</span></div>
+  <div class="toolbar"><div><button id="fit">Fit model</button><button id="code-toggle" aria-expanded="false">View TypeScript</button></div><span class="revision" id="revision">Loading kernel</span></div>
   <div class="code" id="code" hidden><pre></pre></div>
   <div class="status" id="status" role="status"><strong>Loading the native kernel…</strong><div class="detail">Authoring and geometric validation run in Rust/Wasm.</div></div>
  </section>
@@ -55,10 +69,15 @@ const controlsNames = ["width", "height", "thickness", "pocketDepth", "cornerRad
 const parameters = (): PanelParameters => Object.fromEntries(controlsNames.map(key => [key, Number(element<HTMLInputElement>(key).value)])) as unknown as PanelParameters;
 const collarNames = ["radius","wall","collarHeight","angle","rounding","innerRadius"] as const;
 const collarParameters = (): CollarParameters => Object.fromEntries(collarNames.map(key=>[key,Number(element<HTMLInputElement>(key).value)])) as unknown as CollarParameters;
+const operationNames=["railRadius","bendRadius","turnAngle","loftHeight","loftTwist","loftOffset","finishSize","finishHeight"] as const;
+const value=(key:string)=>Number(element<HTMLInputElement>(key).value);
 const authorCurrent = (delta=0) => {
   const sample=element<HTMLSelectElement>("sample").value;
   const p={...collarParameters(),radius:collarParameters().radius+delta};
   switch(sample) {
+    case "rail":case "hollowRail":return authorRail({radius:value("railRadius")+delta,bendRadius:value("bendRadius"),angle:value("turnAngle"),hollow:sample === "hollowRail"});
+    case "loft":return authorVariableLoft({height:value("loftHeight")+delta,twist:value("loftTwist"),offset:value("loftOffset")});
+    case "fillet":case "chamfer":return authorFinishedPlate({size:value("finishSize")+delta,height:value("finishHeight"),treatment:sample,inner:sample === "chamfer"});
     case "collar": return authorCollar(p);
     case "roundedRing": case "torus": case "hollowTorus": return authorRoundedTurn(p,sample);
     case "sleeve": return authorFlangedSleeve(p);
@@ -90,14 +109,37 @@ scene.add(key);
 const fill = new THREE.DirectionalLight(0xb3d4fa, 1.5); fill.position.set(140, 70, 120); scene.add(fill);
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 400), new THREE.ShadowMaterial({ color: 0x080e15, opacity: 0.5 })); ground.position.z = -0.3; ground.receiveShadow = true; scene.add(ground);
 const grid = new THREE.GridHelper(400, 40, 0x60717d, 0x3c4c59); grid.rotation.x = Math.PI / 2; grid.position.z = -0.25; (grid.material as THREE.Material).transparent = true; (grid.material as THREE.Material).opacity = 0.2; scene.add(grid);
-const resize = () => { const { width, height } = viewport.getBoundingClientRect(); renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
-new ResizeObserver(resize).observe(viewport); resize();
-function frame() {
-  // Consume the latest edit before drawing, so the new model is submitted in this frame.
-  if (pendingBuild) { pendingBuild = false; rebuild(); }
-  orbit.update(); renderer.render(scene, camera); requestAnimationFrame(frame);
+let pendingBuild=false;
+let frameRequest:number|null=null;
+let renderingFrame=false;
+let geometryActive=true;
+function invalidate(){
+  if(!geometryActive || document.hidden || renderingFrame || frameRequest!==null)return;
+  frameRequest=requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+function setGeometryActive(active:boolean){
+  geometryActive=active;orbit.enabled=active;
+  if(!active && frameRequest!==null){cancelAnimationFrame(frameRequest);frameRequest=null;}
+  if(active)resize();
+}
+const resize = () => {
+  const {width,height}=viewport.getBoundingClientRect();if(width<=0 || height<=0)return;
+  renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();invalidate();
+};
+new ResizeObserver(resize).observe(viewport);resize();
+orbit.addEventListener("change",invalidate);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)invalidate();});
+function frame(){
+  frameRequest=null;if(!geometryActive || document.hidden)return;
+  renderingFrame=true;
+  let moving=false;
+  try {
+    // Latest inputs are consumed before submitting this frame's model.
+    if(pendingBuild){pendingBuild=false;rebuild();}
+    moving=orbit.update();renderer.render(scene,camera);
+  }finally{renderingFrame=false;}
+  if(moving)invalidate();
+}
 
 interface Entry { part: NativePart; display: Realization; mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]> }
 interface Drawn { group: THREE.Group; entries: Entry[] }
@@ -105,13 +147,14 @@ let session: AuthoringSession;
 let current: NativeDocument | null = null;
 let drawn: Drawn | null = null;
 let selected: FaceSelection | null = null;
+let selectedFeature:string|null=null;
 let highlight: THREE.Mesh | null = null;
 let draftError: unknown = null;
 let displayError: unknown = null;
 let hasCamera = false;
 
 function materials(part: NativePart) {
-  const names = [...new Set([part.name, ...part.faces().map(f => f.feature ?? part.name)])];
+  const names = [...new Set([part.name, ...part.faces().flatMap(f => f.features.length?f.features:[part.name])])];
   const values = names.map(name => new THREE.MeshStandardMaterial({ color: featureColors[name] ?? "#87abb7", metalness: 0.25, roughness: 0.35, wireframe: element<HTMLInputElement>("wireframe").checked }));
   return { names, values };
 }
@@ -148,13 +191,15 @@ function clearHighlight() {
   scene.remove(highlight); highlight.geometry.dispose();
   (highlight.material as THREE.Material).dispose(); highlight = null;
 }
-function showSelection(selection: FaceSelection | null) {
-  clearHighlight(); selected = selection;
+function showSelection(selection: FaceSelection | null, feature?:string) {
+  invalidate();
+  clearHighlight(); selected = selection;selectedFeature=feature??selection?.feature??null;
   if (!selection || !drawn) { element("selection").textContent = "No selection."; return; }
   const entry = drawn.entries.find(e => e.part.id === selection.partId);
   if (!entry) return;
   entry.part.requireSelection(selection);
-  const family = selection.feature ? entry.part.faces(selection.feature) : [selection];
+  element("selection-notice").textContent="";
+  const family = selectedFeature ? entry.part.faces(selectedFeature) : [selection];
   const ids = new Set(family.map(f => f.nativeId));
   const indices: number[] = [];
   entry.display.nativeFaces.forEach((face, triangle) => { if (ids.has(face)) indices.push(...entry.display.indices.subarray(triangle * 3, triangle * 3 + 3)); });
@@ -165,7 +210,7 @@ function showSelection(selection: FaceSelection | null) {
   highlight = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xfce4a2, emissive: 0xa2650c, emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.3, transparent: true, opacity: 0.78, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
   scene.add(highlight);
   const box = element("selection"); box.replaceChildren();
-  const strong = document.createElement("strong"); strong.textContent = selection.feature ?? "Unlabelled cap"; box.append(strong, document.createElement("br"));
+  const strong = document.createElement("strong"); strong.textContent = selectedFeature??(selection.features.length?selection.features.join(" / "):`Unlabelled ${selection.role}`); box.append(strong, document.createElement("br"));
   box.append(`${entry.part.name} · ${selection.role} · ${selection.surface}`, document.createElement("br"));
   const detail = document.createElement("code"); detail.textContent = `native face ${selection.nativeId} · ${family.length} feature faces`; box.append(detail);
 }
@@ -213,12 +258,12 @@ function evidence() {
   }
   const features = element("features"); features.replaceChildren();
   for (const [partName, part] of Object.entries(current.parts)) {
-    for (const feature of [...new Set(part.faces().flatMap(f => f.feature ? [f.feature] : []))]) {
+    for (const feature of [...new Set(part.faces().flatMap(f => f.features))]) {
       const row = document.createElement("button"); row.className = "feature-row"; row.style.width = "100%"; row.style.background = "none"; row.style.borderRadius = "0"; row.style.borderWidth = "0 0 1px";
       row.setAttribute("aria-label", `Select ${feature} feature`);
       const swatch = document.createElement("i"); swatch.className = "swatch"; swatch.style.background = featureColors[feature] ?? "#87abb7";
       const count = document.createElement("span"); count.textContent = `${part.faces(feature).length} faces`;
-      row.append(swatch, `${partName} / ${feature}`, count); row.onclick = () => showSelection(part.faces(feature)[0]); features.append(row);
+      row.append(swatch, `${partName} / ${feature}`, count); row.onclick = () => showSelection(part.faces(feature)[0],feature); features.append(row);
     }
   }
   renderDownloads();
@@ -248,7 +293,7 @@ function accept(document: NativeDocument, view: Drawn, edited: boolean) {
   if (edited && selected) { selected = null; element("selection-notice").textContent = "Selection cleared: authored revision changed."; }
   if (old && old !== document) old.dispose();
   evidence(); if (!hasCamera) fit();
-  showSelection(selected);
+  showSelection(selected,selectedFeature??undefined);
   if (edited) draftError = null;
   displayError = null;
   if (draftError) { reportError(draftError); return; }
@@ -263,23 +308,26 @@ function rebuild() {
   catch (error) { candidate?.dispose(); draftError = error; reportError(error); }
 }
 // One pending frame reads the latest controls; dragging never queues obsolete builds.
-let pendingBuild = false;
-function scheduleBuild() { pendingBuild = true; }
-for (const key of [...controlsNames,...collarNames]) {
+function scheduleBuild() { pendingBuild = true; invalidate(); }
+for (const key of [...controlsNames,...collarNames,...operationNames]) {
   const input = element<HTMLInputElement>(key);
-  const label = () => { element(`${key}-value`).textContent = `${input.value} ${key === "angle" ? "°" : "mm"}`; };
+  const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist"].includes(key) ? "°" : "mm"}`; };
   label(); input.addEventListener("input", () => { label(); scheduleBuild(); });
 }
 element<HTMLSelectElement>("sample").onchange = () => {
   const sample=element<HTMLSelectElement>("sample").value, panel=sample === "panel", torus=sample === "torus" || sample === "hollowTorus";
-  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel;
+  const rail=sample === "rail" || sample === "hollowRail", loft=sample === "loft", finish=sample === "fillet" || sample === "chamfer";
+  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish;
+  element("rail-controls").hidden=!rail;element("loft-controls").hidden=!loft;element("finish-controls").hidden=!finish;
+  for(const [key,initial] of [["railRadius",sample === "hollowRail"?8:6],["bendRadius",40],["turnAngle",135],["loftHeight",120],["loftTwist",14],["loftOffset",18],["finishSize",sample === "chamfer"?3:5],["finishHeight",30]] as const){element<HTMLInputElement>(key).value=String(initial);element(`${key}-value`).textContent=`${initial} ${["turnAngle","loftTwist"].includes(key)?"°":"mm"}`;}
+
   element("rounding-control").hidden=sample !== "roundedRing";element("innerRadius-control").hidden=sample !== "hollowTorus";
   element<HTMLInputElement>("collarHeight").closest<HTMLElement>(".control")!.hidden=torus;
   element("radius-label").textContent=torus ? "Major radius" : "Bore radius";
   element("wall-label").textContent=torus ? "Tube radius" : "Wall thickness";
   const defaults=sample === "roundedRing" ? [22,12,24,360] : torus ? [35,7,30,sample === "hollowTorus" ? 270 : 360] : sample === "sleeve" ? [12,10,35,270] : sample === "fitting" ? [7,15,47,270] : [12,7,30,270];
   for (const [i,key] of ["radius","wall","collarHeight","angle"].entries()) {
-    element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${key === "angle" ? "°" : "mm"}`;
+    element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${["angle","turnAngle","loftTwist"].includes(key) ? "°" : "mm"}`;
   }
   for(const [key,value] of [["rounding",2],["innerRadius",4]] as const) {element<HTMLInputElement>(key).value=String(value);element(`${key}-value`).textContent=`${value} mm`;}
   hasCamera=false; scheduleBuild();
@@ -288,7 +336,7 @@ element<HTMLSelectElement>("quality").onchange = () => {
   if (!current) return;
   try { const view = draw(current); accept(current, view, false); } catch (error) { displayError = error; reportError(draftError ?? displayError); }
 };
-element<HTMLInputElement>("wireframe").onchange = () => { for (const e of drawn?.entries ?? []) for (const m of e.mesh.material) m.wireframe = element<HTMLInputElement>("wireframe").checked; };
+element<HTMLInputElement>("wireframe").onchange = () => { for (const e of drawn?.entries ?? []) for (const m of e.mesh.material) m.wireframe = element<HTMLInputElement>("wireframe").checked; invalidate(); };
 element("fit").onclick = fit;
 element("code-toggle").onclick = () => { const code = element("code"); code.hidden = !code.hidden; element("code-toggle").setAttribute("aria-expanded", String(!code.hidden)); };
 const raycaster = new THREE.Raycaster(); let down: [number, number] | null = null;
@@ -343,7 +391,7 @@ element<HTMLButtonElement>("lifecycle").onclick = () => {
     ownership();
   } catch (error) { element("lifecycle-result").textContent = String(error); }
 };
-window.addEventListener("beforeunload", () => { pendingBuild = false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose(); renderer.dispose(); orbit.dispose(); });
+window.addEventListener("beforeunload", () => { setGeometryActive(false); pendingBuild = false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose(); renderer.dispose(); orbit.dispose(); });
 try {
   session = await createSession({ units: "mm", separation: 1e-6 });
   rebuild(); element<HTMLButtonElement>("lifecycle").disabled = false;
