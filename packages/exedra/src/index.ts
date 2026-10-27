@@ -61,6 +61,8 @@ export interface Diagnostic {
   measure?: "volume" | "surfaceArea";
   face?: number;
   geometryFamily?: string;
+  semiAngle?: number;
+  semiAngleAbsRange?: readonly [number,number];
   clearance?:number;
   requiredClearance?:number;
   axisDot?:number;
@@ -394,6 +396,8 @@ export interface StepReport {
   maxDeviation: number;
   maxNativeSupportGap: number;
   frameRoundoffBound: number;
+  /** Length allowance for converting native support parameters to STEP. */
+  parameterRoundoffBound: number;
   entities: number;
   faces: number;
   edges: number;

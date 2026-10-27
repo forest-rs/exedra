@@ -4,6 +4,10 @@ This example exports native analytic bodies directly, before or independently of
 any display mesh. It exercises shared topology and orientation, through holes,
 a blind pocket, translated and rotated occurrences, a 270° circular boundary,
 metre units, and a full periodic cylinder whose wall reuses one seam edge twice.
+Additional native revolutions exercise positive/negative conical slopes, inward
+wall sense, full and partial turns, a toroidal cavity joined by partial-turn caps,
+small radii, near-horn regular tori, near-cylinder cones, near-rigid placement and
+near-seam trims. A single-face torus shares both periodic seam curves twice.
 Two oblique-bore fixtures retain ellipse rims and include material witnesses,
 including a rotated occurrence in metre units. The periodic cylinder also exercises quote, backslash, BMP and non-BMP text encoding.
 
@@ -30,8 +34,10 @@ python3 -m venv /tmp/step-oracle
 The script refuses model syntax/semantic checks and transfer warnings/failures,
 then checks the imported boundary with OCCT's `BRepCheck_Analyzer`. It requires
 one solid and shell, preserved unique face/edge/vertex counts, exact reference
-volume and area within numeric tolerance, placed bounds and metre-to-millimetre
-scaling. No additional shape-repair operation is applied. This is independent
+volume and area within numeric tolerance, retained elementary support families,
+positive canonical cone angles, placed bounds and metre-to-millimetre scaling.
+Bounding-box comparisons report OCCT's separate extrema-padding allowance;
+small-solid measure checks use scale-sensitive absolute floors. No additional shape-repair operation is applied. This is independent
 reader evidence for these fixtures, not a general CAD certification claim.
 
 Success prints JSON with reader package version and per-fixture evidence.

@@ -218,13 +218,44 @@ pub(super) fn export<F, E>(
         map.loops[i] = Some(out.entity(format_args!("EDGE_LOOP('',{})", Refs(&refs)))?);
     }
     for (i, face) in body.faces().iter().enumerate() {
-        let frame = out.frame(placement * face.surface.frame())?;
+        let native_frame = face.surface.frame();
+        // Canonical positive cone angle also works with readers that clamp a
+        // negative STEP angle. Flipping Y and Z maps (u,v) to (-u,-v): two
+        // parameter reversals preserve the outward normal and native face sense.
+        let surface_frame = if matches!(&face.surface, Surface::Cone(c) if c.slope() < 0.0) {
+            Placement3::from_axes(
+                native_frame.rows.map(|r| r[0]),
+                native_frame.rows.map(|r| -r[1]),
+                native_frame.rows.map(|r| -r[2]),
+                native_frame.rows.map(|r| r[3]),
+            )
+        } else {
+            native_frame
+        };
+        let frame = out.frame(placement * surface_frame)?;
         let surface = match &face.surface {
             Surface::Plane(_) => out.entity(format_args!("PLANE('',{})", Id(frame)))?,
             Surface::Cylinder(c) => out.entity(format_args!(
                 "CYLINDRICAL_SURFACE('',{},{})",
                 Id(frame),
                 Real(c.radius())
+            ))?,
+            Surface::Cone(c) if c.slope() == 0.0 => out.entity(format_args!(
+                "CYLINDRICAL_SURFACE('',{},{})",
+                Id(frame),
+                Real(c.radius())
+            ))?,
+            Surface::Cone(c) => out.entity(format_args!(
+                "CONICAL_SURFACE('',{},{},{})",
+                Id(frame),
+                Real(c.radius()),
+                Real(c.semi_angle().abs())
+            ))?,
+            Surface::Torus(t) => out.entity(format_args!(
+                "TOROIDAL_SURFACE('',{},{},{})",
+                Id(frame),
+                Real(t.major_radius()),
+                Real(t.minor_radius())
             ))?,
             _ => unreachable!("preflight checked surface family"),
         };
@@ -324,7 +355,8 @@ pub(super) fn export<F, E>(
         declared_uncertainty: options.tolerance,
         max_native_support_gap: prepared.gap,
         frame_roundoff_bound: prepared.allowance,
-        max_deviation: prepared.gap + prepared.allowance,
+        parameter_roundoff_bound: prepared.parameter_allowance,
+        max_deviation: prepared.gap + prepared.allowance + prepared.parameter_allowance,
         counts: prepared.counts,
         correspondence: map,
     };
