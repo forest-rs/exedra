@@ -39,6 +39,9 @@ fn measure(label: &str, native: &NativeSource, chart: Option<SurfaceChart>) -> s
     let selection = native.select_face(FaceId(0)).unwrap();
     let mut policy = CompilePolicy {
         native_chart: chart,
+        max_render_vertices: std::env::var("EXEDRA_RENDER_VERTICES")
+            .ok()
+            .map(|limit| limit.parse().expect("EXEDRA_RENDER_VERTICES is a u32")),
         ..Default::default()
     };
     policy.native.tolerance = 0.05;
@@ -161,6 +164,6 @@ fn main() {
     }
     println!(
         "{}",
-        serde_json::json!({"cases":rows,"scope":"release native-source compile_snapshot with actual render extraction and retained correspondence; source installation, prepared identity, fixture preparation, query verification and output destruction excluded; cold compiler created before clock; cache-hit compiler seeded before measurements; no JS, GPU or file I/O"})
+        serde_json::json!({"cases":rows,"max_render_vertices":std::env::var("EXEDRA_RENDER_VERTICES").ok(),"scope":"release native-source compile_snapshot with actual render extraction and retained correspondence; source installation, prepared identity, fixture preparation, query verification and output destruction excluded; cold compiler created before clock; cache-hit compiler seeded before measurements; no JS, GPU or file I/O"})
     );
 }

@@ -10,12 +10,17 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--repo", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[2])
 parser.add_argument("--output", type=pathlib.Path, required=True)
+parser.add_argument("--workload", choices=["authoring", "render_vertices"], default="authoring")
 args = parser.parse_args()
 repo, output = args.repo.resolve(), args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
 (output / "src").mkdir(exist_ok=True)
 bridge = repo / "apps/exedra_authoring_web_bridge"
-worker = pathlib.Path(__file__).resolve().parent / "src/bin/authoring_bridge.rs"
+worker_name = "authoring_bridge.rs" if args.workload == "authoring" else "render_vertex_budget.rs"
+worker = pathlib.Path(__file__).resolve().parent / "src/bin" / worker_name
+scope = ("three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    if args.workload == "authoring" else
+    "one render extraction; fixed 1000-triangle source and profiler setup excluded; custom-only normals avoid global normal derivation; output destruction included")
 (output / "Cargo.toml").write_text(f'''[package]
 name = "exedra-authoring-allocation-profile"
 version = "0.0.0"
@@ -23,6 +28,7 @@ edition = "2024"
 [workspace]
 [dependencies]
 exedra_authoring_web_bridge = {{ path = {json.dumps(str(bridge))} }}
+exedra_mesh = {{ path = {json.dumps(str(repo / "crates/exedra_mesh"))} }}
 serde_json = {{ version = "=1.0.151", features = ["float_roundtrip"] }}
 dhat = "=0.3.3"
 ''')
@@ -45,7 +51,7 @@ fn main() {{
         "current_blocks":s.curr_blocks,"current_bytes":s.curr_bytes,
         "peak_blocks":s.max_blocks,"peak_bytes":s.max_bytes
     }})).collect();
-    println!("{{}}",serde_json::json!({{"checkpoints":checkpoints,"scope":"three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"}}));
+    println!("{{}}",serde_json::json!({{"checkpoints":checkpoints,"scope":{json.dumps(scope)}}}));
 }}
 ''')
 subprocess.run(["cargo", "build", "--release", "--offline", "--manifest-path", str(output / "Cargo.toml")], check=True)
