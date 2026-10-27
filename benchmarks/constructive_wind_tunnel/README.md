@@ -210,6 +210,27 @@ peak. The exported sample GLB is byte-identical through that importer change.
 Alternating before/after executables on Apple Silicon measured native medians
 of 0.201/0.179 ms; the constructive control measured 0.171/0.167 ms.
 
+### Doubly curved native sweep
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin rounded_sweep
+```
+
+A retained hollow rail has two toroidal bends and a cylindrical run. Fresh
+realization at 0.01 mm produces 60,320 vertices and 120,640 triangles. Inputs,
+closure/deep-validity checks and one warm realization stay outside timing.
+Each of 21 samples stops while the output remains alive; destruction follows.
+Pass `profile` to the executable for a 20 second CPU sampling loop.
+
+macOS `sample` identified repeated trigonometry in grid emission. Reusing one
+U phase schedule and two rows throughout realization reduced alternating
+before/after medians from 20.5 to 15.9 ms on Apple Silicon. The exported four-part
+sample remains byte-identical. External three-call DHAT windows measured total
+allocation traffic of 123,448,332 bytes before, 120,553,308 after, with peak
+live memory of 32,921,212 / 31,963,724 bytes. Imports without welding now borrow
+positions and omit an identity remap; no allocation profiler is linked into
+production crates.
+
 ### Matched build123d / OCCT comparison
 
 [Reproduce the eight matched workflows and read the reference measurements](build123d/README.md).

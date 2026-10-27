@@ -115,5 +115,27 @@ which retains the authored segment index. The rail uses `Sweep::from_profile`
 with that same authored path. Its native walls retain planes and cylinders,
 and its exact measures precede meshing. An embedded grid uses construction-aware
 sweep charts with a 20 mm repeat, making texture stretch through the bends visible.
-Native sweeping currently accepts polygonal sections on smooth open line/arc
-paths; sharp corners, cubic spans and local bend-axis contact are refused.
+This sample uses a polygonal section on a smooth open line/arc path; sharp
+corners, cubic spans and local bend-axis contact are refused. Curved sections
+are shown below.
+
+## Rounded native surfaces
+
+```sh
+cargo run --release -p analytic_extrusion --example rounded_geometry -- /tmp/rounded.glb
+blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/rounded.glb /tmp/rounded.png
+```
+
+Four native solids show a rounded turned profile, a torus cutaway, a round
+section carried through two bends and a straight run, and a hollow version of
+that rail. Rounded shoulders retain toroidal faces; straight round walls retain
+cylinders. Shared native boundaries survive the change in supporting surface.
+The cut ends expose solid and hollow sections in orange.
+
+An embedded grid uses exact source-curve construction distances with a 20 mm
+repeat. Geometry stays shared across texture seams. Every output must be deeply
+valid, closed and within its reported 0.04 mm tolerance. Console output includes
+exact native measures, face/triangle counts and geometric deviation. Native
+sweeping now accepts line/arc profiles; arcs requiring nonregular toroidal walls
+and pieces touching a bend axis are source-indexed refusals. Spheres and poles
+remain outside this example's supported surface families.
