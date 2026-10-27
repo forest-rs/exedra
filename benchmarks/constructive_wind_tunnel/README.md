@@ -154,6 +154,41 @@ adjustment. Meshing is a separate operation. On the development Apple Silicon
 host, preparation took a median 0.056 ms for 14 input and 30 output segments
 across three sections. This is a local observation, not a portable guarantee.
 
+## Retained ruled lofts
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_loft
+cargo run --release -p constructive_wind_tunnel --bin native_loft -- charted
+```
+
+Solid and hollow circle-to-rectangle fixtures share exact prepared source
+profiles. Preparation is outside timing. The binary measures retained native
+construction, fresh remeshing with and without charts, and direct mesh lofting
+separately. Each phase warms up before 31 timed results; output destruction is
+excluded. Closure, deep validity, tolerance and repeatable native construction
+are checked before timing. The `native` and `charted` modes repeat a hollow
+remesh for 20 seconds for an external profiler.
+
+Native realization uses a combined 0.05 mm geometric bound. The mesh path uses
+0.025 mm profile and 0.025 mm side-surface policies; its evidence reports those
+separately. Geometry and triangle counts are not claimed to match exactly.
+On the development Apple Silicon host, tighter mixed-derivative bounds and a
+resolved final subdivision count reduced solid output from 23,916 to 4,956
+triangles and remeshing from 3.92 to 1.21 ms. The hollow output fell from 34,480
+to 8,848 triangles and 6.63 to 2.22 ms. The direct mesh path produced 4,640 and
+8,532 triangles in 0.73 and 2.02 ms. Native construction took about 0.04 ms;
+charted native remeshing took 1.54 and 3.26 ms. These are local measurements,
+not portable guarantees or evidence of identical mesh quality.
+
+An external DHAT run over three fresh charted hollow remeshes measured traffic
+falling from 15,838,868 to 4,262,404 bytes per call, and 577 to 448 allocation
+events per call. Peak live heap fell from 9,329,468 to 2,404,060 bytes. Inputs
+and warmup precede the profiler window; output destruction is included in that
+window. The profiler dependency remains outside the workspace. CPU sampling
+shows the remaining work primarily in cap triangulation, mesh import and chart
+delivery. Source-curve evaluations are cached across rows; per-cell heap
+allocation is unnecessary.
+
 ## License
 
 Apache-2.0 OR MIT
