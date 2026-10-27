@@ -19,6 +19,7 @@
 //! - `analytic` and `isosurface` contain alternative geometry heads (opt-in).
 //! - `profile` contains the line and arc profiles both `constructive` and
 //!   `analytic` accept; either feature enables it.
+//! - `step` exchanges supported retained analytic boundaries (opt-in).
 //! - `gltf` exports compiled geometry and caller-prepared structure (opt-in).
 //! - `serde` exposes recipe interchange and forwards to optional Assembly interchange.
 //!
@@ -154,6 +155,12 @@ pub use exedra_primitives as primitives;
 /// This namespace requires the `gltf` feature, which also selects `std`.
 #[cfg(feature = "gltf")]
 pub use exedra_gltf as gltf;
+
+/// STEP exchange from retained native boundaries, independent of display meshes.
+///
+/// This namespace requires `step`, which also selects `analytic`.
+#[cfg(feature = "step")]
+pub use exedra_step as step;
 
 #[cfg(test)]
 mod feature_contract_tests {
