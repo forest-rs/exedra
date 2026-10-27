@@ -58,6 +58,10 @@ export interface Diagnostic {
   message: string;
   node?: number;
   profile?: number;
+  segment?:number;
+  startRadius?:number;
+  endRadius?:number;
+  radiusRoundoffBound?:number;
   cornerPoint?:XY;
   cornerTolerance?:number;
   corner?:ProfileCornerLocation;
@@ -144,9 +148,15 @@ function point(value: XY): XY {
   return Object.freeze([finite(value[0], "x"), finite(value[1], "y")]);
 }
 
+/** One closed-outline segment; its start is the preceding endpoint, cyclically. */
+export type ProfileSegment =
+  | {readonly kind:"line";readonly to:XY;readonly feature?:string}
+  | {readonly kind:"arc";readonly to:XY;readonly center:XY;readonly clockwise:boolean;readonly feature?:string};
+
 type ProfileNode =
   | { kind:"corners";profile:Profile;at:readonly XY[];tolerance?:number;treatment:"fillet"|"chamfer";size:number;feature?:string }
   | { kind: "polygon"; points: readonly XY[] }
+  | { kind:"loop";segments:readonly ProfileSegment[] }
   | { kind: "rectangle"; width: number; height: number }
   | { kind: "roundedRectangle"; width: number; height: number; radius: number }
   | { kind: "circle"; radius: number }
@@ -178,6 +188,25 @@ export class Profile {
       points.push(point(vertex));
     }
     return new Profile({kind:"polygon",points:Object.freeze(points)});
+  }
+  /** Closed line/center-defined-arc outline. Rust validates winding, radii and separation.
+   * Each start is the preceding endpoint, cyclically; full circles need two arcs.
+   * Coordinates and optional per-segment feature labels are copied immediately.
+   */
+  static loop(input:Iterable<ProfileSegment>):Profile {
+    const segments:ProfileSegment[]=[];
+    for(const segment of input){
+      if(segments.length===4096)fail("budget.profileSegments","At most 4096 profile segments are allowed");
+      const common={to:point(segment.to),feature:segment.feature===undefined?undefined:name(segment.feature)};
+      switch(segment.kind){
+        case "line":segments.push(Object.freeze({kind:"line",...common}));break;
+        case "arc":
+          if(typeof segment.clockwise!=="boolean")fail("input.arcDirection","Arc clockwise must be a boolean");
+          segments.push(Object.freeze({kind:"arc",...common,center:point(segment.center),clockwise:segment.clockwise}));break;
+        default:fail("input.profileSegment","Expected a line or center-defined arc");
+      }
+    }
+    return new Profile({kind:"loop",segments:Object.freeze(segments)});
   }
   static rectangle(options: { width: number; height: number }): Profile {
     return new Profile({ kind: "rectangle", width: finite(options.width, "width"), height: finite(options.height, "height") });
@@ -223,6 +252,7 @@ export class Profile {
 }
 export const profiles = Object.freeze({
   polygon: Profile.polygon,
+  loop: Profile.loop,
   rectangle: Profile.rectangle,
   roundedRectangle: Profile.roundedRectangle,
   circle: Profile.circle,

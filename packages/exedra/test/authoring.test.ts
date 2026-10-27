@@ -222,3 +222,22 @@ test("corner diagnostics retain immutable query and candidate evidence",()=>{
  assert.deepEqual(error.diagnostic.cornerPoint,[1,2]);assert.equal(error.diagnostic.cornerCandidates![0].segment,3);
  assert.throws(()=>{(error.diagnostic.cornerCandidates![0].point as any)[0]=77},TypeError);
 });
+
+
+test("closed curve profiles snapshot center/direction/feature intent and lower one shared source",()=>{
+ const to:[number,number]=[3,1],center:[number,number]=[3,0];
+ const arc={kind:"arc" as const,to,center,clockwise:false,feature:"rim"};
+ const segments=[{kind:"line" as const,to:[3,0] as [number,number]},{kind:"line" as const,to:[4,0] as [number,number]},arc];
+ const profile=profiles.loop(segments),h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+ const first=session.build({plate:extrude(profile,{height:2}),turned:revolve(profile,{angle:1.7})});first.dispose();
+ to[1]=99;center[0]=99;arc.clockwise=true;arc.feature="other";segments.pop();
+ session.build({plate:extrude(profile,{height:2}),turned:revolve(profile,{angle:1.7})}).dispose();
+ assert.deepEqual(h.requests[0],h.requests[1]);
+ assert.equal(h.requests[0].profiles.length,1);
+ assert.deepEqual(h.requests[0].profiles[0].segments[2],{kind:"arc",to:[3,1],center:[3,0],clockwise:false,feature:"rim"});
+ function* endless(){while(true)yield {kind:"line" as const,to:[0,0] as const};}
+ assert.throws(()=>profiles.loop(endless()),code("budget.profileSegments"));
+ assert.throws(()=>profiles.loop([{kind:"arc",to:[1,0],center:[Infinity,0],clockwise:false}]),code("input.nonFinite"));
+ assert.throws(()=>profiles.loop([{kind:"arc",to:[1,0],center:[0,0],clockwise:1 as any}]),code("input.arcDirection"));
+ session.dispose();
+});
