@@ -341,3 +341,47 @@ fn positive_native_measures_must_not_silently_underflow() {
     );
     assert!(native.surface_area().unwrap() > 0.0);
 }
+
+#[test]
+fn native_support_bounds_and_planar_frames_are_independent_of_display_quality() {
+    let tag = SegTag(73);
+    let frame = Placement3::rotate_y_then_translate(0.35, 30.0, -7.0, 9.0);
+    let native = source(tag, frame);
+    let bounds = native.conservative_bounds().unwrap();
+    let extrusion = native.as_extrusion().unwrap();
+    let floor = extrusion.floor_tagged(tag).unwrap();
+    assert_eq!(
+        native.face_tags(floor).unwrap().collect::<vec::Vec<_>>(),
+        vec![tag]
+    );
+    assert!(matches!(
+        native.face_tags(FaceId(u32::MAX)),
+        Err(NativeSelectionError::UnknownFace { .. })
+    ));
+    let plane = native.planar_frame(floor).unwrap();
+    assert!(
+        norm(sub(
+            plane.rows.map(|r| r[3]),
+            frame.transform_point([0.0, 0.0, 8.0])
+        )) < 1e-10
+    );
+    let curved = extrusion
+        .indexed_faces()
+        .find(|(_, f)| matches!(f.surface, exedra_analytic::geometry::Surface::Cylinder(_)))
+        .unwrap()
+        .0;
+    assert_eq!(
+        native.planar_frame(curved),
+        Err(NativeSelectionError::NotPlanar { face: curved })
+    );
+    assert_eq!(
+        native.planar_frame(FaceId(u32::MAX)),
+        Err(NativeSelectionError::UnknownFace {
+            face: FaceId(u32::MAX)
+        })
+    );
+    let mut compiler = PartCompiler::new();
+    snapshot(&mut compiler, &native, 0.4);
+    snapshot(&mut compiler, &native, 0.03);
+    assert_eq!(native.conservative_bounds().unwrap(), bounds);
+}

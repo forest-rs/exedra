@@ -22,6 +22,7 @@ extern crate std;
 compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 
 pub mod body;
+pub mod bounds;
 pub mod extrusion;
 pub mod geometry;
 pub mod loft;

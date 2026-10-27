@@ -223,3 +223,13 @@ construction errors use its `Extrusion` variant. Cubics are refused rather than
 flattened. `Extrusion::new` still accepts an already checked shared profile
 without repeating validation. The analytic crate does not depend on a profile
 authoring frontend.
+
+`Curve::conservative_bounds(range)`, `Surface::conservative_bounds(domain)` and
+`Body::conservative_bounds()` enclose native supporting geometry without
+meshing. Circular/torus supports use full angular enclosures, and ruled patches
+use the convex hull of source-curve enclosures; trims can make these bounds
+loose. `Body::conservative_bounds_in(placement)` applies stored affine rows with
+outward-rounded products and sums, including large-coordinate cancellation.
+The query returns a typed numeric limit instead of non-finite bounds. These
+support enclosures are independent of display quality and are not tight extrema
+or a solid-interior test.
