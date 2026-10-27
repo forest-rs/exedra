@@ -48,7 +48,9 @@ pub struct CompilePolicy {
     pub native: exedra_analytic::realize::RealizationPolicy,
     /// Opt-in construction chart for compatible native sources. Recipes keep
     /// their node-authored charts; baked sources ignore this native-only setting.
-    /// Native source identity and selection scope do not depend on this policy.
+    /// Every native input must support the requested operation; incompatible
+    /// input refuses the compilation. Native source identity and selection
+    /// scope do not depend on this policy.
     /// Revolution, sweep and loft are supported; extrusion and bored plates
     /// return a typed unavailable diagnosis. Full chart parameters join the cache key.
     pub native_chart: Option<SurfaceChart>,

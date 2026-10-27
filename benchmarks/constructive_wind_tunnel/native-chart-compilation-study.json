@@ -1,0 +1,241 @@
+{
+  "source_head": "8045c0be26be5463a773dce2a5b23a6e94c83024",
+  "baseline_head": "e1eb01d4e056b9be0d67fac452f745d843b05964",
+  "machine": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "native_compilation": {
+    "cases": [
+      {
+        "cache_hit_ns": {
+          "p50": 667,
+          "p95": 791,
+          "samples": 101
+        },
+        "charted": false,
+        "cold_ns": {
+          "p50": 159167,
+          "p95": 175542,
+          "samples": 101
+        },
+        "family": "revolution",
+        "native_boundary_bytes": 2984,
+        "native_realizations_after_hits": 1,
+        "render_vertices": 200,
+        "triangles": 200
+      },
+      {
+        "cache_hit_ns": {
+          "p50": 834,
+          "p95": 875,
+          "samples": 101
+        },
+        "charted": true,
+        "cold_ns": {
+          "p50": 180333,
+          "p95": 189625,
+          "samples": 101
+        },
+        "family": "revolution",
+        "native_boundary_bytes": 2984,
+        "native_realizations_after_hits": 1,
+        "render_vertices": 208,
+        "triangles": 200
+      },
+      {
+        "cache_hit_ns": {
+          "p50": 625,
+          "p95": 667,
+          "samples": 101
+        },
+        "charted": false,
+        "cold_ns": {
+          "p50": 325500,
+          "p95": 347333,
+          "samples": 101
+        },
+        "family": "sweep",
+        "native_boundary_bytes": 11976,
+        "native_realizations_after_hits": 1,
+        "render_vertices": 456,
+        "triangles": 444
+      },
+      {
+        "cache_hit_ns": {
+          "p50": 833,
+          "p95": 834,
+          "samples": 101
+        },
+        "charted": true,
+        "cold_ns": {
+          "p50": 402541,
+          "p95": 413084,
+          "samples": 101
+        },
+        "family": "sweep",
+        "native_boundary_bytes": 11976,
+        "native_realizations_after_hits": 1,
+        "render_vertices": 456,
+        "triangles": 444
+      },
+      {
+        "cache_hit_ns": {
+          "p50": 625,
+          "p95": 666,
+          "samples": 101
+        },
+        "charted": false,
+        "cold_ns": {
+          "p50": 6574958,
+          "p95": 6738417,
+          "samples": 101
+        },
+        "family": "hollow loft",
+        "native_boundary_bytes": 13936,
+        "native_realizations_after_hits": 1,
+        "render_vertices": 5040,
+        "triangles": 8848
+      },
+      {
+        "cache_hit_ns": {
+          "p50": 875,
+          "p95": 1083,
+          "samples": 101
+        },
+        "charted": true,
+        "cold_ns": {
+          "p50": 8540250,
+          "p95": 8775208,
+          "samples": 101
+        },
+        "family": "hollow loft",
+        "native_boundary_bytes": 13936,
+        "native_realizations_after_hits": 1,
+        "render_vertices": 5040,
+        "triangles": 8848
+      }
+    ],
+    "scope": "release native-source compile_snapshot with actual render extraction and retained correspondence; source installation, prepared identity, fixture preparation, query verification and output destruction excluded; cold compiler created before clock; cache-hit compiler seeded before measurements; no JS, GPU or file I/O"
+  },
+  "default_authoring_bridge": {
+    "timings": [
+      {
+        "tolerance": 0.45,
+        "before": {
+          "p50_ns": 573125,
+          "p95_ns": 708250,
+          "samples": 303
+        },
+        "after": {
+          "p50_ns": 582917,
+          "p95_ns": 849125,
+          "samples": 303
+        },
+        "matched_triangles_and_buffer_bytes": true
+      },
+      {
+        "tolerance": 0.12,
+        "before": {
+          "p50_ns": 679125,
+          "p95_ns": 708959,
+          "samples": 303
+        },
+        "after": {
+          "p50_ns": 681208,
+          "p95_ns": 725791,
+          "samples": 303
+        },
+        "matched_triangles_and_buffer_bytes": true
+      },
+      {
+        "tolerance": 0.035,
+        "before": {
+          "p50_ns": 1109000,
+          "p95_ns": 1182375,
+          "samples": 303
+        },
+        "after": {
+          "p50_ns": 1106417,
+          "p95_ns": 1160584,
+          "samples": 303
+        },
+        "matched_triangles_and_buffer_bytes": true
+      }
+    ],
+    "method": "three alternating process rounds,101samples per quality; same public actual authorPanel graph, native host only; requests prepared outside timing, outputbuffer destruction/JS/GPU/UI excluded",
+    "allocation_before": {
+      "checkpoints": [
+        {
+          "current_blocks": 386,
+          "current_bytes": 533667,
+          "peak_blocks": 1120,
+          "peak_bytes": 605990,
+          "phase": "retained",
+          "total_blocks": 17074,
+          "total_bytes": 3608259
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 1120,
+          "peak_bytes": 605990,
+          "phase": "released",
+          "total_blocks": 17074,
+          "total_bytes": 3608259
+        }
+      ],
+      "scope": "three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    },
+    "allocation_after": {
+      "checkpoints": [
+        {
+          "current_blocks": 386,
+          "current_bytes": 533691,
+          "peak_blocks": 1120,
+          "peak_bytes": 606006,
+          "phase": "retained",
+          "total_blocks": 17074,
+          "total_bytes": 3608283
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 1120,
+          "peak_bytes": 606006,
+          "phase": "released",
+          "total_blocks": 17074,
+          "total_bytes": 3608283
+        }
+      ],
+      "scope": "three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    },
+    "interpretation": "allocation count and buffers unchanged;24B additional retained/traffic and16B peak reflect empty policy-record pointers; medium/fine medians neutral, coarse median+1.7% with a noisy first after run; no speedup claim"
+  },
+  "capability_inventory": {
+    "successful_native_families": [
+      "Revolution",
+      "Sweep",
+      "Loft"
+    ],
+    "unavailable_native_families": [
+      "Extrusion",
+      "BoredPlate"
+    ],
+    "checked_refusals": [
+      "wrong chart operation",
+      "nonfinite transform",
+      "invalid reference section",
+      "mapped f32 edge collapse",
+      "coincident datums",
+      "nonadvancing/underflowed station metric"
+    ],
+    "verified": [
+      "UV vertex splits",
+      "actual triangle/native correspondence after region regrouping",
+      "applied-policy cache sharing",
+      "native identity across chart and quality changes",
+      "fresh equal-content selection refusal",
+      "held policy after cache eviction",
+      "section-index versus datum-distance UV metric"
+    ]
+  }
+}

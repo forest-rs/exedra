@@ -124,3 +124,15 @@ Authored corner UVs can split render vertices while native topology stays shared
 `SnapshotBody::native_render_face` follows the compiler's final triangle order,
 including UV splitting and region regrouping. Render-only compilation retains
 buffers; use `compile_snapshot` for native policy/correspondence inspection.
+
+`NativeSource::chart_kind()` and `NativeGeometryRef::chart_kind()` report the
+structural operation as a shared `SurfaceChartKind`, independently of metric
+validity. `check_chart` validates the requested policy; realization establishes
+actual coordinate representability. One policy applies to every native input
+in that compilation call, so incompatible inputs produce a typed refusal.
+
+Borrowed constructor views also provide `family`, `frame`, `cap` and
+`planar_frame`. A transient authoring node can query its current end-cap frame
+before source installation, avoiding content hashing or duplicate role scans in
+the bridge. Raw face IDs remain constructor-local; durable native selections
+belong to an installed `NativeSource` and its revision scope.
