@@ -160,3 +160,23 @@ joins remain sharp. The sample requires deep validity, closure and an emitted
 side-surface bound within policy, including f32 displacement. Profile chord
 error is controlled separately at 0.05 mm. Console output reports preparation
 work, mesh counts, sampling intervals and the side-surface bound.
+
+## Retained ruled lofts and variable sections
+
+```sh
+cargo run --release -p analytic_extrusion --example native_loft -- /tmp/native-lofts.glb
+blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/native-lofts.glb /tmp/native-lofts.png
+```
+
+The solid and hollow circle-to-rectangle transitions now retain exact ruled
+surfaces. The middle solid changes rounded section size, position and rotation
+through four authored stations. Its section joins are intentionally ruled;
+the smooth cubic mesh loft remains in the preceding sample. Native faces,
+source curves, tags and shared edge identities survive remeshing.
+
+Construction charts use exact reference-section perimeter and explicit datum
+distances. The source profiles and correspondence are prepared once, before
+native construction. Every output must be deeply valid, closed and within a
+combined 0.05 mm geometric deviation bound. Console output includes native face
+and edge counts, emitted mesh counts and total deviation. Orange end caps expose
+the original sections.
