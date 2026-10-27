@@ -121,3 +121,15 @@ construction charts and includes UV transfer bytes in the reported buffer total.
 
 `npm run test:views` checks lazy Scene initialization, retained Stage lifetime,
 late completion, retries and teardown independently of GPU execution.
+
+The flanged sleeve starts with a radius-2 profile fillet at its concave shoulder.
+Its generated face is an exact torus; selecting **Chamfer** produces an exact cone.
+The size control is independent of shoulder height, total height and all radii.
+Zero leaves the sharp source section. Trims that consume an adjacent edge are
+refused by the native profile operation, preserving the last valid display.
+**View TypeScript** shows the reusable `cornerAt(...).fillet/chamfer(...)` call.
+
+`profile-pipeline-fixtures.mjs` can compare unchanged native fingerprints, measures,
+face metadata, render-buffer hashes and deterministic GLB bytes across generated
+Wasm packages. The sharp sleeve fixture deliberately remains sharp while the
+interactive sleeve defaults to a rounded shoulder.

@@ -220,3 +220,16 @@ native solids, measures, topology, units and material witnesses with OCCT.
 The first contract requires a plain unperforated rectangular plate and a bore
 whose entire section clears every sidewall by the requested separation. Parallel,
 near-parallel, sidewall-contact and unsupported source cases return diagnostics.
+
+### Profile shoulder treatments
+
+```sh
+cargo run -p analytic_extrusion --example profile_shoulders -- /tmp/profile-shoulders
+```
+
+`profile_shoulders` selects the flange's concave profile corner by position,
+then reuses the shared profile operation for a tangent fillet and an equal-distance
+chamfer. The three native revolutions compare a sharp shoulder, exact torus and
+exact cone. GLB and JSON report the native surfaces and integrals; no 3D edge blend
+or mesh Boolean is involved. `Profile::corner_at` refuses missing/ambiguous matches,
+and the treatment refuses overlapping trims under the explicit profile policy.

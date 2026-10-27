@@ -11,7 +11,7 @@ export const galleryCases = [
   { id: "roundedRing", step: "supported", make: (delta=0) => authorRoundedTurn({radius:22+delta,wall:12,collarHeight:24,angle:360,rounding:2},"roundedRing") },
   { id: "torus", step: "supported", make: (delta=0) => authorRoundedTurn({radius:35+delta,wall:7,collarHeight:30,angle:360},"torus") },
   { id: "hollowTorus", step: "supported", make: (delta=0) => authorRoundedTurn({radius:35+delta,wall:7,collarHeight:30,angle:270,innerRadius:4},"hollowTorus") },
-  { id: "sleeve", step: "supported", make: (delta=0) => authorFlangedSleeve({boreRadius:12+delta,sleeveOuterRadius:18,flangeOuterRadius:22,shoulderHeight:8.75,height:35,angle:270}) },
+  { id: "sleeve", step: "supported", make: (delta=0) => authorFlangedSleeve({boreRadius:12+delta,sleeveOuterRadius:18,flangeOuterRadius:22,shoulderHeight:8.75,height:35,angle:270,shoulder:{kind:"fillet",radius:2}}) },
   { id: "fitting", step: "supported", make: (delta=0) => authorTurnedFitting({radius:7+delta,wall:15,collarHeight:47,angle:270}) },
   { id: "rail", step: "supported", make: (delta=0) => authorRail({radius:6+delta,bendRadius:40,angle:135,hollow:false}) },
   { id: "hollowRail", step: "supported", make: (delta=0) => authorRail({radius:8+delta,bendRadius:40,angle:135,hollow:true}) },

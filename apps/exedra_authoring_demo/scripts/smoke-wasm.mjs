@@ -95,6 +95,28 @@ try {
 }finally{flangeSession.dispose();}
 
 
+
+// Profile-level shoulder treatments retain exact native surfaces and moments.
+const shoulderSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const cases=[{kind:"fillet",radius:0},{kind:"fillet",radius:.5},{kind:"fillet",radius:2},{kind:"fillet",radius:3.5},{kind:"chamfer",distance:2}];
+ for(const shoulder of cases){
+  const document=shoulderSession.build(authorFlangedSleeve({...flangeBase,shoulder}));
+  try {
+   const part=document.parts.sleeve,size=shoulder.kind==="fillet"?shoulder.radius:shoulder.distance;
+   const moment=shoulder.kind==="fillet"?flangeBase.sleeveOuterRadius*size**2*(1-Math.PI/4)+size**3*(5/6-Math.PI/4):flangeBase.sleeveOuterRadius*size**2/2+size**3/6;
+   assert.ok(Math.abs(part.measurements.volume.value-(flangeVolume(flangeBase)+flangeBase.angle*Math.PI/180*moment))<1e-7);
+   const faces=part.faces("shoulder");assert.equal(faces.length,size===0?0:1);
+   if(size!==0){assert.equal(faces[0].surface,shoulder.kind==="fillet"?"torus":"cone");const display=part.realize(policy);within(display);assert.ok(display.nativeFaces.includes(faces[0].nativeId));const fine=part.realize({tolerance:.035});within(fine);part.requireSelection(faces[0]);const file=part.exportStep({timestamp});assert.ok(file.text.includes(shoulder.kind==="fillet"?"TOROIDAL_SURFACE(":"CONICAL_SURFACE("));}
+  }finally{document.dispose();}
+ }
+ const good=shoulderSession.build(authorFlangedSleeve({...flangeBase,shoulder:{kind:"fillet",radius:2}}));
+ assert.throws(()=>shoulderSession.build(authorFlangedSleeve({...flangeBase,shoulder:{kind:"fillet",radius:5}})),error=>error instanceof ExedraError&&error.diagnostic.code==="profile.corner.overlap"&&error.diagnostic.segmentLength===4&&Number.isFinite(error.diagnostic.requestedTrim));
+ good.parts.sleeve.realize(policy);good.dispose();assert.equal(shoulderSession.stats().documents,0);assert.equal(shoulderSession.stats().cacheEntries,0);
+ results.push({sample:"profile-shoulder-treatments",outcome:"success",nativeTreatments:cases.length});
+}finally{shoulderSession.dispose();}
+
+
 // Construction charts preserve exact source metadata and final native-face mapping.
 const chartSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
 try {

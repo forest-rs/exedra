@@ -64,11 +64,13 @@ export function authorRoundedTurn(p: CollarParameters, kind: "roundedRing" | "to
   return {ring:revolve(outline,{angle:p.angle*Math.PI/180,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
 }
 
+export type ShoulderFinish = {readonly kind:"fillet";readonly radius:number}|{readonly kind:"chamfer";readonly distance:number};
 export interface FlangeParameters {
   boreRadius:number;
   sleeveOuterRadius:number;
   flangeOuterRadius:number;
   shoulderHeight:number;
+  shoulder?:ShoulderFinish;
   height:number;
   angle:number;
 }
@@ -77,7 +79,12 @@ export function authorFlangedSleeve(p:FlangeParameters) {
   if(!(p.shoulderHeight>0&&p.shoulderHeight<p.height))throw new ExedraError({code:"input.flangeHeight",operation:"sample.flangedSleeve",message:"Shoulder height must be positive and less than total height."});
   const r=p.boreRadius,upper=p.sleeveOuterRadius,bottom=p.flangeOuterRadius,t=p.shoulderHeight,h=p.height;
   const points:readonly (readonly [number,number])[]=upper===bottom?[[r,0],[upper,0],[upper,h],[r,h]]:[[r,0],[bottom,0],[bottom,t],[upper,t],[upper,h],[r,h]];
-  const section=profiles.polygon(points).tagged("sleeve");
+  let section=profiles.polygon(points).tagged("sleeve");
+  if(p.shoulder){
+    const corner=section.cornerAt([upper,t]);
+    if(p.shoulder.kind==="fillet"&&p.shoulder.radius!==0)section=corner.fillet(p.shoulder.radius,{feature:"shoulder"});
+    if(p.shoulder.kind==="chamfer"&&p.shoulder.distance!==0)section=corner.chamfer(p.shoulder.distance,{feature:"shoulder"});
+  }
   return {sleeve:revolve(section,{angle:p.angle*Math.PI/180,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
 }
 
