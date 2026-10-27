@@ -536,6 +536,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_scene_web_bridge"
+version = "0.0.0"
+dependencies = [
+ "exedra_compile",
+ "exedra_scene",
+ "layerstack_usda",
+ "native_scene",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "exedra_step"
 version = "0.1.0"
 dependencies = [
@@ -970,7 +982,7 @@ dependencies = [
 [[package]]
 name = "layerstack"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6#08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6"
+source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
 dependencies = [
  "hashbrown",
  "invalidation 0.3.0",
@@ -983,7 +995,7 @@ dependencies = [
 [[package]]
 name = "layerstack_schemas"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6#08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6"
+source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
 dependencies = [
  "fearless_simd",
  "hashbrown",
@@ -994,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "layerstack_usda"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6#08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6"
+source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
 dependencies = [
  "hashbrown",
  "layerstack",
@@ -1172,7 +1184,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "opinionated"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6#08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6"
+source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
 dependencies = [
  "hashbrown",
 ]
