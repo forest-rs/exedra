@@ -511,6 +511,17 @@ jobs:
       - name: check portable browser lockfile
         working-directory: apps/exedra_authoring_demo
         run: npm run check:lockfile
+      - name: read native Layerstack pin
+        id: layerstack-pin
+        run: echo "revision=$(node apps/exedra_authoring_demo/scripts/check-layerstack-partner.mjs --revision)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: forest-rs/layerstack
+          ref: ${{ steps.layerstack-pin.outputs.revision }}
+          path: .local/partners/layerstack
+      - name: verify native client affinity
+        working-directory: apps/exedra_authoring_demo
+        run: npm run check:partner
       - name: install browser dependencies
         working-directory: apps/exedra_authoring_demo
         run: npm ci

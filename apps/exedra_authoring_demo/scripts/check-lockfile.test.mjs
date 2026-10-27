@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkLockfile } from "./check-lockfile.mjs";
 
-test("public packages and the one authored SDK link remain portable", () => {
+test("public packages and the explicit authored SDK/native stage links remain portable", () => {
   const packages = {
     "node_modules/three": { resolved: "https://registry.npmjs.org/three/-/three-0.179.1.tgz", integrity: "sha512-fixture" },
     "node_modules/@exedra/authoring": { resolved: "../../packages/exedra", link: true },
+    "node_modules/@layerstack/client": { resolved: "../../.local/partners/layerstack/packages/client", link: true },
   };
   assert.deepEqual(checkLockfile({ packages }), []);
 });
