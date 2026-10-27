@@ -5,18 +5,20 @@
 
 use crate::Error;
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     format,
     string::{String, ToString},
     vec::Vec,
 };
 use exedra_analytic::{
-    extrusion::{End, Extrusion, Pocket},
+    bore::{Bore, BoreError, BorePolicy, BoredPlate},
+    extrusion::{End, Extrusion, Pocket, Workplane},
     loft::{Loft, LoftPolicy},
     revolve::Revolution,
     sweep::Sweep,
 };
-use exedra_compile::NativeSource;
+use exedra_compile::{NativeGeometryRef, NativeSource};
 use exedra_constructive::{
     builders,
     path::PathCursor3,
@@ -115,8 +117,18 @@ enum Model {
     Revolution(Revolution),
     Sweep(Sweep),
     Loft(Loft),
+    BoredPlate(Box<BoredPlate>),
 }
 impl Model {
+    fn geometry(&self) -> NativeGeometryRef<'_> {
+        match self {
+            Self::Extrusion(v) => NativeGeometryRef::Extrusion(v),
+            Self::Revolution(v) => NativeGeometryRef::Revolution(v),
+            Self::Sweep(v) => NativeGeometryRef::Sweep(v),
+            Self::Loft(v) => NativeGeometryRef::Loft(v),
+            Self::BoredPlate(v) => NativeGeometryRef::BoredPlate(v),
+        }
+    }
     fn extrusion(&self) -> Result<&Extrusion, Error> {
         if let Self::Extrusion(v) = self {
             Ok(v)
@@ -134,6 +146,7 @@ impl Model {
             Self::Revolution(v) => NativeSource::from(v),
             Self::Sweep(v) => NativeSource::from(v),
             Self::Loft(v) => NativeSource::from(v),
+            Self::BoredPlate(v) => NativeSource::from(*v),
         }
     }
 }
@@ -175,6 +188,14 @@ enum FinishKind {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum Node {
+    ThroughBore {
+        base: u32,
+        point: [f64; 3],
+        direction: [f64; 3],
+        radius: f64,
+        separation: f64,
+        feature: Option<String>,
+    },
     Sweep {
         profile: u32,
         path: u32,
@@ -395,6 +416,20 @@ impl Request {
                     }
                     (sections.iter().map(|s| s.profile).collect(), None, 1)
                 }
+                Node::ThroughBore { base, feature, .. } => {
+                    if let Some(feature) = feature {
+                        if !label(feature) {
+                            return Err(Error::new(
+                                "input.name",
+                                "document.validate",
+                                "Bore feature names must contain text and fit in 128 UTF-8 bytes",
+                            )
+                            .node(i));
+                        }
+                        labels.insert(feature.clone());
+                    }
+                    (Vec::new(), Some(*base), 1)
+                }
                 Node::AxialFinish {
                     base,
                     feature,
@@ -452,7 +487,10 @@ impl Request {
                 .fold(0_usize, |sum, id| sum.saturating_add(counts[*id as usize]))
                 .saturating_mul(multiplier)
                 .saturating_add(
-                    if matches!(node, Node::Pocket { .. } | Node::AxialFinish { .. }) {
+                    if matches!(
+                        node,
+                        Node::Pocket { .. } | Node::AxialFinish { .. } | Node::ThroughBore { .. }
+                    ) {
                         body_counts[parent.expect("feature parent") as usize]
                     } else {
                         0
@@ -588,6 +626,76 @@ impl Request {
                 Error::new(code, operation, message).node(i)
             };
             let solid = match node {
+                Node::ThroughBore {
+                    base,
+                    point,
+                    direction,
+                    radius,
+                    separation,
+                    feature,
+                } => {
+                    let refusal = |error: BoreError| {
+                        let code = match &error {
+                            BoreError::Input => "bore.input",
+                            BoreError::InvalidPolicy => "bore.policy",
+                            BoreError::UnsupportedPlate => "bore.unsupportedPlate",
+                            BoreError::Sidewall { .. } => "bore.clearance",
+                            BoreError::NumericLimit => "bore.numericLimit",
+                            BoreError::Section(
+                                exedra_analytic::geometry::intersection::SectionError::NearParallel {
+                                    ..
+                                },
+                            ) => "bore.nearParallel",
+                            _ => "bore.invalid",
+                        };
+                        {
+                            let mut diagnostic =
+                                failure(code, "solid.throughBore", error.to_string());
+                            let context = diagnostic.context_mut();
+                            context.feature = feature.clone();
+                            match &error {
+                                BoreError::Sidewall { end, clearance, required } => {
+                                    context.end = Some(match end {
+                                        End::Start => "start",
+                                        End::End => "end",
+                                    });
+                                    context.clearance = Some(*clearance);
+                                    context.required_clearance = Some(*required);
+                                }
+                                BoreError::Section(
+                                    exedra_analytic::geometry::intersection::SectionError::NearParallel {
+                                        axis_dot, minimum,
+                                    },
+                                ) => {
+                                    context.axis_dot = Some(*axis_dot);
+                                    context.minimum_axis_dot = Some(*minimum);
+                                }
+                                _ => {}
+                            }
+                            diagnostic
+                        }
+                    };
+                    let mut bore = Bore::new(point, direction, radius).map_err(refusal)?;
+                    if let Some(feature) = &feature {
+                        bore = bore.tagged(labels[feature]);
+                    }
+                    let source = models[base as usize]
+                        .extrusion()
+                        .map_err(|e| failure(e.code, "solid.throughBore", e.message))?;
+                    Model::BoredPlate(Box::new(
+                        source
+                            .with_through_bore(
+                                bore,
+                                &BorePolicy {
+                                    separation,
+                                    geometry_gap: self.separation,
+                                    min_axis_dot: 0.05,
+                                },
+                            )
+                            .map_err(refusal)?,
+                    ))
+                }
+
                 Node::Sweep {
                     profile,
                     path,
@@ -725,11 +833,15 @@ impl Request {
                     offset,
                     at,
                 } => {
-                    let host = models[host as usize]
-                        .extrusion()
-                        .map_err(|e| failure(e.code, "workplane", e.message))?;
+                    let geometry = models[host as usize].geometry();
                     let face = match face {
-                        FaceSelector::Cap { end } => host.cap(end.into()),
+                        FaceSelector::Cap { end } => geometry.cap(end.into()).ok_or_else(|| {
+                            failure(
+                                "selection.missingCap",
+                                "workplane.cap",
+                                "This construction end has no cap".into(),
+                            )
+                        })?,
                         FaceSelector::Floor { feature } => {
                             let Some(tag) = labels.get(&feature) else {
                                 return Err(failure(
@@ -738,17 +850,23 @@ impl Request {
                                     format!("No feature named '{feature}' was authored"),
                                 ));
                             };
-                            host.floor_tagged(*tag).map_err(|e| {
-                                failure(
-                                    "selection.floor",
-                                    "workplane.floor",
-                                    format!("Feature '{feature}': {e}"),
-                                )
-                            })?
+                            models[host as usize]
+                                .extrusion()
+                                .map_err(|e| failure(e.code, "workplane.floor", e.message))?
+                                .floor_tagged(*tag)
+                                .map_err(|e| {
+                                    failure(
+                                        "selection.floor",
+                                        "workplane.floor",
+                                        format!("Feature '{feature}': {e}"),
+                                    )
+                                })?
                         }
                     };
-                    let plane = host
-                        .workplane(face)
+                    let frame = geometry
+                        .planar_frame(face)
+                        .map_err(|e| failure("workplane.invalid", "workplane", e.to_string()))?;
+                    let plane = Workplane::new(frame)
                         .map_err(|e| failure("workplane.invalid", "workplane", e.to_string()))?
                         .offset(offset)
                         .map_err(|e| {
@@ -832,11 +950,11 @@ mod tests {
         let built = value.build().unwrap();
         assert!(matches!(
             built.roots[0].1.geometry(),
-            exedra_compile::NativeGeometryRef::Sweep(_)
+            NativeGeometryRef::Sweep(_)
         ));
         assert!(matches!(
             built.roots[1].1.geometry(),
-            exedra_compile::NativeGeometryRef::Loft(_)
+            NativeGeometryRef::Loft(_)
         ));
         assert!(matches!(
             built.roots[1].1.volume(),
@@ -860,5 +978,34 @@ mod tests {
             placement: InputPlacement::default()
         }];
         assert_eq!(value.validate().unwrap_err().code, "budget.sections");
+    }
+    #[test]
+    fn generic_cap_attachments_use_borrowed_native_frames_without_installing_transient_sources() {
+        for (kind, origin) in [("sweep", [0.0, 20.5, 0.0]), ("loft", [0.0, 0.0, 20.5])] {
+            let host = if kind == "sweep" {
+                serde_json::json!({"kind":"sweep","profile":0,"path":0})
+            } else {
+                serde_json::json!({"kind":"loft","sections":[{"profile":0,"placement":{}},{"profile":0,"placement":{"translation":[0,0,20]}}]})
+            };
+            let value:Request=serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-6,
+                "profiles":[{"kind":"circle","radius":3},{"kind":"circle","radius":1}],
+                "paths":[{"start":[0,0,0],"tangent":[0,1,0],"sectionX":[1,0,0],"steps":[{"kind":"lineBy","offset":[0,20,0]}]}],
+                "nodes":[host,{"kind":"onFace","host":0,"face":{"kind":"cap","end":"end"},"profile":1,"height":5,"offset":0.5,"at":[0,0]}],
+                "roots":[{"name":"attached","node":1}]
+            })).unwrap();
+            let built = value.build().unwrap();
+            assert_eq!(built.roots.len(), 1);
+            let part = built.roots[0].1.as_extrusion().unwrap();
+            assert_eq!(part.frame().transform_point([0.0; 3]), origin);
+            assert!((part.volume() - 5.0 * core::f64::consts::PI).abs() < 1e-12);
+        }
+        let value:Request=serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-6,
+            "profiles":[{"kind":"rectangle","width":4,"height":4},{"kind":"translated","profile":0,"offset":[10,2]}],
+            "nodes":[{"kind":"revolve","profile":1,"angle":core::f64::consts::TAU},{"kind":"onFace","host":0,"face":{"kind":"cap","end":"end"},"profile":0,"height":2,"offset":0,"at":[0,0]}],
+            "roots":[{"name":"attached","node":1}]
+        })).unwrap();
+        let error = value.build().unwrap_err();
+        assert_eq!(error.code, "selection.missingCap");
+        assert_eq!(error.context.as_ref().and_then(|c| c.node), Some(1));
     }
 }

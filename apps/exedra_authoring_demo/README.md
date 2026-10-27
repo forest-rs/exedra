@@ -103,3 +103,17 @@ The flanged sleeve has independent bore, sleeve and flange radii, shoulder heigh
 total height and turn angle. Changing total height leaves shoulder height fixed.
 Each field retains its value when switching samples. Invalid dimensions preserve
 the last valid model with a diagnostic; values are not silently clamped.
+
+
+The angled bore sample uses the exact native plate/bore operation. Edit the axis
+tilt, radius and minimum edge clearance, inspect its elliptical rims with mesh
+triangles, and select the named bore wall. Its STEP file keeps native ellipse and
+cylinder geometry. Refused edits preserve the last valid display.
+
+Construction checker coordinates are available on revolutions, sweeps and lofts.
+Rest radius, rest length, reference section and station controls change the
+construction chart without changing native identity. An unsupported chart or
+invalid metric is diagnosed explicitly; no mesh projection is substituted.
+
+`npm run bench:wasm -- --charts` repeats the same edit workload with available
+construction charts and includes UV transfer bytes in the reported buffer total.

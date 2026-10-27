@@ -143,3 +143,68 @@ Named axial-edge finishes apply to extrusion profile corners, including selected
 hole corners. They do not imply general rim or arbitrary 3D edge fillets. Kernel
 errors preserve the construction node and operation; a failed document build
 never registers a partial result.
+
+Construction UVs are display policy over an installed native source:
+
+```ts
+import { charts, uvTransform } from "@exedra/authoring";
+const grid = uvTransform({ matrix: [[1 / 20, 0], [0, 1 / 20]] });
+const display = document.parts.rail.realize({
+  tolerance: 0.12,
+  chart: charts.sweep({ wall: grid, caps: grid }),
+});
+// Attach display.uvs to a two-component render UV attribute.
+```
+
+`part.chartKind` identifies structural native chart support, or is `null` when
+unavailable. `charts.revolve` uses an explicit rest radius; `charts.loft` uses an
+explicit reference section, rest length and station rule. Native distances follow
+exact source curves. Coordinate transforms map those lengths to texture repeats;
+offsets change texture phase. Chart settings do not change source identity,
+workplanes or topology. Invalid or unsupported settings produce typed refusals.
+
+`display.uvs` is a caller-owned `Float32Array`, or `null` for uncharted output.
+Corner seams can split render vertices; `maxVertices` limits both native mesh
+construction and delivered render vertices, so attribute seams can cause a typed
+budget refusal. Native-face correspondence remains parallel to final render
+triangles. Report `chart` records the policy actually applied. Report `work` and
+`curveRefinement` describe the generation retained with the output, including on
+cache hits; current-call compilation/cache counters and timing are separate.
+Always inspect `withinTolerance`, even if a refinement improved its bound.
+
+Construction caps support independent attachments across families:
+
+```ts
+const peg = rail.cap("end").workplane().offset(0.5)
+  .extrude(profiles.circle({ radius: 2 }).tagged("peg"), { height: 5 });
+const document = session.build({ rail, peg });
+const nativePlane = document.parts.rail.cap("end").workplane();
+```
+
+Authoring selectors and installed native selections remain distinct. A full
+revolution has no end caps and reports `selection.missingCap`. Queried workplanes
+come from exact supporting geometry; their datum is parameter zero, independent
+of display triangles and texture coordinates.
+
+
+A plain rectangular extrusion can retain an exact angled through bore:
+
+```ts
+const plate = extrude(profiles.rectangle({ width: 100, height: 70 }), { height: 20 })
+  .throughBore({
+    point: [0, 0, 10], direction: [Math.sqrt(3), 0, 1], radius: 8,
+    separation: 2, feature: "bore",
+  });
+const document = session.build({ plate });
+const bore = document.parts.plate.bore;
+```
+
+`point` and `direction` use the source construction frame, before its authored
+placement. Inputs are snapshotted; subsequent caller mutations do not alter the
+descriptor. `separation` is minimum remaining material to the plate sidewalls,
+separate from session numeric separation and display tolerance. The first bore
+operation accepts an unpocketed rectangular plate; unsupported plates, near-parallel
+axes and insufficient clearance return distinct diagnostics with the failed node
+and relevant numeric evidence. Elliptical rims and the cylindrical wall remain
+native, including in supported STEP export. `part.bore` reports local axis inputs,
+document-space evidence, rim semiaxes and native wall identity.

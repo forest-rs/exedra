@@ -5,13 +5,13 @@ import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createSession, ExedraError, type AuthoringSession, type NativeDocument, type NativePart, type Realization, type FaceSelection, type NativeMeasurement } from "@exedra/authoring";
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, type PanelParameters, type CollarParameters } from "./sample.js";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, constructionChart, type PanelParameters, type CollarParameters } from "./sample.js";
 import sampleSource from "./sample.ts?raw";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
 <main class="layout">
- <aside><div class="brand">exedra</div><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
+ <aside><div class="brand">exedra</div><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
   <div id="panel-controls"><div class="control"><label class="label" for="width">Panel width <span class="value" id="width-value"></span></label><input id="width" type="range" min="100" max="160" step="1" value="120"></div>
   <div class="control"><label class="label" for="height">Panel height <span class="value" id="height-value"></span></label><input id="height" type="range" min="70" max="110" step="1" value="80"></div>
   <div class="control"><label class="label" for="thickness">Panel thickness <span class="value" id="thickness-value"></span></label><input id="thickness" type="range" min="8" max="20" step="0.5" value="12"></div>
@@ -49,8 +49,25 @@ app.innerHTML = `
     <div class="control"><label class="label" for="sleeveHeight">Total height <span class="value" id="sleeveHeight-value"></span></label><input id="sleeveHeight" type="range" min="1" max="80" step="0.5" value="35"></div>
     <div class="control"><label class="label" for="flangeAngle">Turn angle <span class="value" id="flangeAngle-value"></span></label><input id="flangeAngle" type="range" min="30" max="360" step="5" value="270"></div>
   </div>
+  <div id="bore-controls" hidden>
+   <div class="control"><label class="label" for="boreWidth">Plate width <span class="value" id="boreWidth-value"></span></label><input id="boreWidth" type="range" min="60" max="160" step="1" value="100"></div>
+   <div class="control"><label class="label" for="boreHeight">Plate height <span class="value" id="boreHeight-value"></span></label><input id="boreHeight" type="range" min="40" max="120" step="1" value="70"></div>
+   <div class="control"><label class="label" for="boreThickness">Plate thickness <span class="value" id="boreThickness-value"></span></label><input id="boreThickness" type="range" min="5" max="35" step="0.5" value="20"></div>
+   <div class="control"><label class="label" for="boreRadius">Bore radius <span class="value" id="boreRadius-value"></span></label><input id="boreRadius" type="range" min="2" max="25" step="0.5" value="8"></div>
+   <div class="control"><label class="label" for="boreAngle">Axis tilt from plate normal <span class="value" id="boreAngle-value"></span></label><input id="boreAngle" type="range" min="0" max="88" step="1" value="60"></div>
+   <div class="control"><label class="label" for="boreSeparation">Minimum edge clearance <span class="value" id="boreSeparation-value"></span></label><input id="boreSeparation" type="range" min="0.5" max="30" step="0.5" value="2"></div>
+  </div>
   <h2>Display</h2><label class="label" for="quality">Quality <select id="quality" class="quality"><option value="0.45">Coarse · 0.45 mm</option><option value="0.12" selected>Medium · 0.12 mm</option><option value="0.035">Fine · 0.035 mm</option></select></label>
   <label class="checkline"><input id="wireframe" type="checkbox"> Show mesh triangles</label>
+  <label class="checkline"><input id="checker" type="checkbox"> Construction checker</label><p id="chart-support" class="hint"></p>
+  <div id="chart-controls" hidden>
+   <div class="control"><label class="label" for="uvRepeat">UV repeat · mm</label><input id="uvRepeat" type="number" min="1" step="1" value="20"></div>
+   <div class="control" id="revolve-chart" hidden><label class="label" for="referenceRadius">Rest radius · mm</label><input id="referenceRadius" type="number" min="0" step="1" value="28"></div>
+   <div id="loft-chart" hidden><div class="control"><label class="label" for="restLength">Rest length · mm</label><input id="restLength" type="number" min="0" step="1" value="120"></div>
+    <div class="control"><label class="label" for="referenceSection">Reference section · zero-based</label><input id="referenceSection" type="number" min="0" max="3" step="1" value="0"></div>
+    <label class="label" for="stations">Station spacing</label><select id="stations" class="quality"><option value="datumDistance">Datum distance</option><option value="sectionIndex">Section index</option></select>
+   </div>
+  </div>
 
   <div class="divider"></div><button id="lifecycle" disabled>Check rebuild / release</button><p id="lifecycle-result" class="hint">12 rebuilds; live owner counts.</p>
  </aside>
@@ -63,7 +80,7 @@ app.innerHTML = `
   <div class="stat wide"><small>Volume · mm³</small><b id="volume">—</b></div><div class="stat wide"><small>Surface area · mm²</small><b id="area">—</b></div>
   <div class="stat"><small>Native faces</small><b id="native-faces">—</b></div><div class="stat"><small>Shared edges</small><b id="native-edges">—</b></div></div>
   <h2>Display data</h2><div class="metrics-line"><span>Triangles</span><code id="triangles">—</code></div><div class="metrics-line"><span>Render vertices</span><code id="vertices">—</code></div><div class="metrics-line"><span>Reported error</span><code id="deviation">—</code></div><div class="metrics-line"><span>CPU display buffers</span><code id="buffers">—</code></div><div class="metrics-line"><span>Compile / cache hits</span><code id="cache">—</code></div>
-  <h2>Timing</h2><div class="metrics-line"><span>Build / validation call</span><code id="build-kernel-time">—</code></div><div class="metrics-line"><span>Realize calls</span><code id="realize-kernel-time">—</code></div><div class="metrics-line"><span>STEP export call</span><code id="step-time">—</code></div><div class="metrics-line"><span>Last refused call</span><code id="refused-time">—</code></div><details><summary>SDK / transfer breakdown</summary><div class="metrics-line"><span>SDK prepare / transfer</span><code id="sdk-transfer-time">—</code></div><div class="metrics-line"><span>Workplane query</span><code id="workplane-time">—</code></div><p class="hint">Host-observed Wasm calls, in ms. SDK/transfer are separate; excludes rendering and GPU presentation.</p></details><h2>Features</h2><div id="features"></div><p class="hint">Pick a face or feature.</p>
+  <div class="metrics-line"><span>Construction UV vertices</span><code id="uv-vertices">—</code></div><div class="metrics-line"><span>Generation attempts</span><code id="attempts">—</code></div><h2>Timing</h2><div class="metrics-line"><span>Build / validation call</span><code id="build-kernel-time">—</code></div><div class="metrics-line"><span>Realize calls</span><code id="realize-kernel-time">—</code></div><div class="metrics-line"><span>STEP export call</span><code id="step-time">—</code></div><div class="metrics-line"><span>Last refused call</span><code id="refused-time">—</code></div><details><summary>SDK / transfer breakdown</summary><div class="metrics-line"><span>SDK prepare / transfer</span><code id="sdk-transfer-time">—</code></div><div class="metrics-line"><span>Workplane query</span><code id="workplane-time">—</code></div><p class="hint">Host-observed Wasm calls, in ms. SDK/transfer are separate; excludes rendering and GPU presentation.</p></details><h2>Features</h2><div id="features"></div><p class="hint">Pick a face or feature.</p>
   <h2>Selection</h2><div id="selection" class="selection">No selection.</div><p id="selection-notice" class="notice"></p>
   <h2>Construction</h2><div id="attachment" class="hint">The gold pin is placed from the tagged recess floor.</div>
   <h2>Export</h2><div class="downloads"></div><div id="step-result" class="step-result">STEP: one part per file.</div>
@@ -79,6 +96,8 @@ const collarNames = ["radius","wall","collarHeight","angle","rounding","innerRad
 const collarParameters = (): CollarParameters => Object.fromEntries(collarNames.map(key=>[key,Number(element<HTMLInputElement>(key).value)])) as unknown as CollarParameters;
 const operationNames=["railRadius","bendRadius","turnAngle","loftHeight","loftTwist","loftOffset","finishSize","finishHeight"] as const;
 const value=(key:string)=>Number(element<HTMLInputElement>(key).value);
+const boreNames=["boreWidth","boreHeight","boreThickness","boreRadius","boreAngle","boreSeparation"] as const;
+const boreParameters=(delta=0)=>({width:value("boreWidth"),height:value("boreHeight"),thickness:value("boreThickness"),radius:value("boreRadius")+delta,angle:value("boreAngle"),separation:value("boreSeparation")});
 const flangeNames=["flangeBore","sleeveOuter","flangeOuter","shoulderHeight","sleeveHeight","flangeAngle"] as const;
 const flangeParameters=(delta=0)=>({boreRadius:value("flangeBore")+delta,sleeveOuterRadius:value("sleeveOuter"),flangeOuterRadius:value("flangeOuter"),shoulderHeight:value("shoulderHeight"),height:value("sleeveHeight"),angle:value("flangeAngle")});
 const authorCurrent = (delta=0) => {
@@ -88,6 +107,7 @@ const authorCurrent = (delta=0) => {
     case "rail":case "hollowRail":return authorRail({radius:value("railRadius")+delta,bendRadius:value("bendRadius"),angle:value("turnAngle"),hollow:sample === "hollowRail"});
     case "loft":return authorVariableLoft({height:value("loftHeight")+delta,twist:value("loftTwist"),offset:value("loftOffset")});
     case "fillet":case "chamfer":return authorFinishedPlate({size:value("finishSize")+delta,height:value("finishHeight"),treatment:sample,inner:sample === "chamfer"});
+    case "bore":return authorAngledBore(boreParameters(delta));
     case "collar": return authorCollar(p);
     case "roundedRing": case "torus": case "hollowTorus": return authorRoundedTurn(p,sample);
     case "sleeve": return authorFlangedSleeve(flangeParameters(delta));
@@ -98,7 +118,7 @@ const authorCurrent = (delta=0) => {
 const tolerance = () => Number(element<HTMLSelectElement>("quality").value);
 const format = (n: number, digits = 2) => n.toLocaleString(undefined, { maximumFractionDigits: digits });
 const formatMeasure = (value: NativeMeasurement) => value.status === "available" ? format(value.value,3) : value.status === "unavailable" ? "Not available" : "Numeric limit";
-const featureColors: Record<string, string> = { panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
+const featureColors: Record<string, string> = { plate:"#4baca7",bore:"#bf9878",panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -120,6 +140,7 @@ const fill = new THREE.DirectionalLight(0xb3d4fa, 1.5); fill.position.set(140, 7
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 400), new THREE.ShadowMaterial({ color: 0x080e15, opacity: 0.5 })); ground.position.z = -0.3; ground.receiveShadow = true; scene.add(ground);
 const grid = new THREE.GridHelper(400, 40, 0x60717d, 0x3c4c59); grid.rotation.x = Math.PI / 2; grid.position.z = -0.25; (grid.material as THREE.Material).transparent = true; (grid.material as THREE.Material).opacity = 0.2; scene.add(grid);
 let pendingBuild=false;
+let pendingDisplay=false;
 let frameRequest:number|null=null;
 let renderingFrame=false;
 let geometryActive=true;
@@ -146,6 +167,7 @@ function frame(){
   try {
     // Latest inputs are consumed before submitting this frame's model.
     if(pendingBuild){pendingBuild=false;rebuild();}
+    if(pendingDisplay){pendingDisplay=false;redraw();}
     moving=orbit.update();renderer.render(scene,camera);
   }finally{renderingFrame=false;}
   if(moving)invalidate();
@@ -159,25 +181,44 @@ let drawn: Drawn | null = null;
 let selected: FaceSelection | null = null;
 let selectedFeature:string|null=null;
 let highlight: THREE.Mesh | null = null;
-let draftError: unknown = null;
+type Draft = {kind:"invalid";error:unknown}|{kind:"valid";document:NativeDocument};
+let draft:Draft|null=null;
+const authoredError=()=>draft?.kind==="invalid"?draft.error:null;
 let displayError: unknown = null;
 let hasCamera = false;
 
-function materials(part: NativePart) {
+let checkerTexture:THREE.DataTexture|null=null;
+function checkerMap(){
+  if(!checkerTexture){
+    checkerTexture=new THREE.DataTexture(new Uint8Array([255,255,255,255,55,55,55,255,55,55,55,255,255,255,255,255]),2,2);
+    checkerTexture.colorSpace=THREE.SRGBColorSpace;checkerTexture.wrapS=checkerTexture.wrapT=THREE.RepeatWrapping;checkerTexture.magFilter=THREE.NearestFilter;checkerTexture.needsUpdate=true;
+  }
+  return checkerTexture;
+}
+const displayChart=(part:NativePart)=>element<HTMLInputElement>("checker").checked?constructionChart(part,{repeat:value("uvRepeat"),referenceRadius:value("referenceRadius"),restLength:value("restLength"),referenceSection:value("referenceSection"),stations:element<HTMLSelectElement>("stations").value as "sectionIndex"|"datumDistance"}):undefined;
+function chartControls(document:NativeDocument){
+  const supported=Object.values(document.parts).filter(p=>p.chartKind!==null),kind=supported[0]?.chartKind;
+  element<HTMLInputElement>("checker").disabled=!supported.length;
+  element("chart-support").textContent=supported.length?"Exact native rest coordinates.":"Construction charts unavailable for this source.";
+  element("chart-controls").hidden=!supported.length||!element<HTMLInputElement>("checker").checked;
+  element("revolve-chart").hidden=kind!=="revolve";element("loft-chart").hidden=kind!=="loft";
+}
+function materials(part: NativePart,display:Realization) {
   const names = [...new Set([part.name, ...part.faces().flatMap(f => f.features.length?f.features:[part.name])])];
-  const values = names.map(name => new THREE.MeshStandardMaterial({ color: featureColors[name] ?? "#87abb7", metalness: 0.25, roughness: 0.35, wireframe: element<HTMLInputElement>("wireframe").checked }));
+  const values = names.map(name => new THREE.MeshStandardMaterial({ color: featureColors[name] ?? "#87abb7", metalness: 0.25, roughness: 0.35, wireframe: element<HTMLInputElement>("wireframe").checked,map:display.uvs?checkerMap():null }));
   return { names, values };
 }
 function draw(document: NativeDocument): Drawn {
   const group = new THREE.Group(); const entries: Entry[] = [];
   try {
     for (const part of Object.values(document.parts)) {
-      const display = part.realize({ tolerance: tolerance() });
+      const display = part.realize({ tolerance: tolerance(),chart:displayChart(part) });
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(display.positions, 3));
       geometry.setAttribute("normal", new THREE.BufferAttribute(display.normals, 3));
       geometry.setIndex(new THREE.BufferAttribute(display.indices, 1));
-      const style = materials(part);
+      if(display.uvs)geometry.setAttribute("uv",new THREE.BufferAttribute(display.uvs,2));
+      const style = materials(part,display);
       const faces = new Map(part.faces().map(face => [face.nativeId, face]));
       let start = 0, previous = -1;
       for (let triangle = 0; triangle <= display.nativeFaces.length; triangle++) {
@@ -203,7 +244,7 @@ function clearHighlight() {
 }
 function showSelection(selection: FaceSelection | null, feature?:string) {
   invalidate();
-  clearHighlight(); selected = selection;selectedFeature=feature??selection?.feature??null;
+  clearHighlight(); selected = selection;selectedFeature=selection?(feature??selection.feature??null):null;
   if (!selection || !drawn) { element("selection").textContent = "No selection."; return; }
   const entry = drawn.entries.find(e => e.part.id === selection.partId);
   if (!entry) return;
@@ -217,7 +258,8 @@ function showSelection(selection: FaceSelection | null, feature?:string) {
   geometry.setAttribute("position", new THREE.BufferAttribute(entry.display.positions, 3));
   geometry.setAttribute("normal", new THREE.BufferAttribute(entry.display.normals, 3));
   geometry.setIndex(indices);
-  highlight = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xfce4a2, emissive: 0xa2650c, emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.3, transparent: true, opacity: 0.78, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+  if(entry.display.uvs)geometry.setAttribute("uv",new THREE.BufferAttribute(entry.display.uvs,2));
+  highlight = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xfce4a2,map:entry.display.uvs?checkerMap():null, emissive: 0xa2650c, emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.3, transparent: true, opacity: 0.78, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
   scene.add(highlight);
   const box = element("selection"); box.replaceChildren();
   const strong = document.createElement("strong"); strong.textContent = selectedFeature??(selection.features.length?selection.features.join(" / "):`Unlabelled ${selection.role}`); box.append(strong, document.createElement("br"));
@@ -234,7 +276,7 @@ function fit() {
 }
 function ownership() {
   const stats = session.stats();
-  element("ownership").textContent = `${stats.documents} document · ${stats.nativeParts} parts · ${stats.cacheEntries}/8 cached realizations.`;
+  element("ownership").textContent = `${stats.documents} document · ${stats.nativeParts} parts · ${stats.cacheEntries}/8 cached realizations.${draft?.kind==="valid"&&draft.document!==current?" One model awaiting display.":""}`;
 }
 function evidence() {
   if (!current || !drawn) return;
@@ -250,10 +292,13 @@ function evidence() {
   element("triangles").textContent = format(report.reduce((n, r) => n + r.triangles, 0), 0);
   element("vertices").textContent = format(report.reduce((n, r) => n + r.vertices, 0), 0);
   element("deviation").textContent = `${format(Math.max(...report.map(r => r.maxDeviation)), 5)} mm`;
-  const bytes = drawn.entries.reduce((n, e) => n + e.display.positions.byteLength + e.display.normals.byteLength + e.display.indices.byteLength + e.display.nativeFaces.byteLength, 0);
+  const bytes = drawn.entries.reduce((n, e) => n + e.display.positions.byteLength + e.display.normals.byteLength + e.display.indices.byteLength + e.display.nativeFaces.byteLength + (e.display.uvs?.byteLength ?? 0), 0);
   element("buffers").textContent = `${format(bytes / 1024, 1)} KiB`;
   element("cache").textContent = `${report.reduce((n, r) => n + r.nativeRealizations, 0)} / ${report.reduce((n, r) => n + r.cacheHits, 0)}`;
   element("revision").textContent = current.id.split("/").at(-1)!;
+  element("uv-vertices").textContent=drawn.entries.some(e=>e.display.uvs)?format(drawn.entries.reduce((sum,e)=>sum+(e.display.uvs?.length??0)/2,0),0):"Off";
+  element("attempts").textContent=drawn.entries.map(e=>`${e.part.name}: ${e.display.report.work.attempts}`).join(" / ");
+  element("attempts").title="Work that generated each cached output; current-call cache/compile counts are separate.";
   const calls=drawn.entries.map(e=>e.display.timing),build=current.buildTiming;
   element("build-kernel-time").textContent=`${format(build.kernelMs,2)} ms`;
   element("realize-kernel-time").textContent=`${format(calls.reduce((n,t)=>n+t.kernelMs,0),2)} ms`;
@@ -262,6 +307,10 @@ function evidence() {
     const plane = panel.floor("recess").workplane();
     element("workplane-time").textContent=`${format(plane.timing.kernelMs,2)} ms`;
     element("attachment").textContent = `Native recess floor z = ${format(plane.origin[2])} mm. The pin begins at z = ${format(current.parts.pin.measurements.bounds[0][2])} mm, offset 0.5 mm along its normal.`;
+  } else if(panel.bore){
+    const bore=panel.bore;
+    element("workplane-time").textContent="—";
+    element("attachment").textContent=`Native ellipse rims: ${bore.rims.map(r=>`${format(r.semiMajor,3)} × ${format(r.semiMinor,3)} mm semiaxes`).join(" / ")}. Minimum sidewall clearance ${format(bore.minimumClearance,3)} mm. Axis inputs are in plate construction space.`;
   } else {
     element("workplane-time").textContent="—";
     element("attachment").textContent = `${panel.family}. Bounds enclose native supporting patches and may include space outside trims.`;
@@ -291,9 +340,8 @@ function showRefusalTiming(error:unknown) {
 }
 function reportError(error: unknown) {
   const diagnostic = error instanceof ExedraError ? error.diagnostic : { code: "unexpected", operation: "demo", message: String(error) };
-  status(current ? "Showing the last valid model" : "Model was refused", `${diagnostic.code} · ${diagnostic.operation}: ${diagnostic.message}`, true);
-  showRefusalTiming(error);
-  setExportDisabled(true);
+  status(current ? (authoredError()?"Showing the last valid model":"Showing the last valid display") : "Model was refused", `${diagnostic.code} · ${diagnostic.operation}: ${diagnostic.message}`, true);
+  setExportDisabled(true);if(session)ownership();
 }
 function accept(document: NativeDocument, view: Drawn, edited: boolean) {
   const old = current, prior = drawn;
@@ -304,31 +352,39 @@ function accept(document: NativeDocument, view: Drawn, edited: boolean) {
   if (old && old !== document) old.dispose();
   evidence(); if (!hasCamera) fit();
   showSelection(selected,selectedFeature??undefined);
-  if (edited) draftError = null;
+  if(edited)draft=null;
   displayError = null;
-  if (draftError) { reportError(draftError); return; }
+  if(authoredError()){reportError(authoredError());return;}
   const within = view.entries.every(e => e.display.report.withinTolerance);
   status(within ? "Ready" : "Display tolerance unmet", within ? "Display tolerance met." : "See the reported error and requested tolerance.", !within);
   setExportDisabled(false);
 }
-function rebuild() {
-  if (!session) return;
-  let candidate: NativeDocument | undefined;
-  try { candidate = session.build(authorCurrent()); const view = draw(candidate); accept(candidate, view, true); }
-  catch (error) { candidate?.dispose(); draftError = error; reportError(error); }
+function redraw(){
+  const target=draft?.kind==="valid"?draft.document:current;if(!target)return;
+  chartControls(target);
+  try{const view=draw(target);accept(target,view,target!==current);}
+  catch(error){displayError=error;showRefusalTiming(error);reportError(authoredError()??error);}
+}
+function rebuild(){
+  if(!session)return;
+  if(draft?.kind==="valid")draft.document.dispose();draft=null;
+  let candidate:NativeDocument;
+  try{candidate=session.build(authorCurrent());draft={kind:"valid",document:candidate};}
+  catch(error){draft={kind:"invalid",error};showRefusalTiming(error);reportError(error);return;}
+  pendingDisplay=false;redraw();
 }
 // One pending frame reads the latest controls; dragging never queues obsolete builds.
 function scheduleBuild() { pendingBuild = true; invalidate(); }
-for (const key of [...controlsNames,...collarNames,...operationNames,...flangeNames]) {
+for (const key of [...controlsNames,...collarNames,...operationNames,...flangeNames,...boreNames]) {
   const input = element<HTMLInputElement>(key);
-  const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist","flangeAngle"].includes(key) ? "°" : "mm"}`; };
+  const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist","flangeAngle","boreAngle"].includes(key) ? "°" : "mm"}`; };
   label(); input.addEventListener("input", () => { label(); scheduleBuild(); });
 }
 element<HTMLSelectElement>("sample").onchange = () => {
   const sample=element<HTMLSelectElement>("sample").value, panel=sample === "panel", torus=sample === "torus" || sample === "hollowTorus";
   const rail=sample === "rail" || sample === "hollowRail", loft=sample === "loft", finish=sample === "fillet" || sample === "chamfer";
-  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || sample === "sleeve";
-  element("flange-controls").hidden=sample!=="sleeve";
+  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || sample === "sleeve" || sample === "bore";
+  element("flange-controls").hidden=sample!=="sleeve";element("bore-controls").hidden=sample!=="bore";
   element("rail-controls").hidden=!rail;element("loft-controls").hidden=!loft;element("finish-controls").hidden=!finish;
   for(const [key,initial] of [["railRadius",sample === "hollowRail"?8:6],["bendRadius",40],["turnAngle",135],["loftHeight",120],["loftTwist",14],["loftOffset",18],["finishSize",sample === "chamfer"?3:5],["finishHeight",30]] as const){element<HTMLInputElement>(key).value=String(initial);element(`${key}-value`).textContent=`${initial} ${["turnAngle","loftTwist"].includes(key)?"°":"mm"}`;}
 
@@ -338,15 +394,16 @@ element<HTMLSelectElement>("sample").onchange = () => {
   element("wall-label").textContent=torus ? "Tube radius" : "Wall thickness";
   const defaults=sample === "roundedRing" ? [22,12,24,360] : torus ? [35,7,30,sample === "hollowTorus" ? 270 : 360] : sample === "sleeve" ? [12,10,35,270] : sample === "fitting" ? [7,15,47,270] : [12,7,30,270];
   for (const [i,key] of ["radius","wall","collarHeight","angle"].entries()) {
-    element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${["angle","turnAngle","loftTwist","flangeAngle"].includes(key) ? "°" : "mm"}`;
+    element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${["angle","turnAngle","loftTwist","flangeAngle","boreAngle"].includes(key) ? "°" : "mm"}`;
   }
   for(const [key,value] of [["rounding",2],["innerRadius",4]] as const) {element<HTMLInputElement>(key).value=String(value);element(`${key}-value`).textContent=`${value} mm`;}
+  element<HTMLInputElement>("referenceRadius").value=String(torus?defaults[0]:defaults[0]+defaults[1]/2);
+  element<HTMLInputElement>("restLength").value="120";element<HTMLInputElement>("referenceSection").value="0";
   hasCamera=false; scheduleBuild();
 };
-element<HTMLSelectElement>("quality").onchange = () => {
-  if (!current) return;
-  try { const view = draw(current); accept(current, view, false); } catch (error) { displayError = error; reportError(draftError ?? displayError); }
-};
+function scheduleDisplay(){pendingDisplay=true;invalidate();}
+element<HTMLSelectElement>("quality").onchange=scheduleDisplay;
+for(const key of ["checker","uvRepeat","referenceRadius","restLength","referenceSection","stations"]){element(key).addEventListener(key==="checker"||key==="stations"?"change":"input",scheduleDisplay);}
 element<HTMLInputElement>("wireframe").onchange = () => { for (const e of drawn?.entries ?? []) for (const m of e.mesh.material) m.wireframe = element<HTMLInputElement>("wireframe").checked; invalidate(); };
 element("fit").onclick = fit;
 element("code-toggle").onclick = () => { const code = element("code"); code.hidden = !code.hidden; element("code-toggle").setAttribute("aria-expanded", String(!code.hidden)); };
@@ -368,14 +425,14 @@ function renderDownloads() {
   for (const [name,part] of Object.entries(current?.parts ?? {})) {
     const support=part.stepSupport;
     const button=document.createElement("button"); button.id=`step-${name}`;button.textContent=`Download ${name} STEP`;button.onclick=()=>downloadStep(name);
-    button.dataset.stepSupported=String(support.status === "supported");button.disabled=support.status !== "supported" || !!draftError || !!displayError;box.append(button);
+    button.dataset.stepSupported=String(support.status === "supported");button.disabled=support.status !== "supported" || !!authoredError() || !!displayError;box.append(button);
     if(support.status === "unsupported") {
       const reason=document.createElement("small");reason.textContent=`${name}: STEP does not support ${support.diagnostic.geometryFamily ?? "this geometry"}${support.diagnostic.face === undefined ? "" : ` (face ${support.diagnostic.face})`}.`;reason.title=support.diagnostic.message;box.append(reason);
     }
   }
 }
 function downloadStep(part: string) {
-  if (!current || draftError || displayError) return;
+  if (!current || authoredError() || displayError) return;
   try {
     const file = current.parts[part].exportStep({ name: part, timestamp: new Date().toISOString() });
     element("step-time").textContent=`${format(file.timing.kernelMs,2)} ms`;
@@ -402,8 +459,11 @@ element<HTMLButtonElement>("lifecycle").onclick = () => {
     ownership();
   } catch (error) { element("lifecycle-result").textContent = String(error); }
 };
-window.addEventListener("beforeunload", () => { setGeometryActive(false); pendingBuild = false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose(); renderer.dispose(); orbit.dispose(); });
+window.addEventListener("beforeunload", () => { setGeometryActive(false); pendingBuild = false;pendingDisplay=false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose();checkerTexture?.dispose(); renderer.dispose(); orbit.dispose(); });
+const requestedSample=new URL(location.href).searchParams.get("sample");
+if(requestedSample&&[...element<HTMLSelectElement>("sample").options].some(o=>o.value===requestedSample)){element<HTMLSelectElement>("sample").value=requestedSample;element("sample").dispatchEvent(new Event("change"));}
+if(new URL(location.href).searchParams.get("checker")==="1")element<HTMLInputElement>("checker").checked=true;
 try {
   session = await createSession({ units: "mm", separation: 1e-6 });
   rebuild(); element<HTMLButtonElement>("lifecycle").disabled = false;
-} catch (error) { reportError(error); }
+} catch (error) { showRefusalTiming(error);reportError(error); }
