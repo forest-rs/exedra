@@ -30,7 +30,7 @@ pub use evaluated::{
 };
 pub use snapshot::CompilationMismatch;
 
-/// Evaluation and render extraction policy for recipe and baked parts.
+/// Evaluation, native realization and render extraction policy for geometry parts.
 ///
 /// Defaults to derived normals and authored-only UVs. Select
 /// [`NormalsSource::CustomOrDerived`] to preserve authored corner normals and
@@ -101,8 +101,8 @@ impl From<EvalPolicy> for CompilePolicy {
     }
 }
 
-/// Content identity of a compiled part (recipe fingerprint, or canonical
-/// mesh bytes for baked parts).
+/// Content identity of a compiled part: recipe fingerprint, canonical mesh bytes
+/// for baked parts, or captured native construction content.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PartFingerprint(pub u128);
 

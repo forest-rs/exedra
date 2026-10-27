@@ -4,14 +4,15 @@
 //! Scene-independent geometry compilation, extraction and retained queries.
 //!
 //! This crate owns content-addressed compilation and immutable geometry snapshots.
-//! It owns no scene hierarchy, placements, material bindings or authored identity.
+//! It owns no scene hierarchy, scene placements, material bindings or application identity.
 //! Supply an explicit borrowed input list; input-local handles are never persistent
 //! identity. Callers own names, structure and appearance. Recipes, baked meshes and native sources
 //! share extraction, reports, cache retention and geometric queries.
 //!
 //! Render-only compilation releases topology. Query snapshots retain it and
 //! preserve source correspondence. Old snapshots survive cache eviction; new
-//! compilations create fresh selection scopes, including cache hits. `no_std`
+//! compilations create fresh mesh selection scopes, including cache hits. Native
+//! selections keep their immutable source installation scope across display policies. `no_std`
 //! requires `alloc` and pointer-width atomics for shared `Arc` ownership.
 //!
 //! ```

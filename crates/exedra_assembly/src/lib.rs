@@ -5,7 +5,7 @@
 //! over Exedra geometry.
 //!
 //! This crate owns *cross-part structure*: registering part definitions
-//! (constructive recipes or baked meshes), arranging instances of them in
+//! (constructive recipes, native models or baked meshes), arranging instances of them in
 //! a tree under stable frontend-supplied keys, binding material slots to
 //! opaque material keys, and flattening the result into an explicit render
 //! list. It compiles parts once per distinct content and shares the result
