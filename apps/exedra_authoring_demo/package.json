@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "check:lockfile": "node scripts/check-lockfile.mjs && node --test scripts/check-lockfile.test.mjs",
     "build:sdk": "tsc -p ../../packages/exedra/tsconfig.json",
-    "build:wasm": "wasm-pack build ../exedra_authoring_web_bridge --target web --out-dir ../../packages/exedra/dist/wasm_pkg --no-typescript",
+    "build:wasm": "wasm-pack build ../exedra_authoring_web_bridge --release --target web --out-dir ../../packages/exedra/dist/wasm_pkg --no-typescript",
     "prepare:sdk": "npm run build:sdk && npm run build:wasm",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "predev": "npm run prepare:sdk",

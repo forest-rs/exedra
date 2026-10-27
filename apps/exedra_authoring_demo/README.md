@@ -2,19 +2,23 @@
 
 A live TypeScript authoring workflow: reusable tagged vents, a native blind
 recess and a separate pin attached to its native floor. Controls rebuild actual
-Rust/Wasm geometry. Coarse/fine display controls reuse the installed native
+Rust/Wasm geometry. Slider input coalesces to one latest-value build before the
+next frame is drawn, without a trailing debounce or reduced interaction quality. Coarse/fine display controls reuse the installed native
 source, with source-aware surface picking and exact native measures.
 
 From this directory, with Node.js 22.18+ (or 24+), Rust's
 `wasm32-unknown-unknown` target, and `wasm-pack` installed:
 
 ```sh
+npm run check:lockfile
 npm ci
 npm run dev
 ```
 
 Open **http://127.0.0.1:5174/**. `predev` compiles the local SDK and generated
-Wasm package. The first build may download wasm-pack's matching wasm-bindgen
+Wasm package in release mode and runs wasm-opt. Dependencies resolve from the public npm registry; no registry account is required.
+The lockfile check rejects private registry URLs before CI installs dependencies.
+The first build may download wasm-pack's matching wasm-bindgen
 tool. `npm run build` creates the production app; `npm run preview` serves it.
 `npm run test:sdk` runs the SDK ownership/authoring regressions.
 

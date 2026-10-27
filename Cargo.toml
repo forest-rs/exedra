@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "apps/exedra_edit_web_bridge",
     "apps/exedra_authoring_web_bridge",
+    "apps/exedra_edit_web_bridge",
     "benchmarks/assembly_wind_tunnel",
     "benchmarks/boolean_oracle",
     "benchmarks/constructive_wind_tunnel",

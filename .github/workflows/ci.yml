@@ -473,6 +473,39 @@ jobs:
         env:
           RUSTDOCFLAGS: '-D warnings'
 
+  authoring-browser:
+    name: native authoring SDK and browser build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/exedra_authoring_demo/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE_VER }}
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'merge_group' }}
+      - name: check portable browser lockfile
+        working-directory: apps/exedra_authoring_demo
+        run: npm run check:lockfile
+      - name: install browser dependencies
+        working-directory: apps/exedra_authoring_demo
+        run: npm ci
+      - name: check SDK ownership and authoring
+        working-directory: apps/exedra_authoring_demo
+        run: npm run test:sdk
+      - name: build release Wasm, SDK and browser
+        working-directory: apps/exedra_authoring_demo
+        run: npm run build
+
   # If this fails, consider changing your text or adding something to .typos.toml.
   typos:
     runs-on: ubuntu-latest
