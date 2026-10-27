@@ -140,6 +140,7 @@ fn main() -> Result<()> {
                 mesh: turn(true)?,
                 placement: Placement3::translate(-100.0, 100.0, 0.0),
                 color: [0.18, 0.42, 0.66, 1.0],
+                grid: true,
                 cut_regions: &[1],
             },
             Exhibit {
@@ -147,6 +148,7 @@ fn main() -> Result<()> {
                 mesh: turn(false)?,
                 placement: Placement3::translate(100.0, 100.0, 0.0),
                 color: [0.75, 0.59, 0.29, 1.0],
+                grid: true,
                 cut_regions: &[1],
             },
             Exhibit {
@@ -154,6 +156,7 @@ fn main() -> Result<()> {
                 mesh: rail(false)?,
                 placement: Placement3::translate(-20.0, -80.0, 0.0),
                 color: [0.12, 0.52, 0.42, 1.0],
+                grid: true,
                 cut_regions: &[1],
             },
             Exhibit {
@@ -161,6 +164,7 @@ fn main() -> Result<()> {
                 mesh: rail(true)?,
                 placement: Placement3::translate(180.0, -80.0, 0.0),
                 color: [0.55, 0.25, 0.15, 1.0],
+                grid: true,
                 cut_regions: &[1],
             },
         ],

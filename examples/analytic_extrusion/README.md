@@ -180,3 +180,22 @@ native construction. Every output must be deeply valid, closed and within a
 combined 0.05 mm geometric deviation bound. Console output includes native face
 and edge counts, emitted mesh counts and total deviation. Orange end caps expose
 the original sections.
+
+## Selected native axial finishes
+
+```sh
+cargo run --release -p analytic_extrusion --example native_edge_finish -- /tmp/native-finishes.glb
+blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/native-finishes.glb /tmp/native-finishes.png
+```
+
+Three blocks show selected planar chamfers, tangent cylindrical fillets and
+inner chamfers combined with outer fillets. Orange marks the generated transition
+walls. The first two retain their blind slot recesses; the third retains a through
+opening. Whole-feature labels select native axial edges and bind materials.
+Recesses receive their own label so incidental builder segment labels do not
+select them as finishing surfaces.
+
+Each edit returns an independent exact solid and maps transition walls to the
+original selected edges. The sample reselects after its second edit and requires
+deep validity, closure and a 0.03 mm mesh deviation contract. Full-length profile
+seams are the supported family; cap rims and pocket seams require other operations.

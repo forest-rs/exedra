@@ -20,6 +20,7 @@ pub(super) struct Exhibit<'a> {
     pub mesh: Mesh,
     pub placement: Placement3,
     pub color: [f64; 4],
+    pub grid: bool,
     pub cut_regions: &'a [u32],
 }
 
@@ -42,7 +43,7 @@ pub(super) fn export(
             e.name
         );
         sources.push(PartSource::Baked(e.mesh));
-        specs.push((e.name, e.placement, e.color, e.cut_regions));
+        specs.push((e.name, e.placement, e.color, e.cut_regions, e.grid));
     }
     let inputs: Vec<_> = specs
         .iter()
@@ -58,7 +59,7 @@ pub(super) fn export(
         [0.0; 3],
     );
     let mut nodes = vec![root];
-    for (i, (name, placement, _, cut_regions)) in specs.iter().enumerate() {
+    for (i, (name, placement, _, cut_regions, _)) in specs.iter().enumerate() {
         let id = PartId(u32::try_from(i)?);
         let mut mesh = GltfMesh::new(id, *name, &compiled)?;
         mesh.materials = compiled
@@ -85,14 +86,14 @@ pub(super) fn export(
         node.geometry = Some(mesh.into());
         nodes.push(node);
     }
-    let colors: Vec<_> = specs.iter().map(|e| e.2).collect();
+    let styles: Vec<_> = specs.iter().map(|e| (e.2, e.4)).collect();
     let output = export_glb_with_materials(
         &GltfScene {
             nodes,
             ..GltfScene::default()
         },
         &compiled,
-        &Materials { colors: &colors },
+        &Materials { styles: &styles },
         GltfExportOptions::z_up_to_y_up(),
     )?;
     std::fs::write(path, output.bytes)?;
@@ -101,19 +102,19 @@ pub(super) fn export(
 }
 
 struct Materials<'a> {
-    colors: &'a [[f64; 4]],
+    styles: &'a [([f64; 4], bool)],
 }
 impl MaterialResolver for Materials<'_> {
     fn resolve(&self, key: &str) -> Option<Value> {
-        let color = if key == "cut" {
-            [0.65, 0.3, 0.1, 1.0]
+        let (color, grid) = if key == "cut" {
+            ([0.65, 0.3, 0.1, 1.0], false)
         } else {
             *self
-                .colors
+                .styles
                 .get(key.strip_prefix("part-")?.parse::<usize>().ok()?)?
         };
         let mut material = json!({"name":key,"pbrMetallicRoughness":{"baseColorFactor":color,"metallicFactor":0.35,"roughnessFactor":0.32}});
-        if key != "cut" {
+        if grid {
             material["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":0});
         }
         Some(material)

@@ -155,6 +155,7 @@ fn main() -> Result<()> {
                 mesh: loft(false, false)?,
                 placement: Placement3::translate(-115.0, 0.0, 0.0),
                 color: [0.18, 0.42, 0.66, 1.0],
+                grid: true,
                 cut_regions: &[0, 1],
             },
             Exhibit {
@@ -162,6 +163,7 @@ fn main() -> Result<()> {
                 mesh: loft(true, false)?,
                 placement: Placement3::IDENTITY,
                 color: [0.75, 0.59, 0.29, 1.0],
+                grid: true,
                 cut_regions: &[0, 1],
             },
             Exhibit {
@@ -169,6 +171,7 @@ fn main() -> Result<()> {
                 mesh: loft(false, true)?,
                 placement: Placement3::translate(115.0, 0.0, 0.0),
                 color: [0.12, 0.52, 0.42, 1.0],
+                grid: true,
                 cut_regions: &[0, 1],
             },
         ],
