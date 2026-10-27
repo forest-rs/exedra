@@ -234,6 +234,16 @@ pub enum NativeSelectionError {
         /// Requested local native ID.
         face: FaceId,
     },
+    /// The selected supporting surface is curved and has no planar workplane.
+    NotPlanar {
+        /// Requested native face.
+        face: FaceId,
+    },
+    /// A supporting plane frame cannot be represented finitely.
+    PlaneNumericLimit {
+        /// Requested native face.
+        face: FaceId,
+    },
     /// Selection belongs to another source installation, including a new
     /// installation whose content happens to equal this model.
     SourceMismatch,
@@ -242,6 +252,13 @@ impl core::fmt::Display for NativeSelectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::UnknownFace { face } => write!(f, "native face {face:?} does not exist"),
+            Self::NotPlanar { face } => {
+                write!(f, "native face {face:?} has no planar supporting frame")
+            }
+            Self::PlaneNumericLimit { face } => write!(
+                f,
+                "native face {face:?} supporting frame exceeds numeric limits"
+            ),
             Self::SourceMismatch => {
                 write!(f, "native selection belongs to another source installation")
             }
@@ -309,6 +326,100 @@ impl NativeSource {
             NativeGeometryRef::Sweep(v) => v.frame(),
             NativeGeometryRef::Loft(v) => v.frame(),
         }
+    }
+    /// Distinct authored feature tags on one native face, without allocating.
+    ///
+    /// A loft wall can carry both source-section tags. Cap faces have none.
+    /// Tags are geometry provenance; callers own names and material bindings.
+    /// # Errors
+    /// Returns [`NativeSelectionError::UnknownFace`] for an absent source-local ID.
+    pub fn face_tags(
+        &self,
+        face: FaceId,
+    ) -> Result<impl Iterator<Item = SegTag>, NativeSelectionError> {
+        fn check<F, E>(body: &Body<F, E>, face: FaceId) -> Result<(), NativeSelectionError> {
+            body.face(face)
+                .map(|_| ())
+                .ok_or(NativeSelectionError::UnknownFace { face })
+        }
+        let mut tags = match self.geometry() {
+            NativeGeometryRef::Extrusion(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::Revolution(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::Sweep(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::Loft(v) => match v
+                .body()
+                .face(face)
+                .ok_or(NativeSelectionError::UnknownFace { face })?
+                .role
+            {
+                exedra_analytic::loft::FaceRole::Wall { tags, .. } => tags,
+                exedra_analytic::loft::FaceRole::Cap { .. } => [None; 2],
+            },
+        };
+        if tags[0] == tags[1] {
+            tags[1] = None;
+        }
+        Ok(tags.into_iter().flatten())
+    }
+    /// Finite conservative native support bounds in occurrence coordinates.
+    ///
+    /// This enclosure is independent of display quality and may be loose around
+    /// trims, partial angular surfaces and rotated source-space boxes.
+    /// # Errors
+    /// Returns the analytic bounds diagnosis or a numeric limit during placement.
+    pub fn conservative_bounds(
+        &self,
+    ) -> Result<[[f64; 3]; 2], exedra_analytic::bounds::BoundsError> {
+        match self.geometry() {
+            NativeGeometryRef::Extrusion(v) => v.body().conservative_bounds_in(v.frame()),
+            NativeGeometryRef::Revolution(v) => v.body().conservative_bounds_in(v.frame()),
+            NativeGeometryRef::Sweep(v) => v.body().conservative_bounds_in(v.frame()),
+            NativeGeometryRef::Loft(v) => v.body().conservative_bounds_in(v.frame()),
+        }
+    }
+
+    /// Exact oriented supporting-plane frame in occurrence coordinates.
+    ///
+    /// The datum is parameter zero of the plane; trims do not reposition it.
+    /// Curved faces are refused explicitly rather than approximated by mesh normals.
+    /// # Errors
+    /// Returns a typed unknown-face, curved-support or numeric-limit diagnosis.
+    pub fn planar_frame(&self, face: FaceId) -> Result<Placement3, NativeSelectionError> {
+        fn local<F, E>(
+            body: &Body<F, E>,
+            face: FaceId,
+        ) -> Result<Placement3, NativeSelectionError> {
+            if !matches!(
+                body.face(face)
+                    .ok_or(NativeSelectionError::UnknownFace { face })?
+                    .surface,
+                exedra_analytic::geometry::Surface::Plane(_)
+            ) {
+                return Err(NativeSelectionError::NotPlanar { face });
+            }
+            body.planar_frame(face, [0.0; 2])
+                .ok_or(NativeSelectionError::PlaneNumericLimit { face })
+        }
+        let plane = match self.geometry() {
+            NativeGeometryRef::Extrusion(v) => local(v.body(), face),
+            NativeGeometryRef::Revolution(v) => local(v.body(), face),
+            NativeGeometryRef::Sweep(v) => local(v.body(), face),
+            NativeGeometryRef::Loft(v) => local(v.body(), face),
+        }?;
+        let frame = self.frame() * plane;
+        if frame.rows.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(NativeSelectionError::PlaneNumericLimit { face });
+        }
+        Ok(frame)
     }
     /// Positive finite native boundary area in squared model units, without meshing.
     ///

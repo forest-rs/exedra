@@ -56,8 +56,15 @@ budgets. Compile the same prepared input at coarse and fine tolerances; each
 snapshot retains its mesh and `native_realization()` report/correspondence while
 `SnapshotBody::native()` exposes the original immutable constructor. Native area
 and volume queries avoid meshing; unsupported measures, currently ruled-loft
-area/volume, return a typed availability error. Use the original typed extrusion
-for tagged floor/workplane queries and generic-body CAD export.
+area/volume, return a typed availability error. Use the original typed extrusion for tagged floor queries and generic-body CAD export.
+`NativeSource::face_tags(face)` yields distinct authored tags without allocation,
+including both source-section labels on loft walls.
+`NativeSource::planar_frame(face)` queries the oriented supporting plane across
+construction families and explicitly refuses curved faces.
+`conservative_bounds()` encloses native supporting domains after occurrence
+placement, independently of display tolerance. It can include space outside
+trims, partial angular faces and rotated source boxes; it is not a tight extent
+or a material-classification query.
 
 `native_render_face(triangle)` follows the actual grouped render index buffer.
 It returns a source-scoped native selection, without inferring provenance from
