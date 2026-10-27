@@ -1,0 +1,9 @@
+{
+  "name": "@exedra/authoring",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed profile authoring and retained native geometry for Exedra",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"]
+}

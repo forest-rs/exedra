@@ -1,0 +1,26 @@
+[package]
+name = "exedra_authoring_web_bridge"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed native authoring and retained realization bridge for browser hosts"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+exedra_analytic = { features = ["libm"], workspace = true }
+exedra_compile.workspace = true
+exedra_constructive.workspace = true
+exedra_math = { features = ["libm"], workspace = true }
+exedra_profile.workspace = true
+exedra_step.workspace = true
+serde = { default-features = false, features = ["alloc", "derive"], version = "1.0.228" }
+serde_json = { default-features = false, features = ["alloc"], version = "1.0.145" }
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
