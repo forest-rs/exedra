@@ -4,10 +4,11 @@ This example exports native analytic bodies directly, before or independently of
 any display mesh. It exercises shared topology and orientation, through holes,
 a blind pocket, translated and rotated occurrences, a 270° circular boundary,
 metre units, and a full periodic cylinder whose wall reuses one seam edge twice.
-The last fixture also exercises quote, backslash, BMP and non-BMP text encoding.
+Two oblique-bore fixtures retain ellipse rims and include material witnesses,
+including a rotated occurrence in metre units. The periodic cylinder also exercises quote, backslash, BMP and non-BMP text encoding.
 
 ```sh
-cargo run --release -p step_exchange -- /tmp/step-fixtures
+cargo run --release -p step_exchange --bin step_exchange -- /tmp/step-fixtures
 ```
 
 Each STEP file has an entry in `expected.json`: exact native volume and area,
@@ -40,7 +41,7 @@ Missing bindings print `status: unavailable` and exit 77; failed checks print
 ## Export timing
 
 ```sh
-cargo run --release -p step_exchange -- /tmp/step-fixtures --bench
+cargo run --release -p step_exchange --bin step_exchange -- /tmp/step-fixtures --bench
 ```
 
 This writes `benchmark.json` for plates with 0, 4, 64 and 256 circular holes.
@@ -51,3 +52,26 @@ results can be interpreted across machines. The exporter uses one bounded
 String plus topology tables and reusable reference scratch; it does not build a
 temporary String for every entity. This timing does not measure peak residency
 or allocator call counts.
+
+## Exact bore workload
+
+```sh
+cargo run --release -p step_exchange --bin bore_study > /tmp/bore-study.json
+python3 examples/step_exchange/scripts/profile_bores.py --output /tmp/bore-allocation-profile
+```
+
+The first command times 101 release iterations at 0°, 30° and 60°: construction,
+display realization and native STEP export separately. Preauthored source/axis,
+output destruction, compiler caches, JavaScript, GPU and file I/O are excluded.
+Each result retains its original Extrusion construction history. Capability
+counts separate required scale/angle cases from exploratory numeric limits.
+A supported native model can still refuse f32 emission or report an unmet display
+target. The translated small model explicitly records curve-budget exhaustion
+with small emission error; it is not classified as an unrepresentable placement.
+
+The second command creates an isolated QA package using dhat, outside the
+workspace and production dependency graph. Its three-result allocation window
+starts after source/request/container preparation and warmup. Checkpoints retain
+all outputs, release display meshes/STEP text while retaining native models, then
+release models. Original Extrusion copies inside each result are included;
+the shared preauthored input is excluded.
