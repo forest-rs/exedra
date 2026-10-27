@@ -18,6 +18,7 @@ pub(crate) fn family(value: NativeFamily) -> &'static str {
         NativeFamily::Revolution => "revolution",
         NativeFamily::Sweep => "sweep",
         NativeFamily::Loft => "loft",
+        NativeFamily::BoredPlate => "boredPlate",
     }
 }
 fn measure(value: Result<f64, NativeMeasureError>, measure: &'static str) -> Value {
@@ -93,12 +94,21 @@ pub(crate) fn metadata(
             exedra_analytic::loft::FaceRole::Cap { .. } => "cap",
             exedra_analytic::loft::FaceRole::Wall { .. } => "wall",
         }),
+        NativeGeometryRef::BoredPlate(v) => faces(v.body(), names, native, |role| match role {
+            exedra_analytic::bore::FaceRole::Plate { role, .. } => match role {
+                exedra_analytic::extrusion::FaceRole::Cap(_) => "cap",
+                exedra_analytic::extrusion::FaceRole::Wall { .. } => "wall",
+                exedra_analytic::extrusion::FaceRole::Floor { .. } => "floor",
+            },
+            exedra_analytic::bore::FaceRole::BoreWall { .. } => "wall",
+        }),
     };
     let support = match native.geometry() {
         NativeGeometryRef::Extrusion(v) => exedra_step::check_geometry_support(v.body()),
         NativeGeometryRef::Revolution(v) => exedra_step::check_geometry_support(v.body()),
         NativeGeometryRef::Sweep(v) => exedra_step::check_geometry_support(v.body()),
         NativeGeometryRef::Loft(v) => exedra_step::check_geometry_support(v.body()),
+        NativeGeometryRef::BoredPlate(v) => exedra_step::check_geometry_support(v.body()),
     };
     let step_support = match support {
         Ok(()) => json!({"status":"supported"}),
@@ -156,5 +166,54 @@ mod tests {
             value["measurements"]["boundsKind"],
             "conservativeNativeSupport"
         );
+    }
+    #[test]
+    fn bored_plate_inspection_keeps_inherited_roles_generated_tag_and_step_support() {
+        let validation = ProfilePolicy::new(1e-6);
+        let profile = builders::rect_centered(40.0, 30.0)
+            .unwrap()
+            .to_line_arc(&validation)
+            .unwrap();
+        let plate = exedra_analytic::extrusion::Extrusion::new(profile, Placement3::IDENTITY, 10.0)
+            .unwrap();
+        let bored = plate
+            .with_through_bore(
+                exedra_analytic::bore::Bore::new([0.0; 3], [0.2, 0.0, 1.0], 2.0)
+                    .unwrap()
+                    .tagged(exedra_profile::SegTag(9)),
+                &exedra_analytic::bore::BorePolicy {
+                    separation: 0.1,
+                    geometry_gap: 1e-8,
+                    min_axis_dot: 0.1,
+                },
+            )
+            .unwrap();
+        let wall = bored.report().wall.0 as usize;
+        let mut names = BTreeMap::new();
+        names.insert(9, String::from("bore"));
+        let value = metadata(&NativeSource::from(bored), &names).unwrap();
+        assert_eq!(value["family"], "boredPlate");
+        assert_eq!(value["stepSupport"]["status"], "supported");
+        assert_eq!(value["measurements"]["faces"], 7);
+        assert_eq!(value["faces"][wall]["role"], "wall");
+        assert_eq!(value["faces"][wall]["feature"], "bore");
+        assert_eq!(
+            value["faces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|face| face["role"] == "cap")
+                .count(),
+            2
+        );
+        for measure in ["volume", "surfaceArea"] {
+            assert_eq!(value["measurements"][measure]["status"], "available");
+            assert!(
+                value["measurements"][measure]["value"]
+                    .as_f64()
+                    .unwrap()
+                    .is_finite()
+            );
+        }
     }
 }

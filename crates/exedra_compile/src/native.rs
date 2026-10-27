@@ -4,10 +4,11 @@
 //! Immutable native source installation and explicit realization correspondence.
 
 use crate::PartFingerprint;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::{size_of, size_of_val};
 use exedra_analytic::{
     body::{Body, FaceId},
+    bore::BoredPlate,
     extrusion::Extrusion,
     loft::Loft,
     realize::{
@@ -34,6 +35,8 @@ pub enum NativeFamily {
     Sweep,
     /// Ruled loft through corresponding line/arc profiles.
     Loft,
+    /// A supported rectangular plate with one fully contained cylindrical through bore.
+    BoredPlate,
 }
 
 #[derive(Debug)]
@@ -42,6 +45,7 @@ enum Geometry {
     Revolution(Revolution),
     Sweep(Sweep),
     Loft(Loft),
+    BoredPlate(Box<BoredPlate>),
 }
 
 /// Original constructor-specific geometry, preserving typed face and edge roles.
@@ -55,6 +59,8 @@ pub enum NativeGeometryRef<'a> {
     Sweep(&'a Sweep),
     /// Original corresponding placed sections.
     Loft(&'a Loft),
+    /// Original plate source, authored bore and inherited/generated construction roles.
+    BoredPlate(&'a BoredPlate),
 }
 
 /// Immutable native model installation with content identity captured once.
@@ -134,7 +140,8 @@ impl core::error::Error for NativeMeasureError {}
 ///
 /// Byte counts use live table lengths and include inline metadata and nested
 /// coedge/loop-ID arrays. They exclude spare capacity, allocator overhead,
-/// constructor records such as profiles/paths, and heap storage owned by custom
+/// constructor/source-history records such as profiles, paths or the original
+/// plate, and heap storage owned by custom
 /// metadata. This is boundary payload evidence, not total process residency.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct NativeBoundaryStorage {
@@ -296,6 +303,7 @@ impl NativeSource {
             Geometry::Revolution(v) => NativeGeometryRef::Revolution(v),
             Geometry::Sweep(v) => NativeGeometryRef::Sweep(v),
             Geometry::Loft(v) => NativeGeometryRef::Loft(v),
+            Geometry::BoredPlate(v) => NativeGeometryRef::BoredPlate(v),
         }
     }
     /// Original extrusion, or `None` for another construction family.
@@ -315,6 +323,7 @@ impl NativeSource {
             NativeGeometryRef::Revolution(_) => NativeFamily::Revolution,
             NativeGeometryRef::Sweep(_) => NativeFamily::Sweep,
             NativeGeometryRef::Loft(_) => NativeFamily::Loft,
+            NativeGeometryRef::BoredPlate(_) => NativeFamily::BoredPlate,
         }
     }
     /// Complete rigid occurrence placement, separate from body-local geometry.
@@ -325,6 +334,7 @@ impl NativeSource {
             NativeGeometryRef::Revolution(v) => v.frame(),
             NativeGeometryRef::Sweep(v) => v.frame(),
             NativeGeometryRef::Loft(v) => v.frame(),
+            NativeGeometryRef::BoredPlate(v) => v.frame(),
         }
     }
     /// Distinct authored feature tags on one native face, without allocating.
@@ -352,6 +362,10 @@ impl NativeSource {
                 [v.face_tag(face), None]
             }
             NativeGeometryRef::Sweep(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::BoredPlate(v) => {
                 check(v.body(), face)?;
                 [v.face_tag(face), None]
             }
@@ -384,6 +398,7 @@ impl NativeSource {
             NativeGeometryRef::Revolution(v) => v.body().conservative_bounds_in(v.frame()),
             NativeGeometryRef::Sweep(v) => v.body().conservative_bounds_in(v.frame()),
             NativeGeometryRef::Loft(v) => v.body().conservative_bounds_in(v.frame()),
+            NativeGeometryRef::BoredPlate(v) => v.body().conservative_bounds_in(v.frame()),
         }
     }
 
@@ -414,6 +429,7 @@ impl NativeSource {
             NativeGeometryRef::Revolution(v) => local(v.body(), face),
             NativeGeometryRef::Sweep(v) => local(v.body(), face),
             NativeGeometryRef::Loft(v) => local(v.body(), face),
+            NativeGeometryRef::BoredPlate(v) => local(v.body(), face),
         }?;
         let frame = self.frame() * plane;
         if frame.rows.iter().flatten().any(|v| !v.is_finite()) {
@@ -448,6 +464,8 @@ impl NativeSource {
             (NativeMeasure::Volume, NativeGeometryRef::Extrusion(v)) => v.volume(),
             (NativeMeasure::Volume, NativeGeometryRef::Revolution(v)) => v.volume(),
             (NativeMeasure::Volume, NativeGeometryRef::Sweep(v)) => v.volume(),
+            (NativeMeasure::SurfaceArea, NativeGeometryRef::BoredPlate(v)) => v.surface_area(),
+            (NativeMeasure::Volume, NativeGeometryRef::BoredPlate(v)) => v.volume(),
             (_, NativeGeometryRef::Loft(_)) => {
                 return Err(NativeMeasureError::Unavailable { family, measure });
             }
@@ -466,6 +484,7 @@ impl NativeSource {
             NativeGeometryRef::Revolution(v) => boundary_storage(v.body()),
             NativeGeometryRef::Sweep(v) => boundary_storage(v.body()),
             NativeGeometryRef::Loft(v) => boundary_storage(v.body()),
+            NativeGeometryRef::BoredPlate(v) => boundary_storage(v.body()),
         }
     }
     /// Selects a native face in this installation.
@@ -478,6 +497,7 @@ impl NativeSource {
             NativeGeometryRef::Revolution(v) => v.body().faces().len(),
             NativeGeometryRef::Sweep(v) => v.body().faces().len(),
             NativeGeometryRef::Loft(v) => v.body().faces().len(),
+            NativeGeometryRef::BoredPlate(v) => v.body().faces().len(),
         };
         if face.index() >= faces {
             return Err(NativeSelectionError::UnknownFace { face });
@@ -511,6 +531,9 @@ impl NativeSource {
             NativeGeometryRef::Revolution(v) => v.realize_with_regions(policy, |_, _| 0),
             NativeGeometryRef::Sweep(v) => v.realize_with_regions(policy, |_, _| 0),
             NativeGeometryRef::Loft(v) => v.realize_with_regions(policy, |_, _| 0),
+            NativeGeometryRef::BoredPlate(v) => {
+                v.body().realize_with_regions(v.frame(), policy, |_, _| 0)
+            }
         }
     }
 }
@@ -527,6 +550,11 @@ install!(Extrusion, Extrusion);
 install!(Revolution, Revolution);
 install!(Sweep, Sweep);
 install!(Loft, Loft);
+impl From<BoredPlate> for NativeSource {
+    fn from(value: BoredPlate) -> Self {
+        Self::new(Geometry::BoredPlate(Box::new(value)))
+    }
+}
 
 fn boundary_storage<F, E>(body: &Body<F, E>) -> NativeBoundaryStorage {
     let coedges = body.loops().iter().map(|l| l.coedges.len()).sum::<usize>();
@@ -621,6 +649,21 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
                     }
                 }
             }
+        }
+        Geometry::BoredPlate(v) => {
+            id.word(4);
+            id.frame(v.frame());
+            id.profile(v.source().profile());
+            id.values([v.source().length()]);
+            id.values(v.bore().point());
+            id.values(v.bore().direction());
+            id.values([v.bore().radius()]);
+            id.tag(v.bore().tag());
+            // The finite enclosure is retained native content too, including its
+            // explicitly padded axial bounds. Capturing it is constant work.
+            let domain = v.body().face(v.report().wall).expect("bore wall").domain;
+            id.values(domain.u.bounds());
+            id.values(domain.v.bounds());
         }
         Geometry::Revolution(v) => {
             id.word(1);
