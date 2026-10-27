@@ -247,3 +247,19 @@ world-space harmonics. Parameter-map error uses complete forward coefficients.
 Angular maps are bounded to one turn around zero so large floating-point phase
 addition cannot silently erase correspondence. Axial harmonic enclosures round
 outward and include arithmetic headroom.
+
+`Extrusion::with_through_bore` returns an independent `bore::BoredPlate` for
+a plain local rectangular plate and one fully contained nonparallel cylinder.
+Inputs are plate-local; placement and the original extrusion stay available.
+Native caps acquire ellipse loops, the cylindrical wall retains a repeated
+shared seam, and inherited/generated roles identify provenance. Complete rim
+clearance proves containment in this convex slab. Existing openings, sidewall
+contact, near-parallel axes and unmet numeric agreement are explicit refusals.
+
+`Body::cylindrical_band` derives native angle/height trim functions from complete
+curve coefficients and paired coedges, including local rim/seam endpoint
+agreement. This view is consumed by shared-edge realization; no extra pcurve
+state or texture UVs become authoritative. Native area/volume are independent
+of display policy; all curve, pairing, native-gap and f32-displacement evidence
+contributes to realization accuracy. Retaining `BoredPlate::source` also retains
+the original extrusion and its boundary storage, separately from the result.

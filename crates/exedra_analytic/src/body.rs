@@ -10,6 +10,9 @@
 //! establish absence of self-intersections or containment of nested shells.
 //! A closed boundary is not by itself a certified regular solid.
 
+mod cylindrical;
+pub use cylindrical::{CylindricalBand, CylindricalBandError};
+
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface, SurfaceEvaluation};
 use alloc::vec::Vec;
 use exedra_math::Placement3;
