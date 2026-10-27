@@ -1,0 +1,23 @@
+[package]
+name = "exedra_step"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Explicit STEP exchange for retained Exedra analytic boundaries"
+keywords = ["geometry", "analytic", "step", "cad", "no_std"]
+categories = ["data-structures", "graphics", "no-std"]
+
+[dependencies]
+exedra_analytic.workspace = true
+exedra_math.workspace = true
+
+[features]
+default = ["std"]
+std = ["exedra_analytic/std", "exedra_math/std"]
+libm = ["exedra_analytic/libm", "exedra_math/libm"]
+
+[lints]
+workspace = true

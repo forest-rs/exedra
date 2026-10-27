@@ -27,6 +27,7 @@ members = [
     "crates/exedra_mesh_ops",
     "crates/exedra_primitives",
     "crates/exedra_profile",
+    "crates/exedra_step",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
     "crates/joiner",
@@ -45,6 +46,7 @@ members = [
     "examples/constructive_probe",
     "examples/geometry_queries",
     "examples/material_gallery",
+    "examples/step_exchange",
     "examples/yingzao_fashi_pavilion",
 ]
 
@@ -124,6 +126,7 @@ exedra_mesh = { default-features = false, path = "crates/exedra_mesh", version =
 exedra_mesh_ops = { default-features = false, path = "crates/exedra_mesh_ops", version = "0.1.0" }
 exedra_primitives = { default-features = false, path = "crates/exedra_primitives", version = "0.1.0" }
 exedra_profile = { path = "crates/exedra_profile", version = "0.1.0" }
+exedra_step = { default-features = false, path = "crates/exedra_step", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate", version = "0.1.0" }
 fidget = { default-features = false, version = "0.5.0" }
