@@ -658,6 +658,7 @@ fn place_surface(surface: Surface, frame: Placement3) -> Result<Surface, SweepEr
         Surface::Cylinder(c) => Surface::cylinder(placement, c.radius()),
         Surface::Cone(c) => Surface::cone(placement, c.radius(), c.slope()),
         Surface::Torus(t) => Surface::torus(placement, t.major_radius(), t.minor_radius()),
+        Surface::Sphere(s) => Surface::sphere(placement, s.radius()),
         Surface::Ruled(r) => Surface::ruled(
             r.curves()[0]
                 .transformed(frame)

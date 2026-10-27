@@ -421,7 +421,7 @@ export interface NativeFace {
   feature?: string;
   end?:End;
   role: "cap" | "wall" | "floor";
-  surface: "plane" | "cylinder" | "cone" | "torus" | "ruled";
+  surface: "plane" | "cylinder" | "cone" | "torus" | "sphere" | "ruled";
 }
 /** Completed work that generated this output; retained on cache hits. Current-call counters are separate. */
 export interface RealizationWork {

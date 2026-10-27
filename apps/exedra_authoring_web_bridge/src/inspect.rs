@@ -66,6 +66,7 @@ fn faces<F, E>(
                 Surface::Cylinder(_) => "cylinder",
                 Surface::Cone(_) => "cone",
                 Surface::Torus(_) => "torus",
+                Surface::Sphere(_) => "sphere",
                 Surface::Ruled(_) => "ruled",
             };
             let mut features: Vec<_> = native
