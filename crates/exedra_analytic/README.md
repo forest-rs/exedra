@@ -263,3 +263,14 @@ state or texture UVs become authoritative. Native area/volume are independent
 of display policy; all curve, pairing, native-gap and f32-displacement evidence
 contributes to realization accuracy. Retaining `BoredPlate::source` also retains
 the original extrusion and its boundary storage, separately from the result.
+
+
+A completed display result that narrowly misses its target because of curve
+sampling can make one bounded retry. Other error must be below one quarter of
+the target; the retry halves only the curve budget and retains the original
+caller target and grid/geometry policies. Native face region mappings run once.
+Refusal or non-improvement preserves the original honest result. Reports expose
+the attempted budget, typed outcome, attempt count and completed-output work;
+partial planning work in a refused attempt is excluded from those counters.
+Ordinary target-achieving results take their original path. Each attempt obeys
+the policy limits; a retry can retain two bounded outputs concurrently.

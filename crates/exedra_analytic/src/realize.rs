@@ -33,13 +33,13 @@ pub struct RealizationPolicy {
     pub tolerance: f64,
     /// Allowed native endpoint/support agreement, separate from tessellation accuracy.
     pub geometry_gap: f64,
-    /// Minimum segments for a circular edge; at least four.
+    /// Minimum segments for a periodic circle or ellipse edge; at least four.
     pub min_arc_segments: u32,
-    /// Maximum segments for any circular edge.
+    /// Maximum segments for any periodic circle or ellipse edge in each attempt.
     pub max_edge_segments: u32,
-    /// Maximum emitted vertices.
+    /// Maximum emitted vertices in each attempt.
     pub max_vertices: u32,
-    /// Maximum total edge-chain entries, including repeated shared endpoints.
+    /// Maximum edge-chain entries in each attempt, including repeated endpoints.
     pub max_boundary_samples: u32,
 }
 impl Default for RealizationPolicy {
@@ -102,6 +102,43 @@ impl EdgeChains {
     }
 }
 
+/// Work for completed mesh outputs, including a replaced refinement candidate.
+///
+/// A refused attempt can perform additional validation or planning that these
+/// completed-output counters do not include. See the typed refinement outcome.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RealizationWork {
+    /// Number of attempts, bounded to one initial attempt and one curve retry.
+    pub attempts: u8,
+    /// Edge-chain entries in completed outputs, including repeated endpoints.
+    pub completed_boundary_samples: usize,
+    /// Triangles in completed outputs, including any discarded candidate.
+    pub completed_triangles: usize,
+}
+
+/// Result of the optional bounded curve-sampling retry.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CurveRefinementOutcome {
+    /// The retry reduced the combined deviation and replaced the first output.
+    /// Final target achievement is still reported by `within_tolerance()`.
+    Improved,
+    /// The completed retry did not reduce deviation; the first output is retained.
+    NotImproved,
+    /// The retry was refused; the first output and its honest accuracy remain.
+    Refused(RealizationError),
+}
+
+/// Evidence for a single optional curve-sampling retry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CurveRefinement {
+    /// Combined bound for the original completed output.
+    pub initial_deviation: f64,
+    /// Smaller curve budget used only for this retry, in model units.
+    pub curve_tolerance: f64,
+    /// Whether the retry replaced the original output, or why it did not.
+    pub outcome: CurveRefinementOutcome,
+}
+
 /// Accuracy and work evidence for one explicit conversion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RealizationReport {
@@ -109,8 +146,8 @@ pub struct RealizationReport {
     pub tolerance: f64,
     /// Largest conservative native endpoint/support gap from validation.
     pub geometry_gap: f64,
-    /// Largest circular chord sagitta from actual sampled parameter intervals,
-    /// before narrowing.
+    /// Largest conservative curve chord bound from actual sampled parameter
+    /// intervals, before placement and narrowing.
     pub max_curve_deviation: f64,
     /// Largest bound for a doubly curved grid, including whole-curve boundary
     /// alignment and parameter arithmetic, before narrowing.
@@ -126,6 +163,10 @@ pub struct RealizationReport {
     pub max_deviation: f64,
     /// Segment counts indexed by native edge; zero for detached edges.
     pub edge_segments: Vec<u32>,
+    /// Attempt and completed-output work, including any discarded output.
+    pub work: RealizationWork,
+    /// A single curve retry, absent on the ordinary first-pass path.
+    pub curve_refinement: Option<CurveRefinement>,
 }
 impl RealizationReport {
     /// Whether the emitted result meets the requested geometric deviation.
@@ -331,6 +372,15 @@ impl<F, E> Body<F, E> {
     /// Realizes the body and maps each native face to a caller region.
     ///
     /// Native correspondence remains per-face even when regions are shared.
+    /// The region function is evaluated once per native face. If a completed
+    /// output misses the target because curve sampling consumed its headroom,
+    /// with other error below one quarter of the target, one retry halves only
+    /// the curve budget. Placement, geometry policy, grid policy and requested
+    /// target remain unchanged. The original output is kept on retry refusal
+    /// or non-improvement. Ordinary successful outputs take the original path.
+    ///
+    /// Storage limits apply to each attempt. During a retry both bounded outputs
+    /// can be live; peak storage can therefore approach twice one output's limits.
     ///
     /// # Errors
     /// Returns the same bounded refusals as [`Self::realize`].
@@ -338,6 +388,87 @@ impl<F, E> Body<F, E> {
         &self,
         placement: Placement3,
         policy: &RealizationPolicy,
+        region: impl Fn(FaceId, &Face<F>) -> u32,
+    ) -> Result<RealizedBody, RealizationError> {
+        let first = self.realize_once(placement, policy, policy.tolerance, region)?;
+        if first.report.within_tolerance() {
+            Ok(first)
+        } else {
+            Ok(self.refine_curves(first, placement, policy))
+        }
+    }
+
+    #[cold]
+    fn refine_curves(
+        &self,
+        mut first: RealizedBody,
+        placement: Placement3,
+        policy: &RealizationPolicy,
+    ) -> RealizedBody {
+        let report = &first.report;
+        let other = report.max_vertex_displacement
+            + report.max_ruling_displacement
+            + 2.0 * report.geometry_gap;
+        let curve_tolerance = 0.5 * policy.tolerance;
+        if report.max_curve_deviation <= 0.0
+            || report.max_surface_deviation > report.max_curve_deviation
+            || other >= 0.25 * policy.tolerance
+            || curve_tolerance <= 0.0
+        {
+            return first;
+        }
+        // Recover semantic values from the first output only on this rare path.
+        // Reusing native correspondence avoids invoking caller code a second time.
+        let mut face_regions = alloc::vec![None; self.faces().len()];
+        let values = first.mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
+        for &(mesh_face, native_face) in &first.mesh_faces {
+            face_regions[native_face.index()] = Some(
+                values
+                    .and_then(|layer| layer.get(mesh_face.as_id()))
+                    .copied()
+                    .unwrap_or(0),
+            );
+        }
+        if face_regions.iter().any(Option::is_none) {
+            return first;
+        }
+        let initial_deviation = first.report.max_deviation;
+        let mut work = first.report.work;
+        work.attempts = 2;
+        let retry = self.realize_once(placement, policy, curve_tolerance, |id, _| {
+            face_regions[id.index()].expect("complete first-output region mapping")
+        });
+        let outcome = match retry {
+            Ok(mut candidate) => {
+                work.completed_boundary_samples += candidate.report.work.completed_boundary_samples;
+                work.completed_triangles += candidate.report.work.completed_triangles;
+                if candidate.report.max_deviation < first.report.max_deviation {
+                    candidate.report.work = work;
+                    candidate.report.curve_refinement = Some(CurveRefinement {
+                        initial_deviation,
+                        curve_tolerance,
+                        outcome: CurveRefinementOutcome::Improved,
+                    });
+                    return candidate;
+                }
+                CurveRefinementOutcome::NotImproved
+            }
+            Err(error) => CurveRefinementOutcome::Refused(error),
+        };
+        first.report.work = work;
+        first.report.curve_refinement = Some(CurveRefinement {
+            initial_deviation,
+            curve_tolerance,
+            outcome,
+        });
+        first
+    }
+
+    fn realize_once(
+        &self,
+        placement: Placement3,
+        policy: &RealizationPolicy,
+        curve_tolerance: f64,
         region: impl Fn(FaceId, &Face<F>) -> u32,
     ) -> Result<RealizedBody, RealizationError> {
         if !policy.tolerance.is_finite()
@@ -403,7 +534,7 @@ impl<F, E> Body<F, E> {
                     curve => circular_edge_count(
                         curve.sampling_radius().expect("periodic curve"),
                         edge.range.span(),
-                        policy.tolerance,
+                        curve_tolerance,
                         CircularEdgeConstraints::new(
                             policy.min_arc_segments,
                             policy.max_edge_segments,
@@ -868,6 +999,11 @@ impl<F, E> Body<F, E> {
                 .collect(),
             offsets: chains.offsets,
         };
+        let work = RealizationWork {
+            attempts: 1,
+            completed_boundary_samples: edge_chains.vertices.len(),
+            completed_triangles: triangles.len(),
+        };
         Ok(RealizedBody {
             mesh,
             mesh_faces: face_ids.into_iter().zip(native_faces).collect(),
@@ -885,6 +1021,8 @@ impl<F, E> Body<F, E> {
                     + ruling_displacement
                     + 2.0 * validation.max_gap,
                 edge_segments: counts,
+                work,
+                curve_refinement: None,
             },
         })
     }
@@ -1378,17 +1516,27 @@ mod tests {
             Placement3::IDENTITY,
             Placement3::rotate_y_then_translate(0.7, 3.0, -2.0, 1.0),
         ] {
-            let result = body
-                .realize(
-                    placement,
-                    &RealizationPolicy {
-                        tolerance: 0.011,
-                        ..RealizationPolicy::default()
-                    },
-                )
+            let policy = RealizationPolicy {
+                tolerance: 0.011,
+                ..Default::default()
+            };
+            let initial = body
+                .realize_once(placement, &policy, policy.tolerance, |id, _| id.0)
                 .unwrap();
-            assert!(!result.report.within_tolerance());
-            assert!(result.report.max_curve_deviation >= 0.0175);
+            assert!(!initial.report.within_tolerance());
+            assert!(initial.report.max_curve_deviation >= 0.0175);
+            let result = body.realize(placement, &policy).unwrap();
+            assert!(result.report.max_deviation <= initial.report.max_deviation);
+            assert_eq!(result.report.work.attempts, 2);
+            assert_eq!(
+                result
+                    .report
+                    .curve_refinement
+                    .as_ref()
+                    .unwrap()
+                    .initial_deviation,
+                initial.report.max_deviation
+            );
             for edge in result.mesh.half_edges() {
                 let a = result
                     .mesh
@@ -1707,5 +1855,177 @@ mod tests {
                 .unwrap_err(),
             RealizationError::UnsupportedSurfaceTrim { face: FaceId(0) }
         );
+    }
+    fn translated_bore() -> crate::bore::BoredPlate {
+        use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+        let size = 1e-6;
+        let outline = Loop::new(vec![
+            Segment::line([35.0 * size, -25.0 * size]),
+            Segment::line([35.0 * size, 25.0 * size]),
+            Segment::line([-35.0 * size, 25.0 * size]),
+            Segment::line([-35.0 * size, -25.0 * size]),
+        ])
+        .unwrap();
+        let source = crate::extrusion::Extrusion::new(
+            Profile::new(outline, vec![], &ProfilePolicy::new(1e-8 * size)).unwrap(),
+            Placement3::rotate_y_then_translate(0.35, 1000.0 * size, -700.0 * size, 300.0 * size),
+            20.0 * size,
+        )
+        .unwrap();
+        let angle = core::f64::consts::PI / 6.0;
+        source
+            .with_through_bore(
+                crate::bore::Bore::new(
+                    [-10.0 * size * libm::tan(angle), 0.0, 0.0],
+                    [libm::sin(angle), 0.0, libm::cos(angle)],
+                    6.0 * size,
+                )
+                .unwrap(),
+                &crate::bore::BorePolicy {
+                    separation: 0.1 * size,
+                    geometry_gap: 1e-8 * size,
+                    min_axis_dot: 0.1,
+                },
+            )
+            .unwrap()
+    }
+    #[test]
+    fn curve_budget_refines_small_error_without_repeating_regions() {
+        let model = translated_bore();
+        let policy = RealizationPolicy {
+            tolerance: 2.5e-8,
+            geometry_gap: 1e-14,
+            ..Default::default()
+        };
+        let initial = model
+            .body()
+            .realize_once(model.frame(), &policy, policy.tolerance, |id, _| 100 + id.0)
+            .unwrap();
+        assert!(!initial.report.within_tolerance());
+        let calls = Cell::new(0);
+        let output = model
+            .body()
+            .realize_with_regions(model.frame(), &policy, |id, _| {
+                calls.set(calls.get() + 1);
+                100 + id.0
+            })
+            .unwrap();
+        assert!(output.report.within_tolerance(), "{:?}", output.report);
+        assert_eq!(output.report.work.attempts, 2);
+        let refinement = output.report.curve_refinement.as_ref().unwrap();
+        assert!(refinement.initial_deviation > policy.tolerance);
+        assert_eq!(refinement.curve_tolerance, 0.5 * policy.tolerance);
+        assert_eq!(refinement.outcome, CurveRefinementOutcome::Improved);
+        assert_eq!(output.report.tolerance, policy.tolerance);
+        assert_eq!(
+            output.report.work.completed_boundary_samples,
+            initial.edge_chains.vertices.len() + output.edge_chains.vertices.len()
+        );
+        assert_eq!(
+            output.report.work.completed_triangles,
+            initial.mesh_faces.len() + output.mesh_faces.len()
+        );
+        assert!(output.report.work.completed_triangles > output.mesh_faces.len());
+        assert!(output.report.work.completed_boundary_samples > output.edge_chains.vertices.len());
+        assert_eq!(calls.get(), model.body().faces().len());
+        assert!(output.mesh.validate_deep().is_empty());
+        assert!(output.mesh.boundary_loops().unwrap().is_empty());
+        let regions = output
+            .mesh
+            .attrs()
+            .dense(exedra_mesh::attr::FACE_REGION)
+            .unwrap();
+        for &(mesh_face, native_face) in &output.mesh_faces {
+            assert_eq!(regions.get(mesh_face.as_id()), Some(&(100 + native_face.0)));
+        }
+    }
+    fn assert_same_geometry(a: &RealizedBody, b: &RealizedBody) {
+        assert_eq!(a.mesh_faces, b.mesh_faces);
+        assert_eq!(a.mesh_vertices, b.mesh_vertices);
+        assert_eq!(a.edge_chains.vertices, b.edge_chains.vertices);
+        assert_eq!(a.edge_chains.offsets, b.edge_chains.offsets);
+        for (a_id, b_id) in a.mesh.vertices().zip(b.mesh.vertices()) {
+            assert_eq!(a.mesh.vertex_position(a_id), b.mesh.vertex_position(b_id));
+        }
+        for (a_id, b_id) in a.mesh.faces().zip(b.mesh.faces()) {
+            let corners = |mesh: &Mesh, id| {
+                mesh.face_loop(id)
+                    .map(|c| mesh.from_vertex(c))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(corners(&a.mesh, a_id), corners(&b.mesh, b_id));
+            let region = |mesh: &Mesh, id: exedra_mesh::FaceId| {
+                mesh.attrs()
+                    .dense(exedra_mesh::attr::FACE_REGION)
+                    .and_then(|v| v.get(id.as_id()))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            assert_eq!(region(&a.mesh, a_id), region(&b.mesh, b_id));
+        }
+        for (a_id, b_id) in a.mesh.half_edges().zip(b.mesh.half_edges()) {
+            assert_eq!(a.mesh.edge_sharpness(a_id), b.mesh.edge_sharpness(b_id));
+        }
+    }
+    #[test]
+    fn refinement_budget_refusal_preserves_original_output_and_region_calls() {
+        let model = translated_bore();
+        let mut policy = RealizationPolicy {
+            tolerance: 2.5e-8,
+            geometry_gap: 1e-14,
+            ..Default::default()
+        };
+        let original = model
+            .body()
+            .realize_once(model.frame(), &policy, policy.tolerance, |id, _| 100 + id.0)
+            .unwrap();
+        assert!(!original.report.within_tolerance());
+        policy.max_edge_segments = *original.report.edge_segments.iter().max().unwrap();
+        let calls = Cell::new(0);
+        let output = model
+            .body()
+            .realize_with_regions(model.frame(), &policy, |id, _| {
+                calls.set(calls.get() + 1);
+                100 + id.0
+            })
+            .unwrap();
+        assert_same_geometry(&original, &output);
+        assert_eq!(output.report.max_deviation, original.report.max_deviation);
+        assert_eq!(output.report.tolerance, policy.tolerance);
+        assert_eq!(output.report.work.attempts, 2);
+        assert_eq!(
+            output.report.work.completed_boundary_samples,
+            original.report.work.completed_boundary_samples
+        );
+        assert_eq!(
+            output.report.work.completed_triangles,
+            original.report.work.completed_triangles
+        );
+        assert!(matches!(
+            output.report.curve_refinement.unwrap().outcome,
+            CurveRefinementOutcome::Refused(RealizationError::Sampling { .. })
+        ));
+        assert_eq!(calls.get(), model.body().faces().len());
+    }
+    #[test]
+    fn ordinary_curve_outputs_keep_first_pass_geometry_and_work() {
+        let body = cylinder();
+        for tolerance in [0.1, 0.01, 0.001] {
+            let policy = RealizationPolicy {
+                tolerance,
+                ..Default::default()
+            };
+            let original = body
+                .realize_once(Placement3::IDENTITY, &policy, policy.tolerance, |id, _| {
+                    id.0
+                })
+                .unwrap();
+            assert!(original.report.within_tolerance());
+            let output = body.realize(Placement3::IDENTITY, &policy).unwrap();
+            assert_same_geometry(&original, &output);
+            assert_eq!(original.report, output.report);
+            assert_eq!(output.report.work.attempts, 1);
+            assert!(output.report.curve_refinement.is_none());
+        }
     }
 }
