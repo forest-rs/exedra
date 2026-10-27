@@ -443,3 +443,28 @@ encoding, UI/GPU, file I/O and returned buffer destruction. The allocation windo
 includes Rust-host metadata/report parsing and release, with requests/warmup
 outside it. Charted fresh compilation does additional coordinate/mapping work;
 charted cache hits reuse geometry and boxed policy evidence.
+
+## Delivered vertex bounds
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin render_vertex_budget
+EXEDRA_RENDER_VERTICES=250000 cargo run --release -p constructive_wind_tunnel --bin native_chart_compilation
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --repo /path/to/after --output /tmp/render-alloc --workload render_vertices
+EXEDRA_RENDER_VERTICES=4 python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --repo /path/to/after --output /tmp/render-refusal --workload render_vertices
+```
+
+`render-vertex-budget-study.json` compares the exact parent version and bounded
+extraction across five alternating native-host release rounds. Default uncapped
+compilation and the actual bridge are effectively neutral in latency; all bridge
+allocation counts, traffic, retained bytes and peak bytes match exactly. The
+bridge now requests the delivered bound before extraction, preserving its public
+`budget.renderVertices` diagnosis. Native working-topology budgets stay separate.
+
+The fixed extraction fixture has 1,000 disconnected triangles and 3,000 unique
+vertices. Uncapped and an exact sufficient bound deliver identical geometry; a
+bound of four refuses at the fifth unique vertex. Normal derivation is explicitly
+excluded using custom-only missing normals, so the early-refusal measurements do
+not imply a bound on normal/tangent scratch or whole-source work. The limit is
+per body and successful counters match uncapped extraction. Refused output is
+absent, and the reported requirement is a lower bound. Timing excludes returned
+buffer destruction; allocation checkpoints include its release.

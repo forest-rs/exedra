@@ -1,0 +1,599 @@
+{
+  "baseline_head": "ee110560c83ef0af240bcc64d33eaf146ef6839d",
+  "measured_core_head": "a1a49e26cbc72e6efebf06cc6ae2916478a748bd",
+  "source_sha256": {
+    "crates/exedra_mesh/src/render.rs": "8181043e2efc58faa7540276f388049e027d6cffd23ff8cc0548fcc13402f57c",
+    "crates/exedra_mesh/src/render/tangents.rs": "b240a16746a8bc320d393e69938bc704c393fab9fc0f6b6df383bc790fca83fe",
+    "crates/exedra_mesh/src/render/attributes.rs": "8f65096c3de7bb02054107301958551628daeca608b404963701e335ab3fbec5",
+    "crates/exedra_compile/src/compile.rs": "99817eb18b4d116ded6a96bcbfa63fc6d443be0d90780ef9277f673bafd9a24e",
+    "apps/exedra_authoring_web_bridge/src/lib.rs": "2928ab0fefebd4fa989c31c28e1db169587c76dc25c3e5b06c050e999a47ed7b"
+  },
+  "machine": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "method": {
+    "native_and_bridge": "5 alternating before/after rounds,101 samples per case per round after3warmups; separate release targets and copied binaries; prepared sources outside timers; no headless browser running",
+    "bounded_native": "3 additional rounds with EXEDRA_RENDER_VERTICES=250000; same source fixtures",
+    "early_refusal": "5 warm rounds,101 samples each,1000 disconnected triangles/3000 unique vertices; normal CustomOnly excludes global derivation; extraction source constructed before timer/profiler; cap4 refuses at first excess5,notfullrequiredcount",
+    "allocation": "existing isolated dhat0.3.3 harness; before/after bridge share copied lockfile; profiling is native host,not Wasm; requests/warmup excluded; all temporary outputs destroyed; no production dependency/unsafe added",
+    "timing_exclusions": [
+      "source/fixture construction",
+      "output destruction",
+      "Wasm-JS copies",
+      "SDK graph encoding",
+      "browser/UI/GPU",
+      "file I/O"
+    ],
+    "limit_semantics": "per compiled body; normal/tangent derivation,triangulation,deduplication tables,indices and source geometry are separate working storage; no aggregate,totalbyte,orworkbound"
+  },
+  "compilation_and_bridge": [
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "revolution",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 151125,
+      "p95_ns": 182709
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "revolution",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 667,
+      "p95_ns": 750
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "revolution",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 176791,
+      "p95_ns": 195875
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "revolution",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 917,
+      "p95_ns": 1125
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "sweep",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 327375,
+      "p95_ns": 352792
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "sweep",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 625,
+      "p95_ns": 709
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "sweep",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 407292,
+      "p95_ns": 434167
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "sweep",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 875,
+      "p95_ns": 958
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "hollow loft",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 6710125,
+      "p95_ns": 6975208
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "hollow loft",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 666,
+      "p95_ns": 750
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "hollow loft",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 8694041,
+      "p95_ns": 9022625
+    },
+    {
+      "workload": "charts",
+      "version": "before",
+      "family": "hollow loft",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 916,
+      "p95_ns": 1125
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "revolution",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 150875,
+      "p95_ns": 171958
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "revolution",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 666,
+      "p95_ns": 708
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "revolution",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 178459,
+      "p95_ns": 198000
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "revolution",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 917,
+      "p95_ns": 1167
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "sweep",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 329958,
+      "p95_ns": 354625
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "sweep",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 625,
+      "p95_ns": 667
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "sweep",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 411042,
+      "p95_ns": 436916
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "sweep",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 875,
+      "p95_ns": 1166
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "hollow loft",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 6794334,
+      "p95_ns": 7283791
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "hollow loft",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 625,
+      "p95_ns": 833
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "hollow loft",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 8704084,
+      "p95_ns": 9152750
+    },
+    {
+      "workload": "charts",
+      "version": "after",
+      "family": "hollow loft",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 875,
+      "p95_ns": 959
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "revolution",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 150833,
+      "p95_ns": 167375
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "revolution",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 666,
+      "p95_ns": 708
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "revolution",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 178709,
+      "p95_ns": 197500
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "revolution",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 834,
+      "p95_ns": 1041
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "sweep",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 331459,
+      "p95_ns": 366042
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "sweep",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 625,
+      "p95_ns": 667
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "sweep",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 411125,
+      "p95_ns": 445209
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "sweep",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 833,
+      "p95_ns": 1000
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "hollow loft",
+      "charted": false,
+      "phase": "cold_ns",
+      "p50_ns": 6785791,
+      "p95_ns": 7280792
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "hollow loft",
+      "charted": false,
+      "phase": "cache_hit_ns",
+      "p50_ns": 625,
+      "p95_ns": 667
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "hollow loft",
+      "charted": true,
+      "phase": "cold_ns",
+      "p50_ns": 8749417,
+      "p95_ns": 9412416
+    },
+    {
+      "workload": "charts",
+      "version": "bounded",
+      "family": "hollow loft",
+      "charted": true,
+      "phase": "cache_hit_ns",
+      "p50_ns": 875,
+      "p95_ns": 1167
+    },
+    {
+      "workload": "bridge",
+      "version": "before",
+      "tolerance": 0.45,
+      "p50_ns": 610708,
+      "p95_ns": 875084
+    },
+    {
+      "workload": "bridge",
+      "version": "before",
+      "tolerance": 0.12,
+      "p50_ns": 720375,
+      "p95_ns": 765417
+    },
+    {
+      "workload": "bridge",
+      "version": "before",
+      "tolerance": 0.035,
+      "p50_ns": 1169834,
+      "p95_ns": 1324541
+    },
+    {
+      "workload": "bridge",
+      "version": "after",
+      "tolerance": 0.45,
+      "p50_ns": 612000,
+      "p95_ns": 676125
+    },
+    {
+      "workload": "bridge",
+      "version": "after",
+      "tolerance": 0.12,
+      "p50_ns": 723125,
+      "p95_ns": 770667
+    },
+    {
+      "workload": "bridge",
+      "version": "after",
+      "tolerance": 0.035,
+      "p50_ns": 1168542,
+      "p95_ns": 1292625
+    }
+  ],
+  "early_refusal": [
+    {
+      "maximum": null,
+      "samples": 505,
+      "p50_ns": 270667,
+      "p95_ns": 430500
+    },
+    {
+      "maximum": 3000,
+      "samples": 505,
+      "p50_ns": 268167,
+      "p95_ns": 375500
+    },
+    {
+      "maximum": 4,
+      "samples": 505,
+      "p50_ns": 625,
+      "p95_ns": 750
+    }
+  ],
+  "allocations": {
+    "bridge_before": {
+      "checkpoints": [
+        {
+          "current_blocks": 386,
+          "current_bytes": 533691,
+          "peak_blocks": 1261,
+          "peak_bytes": 614488,
+          "phase": "retained",
+          "total_blocks": 18953,
+          "total_bytes": 3715091
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 1261,
+          "peak_bytes": 614488,
+          "phase": "released",
+          "total_blocks": 18953,
+          "total_bytes": 3715091
+        }
+      ],
+      "scope": "three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    },
+    "bridge_after": {
+      "checkpoints": [
+        {
+          "current_blocks": 386,
+          "current_bytes": 533691,
+          "peak_blocks": 1261,
+          "peak_bytes": 614488,
+          "phase": "retained",
+          "total_blocks": 18953,
+          "total_bytes": 3715091
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 1261,
+          "peak_bytes": 614488,
+          "phase": "released",
+          "total_blocks": 18953,
+          "total_bytes": 3715091
+        }
+      ],
+      "scope": "three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    },
+    "extraction_uncapped": {
+      "checkpoints": [
+        {
+          "current_blocks": 4,
+          "current_bytes": 147456,
+          "peak_blocks": 6008,
+          "peak_bytes": 870896,
+          "phase": "retained",
+          "total_blocks": 7077,
+          "total_bytes": 1597128
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 6008,
+          "peak_bytes": 870896,
+          "phase": "released",
+          "total_blocks": 7077,
+          "total_bytes": 1597128
+        }
+      ],
+      "scope": "one render extraction; fixed 1000-triangle source and profiler setup excluded; custom-only normals avoid global normal derivation; output destruction included"
+    },
+    "extraction_exact": {
+      "checkpoints": [
+        {
+          "current_blocks": 4,
+          "current_bytes": 112384,
+          "peak_blocks": 6008,
+          "peak_bytes": 831440,
+          "phase": "retained",
+          "total_blocks": 7077,
+          "total_bytes": 1557672
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 6008,
+          "peak_bytes": 831440,
+          "phase": "released",
+          "total_blocks": 7077,
+          "total_bytes": 1557672
+        }
+      ],
+      "scope": "one render extraction; fixed 1000-triangle source and profiler setup excluded; custom-only normals avoid global normal derivation; output destruction included"
+    },
+    "extraction_refused": {
+      "checkpoints": [
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 17,
+          "peak_bytes": 1644,
+          "phase": "retained",
+          "total_blocks": 19,
+          "total_bytes": 2072
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 17,
+          "peak_bytes": 1644,
+          "phase": "released",
+          "total_blocks": 19,
+          "total_bytes": 2072
+        }
+      ],
+      "scope": "one render extraction; fixed 1000-triangle source and profiler setup excluded; custom-only normals avoid global normal derivation; output destruction included"
+    }
+  },
+  "unchanged_outputs": {
+    "bridge": [
+      {
+        "tolerance": 0.45,
+        "triangles": 328,
+        "buffer_bytes": 12928
+      },
+      {
+        "tolerance": 0.12,
+        "triangles": 448,
+        "buffer_bytes": 17728
+      },
+      {
+        "tolerance": 0.035,
+        "triangles": 768,
+        "buffer_bytes": 30528
+      }
+    ],
+    "native": [
+      {
+        "family": "revolution",
+        "charted": false,
+        "render_vertices": 200,
+        "triangles": 200,
+        "native_realizations_after_hits": 1
+      },
+      {
+        "family": "revolution",
+        "charted": true,
+        "render_vertices": 208,
+        "triangles": 200,
+        "native_realizations_after_hits": 1
+      },
+      {
+        "family": "sweep",
+        "charted": false,
+        "render_vertices": 456,
+        "triangles": 444,
+        "native_realizations_after_hits": 1
+      },
+      {
+        "family": "sweep",
+        "charted": true,
+        "render_vertices": 456,
+        "triangles": 444,
+        "native_realizations_after_hits": 1
+      },
+      {
+        "family": "hollow loft",
+        "charted": false,
+        "render_vertices": 5040,
+        "triangles": 8848,
+        "native_realizations_after_hits": 1
+      },
+      {
+        "family": "hollow loft",
+        "charted": true,
+        "render_vertices": 5040,
+        "triangles": 8848,
+        "native_realizations_after_hits": 1
+      }
+    ]
+  },
+  "interpretation": "Default None and actual bridge latency effectively neutral. Exact same bridge allocation count,traffic,retained andpeak. Optional exact bound avoids excess capacityrequests. Early refusal sharply reduces extraction work; no claim to bound normal/tangent derivation or other workingstorage.",
+  "integrated_core_head": "3edfb3816be1a9d8d3dd1987521a2de6d9d96fce",
+  "integration_note": "Restacked above scene-usd-layer-text d54a0ac38987666925061209eb2aa97d4af8412f; all measured owning mesh/compiler/authoring-bridge source files retain the recorded SHA256; CSS and Scene USD changes do not alter these workloads."
+}
