@@ -65,6 +65,13 @@ Exedra Mesh does not own scene graphs, materials, units, UI workflows, or exact
 CAD surfaces. It also does not compact IDs implicitly; call `Mesh::compact`
 when a tombstone-free copy and `Remap` are needed.
 
+`Mesh::to_trimesh_bounded(params, maximum)` refuses before inserting an excess
+unique render vertex, including tangent splits. It returns a `RenderVertexLimit`
+with the failing stage and a proven required-count lower bound; no partial output
+is returned. Successful buffers and counters match uncapped extraction. Vertex
+buffer capacity requests respect the limit, while indices, deduplication and
+normal/tangent derivation remain separate working storage.
+
 For checks on the actual render buffers, call `TriMesh::validate_geometry()`.
 It rejects incomplete or out-of-bounds triangles, nonfinite positions and exactly
 zero-area triangles, with the offending buffer index in `TriMeshGeometryError`.

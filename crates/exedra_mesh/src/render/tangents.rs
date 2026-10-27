@@ -437,11 +437,12 @@ pub enum TangentUv {
 
 /// Adds MikkTSpace tangents to `mesh`, splitting render vertices whose
 /// corners disagree. Returns the output mesh and updates `stats`.
-pub(super) fn apply(
+pub(super) fn apply<const BOUNDED: bool>(
     mesh: crate::TriMesh,
     uv_set: TangentUv,
     stats: &mut crate::ExtractStats,
-) -> crate::TriMesh {
+    maximum: u32,
+) -> Result<crate::TriMesh, super::RenderVertexLimit> {
     let uvs: Option<&[[f32; 2]]> = match uv_set {
         TangentUv::Primary => Some(&mesh.uvs),
         TangentUv::Attribute(key) => match mesh.attribute(key) {
@@ -472,20 +473,35 @@ pub(super) fn apply(
     for (c, &source) in mesh.indices.iter().enumerate() {
         let tangent = corner.tangents[c];
         let key = (source, tangent.map(f32::to_bits));
-        let index = *key_to_index.entry(key).or_insert_with(|| {
-            let index = u32::try_from(sources.len()).expect("render vertex count fits u32");
-            sources.push(source);
-            tangents.push(tangent);
-            if corner.fallback[c] {
-                fallbacks += 1;
+        if BOUNDED && sources.len() >= maximum as usize && !key_to_index.contains_key(&key) {
+            return Err(super::RenderVertexLimit {
+                maximum,
+                required_at_least: u64::from(maximum) + 1,
+                stage: super::RenderVertexStage::Tangents,
+            });
+        }
+        let index = match key_to_index.entry(key) {
+            hashbrown::hash_map::Entry::Occupied(entry) => *entry.get(),
+            hashbrown::hash_map::Entry::Vacant(entry) => {
+                if BOUNDED {
+                    super::reserve_vertices(&mut sources, 1, maximum as usize);
+                    super::reserve_vertices(&mut tangents, 1, maximum as usize);
+                }
+                let index = u32::try_from(sources.len()).expect("render vertex count fits u32");
+                sources.push(source);
+                tangents.push(tangent);
+                if corner.fallback[c] {
+                    fallbacks += 1;
+                }
+                if seen[source as usize] {
+                    stats.tangent_split_count = stats.tangent_split_count.saturating_add(1);
+                    stats.split_count = stats.split_count.saturating_add(1);
+                }
+                seen[source as usize] = true;
+                entry.insert(index);
+                index
             }
-            if seen[source as usize] {
-                stats.tangent_split_count = stats.tangent_split_count.saturating_add(1);
-                stats.split_count = stats.split_count.saturating_add(1);
-            }
-            seen[source as usize] = true;
-            index
-        });
+        };
         indices.push(index);
     }
     stats.tangent_fallback_count = fallbacks;
@@ -498,11 +514,11 @@ pub(super) fn apply(
             indices, mesh.indices,
             "identity re-keying keeps the index buffer"
         );
-        return crate::TriMesh { tangents, ..mesh };
+        return Ok(crate::TriMesh { tangents, ..mesh });
     }
 
     let gather = |values: &[[f32; 3]]| sources.iter().map(|&s| values[s as usize]).collect();
-    crate::TriMesh {
+    Ok(crate::TriMesh {
         indices,
         positions: gather(&mesh.positions),
         uvs: sources.iter().map(|&s| mesh.uvs[s as usize]).collect(),
@@ -517,5 +533,5 @@ pub(super) fn apply(
                 values: stream.values.gather(&sources),
             })
             .collect(),
-    }
+    })
 }

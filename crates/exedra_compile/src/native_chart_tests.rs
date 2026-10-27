@@ -573,3 +573,97 @@ fn borrowed_constructors_expose_caps_planes_and_structural_chart_kind() {
         })
     );
 }
+
+#[test]
+fn charted_torus_delivered_vertex_budget_witness() {
+    let validation = ProfilePolicy::new(1e-6);
+    let profile = builders::circle(3.0)
+        .unwrap()
+        .translated((20.0, 0.0))
+        .unwrap()
+        .to_line_arc(&validation)
+        .unwrap();
+    let torus = Revolution::new(profile, Placement3::IDENTITY, core::f64::consts::TAU).unwrap();
+    let native_policy = exedra_analytic::realize::RealizationPolicy {
+        tolerance: 0.12,
+        geometry_gap: 1e-6,
+        ..Default::default()
+    };
+    let native_count = u32::try_from(
+        torus
+            .realize(&native_policy)
+            .unwrap()
+            .mesh
+            .vertices()
+            .count(),
+    )
+    .unwrap();
+    let prepared = PreparedSource::new(PartSource::Native(torus.into()));
+    let mut policy = CompilePolicy {
+        native: exedra_analytic::realize::RealizationPolicy {
+            max_vertices: native_count,
+            ..native_policy
+        },
+        native_chart: Some(SurfaceChart::Revolve {
+            reference_radius: 20.0,
+            wall: ChartTransform::IDENTITY,
+            caps: ChartTransform::IDENTITY,
+        }),
+        ..Default::default()
+    };
+    let input = [PartInput::prepared("torus", &prepared)];
+    let mut compiler = PartCompiler::new();
+    let snapshot = compiler.compile_snapshot(&input, &policy).unwrap();
+    let delivered = snapshot.compiled().part(PartId(0)).unwrap().bodies[0]
+        .tri
+        .positions
+        .len();
+    assert!(
+        delivered > native_count as usize,
+        "fixture must exercise UV splits"
+    );
+    let uncapped_key = policy_fingerprint(&policy);
+    policy.max_render_vertices = Some(native_count);
+    assert_ne!(uncapped_key, policy_fingerprint(&policy));
+    let entries = compiler.cached_entries();
+    let error = compiler.compile_snapshot(&input, &policy).unwrap_err();
+    assert_eq!(
+        error,
+        CompileError::RenderVertices {
+            part: PartId(0),
+            part_key: "torus".into(),
+            body: 0,
+            error: exedra_mesh::RenderVertexLimit {
+                maximum: native_count,
+                required_at_least: u64::from(native_count) + 1,
+                stage: exedra_mesh::RenderVertexStage::Corners,
+            },
+        }
+    );
+    assert_eq!(
+        compiler.cached_entries(),
+        entries,
+        "refused part is not cached"
+    );
+    policy.max_render_vertices = Some(u32::try_from(delivered).unwrap());
+    let bounded = compiler.compile_snapshot(&input, &policy).unwrap();
+    assert_eq!(
+        bounded.compiled().part(PartId(0)).unwrap().bodies[0].tri,
+        snapshot.compiled().part(PartId(0)).unwrap().bodies[0].tri
+    );
+    let realizations = compiler.counters().native_realizations;
+    let hit = compiler.compile_snapshot(&input, &policy).unwrap();
+    assert_eq!(compiler.counters().native_realizations, realizations);
+    assert!(Arc::ptr_eq(
+        bounded.compiled().part(PartId(0)).unwrap(),
+        hit.compiled().part(PartId(0)).unwrap()
+    ));
+    let before = snapshot.body(PartId(0), 0).unwrap();
+    let after = bounded.body(PartId(0), 0).unwrap();
+    for triangle in 0..delivered.min(10) {
+        assert_eq!(
+            before.native_realization().unwrap().render_face(triangle),
+            after.native_realization().unwrap().render_face(triangle)
+        );
+    }
+}

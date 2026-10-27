@@ -54,6 +54,12 @@ pub struct CompilePolicy {
     /// Revolution, sweep and loft are supported; extrusion and bored plates
     /// return a typed unavailable diagnosis. Full chart parameters join the cache key.
     pub native_chart: Option<SurfaceChart>,
+    /// Optional delivered-vertex limit for each compiled body, including UV,
+    /// normal, carried-attribute and tangent splits. This is not an aggregate
+    /// assembly limit or a bound on working storage. Native topological working
+    /// vertices are separately governed by [`Self::native`]. `None` retains
+    /// uncapped extraction. A refusal returns no partial compiled part.
+    pub max_render_vertices: Option<u32>,
     /// Normal selection for every emitted body, including imported meshes.
     ///
     /// [`NormalsSource::CustomOnly`] emits zero normals for missing overrides.
@@ -130,7 +136,14 @@ pub struct PolicyFingerprint(pub u64);
 /// collide with current ones.
 #[must_use]
 pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v6"[..]);
+    let mut bytes = Vec::from(&b"assembly-compile-v7"[..]);
+    match policy.max_render_vertices {
+        None => bytes.push(0),
+        Some(maximum) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&maximum.to_le_bytes());
+        }
+    }
     bytes.extend_from_slice(&policy.native.tolerance.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.native.geometry_gap.to_bits().to_le_bytes());
     for limit in [
@@ -440,6 +453,17 @@ pub struct NativeCacheStorage {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// Render extraction refused before exceeding a per-body vertex limit.
+    RenderVertices {
+        /// Failing input-local part.
+        part: PartId,
+        /// Owned caller diagnostic key.
+        part_key: String,
+        /// Zero-based body within this part.
+        body: usize,
+        /// Maximum, proven required lower bound and extraction stage.
+        error: exedra_mesh::RenderVertexLimit,
+    },
     /// A requested native construction chart was unavailable or refused.
     NativeChart {
         /// Failing input-local part.
@@ -481,6 +505,12 @@ pub enum CompileError {
 impl core::fmt::Display for CompileError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::RenderVertices {
+                part,
+                part_key,
+                body,
+                error,
+            } => write!(f, "part {part_key:?} ({part:?}) body {body}: {error}"),
             Self::NativeChart {
                 part,
                 part_key,
@@ -912,23 +942,35 @@ fn compile_source(
                     report: Arc::new(evaluation.report),
                 });
             }
-            let bodies = evaluation
-                .bodies
-                .iter()
-                .map(|placed| {
+            let mut bodies = Vec::with_capacity(evaluation.bodies.len());
+            for (body, placed) in evaluation.bodies.iter().enumerate() {
+                bodies.push(
                     compile_body(
                         &placed.body.mesh,
                         |face| placed.material_for_face(face).map(|slot| SlotIndex(slot.0)),
                         policy,
                     )
-                })
-                .collect();
+                    .map_err(|error| CompileError::RenderVertices {
+                        part,
+                        part_key: String::from(part_key),
+                        body,
+                        error,
+                    })?,
+                );
+            }
             let geometry =
                 retain.then(|| EvaluatedPart::from_evaluation(evaluation.bodies, recipe));
             (bodies, Some(evaluation.report), geometry)
         }
         PartSource::Baked(mesh) => (
-            alloc::vec![compile_body(mesh, |_| None, policy)],
+            alloc::vec![compile_body(mesh, |_| None, policy).map_err(|error| {
+                CompileError::RenderVertices {
+                    part,
+                    part_key: String::from(part_key),
+                    body: 0,
+                    error,
+                }
+            })?],
             None,
             retain.then(|| EvaluatedPart::from_baked(mesh)),
         ),
@@ -951,7 +993,14 @@ fn compile_source(
                     })?
             };
             let (compiled, render_mesh_faces) =
-                compile_body_with_faces(&realized.mesh, |_| None, policy, retain);
+                compile_body_with_faces(&realized.mesh, |_| None, policy, retain).map_err(
+                    |error| CompileError::RenderVertices {
+                        part,
+                        part_key: String::from(part_key),
+                        body: 0,
+                        error,
+                    },
+                )?;
             let geometry = if retain {
                 let faces = render_mesh_faces
                     .into_iter()
@@ -988,8 +1037,8 @@ fn compile_body(
     mesh: &exedra_mesh::Mesh,
     material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
     policy: &CompilePolicy,
-) -> CompiledBody {
-    compile_body_with_faces(mesh, material_for_face, policy, false).0
+) -> Result<CompiledBody, exedra_mesh::RenderVertexLimit> {
+    compile_body_with_faces(mesh, material_for_face, policy, false).map(|(body, _)| body)
 }
 
 fn compile_body_with_faces(
@@ -997,9 +1046,12 @@ fn compile_body_with_faces(
     material_for_face: impl Fn(exedra_mesh::FaceId) -> Option<SlotIndex>,
     policy: &CompilePolicy,
     retain_faces: bool,
-) -> (CompiledBody, Vec<exedra_mesh::FaceId>) {
+) -> Result<(CompiledBody, Vec<exedra_mesh::FaceId>), exedra_mesh::RenderVertexLimit> {
     let params = policy.extraction_params();
-    let (tri, extraction) = mesh.to_trimesh(&params);
+    let (tri, extraction) = match policy.max_render_vertices {
+        Some(maximum) => mesh.to_trimesh_bounded(&params, maximum)?,
+        None => mesh.to_trimesh(&params),
+    };
     // Per-triangle regions in extraction order: to_trimesh emits faces in
     // face-id order, so per-face triangle counts line up exactly.
     let regions_layer = mesh.attrs().dense(exedra_mesh::attr::FACE_REGION);
@@ -1083,14 +1135,14 @@ fn compile_body_with_faces(
     } else {
         Vec::new()
     };
-    (
+    Ok((
         CompiledBody {
             tri: TriMesh { indices, ..tri },
             regions,
             extraction,
         },
         faces,
-    )
+    ))
 }
 
 /// Canonical baked-mesh identity including the built-in render attributes.
@@ -1268,7 +1320,8 @@ mod native_mapping_tests {
         }
         let _: () = edit.finish();
         let (compiled, faces) =
-            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), true);
+            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), true)
+                .unwrap();
         assert_eq!(compiled.regions.len(), 3);
         assert_ne!(faces, original);
         for (ids, &face) in compiled.tri.indices.as_chunks::<3>().0.iter().zip(&faces) {
@@ -1292,7 +1345,8 @@ mod native_mapping_tests {
             assert_eq!(actual, expected);
         }
         let (_, omitted) =
-            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), false);
+            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), false)
+                .unwrap();
         assert!(omitted.is_empty());
     }
     #[test]
@@ -1331,7 +1385,8 @@ mod native_mapping_tests {
         }
         let _: () = edit.finish();
         let (compiled, faces) =
-            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), true);
+            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), true)
+                .unwrap();
         assert_eq!(compiled.regions.len(), 3);
         assert!(compiled.regions.iter().all(|r| r.has_uvs));
         assert!(
