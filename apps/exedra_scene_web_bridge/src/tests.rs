@@ -5,6 +5,182 @@ use super::*;
 use serde_json::{Value, json};
 
 const REALM: &str = "test-native-scene-realm-a";
+
+#[test]
+fn all_four_scene_layers_are_readable_native_usda() {
+    let mut kernel = kernel(3);
+    stage(
+        &mut kernel,
+        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[
+            {"type":"setAttribute","path":"/World/PanelAsset","name":native_scene::PANEL_DEPTH,"value":{"type":"double","value":6}},
+            {"type":"setAttribute","path":"/World/Placements/P0000","name":"xformOp:translate","value":{"type":"double3","value":[220,15,4]}},
+            {"type":"definePrim","path":"/World/Placements/P0003"},
+            {"type":"addReference","path":"/World/Placements/P0003","layer":protocol::layer_handle(REALM,backend::ROOT),"primPath":"/World/PanelAsset"},
+            {"type":"setInstanceable","path":"/World/Placements/P0003","value":true},
+            create_attribute("/World/Placements/P0003","xformOp:translate",json!({"type":"double3","value":[600,0,0]})),
+            {"type":"createAttribute","path":"/World/Placements/P0003","name":"xformOpOrder","typeName":"token[]","variability":"uniform","value":{"type":"token[]","value":["xformOp:translate"]}}
+        ]}),
+    );
+    sync(&mut kernel);
+    let b = kernel.backend.as_ref().unwrap();
+    let mut imported = b.store.snapshot();
+    let options = b.live.options().clone();
+    for id in [
+        backend::ROOT,
+        backend::BASE,
+        backend::OVERRIDES,
+        backend::GENERATED,
+    ] {
+        let result = call(
+            &mut kernel,
+            "layerstack",
+            json!({"type":"layerText","layer":protocol::layer_handle(REALM,id)}),
+        );
+        assert_eq!(
+            result["ok"], true,
+            "all authored scene layers must export: {result}"
+        );
+        let text = result["result"]["text"].as_str().unwrap();
+        assert!(
+            layerstack_usda::parser::parse(text).diagnostics.is_empty(),
+            "saved layer parses"
+        );
+        if id == backend::BASE {
+            assert!(
+                text.contains("</World/PanelAsset>"),
+                "instances save as internal references"
+            );
+        }
+        let read = layerstack_usda::read_usda_with_registry(
+            text,
+            id,
+            &imported.tokens,
+            &imported.paths,
+            &mut NamedLayers,
+            options.schemas.as_ref().unwrap(),
+        );
+        assert!(read.parse_diagnostics.is_empty(), "USDA syntax diagnostics");
+        assert!(
+            read.lower_diagnostics.is_empty(),
+            "USDA lowering diagnostics"
+        );
+        assert!(
+            read.emitted.diagnostics.is_empty(),
+            "USDA import diagnostics: {:?}",
+            read.emitted.diagnostics
+        );
+        assert!(!read.emitted.rejected, "saved USD must import");
+        assert_eq!(
+            layerstack_usda::save::save_usda(
+                &read.emitted.layer,
+                &imported.tokens,
+                &imported.paths
+            )
+            .unwrap(),
+            text,
+            "canonical saved text roundtrips"
+        );
+        imported.insert_layer(read.emitted.layer);
+    }
+    let reloaded = Stage::compose(&mut imported, backend::ROOT, options);
+    assert!(
+        reloaded.composition_errors().is_empty(),
+        "all four saved layers compose"
+    );
+    let b = kernel.backend.as_mut().unwrap();
+    let mut before = exedra_scene::schemas::XformCache::new(Time::Default);
+    let mut after = exedra_scene::schemas::XformCache::new(Time::Default);
+    for index in 0..4 {
+        let name = format!("/World/Placements/P{index:04}");
+        let old = b.store.path(&name);
+        let new = imported.path(&name);
+        assert!(
+            reloaded.view(&imported).prim(new).unwrap().is_instance(),
+            "native instances survive layer reload"
+        );
+        assert_eq!(
+            before.local_to_world(
+                &exedra_scene::schemas::Scene::new(b.live.stage(), &b.store),
+                old
+            ),
+            after.local_to_world(
+                &exedra_scene::schemas::Scene::new(&reloaded, &imported),
+                new
+            ),
+            "native placement survives layer reload"
+        );
+        let name = format!("{name}/{}", exedra_scene::GENERATED_CHILD);
+        let old = b.store.path(&name);
+        let new = imported.path(&name);
+        let points = |stage: &Stage, store: &InMemoryStore, path| {
+            stage
+                .view(store)
+                .prim(path)
+                .unwrap()
+                .attribute("points")
+                .unwrap()
+                .get(Time::Default)
+                .unwrap()
+                .value
+        };
+        assert_eq!(
+            points(b.live.stage(), &b.store, old),
+            points(&reloaded, &imported, new),
+            "actual instance proxy geometry survives export/reload"
+        );
+    }
+}
+#[test]
+fn foreign_layer_reference_requires_explicit_asset_intent() {
+    let mut kernel = kernel(1);
+    let before = stage(
+        &mut kernel,
+        json!({"type":"layerText","layer":protocol::layer_handle(REALM,backend::OVERRIDES)}),
+    );
+    let result = call(
+        &mut kernel,
+        "layerstack",
+        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[
+            {"type":"definePrim","path":"/World/Uncommitted"},
+            {"type":"addReference","path":"/World/Uncommitted","layer":protocol::layer_handle(REALM,backend::BASE),"primPath":"/World/PanelAsset"}
+        ]}),
+    );
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["error"]["code"], "edit.referenceAsset");
+    assert_eq!(
+        stage(
+            &mut kernel,
+            json!({"type":"layerText","layer":protocol::layer_handle(REALM,backend::OVERRIDES)})
+        ),
+        before,
+        "refusal must leave transaction unpublished"
+    );
+}
+struct NamedLayers;
+impl AssetResolver for NamedLayers {
+    fn resolve(
+        &mut self,
+        path: &str,
+        _: Option<LayerId>,
+        _: &TokenInterner,
+        _: &PathInterner,
+    ) -> std::result::Result<ResolvedAsset, AssetResolveError> {
+        let id = match path {
+            "base.usda" => backend::BASE,
+            "overrides.usda" => backend::OVERRIDES,
+            "generated.usda" => backend::GENERATED,
+            _ => return Err(AssetResolveError::NotFound),
+        };
+        Ok(ResolvedAsset {
+            layer_id: id,
+            resolved_path: path.into(),
+            layer: None,
+        })
+    }
+    fn resolved_path(&self, _: LayerId) -> Option<&str> {
+        None
+    }
+}
 fn kernel(instances: u32) -> SceneKernel {
     SceneKernel::new(instances, REALM.into()).unwrap()
 }

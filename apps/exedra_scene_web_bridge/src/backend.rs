@@ -166,7 +166,9 @@ impl Backend {
             transaction.set_instanceable(base.prim(path), true);
             transaction.add_reference(
                 base.prim(path),
-                Reference::new(ROOT, asset),
+                // An internal reference names its authoring layer. Composition
+                // still resolves the target in the complete stage layer stack.
+                Reference::new(BASE, asset),
                 ListPosition::BackOfPrepend,
             );
             attribute(

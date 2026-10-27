@@ -7,6 +7,14 @@ controls. Exedra owns the native construction provider, compilation and derived
 Mesh publication. The generic TypeScript client lives in Layerstack; it talks to
 this same stage through an injected transport.
 
+All four authored layers can be inspected or downloaded as native USDA. Internal
+references are authored against their owning layer and resolve in the composed
+stage. The bounded transport's `addReference` accepts the stage root or edit-target
+layer for that intent. Other layer roots require an authored external asset path,
+which this endpoint currently refuses with `edit.referenceAsset`; it does not
+invent filenames for foreign in-memory layers. Export refuses unrepresentable
+arcs rather than silently dropping them.
+
 `SceneKernel(instances, realm)` installs the shared native panel provider and
 authors base, override and generated layers with millimetres and Z up. Pass a
 unique host-generated realm such as `crypto.randomUUID()` for each backend,
