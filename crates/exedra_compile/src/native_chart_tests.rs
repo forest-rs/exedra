@@ -505,3 +505,71 @@ fn loft_station_modes_change_uv_metric_without_changing_native_geometry() {
         );
     }
 }
+
+#[test]
+fn borrowed_constructors_expose_caps_planes_and_structural_chart_kind() {
+    use exedra_analytic::End;
+    use exedra_constructive::chart::SurfaceChartKind;
+    for (source, kind, has_caps) in [
+        (revolution(), Some(SurfaceChartKind::Revolve), false),
+        (sweep(), Some(SurfaceChartKind::Sweep), true),
+        (loft(), Some(SurfaceChartKind::Loft), true),
+    ] {
+        let view = source.geometry();
+        assert_eq!(view.family(), source.family());
+        assert_eq!(view.frame(), source.frame());
+        assert_eq!(view.chart_kind(), kind);
+        assert_eq!(source.chart_kind(), kind);
+        for end in [End::Start, End::End] {
+            assert_eq!(source.cap(end), view.cap(end));
+            assert_eq!(source.cap(end).is_some(), has_caps);
+            if let Some(cap) = view.cap(end) {
+                assert_eq!(view.planar_frame(cap), source.planar_frame(cap));
+                let plane = view.planar_frame(cap).unwrap();
+                let sign = if end == End::Start { -1.0 } else { 1.0 };
+                assert!((plane.rows[2][2] - sign).abs() < 1e-12);
+            }
+        }
+        assert_eq!(
+            view.planar_frame(FaceId(u32::MAX)),
+            Err(NativeSelectionError::UnknownFace {
+                face: FaceId(u32::MAX)
+            })
+        );
+    }
+    let shape = builders::rect_centered(40.0, 30.0)
+        .unwrap()
+        .to_line_arc(&ProfilePolicy::new(1e-9))
+        .unwrap();
+    let plate = exedra_analytic::extrusion::Extrusion::new(
+        shape,
+        Placement3::rotate_y_then_translate(0.35, 8.0, -2.0, 5.0),
+        10.0,
+    )
+    .unwrap();
+    // A transient constructor is queried before any NativeSource installation.
+    let view = NativeGeometryRef::Extrusion(&plate);
+    assert_eq!(view.chart_kind(), None);
+    let cap = view.cap(End::End).unwrap();
+    let plane = view.planar_frame(cap).unwrap();
+    let bored = plate
+        .with_through_bore(
+            exedra_analytic::bore::Bore::new([0.0; 3], [0.2, 0.0, 1.0], 2.0).unwrap(),
+            &exedra_analytic::bore::BorePolicy {
+                separation: 0.1,
+                geometry_gap: 1e-8,
+                min_axis_dot: 0.1,
+            },
+        )
+        .unwrap();
+    let view = NativeGeometryRef::BoredPlate(&bored);
+    assert_eq!(view.chart_kind(), None);
+    assert_eq!(view.cap(End::End), Some(cap));
+    assert_eq!(view.planar_frame(cap), Ok(plane));
+    assert_eq!(
+        view.planar_frame(bored.report().wall),
+        Err(NativeSelectionError::NotPlanar {
+            face: bored.report().wall
+        })
+    );
+}

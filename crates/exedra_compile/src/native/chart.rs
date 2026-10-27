@@ -61,35 +61,36 @@ impl NativeSource {
         use exedra_constructive::chart::{ChartError, LoftStations, SurfaceChart};
         chart.validate().map_err(NativeChartError::Invalid)?;
         let family = self.family();
-        match (self.geometry(), chart) {
-            (NativeGeometryRef::Extrusion(_) | NativeGeometryRef::BoredPlate(_), _) => {
-                Err(NativeChartError::Unavailable { family })
-            }
-            (NativeGeometryRef::Revolution(_), SurfaceChart::Revolve { .. })
-            | (NativeGeometryRef::Sweep(_), SurfaceChart::Sweep { .. }) => Ok(()),
-            (
-                NativeGeometryRef::Loft(v),
-                SurfaceChart::Loft {
-                    reference_section,
-                    stations,
-                    ..
-                },
-            ) => {
-                if *reference_section as usize >= v.sections().len() {
-                    return Err(NativeChartError::Invalid(
-                        ChartError::InvalidReferenceSection {
-                            section: *reference_section,
-                        },
-                    ));
-                }
-                match stations {
-                    LoftStations::SectionIndex | LoftStations::DatumDistance => Ok(()),
-                    _ => Err(NativeChartError::Unavailable { family }),
-                }
-            }
-            _ => Err(NativeChartError::WrongOperation { family }),
+        let kind = self
+            .chart_kind()
+            .ok_or(NativeChartError::Unavailable { family })?;
+        if chart.kind() != kind {
+            return Err(NativeChartError::WrongOperation { family });
         }
+        if let (
+            NativeGeometryRef::Loft(v),
+            SurfaceChart::Loft {
+                reference_section,
+                stations,
+                ..
+            },
+        ) = (self.geometry(), chart)
+        {
+            if *reference_section as usize >= v.sections().len() {
+                return Err(NativeChartError::Invalid(
+                    ChartError::InvalidReferenceSection {
+                        section: *reference_section,
+                    },
+                ));
+            }
+            match stations {
+                LoftStations::SectionIndex | LoftStations::DatumDistance => {}
+                _ => return Err(NativeChartError::Unavailable { family }),
+            }
+        }
+        Ok(())
     }
+
     pub(crate) fn realize_with_chart(
         &self,
         policy: &RealizationPolicy,

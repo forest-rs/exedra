@@ -5,6 +5,7 @@
 
 use crate::PartFingerprint;
 mod chart;
+mod inspect;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 pub use chart::NativeChartError;
 use core::mem::{size_of, size_of_val};
@@ -332,25 +333,29 @@ impl NativeSource {
     /// Supported construction family.
     #[must_use]
     pub fn family(&self) -> NativeFamily {
-        match self.geometry() {
-            NativeGeometryRef::Extrusion(_) => NativeFamily::Extrusion,
-            NativeGeometryRef::Revolution(_) => NativeFamily::Revolution,
-            NativeGeometryRef::Sweep(_) => NativeFamily::Sweep,
-            NativeGeometryRef::Loft(_) => NativeFamily::Loft,
-            NativeGeometryRef::BoredPlate(_) => NativeFamily::BoredPlate,
-        }
+        self.geometry().family()
     }
     /// Complete rigid occurrence placement, separate from body-local geometry.
     #[must_use]
     pub fn frame(&self) -> Placement3 {
-        match self.geometry() {
-            NativeGeometryRef::Extrusion(v) => v.frame(),
-            NativeGeometryRef::Revolution(v) => v.frame(),
-            NativeGeometryRef::Sweep(v) => v.frame(),
-            NativeGeometryRef::Loft(v) => v.frame(),
-            NativeGeometryRef::BoredPlate(v) => v.frame(),
-        }
+        self.geometry().frame()
     }
+    /// Structural native chart support, without metric checks or realization.
+    ///
+    /// Use [`Self::check_chart`] to check a requested configuration. Coordinate
+    /// representability is checked during realization. `None` is an explicit
+    /// absence of a charted path for this family, not an assessment of geometry validity.
+    #[must_use]
+    pub fn chart_kind(&self) -> Option<exedra_constructive::chart::SurfaceChartKind> {
+        self.geometry().chart_kind()
+    }
+    /// Current construction end cap, if present, in this source's native tables.
+    /// Use [`Self::select_face`] when retaining the result as a scoped selection.
+    #[must_use]
+    pub fn cap(&self, end: exedra_analytic::End) -> Option<FaceId> {
+        self.geometry().cap(end)
+    }
+
     /// Distinct authored feature tags on one native face, without allocating.
     ///
     /// A loft wall can carry both source-section tags. Cap faces have none.
@@ -423,33 +428,7 @@ impl NativeSource {
     /// # Errors
     /// Returns a typed unknown-face, curved-support or numeric-limit diagnosis.
     pub fn planar_frame(&self, face: FaceId) -> Result<Placement3, NativeSelectionError> {
-        fn local<F, E>(
-            body: &Body<F, E>,
-            face: FaceId,
-        ) -> Result<Placement3, NativeSelectionError> {
-            if !matches!(
-                body.face(face)
-                    .ok_or(NativeSelectionError::UnknownFace { face })?
-                    .surface,
-                exedra_analytic::geometry::Surface::Plane(_)
-            ) {
-                return Err(NativeSelectionError::NotPlanar { face });
-            }
-            body.planar_frame(face, [0.0; 2])
-                .ok_or(NativeSelectionError::PlaneNumericLimit { face })
-        }
-        let plane = match self.geometry() {
-            NativeGeometryRef::Extrusion(v) => local(v.body(), face),
-            NativeGeometryRef::Revolution(v) => local(v.body(), face),
-            NativeGeometryRef::Sweep(v) => local(v.body(), face),
-            NativeGeometryRef::Loft(v) => local(v.body(), face),
-            NativeGeometryRef::BoredPlate(v) => local(v.body(), face),
-        }?;
-        let frame = self.frame() * plane;
-        if frame.rows.iter().flatten().any(|v| !v.is_finite()) {
-            return Err(NativeSelectionError::PlaneNumericLimit { face });
-        }
-        Ok(frame)
+        self.geometry().planar_frame(face)
     }
     /// Positive finite native boundary area in squared model units, without meshing.
     ///
