@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { extrude, profiles, revolve, placement } from "@exedra/authoring";
+import { extrude, profiles, revolve, sweep, loft, paths, placement } from "@exedra/authoring";
 
 export interface PanelParameters {
   width: number;
@@ -78,4 +78,35 @@ export function authorTurnedFitting(p: CollarParameters) {
   ];
   const section=profiles.polygon(outline.map(([r,z])=>[p.radius+(r-7)*p.wall/15,z*p.collarHeight/47] as const)).tagged("fitting");
   return {fitting:revolve(section,{angle:p.angle*Math.PI/180,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
+}
+
+export interface SweepParameters {radius:number;bendRadius:number;angle:number;hollow:boolean;}
+/** Smooth exact line/arc rail, using the same path vocabulary as the Rust study. */
+export function authorRail(p:SweepParameters) {
+  const outer=profiles.circle({radius:p.radius}).tagged("rail");
+  const section=p.hollow?outer.withCutoutsAt(profiles.circle({radius:p.radius*.6}).tagged("bore"),[[0,0]]):outer;
+  const path=paths.start([0,0,0],{tangent:[0,1,0],sectionX:[1,0,0]})
+    .lineBy([0,20,0]).tangentArc({radius:p.bendRadius,angle:p.angle*Math.PI/180,normal:[0,0,1]});
+  return {rail:sweep(section,path,{placement:placement({translation:[0,0,p.radius]})})};
+}
+export interface LoftParameters {height:number;twist:number;offset:number;}
+/** Four corresponding rounded sections; wall supports are native ruled surfaces. */
+export function authorVariableLoft(p:LoftParameters) {
+  const sizes=[[52,38,8],[80,52,12],[60,40,6],[68,44,10]] as const;
+  const angles=[0,p.twist,-p.twist*.6,p.twist*.8];
+  const offsets=[[0,0],[p.offset,0],[-p.offset*.67,p.offset*.44],[0,0]] as const;
+  return {loft:loft(sizes.map(([width,height,radius],i)=>({
+    profile:profiles.roundedRectangle({width,height,radius}).tagged(`section ${i+1}`),
+    placement:placement({translation:[offsets[i][0],offsets[i][1],p.height*i/3],rotationXYZ:[0,0,angles[i]*Math.PI/180]}),
+  })))};
+}
+export interface FinishParameters {size:number;height:number;treatment:"fillet"|"chamfer";inner:boolean;}
+/** Named profile axial edges only: outer rounds or inner chamfers, with native transition tags. */
+export function authorFinishedPlate(p:FinishParameters) {
+  const outer=profiles.rectangle({width:70,height:50}).tagged("body");
+  const outline=p.inner?outer.withCutoutsAt(profiles.rectangle({width:32,height:22}).tagged("bore"),[[0,0]]):outer;
+  const original=extrude(outline,{height:p.height});
+  const edges=original.axialEdges(p.inner?"bore":"body");
+  const finished=p.treatment === "fillet"?edges.fillet({radius:p.size,feature:"round"}):edges.chamfer({distance:p.size,feature:"chamfer"});
+  return {plate:finished};
 }

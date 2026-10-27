@@ -1,9 +1,10 @@
 # Exedra authoring for TypeScript
 
 Describe reusable profiles and native construction in TypeScript; Rust validates,
-constructs, measures and realizes the geometry. This first slice supports native
-extrusions, through cutouts, blind pockets, planar native-face attachments and
-line/arc profile revolutions. Other constructors are not exposed by this SDK slice.
+constructs, queries and realizes the geometry. The SDK supports native extrusions,
+through cutouts, blind pockets, planar native-face attachments, line/arc profile
+revolutions, smooth sweeps, corresponding-section ruled lofts and selected axial
+finishes. Capabilities and measurement availability are explicit.
 
 ```ts
 import { createSession, extrude, profiles } from "@exedra/authoring";
@@ -118,3 +119,27 @@ after later edits or disposal; they do not retain another native model owner.
 `part.stepSupport` reports structural STEP geometry support with a typed face/family
 reason when unavailable. A supported result still requires final export validation
 of placement, tolerance, topology and output budgets.
+
+Native sweeps and ruled lofts use immutable descriptors too:
+
+```ts
+const path = paths.start([0, 0, 0], { tangent: [0, 1, 0], sectionX: [1, 0, 0] })
+  .lineBy([0, 20, 0])
+  .tangentArc({ radius: 40, angle: Math.PI / 2, normal: [0, 0, 1] });
+const rail = sweep(profiles.circle({ radius: 6 }).tagged("rail"), path);
+const transition = loft([
+  { profile: section, placement: placement() },
+  { profile: section, placement: placement({ translation: [5, 0, 60] }) },
+]);
+const rounded = extrude(profiles.rectangle({ width: 70, height: 50 }).tagged("body"), { height: 20 })
+  .axialEdges("body").fillet({ radius: 5, feature: "round" });
+```
+
+Import `paths`, `sweep`, `loft` and `placement` from the SDK. Paths lower once per
+shared descriptor, using native line/arc validation. Sweeps currently require a
+supported smooth open path and section. Loft sections must have corresponding
+line/arc segment structure; unsupported integrals remain explicitly unavailable.
+Named axial-edge finishes apply to extrusion profile corners, including selected
+hole corners. They do not imply general rim or arbitrary 3D edge fillets. Kernel
+errors preserve the construction node and operation; a failed document build
+never registers a partial result.
