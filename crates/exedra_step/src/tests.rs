@@ -317,6 +317,13 @@ fn unsupported_supports_and_open_or_multiple_shells_have_distinct_refusals() {
     )
     .unwrap();
     assert!(matches!(
+        check_geometry_support(&ruled),
+        Err(StepError::UnsupportedSurface {
+            face: FaceId(1),
+            family: "ruled"
+        })
+    ));
+    assert!(matches!(
         export_body(&ruled, Placement3::IDENTITY, &StepOptions::default()),
         Err(StepError::UnsupportedSurface {
             face: FaceId(1),
@@ -364,5 +371,33 @@ fn unsupported_supports_and_open_or_multiple_shells_have_distinct_refusals() {
     assert!(matches!(
         export_body(&multiple, Placement3::IDENTITY, &StepOptions::default()),
         Err(StepError::ShellCount { found: 2 })
+    ));
+}
+
+#[test]
+fn structural_support_is_separate_from_final_options_and_budget_validation() {
+    let body = cube();
+    assert_eq!(check_geometry_support(&body), Ok(()));
+    assert!(matches!(
+        export_body(
+            &body,
+            Placement3::IDENTITY,
+            &StepOptions {
+                tolerance: 0.0,
+                ..StepOptions::default()
+            }
+        ),
+        Err(StepError::InvalidOptions)
+    ));
+    assert!(matches!(
+        export_body(
+            &body,
+            Placement3::IDENTITY,
+            &StepOptions {
+                max_bytes: 1,
+                ..StepOptions::default()
+            }
+        ),
+        Err(StepError::Budget { .. })
     ));
 }

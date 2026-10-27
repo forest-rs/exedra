@@ -114,3 +114,7 @@ synchronous host CPU/elapsed measurements, not GPU time or presented-frame laten
 operation, outcome and document/part scope. Reading timings or `stats()` does not
 record additional operations. Held timing values remain plain immutable evidence
 after later edits or disposal; they do not retain another native model owner.
+
+`part.stepSupport` reports structural STEP geometry support with a typed face/family
+reason when unavailable. A supported result still requires final export validation
+of placement, tolerance, topology and output budgets.
