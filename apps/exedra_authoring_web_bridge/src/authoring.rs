@@ -3,7 +3,7 @@
 
 //! Bounded acyclic authoring requests lowered once into native constructors.
 
-use crate::Error;
+use crate::{CornerLocation, Error};
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
@@ -25,7 +25,10 @@ use exedra_constructive::{
     profile::{Loop2, Profile2, Seg2},
 };
 use exedra_math::Placement3;
-use exedra_profile::{CornerTreatment, ProfilePolicy, SegTag};
+use exedra_profile::{
+    CornerError, CornerSelectionError, CornerTreatment, LoopRef, Profile as SharedProfile,
+    ProfilePolicy, SegTag, SegmentRef,
+};
 use serde::Deserialize;
 
 const UNNAMED: SegTag = SegTag(u32::MAX);
@@ -58,6 +61,14 @@ impl From<InputEnd> for End {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum ProfileNode {
+    Corners {
+        profile: u32,
+        at: Vec<[f64; 2]>,
+        tolerance: Option<f64>,
+        treatment: FinishKind,
+        size: f64,
+        feature: Option<String>,
+    },
     Polygon {
         points: Vec<[f64; 2]>,
     },
@@ -269,6 +280,109 @@ pub(crate) struct Built {
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 128
 }
+fn corner_location(profile: &SharedProfile, reference: SegmentRef) -> Option<CornerLocation> {
+    let (boundary, hole, loop_) = match reference.loop_ref {
+        LoopRef::Outer => ("outer", None, profile.outer()),
+        LoopRef::Hole(index) => ("hole", Some(index), profile.holes().get(index)?),
+    };
+    Some(CornerLocation {
+        boundary,
+        hole,
+        segment: reference.segment,
+        point: loop_.segments().get(reference.segment)?.to,
+    })
+}
+fn corner_selection_error(
+    profile: &SharedProfile,
+    error: CornerSelectionError,
+    index: usize,
+) -> Error {
+    let code = match &error {
+        CornerSelectionError::Input { .. } => "profile.corner.selectionInput",
+        CornerSelectionError::Missing { .. } => "profile.corner.missing",
+        CornerSelectionError::Ambiguous { .. } => "profile.corner.ambiguous",
+        _ => "profile.corner.selection",
+    };
+    let mut diagnostic = Error::new(code, "profile.corners", error.to_string()).profile(index);
+    match error {
+        CornerSelectionError::Input {
+            point,
+            max_distance,
+        }
+        | CornerSelectionError::Missing {
+            point,
+            max_distance,
+        }
+        | CornerSelectionError::Ambiguous {
+            point,
+            max_distance,
+            ..
+        } => {
+            let context = diagnostic.context_mut();
+            context.corner_point = point.iter().all(|x| x.is_finite()).then_some(point);
+            context.corner_tolerance = max_distance.is_finite().then_some(max_distance);
+        }
+        _ => {}
+    }
+    if let CornerSelectionError::Ambiguous { matches, .. } = error {
+        diagnostic.context_mut().corner_candidates = Some(
+            matches
+                .into_iter()
+                .filter_map(|r| corner_location(profile, r))
+                .collect(),
+        );
+    }
+    diagnostic
+}
+fn corner_treatment_error(
+    profile: &SharedProfile,
+    error: CornerError,
+    index: usize,
+    size: f64,
+    feature: Option<String>,
+) -> Error {
+    let code = match &error {
+        CornerError::InvalidSize { .. } => "profile.corner.size",
+        CornerError::UnknownCorner { .. } => "profile.corner.missing",
+        CornerError::RepeatedCorner { .. } => "profile.corner.repeated",
+        CornerError::SmoothCorner { .. } => "profile.corner.smooth",
+        CornerError::UnsupportedCorner { .. } => "profile.corner.unsupportedJunction",
+        CornerError::OverlappingTrims { requested, .. } if !requested.is_finite() => {
+            "profile.corner.numericLimit"
+        }
+        CornerError::OverlappingTrims { .. } => "profile.corner.overlap",
+        CornerError::Loop(_) => "profile.corner.numericLimit",
+        CornerError::Input(_) => "profile.corner.input",
+        CornerError::Output(_) => "profile.corner.output",
+        _ => "profile.corner.invalid",
+    };
+    let mut diagnostic = Error::new(code, "profile.corners", error.to_string()).profile(index);
+    let context = diagnostic.context_mut();
+    context.feature = feature;
+    context.requested_size = size.is_finite().then_some(size);
+    match error {
+        CornerError::UnknownCorner { corner }
+        | CornerError::RepeatedCorner { corner }
+        | CornerError::SmoothCorner { corner }
+        | CornerError::UnsupportedCorner { corner, .. } => {
+            context.corner = corner_location(profile, corner);
+        }
+        CornerError::OverlappingTrims {
+            segment,
+            length,
+            requested,
+            min_separation,
+        } => {
+            context.corner = corner_location(profile, segment);
+            context.segment_length = length.is_finite().then_some(length);
+            context.requested_trim = requested.is_finite().then_some(requested);
+            context.minimum_separation = min_separation.is_finite().then_some(min_separation);
+        }
+        _ => {}
+    }
+    diagnostic
+}
+
 impl Request {
     fn validate(&self) -> Result<BTreeMap<String, SegTag>, Error> {
         if !self.separation.is_finite() || self.separation <= 0.0 {
@@ -333,6 +447,33 @@ impl Request {
                     labels.insert(name.clone());
                 }
                 ProfileNode::Translated { profile, .. } => dependency(*profile)?,
+                ProfileNode::Corners {
+                    profile,
+                    at,
+                    feature,
+                    ..
+                } => {
+                    dependency(*profile)?;
+                    if at.is_empty() || at.len() > 4096 {
+                        return Err(Error::new(
+                            "budget.corners",
+                            "document.validate",
+                            "Select 1–4096 profile corners",
+                        )
+                        .profile(i));
+                    }
+                    if let Some(feature) = feature {
+                        if !label(feature) {
+                            return Err(Error::new(
+                                "input.name",
+                                "document.validate",
+                                "Corner feature names must contain text and fit in 128 UTF-8 bytes",
+                            )
+                            .profile(i));
+                        }
+                        labels.insert(feature.clone());
+                    }
+                }
                 ProfileNode::Cutouts {
                     profile,
                     template,
@@ -366,6 +507,9 @@ impl Request {
                 ProfileNode::Polygon { points } => points.len(),
                 ProfileNode::Tagged { profile, .. } | ProfileNode::Translated { profile, .. } => {
                     counts[*profile as usize]
+                }
+                ProfileNode::Corners { profile, at, .. } => {
+                    counts[*profile as usize].saturating_add(at.len())
                 }
                 ProfileNode::Cutouts {
                     profile,
@@ -531,7 +675,7 @@ impl Request {
         let labels = self.validate()?;
         let policy = ProfilePolicy::new(self.separation);
         struct AuthoredProfile {
-            geometry: Profile2,
+            geometry: SharedProfile,
             feature: Option<SegTag>,
         }
         let mut profiles: Vec<AuthoredProfile> = Vec::with_capacity(self.profiles.len());
@@ -540,35 +684,43 @@ impl Request {
                 Error::new("profile.invalid", "profile.build", message).profile(i)
             };
             let mut feature = None;
+            let canonical = |profile: Profile2| {
+                profile
+                    .to_line_arc(&policy)
+                    .map(|p| p.tagged(UNNAMED))
+                    .map_err(|e| failure(e.to_string()))
+            };
             let geometry = match node {
-                ProfileNode::Polygon { points } => Profile2::new(
-                    Loop2::new(
-                        points
-                            .into_iter()
-                            .map(|p| Seg2::line((p[0], p[1])))
-                            .collect(),
+                ProfileNode::Polygon { points } => canonical(
+                    Profile2::new(
+                        Loop2::new(
+                            points
+                                .into_iter()
+                                .map(|p| Seg2::line((p[0], p[1])))
+                                .collect(),
+                        )
+                        .map_err(|e| failure(e.to_string()))?,
+                        Vec::new(),
                     )
                     .map_err(|e| failure(e.to_string()))?,
-                    Vec::new(),
-                )
-                .map(|p| p.tagged(UNNAMED))
-                .map_err(|e| failure(e.to_string()))?,
-                ProfileNode::Rectangle { width, height } => builders::rect_centered(width, height)
-                    .map(|p| p.tagged(UNNAMED))
-                    .map_err(|e| failure(e.to_string()))?,
+                )?,
+                ProfileNode::Rectangle { width, height } => canonical(
+                    builders::rect_centered(width, height).map_err(|e| failure(e.to_string()))?,
+                )?,
                 ProfileNode::RoundedRectangle {
                     width,
                     height,
                     radius,
-                } => builders::rounded_rect_centered(width, height, radius)
-                    .map(|p| p.tagged(UNNAMED))
-                    .map_err(|e| failure(e.to_string()))?,
-                ProfileNode::Circle { radius } => builders::circle(radius)
-                    .map(|p| p.tagged(UNNAMED))
-                    .map_err(|e| failure(e.to_string()))?,
-                ProfileNode::Slot { length, radius } => builders::slot_centered(length, radius)
-                    .map(|p| p.tagged(UNNAMED))
-                    .map_err(|e| failure(e.to_string()))?,
+                } => canonical(
+                    builders::rounded_rect_centered(width, height, radius)
+                        .map_err(|e| failure(e.to_string()))?,
+                )?,
+                ProfileNode::Circle { radius } => {
+                    canonical(builders::circle(radius).map_err(|e| failure(e.to_string()))?)?
+                }
+                ProfileNode::Slot { length, radius } => canonical(
+                    builders::slot_centered(length, radius).map_err(|e| failure(e.to_string()))?,
+                )?,
                 ProfileNode::Tagged { profile, name } => {
                     feature = Some(labels[&name]);
                     profiles[profile as usize]
@@ -580,21 +732,64 @@ impl Request {
                     feature = profiles[profile as usize].feature;
                     profiles[profile as usize]
                         .geometry
-                        .translated((offset[0], offset[1]))
+                        .translated(offset, &policy)
                         .map_err(|e| failure(e.to_string()))?
+                }
+                ProfileNode::Corners {
+                    profile,
+                    at,
+                    tolerance,
+                    treatment,
+                    size,
+                    feature: transition,
+                } => {
+                    let source = &profiles[profile as usize].geometry;
+                    feature = profiles[profile as usize].feature;
+                    let tolerance = tolerance.unwrap_or(self.separation);
+                    let mut selected = Vec::with_capacity(at.len());
+                    for point in at {
+                        selected.push(
+                            source
+                                .corner_at(point, tolerance)
+                                .map_err(|e| corner_selection_error(source, e, i))?
+                                .segment,
+                        );
+                    }
+                    let mut treatment = match treatment {
+                        FinishKind::Fillet => CornerTreatment::fillet(size),
+                        FinishKind::Chamfer => CornerTreatment::chamfer(size),
+                    };
+                    if let Some(name) = &transition {
+                        treatment = treatment.tagged(labels[name]);
+                    }
+                    source
+                        .with_corners(selected, treatment, &policy)
+                        .map_err(|e| corner_treatment_error(source, e, i, size, transition))?
+                        .profile
                 }
                 ProfileNode::Cutouts {
                     profile,
                     template,
                     positions,
-                } => profiles[profile as usize]
-                    .geometry
-                    .clone()
-                    .with_cutouts_at(
-                        &profiles[template as usize].geometry,
-                        positions.into_iter().map(|p| (p[0], p[1])),
-                    )
-                    .map_err(|e| failure(e.to_string()))?,
+                } => {
+                    let parent = &profiles[profile as usize].geometry;
+                    let template = &profiles[template as usize].geometry;
+                    if !template.holes().is_empty() {
+                        return Err(failure("Cutout templates must have no holes".into()));
+                    }
+                    let mut holes = parent.holes().to_vec();
+                    for offset in positions {
+                        holes.push(
+                            template
+                                .outer()
+                                .translated(offset)
+                                .map_err(|e| failure(e.to_string()))?
+                                .reversed(),
+                        );
+                    }
+                    SharedProfile::new(parent.outer().clone(), holes, &policy)
+                        .map_err(|e| failure(e.to_string()))?
+                }
             };
             profiles.push(AuthoredProfile { geometry, feature });
         }
@@ -783,12 +978,7 @@ impl Request {
                     placement,
                 } => Model::Revolution(
                     Revolution::new(
-                        profiles[profile as usize]
-                            .geometry
-                            .to_line_arc(&policy)
-                            .map_err(|e| {
-                                failure("revolve.profile", "solid.revolve", e.to_string())
-                            })?,
+                        profiles[profile as usize].geometry.clone(),
                         placement.frame(),
                         angle,
                     )
@@ -804,12 +994,9 @@ impl Request {
                     let feature = profiles[profile as usize].feature;
                     let profile = profiles[profile as usize]
                         .geometry
-                        .translated((at[0], at[1]))
+                        .translated(at, &policy)
                         .map_err(|e| failure("pocket.profile", "solid.pocket", e.to_string()))?;
-                    let native = profile
-                        .to_line_arc(&policy)
-                        .map_err(|e| failure("pocket.profile", "solid.pocket", e.to_string()))?;
-                    let mut pocket = Pocket::from_profile(&native, end.into(), depth)
+                    let mut pocket = Pocket::from_profile(&profile, end.into(), depth)
                         .map_err(|e| failure("pocket.profile", "solid.pocket", e.to_string()))?;
                     if let Some(feature) = feature {
                         pocket = pocket.tagged(feature);
@@ -1007,5 +1194,135 @@ mod tests {
         let error = value.build().unwrap_err();
         assert_eq!(error.code, "selection.missingCap");
         assert_eq!(error.context.as_ref().and_then(|c| c.node), Some(1));
+    }
+    fn corner_request(treatment: &str, size: f64, point: [f64; 2]) -> serde_json::Value {
+        serde_json::json!({"units":"mm","separation":1e-6,
+            "profiles":[
+                {"kind":"polygon","points":[[7,0],[22,0],[22,5],[18,5],[18,30],[7,30]]},
+                {"kind":"tagged","profile":0,"name":"body"},
+                {"kind":"corners","profile":1,"at":[point],"treatment":treatment,"size":size,"feature":"shoulder"},
+                {"kind":"translated","profile":2,"offset":[2,1]},
+                {"kind":"rectangle","width":100,"height":100},
+                {"kind":"cutouts","profile":4,"template":3,"positions":[[-20,-10],[5,-10]]}
+            ],
+            "paths":[{"start":[0,0,0],"tangent":[0,1,0],"sectionX":[1,0,0],"steps":[{"kind":"lineBy","offset":[0,20,0]}]}],
+            "nodes":[
+                {"kind":"extrude","profile":3,"height":5},
+                {"kind":"revolve","profile":3,"angle":core::f64::consts::TAU},
+                {"kind":"sweep","profile":3,"path":0},
+                {"kind":"loft","sections":[{"profile":3,"placement":{}},{"profile":3,"placement":{"translation":[0,0,20]}}]},
+                {"kind":"extrude","profile":5,"height":3}
+            ],"roots":[{"name":"plate","node":0},{"name":"turn","node":1},{"name":"rail","node":2},{"name":"loft","node":3},{"name":"cutoutPlate","node":4}]
+        })
+    }
+    #[test]
+    fn one_treated_shared_profile_drives_all_native_families_and_placed_cutouts() {
+        for treatment in ["fillet", "chamfer"] {
+            let request: Request =
+                serde_json::from_value(corner_request(treatment, 2.0, [18.0, 5.0])).unwrap();
+            let built = request.build().unwrap();
+            assert_eq!(built.roots.len(), 5);
+            let area = 350.0
+                + if treatment == "fillet" {
+                    4.0 - core::f64::consts::PI
+                } else {
+                    2.0
+                };
+            assert!((built.roots[0].1.volume().unwrap() - 5.0 * area).abs() < 1e-8);
+            assert!((built.roots[2].1.volume().unwrap() - 20.0 * area).abs() < 1e-8);
+            assert!(
+                (built.roots[4].1.volume().unwrap() - 3.0 * (10000.0 - 2.0 * area)).abs() < 1e-8
+            );
+            for ((_, native), surface) in built.roots.iter().take(4).zip(if treatment == "fillet" {
+                ["cylinder", "torus", "cylinder", "ruled"]
+            } else {
+                ["plane", "cone", "plane", "ruled"]
+            }) {
+                let metadata = crate::inspect::metadata(native, &built.names).unwrap();
+                let generated: Vec<_> = metadata["faces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|face| {
+                        face["features"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|name| name == "shoulder")
+                    })
+                    .collect();
+                assert_eq!(
+                    generated.len(),
+                    1,
+                    "one selected corner yields one labelled transition"
+                );
+                assert_eq!(generated[0]["surface"], surface);
+            }
+            if treatment == "fillet" {
+                let NativeGeometryRef::Revolution(turn) = built.roots[1].1.geometry() else {
+                    panic!("native revolution")
+                };
+                let torus = turn
+                    .body()
+                    .faces()
+                    .iter()
+                    .find_map(|face| {
+                        if let exedra_analytic::geometry::Surface::Torus(t) = &face.surface {
+                            Some(t)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap();
+                assert!((torus.major_radius() - 22.0).abs() < 1e-12);
+                assert!((torus.minor_radius() - 2.0).abs() < 1e-12);
+            }
+        }
+    }
+    #[test]
+    fn corner_refusals_keep_query_and_limiting_edge_evidence_without_nonfinite_json() {
+        for (point, size, expected) in [
+            ([18.0, 5.0], 5.0, "profile.corner.overlap"),
+            ([99.0, 99.0], 1.0, "profile.corner.missing"),
+            ([18.0, 5.0], 0.0, "profile.corner.size"),
+            ([18.0, 5.0], 1e308, "profile.corner.overlap"),
+        ] {
+            let value: Request =
+                serde_json::from_value(corner_request("fillet", size, point)).unwrap();
+            let error = value.build().unwrap_err();
+            let json = serde_json::to_value(error).unwrap();
+            assert_eq!(json["code"], expected);
+            assert_eq!(json["profile"], 2);
+            assert_eq!(json["operation"], "profile.corners");
+            if expected == "profile.corner.overlap" {
+                assert!(json["segmentLength"].as_f64().unwrap().is_finite());
+                assert!(json["requestedTrim"].as_f64().unwrap().is_finite());
+                assert_eq!(json["feature"], "shoulder");
+            }
+        }
+        let mut request = corner_request("fillet", 1.0, [18.0, 5.0]);
+        request["profiles"][2]["tolerance"] = serde_json::json!(100);
+        let request: Request = serde_json::from_value(request).unwrap();
+        let json = serde_json::to_value(request.build().unwrap_err()).unwrap();
+        assert_eq!(json["code"], "profile.corner.ambiguous");
+        assert_eq!(json["cornerCandidates"].as_array().unwrap().len(), 2);
+        let mut request = corner_request("fillet", 1e308, [22.0, 0.0]);
+        request["profiles"][0]["points"] =
+            serde_json::json!([[7, 0], [22, 0], [7.01, 0.001], [7, 30]]);
+        let request: Request = serde_json::from_value(request).unwrap();
+        let json = serde_json::to_value(request.build().unwrap_err()).unwrap();
+        assert_eq!(json["code"], "profile.corner.numericLimit");
+        assert!(
+            json.get("requestedTrim").is_none(),
+            "non-finite numeric evidence is absent, never number-typed null"
+        );
+        let mut request = corner_request("fillet", 1.0, [10.0, 0.0]);
+        request["profiles"][0] = serde_json::json!({"kind":"circle","radius":10});
+        let request: Request = serde_json::from_value(request).unwrap();
+        assert_eq!(request.build().unwrap_err().code, "profile.corner.smooth");
+        let mut request = corner_request("fillet", 1.0, [18.0, 5.0]);
+        request["profiles"][2]["at"] = serde_json::json!([[18, 5], [18, 5]]);
+        let request: Request = serde_json::from_value(request).unwrap();
+        assert_eq!(request.build().unwrap_err().code, "profile.corner.repeated");
     }
 }

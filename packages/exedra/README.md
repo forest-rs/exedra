@@ -208,3 +208,32 @@ axes and insufficient clearance return distinct diagnostics with the failed node
 and relevant numeric evidence. Elliptical rims and the cylindrical wall remain
 native, including in supported STEP export. `part.bore` reports local axis inputs,
 document-space evidence, rim semiaxes and native wall identity.
+
+Reusable profile corner treatments select positions in profile coordinates:
+
+```ts
+const outline = profiles.polygon([
+  [7, 0], [22, 0], [22, 5], [18, 5], [18, 30], [7, 30],
+]).tagged("sleeve");
+const rounded = outline.cornerAt([18, 5]).fillet(2, { feature: "shoulder" });
+const chamfered = outline.cornerAt([18, 5]).chamfer(1, { feature: "shoulder" });
+const part = revolve(rounded);
+```
+
+`cornersAt([[x, y], ...])` treats several corners simultaneously. Selections
+snapshot their points and optional `{ tolerance }`; the default search distance
+is the session's numeric separation. Exactly one boundary vertex must match each
+position, including holes. No nearest vertex or snapped position is guessed.
+Select on the profile before translating it, or use the translated coordinates.
+
+The same treated profile can be reused in extrusion, revolution, sweep, loft and
+cutout templates. Straight edges retain their tags; generated arcs/chamfers take
+the supplied feature or the common adjacent tag. Whole-feature intent survives
+profile treatment and translation. Geometry, validation and segment provenance
+stay in the shared Rust profile library.
+
+Treatments currently require adjacent straight segments. Smooth vertices, arc
+junctions, repeated selections and trims that consume adjacent edges return
+distinct `profile.corner.*` diagnostics. Errors identify the profile, selected
+position or local segment and available numeric trim evidence. Corner evidence
+is immutable; invalid edits never register a partial native document.

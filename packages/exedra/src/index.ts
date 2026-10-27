@@ -50,12 +50,22 @@ function snapshotChart(chart:ConstructionChart):ConstructionChart {
 }
 export type End = "start" | "end";
 
+/** Position and local segment identity within the refused authored profile. */
+export interface ProfileCornerLocation {readonly boundary:"outer"|"hole";readonly hole?:number;readonly segment:number;readonly point:XY;}
 export interface Diagnostic {
   code: string;
   operation: string;
   message: string;
   node?: number;
   profile?: number;
+  cornerPoint?:XY;
+  cornerTolerance?:number;
+  corner?:ProfileCornerLocation;
+  cornerCandidates?:readonly ProfileCornerLocation[];
+  requestedSize?:number;
+  segmentLength?:number;
+  requestedTrim?:number;
+  minimumSeparation?:number;
   feature?: string;
   family?: NativeFamily;
   measure?: "volume" | "surfaceArea";
@@ -109,7 +119,12 @@ export class ExedraError extends Error {
   constructor(diagnostic: Diagnostic, timing?: KernelCallTiming) {
     super(diagnostic.message);
     this.name = "ExedraError";
-    this.diagnostic = Object.freeze({ ...diagnostic });
+    const snapshot={...diagnostic};
+    const freezeCorner=(corner:ProfileCornerLocation):ProfileCornerLocation=>Object.freeze({...corner,point:Object.freeze([...corner.point]) as XY});
+    if(snapshot.cornerPoint)snapshot.cornerPoint=Object.freeze([...snapshot.cornerPoint]) as XY;
+    if(snapshot.corner)snapshot.corner=freezeCorner(snapshot.corner);
+    if(snapshot.cornerCandidates)snapshot.cornerCandidates=Object.freeze(snapshot.cornerCandidates.map(freezeCorner));
+    this.diagnostic = Object.freeze(snapshot);
     this.timing=timing && Object.freeze({...timing});
   }
 }
@@ -130,6 +145,7 @@ function point(value: XY): XY {
 }
 
 type ProfileNode =
+  | { kind:"corners";profile:Profile;at:readonly XY[];tolerance?:number;treatment:"fillet"|"chamfer";size:number;feature?:string }
   | { kind: "polygon"; points: readonly XY[] }
   | { kind: "rectangle"; width: number; height: number }
   | { kind: "roundedRectangle"; width: number; height: number; radius: number }
@@ -139,6 +155,14 @@ type ProfileNode =
   | { kind: "translated"; profile: Profile; offset: XY }
   | { kind: "cutouts"; profile: Profile; template: Profile; positions: readonly XY[] };
 const profileNodes = new WeakMap<Profile, ProfileNode>();
+
+/** Immutable positions to identify on one authored profile, not installed topology handles. */
+export interface AuthoredProfileCorners {
+  /** Exact tangent circular transitions between adjacent straight segments. */
+  readonly fillet:(radius:number,options?:{feature?:string})=>Profile;
+  /** Equal-distance trims joined by straight transitions. */
+  readonly chamfer:(distance:number,options?:{feature?:string})=>Profile;
+}
 
 /** An immutable reusable profile description. Geometry is checked by Rust at build time. */
 export class Profile {
@@ -166,6 +190,19 @@ export class Profile {
   }
   static slot(options: { length: number; radius: number }): Profile {
     return new Profile({ kind: "slot", length: finite(options.length, "length"), radius: finite(options.radius, "radius") });
+  }
+  /** Identifies one corner by profile-space position. Defaults to session separation; no snapping. */
+  cornerAt(at:XY,options:{tolerance?:number}={}):AuthoredProfileCorners {
+    return this.cornersAt([at],options);
+  }
+  /** Selects unique corners by profile-space positions; geometry/ambiguity are checked in Rust. */
+  cornersAt(points:Iterable<XY>,options:{tolerance?:number}={}):AuthoredProfileCorners {
+    const at:XY[]=[];
+    for(const value of points){if(at.length===4096)fail("budget.corners","At most 4096 corner selections are allowed");at.push(point(value));}
+    if(at.length===0)fail("input.corners","Select at least one profile corner");
+    const positions=Object.freeze(at),tolerance=options.tolerance===undefined?undefined:finite(options.tolerance,"corner search distance");
+    const apply=(treatment:"fillet"|"chamfer",size:number,feature?:string)=>new Profile({kind:"corners",profile:this,at:positions,tolerance,treatment,size:finite(size,"corner size"),feature:feature===undefined?undefined:name(feature)});
+    return Object.freeze({fillet:(radius:number,options:{feature?:string}={})=>apply("fillet",radius,options.feature),chamfer:(distance:number,options:{feature?:string}={})=>apply("chamfer",distance,options.feature)});
   }
   /** Labels the whole feature, including every generated segment. */
   tagged(label: string): Profile {
@@ -461,7 +498,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     let wire: unknown;
     switch (source.kind) {
       case "tagged": wire = { ...source, profile: visitProfile(source.profile) }; break;
-      case "translated": wire = { ...source, profile: visitProfile(source.profile) }; break;
+      case "translated":case "corners": wire = { ...source, profile: visitProfile(source.profile) }; break;
       case "cutouts": wire = { ...source, profile: visitProfile(source.profile), template: visitProfile(source.template) }; break;
       default: wire = source;
     }

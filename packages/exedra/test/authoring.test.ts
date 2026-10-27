@@ -197,3 +197,28 @@ test("bore point and direction snapshot construction-space inputs before a place
  session.build({plate}).dispose();point[0]=999;direction[2]=0;session.build({plate}).dispose();
  assert.deepEqual(h.requests[0],h.requests[1]);const bore=h.requests[0].nodes.find((n:any)=>n.kind==="throughBore");assert.deepEqual(bore.point,[0,0,10]);assert.deepEqual(bore.direction,[1,0,1]);assert.equal(bore.separation,2);session.dispose();
 });
+
+test("profile corner selections snapshot positions and share one treated profile across native operations",()=>{
+ const points:[number,number][]=[[22,5]],options={tolerance:0.001},feature={feature:"shoulder"};
+ const base=profiles.polygon([[7,0],[22,0],[22,5],[18,5],[18,30],[7,30]]).tagged("body");
+ const selected=base.cornersAt(points,options),rounded=selected.fillet(1,feature);
+ points[0][0]=99;points.push([7,0]);options.tolerance=99;feature.feature="other";
+ const h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+ const path=paths.start([0,0,0],{tangent:[0,1,0],sectionX:[1,0,0]}).lineBy([0,20,0]);
+ const make=()=>({plate:extrude(rounded,{height:5}),turn:revolve(rounded),rail:sweep(rounded,path),loft:loft([{profile:rounded,placement:placement()},{profile:rounded,placement:placement({translation:[0,0,20]})}])});
+ const first=session.build(make());first.dispose();const second=session.build(make());second.dispose();
+ assert.deepEqual(h.requests[0],h.requests[1]);
+ const treated=h.requests[0].profiles.filter((p:any)=>p.kind==="corners");assert.equal(treated.length,1);assert.deepEqual(treated[0].at,[[22,5]]);assert.equal(treated[0].tolerance,.001);assert.equal(treated[0].feature,"shoulder");
+ assert.throws(()=>base.cornersAt([]),code("input.corners"));
+ function* endless(){while(true)yield [22,5] as const;}
+ assert.throws(()=>base.cornersAt(endless()),code("budget.corners"));
+ session.dispose();
+});
+
+test("corner diagnostics retain immutable query and candidate evidence",()=>{
+ const point:[number,number]=[1,2],candidate={boundary:"outer" as const,segment:3,point};
+ const error=new ExedraError({code:"profile.corner.ambiguous",operation:"profile.corners",message:"Several corners match",cornerPoint:point,cornerCandidates:[candidate]});
+ point[0]=99;candidate.segment=44;
+ assert.deepEqual(error.diagnostic.cornerPoint,[1,2]);assert.equal(error.diagnostic.cornerCandidates![0].segment,3);
+ assert.throws(()=>{(error.diagnostic.cornerCandidates![0].point as any)[0]=77},TypeError);
+});
